@@ -1,0 +1,309 @@
+use std::{fs, io::Write as _, path::Path};
+
+use serde::{Deserialize, Serialize};
+use url::Url;
+use uuid::Uuid;
+
+use crate::{
+    error::{Error, Result},
+    paths::{Paths, set_private_permissions},
+};
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    #[serde(default)]
+    pub default_community: Option<Uuid>,
+    #[serde(default)]
+    pub identities: Vec<IdentityConfig>,
+    #[serde(default)]
+    pub communities: Vec<CommunityConfig>,
+    #[serde(default)]
+    pub ui: UiConfig,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeyBackend {
+    Keychain,
+    EncryptedFile,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityConfig {
+    pub id: Uuid,
+    pub label: String,
+    pub pubkey: String,
+    pub backend: KeyBackend,
+    pub key_ref: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommunityConfig {
+    pub id: Uuid,
+    pub label: String,
+    pub relay_url: String,
+    pub identity_id: Uuid,
+    #[serde(default)]
+    pub allow_insecure_localhost: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UiConfig {
+    pub sidebar_width: u16,
+    pub thread_width: u16,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            sidebar_width: 28,
+            thread_width: 44,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelayEndpoint {
+    pub websocket: Url,
+    pub http_base: Url,
+    pub authority: String,
+}
+
+impl Config {
+    pub fn load(paths: &Paths) -> Result<Self> {
+        let path = paths.config_file();
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let text = fs::read_to_string(&path).map_err(|error| Error::io(&path, error))?;
+        let config: Self = toml::from_str(&text).map_err(|_| {
+            Error::Config(format!(
+                "{} contains invalid or unknown settings",
+                path.display()
+            ))
+        })?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn save(&self, paths: &Paths) -> Result<()> {
+        self.validate()?;
+        paths.ensure()?;
+        let path = paths.config_file();
+        let text = toml::to_string_pretty(self)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        let temporary = path.with_extension("toml.tmp");
+        let mut file =
+            fs::File::create(&temporary).map_err(|error| Error::io(&temporary, error))?;
+        file.write_all(text.as_bytes())
+            .map_err(|error| Error::io(&temporary, error))?;
+        file.sync_all()
+            .map_err(|error| Error::io(&temporary, error))?;
+        set_private_permissions(&temporary)?;
+        replace_file(&temporary, &path)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let mut identity_ids = std::collections::HashSet::new();
+        for identity in &self.identities {
+            if !identity_ids.insert(identity.id) {
+                return Err(Error::Config(format!(
+                    "duplicate identity id {}",
+                    identity.id
+                )));
+            }
+            if identity.label.trim().is_empty() {
+                return Err(Error::Config("identity label cannot be empty".into()));
+            }
+            let pubkey_is_hex = identity.pubkey.len() == 64
+                && identity.pubkey.bytes().all(|byte| byte.is_ascii_hexdigit());
+            if !pubkey_is_hex {
+                return Err(Error::Config(format!(
+                    "identity {} has an invalid public key",
+                    identity.id
+                )));
+            }
+            if identity.key_ref.trim().is_empty() {
+                return Err(Error::Config(format!(
+                    "identity {} has an empty key reference",
+                    identity.id
+                )));
+            }
+        }
+        let mut community_ids = std::collections::HashSet::new();
+        let mut urls = std::collections::HashSet::new();
+        for community in &self.communities {
+            if !community_ids.insert(community.id) {
+                return Err(Error::Config(format!(
+                    "duplicate community id {}",
+                    community.id
+                )));
+            }
+            if !identity_ids.contains(&community.identity_id) {
+                return Err(Error::Config(format!(
+                    "community {} refers to missing identity {}",
+                    community.id, community.identity_id
+                )));
+            }
+            if community.label.trim().is_empty() {
+                return Err(Error::Config("community label cannot be empty".into()));
+            }
+            let endpoint =
+                validate_relay_url(&community.relay_url, community.allow_insecure_localhost)?;
+            if !urls.insert(endpoint.websocket.to_string()) {
+                return Err(Error::Config(format!(
+                    "duplicate relay URL {}",
+                    endpoint.websocket
+                )));
+            }
+        }
+        if let Some(default) = self.default_community
+            && !community_ids.contains(&default)
+        {
+            return Err(Error::Config(format!(
+                "default community {default} does not exist"
+            )));
+        }
+        if !(18..=60).contains(&self.ui.sidebar_width) {
+            return Err(Error::Config(
+                "ui.sidebar_width must be between 18 and 60".into(),
+            ));
+        }
+        if !(30..=80).contains(&self.ui.thread_width) {
+            return Err(Error::Config(
+                "ui.thread_width must be between 30 and 80".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn add_community(
+        &mut self,
+        label: String,
+        relay_url: String,
+        identity_id: Uuid,
+        insecure: bool,
+    ) -> Result<Uuid> {
+        let endpoint = validate_relay_url(&relay_url, insecure)?;
+        if !self
+            .identities
+            .iter()
+            .any(|identity| identity.id == identity_id)
+        {
+            return Err(Error::Config(format!(
+                "identity {identity_id} does not exist"
+            )));
+        }
+        if self.communities.iter().any(|entry| {
+            validate_relay_url(&entry.relay_url, entry.allow_insecure_localhost)
+                .is_ok_and(|existing| existing.websocket == endpoint.websocket)
+        }) {
+            return Err(Error::Config("that relay is already configured".into()));
+        }
+        let id = Uuid::new_v4();
+        self.communities.push(CommunityConfig {
+            id,
+            label,
+            relay_url: endpoint.websocket.to_string(),
+            identity_id,
+            allow_insecure_localhost: insecure,
+        });
+        self.default_community.get_or_insert(id);
+        self.validate()?;
+        Ok(id)
+    }
+
+    pub fn remove_community(&mut self, id: Uuid) -> bool {
+        let original = self.communities.len();
+        self.communities.retain(|community| community.id != id);
+        if self.default_community == Some(id) {
+            self.default_community = self.communities.first().map(|entry| entry.id);
+        }
+        original != self.communities.len()
+    }
+}
+
+pub fn validate_relay_url(input: &str, allow_insecure_localhost: bool) -> Result<RelayEndpoint> {
+    let mut url =
+        Url::parse(input).map_err(|error| Error::Config(format!("invalid relay URL: {error}")))?;
+    if url.username() != "" || url.password().is_some() {
+        return Err(Error::Config("relay URL credentials are forbidden".into()));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(Error::Config(
+            "relay URL query/fragment is forbidden".into(),
+        ));
+    }
+    if url.path() != "" && url.path() != "/" {
+        return Err(Error::Config("relay URL must use the origin root".into()));
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| Error::Config("relay URL needs a host".into()))?;
+    match url.scheme() {
+        "wss" => {}
+        "ws" if allow_insecure_localhost && is_loopback(host) => {}
+        "ws" => {
+            return Err(Error::Config(
+                "ws:// is allowed only for loopback with explicit acknowledgement".into(),
+            ));
+        }
+        _ => return Err(Error::Config("relay URL scheme must be wss://".into())),
+    }
+    url.set_path("/");
+    let mut http = url.clone();
+    http.set_scheme(if url.scheme() == "wss" {
+        "https"
+    } else {
+        "http"
+    })
+    .map_err(|()| Error::Config("cannot map relay URL to HTTP".into()))?;
+    let authority = buzz_core::tenant::relay_url_authority(url.as_str());
+    Ok(RelayEndpoint {
+        websocket: url,
+        http_base: http,
+        authority,
+    })
+}
+
+fn is_loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+#[cfg(not(windows))]
+fn replace_file(temporary: &Path, destination: &Path) -> Result<()> {
+    fs::rename(temporary, destination).map_err(|error| Error::io(destination, error))
+}
+
+#[cfg(windows)]
+fn replace_file(temporary: &Path, destination: &Path) -> Result<()> {
+    let backup = destination.with_extension("toml.bak");
+    if backup.exists() {
+        fs::remove_file(&backup).map_err(|error| Error::io(&backup, error))?;
+    }
+    if destination.exists() {
+        fs::rename(destination, &backup).map_err(|error| Error::io(destination, error))?;
+    }
+    if let Err(error) = fs::rename(temporary, destination) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, destination);
+        }
+        return Err(Error::io(destination, error));
+    }
+    if backup.exists() {
+        fs::remove_file(&backup).map_err(|error| Error::io(&backup, error))?;
+    }
+    Ok(())
+}
+
+pub fn load_from(path: &Path) -> Result<Config> {
+    let text = fs::read_to_string(path).map_err(|error| Error::io(path, error))?;
+    toml::from_str(&text).map_err(|_| Error::Config("invalid or unknown settings".into()))
+}

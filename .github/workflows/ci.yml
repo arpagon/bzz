@@ -1,0 +1,62 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with: { components: rustfmt, clippy }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --all-targets
+      - run: cargo install cargo-deny --version 0.20.2 --locked
+      - run: cargo deny check
+      - run: cargo install cargo-audit --version 0.22.2 --locked
+      - run: cargo audit
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: target/x86_64-unknown-linux-gnu/release/bzz
+          - os: macos-13
+            target: x86_64-apple-darwin
+            binary: target/x86_64-apple-darwin/release/bzz
+          - os: macos-14
+            target: aarch64-apple-darwin
+            binary: target/aarch64-apple-darwin/release/bzz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: target/x86_64-pc-windows-msvc/release/bzz.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with: { targets: '${{ matrix.target }}' }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Smoke-test release binary
+        shell: bash
+        run: ${{ matrix.binary }} --version
+      - name: Test identity, config, and keymap on target OS
+        run: cargo test --locked --target ${{ matrix.target }} --test auth_test --test config_test --test terminal_restore_test
+      - name: Smoke-test native keychain
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          smoke_home="$(mktemp -d)"
+          export HOME="$smoke_home" XDG_CONFIG_HOME="$smoke_home/config" XDG_DATA_HOME="$smoke_home/data" XDG_CACHE_HOME="$smoke_home/cache"
+          export APPDATA="$smoke_home/config" LOCALAPPDATA="$smoke_home/data"
+          ${{ matrix.binary }} identity new --label ci-keychain
+          identity_id="$(${{ matrix.binary }} identity list | tee /dev/stderr | awk '$2 == "ci-keychain" { print $1 }')"
+          test -n "$identity_id"
+          ${{ matrix.binary }} identity remove "$identity_id" --yes

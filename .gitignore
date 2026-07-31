@@ -1,0 +1,9 @@
+/target/
+*.db
+*.db-shm
+*.db-wal
+*.bak
+.env
+.DS_Store
+.pi/
+result/

@@ -1,0 +1,1621 @@
+use std::{
+    collections::{HashMap, HashSet},
+    time::{Duration, Instant},
+};
+
+use crossterm::event::{
+    Event as TerminalEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+};
+use futures_util::StreamExt as _;
+use ratatui::{
+    Frame,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Text},
+    widgets::{Block, Clear, List, ListItem, Paragraph, Wrap},
+};
+use tokio::sync::{broadcast, mpsc};
+use uuid::Uuid;
+
+use crate::{
+    auth::{IdentityManager, read_passphrase, signer::SignerHandle},
+    config::{Config, KeyBackend, validate_relay_url},
+    domain::{Channel, ConnectionState, Message, Profile, Reaction},
+    error::{Error, Result},
+    paths::Paths,
+    protocol::http::HttpClient,
+    realtime::{
+        session::SessionEvent,
+        subscriptions,
+        supervisor::{SupervisorEvent, SupervisorHandle},
+    },
+    render::sanitize,
+    service::{
+        channels::ChannelService, messages::MessageService, profiles::ProfileService,
+        read_state::ReadStateService,
+    },
+    store::writer::StoreHandle,
+    sync::{outbox, read_state},
+    ui::{
+        composer::Composer,
+        keymap::{KeyAction, map_insert, map_normal},
+        layout,
+        terminal::{TerminalGuard, Tui},
+        timeline::{self, TimelineState},
+    },
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Mode {
+    Normal,
+    Insert,
+    Finder,
+    Reaction,
+    ConfirmDelete,
+    Command,
+    Help,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Pane {
+    Channels,
+    Timeline,
+    Thread,
+}
+
+struct Runtime {
+    community_id: Uuid,
+    identity_id: Uuid,
+    signer: SignerHandle,
+    supervisor: SupervisorHandle,
+    events: broadcast::Receiver<SupervisorEvent>,
+    http: HttpClient,
+    channels: ChannelService,
+    profiles: ProfileService,
+    messages: MessageService,
+    read_state: ReadStateService,
+}
+
+impl Runtime {
+    fn build(
+        config: &Config,
+        index: usize,
+        paths: &Paths,
+        store: StoreHandle,
+        signer: Option<SignerHandle>,
+    ) -> Result<Self> {
+        let community = config
+            .communities
+            .get(index)
+            .ok_or_else(|| Error::Config("community selection is out of range".into()))?;
+        let identity = config
+            .identities
+            .iter()
+            .find(|identity| identity.id == community.identity_id)
+            .ok_or_else(|| Error::Config("community identity does not exist".into()))?;
+        let signer = if let Some(signer) = signer {
+            signer
+        } else {
+            let passphrase = matches!(identity.backend, KeyBackend::EncryptedFile)
+                .then(|| read_passphrase("Identity passphrase: ", false))
+                .transpose()?;
+            let keys = IdentityManager::new(paths).unlock(identity, passphrase.as_ref())?;
+            SignerHandle::spawn(keys)
+        };
+        let endpoint =
+            validate_relay_url(&community.relay_url, community.allow_insecure_localhost)?;
+        let supervisor = SupervisorHandle::spawn(endpoint.websocket, signer.clone());
+        let events = supervisor.subscribe_events();
+        let http = HttpClient::new(endpoint.http_base, signer.clone())?;
+        Ok(Self {
+            community_id: community.id,
+            identity_id: identity.id,
+            signer: signer.clone(),
+            supervisor: supervisor.clone(),
+            events,
+            http: http.clone(),
+            channels: ChannelService::new(community.id, http.clone(), store.clone()),
+            profiles: ProfileService::new(community.id, http.clone(), store.clone()),
+            messages: MessageService::new(
+                community.id,
+                signer.clone(),
+                store.clone(),
+                supervisor.clone(),
+            ),
+            read_state: ReadStateService::new(community.id, signer, store, supervisor),
+        })
+    }
+}
+
+#[derive(Debug)]
+enum Background {
+    Changed,
+    Failed(String),
+}
+
+pub struct App {
+    config: Config,
+    paths: Paths,
+    store: StoreHandle,
+    runtime: Option<Runtime>,
+    selected_community: usize,
+    channels: Vec<Channel>,
+    selected_channel: usize,
+    showing_open_channel: bool,
+    messages: Vec<Message>,
+    profiles: HashMap<String, Profile>,
+    reactions: HashMap<String, Vec<Reaction>>,
+    profile_requested: HashSet<String>,
+    thread_messages: Vec<Message>,
+    thread_root: Option<String>,
+    timeline: TimelineState,
+    thread_timeline: TimelineState,
+    mode: Mode,
+    pane: Pane,
+    composer: Composer,
+    finder: String,
+    reaction_index: usize,
+    command: String,
+    sidebar: bool,
+    connection: ConnectionState,
+    status_error: Option<String>,
+    should_quit: bool,
+    awaiting_g: bool,
+    cache_dirty: bool,
+    manual_unread: HashSet<Uuid>,
+    computed_unread: HashSet<Uuid>,
+    subscribed_channels: HashSet<Uuid>,
+    last_marked: HashMap<String, u32>,
+    read_dirty_since: Option<Instant>,
+    last_cache_refresh: Instant,
+    last_directory_refresh: Instant,
+    background_tx: mpsc::Sender<Background>,
+    background_rx: mpsc::Receiver<Background>,
+}
+
+impl App {
+    pub async fn new(config: Config, paths: Paths, store: StoreHandle) -> Result<Self> {
+        let selected_community = config
+            .default_community
+            .and_then(|id| config.communities.iter().position(|entry| entry.id == id))
+            .unwrap_or_default();
+        let runtime = if config.communities.is_empty() {
+            None
+        } else {
+            Some(Runtime::build(
+                &config,
+                selected_community,
+                &paths,
+                store.clone(),
+                None,
+            )?)
+        };
+        let (background_tx, background_rx) = mpsc::channel(128);
+        let mut app = Self {
+            config,
+            paths,
+            store,
+            runtime,
+            selected_community,
+            channels: Vec::new(),
+            selected_channel: 0,
+            showing_open_channel: false,
+            messages: Vec::new(),
+            profiles: HashMap::new(),
+            reactions: HashMap::new(),
+            profile_requested: HashSet::new(),
+            thread_messages: Vec::new(),
+            thread_root: None,
+            timeline: TimelineState {
+                at_live_bottom: true,
+                ..TimelineState::default()
+            },
+            thread_timeline: TimelineState {
+                at_live_bottom: true,
+                ..TimelineState::default()
+            },
+            mode: Mode::Normal,
+            pane: Pane::Channels,
+            composer: Composer::default(),
+            finder: String::new(),
+            reaction_index: 0,
+            command: String::new(),
+            sidebar: true,
+            connection: ConnectionState::Connecting,
+            status_error: None,
+            should_quit: false,
+            awaiting_g: false,
+            cache_dirty: true,
+            manual_unread: HashSet::new(),
+            computed_unread: HashSet::new(),
+            subscribed_channels: HashSet::new(),
+            last_marked: HashMap::new(),
+            read_dirty_since: None,
+            last_cache_refresh: Instant::now(),
+            last_directory_refresh: Instant::now(),
+            background_tx,
+            background_rx,
+        };
+        app.hydrate_cache().await?;
+        Ok(app)
+    }
+
+    pub async fn run(mut self) -> Result<()> {
+        let shutdown = shutdown_signal();
+        tokio::pin!(shutdown);
+        tokio::select! {
+            biased;
+            _ = &mut shutdown => return Ok(()),
+            _ = tokio::task::yield_now() => {},
+        }
+        let (mut guard, mut terminal) = TerminalGuard::enter()?;
+        terminal
+            .draw(|frame| self.render(frame))
+            .map_err(|error| Error::io("terminal", error))?;
+        self.start_sync().await?;
+        let mut input = EventStream::new();
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        while !self.should_quit {
+            terminal
+                .draw(|frame| self.render(frame))
+                .map_err(|error| Error::io("terminal", error))?;
+            tokio::select! {
+                maybe=input.next()=>if let Some(Ok(TerminalEvent::Key(key)))=maybe&&key.kind==KeyEventKind::Press{self.handle_key(key,&mut guard,&mut terminal).await?;},
+                network=next_network(&mut self.runtime)=>if let Some(event)=network{self.handle_network(event).await?;},
+                background=self.background_rx.recv()=>if let Some(event)=background{match event{Background::Changed=>self.cache_dirty=true,Background::Failed(message)=>self.status_error=Some(message)}},
+                _=tick.tick()=>self.on_tick().await?,
+                _=&mut shutdown=>self.should_quit=true,
+            }
+        }
+        self.shutdown().await;
+        guard.restore();
+        Ok(())
+    }
+
+    async fn start_sync(&mut self) -> Result<()> {
+        let Some(runtime) = &self.runtime else {
+            self.connection = ConnectionState::Offline;
+            return Ok(());
+        };
+        let pubkey = runtime.signer.public_key().to_hex();
+        let channels = runtime.channels.clone();
+        let profiles = runtime.profiles.clone();
+        let http = runtime.http.clone();
+        let supervisor = runtime.supervisor.clone();
+        let community = runtime.community_id;
+        supervisor
+            .subscribe(
+                "membership",
+                subscriptions::membership(&pubkey, nostr::Timestamp::now().as_secs()),
+            )
+            .await?;
+        supervisor
+            .subscribe(
+                "global-stream",
+                subscriptions::global_stream(nostr::Timestamp::now().as_secs()),
+            )
+            .await?;
+        supervisor
+            .subscribe(
+                "read-state",
+                subscriptions::read_state(
+                    &pubkey,
+                    nostr::Timestamp::now()
+                        .as_secs()
+                        .saturating_sub(read_state::HORIZON_SECONDS),
+                ),
+            )
+            .await?;
+        let initial_channels = self
+            .channels
+            .iter()
+            .filter(|channel| channel.is_member)
+            .take(900)
+            .map(|channel| channel.id)
+            .collect::<Vec<_>>();
+        for channel in initial_channels {
+            self.subscribe_channel(channel).await?;
+        }
+        let store = self.store.clone();
+        let authors = self
+            .messages
+            .iter()
+            .map(|message| message.pubkey.clone())
+            .collect::<HashSet<_>>();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = async {
+                let info = http.nip11().await?;
+                let relay_pubkey = crate::protocol::http::relay_signing_pubkey(&info)
+                    .ok_or_else(|| {
+                        Error::Protocol("NIP-11 document has no relay signing key".into())
+                    })?
+                    .to_owned();
+                store
+                    .call(move |store| store.pin_relay_pubkey(community, &relay_pubkey))
+                    .await?;
+                channels.refresh(&pubkey).await?;
+                let _ = profiles.hydrate(authors).await;
+                let _ = outbox::flush(community, &http, &supervisor, &store).await;
+                Ok::<_, Error>(())
+            }
+            .await;
+            let _ = tx
+                .send(match result {
+                    Ok(()) => Background::Changed,
+                    Err(error) => Background::Failed(error.to_string()),
+                })
+                .await;
+        });
+        if let Some(channel) = self.current_channel().map(|channel| channel.id) {
+            self.spawn_backfill(channel);
+        }
+        Ok(())
+    }
+
+    async fn subscribe_channel(&mut self, channel: Uuid) -> Result<()> {
+        if self.subscribed_channels.contains(&channel) || self.subscribed_channels.len() >= 900 {
+            return Ok(());
+        }
+        let Some(runtime) = &self.runtime else {
+            return Ok(());
+        };
+        let community = runtime.community_id;
+        let channel_string = channel.to_string();
+        let cursor = self
+            .store
+            .call(move |store| store.sync_cursor(community, "history", &channel_string))
+            .await?;
+        runtime
+            .supervisor
+            .subscribe(
+                format!("ch-{}", channel.simple()),
+                subscriptions::channel(channel, cursor.high_created_at),
+            )
+            .await?;
+        self.subscribed_channels.insert(channel);
+        Ok(())
+    }
+
+    async fn reconcile_subscriptions(&mut self) -> Result<()> {
+        let channels = self
+            .channels
+            .iter()
+            .filter(|channel| channel.is_member)
+            .take(900)
+            .map(|channel| channel.id)
+            .collect::<Vec<_>>();
+        for channel in channels {
+            self.subscribe_channel(channel).await?;
+        }
+        Ok(())
+    }
+
+    fn spawn_backfill(&self, channel: Uuid) {
+        if let Some(runtime) = &self.runtime {
+            let service = runtime.channels.clone();
+            let tx = self.background_tx.clone();
+            tokio::spawn(async move {
+                let result = service.backfill(channel).await;
+                let _ = tx
+                    .send(match result {
+                        Ok(_) => Background::Changed,
+                        Err(error) => Background::Failed(error.to_string()),
+                    })
+                    .await;
+            });
+        }
+    }
+
+    async fn hydrate_cache(&mut self) -> Result<()> {
+        let Some(community) = self.active_community_id() else {
+            self.channels.clear();
+            self.messages.clear();
+            self.reactions.clear();
+            return Ok(());
+        };
+        self.channels = self
+            .store
+            .call(move |store| store.channels(community))
+            .await?;
+        self.selected_channel = if self.showing_open_channel {
+            self.selected_channel
+                .min(self.channels.len().saturating_sub(1))
+        } else if self
+            .channels
+            .get(self.selected_channel)
+            .is_some_and(|channel| channel.is_member)
+        {
+            self.selected_channel
+        } else {
+            self.channels
+                .iter()
+                .position(|channel| channel.is_member)
+                .unwrap_or(self.channels.len())
+        };
+        if let Some(channel) = self.current_channel().map(|channel| channel.id) {
+            self.messages = self
+                .store
+                .call(move |store| store.messages(community, channel, 500))
+                .await?;
+            self.timeline.reconcile(&self.messages);
+            if let Some(root) = self.thread_root.clone() {
+                self.thread_messages = self
+                    .store
+                    .call(move |store| store.thread(community, &root, 500))
+                    .await?;
+                self.thread_timeline.reconcile(&self.thread_messages);
+            }
+        } else {
+            self.messages.clear();
+            self.thread_messages.clear();
+        }
+        let reaction_targets = self
+            .messages
+            .iter()
+            .chain(self.thread_messages.iter())
+            .map(|message| message.event_id.clone())
+            .collect::<HashSet<_>>();
+        self.reactions = self
+            .store
+            .call(move |store| {
+                reaction_targets
+                    .into_iter()
+                    .map(|target| {
+                        store
+                            .reactions(community, &target)
+                            .map(|rows| (target, rows))
+                    })
+                    .collect()
+            })
+            .await?;
+        self.profiles = self
+            .store
+            .call(move |store| store.profiles(community))
+            .await?;
+        let unknown_authors = self
+            .messages
+            .iter()
+            .chain(self.thread_messages.iter())
+            .map(|message| message.pubkey.clone())
+            .filter(|pubkey| {
+                !self.profiles.contains_key(pubkey) && !self.profile_requested.contains(pubkey)
+            })
+            .collect::<HashSet<_>>();
+        self.profile_requested
+            .extend(unknown_authors.iter().cloned());
+        if !unknown_authors.is_empty()
+            && let Some(runtime) = &self.runtime
+        {
+            let profiles = runtime.profiles.clone();
+            let tx = self.background_tx.clone();
+            tokio::spawn(async move {
+                let result = profiles.hydrate(unknown_authors).await;
+                let _ = tx
+                    .send(match result {
+                        Ok(_) => Background::Changed,
+                        Err(error) => Background::Failed(error.to_string()),
+                    })
+                    .await;
+            });
+        }
+        self.manual_unread = self
+            .store
+            .call(move |store| store.ui_state(community, "manual_unread"))
+            .await?
+            .unwrap_or_default();
+        self.computed_unread = if let Some(runtime) = &self.runtime {
+            let pubkey = runtime.signer.public_key().to_hex();
+            self.store
+                .call(move |store| store.unread_channels(community, &pubkey))
+                .await?
+        } else {
+            HashSet::new()
+        };
+        self.cache_dirty = false;
+        self.last_cache_refresh = Instant::now();
+        Ok(())
+    }
+
+    async fn handle_network(&mut self, event: SupervisorEvent) -> Result<()> {
+        match event {
+            SupervisorEvent::Connecting => self.connection = ConnectionState::Connecting,
+            SupervisorEvent::Backoff(_) => self.connection = ConnectionState::Offline,
+            SupervisorEvent::Terminal(message) => {
+                self.connection = if message.contains("clock-skew") {
+                    ConnectionState::ClockSkew
+                } else {
+                    ConnectionState::AccessDenied
+                };
+                self.status_error = Some(message);
+            }
+            SupervisorEvent::Session(SessionEvent::Authenticated) => {
+                self.connection = ConnectionState::Online;
+                self.status_error = None;
+                if let Some(runtime) = &self.runtime {
+                    let community = runtime.community_id;
+                    let http = runtime.http.clone();
+                    let supervisor = runtime.supervisor.clone();
+                    let store = self.store.clone();
+                    let tx = self.background_tx.clone();
+                    tokio::spawn(async move {
+                        let result = outbox::flush(community, &http, &supervisor, &store).await;
+                        let _ = tx
+                            .send(match result {
+                                Ok(_) => Background::Changed,
+                                Err(error) => Background::Failed(error.to_string()),
+                            })
+                            .await;
+                    });
+                    let channels = self
+                        .channels
+                        .iter()
+                        .filter(|channel| channel.is_member)
+                        .map(|channel| channel.id)
+                        .collect::<Vec<_>>();
+                    let service = runtime.channels.clone();
+                    let tx = self.background_tx.clone();
+                    tokio::spawn(async move {
+                        let mut failure = None;
+                        for channel in channels {
+                            if let Err(error) = service.backfill(channel).await {
+                                failure.get_or_insert_with(|| error.to_string());
+                            }
+                        }
+                        let _ = tx
+                            .send(failure.map_or(Background::Changed, Background::Failed))
+                            .await;
+                    });
+                }
+            }
+            SupervisorEvent::Session(SessionEvent::Event { event, .. }) => {
+                let Some(runtime) = &self.runtime else {
+                    return Ok(());
+                };
+                let community = runtime.community_id;
+                if event.kind.as_u16() == 30_078 {
+                    let events = vec![event];
+                    let signer = runtime.signer.clone();
+                    let store = self.store.clone();
+                    let tx = self.background_tx.clone();
+                    tokio::spawn(async move {
+                        let result =
+                            read_state::merge_events(community, &events, &signer, &store).await;
+                        let _ = tx
+                            .send(match result {
+                                Ok(_) => Background::Changed,
+                                Err(error) => Background::Failed(error.to_string()),
+                            })
+                            .await;
+                    });
+                } else {
+                    let refresh_memberships = matches!(event.kind.as_u16(), 44_100 | 44_101);
+                    match self
+                        .store
+                        .call(move |store| store.apply_event(community, &event).map(|_| ()))
+                        .await
+                    {
+                        Ok(()) => self.cache_dirty = true,
+                        Err(error) => self.status_error = Some(error.to_string()),
+                    }
+                    if refresh_memberships {
+                        let service = runtime.channels.clone();
+                        let pubkey = runtime.signer.public_key().to_hex();
+                        let tx = self.background_tx.clone();
+                        tokio::spawn(async move {
+                            let result = service.refresh(&pubkey).await;
+                            let _ = tx
+                                .send(match result {
+                                    Ok(_) => Background::Changed,
+                                    Err(error) => Background::Failed(error.to_string()),
+                                })
+                                .await;
+                        });
+                    }
+                }
+            }
+            SupervisorEvent::Session(SessionEvent::Eose(_)) => {
+                if self.connection != ConnectionState::Backfilling {
+                    self.connection = ConnectionState::Online;
+                }
+            }
+            SupervisorEvent::Session(SessionEvent::Notice(message)) => {
+                self.status_error = Some(message)
+            }
+            SupervisorEvent::Session(SessionEvent::Closed {
+                subscription,
+                message,
+            }) => {
+                if subscription.starts_with("ch-") {
+                    self.connection = ConnectionState::AccessDenied;
+                    if let Some(channel) = self
+                        .subscribed_channels
+                        .iter()
+                        .find(|channel| format!("ch-{}", channel.simple()) == subscription)
+                        .copied()
+                    {
+                        self.subscribed_channels.remove(&channel);
+                    }
+                    if let Some(runtime) = &self.runtime {
+                        let _ = runtime.supervisor.close(subscription.clone()).await;
+                        let service = runtime.channels.clone();
+                        let pubkey = runtime.signer.public_key().to_hex();
+                        let tx = self.background_tx.clone();
+                        tokio::spawn(async move {
+                            let result = service.refresh(&pubkey).await;
+                            let _ = tx
+                                .send(match result {
+                                    Ok(_) => Background::Changed,
+                                    Err(error) => Background::Failed(error.to_string()),
+                                })
+                                .await;
+                        });
+                    }
+                }
+                self.status_error = Some(message);
+            }
+            SupervisorEvent::Session(SessionEvent::Disconnected(message)) => {
+                self.connection = ConnectionState::Offline;
+                self.status_error = Some(message);
+            }
+            SupervisorEvent::Session(SessionEvent::Count { .. }) => {}
+        }
+        Ok(())
+    }
+
+    async fn on_tick(&mut self) -> Result<()> {
+        if self.cache_dirty || self.last_cache_refresh.elapsed() > Duration::from_secs(1) {
+            self.hydrate_cache().await?;
+            self.reconcile_subscriptions().await?;
+        }
+        if ((self.pane == Pane::Timeline && self.timeline.at_live_bottom)
+            || (self.pane == Pane::Thread && self.thread_timeline.at_live_bottom))
+            && self.mode == Mode::Normal
+        {
+            self.mark_current_read().await?;
+        }
+        if self.last_directory_refresh.elapsed() >= Duration::from_secs(300) {
+            self.last_directory_refresh = Instant::now();
+            if let Some(runtime) = &self.runtime {
+                let service = runtime.channels.clone();
+                let pubkey = runtime.signer.public_key().to_hex();
+                let tx = self.background_tx.clone();
+                tokio::spawn(async move {
+                    let result = service.refresh(&pubkey).await;
+                    let _ = tx
+                        .send(match result {
+                            Ok(_) => Background::Changed,
+                            Err(error) => Background::Failed(error.to_string()),
+                        })
+                        .await;
+                });
+            }
+        }
+        if self
+            .read_dirty_since
+            .is_some_and(|since| since.elapsed() >= Duration::from_secs(5))
+        {
+            self.read_dirty_since = None;
+            if let Some(runtime) = &self.runtime {
+                let service = runtime.read_state.clone();
+                let tx = self.background_tx.clone();
+                let max_seen = self.messages.last().map_or(0, |message| message.created_at);
+                tokio::spawn(async move {
+                    let result = service.publish(max_seen).await;
+                    let _ = tx
+                        .send(match result {
+                            Ok(_) => Background::Changed,
+                            Err(error) => Background::Failed(error.to_string()),
+                        })
+                        .await;
+                });
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        guard: &mut TerminalGuard,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        match self.mode {
+            Mode::Normal => {
+                if let KeyCode::Char(digit @ '1'..='9') = key.code
+                    && key.modifiers.is_empty()
+                {
+                    let index = usize::from(digit as u8 - b'1');
+                    if index < self.config.communities.len() {
+                        self.switch_community(index, guard, terminal).await?;
+                    }
+                    return Ok(());
+                }
+                let action = map_normal(key, self.awaiting_g);
+                self.awaiting_g = matches!(key.code, KeyCode::Char('g'));
+                self.normal_action(action).await?;
+            }
+            Mode::Insert => self.insert_action(map_insert(key)).await?,
+            Mode::Help => {
+                if matches!(
+                    key.code,
+                    KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')
+                ) {
+                    self.mode = Mode::Normal
+                }
+            }
+            Mode::Finder => self.text_overlay_key(key, Mode::Finder).await?,
+            Mode::Command => self.text_overlay_key(key, Mode::Command).await?,
+            Mode::Reaction => match key.code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.reaction_index =
+                        (self.reaction_index + 1) % crate::ui::reaction_picker::REACTIONS.len()
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.reaction_index = self
+                        .reaction_index
+                        .checked_sub(1)
+                        .unwrap_or(crate::ui::reaction_picker::REACTIONS.len() - 1)
+                }
+                KeyCode::Enter => self.send_reaction(),
+                _ => {}
+            },
+            Mode::ConfirmDelete => match key.code {
+                KeyCode::Char('y' | 'Y') => {
+                    self.delete_selected();
+                    self.mode = Mode::Normal
+                }
+                KeyCode::Esc | KeyCode::Char('n' | 'N') => self.mode = Mode::Normal,
+                _ => {}
+            },
+        }
+        Ok(())
+    }
+
+    async fn normal_action(&mut self, action: KeyAction) -> Result<()> {
+        match action {
+            KeyAction::Quit => self.should_quit = true,
+            KeyAction::Help => self.mode = Mode::Help,
+            KeyAction::ToggleSidebar => self.sidebar = !self.sidebar,
+            KeyAction::Finder => {
+                self.finder.clear();
+                self.mode = Mode::Finder
+            }
+            KeyAction::Command => {
+                self.command.clear();
+                self.mode = Mode::Command
+            }
+            KeyAction::NextPane => {
+                self.pane = match self.pane {
+                    Pane::Channels => Pane::Timeline,
+                    Pane::Timeline => {
+                        if self.thread_root.is_some() {
+                            Pane::Thread
+                        } else {
+                            Pane::Channels
+                        }
+                    }
+                    Pane::Thread => Pane::Channels,
+                }
+            }
+            KeyAction::PreviousPane => {
+                self.pane = match self.pane {
+                    Pane::Channels => {
+                        if self.thread_root.is_some() {
+                            Pane::Thread
+                        } else {
+                            Pane::Timeline
+                        }
+                    }
+                    Pane::Timeline => Pane::Channels,
+                    Pane::Thread => Pane::Timeline,
+                }
+            }
+            KeyAction::Up => self.move_selection(-1),
+            KeyAction::Down => self.move_selection(1),
+            KeyAction::First => self.move_to_edge(false),
+            KeyAction::Last => self.move_to_edge(true),
+            KeyAction::PageUp => self.move_selection(-10),
+            KeyAction::PageDown => self.move_selection(10),
+            KeyAction::Open => self.open_selected().await?,
+            KeyAction::Compose => self.enter_composer().await?,
+            KeyAction::Thread => self.toggle_thread().await?,
+            KeyAction::React if self.selected_message().is_some() => self.mode = Mode::Reaction,
+            KeyAction::Delete
+                if self.selected_message().is_some_and(|message| {
+                    self.runtime.as_ref().is_some_and(|runtime| {
+                        message.pubkey == runtime.signer.public_key().to_hex()
+                    })
+                }) =>
+            {
+                self.mode = Mode::ConfirmDelete
+            }
+            KeyAction::MarkUnread => self.mark_unread().await?,
+            KeyAction::Escape => {
+                self.thread_root = None;
+                self.pane = Pane::Timeline
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        match self.pane {
+            Pane::Channels => {
+                let joined = self
+                    .channels
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, channel)| channel.is_member)
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>();
+                if !joined.is_empty() {
+                    let current = joined
+                        .iter()
+                        .position(|index| *index == self.selected_channel)
+                        .unwrap_or_default();
+                    let next = current.saturating_add_signed(delta).min(joined.len() - 1);
+                    self.selected_channel = joined[next];
+                    self.showing_open_channel = false;
+                }
+            }
+            Pane::Timeline => self.timeline.move_by(&self.messages, delta),
+            Pane::Thread => self.thread_timeline.move_by(&self.thread_messages, delta),
+        }
+    }
+    fn move_to_edge(&mut self, last: bool) {
+        match self.pane {
+            Pane::Channels => {
+                let joined = self
+                    .channels
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, channel)| channel.is_member)
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>();
+                if let Some(index) = if last { joined.last() } else { joined.first() } {
+                    self.selected_channel = *index;
+                    self.showing_open_channel = false;
+                }
+            }
+            Pane::Timeline => {
+                self.timeline.selected_event = (if last {
+                    self.messages.last()
+                } else {
+                    self.messages.first()
+                })
+                .map(|message| message.event_id.clone());
+                self.timeline.at_live_bottom = last
+            }
+            Pane::Thread => {
+                self.thread_timeline.selected_event = (if last {
+                    self.thread_messages.last()
+                } else {
+                    self.thread_messages.first()
+                })
+                .map(|message| message.event_id.clone());
+                self.thread_timeline.at_live_bottom = last
+            }
+        }
+    }
+
+    async fn open_selected(&mut self) -> Result<()> {
+        match self.pane {
+            Pane::Channels => {
+                self.load_selected_channel().await?;
+                self.pane = Pane::Timeline
+            }
+            Pane::Timeline | Pane::Thread => self.toggle_thread().await?,
+        }
+        Ok(())
+    }
+    async fn load_selected_channel(&mut self) -> Result<()> {
+        self.thread_root = None;
+        self.timeline = TimelineState {
+            at_live_bottom: true,
+            ..TimelineState::default()
+        };
+        self.cache_dirty = true;
+        self.hydrate_cache().await?;
+        if let Some(channel) = self.current_channel().map(|channel| channel.id) {
+            self.subscribe_channel(channel).await?;
+            self.spawn_backfill(channel);
+        }
+        Ok(())
+    }
+    async fn toggle_thread(&mut self) -> Result<()> {
+        if self.thread_root.is_some() {
+            self.thread_root = None;
+            self.pane = Pane::Timeline;
+            return Ok(());
+        }
+        if let Some(message) = self.selected_message() {
+            let root = message
+                .root_event_id
+                .clone()
+                .unwrap_or_else(|| message.event_id.clone());
+            self.thread_root = Some(root);
+            self.pane = Pane::Thread;
+            self.cache_dirty = true;
+            self.hydrate_cache().await?;
+        }
+        Ok(())
+    }
+    async fn enter_composer(&mut self) -> Result<()> {
+        let Some(community) = self.active_community_id() else {
+            return Ok(());
+        };
+        let Some(channel) = self.current_channel().map(|channel| channel.id) else {
+            return Ok(());
+        };
+        let root = self.thread_root.clone();
+        self.composer.body = self
+            .store
+            .call(move |store| store.draft(community, channel, root.as_deref()))
+            .await?;
+        self.composer.cursor = self.composer.body.len();
+        self.mode = Mode::Insert;
+        Ok(())
+    }
+
+    async fn insert_action(&mut self, action: KeyAction) -> Result<()> {
+        match action {
+            KeyAction::Escape => self.mode = Mode::Normal,
+            KeyAction::Character(character) => self.composer.insert(character),
+            KeyAction::Backspace => self.composer.backspace(),
+            KeyAction::Newline => self.composer.newline(),
+            KeyAction::Submit => {
+                if let Some(body) = self.composer.take_for_send() {
+                    self.queue_message(body);
+                    self.mode = Mode::Normal
+                }
+            }
+            _ => {}
+        }
+        self.persist_draft().await
+    }
+    async fn persist_draft(&self) -> Result<()> {
+        let Some(community) = self.active_community_id() else {
+            return Ok(());
+        };
+        let Some(channel) = self.current_channel().map(|channel| channel.id) else {
+            return Ok(());
+        };
+        let root = self.thread_root.clone();
+        let body = self.composer.body.clone();
+        self.store
+            .call(move |store| store.save_draft(community, channel, root.as_deref(), &body))
+            .await
+    }
+
+    fn queue_message(&mut self, body: String) {
+        let Some(runtime) = &self.runtime else { return };
+        let Some(channel) = self.current_channel().map(|channel| channel.id) else {
+            return;
+        };
+        let service = runtime.messages.clone();
+        let root = self.thread_root.clone();
+        let parent = self
+            .selected_message()
+            .map(|message| message.event_id.clone())
+            .or_else(|| root.clone());
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = if let (Some(root), Some(parent)) = (root, parent) {
+                service.reply(channel, &root, &parent, &body).await
+            } else {
+                service.send(channel, &body).await
+            };
+            let _ = tx
+                .send(match result {
+                    Ok(_) => Background::Changed,
+                    Err(error) => Background::Failed(error.to_string()),
+                })
+                .await;
+        });
+        self.cache_dirty = true;
+    }
+    fn send_reaction(&mut self) {
+        let Some(runtime) = &self.runtime else { return };
+        let Some(message) = self.selected_message() else {
+            return;
+        };
+        let service = runtime.messages.clone();
+        let target = message.event_id.clone();
+        let emoji = crate::ui::reaction_picker::REACTIONS[self.reaction_index].to_owned();
+        let self_pubkey = runtime.signer.public_key().to_hex();
+        let own_reaction = self.reactions.get(&target).and_then(|reactions| {
+            reactions
+                .iter()
+                .find(|reaction| {
+                    !reaction.deleted && reaction.pubkey == self_pubkey && reaction.emoji == emoji
+                })
+                .map(|reaction| reaction.event_id.clone())
+        });
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = if let Some(reaction) = own_reaction {
+                service.remove_reaction(&reaction).await
+            } else {
+                service.react(&target, &emoji).await
+            };
+            let _ = tx
+                .send(match result {
+                    Ok(_) => Background::Changed,
+                    Err(error) => Background::Failed(error.to_string()),
+                })
+                .await;
+        });
+        self.mode = Mode::Normal;
+    }
+    fn delete_selected(&mut self) {
+        let Some(runtime) = &self.runtime else { return };
+        let Some(channel) = self.current_channel().map(|channel| channel.id) else {
+            return;
+        };
+        let Some(message) = self.selected_message() else {
+            return;
+        };
+        let service = runtime.messages.clone();
+        let target = message.event_id.clone();
+        let author = message.pubkey.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = service.delete(channel, &target, &author).await;
+            let _ = tx
+                .send(match result {
+                    Ok(_) => Background::Changed,
+                    Err(error) => Background::Failed(error.to_string()),
+                })
+                .await;
+        });
+    }
+
+    async fn mark_unread(&mut self) -> Result<()> {
+        if let Some(channel) = self.current_channel().map(|channel| channel.id) {
+            self.manual_unread.insert(channel);
+            self.persist_manual_unread().await?;
+        }
+        Ok(())
+    }
+    async fn mark_current_read(&mut self) -> Result<()> {
+        let Some(runtime) = &self.runtime else {
+            return Ok(());
+        };
+        let service = runtime.read_state.clone();
+        let Some(channel) = self.current_channel().map(|channel| channel.id) else {
+            return Ok(());
+        };
+        let mut marks = Vec::new();
+        if self.pane == Pane::Thread
+            && let Some(root) = &self.thread_root
+            && let Some(last) = self.thread_messages.last()
+        {
+            marks.push((
+                format!("thread:{root}"),
+                u32::try_from(last.created_at).unwrap_or(u32::MAX),
+            ));
+            marks.extend(self.thread_messages.iter().skip(1).map(|message| {
+                (
+                    format!("msg:{}", message.event_id),
+                    u32::try_from(message.created_at).unwrap_or(u32::MAX),
+                )
+            }));
+        } else if let Some(last) = self.messages.last() {
+            marks.push((
+                channel.to_string(),
+                u32::try_from(last.created_at).unwrap_or(u32::MAX),
+            ));
+        }
+        let mut advanced = false;
+        for (context, at) in marks {
+            if self
+                .last_marked
+                .get(&context)
+                .is_some_and(|previous| *previous >= at)
+            {
+                continue;
+            }
+            service.mark(&context, at).await?;
+            self.last_marked.insert(context, at);
+            advanced = true;
+        }
+        if advanced {
+            self.computed_unread.remove(&channel);
+            if self.manual_unread.remove(&channel) {
+                self.persist_manual_unread().await?;
+            }
+            self.read_dirty_since.get_or_insert_with(Instant::now);
+        }
+        Ok(())
+    }
+    async fn persist_manual_unread(&self) -> Result<()> {
+        let Some(community) = self.active_community_id() else {
+            return Ok(());
+        };
+        let values = self.manual_unread.clone();
+        self.store
+            .call(move |store| store.save_ui_state(community, "manual_unread", &values))
+            .await
+    }
+
+    async fn text_overlay_key(&mut self, key: KeyEvent, mode: Mode) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Backspace => {
+                if mode == Mode::Finder {
+                    self.finder.pop();
+                } else {
+                    self.command.pop();
+                }
+            }
+            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if mode == Mode::Finder {
+                    self.finder.push(character)
+                } else {
+                    self.command.push(character)
+                }
+            }
+            KeyCode::Enter => {
+                if mode == Mode::Finder {
+                    if let Some(found) =
+                        crate::ui::finder::rank(&self.finder, &self.channels).first()
+                        && let Some(index) = self
+                            .channels
+                            .iter()
+                            .position(|channel| channel.id == found.id)
+                    {
+                        self.selected_channel = index;
+                        self.showing_open_channel = !found.is_member;
+                        self.load_selected_channel().await?;
+                        self.pane = Pane::Timeline;
+                    }
+                    self.mode = Mode::Normal
+                } else {
+                    self.execute_command().await?;
+                    self.mode = Mode::Normal
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    async fn execute_command(&mut self) -> Result<()> {
+        match crate::ui::command::parse(&self.command) {
+            crate::ui::command::Command::Lock => {
+                if let Some(runtime) = self.runtime.take() {
+                    runtime.supervisor.shutdown().await;
+                    runtime.signer.lock().await;
+                }
+                self.connection = ConnectionState::Locked
+            }
+            crate::ui::command::Command::Reconnect => {
+                if let Some(runtime) = &self.runtime {
+                    runtime.supervisor.reconnect().await
+                }
+            }
+            crate::ui::command::Command::Resync => {
+                if let (Some(community), Some(channel)) = (
+                    self.active_community_id(),
+                    self.current_channel().map(|channel| channel.id),
+                ) {
+                    let scope_id = channel.to_string();
+                    self.store
+                        .call(move |store| store.reset_sync_cursor(community, "history", &scope_id))
+                        .await?;
+                    self.spawn_backfill(channel)
+                }
+            }
+            crate::ui::command::Command::PurgeCache => {
+                if let Some(community) = self.active_community_id() {
+                    self.store
+                        .call(move |store| store.purge_community(community))
+                        .await?;
+                    self.channels.clear();
+                    self.messages.clear()
+                }
+            }
+            crate::ui::command::Command::Unknown(value) => {
+                self.status_error = Some(format!("unknown command: {value}"))
+            }
+            _ => self.status_error = Some("use the CLI to add/remove communities".into()),
+        }
+        Ok(())
+    }
+
+    async fn switch_community(
+        &mut self,
+        index: usize,
+        guard: &mut TerminalGuard,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        if index == self.selected_community {
+            return Ok(());
+        }
+        let target = &self.config.communities[index];
+        let reuse = self
+            .runtime
+            .as_ref()
+            .filter(|runtime| runtime.identity_id == target.identity_id)
+            .map(|runtime| runtime.signer.clone());
+        let needs_prompt = reuse.is_none()
+            && self
+                .config
+                .identities
+                .iter()
+                .find(|identity| identity.id == target.identity_id)
+                .is_some_and(|identity| matches!(identity.backend, KeyBackend::EncryptedFile));
+        if needs_prompt {
+            guard.restore();
+        }
+        let built = Runtime::build(&self.config, index, &self.paths, self.store.clone(), reuse);
+        if needs_prompt {
+            let (new_guard, new_terminal) = TerminalGuard::enter()?;
+            *guard = new_guard;
+            *terminal = new_terminal;
+        }
+        match built {
+            Ok(runtime) => {
+                if let Some(old) = self.runtime.take() {
+                    old.supervisor.shutdown().await;
+                    if old.identity_id != runtime.identity_id {
+                        old.signer.lock().await;
+                    }
+                }
+                self.runtime = Some(runtime);
+                self.selected_community = index;
+                self.config.default_community = Some(target.id);
+                self.config.save(&self.paths)?;
+                self.selected_channel = 0;
+                self.showing_open_channel = false;
+                self.thread_root = None;
+                self.last_marked.clear();
+                self.profile_requested.clear();
+                self.subscribed_channels.clear();
+                self.connection = ConnectionState::Connecting;
+                self.last_directory_refresh = Instant::now();
+                self.hydrate_cache().await?;
+                self.start_sync().await?;
+            }
+            Err(error) => self.status_error = Some(error.to_string()),
+        }
+        Ok(())
+    }
+
+    fn active_community_id(&self) -> Option<Uuid> {
+        self.config
+            .communities
+            .get(self.selected_community)
+            .map(|entry| entry.id)
+    }
+    fn current_channel(&self) -> Option<&Channel> {
+        self.channels.get(self.selected_channel)
+    }
+    fn selected_message(&self) -> Option<&Message> {
+        match self.pane {
+            Pane::Thread => self
+                .thread_timeline
+                .selected_index(&self.thread_messages)
+                .and_then(|index| self.thread_messages.get(index)),
+            _ => self
+                .timeline
+                .selected_index(&self.messages)
+                .and_then(|index| self.messages.get(index)),
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        if let Some(runtime) = self.runtime.take() {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(3),
+                outbox::flush(
+                    runtime.community_id,
+                    &runtime.http,
+                    &runtime.supervisor,
+                    &self.store,
+                ),
+            )
+            .await;
+            if self.read_dirty_since.is_some() {
+                let max_seen = self.messages.last().map_or(0, |message| message.created_at);
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(3),
+                    runtime.read_state.publish(max_seen),
+                )
+                .await;
+            }
+            runtime.supervisor.shutdown().await;
+            runtime.signer.lock().await;
+        }
+    }
+
+    fn render(&self, frame: &mut Frame<'_>) {
+        let area = frame.area();
+        if area.width < 50 || area.height < 12 {
+            frame.render_widget(
+                Paragraph::new("bzz needs at least 50×12\nResize the terminal or press Q to quit")
+                    .alignment(Alignment::Center)
+                    .block(Block::bordered().title(" terminal too small ")),
+                area,
+            );
+            return;
+        }
+        if self.config.communities.is_empty() {
+            self.render_empty(frame, area);
+            return;
+        }
+        let panes = layout::panes(
+            area,
+            self.sidebar,
+            self.thread_root.is_some(),
+            self.config.ui.sidebar_width,
+            self.config.ui.thread_width,
+        );
+        if let Some(rail) = panes.community {
+            self.render_communities(frame, rail);
+        }
+        if let Some(sidebar) = panes.sidebar {
+            crate::ui::sidebar::render(
+                frame,
+                sidebar,
+                &self.channels,
+                self.selected_channel,
+                &self.unread_channels(),
+            );
+        }
+        let title = self
+            .current_channel()
+            .map_or("timeline", |channel| channel.name.as_str());
+        timeline::render(
+            frame,
+            panes.timeline,
+            &self.messages,
+            &self.profiles,
+            &self.reactions,
+            &self.timeline,
+            title,
+        );
+        if let Some(thread) = panes.thread {
+            timeline::render(
+                frame,
+                thread,
+                &self.thread_messages,
+                &self.profiles,
+                &self.reactions,
+                &self.thread_timeline,
+                "thread",
+            );
+        }
+        self.render_status(frame, panes.status);
+        self.render_overlay(frame, area);
+    }
+    fn render_empty(&self, frame: &mut Frame<'_>, area: Rect) {
+        frame.render_widget(
+            Paragraph::new(Text::from(vec![
+                Line::styled(
+                    "Welcome to bzz",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Line::default(),
+                Line::from("No communities are configured."),
+                Line::from("Run bzz identity new, then bzz community add."),
+                Line::default(),
+                Line::from("? help · Q quit"),
+            ]))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false })
+            .block(Block::bordered().title(" bzz ")),
+            area,
+        );
+    }
+    fn render_communities(&self, frame: &mut Frame<'_>, area: Rect) {
+        let items = self
+            .config
+            .communities
+            .iter()
+            .enumerate()
+            .map(|(index, community)| {
+                ListItem::new(
+                    sanitize::single_line(&community.label)
+                        .chars()
+                        .next()
+                        .unwrap_or('?')
+                        .to_string(),
+                )
+                .style(if index == self.selected_community {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                })
+            });
+        frame.render_widget(List::new(items).block(Block::bordered().title(" b ")), area);
+    }
+    fn render_status(&self, frame: &mut Frame<'_>, area: Rect) {
+        let mode = match self.mode {
+            Mode::Normal => "NORMAL",
+            Mode::Insert => "INSERT",
+            Mode::Finder => "FINDER",
+            Mode::Reaction => "REACTION",
+            Mode::ConfirmDelete => "CONFIRM",
+            Mode::Command => "COMMAND",
+            Mode::Help => "HELP",
+        };
+        let connection = crate::ui::status::connection_label(self.connection);
+        let error = self
+            .status_error
+            .as_deref()
+            .map(sanitize::single_line)
+            .unwrap_or_default();
+        frame.render_widget(
+            Paragraph::new(format!(
+                " {mode} · {connection} · {error} · ? help · Q quit"
+            ))
+            .style(Style::default().bg(Color::DarkGray).fg(Color::White)),
+            area,
+        );
+    }
+    fn render_overlay(&self, frame: &mut Frame<'_>, area: Rect) {
+        match self.mode {
+            Mode::Help => {
+                frame.render_widget(Clear, area);
+                frame.render_widget(
+                    Paragraph::new(crate::ui::help::HELP)
+                        .block(Block::bordered().title(" help "))
+                        .wrap(Wrap { trim: false }),
+                    area,
+                )
+            }
+            Mode::Finder => self.render_finder(frame, area),
+            Mode::Command => {
+                self.render_prompt(frame, area, " command ", &format!(":{}", self.command))
+            }
+            Mode::Reaction => self.render_prompt(
+                frame,
+                area,
+                " reaction · Enter toggle ",
+                crate::ui::reaction_picker::REACTIONS
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        if index == self.reaction_index {
+                            format!("[{value}]")
+                        } else {
+                            (*value).into()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("  ")
+                    .as_str(),
+            ),
+            Mode::ConfirmDelete => self.render_prompt(
+                frame,
+                area,
+                " delete message? ",
+                "Press y to delete or n/Esc to cancel",
+            ),
+            Mode::Insert => {
+                let popup = bottom_popup(area, 5);
+                frame.render_widget(Clear, popup);
+                frame.render_widget(
+                    Paragraph::new(sanitize::text(&self.composer.body))
+                        .block(
+                            Block::bordered().title(" message · Enter send · Alt-Enter newline "),
+                        )
+                        .wrap(Wrap { trim: false }),
+                    popup,
+                )
+            }
+            Mode::Normal => {}
+        }
+    }
+    fn render_finder(&self, frame: &mut Frame<'_>, area: Rect) {
+        let popup = centered(area, 70, 12);
+        frame.render_widget(Clear, popup);
+        let mut items = vec![ListItem::new(format!(
+            "> {}",
+            sanitize::single_line(&self.finder)
+        ))];
+        items.extend(
+            crate::ui::finder::rank(&self.finder, &self.channels)
+                .into_iter()
+                .take(8)
+                .enumerate()
+                .map(|(index, channel)| {
+                    let membership = if channel.is_member { "#" } else { "+" };
+                    ListItem::new(format!(
+                        "{} {membership}{}",
+                        if index == 0 { "›" } else { " " },
+                        sanitize::single_line(&channel.name)
+                    ))
+                }),
+        );
+        frame.render_widget(
+            List::new(items).block(Block::bordered().title(" channel finder · Enter open ")),
+            popup,
+        );
+    }
+    fn render_prompt(&self, frame: &mut Frame<'_>, area: Rect, title: &str, value: &str) {
+        let popup = centered(area, 70, 5);
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Paragraph::new(sanitize::text(value)).block(Block::bordered().title(title)),
+            popup,
+        );
+    }
+    fn unread_channels(&self) -> HashSet<Uuid> {
+        self.manual_unread
+            .union(&self.computed_unread)
+            .copied()
+            .collect()
+    }
+}
+
+#[cfg(unix)]
+fn shutdown_signal() -> impl std::future::Future<Output = ()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let terminate = signal(SignalKind::terminate());
+    let hangup = signal(SignalKind::hangup());
+    async move {
+        let (Ok(mut terminate), Ok(mut hangup)) = (terminate, hangup) else {
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+            _ = hangup.recv() => {},
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn shutdown_signal() -> impl std::future::Future<Output = ()> {
+    async {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+async fn next_network(runtime: &mut Option<Runtime>) -> Option<SupervisorEvent> {
+    match runtime {
+        Some(runtime) => loop {
+            match runtime.events.recv().await {
+                Ok(event) => return Some(event),
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        },
+        None => std::future::pending().await,
+    }
+}
+fn centered(area: Rect, percent: u16, height: u16) -> Rect {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(height.min(area.height)),
+            Constraint::Fill(1),
+        ])
+        .split(area);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent) / 2),
+            Constraint::Percentage(percent),
+            Constraint::Percentage((100 - percent) / 2),
+        ])
+        .split(rows[1]);
+    cols[1]
+}
+fn bottom_popup(area: Rect, height: u16) -> Rect {
+    Rect {
+        x: area.x.saturating_add(2),
+        y: area.bottom().saturating_sub(height + 1),
+        width: area.width.saturating_sub(4),
+        height: height.min(area.height),
+    }
+}

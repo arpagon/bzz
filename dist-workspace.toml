@@ -1,0 +1,23 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.30.2"
+# Keep two generated-workflow compatibility fixes: GitHub Actions requires
+# `outputs.paths`, and cargo-cyclonedx 0.5.7 understands Cargo.lock v4.
+allow-dirty = ["ci"]
+ci = "github"
+installers = ["shell", "powershell", "homebrew"]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+]
+checksum = "sha256"
+install-path = "CARGO_HOME"
+cargo-cyclonedx = true
+github-attestations = true
+github-attestations-phase = "host"
+github-attestations-filters = ["*.tar.xz", "*.tar.gz", "*.zip", "*.sha256", "*.json", "*.sh", "*.ps1", "*.rb", "*.xml"]
