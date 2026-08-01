@@ -3,7 +3,9 @@
 `bzz` stores non-secret configuration in the platform configuration directory
 (`bzz paths` prints it). `BZZ_CONFIG_DIR`, `BZZ_DATA_DIR`, and `BZZ_CACHE_DIR`
 override directories for testing and managed deployments; they never contain
-secret values.
+secret values. Without overrides, debug builds use a separate `bzz-dev`
+platform directory and `dev.arpagon.bzz.debug` credential service. Release
+builds use `bzz` and `dev.arpagon.bzz`.
 
 ```toml
 default_community = "00000000-0000-0000-0000-000000000000"
@@ -21,13 +23,26 @@ label = "team"
 relay_url = "wss://buzz.example/"
 identity_id = "00000000-0000-0000-0000-000000000001"
 allow_insecure_localhost = false
+theme = "dracula" # optional; overrides the global UI theme
 
 [ui]
 sidebar_width = 28
 thread_width = 44
+theme = "bzz"
 ```
+
+The `key_ref` is an opaque OS-keychain account name, not a secret. Use
+`bzz identity verify <id>` to test availability and
+`bzz identity restore-backup <id> --input <file>` to restore the same configured
+pubkey without editing TOML.
 
 Only `wss://` root URLs are accepted by default. `ws://` requires both a
 loopback host and explicit acknowledgement. Credentials, queries, fragments,
 and non-root paths are rejected. Each relay authority is an isolated Buzz
 community; bzz never sends a client-selected tenant identifier.
+
+`ui.theme` selects the global built-in theme. An optional community `theme`
+field takes precedence only while that community is active. Semantic overrides
+live in a separate, optional `theme.toml`; see [`themes.md`](themes.md). Theme
+configuration is presentation-only and is never synchronized through the
+relay.

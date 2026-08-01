@@ -18,6 +18,13 @@ fn normal_keymap_has_safe_quit_and_modal_navigation() {
         map_normal(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), true),
         KeyAction::First
     );
+    assert_eq!(
+        map_normal(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            false
+        ),
+        KeyAction::Theme
+    );
 }
 
 #[test]

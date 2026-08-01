@@ -1,7 +1,6 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
 };
@@ -9,6 +8,7 @@ use ratatui::{
 use crate::{
     domain::{Message, Profile, Reaction},
     render::{markdown, sanitize},
+    ui::theme::{BorderSurface, HighlightGroup, Theme},
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -44,6 +44,7 @@ impl TimelineState {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -52,40 +53,50 @@ pub fn render(
     reactions: &std::collections::HashMap<String, Vec<Reaction>>,
     state: &TimelineState,
     title: &str,
+    theme: &Theme,
+    focused: bool,
+    self_pubkey: Option<&str>,
 ) {
     let items = messages.iter().map(|message| {
         let author = profiles
             .get(&message.pubkey)
             .map(Profile::label)
             .unwrap_or_else(|| crate::domain::abbreviated_pubkey(&message.pubkey));
-        let marker = if message.deleted {
-            "[deleted]"
-        } else if message.pending {
-            "[pending]"
-        } else if message.rejected.is_some() {
-            "[rejected]"
-        } else {
-            ""
-        };
-        let mut lines = vec![Line::from(vec![
+        let mut header = vec![
             Span::styled(
                 sanitize::single_line(&author),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
+                theme.style(HighlightGroup::MessageAuthor),
             ),
-            Span::raw(format!("  {} {marker}", format_time(message.created_at))),
-        ])];
+            Span::styled(
+                format!("  {}", format_time(message.created_at)),
+                theme.style(HighlightGroup::MessageTimestamp),
+            ),
+        ];
+        if message.deleted {
+            header.push(Span::styled(
+                " [deleted]",
+                theme.style(HighlightGroup::MessageDeleted),
+            ));
+        } else if message.pending {
+            header.push(Span::styled(
+                " [pending]",
+                theme.style(HighlightGroup::Pending),
+            ));
+        } else if message.rejected.is_some() {
+            header.push(Span::styled(
+                " [rejected]",
+                theme.style(HighlightGroup::Rejected),
+            ));
+        }
+        let mut lines = vec![Line::from(header)];
         if message.deleted {
             lines.push(Line::styled(
                 "  message deleted",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
+                theme.style(HighlightGroup::MessageDeleted),
             ));
         } else {
-            for line in markdown::render(&message.content).lines {
-                let mut spans = vec![Span::raw("  ")];
+            for line in markdown::render(&message.content, theme).lines {
+                let mut spans = vec![Span::styled("  ", theme.style(HighlightGroup::MessageBody))];
                 spans.extend(line.spans);
                 lines.push(Line::from(spans));
             }
@@ -96,35 +107,50 @@ pub fn render(
                 .filter(|reaction| !reaction.deleted)
                 .map(|reaction| (reaction.emoji.as_str(), reaction.pubkey.as_str()))
                 .collect::<std::collections::BTreeSet<_>>();
-            let mut aggregate = std::collections::BTreeMap::<&str, usize>::new();
-            for (emoji, _) in active {
-                *aggregate.entry(emoji).or_default() += 1;
+            let mut aggregate = std::collections::BTreeMap::<&str, (usize, bool)>::new();
+            for (emoji, author) in active {
+                let value = aggregate.entry(emoji).or_default();
+                value.0 += 1;
+                value.1 |= self_pubkey == Some(author);
             }
             if !aggregate.is_empty() {
-                lines.push(Line::styled(
-                    format!(
-                        "  {}",
-                        aggregate
-                            .into_iter()
-                            .map(|(emoji, count)| format!("{emoji} {count}"))
-                            .collect::<Vec<_>>()
-                            .join("  ")
-                    ),
-                    Style::default().fg(Color::Magenta),
-                ));
+                let mut spans = vec![Span::raw("  ")];
+                for (index, (emoji, (count, own))) in aggregate.into_iter().enumerate() {
+                    if index > 0 {
+                        spans.push(Span::raw("  "));
+                    }
+                    spans.push(Span::styled(
+                        format!("{emoji} {count}"),
+                        theme.style(if own {
+                            HighlightGroup::SelfReaction
+                        } else {
+                            HighlightGroup::Reaction
+                        }),
+                    ));
+                }
+                lines.push(Line::from(spans));
             }
         }
         ListItem::new(lines)
     });
     let mut list_state = ListState::default().with_selected(state.selected_index(messages));
+    let border_group = if focused {
+        HighlightGroup::FocusedPaneBorder
+    } else {
+        HighlightGroup::PaneBorder
+    };
     frame.render_stateful_widget(
         List::new(items)
+            .style(theme.style(HighlightGroup::Normal))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_type(theme.border_type(BorderSurface::Pane))
+                    .border_style(theme.style(border_group))
+                    .title_style(theme.style(HighlightGroup::PaneTitle))
                     .title(format!(" {} ", sanitize::single_line(title))),
             )
-            .highlight_style(Style::default().bg(Color::Rgb(38, 38, 48)))
+            .highlight_style(theme.style(HighlightGroup::SelectedRow))
             .highlight_symbol("▌"),
         area,
         &mut list_state,

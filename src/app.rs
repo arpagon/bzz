@@ -10,8 +10,7 @@ use futures_util::StreamExt as _;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Text},
+    text::{Line, Span, Text},
     widgets::{Block, Clear, List, ListItem, Paragraph, Wrap},
 };
 use tokio::sync::{broadcast, mpsc};
@@ -41,6 +40,8 @@ use crate::{
         keymap::{KeyAction, map_insert, map_normal},
         layout,
         terminal::{TerminalGuard, Tui},
+        theme::{self, BorderSurface, HighlightGroup, Theme, ThemeScope},
+        theme_picker::ThemePicker,
         timeline::{self, TimelineState},
     },
 };
@@ -53,6 +54,7 @@ enum Mode {
     Reaction,
     ConfirmDelete,
     Command,
+    Theme,
     Help,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -156,6 +158,9 @@ pub struct App {
     reaction_index: usize,
     command: String,
     sidebar: bool,
+    theme: Theme,
+    theme_picker: Option<ThemePicker>,
+    theme_before_preview: Option<Theme>,
     connection: ConnectionState,
     status_error: Option<String>,
     should_quit: bool,
@@ -178,16 +183,19 @@ impl App {
             .default_community
             .and_then(|id| config.communities.iter().position(|entry| entry.id == id))
             .unwrap_or_default();
-        let runtime = if config.communities.is_empty() {
-            None
+        let (theme, theme_notice) = load_theme_safe(&config, selected_community, &paths);
+        let (runtime, connection, status_error) = if config.communities.is_empty() {
+            (None, ConnectionState::Offline, None)
         } else {
-            Some(Runtime::build(
-                &config,
-                selected_community,
-                &paths,
-                store.clone(),
-                None,
-            )?)
+            match Runtime::build(&config, selected_community, &paths, store.clone(), None) {
+                Ok(runtime) => (Some(runtime), ConnectionState::Connecting, None),
+                Err(error) => {
+                    let Some(connection) = identity_recovery_connection(&error) else {
+                        return Err(error);
+                    };
+                    (None, connection, Some(error.to_string()))
+                }
+            }
         };
         let (background_tx, background_rx) = mpsc::channel(128);
         let mut app = Self {
@@ -220,8 +228,16 @@ impl App {
             reaction_index: 0,
             command: String::new(),
             sidebar: true,
-            connection: ConnectionState::Connecting,
-            status_error: None,
+            theme,
+            theme_picker: None,
+            theme_before_preview: None,
+            connection,
+            status_error: match (status_error, theme_notice) {
+                (Some(status), Some(theme)) => Some(format!("{status}; {theme}")),
+                (Some(status), None) => Some(status),
+                (None, Some(theme)) => Some(theme),
+                (None, None) => None,
+            },
             should_quit: false,
             awaiting_g: false,
             cache_dirty: true,
@@ -273,7 +289,14 @@ impl App {
 
     async fn start_sync(&mut self) -> Result<()> {
         let Some(runtime) = &self.runtime else {
-            self.connection = ConnectionState::Offline;
+            if !matches!(
+                self.connection,
+                ConnectionState::Locked
+                    | ConnectionState::IdentityMissing
+                    | ConnectionState::IdentityCorrupt
+            ) {
+                self.connection = ConnectionState::Offline;
+            }
             return Ok(());
         };
         let pubkey = runtime.signer.public_key().to_hex();
@@ -745,6 +768,7 @@ impl App {
             }
             Mode::Finder => self.text_overlay_key(key, Mode::Finder).await?,
             Mode::Command => self.text_overlay_key(key, Mode::Command).await?,
+            Mode::Theme => self.theme_picker_key(key),
             Mode::Reaction => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -781,6 +805,7 @@ impl App {
                 self.finder.clear();
                 self.mode = Mode::Finder
             }
+            KeyAction::Theme => self.open_theme_picker(),
             KeyAction::Command => {
                 self.command.clear();
                 self.mode = Mode::Command
@@ -820,7 +845,9 @@ impl App {
             KeyAction::Open => self.open_selected().await?,
             KeyAction::Compose => self.enter_composer().await?,
             KeyAction::Thread => self.toggle_thread().await?,
-            KeyAction::React if self.selected_message().is_some() => self.mode = Mode::Reaction,
+            KeyAction::React if self.runtime.is_some() && self.selected_message().is_some() => {
+                self.mode = Mode::Reaction
+            }
             KeyAction::Delete
                 if self.selected_message().is_some_and(|message| {
                     self.runtime.as_ref().is_some_and(|runtime| {
@@ -830,7 +857,15 @@ impl App {
             {
                 self.mode = Mode::ConfirmDelete
             }
-            KeyAction::MarkUnread => self.mark_unread().await?,
+            KeyAction::MarkUnread if self.runtime.is_some() => self.mark_unread().await?,
+            KeyAction::React | KeyAction::Delete | KeyAction::MarkUnread
+                if self.runtime.is_none() =>
+            {
+                self.status_error = Some(
+                    "cached read-only mode: restore or unlock the identity, then restart bzz"
+                        .into(),
+                )
+            }
             KeyAction::Escape => {
                 self.thread_root = None;
                 self.pane = Pane::Timeline
@@ -943,6 +978,12 @@ impl App {
         Ok(())
     }
     async fn enter_composer(&mut self) -> Result<()> {
+        if self.runtime.is_none() {
+            self.status_error = Some(
+                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
+            );
+            return Ok(());
+        }
         let Some(community) = self.active_community_id() else {
             return Ok(());
         };
@@ -1121,11 +1162,10 @@ impl App {
             self.last_marked.insert(context, at);
             advanced = true;
         }
+        if clear_visible_unread(&mut self.computed_unread, &mut self.manual_unread, channel) {
+            self.persist_manual_unread().await?;
+        }
         if advanced {
-            self.computed_unread.remove(&channel);
-            if self.manual_unread.remove(&channel) {
-                self.persist_manual_unread().await?;
-            }
             self.read_dirty_since.get_or_insert_with(Instant::now);
         }
         Ok(())
@@ -1181,6 +1221,133 @@ impl App {
         }
         Ok(())
     }
+    fn open_theme_picker(&mut self) {
+        let scope = if self.config.communities.is_empty() {
+            ThemeScope::Global
+        } else {
+            ThemeScope::Community
+        };
+        self.theme_before_preview = Some(self.theme.clone());
+        self.theme_picker = Some(ThemePicker::open(self.theme.id(), scope));
+        self.mode = Mode::Theme;
+    }
+
+    fn theme_picker_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(theme) = self.theme_before_preview.take() {
+                    self.theme = theme;
+                }
+                self.theme_picker = None;
+                self.mode = Mode::Normal;
+                return;
+            }
+            KeyCode::Enter => {
+                self.confirm_theme_selection();
+                return;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                if let Some(picker) = &mut self.theme_picker {
+                    picker.toggle_scope();
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(picker) = &mut self.theme_picker {
+                    picker.move_by(1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(picker) = &mut self.theme_picker {
+                    picker.move_by(-1);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(picker) = &mut self.theme_picker {
+                    picker.backspace();
+                }
+            }
+            KeyCode::Char(character)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                if let Some(picker) = &mut self.theme_picker {
+                    picker.push(character);
+                }
+            }
+            _ => return,
+        }
+        self.preview_selected_theme();
+    }
+
+    fn preview_selected_theme(&mut self) {
+        let Some(entry) = self.theme_picker.as_ref().and_then(ThemePicker::selected) else {
+            return;
+        };
+        match theme::load(&self.paths, entry.id) {
+            Ok(loaded) => {
+                self.theme = loaded.theme;
+                if let Some(warning) = loaded.warnings.first() {
+                    self.status_error = Some(format!("theme warning: {warning}"));
+                }
+            }
+            Err(error) => {
+                self.theme = Theme::builtin(entry.id).unwrap_or_default();
+                self.status_error = Some(format!("theme warning: {error}"));
+            }
+        }
+    }
+
+    fn confirm_theme_selection(&mut self) {
+        let Some((entry, scope)) = self
+            .theme_picker
+            .as_ref()
+            .and_then(|picker| picker.selected().map(|entry| (entry, picker.scope())))
+        else {
+            return;
+        };
+        let previous = self.config.clone();
+        match scope {
+            ThemeScope::Community if !self.config.communities.is_empty() => {
+                self.config.communities[self.selected_community].theme = Some(entry.id.into());
+            }
+            ThemeScope::Global | ThemeScope::Community => self.config.ui.theme = entry.id.into(),
+        }
+        if let Err(error) = self.config.save(&self.paths) {
+            self.config = previous;
+            if let Some(theme) = self.theme_before_preview.take() {
+                self.theme = theme;
+            }
+            self.status_error = Some(format!("could not save theme: {error}"));
+        } else {
+            self.reload_theme();
+            self.status_error = Some(format!("theme: {} ({scope:?})", entry.name));
+            self.theme_before_preview = None;
+        }
+        self.theme_picker = None;
+        self.mode = Mode::Normal;
+    }
+
+    fn reload_theme(&mut self) {
+        let selected = self
+            .config
+            .resolved_theme(self.selected_community)
+            .to_owned();
+        match theme::load(&self.paths, &selected) {
+            Ok(loaded) => {
+                self.theme = loaded.theme;
+                self.status_error = loaded
+                    .warnings
+                    .first()
+                    .map(|warning| format!("theme warning: {warning}"))
+                    .or_else(|| Some(format!("theme reloaded: {}", self.theme.name())));
+            }
+            Err(error) => {
+                self.theme = Theme::builtin(&selected).unwrap_or_default();
+                self.status_error = Some(format!("theme warning: {error}"));
+            }
+        }
+    }
+
     async fn execute_command(&mut self) -> Result<()> {
         match crate::ui::command::parse(&self.command) {
             crate::ui::command::Command::Lock => {
@@ -1188,7 +1355,9 @@ impl App {
                     runtime.supervisor.shutdown().await;
                     runtime.signer.lock().await;
                 }
-                self.connection = ConnectionState::Locked
+                self.connection = ConnectionState::Locked;
+                self.status_error =
+                    Some("identity locked for this process; restart bzz to unlock it again".into())
             }
             crate::ui::command::Command::Reconnect => {
                 if let Some(runtime) = &self.runtime {
@@ -1207,6 +1376,7 @@ impl App {
                     self.spawn_backfill(channel)
                 }
             }
+            crate::ui::command::Command::ThemeReload => self.reload_theme(),
             crate::ui::command::Command::PurgeCache => {
                 if let Some(community) = self.active_community_id() {
                     self.store
@@ -1234,6 +1404,7 @@ impl App {
             return Ok(());
         }
         let target = &self.config.communities[index];
+        let target_id = target.id;
         let reuse = self
             .runtime
             .as_ref()
@@ -1265,8 +1436,9 @@ impl App {
                 }
                 self.runtime = Some(runtime);
                 self.selected_community = index;
-                self.config.default_community = Some(target.id);
+                self.config.default_community = Some(target_id);
                 self.config.save(&self.paths)?;
+                self.reload_theme();
                 self.selected_channel = 0;
                 self.showing_open_channel = false;
                 self.thread_root = None;
@@ -1278,7 +1450,30 @@ impl App {
                 self.hydrate_cache().await?;
                 self.start_sync().await?;
             }
-            Err(error) => self.status_error = Some(error.to_string()),
+            Err(error) => {
+                let recovery = identity_recovery_connection(&error);
+                if let Some(connection) = recovery {
+                    if let Some(old) = self.runtime.take() {
+                        old.supervisor.shutdown().await;
+                        old.signer.lock().await;
+                    }
+                    self.selected_community = index;
+                    self.config.default_community = Some(target_id);
+                    self.config.save(&self.paths)?;
+                    self.reload_theme();
+                    self.selected_channel = 0;
+                    self.showing_open_channel = false;
+                    self.thread_root = None;
+                    self.last_marked.clear();
+                    self.profile_requested.clear();
+                    self.subscribed_channels.clear();
+                    self.connection = connection;
+                    self.status_error = Some(error.to_string());
+                    self.hydrate_cache().await?;
+                } else {
+                    self.status_error = Some(error.to_string());
+                }
+            }
         }
         Ok(())
     }
@@ -1291,6 +1486,18 @@ impl App {
     }
     fn current_channel(&self) -> Option<&Channel> {
         self.channels.get(self.selected_channel)
+    }
+    fn self_pubkey(&self) -> Option<&str> {
+        let identity_id = self
+            .config
+            .communities
+            .get(self.selected_community)?
+            .identity_id;
+        self.config
+            .identities
+            .iter()
+            .find(|identity| identity.id == identity_id)
+            .map(|identity| identity.pubkey.as_str())
     }
     fn selected_message(&self) -> Option<&Message> {
         match self.pane {
@@ -1335,14 +1542,22 @@ impl App {
         if area.width < 50 || area.height < 12 {
             frame.render_widget(
                 Paragraph::new("bzz needs at least 50×12\nResize the terminal or press Q to quit")
+                    .style(self.theme.style(HighlightGroup::Normal))
                     .alignment(Alignment::Center)
-                    .block(Block::bordered().title(" terminal too small ")),
+                    .block(
+                        Block::bordered()
+                            .border_type(self.theme.border_type(BorderSurface::Pane))
+                            .border_style(self.theme.style(HighlightGroup::PaneBorder))
+                            .title_style(self.theme.style(HighlightGroup::PaneTitle))
+                            .title(" terminal too small "),
+                    ),
                 area,
             );
             return;
         }
         if self.config.communities.is_empty() {
             self.render_empty(frame, area);
+            self.render_overlay(frame, area);
             return;
         }
         let panes = layout::panes(
@@ -1362,6 +1577,8 @@ impl App {
                 &self.channels,
                 self.selected_channel,
                 &self.unread_channels(),
+                &self.theme,
+                self.pane == Pane::Channels,
             );
         }
         let title = self
@@ -1375,6 +1592,9 @@ impl App {
             &self.reactions,
             &self.timeline,
             title,
+            &self.theme,
+            self.pane == Pane::Timeline,
+            self.self_pubkey(),
         );
         if let Some(thread) = panes.thread {
             timeline::render(
@@ -1385,6 +1605,9 @@ impl App {
                 &self.reactions,
                 &self.thread_timeline,
                 "thread",
+                &self.theme,
+                self.pane == Pane::Thread,
+                self.self_pubkey(),
             );
         }
         self.render_status(frame, panes.status);
@@ -1395,9 +1618,7 @@ impl App {
             Paragraph::new(Text::from(vec![
                 Line::styled(
                     "Welcome to bzz",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
+                    self.theme.style(HighlightGroup::CommunitySelected),
                 ),
                 Line::default(),
                 Line::from("No communities are configured."),
@@ -1405,9 +1626,16 @@ impl App {
                 Line::default(),
                 Line::from("? help · Q quit"),
             ]))
+            .style(self.theme.style(HighlightGroup::Normal))
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(" bzz ")),
+            .block(
+                Block::bordered()
+                    .border_type(self.theme.border_type(BorderSurface::Pane))
+                    .border_style(self.theme.style(HighlightGroup::PaneBorder))
+                    .title_style(self.theme.style(HighlightGroup::PaneTitle))
+                    .title(" bzz "),
+            ),
             area,
         );
     }
@@ -1425,15 +1653,24 @@ impl App {
                         .unwrap_or('?')
                         .to_string(),
                 )
-                .style(if index == self.selected_community {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
+                .style(self.theme.style(if index == self.selected_community {
+                    HighlightGroup::CommunitySelected
                 } else {
-                    Style::default()
-                })
+                    HighlightGroup::CommunityRail
+                }))
             });
-        frame.render_widget(List::new(items).block(Block::bordered().title(" b ")), area);
+        frame.render_widget(
+            List::new(items)
+                .style(self.theme.style(HighlightGroup::CommunityRail))
+                .block(
+                    Block::bordered()
+                        .border_type(self.theme.border_type(BorderSurface::Pane))
+                        .border_style(self.theme.style(HighlightGroup::PaneBorder))
+                        .title_style(self.theme.style(HighlightGroup::PaneTitle))
+                        .title(" b "),
+                ),
+            area,
+        );
     }
     fn render_status(&self, frame: &mut Frame<'_>, area: Rect) {
         let mode = match self.mode {
@@ -1443,7 +1680,13 @@ impl App {
             Mode::Reaction => "REACTION",
             Mode::ConfirmDelete => "CONFIRM",
             Mode::Command => "COMMAND",
+            Mode::Theme => "THEME",
             Mode::Help => "HELP",
+        };
+        let mode_group = match self.mode {
+            Mode::Insert => HighlightGroup::StatusModeInsert,
+            Mode::Command => HighlightGroup::StatusModeCommand,
+            _ => HighlightGroup::StatusMode,
         };
         let connection = crate::ui::status::connection_label(self.connection);
         let error = self
@@ -1452,10 +1695,14 @@ impl App {
             .map(sanitize::single_line)
             .unwrap_or_default();
         frame.render_widget(
-            Paragraph::new(format!(
-                " {mode} · {connection} · {error} · ? help · Q quit"
-            ))
-            .style(Style::default().bg(Color::DarkGray).fg(Color::White)),
+            Paragraph::new(Line::from(vec![
+                Span::styled(format!(" {mode} "), self.theme.style(mode_group)),
+                Span::styled(
+                    format!(" · {connection} · {error} · ? help · Q quit"),
+                    self.theme.style(HighlightGroup::StatusBar),
+                ),
+            ]))
+            .style(self.theme.style(HighlightGroup::StatusBar)),
             area,
         );
     }
@@ -1465,7 +1712,14 @@ impl App {
                 frame.render_widget(Clear, area);
                 frame.render_widget(
                     Paragraph::new(crate::ui::help::HELP)
-                        .block(Block::bordered().title(" help "))
+                        .style(self.theme.style(HighlightGroup::Normal))
+                        .block(
+                            Block::bordered()
+                                .border_type(self.theme.border_type(BorderSurface::Modal))
+                                .border_style(self.theme.style(HighlightGroup::ModalBorder))
+                                .title_style(self.theme.style(HighlightGroup::ModalTitle))
+                                .title(" help "),
+                        )
                         .wrap(Wrap { trim: false }),
                     area,
                 )
@@ -1474,6 +1728,7 @@ impl App {
             Mode::Command => {
                 self.render_prompt(frame, area, " command ", &format!(":{}", self.command))
             }
+            Mode::Theme => self.render_theme_picker(frame, area),
             Mode::Reaction => self.render_prompt(
                 frame,
                 area,
@@ -1503,8 +1758,15 @@ impl App {
                 frame.render_widget(Clear, popup);
                 frame.render_widget(
                     Paragraph::new(sanitize::text(&self.composer.body))
+                        .style(self.theme.style(HighlightGroup::Composer))
                         .block(
-                            Block::bordered().title(" message · Enter send · Alt-Enter newline "),
+                            Block::bordered()
+                                .border_type(self.theme.border_type(BorderSurface::Composer))
+                                .border_style(
+                                    self.theme.style(HighlightGroup::ActiveComposerBorder),
+                                )
+                                .title_style(self.theme.style(HighlightGroup::ComposerTitle))
+                                .title(" message · Enter send · Alt-Enter newline "),
                         )
                         .wrap(Wrap { trim: false }),
                     popup,
@@ -1535,7 +1797,60 @@ impl App {
                 }),
         );
         frame.render_widget(
-            List::new(items).block(Block::bordered().title(" channel finder · Enter open ")),
+            List::new(items)
+                .style(self.theme.style(HighlightGroup::Normal))
+                .block(
+                    Block::bordered()
+                        .border_type(self.theme.border_type(BorderSurface::Picker))
+                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
+                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
+                        .title(" channel finder · Enter open "),
+                ),
+            popup,
+        );
+    }
+    fn render_theme_picker(&self, frame: &mut Frame<'_>, area: Rect) {
+        let popup = centered(area, 70, 18);
+        frame.render_widget(Clear, popup);
+        let Some(picker) = &self.theme_picker else {
+            return;
+        };
+        let scope = match picker.scope() {
+            ThemeScope::Global => "global",
+            ThemeScope::Community => "community",
+        };
+        let mut items = vec![ListItem::new(Line::from(vec![
+            Span::styled("> ", self.theme.style(HighlightGroup::SelectionMarker)),
+            Span::styled(
+                sanitize::single_line(picker.query()),
+                self.theme.style(HighlightGroup::Normal),
+            ),
+        ]))];
+        items.extend(picker.visible(12).into_iter().map(|(entry, selected)| {
+            ListItem::new(format!(
+                "{} {}  [{}]",
+                if selected { "›" } else { " " },
+                entry.name,
+                entry.id
+            ))
+            .style(self.theme.style(if selected {
+                HighlightGroup::SelectedRow
+            } else {
+                HighlightGroup::Normal
+            }))
+        }));
+        frame.render_widget(
+            List::new(items)
+                .style(self.theme.style(HighlightGroup::Normal))
+                .block(
+                    Block::bordered()
+                        .border_type(self.theme.border_type(BorderSurface::Picker))
+                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
+                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
+                        .title(format!(
+                            " themes · {scope} · Tab scope · Enter save · Esc cancel "
+                        )),
+                ),
             popup,
         );
     }
@@ -1543,7 +1858,15 @@ impl App {
         let popup = centered(area, 70, 5);
         frame.render_widget(Clear, popup);
         frame.render_widget(
-            Paragraph::new(sanitize::text(value)).block(Block::bordered().title(title)),
+            Paragraph::new(sanitize::text(value))
+                .style(self.theme.style(HighlightGroup::Normal))
+                .block(
+                    Block::bordered()
+                        .border_type(self.theme.border_type(BorderSurface::Modal))
+                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
+                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
+                        .title(title),
+                ),
             popup,
         );
     }
@@ -1578,6 +1901,43 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
     async {
         let _ = tokio::signal::ctrl_c().await;
     }
+}
+
+fn load_theme_safe(
+    config: &Config,
+    community_index: usize,
+    paths: &Paths,
+) -> (Theme, Option<String>) {
+    let selected = config.resolved_theme(community_index);
+    match theme::load(paths, selected) {
+        Ok(loaded) => {
+            let notice = (!loaded.warnings.is_empty())
+                .then(|| format!("theme warning: {}", loaded.warnings.join("; ")));
+            (loaded.theme, notice)
+        }
+        Err(error) => (
+            Theme::builtin(selected).unwrap_or_default(),
+            Some(format!("theme warning: {error}")),
+        ),
+    }
+}
+
+fn identity_recovery_connection(error: &Error) -> Option<ConnectionState> {
+    match error {
+        Error::Locked(_) => Some(ConnectionState::Locked),
+        Error::IdentityMissing(_) => Some(ConnectionState::IdentityMissing),
+        Error::IdentityCorrupt(_) => Some(ConnectionState::IdentityCorrupt),
+        _ => None,
+    }
+}
+
+fn clear_visible_unread(
+    computed: &mut HashSet<Uuid>,
+    manual: &mut HashSet<Uuid>,
+    channel: Uuid,
+) -> bool {
+    computed.remove(&channel);
+    manual.remove(&channel)
 }
 
 async fn next_network(runtime: &mut Option<Runtime>) -> Option<SupervisorEvent> {
@@ -1617,5 +1977,166 @@ fn bottom_popup(area: Rect, height: u16) -> Rect {
         y: area.bottom().saturating_sub(height + 1),
         width: area.width.saturating_sub(4),
         height: height.min(area.height),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::{Mode, clear_visible_unread, identity_recovery_connection};
+    use crate::{
+        config::Config,
+        domain::ConnectionState,
+        error::Error,
+        paths::Paths,
+        store::{Store, writer::StoreHandle},
+    };
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend};
+    use tempfile::TempDir;
+    use uuid::Uuid;
+
+    #[test]
+    fn identity_failures_enter_distinct_cache_only_states() {
+        assert_eq!(
+            identity_recovery_connection(&Error::Locked("keyring".into())),
+            Some(ConnectionState::Locked)
+        );
+        assert_eq!(
+            identity_recovery_connection(&Error::IdentityMissing("missing".into())),
+            Some(ConnectionState::IdentityMissing)
+        );
+        assert_eq!(
+            identity_recovery_connection(&Error::IdentityCorrupt("corrupt".into())),
+            Some(ConnectionState::IdentityCorrupt)
+        );
+        assert_eq!(
+            identity_recovery_connection(&Error::Config("bad".into())),
+            None
+        );
+    }
+
+    #[test]
+    fn clearing_manual_unread_does_not_require_a_remote_marker_advance() {
+        let channel = Uuid::new_v4();
+        let mut computed = HashSet::from([channel]);
+        let mut manual = HashSet::from([channel]);
+        assert!(clear_visible_unread(&mut computed, &mut manual, channel));
+        assert!(!computed.contains(&channel));
+        assert!(!manual.contains(&channel));
+        assert!(!clear_visible_unread(&mut computed, &mut manual, channel));
+    }
+
+    #[tokio::test]
+    async fn invalid_theme_toml_falls_back_without_blocking_startup() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        std::fs::write(paths.theme_file(), "[highlight.Normal\n").unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let app = super::App::new(config, paths, handle).await.unwrap();
+        assert_eq!(app.theme.id(), "bzz");
+        assert!(
+            app.status_error
+                .as_deref()
+                .is_some_and(|error| error.contains("theme warning"))
+        );
+    }
+
+    #[tokio::test]
+    async fn theme_preview_is_reversible_and_selection_persists_by_scope() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths.clone(), handle)
+            .await
+            .unwrap();
+
+        app.open_theme_picker();
+        for character in "nord".chars() {
+            app.theme_picker_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        assert_eq!(app.theme.id(), "nord");
+        app.theme_picker_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.theme.id(), "bzz");
+        assert_eq!(app.config.ui.theme, "bzz");
+
+        app.open_theme_picker();
+        for character in "nord".chars() {
+            app.theme_picker_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        app.theme_picker_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.theme.id(), "nord");
+        assert_eq!(app.config.ui.theme, "nord");
+
+        let identity = crate::config::IdentityConfig {
+            id: Uuid::new_v4(),
+            label: "theme-test".into(),
+            pubkey: "a".repeat(64),
+            backend: crate::config::KeyBackend::Keychain,
+            key_ref: "identity:theme-test".into(),
+        };
+        app.config.identities.push(identity.clone());
+        app.config
+            .add_community(
+                "theme-test".into(),
+                "wss://theme.example".into(),
+                identity.id,
+                false,
+            )
+            .unwrap();
+        app.open_theme_picker();
+        for character in "dracula".chars() {
+            app.theme_picker_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        app.theme_picker_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.theme.id(), "dracula");
+        assert_eq!(app.config.communities[0].theme.as_deref(), Some("dracula"));
+        assert_eq!(Config::load(&paths).unwrap(), app.config);
+    }
+
+    #[tokio::test]
+    async fn empty_state_renders_help_overlay() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+        app.mode = Mode::Help;
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("bzz keys"));
+        assert!(text.contains("Theme picker"));
     }
 }

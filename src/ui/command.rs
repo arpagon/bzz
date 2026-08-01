@@ -3,6 +3,7 @@ pub enum Command {
     Lock,
     Reconnect,
     Resync,
+    ThemeReload,
     AddCommunity,
     RemoveCommunity,
     PurgeCache,
@@ -14,9 +15,21 @@ pub fn parse(input: &str) -> Command {
         "lock" => Command::Lock,
         "reconnect" => Command::Reconnect,
         "resync" => Command::Resync,
+        "theme reload" => Command::ThemeReload,
         "community add" => Command::AddCommunity,
         "community remove" => Command::RemoveCommunity,
         "purge-cache" => Command::PurgeCache,
         value => Command::Unknown(value.to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Command, parse};
+
+    #[test]
+    fn theme_reload_is_an_explicit_command() {
+        assert_eq!(parse(":theme reload"), Command::ThemeReload);
+        assert!(matches!(parse(":theme watch"), Command::Unknown(_)));
     }
 }

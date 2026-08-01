@@ -7,11 +7,38 @@ identity before connecting. Check that the system clock is within 60 seconds.
 `banned`, `restricted`, and `not a member` are terminal access errors rather
 than reconnect conditions.
 
+## Identity locked
+
+The OS keychain contains the identity but is unavailable to this process. bzz
+opens cached data without connecting or signing. Unlock the login keychain or
+Linux Secret Service and restart bzz; do not create a replacement identity.
+
+Debug and release builds intentionally use different paths and credential
+services. Use `bzz paths` and make sure you are running the same build profile
+that created the identity.
+
+## Identity missing or corrupt
+
+Verify first:
+
+```sh
+bzz identity verify <identity-id>
+```
+
+Restore the same configured identity from a NIP-49 backup:
+
+```sh
+bzz identity restore-backup <identity-id> --input identity.ncryptsec
+```
+
+The command rejects backups for a different pubkey. A raw nsec can instead be
+entered without echo through `bzz identity restore <identity-id>`.
+
 ## No credential service
 
 Create/import with the encrypted-file backend. On Linux, a graphical Secret
 Service may be unavailable in SSH sessions; bzz does not silently write a
-plaintext key.
+plaintext key. Its encrypted vault requires the passphrase on each launch.
 
 ## Relay signing key changed
 
@@ -24,6 +51,27 @@ operator, then remove and re-add that community to establish a new pin.
 The status line distinguishes offline, authenticating, backfilling, and
 access-revoked states. Use `:reconnect`, then `:resync` if an old-timestamp
 event is missing.
+
+## Invalid or unreadable theme
+
+Validate both the selected built-ins and the optional override:
+
+```sh
+bzz theme check
+bzz check
+```
+
+The TUI falls back to the selected compiled theme when `theme.toml` has invalid
+TOML and reports a warning. Disable only the override and reset selection if
+needed:
+
+```sh
+mv "$(bzz theme path)" "$(bzz theme path).disabled"
+bzz theme reset
+```
+
+An invalid theme never requires deleting identities, configuration, or the
+SQLite cache.
 
 ## Broken terminal after a crash
 

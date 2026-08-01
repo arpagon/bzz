@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod encrypted_file;
 pub mod keychain;
 pub mod signer;
@@ -48,6 +49,43 @@ impl<'a> IdentityManager<'a> {
         self.store_keys(config, label, backend, keys, passphrase)
     }
 
+    pub fn import_keys(
+        &self,
+        config: &mut Config,
+        label: String,
+        backend: KeyBackend,
+        keys: Keys,
+        passphrase: Option<&SecretString>,
+    ) -> Result<IdentityConfig> {
+        self.store_keys(config, label, backend, keys, passphrase)
+    }
+
+    pub fn restore(
+        &self,
+        identity: &IdentityConfig,
+        mut input: Zeroizing<String>,
+        passphrase: Option<&SecretString>,
+    ) -> Result<()> {
+        let keys = Keys::parse(input.trim())
+            .map_err(|_| Error::Auth("the supplied Nostr secret is invalid".into()))?;
+        input.zeroize();
+        self.restore_keys(identity, keys, passphrase)
+    }
+
+    pub fn restore_keys(
+        &self,
+        identity: &IdentityConfig,
+        keys: Keys,
+        passphrase: Option<&SecretString>,
+    ) -> Result<()> {
+        if keys.public_key().to_hex() != identity.pubkey {
+            return Err(Error::Auth(
+                "the supplied backup belongs to a different identity".into(),
+            ));
+        }
+        self.persist_secret(identity.backend, &identity.key_ref, &keys, passphrase)
+    }
+
     pub fn unlock(
         &self,
         identity: &IdentityConfig,
@@ -59,6 +97,12 @@ impl<'a> IdentityManager<'a> {
                 let passphrase = passphrase
                     .ok_or_else(|| Error::Locked("encrypted identity needs a passphrase".into()))?;
                 let path = self.key_path(&identity.key_ref);
+                if !path.exists() {
+                    return Err(Error::IdentityMissing(format!(
+                        "encrypted credential {} is absent; restore this identity from its backup",
+                        identity.key_ref
+                    )));
+                }
                 let bytes =
                     Zeroizing::new(encrypted_file::open(&path, passphrase.expose_secret())?);
                 let plaintext = std::str::from_utf8(bytes.as_slice())
@@ -67,11 +111,11 @@ impl<'a> IdentityManager<'a> {
             }
         };
         let keys = Keys::parse(secret.as_str())
-            .map_err(|_| Error::Auth("stored identity is invalid".into()))?;
+            .map_err(|_| Error::IdentityCorrupt("stored identity is invalid".into()))?;
         secret.zeroize();
         if keys.public_key().to_hex() != identity.pubkey {
-            return Err(Error::Auth(
-                "stored identity does not match its public key".into(),
+            return Err(Error::IdentityCorrupt(
+                "stored identity does not match its configured public key".into(),
             ));
         }
         Ok(keys)
@@ -103,21 +147,7 @@ impl<'a> IdentityManager<'a> {
         }
         let id = Uuid::new_v4();
         let reference = format!("identity:{id}");
-        let mut secret = Zeroizing::new(keys.secret_key().to_secret_hex());
-        match backend {
-            KeyBackend::Keychain => keychain::store(&reference, &secret)?,
-            KeyBackend::EncryptedFile => {
-                let passphrase = passphrase.ok_or_else(|| {
-                    Error::Config("encrypted-file backend needs a passphrase".into())
-                })?;
-                encrypted_file::seal(
-                    &self.key_path(&reference),
-                    secret.as_bytes(),
-                    passphrase.expose_secret(),
-                )?;
-            }
-        }
-        secret.zeroize();
+        self.persist_secret(backend, &reference, &keys, passphrase)?;
         let identity = IdentityConfig {
             id,
             label,
@@ -132,6 +162,31 @@ impl<'a> IdentityManager<'a> {
             return Err(error);
         }
         Ok(identity)
+    }
+
+    fn persist_secret(
+        &self,
+        backend: KeyBackend,
+        reference: &str,
+        keys: &Keys,
+        passphrase: Option<&SecretString>,
+    ) -> Result<()> {
+        let mut secret = Zeroizing::new(keys.secret_key().to_secret_hex());
+        let result = match backend {
+            KeyBackend::Keychain => keychain::store(reference, &secret),
+            KeyBackend::EncryptedFile => {
+                let passphrase = passphrase.ok_or_else(|| {
+                    Error::Config("encrypted-file backend needs a passphrase".into())
+                })?;
+                encrypted_file::seal(
+                    &self.key_path(reference),
+                    secret.as_bytes(),
+                    passphrase.expose_secret(),
+                )
+            }
+        };
+        secret.zeroize();
+        result
     }
 
     fn key_path(&self, reference: &str) -> PathBuf {

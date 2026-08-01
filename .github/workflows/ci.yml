@@ -47,8 +47,8 @@ jobs:
       - name: Smoke-test release binary
         shell: bash
         run: ${{ matrix.binary }} --version
-      - name: Test identity, config, and keymap on target OS
-        run: cargo test --locked --target ${{ matrix.target }} --test auth_test --test config_test --test terminal_restore_test
+      - name: Test identity, backup, config, and keymap on target OS
+        run: cargo test --locked --target ${{ matrix.target }} --lib --test auth_test --test config_test --test terminal_restore_test
       - name: Smoke-test native keychain
         if: runner.os != 'Linux'
         shell: bash
@@ -59,4 +59,5 @@ jobs:
           ${{ matrix.binary }} identity new --label ci-keychain
           identity_id="$(${{ matrix.binary }} identity list | tee /dev/stderr | awk '$2 == "ci-keychain" { print $1 }')"
           test -n "$identity_id"
+          ${{ matrix.binary }} identity verify "$identity_id"
           ${{ matrix.binary }} identity remove "$identity_id" --yes

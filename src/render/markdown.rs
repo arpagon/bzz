@@ -4,30 +4,36 @@ use ratatui::{
     text::{Line, Span, Text},
 };
 
-use crate::render::sanitize;
+use crate::{
+    render::sanitize,
+    ui::theme::{HighlightGroup, Theme},
+};
 
-pub fn render(input: &str) -> Text<'static> {
+pub fn render(input: &str, theme: &Theme) -> Text<'static> {
     let safe = sanitize::text(input);
     let parser = Parser::new_ext(
         &safe,
         Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS,
     );
     let mut lines = vec![Line::default()];
-    let mut style = Style::default();
+    let mut markup = Style::default();
+    let mut code_block_depth = 0_u8;
     let mut links = Vec::<String>::new();
     for event in parser {
         match event {
-            Event::Start(Tag::Strong) => style = style.add_modifier(Modifier::BOLD),
-            Event::End(TagEnd::Strong) => style = style.remove_modifier(Modifier::BOLD),
-            Event::Start(Tag::Emphasis) => style = style.add_modifier(Modifier::ITALIC),
-            Event::End(TagEnd::Emphasis) => style = style.remove_modifier(Modifier::ITALIC),
-            Event::Start(Tag::Strikethrough) => style = style.add_modifier(Modifier::CROSSED_OUT),
+            Event::Start(Tag::Strong) => markup = markup.add_modifier(Modifier::BOLD),
+            Event::End(TagEnd::Strong) => markup = markup.remove_modifier(Modifier::BOLD),
+            Event::Start(Tag::Emphasis) => markup = markup.add_modifier(Modifier::ITALIC),
+            Event::End(TagEnd::Emphasis) => markup = markup.remove_modifier(Modifier::ITALIC),
+            Event::Start(Tag::Strikethrough) => markup = markup.add_modifier(Modifier::CROSSED_OUT),
             Event::End(TagEnd::Strikethrough) => {
-                style = style.remove_modifier(Modifier::CROSSED_OUT)
+                markup = markup.remove_modifier(Modifier::CROSSED_OUT)
             }
-            Event::Start(Tag::CodeBlock(_)) => style = style.add_modifier(Modifier::DIM),
+            Event::Start(Tag::CodeBlock(_)) => {
+                code_block_depth = code_block_depth.saturating_add(1)
+            }
             Event::End(TagEnd::CodeBlock) => {
-                style = style.remove_modifier(Modifier::DIM);
+                code_block_depth = code_block_depth.saturating_sub(1);
                 newline(&mut lines);
             }
             Event::Start(Tag::Link { dest_url, .. }) => {
@@ -37,23 +43,50 @@ pub fn render(input: &str) -> Text<'static> {
                 if let Some(url) = links.pop() {
                     current_line(&mut lines).push_span(Span::styled(
                         format!(" <{url}>"),
-                        Style::default().add_modifier(Modifier::UNDERLINED),
+                        theme.apply(
+                            HighlightGroup::MarkdownLink,
+                            theme.apply(HighlightGroup::MessageBody, markup),
+                        ),
                     ));
                 }
             }
-            Event::Text(value) | Event::Code(value) => {
-                push_multiline(&mut lines, &sanitize::text(&value), style)
+            Event::Text(value) => {
+                let group = if code_block_depth > 0 {
+                    HighlightGroup::MarkdownCode
+                } else {
+                    HighlightGroup::MessageBody
+                };
+                push_multiline(
+                    &mut lines,
+                    &sanitize::text(&value),
+                    theme.apply(group, markup),
+                )
             }
+            Event::Code(value) => push_multiline(
+                &mut lines,
+                &sanitize::text(&value),
+                theme.apply(
+                    HighlightGroup::MarkdownCode,
+                    theme.apply(HighlightGroup::MessageBody, markup),
+                ),
+            ),
             Event::SoftBreak | Event::HardBreak => newline(&mut lines),
             Event::Rule => {
                 newline(&mut lines);
-                current_line(&mut lines).push_span(Span::raw("────────"));
+                current_line(&mut lines).push_span(Span::styled(
+                    "────────",
+                    theme.style(HighlightGroup::MarkdownMarker),
+                ));
                 newline(&mut lines);
             }
-            Event::TaskListMarker(checked) => {
-                current_line(&mut lines).push_span(Span::raw(if checked { "[x] " } else { "[ ] " }))
-            }
-            Event::Start(Tag::Item) => current_line(&mut lines).push_span(Span::raw("• ")),
+            Event::TaskListMarker(checked) => current_line(&mut lines).push_span(Span::styled(
+                if checked { "[x] " } else { "[ ] " },
+                theme.style(HighlightGroup::MarkdownMarker),
+            )),
+            Event::Start(Tag::Item) => current_line(&mut lines).push_span(Span::styled(
+                "• ",
+                theme.style(HighlightGroup::MarkdownMarker),
+            )),
             Event::End(TagEnd::Item | TagEnd::Paragraph | TagEnd::Heading(_)) => {
                 newline(&mut lines)
             }

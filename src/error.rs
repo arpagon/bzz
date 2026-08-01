@@ -6,6 +6,10 @@ pub enum Error {
     Config(String),
     #[error("identity is locked: {0}")]
     Locked(String),
+    #[error("identity secret is missing: {0}")]
+    IdentityMissing(String),
+    #[error("identity storage is corrupt: {0}")]
+    IdentityCorrupt(String),
     #[error("authentication failed: {0}")]
     Auth(String),
     #[error("relay protocol error: {0}")]

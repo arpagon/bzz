@@ -84,6 +84,8 @@ pub struct ReadState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConnectionState {
     Locked,
+    IdentityMissing,
+    IdentityCorrupt,
     Offline,
     Connecting,
     Authenticating,

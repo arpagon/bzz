@@ -48,6 +48,8 @@ pub struct CommunityConfig {
     pub identity_id: Uuid,
     #[serde(default)]
     pub allow_insecure_localhost: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -55,6 +57,7 @@ pub struct CommunityConfig {
 pub struct UiConfig {
     pub sidebar_width: u16,
     pub thread_width: u16,
+    pub theme: String,
 }
 
 impl Default for UiConfig {
@@ -62,6 +65,7 @@ impl Default for UiConfig {
         Self {
             sidebar_width: 28,
             thread_width: 44,
+            theme: crate::ui::theme::DEFAULT_THEME_ID.into(),
         }
     }
 }
@@ -168,6 +172,12 @@ impl Config {
                 "default community {default} does not exist"
             )));
         }
+        validate_theme_name(&self.ui.theme, "ui.theme")?;
+        for community in &self.communities {
+            if let Some(theme) = &community.theme {
+                validate_theme_name(theme, "community theme")?;
+            }
+        }
         if !(18..=60).contains(&self.ui.sidebar_width) {
             return Err(Error::Config(
                 "ui.sidebar_width must be between 18 and 60".into(),
@@ -211,10 +221,18 @@ impl Config {
             relay_url: endpoint.websocket.to_string(),
             identity_id,
             allow_insecure_localhost: insecure,
+            theme: None,
         });
         self.default_community.get_or_insert(id);
         self.validate()?;
         Ok(id)
+    }
+
+    pub fn resolved_theme(&self, community_index: usize) -> &str {
+        self.communities
+            .get(community_index)
+            .and_then(|community| community.theme.as_deref())
+            .unwrap_or(&self.ui.theme)
     }
 
     pub fn remove_community(&mut self, id: Uuid) -> bool {
@@ -268,6 +286,16 @@ pub fn validate_relay_url(input: &str, allow_insecure_localhost: bool) -> Result
         http_base: http,
         authority,
     })
+}
+
+fn validate_theme_name(value: &str, field: &str) -> Result<()> {
+    if value.trim().is_empty()
+        || value.len() > 80
+        || value.chars().any(|character| character.is_control())
+    {
+        return Err(Error::Config(format!("{field} is invalid")));
+    }
+    Ok(())
 }
 
 fn is_loopback(host: &str) -> bool {

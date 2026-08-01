@@ -8,7 +8,7 @@ use chacha20poly1305::{
 };
 use rand::Rng as _;
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     error::{Error, Result},
@@ -64,20 +64,62 @@ pub fn seal(path: &Path, secret: &[u8], passphrase: &str) -> Result<()> {
     };
     let bytes = serde_json::to_vec_pretty(&envelope)
         .map_err(|error| Error::Serialization(error.to_string()))?;
-    let temporary = path.with_extension("key.tmp");
+    let temporary = path.with_extension(format!("key.{}.tmp", uuid::Uuid::new_v4()));
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| Error::io(parent, error))?;
     }
     fs::write(&temporary, bytes).map_err(|error| Error::io(&temporary, error))?;
     set_private_permissions(&temporary)?;
-    fs::rename(&temporary, path).map_err(|error| Error::io(path, error))?;
+    let backup = install_temporary(&temporary, path)?;
+    let verification = open(path, passphrase).and_then(|bytes| {
+        let verified = Zeroizing::new(bytes);
+        if verified.as_slice() == secret {
+            Ok(())
+        } else {
+            Err(Error::IdentityCorrupt(
+                "encrypted identity failed read-back verification".into(),
+            ))
+        }
+    });
+    if let Err(error) = verification {
+        let _ = fs::remove_file(path);
+        if let Some(backup) = backup {
+            let _ = fs::rename(backup, path);
+        }
+        return Err(error);
+    }
+    if let Some(backup) = backup {
+        fs::remove_file(&backup).map_err(|error| Error::io(&backup, error))?;
+    }
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn install_temporary(temporary: &Path, destination: &Path) -> Result<Option<std::path::PathBuf>> {
+    fs::rename(temporary, destination).map_err(|error| Error::io(destination, error))?;
+    Ok(None)
+}
+
+#[cfg(windows)]
+fn install_temporary(temporary: &Path, destination: &Path) -> Result<Option<std::path::PathBuf>> {
+    let backup = destination.with_extension(format!("key.{}.bak", uuid::Uuid::new_v4()));
+    let had_existing = destination.exists();
+    if had_existing {
+        fs::rename(destination, &backup).map_err(|error| Error::io(destination, error))?;
+    }
+    if let Err(error) = fs::rename(temporary, destination) {
+        if had_existing {
+            let _ = fs::rename(&backup, destination);
+        }
+        return Err(Error::io(destination, error));
+    }
+    Ok(had_existing.then_some(backup))
 }
 
 pub fn open(path: &Path, passphrase: &str) -> Result<Vec<u8>> {
     let bytes = fs::read(path).map_err(|error| Error::io(path, error))?;
     let envelope: Envelope = serde_json::from_slice(&bytes)
-        .map_err(|_| Error::Auth("identity file is malformed".into()))?;
+        .map_err(|_| Error::IdentityCorrupt("identity file is malformed".into()))?;
     if envelope.version != 1
         || envelope.kdf != "argon2id"
         || envelope.memory_kib < 65_536
@@ -87,7 +129,7 @@ pub fn open(path: &Path, passphrase: &str) -> Result<Vec<u8>> {
         || envelope.iterations > 20
         || envelope.parallelism > 16
     {
-        return Err(Error::Auth(
+        return Err(Error::IdentityCorrupt(
             "identity file parameters are unsupported".into(),
         ));
     }
@@ -95,7 +137,7 @@ pub fn open(path: &Path, passphrase: &str) -> Result<Vec<u8>> {
     let nonce = decode_exact::<24>(&envelope.nonce)?;
     let ciphertext = STANDARD
         .decode(envelope.ciphertext)
-        .map_err(|_| Error::Auth("identity file is malformed".into()))?;
+        .map_err(|_| Error::IdentityCorrupt("identity file is malformed".into()))?;
     let mut key = derive_key(
         passphrase,
         &salt,
@@ -112,7 +154,7 @@ pub fn open(path: &Path, passphrase: &str) -> Result<Vec<u8>> {
                 aad: AAD,
             },
         )
-        .map_err(|_| Error::Auth("wrong passphrase or damaged identity file".into()));
+        .map_err(|_| Error::Locked("wrong passphrase or damaged identity file".into()));
     key.zeroize();
     result
 }
@@ -137,8 +179,8 @@ fn derive_key(
 fn decode_exact<const N: usize>(encoded: &str) -> Result<[u8; N]> {
     let bytes = STANDARD
         .decode(encoded)
-        .map_err(|_| Error::Auth("identity file is malformed".into()))?;
+        .map_err(|_| Error::IdentityCorrupt("identity file is malformed".into()))?;
     bytes
         .try_into()
-        .map_err(|_| Error::Auth("identity file is malformed".into()))
+        .map_err(|_| Error::IdentityCorrupt("identity file is malformed".into()))
 }

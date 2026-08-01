@@ -28,7 +28,7 @@ directories = "6"
 futures-util = "0.3"
 hex = "0.4"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
-nostr = { version = "0.44", features = ["nip44", "nip98"] }
+nostr = { version = "0.44", features = ["nip44", "nip49", "nip98"] }
 nucleo-matcher = "0.3"
 pulldown-cmark = { version = "0.13", default-features = false }
 rand = "0.9"

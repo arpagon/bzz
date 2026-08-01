@@ -13,7 +13,7 @@ pub struct Paths {
 
 impl Paths {
     pub fn discover() -> Result<Self> {
-        let dirs = ProjectDirs::from("dev", "arpagon", "bzz")
+        let dirs = ProjectDirs::from("dev", "arpagon", application_name())
             .ok_or_else(|| Error::Config("the operating system has no home directory".into()))?;
         let config_dir = std::env::var_os("BZZ_CONFIG_DIR")
             .map(PathBuf::from)
@@ -48,6 +48,10 @@ impl Paths {
         self.config_dir.join("config.toml")
     }
 
+    pub fn theme_file(&self) -> PathBuf {
+        self.config_dir.join("theme.toml")
+    }
+
     pub fn database_file(&self) -> PathBuf {
         self.data_dir.join("bzz.db")
     }
@@ -55,6 +59,14 @@ impl Paths {
     pub fn keys_dir(&self) -> PathBuf {
         self.data_dir.join("keys")
     }
+}
+
+const fn application_name() -> &'static str {
+    application_name_for(cfg!(debug_assertions))
+}
+
+const fn application_name_for(debug: bool) -> &'static str {
+    if debug { "bzz-dev" } else { "bzz" }
 }
 
 #[cfg(unix)]
@@ -68,4 +80,13 @@ pub fn set_private_permissions(path: &std::path::Path) -> Result<()> {
 #[cfg(not(unix))]
 pub fn set_private_permissions(_path: &std::path::Path) -> Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn debug_and_release_names_are_distinct() {
+        assert_eq!(super::application_name_for(true), "bzz-dev");
+        assert_eq!(super::application_name_for(false), "bzz");
+    }
 }

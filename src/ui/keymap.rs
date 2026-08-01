@@ -20,6 +20,7 @@ pub enum KeyAction {
     NextPane,
     PreviousPane,
     Finder,
+    Theme,
     Command,
     Escape,
     Character(char),
@@ -38,6 +39,7 @@ pub fn map_normal(key: KeyEvent, awaiting_g: bool) -> KeyAction {
             KeyCode::Char(']') => KeyAction::Thread,
             KeyCode::Char('u') => KeyAction::PageUp,
             KeyCode::Char('d') => KeyAction::PageDown,
+            KeyCode::Char('y') => KeyAction::Theme,
             _ => KeyAction::Ignore,
         };
     }

@@ -2,7 +2,9 @@ use crate::domain::ConnectionState;
 
 pub fn connection_label(state: ConnectionState) -> &'static str {
     match state {
-        ConnectionState::Locked => "locked",
+        ConnectionState::Locked => "identity locked",
+        ConnectionState::IdentityMissing => "identity missing",
+        ConnectionState::IdentityCorrupt => "identity corrupt",
         ConnectionState::Offline => "offline cache",
         ConnectionState::Connecting => "connecting",
         ConnectionState::Authenticating => "authenticating",

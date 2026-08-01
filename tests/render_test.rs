@@ -13,7 +13,10 @@ fn terminal_controls_and_bidi_overrides_are_never_preserved() {
 
 #[test]
 fn links_are_inert_visible_text() {
-    let text = markdown::render("[click](https://example.test/x)");
+    let text = markdown::render(
+        "[click](https://example.test/x)",
+        &bzz::ui::theme::Theme::default(),
+    );
     let rendered = text
         .lines
         .iter()

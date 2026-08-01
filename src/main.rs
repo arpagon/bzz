@@ -1,20 +1,20 @@
 #![forbid(unsafe_code)]
 
-use std::io::Write as _;
+use std::{io::Write as _, path::PathBuf};
 
 use bzz::{
     Result,
     app::App,
-    auth::{IdentityManager, read_passphrase},
+    auth::{IdentityManager, backup, read_passphrase},
     config::{Config, KeyBackend},
     error::Error,
     paths::Paths,
     store::{Store, writer::StoreHandle},
 };
 use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
-use nostr::ToBech32 as _;
+use secrecy::ExposeSecret as _;
 use uuid::Uuid;
-use zeroize::{Zeroize as _, Zeroizing};
+use zeroize::Zeroizing;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -43,6 +43,11 @@ enum Command {
     Cache {
         #[command(subcommand)]
         command: CacheCommand,
+    },
+    /// Inspect and select color themes.
+    Theme {
+        #[command(subcommand)]
+        command: ThemeCommand,
     },
     /// Validate configuration and database migrations.
     Check,
@@ -97,8 +102,6 @@ enum IdentityCommand {
         label: String,
         #[arg(long, value_enum, default_value = "keychain")]
         backend: BackendArg,
-        #[arg(long)]
-        show_backup: bool,
     },
     /// Import an nsec or 64-character secret read from the controlling terminal.
     Import {
@@ -107,6 +110,31 @@ enum IdentityCommand {
         #[arg(long, value_enum, default_value = "keychain")]
         backend: BackendArg,
     },
+    /// Export a password-encrypted NIP-49 backup to a new owner-only file.
+    Backup {
+        id: Uuid,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Import a password-encrypted NIP-49 backup as a new identity.
+    ImportBackup {
+        #[arg(long)]
+        label: String,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, value_enum, default_value = "keychain")]
+        backend: BackendArg,
+    },
+    /// Restore a missing/corrupt credential from an nsec read interactively.
+    Restore { id: Uuid },
+    /// Restore a missing/corrupt credential from a NIP-49 backup.
+    RestoreBackup {
+        id: Uuid,
+        #[arg(long)]
+        input: PathBuf,
+    },
+    /// Verify that a credential is available and matches its configured pubkey.
+    Verify { id: Uuid },
     /// List public identity metadata.
     List,
     /// Delete an identity only when no community uses it.
@@ -151,6 +179,35 @@ enum CacheCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum ThemeCommand {
+    /// List themes compiled into this bzz binary.
+    List,
+    /// Print an exportable semantic definition for a built-in theme.
+    Show { name: String },
+    /// Validate configured themes and theme.toml.
+    Check,
+    /// Select a global or per-community theme.
+    Use {
+        name: String,
+        #[arg(long)]
+        community: Option<Uuid>,
+    },
+    /// Reset the global or per-community theme selection.
+    Reset {
+        #[arg(long)]
+        community: Option<Uuid>,
+    },
+    /// Export a built-in theme to a new owner-only file.
+    Export {
+        name: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Print the optional theme.toml path.
+    Path,
+}
+
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
@@ -185,15 +242,21 @@ async fn run() -> Result<()> {
             community_command(command, &paths, &mut config).await
         }
         Some(Command::Cache { command }) => cache_command(command, &paths, &mut config),
+        Some(Command::Theme { command }) => theme_command(command, &paths, &mut config),
         Some(Command::Check) => {
             config.validate()?;
+            let warnings = bzz::ui::theme::check(&paths, configured_theme_names(&config))?;
+            for warning in warnings {
+                eprintln!("warning: {warning}");
+            }
             let mut store = Store::open(paths.database_file())?;
             store.sync_config(&config)?;
-            println!("configuration and database are valid");
+            println!("configuration, theme, and database are valid");
             Ok(())
         }
         Some(Command::Paths) => {
             println!("config: {}", paths.config_file().display());
+            println!("theme:  {}", paths.theme_file().display());
             println!("data:   {}", paths.database_file().display());
             println!("cache:  {}", paths.cache_dir.display());
             Ok(())
@@ -211,11 +274,7 @@ async fn run() -> Result<()> {
 fn identity_command(command: IdentityCommand, paths: &Paths, config: &mut Config) -> Result<()> {
     let manager = IdentityManager::new(paths);
     match command {
-        IdentityCommand::New {
-            label,
-            backend,
-            show_backup,
-        } => {
+        IdentityCommand::New { label, backend } => {
             let backend = KeyBackend::from(backend);
             let passphrase = matches!(backend, KeyBackend::EncryptedFile)
                 .then(|| read_passphrase("New identity passphrase: ", true))
@@ -227,20 +286,6 @@ fn identity_command(command: IdentityCommand, paths: &Paths, config: &mut Config
                 return Err(error);
             }
             println!("identity: {}\npubkey:   {}", identity.id, identity.pubkey);
-            if show_backup {
-                confirm_backup()?;
-                let keys = manager.unlock(&identity, passphrase.as_ref())?;
-                let mut backup = Zeroizing::new(
-                    keys.secret_key()
-                        .to_bech32()
-                        .map_err(|_| Error::Auth("could not encode backup".into()))?,
-                );
-                println!("nsec backup (shown once): {}", backup.as_str());
-                std::io::stdout()
-                    .flush()
-                    .map_err(|error| Error::io("stdout", error))?;
-                backup.zeroize();
-            }
             Ok(())
         }
         IdentityCommand::Import { label, backend } => {
@@ -259,6 +304,81 @@ fn identity_command(command: IdentityCommand, paths: &Paths, config: &mut Config
                 return Err(error);
             }
             println!("identity: {}\npubkey:   {}", identity.id, identity.pubkey);
+            Ok(())
+        }
+        IdentityCommand::Backup { id, output } => {
+            if output.exists() {
+                return Err(Error::Config(format!(
+                    "backup output {} already exists; choose a new path",
+                    output.display()
+                )));
+            }
+            let identity = find_identity(config, id)?.clone();
+            let identity_passphrase =
+                identity_passphrase(&identity, "Identity passphrase: ", false)?;
+            let keys = manager.unlock(&identity, identity_passphrase.as_ref())?;
+            let backup_passphrase = read_passphrase("New backup passphrase: ", true)?;
+            let encoded = backup::create_backup(&keys, backup_passphrase.expose_secret())?;
+            backup::write_backup_file(&output, &encoded)?;
+            println!("backup:  {}\npubkey: {}", output.display(), identity.pubkey);
+            Ok(())
+        }
+        IdentityCommand::ImportBackup {
+            label,
+            input,
+            backend,
+        } => {
+            let encoded = backup::read_backup_file(&input)?;
+            let backup_passphrase = read_passphrase("Backup passphrase: ", false)?;
+            let keys = backup::decrypt_backup(&encoded, backup_passphrase.expose_secret())?;
+            let backend = KeyBackend::from(backend);
+            let storage_passphrase = matches!(backend, KeyBackend::EncryptedFile)
+                .then(|| read_passphrase("New identity passphrase: ", true))
+                .transpose()?;
+            let identity =
+                manager.import_keys(config, label, backend, keys, storage_passphrase.as_ref())?;
+            save_new_identity(&manager, config, paths, &identity)?;
+            println!("identity: {}\npubkey:   {}", identity.id, identity.pubkey);
+            Ok(())
+        }
+        IdentityCommand::Restore { id } => {
+            let identity = find_identity(config, id)?.clone();
+            let input = Zeroizing::new(
+                rpassword::prompt_password("Nostr nsec or secret hex: ")
+                    .map_err(|error| Error::io("controlling terminal", error))?,
+            );
+            let storage_passphrase =
+                identity_passphrase(&identity, "New identity passphrase: ", true)?;
+            manager.restore(&identity, input, storage_passphrase.as_ref())?;
+            println!(
+                "restored identity: {}\npubkey:            {}",
+                id, identity.pubkey
+            );
+            Ok(())
+        }
+        IdentityCommand::RestoreBackup { id, input } => {
+            let identity = find_identity(config, id)?.clone();
+            let encoded = backup::read_backup_file(&input)?;
+            let backup_passphrase = read_passphrase("Backup passphrase: ", false)?;
+            let keys = backup::decrypt_backup(&encoded, backup_passphrase.expose_secret())?;
+            let storage_passphrase =
+                identity_passphrase(&identity, "New identity passphrase: ", true)?;
+            manager.restore_keys(&identity, keys, storage_passphrase.as_ref())?;
+            println!(
+                "restored identity: {}\npubkey:            {}",
+                id, identity.pubkey
+            );
+            Ok(())
+        }
+        IdentityCommand::Verify { id } => {
+            let identity = find_identity(config, id)?.clone();
+            let passphrase = identity_passphrase(&identity, "Identity passphrase: ", false)?;
+            let keys = manager.unlock(&identity, passphrase.as_ref())?;
+            println!(
+                "identity available: {}\npubkey:            {}",
+                identity.id,
+                keys.public_key().to_hex()
+            );
             Ok(())
         }
         IdentityCommand::List => {
@@ -444,11 +564,121 @@ fn cache_command(command: CacheCommand, paths: &Paths, config: &mut Config) -> R
     }
 }
 
-fn confirm_backup() -> Result<()> {
-    let confirmation = rpassword::prompt_password("Type SHOW to reveal the nsec backup: ")
-        .map_err(|error| Error::io("controlling terminal", error))?;
-    if confirmation != "SHOW" {
-        return Err(Error::Auth("backup display cancelled".into()));
+fn theme_command(command: ThemeCommand, paths: &Paths, config: &mut Config) -> Result<()> {
+    use bzz::ui::theme::{DEFAULT_THEME_ID, ThemeRegistry};
+
+    match command {
+        ThemeCommand::List => {
+            let mut output = String::new();
+            for entry in ThemeRegistry::entries() {
+                output.push_str(&format!("{}\t{}\tbuilt-in\n", entry.id, entry.name));
+            }
+            write_stdout(output.as_bytes())
+        }
+        ThemeCommand::Show { name } => {
+            let output = ThemeRegistry::export(&name)?;
+            write_stdout(output.as_bytes())
+        }
+        ThemeCommand::Check => {
+            let warnings = bzz::ui::theme::check(paths, configured_theme_names(config))?;
+            for warning in warnings {
+                eprintln!("warning: {warning}");
+            }
+            println!("theme configuration is valid");
+            Ok(())
+        }
+        ThemeCommand::Use { name, community } => {
+            let canonical = ThemeRegistry::canonical_id(&name)
+                .ok_or_else(|| Error::Config(format!("unknown theme: {name}")))?;
+            if let Some(id) = community {
+                let entry = config
+                    .communities
+                    .iter_mut()
+                    .find(|entry| entry.id == id)
+                    .ok_or_else(|| Error::Config(format!("community {id} does not exist")))?;
+                entry.theme = Some(canonical.to_owned());
+            } else {
+                config.ui.theme = canonical.to_owned();
+            }
+            config.save(paths)?;
+            println!("theme: {canonical}");
+            Ok(())
+        }
+        ThemeCommand::Reset { community } => {
+            if let Some(id) = community {
+                let entry = config
+                    .communities
+                    .iter_mut()
+                    .find(|entry| entry.id == id)
+                    .ok_or_else(|| Error::Config(format!("community {id} does not exist")))?;
+                entry.theme = None;
+                println!("theme: inherited from global selection");
+            } else {
+                config.ui.theme = DEFAULT_THEME_ID.into();
+                println!("theme: {DEFAULT_THEME_ID}");
+            }
+            config.save(paths)
+        }
+        ThemeCommand::Export { name, output } => {
+            bzz::ui::theme::export_to(&name, &output)?;
+            println!("theme exported: {}", output.display());
+            Ok(())
+        }
+        ThemeCommand::Path => {
+            println!("{}", bzz::ui::theme::theme_path(paths).display());
+            Ok(())
+        }
+    }
+}
+
+fn configured_theme_names(config: &Config) -> Vec<String> {
+    std::iter::once(config.ui.theme.clone())
+        .chain(
+            config
+                .communities
+                .iter()
+                .filter_map(|community| community.theme.clone()),
+        )
+        .collect()
+}
+
+fn write_stdout(value: &[u8]) -> Result<()> {
+    if let Err(error) = std::io::stdout().write_all(value)
+        && error.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err(Error::io("stdout", error));
+    }
+    Ok(())
+}
+
+fn find_identity(config: &Config, id: Uuid) -> Result<&bzz::config::IdentityConfig> {
+    config
+        .identities
+        .iter()
+        .find(|identity| identity.id == id)
+        .ok_or_else(|| Error::Config(format!("identity {id} does not exist")))
+}
+
+fn identity_passphrase(
+    identity: &bzz::config::IdentityConfig,
+    prompt: &str,
+    confirm: bool,
+) -> Result<Option<secrecy::SecretString>> {
+    matches!(identity.backend, KeyBackend::EncryptedFile)
+        .then(|| read_passphrase(prompt, confirm))
+        .transpose()
+}
+
+fn save_new_identity(
+    manager: &IdentityManager<'_>,
+    config: &mut Config,
+    paths: &Paths,
+    identity: &bzz::config::IdentityConfig,
+) -> Result<()> {
+    if let Err(error) = config.save(paths) {
+        config.identities.retain(|entry| entry.id != identity.id);
+        let _ = manager.delete(identity);
+        return Err(error);
     }
     Ok(())
 }

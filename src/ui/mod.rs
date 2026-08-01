@@ -10,6 +10,8 @@ pub mod shell;
 pub mod sidebar;
 pub mod status;
 pub mod terminal;
+pub mod theme;
+pub mod theme_picker;
 pub mod thread;
 pub mod timeline;
 pub mod unread;

@@ -67,6 +67,8 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
             },
         ],
     )]);
+    let theme = bzz::ui::theme::Theme::default();
+    let self_pubkey = "b".repeat(64);
     let backend = TestBackend::new(100, 20);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
@@ -76,7 +78,15 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                 ratatui::layout::Constraint::Fill(1),
             ])
             .areas(frame.area());
-            sidebar::render(frame, left, &channels, 0, &HashSet::from([channel]));
+            sidebar::render(
+                frame,
+                left,
+                &channels,
+                0,
+                &HashSet::from([channel]),
+                &theme,
+                true,
+            );
             timeline::render(
                 frame,
                 right,
@@ -89,6 +99,9 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                     newer: 0,
                 },
                 "general",
+                &theme,
+                true,
+                Some(&self_pubkey),
             );
         })
         .unwrap();

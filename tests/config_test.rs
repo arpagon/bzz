@@ -76,6 +76,33 @@ fn removing_default_community_selects_the_remaining_one() {
 }
 
 #[test]
+fn community_theme_overrides_global_theme_and_can_inherit_again() {
+    let identity = bzz::config::IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "me".into(),
+        pubkey: "a".repeat(64),
+        backend: bzz::config::KeyBackend::EncryptedFile,
+        key_ref: "identity:test".into(),
+    };
+    let mut config = Config::default();
+    config.ui.theme = "nord".into();
+    config.identities.push(identity.clone());
+    config
+        .add_community(
+            "first".into(),
+            "wss://first.example".into(),
+            identity.id,
+            false,
+        )
+        .unwrap();
+    assert_eq!(config.resolved_theme(0), "nord");
+    config.communities[0].theme = Some("dracula".into());
+    assert_eq!(config.resolved_theme(0), "dracula");
+    config.communities[0].theme = None;
+    assert_eq!(config.resolved_theme(0), "nord");
+}
+
+#[test]
 fn empty_config_round_trips_with_private_paths() {
     let temporary = TempDir::new().unwrap();
     let paths = Paths {
