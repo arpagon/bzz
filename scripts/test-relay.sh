@@ -8,6 +8,9 @@ if [[ "$HEAD" != "$PIN" && "${BZZ_ALLOW_UNPINNED_RELAY:-}" != 1 ]]; then
 fi
 cleanup() {
   tmux kill-session -t "${TMUX_SESSION:-dawn-relay}" 2>/dev/null || true
+  if [[ -n "${BZZ_TMUX_KEEPALIVE:-}" ]]; then
+    tmux kill-session -t "$BZZ_TMUX_KEEPALIVE" 2>/dev/null || true
+  fi
   tmux set-environment -gu BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN 2>/dev/null || true
   tmux set-environment -gu BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC 2>/dev/null || true
   tmux set-environment -gu BUZZ_RELAY_PRIVATE_KEY 2>/dev/null || true
@@ -20,7 +23,12 @@ export BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN=5000
 export BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC=5000
 # Deterministic harness-only relay key enables NIP-29 projection verification.
 export BUZZ_RELAY_PRIVATE_KEY="$(printf '%064d' 1)"
-tmux start-server
+# A tmux server exits immediately when it has no sessions. Keep one disposable
+# session alive while setting the global environment; the Buzz helper starts
+# the actual relay session afterward.
+BZZ_TMUX_KEEPALIVE="bzz-relay-env-$$"
+export BZZ_TMUX_KEEPALIVE
+tmux new-session -d -s "$BZZ_TMUX_KEEPALIVE" "sleep 3600"
 tmux set-environment -g BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN "$BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN"
 tmux set-environment -g BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC "$BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC"
 tmux set-environment -g BUZZ_RELAY_PRIVATE_KEY "$BUZZ_RELAY_PRIVATE_KEY"
