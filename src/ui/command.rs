@@ -4,6 +4,7 @@ pub enum Command {
     Reconnect,
     Resync,
     ThemeReload,
+    MediaReload,
     AddCommunity,
     RemoveCommunity,
     PurgeCache,
@@ -16,6 +17,7 @@ pub fn parse(input: &str) -> Command {
         "reconnect" => Command::Reconnect,
         "resync" => Command::Resync,
         "theme reload" => Command::ThemeReload,
+        "media reload" => Command::MediaReload,
         "community add" => Command::AddCommunity,
         "community remove" => Command::RemoveCommunity,
         "purge-cache" => Command::PurgeCache,
@@ -30,6 +32,7 @@ mod tests {
     #[test]
     fn theme_reload_is_an_explicit_command() {
         assert_eq!(parse(":theme reload"), Command::ThemeReload);
+        assert_eq!(parse(":media reload"), Command::MediaReload);
         assert!(matches!(parse(":theme watch"), Command::Unknown(_)));
     }
 }

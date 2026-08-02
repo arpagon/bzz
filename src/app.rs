@@ -1737,6 +1737,13 @@ impl App {
                 }
             }
             crate::ui::command::Command::ThemeReload => self.reload_theme(),
+            crate::ui::command::Command::MediaReload => {
+                self.media.initialize_terminal();
+                self.status_error = Some(format!(
+                    "media renderer reloaded: {}",
+                    self.media.protocol_name()
+                ));
+            }
             crate::ui::command::Command::PurgeCache => {
                 if let Some(community) = self.active_community_id() {
                     self.store

@@ -485,3 +485,30 @@ fn safe_error(error: &Error) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_terminal_protocol_prepares_a_sliced_image() {
+        for protocol_type in [
+            ProtocolType::Halfblocks,
+            ProtocolType::Kitty,
+            ProtocolType::Sixel,
+            ProtocolType::Iterm2,
+        ] {
+            let mut picker = Picker::halfblocks();
+            picker.set_protocol_type(protocol_type);
+            let protocol = SlicedProtocol::new_with_resize(
+                &picker,
+                image::DynamicImage::new_rgb8(2, 2),
+                Size::new(4, 2),
+                Resize::Fit(None),
+            )
+            .unwrap_or_else(|error| panic!("{protocol_type:?} preparation failed: {error}"));
+            assert!(protocol.size().width > 0);
+            assert!(protocol.size().height > 0);
+        }
+    }
+}

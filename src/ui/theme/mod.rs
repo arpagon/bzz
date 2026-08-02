@@ -85,6 +85,11 @@ define_groups! {
     MessageDeleted => "MessageDeleted",
     Reaction => "Reaction",
     SelfReaction => "SelfReaction",
+    MediaBorder => "MediaBorder",
+    MediaMetadata => "MediaMetadata",
+    MediaLoading => "MediaLoading",
+    MediaWarning => "MediaWarning",
+    MediaError => "MediaError",
     Composer => "Composer",
     ComposerTitle => "ComposerTitle",
     ComposerBorder => "ComposerBorder",
@@ -484,6 +489,11 @@ fn default_definitions() -> [HighlightDefinition; HighlightGroup::COUNT] {
     );
     set(H::Reaction, None, Style::default().fg(Color::Magenta));
     set(H::SelfReaction, Some(H::Success), Style::default());
+    set(H::MediaBorder, Some(H::Border), Style::default());
+    set(H::MediaMetadata, Some(H::Muted), Style::default());
+    set(H::MediaLoading, Some(H::Info), Style::default());
+    set(H::MediaWarning, Some(H::Warning), Style::default());
+    set(H::MediaError, Some(H::Error), Style::default());
     set(H::Composer, Some(H::Normal), Style::default());
     set(H::ComposerTitle, Some(H::Title), Style::default());
     set(H::ComposerBorder, Some(H::Border), Style::default());

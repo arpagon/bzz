@@ -75,7 +75,9 @@ text attachment cards.
 Configure `[media].protocol` as `auto`, `kitty`, `sixel`, `iterm2`,
 `halfblocks`, or `off`. Explicit graphics modes are user overrides. `off`
 retains cards, preview metadata, and explicit save/upload operations without
-inline graphics.
+inline graphics. After changing terminal/tmux conditions, use `:media reload`
+to rebuild the renderer without restarting; configuration-file changes apply on
+restart.
 
 ## Cache and privacy
 

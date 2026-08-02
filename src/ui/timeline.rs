@@ -357,23 +357,35 @@ fn attachment_line(
     state: Option<&MediaState>,
     theme: &Theme,
 ) -> Line<'static> {
-    let status = if let Some(error) = &attachment.error {
-        format!("invalid: {}", sanitize::single_line(error))
+    let (status, status_group) = if let Some(error) = &attachment.error {
+        (
+            format!("invalid: {}", sanitize::single_line(error)),
+            HighlightGroup::MediaError,
+        )
     } else if attachment.spoiler {
-        "spoiler — press p to reveal".into()
+        (
+            "spoiler — press p to reveal".into(),
+            HighlightGroup::MediaWarning,
+        )
     } else {
         match state {
-            Some(MediaState::Loading) => "loading".into(),
-            Some(MediaState::Ready(_)) => "ready".into(),
-            Some(MediaState::Failed(message)) => {
-                format!("failed: {}", sanitize::single_line(message))
+            Some(MediaState::Loading) => ("loading".into(), HighlightGroup::MediaLoading),
+            Some(MediaState::Ready(_)) => ("ready".into(), HighlightGroup::MediaMetadata),
+            Some(MediaState::Failed(message)) => (
+                format!("failed: {}", sanitize::single_line(message)),
+                HighlightGroup::MediaError,
+            ),
+            None if attachment.kind == MediaKind::Image => {
+                ("image".into(), HighlightGroup::MediaMetadata)
             }
-            None if attachment.kind == MediaKind::Image => "image".into(),
-            None => "press p to preview or save".into(),
+            None => (
+                "press p to preview or save".into(),
+                HighlightGroup::MediaMetadata,
+            ),
         }
     };
     Line::from(vec![
-        Span::styled("  ▣ ", theme.style(HighlightGroup::Reaction)),
+        Span::styled("  ▣ ", theme.style(HighlightGroup::MediaBorder)),
         Span::styled(
             sanitize::single_line(attachment.label()),
             theme.style(HighlightGroup::MessageBody),
@@ -384,7 +396,7 @@ fn attachment_line(
                 attachment.mime,
                 human_size(attachment.size)
             ),
-            theme.style(HighlightGroup::MessageTimestamp),
+            theme.style(status_group),
         ),
     ])
 }
