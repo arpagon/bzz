@@ -1,24 +1,23 @@
-# Pruebas E2E asistidas con Herdr
+# Herdr-assisted E2E testing
 
-Esta guía explica cómo operar el [plan E2E manual](e2e-manual.md) desde un
-panel de terminal administrado por Herdr. Herdr es opcional y no es una
-dependencia de `bzz`.
+This guide explains how to run the [manual E2E plan](e2e-manual.md) from a
+terminal pane managed by Herdr. Herdr is optional and is not a `bzz`
+dependency.
 
-Usa siempre:
+Always use:
 
-- una identidad desechable;
-- directorios aislados;
-- un relay y un canal dedicados a pruebas;
-- un binario `release`;
-- placeholders en capturas y evidencias públicas.
+- a disposable identity;
+- isolated directories;
+- a relay and channel dedicated to testing;
+- a `release` binary;
+- placeholders in screenshots and public evidence.
 
-Nunca incluyas en comandos, argumentos, variables ordinarias, logs o capturas
-un `nsec`, una contraseña, una clave administrativa o el contenido de un
-backup NIP-49.
+Never include an `nsec`, passphrase, administrative key, or NIP-49 backup
+contents in commands, arguments, ordinary variables, logs, or screenshots.
 
-## 1. Preparar el proceso
+## 1. Prepare the process
 
-Crea `.env` desde la plantilla y rellena únicamente valores no secretos:
+Create `.env` from the template and set only non-secret values:
 
 ```bash
 cp .env.sample .env
@@ -27,7 +26,7 @@ set -a; source .env; set +a
 cargo build --release --locked
 ```
 
-Como mínimo, configura un relay de prueba:
+Configure at least one test relay:
 
 ```dotenv
 BZZ_RELAY_URL=wss://relay.example
@@ -37,38 +36,38 @@ BZZ_DATA_DIR=/tmp/bzz-e2e/data
 BZZ_CACHE_DIR=/tmp/bzz-e2e/cache
 ```
 
-Comprueba Herdr y enumera los paneles:
+Check Herdr and list its panes:
 
 ```bash
 herdr status
 herdr pane list
 ```
 
-Elige un panel de terminal que no contenga otro agente y guarda su identificador:
+Choose a terminal pane that does not contain another agent and save its ID:
 
 ```bash
 export BZZ_PANE=w1:p2
 herdr pane process-info --pane "$BZZ_PANE"
 ```
 
-Los IDs como `w1:p2` son ejemplos locales de Herdr, no identificadores de Buzz.
+IDs such as `w1:p2` are local Herdr examples, not Buzz identifiers.
 
-## 2. Lanzar y observar bzz
+## 2. Launch and observe bzz
 
-Ejecuta el proceso dentro del panel:
+Run the process inside the pane:
 
 ```bash
 herdr pane run "$BZZ_PANE" \
   'set -a; source .env; set +a; "$BZZ_BIN"'
 ```
 
-Lee la pantalla visible sin adjuntarte al terminal:
+Read the visible screen without attaching to the terminal:
 
 ```bash
 herdr pane read "$BZZ_PANE" --source visible --format text
 ```
 
-Espera un estado concreto cuando quieras sincronizar un script con la TUI:
+Wait for a specific state when synchronizing a script with the TUI:
 
 ```bash
 herdr pane wait-output "$BZZ_PANE" \
@@ -77,15 +76,15 @@ herdr pane wait-output "$BZZ_PANE" \
   --timeout 15000
 ```
 
-Confirma qué proceso ocupa el panel:
+Confirm which process occupies the pane:
 
 ```bash
 herdr pane process-info --pane "$BZZ_PANE"
 ```
 
-## 3. Enviar teclas
+## 3. Send keys
 
-Usa `send-keys` para manejar la TUI:
+Use `send-keys` to operate the TUI:
 
 ```bash
 herdr pane send-keys "$BZZ_PANE" 'shift+?'
@@ -95,31 +94,30 @@ sleep 0.3
 herdr pane send-keys "$BZZ_PANE" 'shift+q'
 ```
 
-Convenciones útiles:
+Useful conventions:
 
-| Acción bzz | Tecla Herdr |
+| bzz action | Herdr key |
 |---|---|
-| Ayuda `?` | `shift+?` |
-| Salir `Q` | `shift+q` |
-| Borrar `D` | `shift+d` |
-| No leído `U` | `shift+u` |
-| Final `G` | `shift+g` |
+| Help `?` | `shift+?` |
+| Quit `Q` | `shift+q` |
+| Delete `D` | `shift+d` |
+| Mark unread `U` | `shift+u` |
+| End `G` | `shift+g` |
 | Finder | `ctrl+p` |
-| Thread | `ctrl+]` o `enter` |
+| Thread | `ctrl+]` or `enter` |
 | Escape | `esc` |
-| Confirmar | `enter` |
+| Confirm | `enter` |
 
-Envía `esc` en una llamada separada y espera antes de enviar una letra. Si
-Herdr escribe `esc` y una letra sin pausa, el terminal puede interpretarlos
-como `Alt+letra`.
+Send `esc` in a separate call and wait before sending a letter. If Herdr sends
+`esc` and a letter without a pause, the terminal may interpret them as
+`Alt+letter`.
 
-No uses `herdr pane send-text` para manejar los modos de `bzz`: Herdr puede
-envolverlo como bracketed paste y la TUI procesa eventos de teclado. Usa
-`send-keys`.
+Do not use `herdr pane send-text` to operate `bzz` modes: Herdr may wrap it as
+bracketed paste while the TUI processes keyboard events. Use `send-keys`.
 
-### Texto ASCII de prueba
+### Test ASCII text
 
-Para mensajes E2E sencillos puedes convertir texto ASCII en teclas:
+For simple E2E messages, convert ASCII text into key events:
 
 ```bash
 herdr_type_ascii() {
@@ -146,124 +144,124 @@ sleep 0.3
 herdr_type_ascii "$BZZ_PANE" "$message"
 ```
 
-Lee la pantalla y comprueba el texto antes de enviarlo:
+Read the screen and verify the text before submitting it:
 
 ```bash
 herdr pane read "$BZZ_PANE" --source visible --format text
 herdr pane send-keys "$BZZ_PANE" enter
 ```
 
-Usa contenido sin información personal y un canal E2E dedicado.
+Use content with no personal information and a dedicated E2E channel.
 
-## 4. Prompts secretos
+## 4. Secret prompts
 
-Herdr puede lanzar comandos que solicitan contraseñas, pero el operador debe
-escribir o pegar el secreto directamente en el terminal con el prompt sin eco.
+Herdr may launch commands that prompt for passphrases, but the operator must
+type or paste the secret directly into the terminal while the prompt has echo
+disabled.
 
-Ejemplo:
+Example:
 
 ```bash
 herdr pane run "$BZZ_PANE" \
   '"$BZZ_BIN" identity backup "$BZZ_IDENTITY_ID" --output "$BZZ_E2E_ROOT/identity.ncryptsec"'
 ```
 
-Cuando aparezca `New backup passphrase:`:
+When `New backup passphrase:` appears:
 
-1. enfoca el panel visualmente;
-2. escribe la contraseña o pégala desde un gestor de credenciales;
-3. pulsa `Enter`;
-4. repítela solo si el prompt pide confirmación.
+1. focus the pane visually;
+2. type the passphrase or paste it from a credential manager;
+3. press `Enter`;
+4. repeat it only if the prompt requests confirmation.
 
-Si utilizas `gopass`, copia sin imprimir:
+If you use `gopass`, copy without printing:
 
 ```bash
-gopass show --clip <entrada-del-backup>
+gopass show --clip <backup-entry>
 ```
 
-No automatices secretos mediante:
+Do not automate secrets through:
 
 - `herdr pane send-text`;
 - `herdr pane send-keys`;
-- argumentos de proceso;
-- variables de entorno ordinarias;
-- archivos `.env`;
-- sustitución `$(gopass ...)`;
-- salida o historial del terminal.
+- process arguments;
+- ordinary environment variables;
+- `.env` files;
+- `$(gopass ...)` substitution;
+- terminal output or history.
 
-El contenido del prompt no tiene eco, pero revisa igualmente cualquier captura
-antes de conservarla.
+The prompt does not echo its contents, but still review every screenshot before
+retaining it.
 
-## 5. Recorrido básico con Herdr
+## 5. Basic journey with Herdr
 
-Correspondencia con los bloques 0–4 del plan manual:
+This corresponds to sections 0–4 of the manual plan:
 
-1. Ejecuta versión, paths y check con `herdr pane run`.
-2. Inicia `bzz`, abre ayuda con `shift+?`, cierra con `esc` y sal con
+1. Run version, paths, and check commands with `herdr pane run`.
+2. Start `bzz`, open help with `shift+?`, close it with `esc`, and quit with
    `shift+q`.
-3. Crea la identidad desde el shell del panel; completa los prompts secretos
-   manualmente.
-4. Configura una comunidad y un canal exclusivamente E2E.
-5. Inicia la TUI y espera `NORMAL · online`.
-6. Entra al canal con `enter`.
-7. Abre el compositor con `i`, escribe un marcador único y envía con `enter`.
-8. Lee la pantalla hasta que desaparezca `[pending]`.
-9. Sal, reinicia y confirma que el mensaje aparece una sola vez.
+3. Create the identity from the pane's shell; complete secret prompts manually.
+4. Configure a community and channel used exclusively for E2E testing.
+5. Start the TUI and wait for `NORMAL · online`.
+6. Enter the channel with `enter`.
+7. Open the composer with `i`, type a unique marker, and submit with `enter`.
+8. Read the screen until `[pending]` disappears.
+9. Quit, restart, and confirm that the message appears exactly once.
 
-Ejemplo de comprobación visual:
+Example visual check:
 
 ```bash
 herdr pane read "$BZZ_PANE" --source visible --format text \
   | grep -F "$message"
 ```
 
-La salida visible es evidencia auxiliar; SQLite y el ACK del relay siguen
-siendo las fuentes para comprobar deduplicación y aceptación.
+Visible output is supporting evidence; SQLite and the relay ACK remain the
+sources of truth for deduplication and acceptance.
 
-## 6. Conversación y recuperación
+## 6. Conversation and recovery
 
-Secuencias comunes, dejando una pausa al cambiar de modo:
+Common sequences, with a pause when changing modes:
 
 ```bash
 # Draft
 herdr pane send-keys "$BZZ_PANE" i
-# escribir texto con herdr_type_ascii
+# Type text with herdr_type_ascii
 herdr pane send-keys "$BZZ_PANE" esc
 sleep 0.3
 herdr pane send-keys "$BZZ_PANE" i
 
-# Reacción seleccionada
+# Selected reaction
 herdr pane send-keys "$BZZ_PANE" r
 sleep 0.3
 herdr pane send-keys "$BZZ_PANE" enter
 
-# Borrado propio
+# Delete own message
 herdr pane send-keys "$BZZ_PANE" 'shift+d'
 sleep 0.3
 herdr pane send-keys "$BZZ_PANE" y
 
-# Marcar no leído y volver al final
+# Mark unread and return to the end
 herdr pane send-keys "$BZZ_PANE" 'shift+u'
 herdr pane send-keys "$BZZ_PANE" 'shift+g'
 
-# Bloqueo del proceso
+# Lock the process
 herdr pane send-keys "$BZZ_PANE" : l o c k enter
 ```
 
-Para `identity missing`, elimina únicamente la credencial de la identidad E2E
-desde el gestor del sistema, nunca su configuración. Verifica en Herdr:
+To test `identity missing`, remove only the E2E identity's credential from the
+system credential manager, never its configuration. Verify through Herdr:
 
-- historial visible;
-- estado `identity missing`;
-- ninguna conexión del proceso;
-- `i`, `r` y `D` bloqueados;
-- outbox sin cambios.
+- history remains visible;
+- `identity missing` state;
+- no connection from the process;
+- `i`, `r`, and `D` are blocked;
+- the outbox is unchanged.
 
-Después sal con `shift+q`, lanza `identity restore-backup`, completa la
-contraseña manualmente y vuelve a esperar `NORMAL · online`.
+Then quit with `shift+q`, run `identity restore-backup`, complete the passphrase
+manually, and wait for `NORMAL · online` again.
 
-### Temas
+### Themes
 
-El picker también puede probarse sin datos específicos del relay:
+The picker can also be tested without relay-specific data:
 
 ```bash
 herdr pane send-keys "$BZZ_PANE" ctrl+y
@@ -275,15 +273,15 @@ sleep 0.3
 herdr pane send-keys "$BZZ_PANE" esc
 ```
 
-Comprueba que `Esc` restaura el buffer con el tema previo. Reabre el picker,
-usa `tab` para alternar alcance y confirma con `enter`; reinicia `bzz` para
-verificar persistencia. No guardes capturas que contengan nombres o contenido
-de comunidades reales.
+Verify that `Esc` restores the buffer with the previous theme. Reopen the
+picker, use `tab` to switch scope, and confirm with `enter`; restart `bzz` to
+verify persistence. Do not retain screenshots containing names or content from
+real communities.
 
-## 7. Segundo cliente independiente
+## 7. Independent second client
 
-No ejecutes dos clientes contra el mismo archivo SQLite para una prueba de
-convergencia real. Crea otra raíz y una copia consistente:
+Do not run two clients against the same SQLite file for a real convergence
+test. Create another root and a consistent copy:
 
 ```bash
 export BZZ_SECOND_ROOT=/tmp/bzz-e2e-client2
@@ -293,14 +291,14 @@ sqlite3 "$BZZ_DATA_DIR/bzz.db" \
   ".backup '$BZZ_SECOND_ROOT/data/bzz.db'"
 ```
 
-Elimina de **la copia** los slots locales para que el segundo cliente genere
-otro `client_id`:
+Delete local slots from **the copy** so the second client generates another
+`client_id`:
 
 ```bash
 sqlite3 "$BZZ_SECOND_ROOT/data/bzz.db" 'DELETE FROM read_slots;'
 ```
 
-Crea un panel temporal:
+Create a temporary pane:
 
 ```bash
 herdr pane split "$BZZ_PANE" \
@@ -312,23 +310,24 @@ herdr pane list
 export BZZ_SECOND_PANE=w1:p3
 ```
 
-Inicia el segundo cliente con rutas distintas:
+Start the second client with different paths:
 
 ```bash
 herdr pane run "$BZZ_SECOND_PANE" \
   'set -a; source .env; set +a; BZZ_CONFIG_DIR=/tmp/bzz-e2e-client2/config BZZ_DATA_DIR=/tmp/bzz-e2e-client2/data BZZ_CACHE_DIR=/tmp/bzz-e2e-client2/cache "$BZZ_BIN"'
 ```
 
-Comprueba:
+Verify:
 
-- ambos paneles en `online`;
-- mensajes A→B y B→A;
-- una sola copia por base;
-- dos `client_id` diferentes;
-- el mismo máximo `read_at`;
-- el slot propio con `is_local=1` y el otro con `is_local=0` en cada base.
+- both panes are `online`;
+- messages propagate A→B and B→A;
+- each database contains one copy;
+- two distinct `client_id` values;
+- the same maximum `read_at`;
+- in each database, its own slot has `is_local=1` and the other slot has
+  `is_local=0`.
 
-Cierra y elimina solo los recursos temporales:
+Close and remove only the temporary resources:
 
 ```bash
 herdr pane send-keys "$BZZ_SECOND_PANE" 'shift+q'
@@ -336,44 +335,44 @@ herdr pane close "$BZZ_SECOND_PANE"
 rm -rf "$BZZ_SECOND_ROOT"
 ```
 
-## 8. Caché offline sin cortar la red del host
+## 8. Offline cache without disconnecting the host
 
-No desconectes el host ni bloquees un relay compartido. Copia el estado a otra
-raíz desechable, edita únicamente esa copia y cambia el relay a un puerto
-loopback cerrado:
+Do not disconnect the host or block a shared relay. Copy the state into another
+disposable root, edit only that copy, and change its relay to a closed loopback
+port:
 
 ```toml
 relay_url = "ws://127.0.0.1:9/"
 allow_insecure_localhost = true
 ```
 
-Lanza esa copia con overrides de paths. El resultado esperado es:
+Launch that copy with path overrides. Expected result:
 
-- mensajes cacheados visibles;
-- estado `offline cache`;
-- error de conexión no fatal;
-- `:reconnect` reintenta sin perder historial.
+- cached messages remain visible;
+- `offline cache` state;
+- a non-fatal connection error;
+- `:reconnect` retries without losing history.
 
-Cierra el proceso, borra la copia y vuelve a iniciar el estado original para
-confirmar `online`.
+Close the process, delete the copy, and relaunch the original state to confirm
+`online`.
 
-## 9. Evidencia y limpieza
+## 9. Evidence and cleanup
 
-Puedes guardar únicamente salida ya revisada:
+Save only output that has already been reviewed:
 
 ```bash
 herdr pane read "$BZZ_PANE" --source visible --format text \
   > /tmp/bzz-e2e-screen.txt
 ```
 
-Antes de adjuntarla, elimina:
+Before attaching it, remove:
 
-- hosts, nombres o identificadores de comunidades reales;
-- pubkeys que no sean fixtures públicos;
-- nombres y contenido de usuarios reales;
-- rutas privadas;
-- cualquier material de autenticación.
+- real community hosts, names, or identifiers;
+- pubkeys that are not public fixtures;
+- real user names and content;
+- private paths;
+- all authentication material.
 
-No guardes como evidencia `.env`, backups `ncryptsec`, portapapeles, prompts de
-contraseña ni terminal scrollback sin revisar. Finaliza con la sección de
-limpieza del [plan E2E manual](e2e-manual.md).
+Do not retain `.env`, `ncryptsec` backups, clipboard contents, passphrase
+prompts, or unreviewed terminal scrollback as evidence. Finish with the cleanup
+section of the [manual E2E plan](e2e-manual.md).

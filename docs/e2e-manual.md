@@ -1,13 +1,13 @@
-# Plan manual de pruebas E2E
+# Manual E2E test plan
 
-Este plan empieza por el recorrido mínimo y deja las pruebas destructivas de
-recuperación para el final. Usa siempre una identidad de prueba; no uses una
-clave administrativa para mensajes, reacciones o borrados.
+This plan starts with the minimum journey and leaves destructive recovery tests
+until the end. Always use a test identity; do not use an administrative key for
+messages, reactions, or deletions.
 
-Para operar este recorrido desde un panel automatizable, consulta la
-[guía E2E asistida con Herdr](e2e-herdr.md).
+To operate this journey from an automatable terminal pane, see the
+[Herdr-assisted E2E guide](e2e-herdr.md).
 
-## 0. Preparación aislada
+## 0. Isolated setup
 
 ```bash
 cp .env.sample .env
@@ -19,28 +19,27 @@ cargo build --release --locked
 "$BZZ_BIN" check
 ```
 
-Edita como mínimo `BZZ_RELAY_URL`. El relay debe ser Buzz-compatible y el
-administrador debe añadir la pubkey de prueba como miembro. Usa el binario
-`release`: las compilaciones debug tienen rutas y servicio de keychain
-separados deliberadamente.
+Set at least `BZZ_RELAY_URL`. The relay must be Buzz-compatible, and its
+administrator must add the test pubkey as a member. Use the `release` binary:
+debug builds deliberately use separate paths and keychain services.
 
-Resultado esperado:
+Expected result:
 
-- versión `0.1.0`;
-- config, datos y caché debajo de `BZZ_E2E_ROOT`;
+- version `0.1.0`;
+- config, data, and cache under `BZZ_E2E_ROOT`;
 - `configuration, theme, and database are valid`;
-- ningún secreto en `.env` ni en la salida.
+- no secrets in `.env` or command output.
 
-## 1. Arranque vacío y restauración del terminal
+## 1. Empty startup and terminal restoration
 
 ```bash
 "$BZZ_BIN"
 ```
 
-Comprueba `Welcome to bzz`, abre/cierra ayuda con `?`/`Esc` y sal con `Q`.
-El terminal debe recuperar cursor, eco y pantalla normal.
+Verify `Welcome to bzz`, open/close help with `?`/`Esc`, and quit with `Q`.
+The terminal must restore its cursor, echo, and normal screen.
 
-## 2. Identidad y backup (básico)
+## 2. Identity and backup (basic)
 
 ```bash
 "$BZZ_BIN" identity new --label "$BZZ_IDENTITY_LABEL" \
@@ -51,27 +50,27 @@ El terminal debe recuperar cursor, eco y pantalla normal.
   --output "$BZZ_E2E_ROOT/identity.ncryptsec"
 ```
 
-Rellena `BZZ_IDENTITY_ID` y `BZZ_PUBLIC_KEY` en `.env`, y vuelve a hacer
-`source .env`. La creación y el backup solicitan contraseñas sin eco.
+Set `BZZ_IDENTITY_ID` and `BZZ_PUBLIC_KEY` in `.env`, then run `source .env`
+again. Identity creation and backup prompt for passphrases without echo.
 
-Resultado esperado:
+Expected result:
 
-- `identity list` solo muestra UUID, label, pubkey y backend;
-- `identity verify` confirma exactamente la pubkey configurada;
-- nunca aparece `nsec1…` ni clave hexadecimal privada;
-- el backup empieza internamente por `ncryptsec1`, pero el comando solo imprime
-  su ruta y pubkey;
-- en Unix, `stat -c '%a' "$BZZ_E2E_ROOT/identity.ncryptsec"` devuelve `600`;
-- repetir el backup sobre la misma ruta falla sin sobrescribirla.
+- `identity list` displays only UUID, label, pubkey, and backend;
+- `identity verify` confirms the exact configured pubkey;
+- neither `nsec1…` nor a private hexadecimal key ever appears;
+- the backup internally starts with `ncryptsec1`, but the command prints only
+  its path and pubkey;
+- on Unix, `stat -c '%a' "$BZZ_E2E_ROOT/identity.ncryptsec"` returns `600`;
+- repeating the backup with the same path fails without overwriting it.
 
-Guarda temporalmente el backup y su contraseña: serán necesarios para la
-prueba de recuperación.
+Temporarily retain the backup and its passphrase; they are required for the
+recovery test.
 
-## 3. Comunidad, autenticación y caché (básico)
+## 3. Community, authentication, and cache (basic)
 
-Primero, el operador debe añadir `BZZ_PUBLIC_KEY` como miembro **normal** del
-relay. En una instalación administrada, prefiere `buzz-admin add-member` dentro
-del relay antes que desbloquear un owner key. Después configura bzz:
+First, the operator must add `BZZ_PUBLIC_KEY` to the relay as a **regular**
+member. In a managed deployment, prefer running `buzz-admin add-member` inside
+the relay instead of unlocking an owner key. Then configure bzz:
 
 ```bash
 "$BZZ_BIN" community add \
@@ -82,73 +81,77 @@ del relay antes que desbloquear un owner key. Después configura bzz:
 "$BZZ_BIN" check
 ```
 
-Rellena `BZZ_COMMUNITY_ID` con el UUID devuelto. La etiqueta local de identidad
-no es un perfil público: si la interfaz administrativa busca miembros por
-nombre, publica primero un perfil Nostr kind `0` de prueba o usa una ruta
-administrativa que acepte la pubkey exacta. Crea un canal activo dedicado (por
-ejemplo, `bzz-e2e-manual`) y añade la identidad de prueba. No reutilices un
-canal de negocio ni uno archivado.
+Set `BZZ_COMMUNITY_ID` to the returned UUID. The local identity label is not a
+public profile: if the administrative interface searches for members by name,
+first publish a test Nostr kind `0` profile or use an administrative path that
+accepts the exact pubkey. Create a dedicated active channel (for example,
+`bzz-e2e-manual`) and add the test identity. Do not reuse a business channel or
+an archived channel.
 
-Abre `"$BZZ_BIN"`.
+Open `"$BZZ_BIN"`.
 
-Resultado esperado:
+Expected result:
 
 1. `connecting`;
 2. `authenticating`;
-3. opcionalmente `backfilling`;
+3. optionally `backfilling`;
 4. `online`;
-5. canal E2E unido e historial visible.
+5. the joined E2E channel and its history are visible.
 
-No debe aparecer `access denied`, `clock skew` ni cambio de pubkey.
+Neither `access denied`, `clock skew`, nor a pubkey change should appear.
 
-## 4. Mensaje y reinicio (básico)
+## 4. Message and restart (basic)
 
-1. Selecciona el canal E2E dedicado con `j/k` y `Enter`.
-2. Pulsa `i`, escribe `E2E básico <fecha-hora>` y pulsa `Enter`.
-3. Espera a que desaparezca `[pending]`.
-4. Sal con `Q`, vuelve a abrir y localiza el mismo mensaje.
+1. Select the dedicated E2E channel with `j/k` and `Enter`.
+2. Press `i`, type `E2E basic <date-time>`, and press `Enter`.
+3. Wait for `[pending]` to disappear.
+4. Quit with `Q`, reopen bzz, and locate the same message.
 
-Si el relay responde `channel is archived`, conserva la evidencia del rechazo
-pero cambia a un canal E2E activo; no publiques como alternativa en un canal de
-producción cualquiera.
+If the relay responds with `channel is archived`, retain the rejection evidence
+but switch to an active E2E channel; do not publish in an arbitrary production
+channel as an alternative.
 
-Resultado esperado: un único mensaje, ACK confirmado y recuperación desde la
-caché tras reiniciar.
+Expected result: one message, a confirmed ACK, and recovery from cache after the
+restart.
 
-**Detente aquí en la primera sesión.** Si 0–4 pasan, el recorrido esencial está
-validado.
+**Stop here during the first session.** If sections 0–4 pass, the essential
+journey is validated.
 
-## 5. Conversación
+## 5. Conversation
 
-- Draft: `i`, escribe, `Esc`, vuelve a `i`; el texto reaparece.
-- Thread: selecciona mensaje, `Enter`/`Ctrl-]`, responde y cierra con `Esc`.
-- Reacción: `r`, selecciona, `Enter`; repite para retirar la misma reacción.
-- Borrado propio: selecciona tu mensaje, `D`, confirma con `y`.
-- No leído: `U`, comprueba el indicador, abre otro canal, vuelve al canal E2E
-  con el finder, pulsa `Enter` y `G`; el indicador debe desaparecer incluso si
-  el marcador remoto ya estaba adelantado.
-- Finder: `Ctrl-p`; con consulta vacía debe priorizar `#` unidos. Busca además
-  un canal `+` abierto, ábrelo sin publicar y vuelve al canal E2E.
+- Draft: press `i`, type text, press `Esc`, then press `i` again; the text
+  reappears.
+- Thread: select a message, press `Enter`/`Ctrl-]`, reply, and close with `Esc`.
+- Reaction: press `r`, select a reaction, and press `Enter`; repeat to remove the
+  same reaction.
+- Own deletion: select your message, press `D`, and confirm with `y`.
+- Unread: press `U`, verify the indicator, open another channel, return to the
+  E2E channel with the finder, then press `Enter` and `G`; the indicator must
+  disappear even when the remote marker was already ahead.
+- Finder: press `Ctrl-p`; an empty query must prioritize joined `#` channels.
+  Also find an open `+` channel, open it without publishing, and return to the
+  E2E channel.
 
-Verifica que threads, reacciones y borrados no se duplican y que nunca puedes
-borrar mensajes ajenos.
+Verify that threads, reactions, and deletions are not duplicated and that you
+can never delete another user's message.
 
-### Apariencia
+### Appearance
 
-1. Pulsa `Ctrl-y`, filtra `nord` y mueve la selección: la vista cambia sin
-   modificar mensajes ni unread.
-2. Pulsa `Esc`: debe volver exactamente el tema anterior.
-3. Reabre, selecciona un tema y pulsa `Enter`; reinicia y comprueba que persiste.
-4. Usa `Tab` en el picker para probar los alcances global y comunidad.
-5. Crea un `theme.toml` con un color inválido junto a otro válido y ejecuta
-   `bzz theme check`: solo la hoja inválida debe producir warning.
-6. Rompe temporalmente la sintaxis TOML: `bzz theme check` debe fallar, pero la
-   TUI debe arrancar con el preset compilado y permitir recuperar el archivo.
-7. Restaura o elimina el override y ejecuta `bzz theme reset`.
+1. Press `Ctrl-y`, filter for `nord`, and move the selection: the view changes
+   without modifying messages or unread state.
+2. Press `Esc`: the exact previous theme must return.
+3. Reopen the picker, select a theme, and press `Enter`; restart and verify that
+   the selection persists.
+4. Use `Tab` in the picker to test global and community scopes.
+5. Create a `theme.toml` with one invalid color next to a valid one and run
+   `bzz theme check`: only the invalid leaf should produce a warning.
+6. Temporarily break the TOML syntax: `bzz theme check` must fail, but the TUI
+   must start with the compiled preset and allow the file to be recovered.
+7. Restore or remove the override and run `bzz theme reset`.
 
-## 6. Backup portable sin destruir la identidad activa
+## 6. Portable backup without destroying the active identity
 
-Importa el backup como una segunda entrada:
+Import the backup as a second entry:
 
 ```bash
 "$BZZ_BIN" identity import-backup \
@@ -159,15 +162,15 @@ Importa el backup como una segunda entrada:
 "$BZZ_BIN" identity verify <RESTORED_ID>
 ```
 
-Resultado esperado: ambos UUID son distintos, pero ambas pubkeys son
-idénticas. Una contraseña incorrecta debe devolver un error genérico sin
-modificar la configuración. Después elimina la entrada duplicada:
+Expected result: the two UUIDs differ, but both pubkeys are identical. An
+incorrect passphrase must return a generic error without modifying
+configuration. Then remove the duplicate entry:
 
 ```bash
 "$BZZ_BIN" identity remove <RESTORED_ID> --yes
 ```
 
-También puedes comprobar una restauración in-place segura:
+You can also verify a safe in-place restoration:
 
 ```bash
 "$BZZ_BIN" identity restore-backup "$BZZ_IDENTITY_ID" \
@@ -175,27 +178,27 @@ También puedes comprobar una restauración in-place segura:
 "$BZZ_BIN" identity verify "$BZZ_IDENTITY_ID"
 ```
 
-Una copia perteneciente a otra pubkey debe rechazarse.
+A backup belonging to a different pubkey must be rejected.
 
-## 7. Recuperación de keychain y modo caché (avanzado/destructivo)
+## 7. Keychain recovery and cache mode (advanced/destructive)
 
-Hazlo únicamente después de verificar el backup NIP-49.
+Do this only after verifying the NIP-49 backup.
 
-1. Cierra bzz.
-2. Desde el gestor de credenciales del sistema, elimina solo la entrada:
-   - servicio release: `dev.arpagon.bzz`;
-   - cuenta: `identity:<BZZ_IDENTITY_ID>`.
-3. Abre bzz.
+1. Close bzz.
+2. From the system credential manager, remove only this entry:
+   - release service: `dev.arpagon.bzz`;
+   - account: `identity:<BZZ_IDENTITY_ID>`.
+3. Open bzz.
 
-Resultado esperado:
+Expected result:
 
-- estado `identity missing`;
-- historial y canales cacheados visibles;
-- no se abre conexión al relay;
-- `i`, `r` y `D` no publican nada;
-- el estado explica cómo restaurar.
+- `identity missing` state;
+- cached history and channels remain visible;
+- no relay connection opens;
+- `i`, `r`, and `D` publish nothing;
+- the status explains how to restore the identity.
 
-Restaura sin cambiar UUID, comunidad ni pubkey:
+Restore without changing the UUID, community, or pubkey:
 
 ```bash
 "$BZZ_BIN" identity restore-backup "$BZZ_IDENTITY_ID" \
@@ -204,40 +207,40 @@ Restaura sin cambiar UUID, comunidad ni pubkey:
 "$BZZ_BIN"
 ```
 
-Debe volver a `online`. Para probar `identity locked`, bloquea temporalmente el
-keychain/Secret Service y relanza; bzz debe mostrar caché en solo lectura, nunca
-generar una identidad nueva. Desbloquea el keychain y relanza para recuperar.
+The client must return to `online`. To test `identity locked`, temporarily lock
+the keychain/Secret Service and relaunch; bzz must display read-only cache and
+must never generate a new identity. Unlock the keychain and relaunch to recover.
 
-## 8. Red, múltiples clientes y comunidades (avanzado)
+## 8. Network, multiple clients, and communities (advanced)
 
-- Para no cortar la red del host, copia config/base de datos a un directorio
-  desechable y cambia solo esa copia a un puerto loopback cerrado. Comprueba
-  historial en `offline cache`, ejecuta `:reconnect` y vuelve después al relay
-  real.
-- Para multicliente real usa bases SQLite distintas. El segundo cliente debe
-  generar otro `client_id`; publica en ambas direcciones y comprueba una sola
-  copia, dos slots y el mismo `read_at` máximo.
-- Deja un hueco mayor que una página, reconecta y verifica backfill completo.
-  Hazlo en el harness aislado, no generando cientos de mensajes en producción.
-- Configura una segunda comunidad de prueba y cambia con `1`/`2`; comprueba
-  aislamiento. Si solo hay un relay disponible, cubre este punto con el test
-  automatizado multicomunidad en vez de duplicar el mismo host.
+- To avoid disconnecting the host, copy the config/database into a disposable
+  directory and change only that copy to a closed loopback port. Verify history
+  in `offline cache`, run `:reconnect`, and then return to the real relay.
+- For a real multi-client test, use separate SQLite databases. The second
+  client must generate another `client_id`; publish in both directions and
+  verify one copy, two slots, and the same maximum `read_at`.
+- Leave a gap larger than one page, reconnect, and verify complete backfill.
+  Do this in the isolated harness, not by generating hundreds of production
+  messages.
+- Configure a second test community and switch with `1`/`2`; verify isolation.
+  If only one relay is available, cover this case with the automated
+  multi-community test instead of duplicating the same host.
 
-## Registro de resultados
+## Results log
 
-| Bloque | Resultado | Evidencia/notas |
+| Section | Result | Evidence/notes |
 |---|---|---|
-| 0. Preparación | ☐ | |
-| 1. Arranque vacío | ☐ | |
-| 2. Identidad/backup | ☐ | |
-| 3. Comunidad/auth | ☐ | |
-| 4. Mensaje/reinicio | ☐ | |
-| 5. Conversación | ☐ | |
-| 6. Backup portable | ☐ | |
-| 7. Recuperación | ☐ | |
-| 8. Red/multicliente | ☐ | |
+| 0. Setup | ☐ | |
+| 1. Empty startup | ☐ | |
+| 2. Identity/backup | ☐ | |
+| 3. Community/auth | ☐ | |
+| 4. Message/restart | ☐ | |
+| 5. Conversation | ☐ | |
+| 6. Portable backup | ☐ | |
+| 7. Recovery | ☐ | |
+| 8. Network/multi-client | ☐ | |
 
-## Limpieza
+## Cleanup
 
 ```bash
 "$BZZ_BIN" community remove "$BZZ_COMMUNITY_ID" --purge --yes
@@ -245,5 +248,5 @@ generar una identidad nueva. Desbloquea el keychain y relanza para recuperar.
 rm -rf "$BZZ_E2E_ROOT"
 ```
 
-Borra también cualquier backup copiado fuera de `BZZ_E2E_ROOT` que ya no
-necesites. Nunca incluyas `.env`, `nsec`, backups o contraseñas en evidencias.
+Also delete any backup copied outside `BZZ_E2E_ROOT` when it is no longer
+needed. Never include `.env`, `nsec`, backups, or passphrases in evidence.
