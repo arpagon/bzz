@@ -81,6 +81,9 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 
+[profile.dist]
+inherits = "release"
+
 [lints.rust]
 unsafe_code = "forbid"
 
