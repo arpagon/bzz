@@ -4,7 +4,7 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: MVP. Protocol compatibility is pinned to Buzz
+> Status: post-MVP development. Protocol compatibility is pinned to Buzz
 > `ede26863345a518ec46edd6d7692e0281883491b`.
 
 ## Build
@@ -25,10 +25,14 @@ use `bzz-dev` paths and a separate OS-keychain service.
 - acknowledged sends with durable ambiguous-outcome recovery;
 - reaction toggles, own-message deletion, and encrypted cross-device read state;
 - Vim-style navigation, fuzzy channel finder, safe Markdown, and narrow layouts;
-- 60 built-in themes plus semantic `theme.toml` customization.
+- 60 built-in themes plus semantic `theme.toml` customization;
+- secure Buzz `imeta`/Blossom attachments with verified offline caching;
+- inline JPEG/PNG/GIF/WebP first-frame rendering through Kitty, Sixel, iTerm2,
+  or a Unicode half-block fallback;
+- image previews, explicit attachment saves, and sanitized image/file uploads.
 
-Search, direct messages, attachments, typing/presence, custom emoji, and message
-editing are intentionally post-MVP.
+Search, direct messages, typing/presence, custom emoji, media playback, profile
+avatars, and message editing remain post-MVP.
 
 ## First run
 
@@ -49,11 +53,27 @@ ordinary environment variables. Backups are password-encrypted NIP-49
 missing credential without changing its identity or communities with
 `bzz identity restore-backup`.
 
-Default keys: `j/k`, `gg/G`, `Ctrl-p`, `Ctrl-y`, `Enter`, `i`, `Ctrl-]`, `r`,
-`D`, `U`, `?`, and `Q`. `Ctrl-y` opens the reversible theme picker. Generate
+Default keys: `j/k`, `gg/G`, `Ctrl-p`, `Ctrl-y`, `Enter`, `i`, `Ctrl-]`, `p`,
+`r`, `D`, `U`, `?`, and `Q`. `p` previews attachments and `Ctrl-a` adds a file
+while composing. `Ctrl-y` opens the reversible theme picker. Generate
 shell integration with `bzz completions <shell>`. Inside the TUI, `:reconnect`,
 `:resync`, `:theme reload`, `:purge-cache`, and `:lock` cover the main recovery,
 appearance, and security operations.
+
+## Media safety
+
+Only descriptor-backed media on the active Buzz community origin is fetched;
+arbitrary Markdown and profile-picture URLs stay inert. Main blobs are fetched
+without redirects, authenticated with short-lived blob-scoped Blossom events,
+and size/MIME/SHA-256 verified before decode, display, save, or offline reuse.
+Generic files are never auto-downloaded or executed. Local image uploads are
+bounded, orientation-corrected, and stripped of private metadata before their
+exact uploaded bytes are hashed.
+
+Use `bzz media status` to inspect configured limits and `bzz media clear --all
+--yes` to remove plaintext owner-only media cache files. See
+[`docs/media.md`](docs/media.md) for protocols, configuration, key bindings,
+cache behavior, and terminal compatibility.
 
 ## Validation and releases
 

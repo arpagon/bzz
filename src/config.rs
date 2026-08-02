@@ -20,6 +20,8 @@ pub struct Config {
     pub communities: Vec<CommunityConfig>,
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub media: MediaConfig,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -66,6 +68,55 @@ impl Default for UiConfig {
             sidebar_width: 28,
             thread_width: 44,
             theme: crate::ui::theme::DEFAULT_THEME_ID.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MediaProtocol {
+    Auto,
+    Kitty,
+    Sixel,
+    Iterm2,
+    Halfblocks,
+    Off,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MediaAutoload {
+    Visible,
+    Preview,
+    Off,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MediaConfig {
+    pub enabled: bool,
+    pub protocol: MediaProtocol,
+    pub autoload: MediaAutoload,
+    pub max_inline_rows: u16,
+    pub auto_download_bytes: u64,
+    pub memory_cache_bytes: u64,
+    pub disk_cache_bytes: u64,
+    pub download_concurrency: usize,
+    pub decode_concurrency: usize,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            protocol: MediaProtocol::Auto,
+            autoload: MediaAutoload::Visible,
+            max_inline_rows: 12,
+            auto_download_bytes: 25 * 1024 * 1024,
+            memory_cache_bytes: 64 * 1024 * 1024,
+            disk_cache_bytes: 512 * 1024 * 1024,
+            download_concurrency: 4,
+            decode_concurrency: 2,
         }
     }
 }
@@ -186,6 +237,30 @@ impl Config {
         if !(30..=80).contains(&self.ui.thread_width) {
             return Err(Error::Config(
                 "ui.thread_width must be between 30 and 80".into(),
+            ));
+        }
+        if !(2..=40).contains(&self.media.max_inline_rows) {
+            return Err(Error::Config(
+                "media.max_inline_rows must be between 2 and 40".into(),
+            ));
+        }
+        if self.media.auto_download_bytes > 50 * 1024 * 1024 {
+            return Err(Error::Config(
+                "media.auto_download_bytes cannot exceed 50 MiB".into(),
+            ));
+        }
+        if self.media.memory_cache_bytes > 1024 * 1024 * 1024
+            || self.media.disk_cache_bytes > 20 * 1024 * 1024 * 1024
+        {
+            return Err(Error::Config(
+                "media cache limit exceeds its safety cap".into(),
+            ));
+        }
+        if !(1..=16).contains(&self.media.download_concurrency)
+            || !(1..=8).contains(&self.media.decode_concurrency)
+        {
+            return Err(Error::Config(
+                "media worker concurrency is outside its safety range".into(),
             ));
         }
         Ok(())

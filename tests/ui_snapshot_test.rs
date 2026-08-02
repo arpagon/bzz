@@ -1,5 +1,6 @@
 use bzz::{
     domain::{Channel, Message, Reaction, Visibility},
+    media::{Attachment, MediaKind},
     ui::{
         sidebar,
         timeline::{self, TimelineState},
@@ -40,6 +41,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
         pubkey: "b".repeat(64),
         created_at: 1,
         content: "hello **world**\x1b]52;c;bad\x07".into(),
+        attachments: Vec::new(),
         root_event_id: None,
         parent_event_id: None,
         deleted: false,
@@ -115,6 +117,71 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
     assert!(!text.contains("discover-only"));
     assert!(text.contains("hello"));
     assert!(text.contains("+ 1"));
+    assert!(!text.contains('\x1b'));
+    assert!(!text.contains('\x07'));
+}
+
+#[test]
+fn attachment_cards_remain_visible_without_a_graphics_protocol() {
+    let channel = Uuid::new_v4();
+    let message = Message {
+        event_id: "a".repeat(64),
+        channel_id: channel,
+        pubkey: "b".repeat(64),
+        created_at: 1,
+        content: "with media".into(),
+        attachments: vec![Attachment {
+            index: 0,
+            url: format!("https://buzz.example/media/{}.png", "c".repeat(64)),
+            mime: "image/png".into(),
+            sha256: "c".repeat(64),
+            size: 1024,
+            width: Some(1),
+            height: Some(1),
+            alt: Some("safe\x1b]52;bad\x07 image".into()),
+            blurhash: None,
+            thumb: None,
+            poster: None,
+            filename: None,
+            duration_millis: None,
+            kind: MediaKind::Image,
+            spoiler: false,
+            error: None,
+        }],
+        root_event_id: None,
+        parent_event_id: None,
+        deleted: false,
+        pending: false,
+        rejected: None,
+    };
+    let backend = TestBackend::new(80, 12);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            timeline::render(
+                frame,
+                frame.area(),
+                &[message],
+                &HashMap::new(),
+                &HashMap::new(),
+                &TimelineState::default(),
+                "media",
+                &bzz::ui::theme::Theme::default(),
+                true,
+                None,
+            );
+        })
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("safe"));
+    assert!(text.contains("image/png"));
+    assert!(text.contains("1.0 KiB"));
     assert!(!text.contains('\x1b'));
     assert!(!text.contains('\x07'));
 }

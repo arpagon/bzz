@@ -13,6 +13,7 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Clear, List, ListItem, Paragraph, Wrap},
 };
+use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
@@ -21,6 +22,7 @@ use crate::{
     config::{Config, KeyBackend, validate_relay_url},
     domain::{Channel, ConnectionState, Message, Profile, Reaction},
     error::{Error, Result},
+    media::{client::MediaClient, runtime::MediaRuntime},
     paths::Paths,
     protocol::http::HttpClient,
     realtime::{
@@ -56,6 +58,9 @@ enum Mode {
     Command,
     Theme,
     Help,
+    MediaPreview,
+    Attachment,
+    SaveAttachment,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Pane {
@@ -74,6 +79,7 @@ struct Runtime {
     channels: ChannelService,
     profiles: ProfileService,
     messages: MessageService,
+    media: MediaClient,
     read_state: ReadStateService,
 }
 
@@ -107,7 +113,13 @@ impl Runtime {
             validate_relay_url(&community.relay_url, community.allow_insecure_localhost)?;
         let supervisor = SupervisorHandle::spawn(endpoint.websocket, signer.clone());
         let events = supervisor.subscribe_events();
-        let http = HttpClient::new(endpoint.http_base, signer.clone())?;
+        let http = HttpClient::new(endpoint.http_base.clone(), signer.clone())?;
+        let media = MediaClient::new(
+            endpoint.http_base,
+            endpoint.authority,
+            signer.clone(),
+            config.media.download_concurrency,
+        )?;
         Ok(Self {
             community_id: community.id,
             identity_id: identity.id,
@@ -123,6 +135,7 @@ impl Runtime {
                 store.clone(),
                 supervisor.clone(),
             ),
+            media,
             read_state: ReadStateService::new(community.id, signer, store, supervisor),
         })
     }
@@ -132,6 +145,21 @@ impl Runtime {
 enum Background {
     Changed,
     Failed(String),
+    Staged {
+        community: Uuid,
+        pending: crate::media::PendingAttachment,
+    },
+    Uploaded {
+        community: Uuid,
+        sha256: String,
+        attachment: Box<crate::media::Attachment>,
+    },
+    UploadFailed {
+        community: Uuid,
+        sha256: String,
+        message: String,
+    },
+    Saved,
 }
 
 pub struct App {
@@ -139,6 +167,7 @@ pub struct App {
     paths: Paths,
     store: StoreHandle,
     runtime: Option<Runtime>,
+    media: MediaRuntime,
     selected_community: usize,
     channels: Vec<Channel>,
     selected_channel: usize,
@@ -157,6 +186,10 @@ pub struct App {
     finder: String,
     reaction_index: usize,
     command: String,
+    attachment_input: String,
+    preview_index: usize,
+    preview_revealed: bool,
+    uploading_media: HashSet<String>,
     sidebar: bool,
     theme: Theme,
     theme_picker: Option<ThemePicker>,
@@ -198,11 +231,18 @@ impl App {
             }
         };
         let (background_tx, background_rx) = mpsc::channel(128);
+        let mut media = MediaRuntime::new(config.media.clone(), &paths, store.clone());
+        if let Some(active) = &runtime {
+            media.bind(active.community_id, active.media.clone());
+        } else if let Some(community) = config.communities.get(selected_community) {
+            media.select_cached(community.id);
+        }
         let mut app = Self {
             config,
             paths,
             store,
             runtime,
+            media,
             selected_community,
             channels: Vec::new(),
             selected_channel: 0,
@@ -227,6 +267,10 @@ impl App {
             finder: String::new(),
             reaction_index: 0,
             command: String::new(),
+            attachment_input: String::new(),
+            preview_index: 0,
+            preview_revealed: false,
+            uploading_media: HashSet::new(),
             sidebar: true,
             theme,
             theme_picker: None,
@@ -264,6 +308,7 @@ impl App {
             _ = tokio::task::yield_now() => {},
         }
         let (mut guard, mut terminal) = TerminalGuard::enter()?;
+        self.media.initialize_terminal();
         terminal
             .draw(|frame| self.render(frame))
             .map_err(|error| Error::io("terminal", error))?;
@@ -277,7 +322,43 @@ impl App {
             tokio::select! {
                 maybe=input.next()=>if let Some(Ok(TerminalEvent::Key(key)))=maybe&&key.kind==KeyEventKind::Press{self.handle_key(key,&mut guard,&mut terminal).await?;},
                 network=next_network(&mut self.runtime)=>if let Some(event)=network{self.handle_network(event).await?;},
-                background=self.background_rx.recv()=>if let Some(event)=background{match event{Background::Changed=>self.cache_dirty=true,Background::Failed(message)=>self.status_error=Some(message)}},
+                background=self.background_rx.recv()=>if let Some(event)=background{match event{
+                    Background::Changed=>self.cache_dirty=true,
+                    Background::Failed(message)=>self.status_error=Some(message),
+                    Background::Staged { community, pending }=>{
+                        if self.active_community_id()==Some(community)
+                            && !self.composer.attachments.iter().any(|item| match item {
+                                crate::media::DraftAttachment::Pending(value)=>value.sha256==pending.sha256,
+                                crate::media::DraftAttachment::Uploaded(value)=>value.sha256==pending.sha256,
+                            })
+                        {
+                            self.composer.attachments.push(
+                                crate::media::DraftAttachment::Pending(pending.clone())
+                            );
+                            self.persist_draft().await?;
+                            self.start_pending_upload(pending);
+                        }
+                    }
+                    Background::Uploaded { community, sha256, attachment }=>{
+                        self.uploading_media.remove(&format!("{community}:{sha256}"));
+                        if self.active_community_id()==Some(community)
+                            && let Some((index, item))=self.composer.attachments.iter_mut().enumerate().find(|(_, item)| matches!(item, crate::media::DraftAttachment::Pending(value) if value.sha256==sha256))
+                        {
+                            let mut attachment=*attachment;
+                            attachment.index=index;
+                            *item=crate::media::DraftAttachment::Uploaded(attachment);
+                            self.status_error=None;
+                            self.persist_draft().await?;
+                        }
+                    }
+                    Background::UploadFailed { community, sha256, message }=>{
+                        self.uploading_media.remove(&format!("{community}:{sha256}"));
+                        if self.active_community_id()==Some(community) {
+                            self.status_error=Some(message);
+                        }
+                    }
+                    Background::Saved=>self.status_error=Some("attachment saved".into()),
+                }},
                 _=tick.tick()=>self.on_tick().await?,
                 _=&mut shutdown=>self.should_quit=true,
             }
@@ -686,6 +767,7 @@ impl App {
     }
 
     async fn on_tick(&mut self) -> Result<()> {
+        self.media.poll();
         if self.cache_dirty || self.last_cache_refresh.elapsed() > Duration::from_secs(1) {
             self.hydrate_cache().await?;
             self.reconcile_subscriptions().await?;
@@ -792,6 +874,9 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('n' | 'N') => self.mode = Mode::Normal,
                 _ => {}
             },
+            Mode::MediaPreview => self.media_preview_key(key),
+            Mode::Attachment => self.attachment_path_key(key, false).await?,
+            Mode::SaveAttachment => self.attachment_path_key(key, true).await?,
         }
         Ok(())
     }
@@ -806,6 +891,7 @@ impl App {
                 self.mode = Mode::Finder
             }
             KeyAction::Theme => self.open_theme_picker(),
+            KeyAction::Preview => self.open_media_preview(),
             KeyAction::Command => {
                 self.command.clear();
                 self.mode = Mode::Command
@@ -991,12 +1077,26 @@ impl App {
             return Ok(());
         };
         let root = self.thread_root.clone();
-        self.composer.body = self
+        let (body, attachments) = self
             .store
-            .call(move |store| store.draft(community, channel, root.as_deref()))
+            .call(move |store| store.draft_with_media(community, channel, root.as_deref()))
             .await?;
+        self.composer.body = body;
+        self.composer.attachments = attachments;
         self.composer.cursor = self.composer.body.len();
         self.mode = Mode::Insert;
+        let pending = self
+            .composer
+            .attachments
+            .iter()
+            .filter_map(|attachment| match attachment {
+                crate::media::DraftAttachment::Pending(value) => Some(value.clone()),
+                crate::media::DraftAttachment::Uploaded(_) => None,
+            })
+            .collect::<Vec<_>>();
+        for attachment in pending {
+            self.start_pending_upload(attachment);
+        }
         Ok(())
     }
 
@@ -1006,9 +1106,40 @@ impl App {
             KeyAction::Character(character) => self.composer.insert(character),
             KeyAction::Backspace => self.composer.backspace(),
             KeyAction::Newline => self.composer.newline(),
+            KeyAction::Attach => {
+                self.attachment_input.clear();
+                self.mode = Mode::Attachment;
+            }
+            KeyAction::RemoveAttachment => {
+                if let Some(crate::media::DraftAttachment::Pending(pending)) =
+                    self.composer.attachments.pop()
+                    && let Some(community) = self.active_community_id()
+                {
+                    self.uploading_media
+                        .remove(&format!("{community}:{}", pending.sha256));
+                    let path = self.media.staging_dir(community).join(pending.cache_name);
+                    tokio::spawn(async move {
+                        let _ = tokio::fs::remove_file(path).await;
+                    });
+                }
+            }
+            KeyAction::RetryAttachments => {
+                let pending = self
+                    .composer
+                    .attachments
+                    .iter()
+                    .filter_map(|attachment| match attachment {
+                        crate::media::DraftAttachment::Pending(value) => Some(value.clone()),
+                        crate::media::DraftAttachment::Uploaded(_) => None,
+                    })
+                    .collect::<Vec<_>>();
+                for attachment in pending {
+                    self.start_pending_upload(attachment);
+                }
+            }
             KeyAction::Submit => {
-                if let Some(body) = self.composer.take_for_send() {
-                    self.queue_message(body);
+                if let Some((body, attachments)) = self.composer.take_message() {
+                    self.queue_message(body, attachments);
                     self.mode = Mode::Normal
                 }
             }
@@ -1016,6 +1147,224 @@ impl App {
         }
         self.persist_draft().await
     }
+    fn open_media_preview(&mut self) {
+        if self
+            .selected_message()
+            .is_some_and(|message| !message.attachments.is_empty())
+        {
+            self.preview_index = 0;
+            self.preview_revealed = false;
+            self.mode = Mode::MediaPreview;
+        } else {
+            self.status_error = Some("the selected message has no attachments".into());
+        }
+    }
+
+    fn preview_attachment(&self) -> Option<&crate::media::Attachment> {
+        self.selected_message()
+            .and_then(|message| message.attachments.get(self.preview_index))
+    }
+
+    fn media_preview_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
+            KeyCode::Char('[') | KeyCode::Left => {
+                self.preview_index = self.preview_index.saturating_sub(1);
+                self.preview_revealed = false;
+            }
+            KeyCode::Char(']') | KeyCode::Right => {
+                let max = self
+                    .selected_message()
+                    .map_or(0, |message| message.attachments.len().saturating_sub(1));
+                self.preview_index = (self.preview_index + 1).min(max);
+                self.preview_revealed = false;
+            }
+            KeyCode::Enter => self.preview_revealed = true,
+            KeyCode::Char('r') => {
+                if let Some(attachment) = self.preview_attachment().cloned() {
+                    self.media.retry(&attachment, 72);
+                }
+            }
+            KeyCode::Char('s') => {
+                self.attachment_input.clear();
+                self.mode = Mode::SaveAttachment;
+            }
+            _ => {}
+        }
+    }
+
+    async fn attachment_path_key(&mut self, key: KeyEvent, save: bool) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = if save {
+                    Mode::MediaPreview
+                } else {
+                    Mode::Insert
+                };
+                self.attachment_input.clear();
+            }
+            KeyCode::Backspace => {
+                self.attachment_input.pop();
+            }
+            KeyCode::Enter => {
+                let path = std::path::PathBuf::from(self.attachment_input.trim());
+                if path.as_os_str().is_empty() {
+                    self.status_error = Some("enter an attachment path".into());
+                    return Ok(());
+                }
+                self.attachment_input.clear();
+                if save {
+                    self.save_preview_attachment(path);
+                    self.mode = Mode::MediaPreview;
+                } else {
+                    self.start_attachment_upload(path);
+                    self.mode = Mode::Insert;
+                }
+            }
+            KeyCode::Char(character)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                    && !character.is_control()
+                    && self.attachment_input.len() < 4_096 =>
+            {
+                self.attachment_input.push(character);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn start_attachment_upload(&mut self, source: std::path::PathBuf) {
+        if self.composer.attachments.len() >= 8 {
+            self.status_error = Some("a message can contain at most 8 attachments".into());
+            return;
+        }
+        let Some(community) = self.active_community_id() else {
+            return;
+        };
+        let staging = self.media.staging_dir(community);
+        let tx = self.background_tx.clone();
+        self.status_error = Some("processing attachment…".into());
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                crate::media::decode::stage_file(&source, &staging)
+            })
+            .await
+            .map_err(|_| Error::Protocol("attachment worker stopped".into()))
+            .and_then(std::convert::identity);
+            let _ = tx
+                .send(match result {
+                    Ok(staged) => Background::Staged {
+                        community,
+                        pending: staged.pending(),
+                    },
+                    Err(error) => Background::Failed(public_media_error(&error)),
+                })
+                .await;
+        });
+    }
+
+    fn start_pending_upload(&mut self, pending: crate::media::PendingAttachment) {
+        let Some(runtime) = &self.runtime else {
+            self.status_error =
+                Some("attachment staged; upload waits for an unlocked identity".into());
+            return;
+        };
+        let community = runtime.community_id;
+        let job = format!("{community}:{}", pending.sha256);
+        if !self.uploading_media.insert(job) {
+            return;
+        }
+        if pending.cache_name.contains(['/', '\\'])
+            || !pending.cache_name.starts_with(&pending.sha256)
+        {
+            self.uploading_media
+                .remove(&format!("{community}:{}", pending.sha256));
+            self.status_error = Some("staged attachment metadata is invalid".into());
+            return;
+        }
+        let path = self.media.staging_dir(community).join(&pending.cache_name);
+        let client = runtime.media.clone();
+        let tx = self.background_tx.clone();
+        self.status_error = Some("uploading attachment…".into());
+        tokio::spawn(async move {
+            let result = client
+                .upload(&path, &pending.mime, Some(pending.filename.clone()))
+                .await;
+            if result.is_ok() {
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+            let _ = tx
+                .send(match result {
+                    Ok(attachment) => Background::Uploaded {
+                        community,
+                        sha256: pending.sha256,
+                        attachment: Box::new(attachment),
+                    },
+                    Err(error) => Background::UploadFailed {
+                        community,
+                        sha256: pending.sha256,
+                        message: public_media_error(&error),
+                    },
+                })
+                .await;
+        });
+    }
+
+    fn save_preview_attachment(&mut self, destination: std::path::PathBuf) {
+        let Some(attachment) = self.preview_attachment().cloned() else {
+            return;
+        };
+        let Some(community) = self.active_community_id() else {
+            return;
+        };
+        let cached = self.media.cache_path(community, &attachment);
+        let client = self.runtime.as_ref().map(|runtime| runtime.media.clone());
+        let tx = self.background_tx.clone();
+        self.status_error = Some("saving attachment…".into());
+        tokio::spawn(async move {
+            let result = async {
+                let source = if cached.exists() {
+                    crate::media::client::verify_file(&cached, &attachment.sha256, attachment.size)
+                        .await?;
+                    cached
+                } else {
+                    client
+                        .ok_or_else(|| {
+                            Error::Locked("uncached media requires an unlocked identity".into())
+                        })?
+                        .fetch(&attachment, &cached)
+                        .await?
+                };
+                let mut input = tokio::fs::File::open(&source)
+                    .await
+                    .map_err(|error| Error::io(&source, error))?;
+                let mut output = tokio::fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&destination)
+                    .await
+                    .map_err(|error| Error::io(&destination, error))?;
+                crate::paths::set_private_permissions(&destination)?;
+                tokio::io::copy(&mut input, &mut output)
+                    .await
+                    .map_err(|error| Error::io(&destination, error))?;
+                output
+                    .sync_all()
+                    .await
+                    .map_err(|error| Error::io(&destination, error))?;
+                Ok::<_, Error>(())
+            }
+            .await;
+            let _ = tx
+                .send(match result {
+                    Ok(()) => Background::Saved,
+                    Err(error) => Background::Failed(public_media_error(&error)),
+                })
+                .await;
+        });
+    }
+
     async fn persist_draft(&self) -> Result<()> {
         let Some(community) = self.active_community_id() else {
             return Ok(());
@@ -1025,12 +1374,21 @@ impl App {
         };
         let root = self.thread_root.clone();
         let body = self.composer.body.clone();
+        let attachments = self.composer.attachments.clone();
         self.store
-            .call(move |store| store.save_draft(community, channel, root.as_deref(), &body))
+            .call(move |store| {
+                store.save_draft_with_media(
+                    community,
+                    channel,
+                    root.as_deref(),
+                    &body,
+                    &attachments,
+                )
+            })
             .await
     }
 
-    fn queue_message(&mut self, body: String) {
+    fn queue_message(&mut self, body: String, attachments: Vec<crate::media::Attachment>) {
         let Some(runtime) = &self.runtime else { return };
         let Some(channel) = self.current_channel().map(|channel| channel.id) else {
             return;
@@ -1044,9 +1402,11 @@ impl App {
         let tx = self.background_tx.clone();
         tokio::spawn(async move {
             let result = if let (Some(root), Some(parent)) = (root, parent) {
-                service.reply(channel, &root, &parent, &body).await
+                service
+                    .reply_with_media(channel, &root, &parent, &body, &attachments)
+                    .await
             } else {
-                service.send(channel, &body).await
+                service.send_with_media(channel, &body, &attachments).await
             };
             let _ = tx
                 .send(match result {
@@ -1434,6 +1794,7 @@ impl App {
                         old.signer.lock().await;
                     }
                 }
+                self.media.bind(runtime.community_id, runtime.media.clone());
                 self.runtime = Some(runtime);
                 self.selected_community = index;
                 self.config.default_community = Some(target_id);
@@ -1457,6 +1818,7 @@ impl App {
                         old.supervisor.shutdown().await;
                         old.signer.lock().await;
                     }
+                    self.media.select_cached(target_id);
                     self.selected_community = index;
                     self.config.default_community = Some(target_id);
                     self.config.save(&self.paths)?;
@@ -1537,7 +1899,7 @@ impl App {
         }
     }
 
-    fn render(&self, frame: &mut Frame<'_>) {
+    fn render(&mut self, frame: &mut Frame<'_>) {
         let area = frame.area();
         if area.width < 50 || area.height < 12 {
             frame.render_widget(
@@ -1583,32 +1945,65 @@ impl App {
         }
         let title = self
             .current_channel()
-            .map_or("timeline", |channel| channel.name.as_str());
-        timeline::render(
-            frame,
-            panes.timeline,
-            &self.messages,
-            &self.profiles,
-            &self.reactions,
-            &self.timeline,
-            title,
-            &self.theme,
-            self.pane == Pane::Timeline,
-            self.self_pubkey(),
-        );
-        if let Some(thread) = panes.thread {
-            timeline::render(
+            .map_or_else(|| "timeline".to_owned(), |channel| channel.name.clone());
+        let self_pubkey = self.self_pubkey().map(str::to_owned);
+        if self.mode == Mode::Normal {
+            timeline::render_with_media(
                 frame,
-                thread,
-                &self.thread_messages,
+                panes.timeline,
+                &self.messages,
                 &self.profiles,
                 &self.reactions,
-                &self.thread_timeline,
-                "thread",
+                &self.timeline,
+                &title,
                 &self.theme,
-                self.pane == Pane::Thread,
-                self.self_pubkey(),
+                self.pane == Pane::Timeline,
+                self_pubkey.as_deref(),
+                &mut self.media,
             );
+        } else {
+            timeline::render(
+                frame,
+                panes.timeline,
+                &self.messages,
+                &self.profiles,
+                &self.reactions,
+                &self.timeline,
+                &title,
+                &self.theme,
+                self.pane == Pane::Timeline,
+                self_pubkey.as_deref(),
+            );
+        }
+        if let Some(thread) = panes.thread {
+            if self.mode == Mode::Normal {
+                timeline::render_with_media(
+                    frame,
+                    thread,
+                    &self.thread_messages,
+                    &self.profiles,
+                    &self.reactions,
+                    &self.thread_timeline,
+                    "thread",
+                    &self.theme,
+                    self.pane == Pane::Thread,
+                    self_pubkey.as_deref(),
+                    &mut self.media,
+                );
+            } else {
+                timeline::render(
+                    frame,
+                    thread,
+                    &self.thread_messages,
+                    &self.profiles,
+                    &self.reactions,
+                    &self.thread_timeline,
+                    "thread",
+                    &self.theme,
+                    self.pane == Pane::Thread,
+                    self_pubkey.as_deref(),
+                );
+            }
         }
         self.render_status(frame, panes.status);
         self.render_overlay(frame, area);
@@ -1682,6 +2077,9 @@ impl App {
             Mode::Command => "COMMAND",
             Mode::Theme => "THEME",
             Mode::Help => "HELP",
+            Mode::MediaPreview => "MEDIA",
+            Mode::Attachment => "ATTACH",
+            Mode::SaveAttachment => "SAVE",
         };
         let mode_group = match self.mode {
             Mode::Insert => HighlightGroup::StatusModeInsert,
@@ -1698,7 +2096,10 @@ impl App {
             Paragraph::new(Line::from(vec![
                 Span::styled(format!(" {mode} "), self.theme.style(mode_group)),
                 Span::styled(
-                    format!(" · {connection} · {error} · ? help · Q quit"),
+                    format!(
+                        " · {connection} · img {} · {error} · ? help · Q quit",
+                        self.media.protocol_name()
+                    ),
                     self.theme.style(HighlightGroup::StatusBar),
                 ),
             ]))
@@ -1706,7 +2107,7 @@ impl App {
             area,
         );
     }
-    fn render_overlay(&self, frame: &mut Frame<'_>, area: Rect) {
+    fn render_overlay(&mut self, frame: &mut Frame<'_>, area: Rect) {
         match self.mode {
             Mode::Help => {
                 frame.render_widget(Clear, area);
@@ -1757,24 +2158,110 @@ impl App {
                 let popup = bottom_popup(area, 5);
                 frame.render_widget(Clear, popup);
                 frame.render_widget(
-                    Paragraph::new(sanitize::text(&self.composer.body))
-                        .style(self.theme.style(HighlightGroup::Composer))
-                        .block(
-                            Block::bordered()
-                                .border_type(self.theme.border_type(BorderSurface::Composer))
-                                .border_style(
-                                    self.theme.style(HighlightGroup::ActiveComposerBorder),
-                                )
-                                .title_style(self.theme.style(HighlightGroup::ComposerTitle))
-                                .title(" message · Enter send · Alt-Enter newline "),
-                        )
-                        .wrap(Wrap { trim: false }),
+                    Paragraph::new(format!(
+                        "{}{}",
+                        sanitize::text(&self.composer.body),
+                        if self.composer.attachments.is_empty() {
+                            String::new()
+                        } else {
+                            let ready = self
+                                .composer
+                                .attachments
+                                .iter()
+                                .filter(|attachment| attachment.uploaded().is_some())
+                                .count();
+                            format!(
+                                "\n{ready}/{} attachment(s) ready",
+                                self.composer.attachments.len()
+                            )
+                        }
+                    ))
+                    .style(self.theme.style(HighlightGroup::Composer))
+                    .block(
+                        Block::bordered()
+                            .border_type(self.theme.border_type(BorderSurface::Composer))
+                            .border_style(self.theme.style(HighlightGroup::ActiveComposerBorder))
+                            .title_style(self.theme.style(HighlightGroup::ComposerTitle))
+                            .title(" message · Ctrl-a attach · Ctrl-r retry · Ctrl-x remove "),
+                    )
+                    .wrap(Wrap { trim: false }),
                     popup,
                 )
             }
+            Mode::MediaPreview => self.render_media_preview(frame, area),
+            Mode::Attachment => self.render_prompt(
+                frame,
+                area,
+                " attach file · Enter upload · Esc cancel ",
+                &self.attachment_input,
+            ),
+            Mode::SaveAttachment => self.render_prompt(
+                frame,
+                area,
+                " save attachment · no overwrite · Esc cancel ",
+                &self.attachment_input,
+            ),
             Mode::Normal => {}
         }
     }
+    fn render_media_preview(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        let popup = centered(area, 86, 80.min(area.height.saturating_sub(2)));
+        frame.render_widget(Clear, popup);
+        let Some(attachment) = self.preview_attachment().cloned() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        let block = Block::bordered()
+            .border_type(self.theme.border_type(BorderSurface::Modal))
+            .border_style(self.theme.style(HighlightGroup::ModalBorder))
+            .title_style(self.theme.style(HighlightGroup::ModalTitle))
+            .title(format!(
+                " attachment {}/{} · [/] navigate · s save · Esc close ",
+                self.preview_index + 1,
+                self.selected_message()
+                    .map_or(0, |message| message.attachments.len())
+            ));
+        let inner = block.inner(popup);
+        frame.render_widget(block, popup);
+        let details = format!(
+            "{}\n{} · {}\n{}",
+            sanitize::single_line(attachment.label()),
+            attachment.mime,
+            crate::media::model::human_size(attachment.size),
+            if attachment.spoiler && !self.preview_revealed {
+                "spoiler hidden · Enter to reveal"
+            } else {
+                "r retry · s save"
+            }
+        );
+        frame.render_widget(
+            Paragraph::new(details)
+                .style(self.theme.style(HighlightGroup::Normal))
+                .wrap(Wrap { trim: false }),
+            Rect::new(inner.x, inner.y, inner.width, inner.height.min(4)),
+        );
+        if attachment.kind == crate::media::MediaKind::Image
+            && (!attachment.spoiler || self.preview_revealed)
+        {
+            let width = inner.width.saturating_sub(2).max(2);
+            self.media.request_inline(&attachment, width, true);
+            if let Some(crate::media::runtime::MediaState::Ready(protocol)) =
+                self.media.state(&attachment, width)
+            {
+                let image_area = Rect::new(
+                    inner.x,
+                    inner.y.saturating_add(4),
+                    inner.width,
+                    inner.height.saturating_sub(4),
+                );
+                frame.render_widget(
+                    SlicedImage::new(protocol.as_ref(), SignedPosition::from((1, 0))),
+                    image_area,
+                );
+            }
+        }
+    }
+
     fn render_finder(&self, frame: &mut Frame<'_>, area: Rect) {
         let popup = centered(area, 70, 12);
         frame.render_widget(Clear, popup);
@@ -1952,6 +2439,23 @@ async fn next_network(runtime: &mut Option<Runtime>) -> Option<SupervisorEvent> 
         None => std::future::pending().await,
     }
 }
+fn public_media_error(error: &Error) -> String {
+    match error {
+        Error::Config(message) | Error::Protocol(message) | Error::Access(message) => {
+            sanitize::single_line(message)
+        }
+        Error::Io { .. } => "attachment I/O failed".into(),
+        Error::Network(_) | Error::Timeout(_) => "attachment network operation failed".into(),
+        Error::Locked(_)
+        | Error::IdentityMissing(_)
+        | Error::IdentityCorrupt(_)
+        | Error::Auth(_) => "attachment authorization is unavailable".into(),
+        Error::Database(_) | Error::Serialization(_) | Error::Unsupported(_) => {
+            "attachment operation failed".into()
+        }
+    }
+}
+
 fn centered(area: Rect, percent: u16, height: u16) -> Rect {
     let rows = Layout::default()
         .direction(Direction::Vertical)

@@ -58,9 +58,29 @@ with user-only permissions where supported. Use full-disk encryption and
 not guaranteed on SSD/copy-on-write filesystems.
 
 Relay content is signature-verified and terminal controls/bidi overrides are
-replaced before rendering. URLs are inert until an explicit future open
-operation. HTTP redirects are disabled so NIP-98 signatures cannot cross
-origins.
+replaced before rendering. Ordinary URLs remain inert. HTTP redirects are
+disabled so NIP-98 and Blossom authorization cannot cross origins.
+
+## Media
+
+Message media is fetched only from a complete `imeta` descriptor bound to the
+active community's exact relay HTTP(S) origin and canonical content-addressed
+path. Arbitrary Markdown and profile-picture URLs never trigger a request.
+Blossom read/upload authorization uses short-lived signed kind `24242` events;
+headers/events, source paths, full hashes, and content are not logged.
+
+Downloads are streamed into owner-only create-new temporary files. Declared
+size, hard transfer limit, response MIME, sniffed image type, exact byte count,
+and SHA-256 are checked before atomic cache publication or decode. Image
+dimensions and decoded allocations are independently bounded. Generic files
+are never automatically downloaded, interpreted, executed, or passed to a
+shell. Explicit saves refuse overwrite.
+
+Media and staging cache bytes are plaintext and partitioned by community.
+Locked recovery can render only already-verified cache entries and performs no
+new authenticated media I/O. `bzz media clear` removes logical cache files but,
+like SQLite purge, cannot promise forensic erasure on SSD/copy-on-write
+storage. See [`media.md`](media.md).
 
 ## Theme files
 

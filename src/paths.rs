@@ -37,6 +37,7 @@ impl Paths {
             &self.data_dir,
             &self.cache_dir,
             &self.keys_dir(),
+            &self.media_cache_dir(),
         ] {
             fs::create_dir_all(path).map_err(|error| Error::io(path, error))?;
             set_private_permissions(path)?;
@@ -58,6 +59,10 @@ impl Paths {
 
     pub fn keys_dir(&self) -> PathBuf {
         self.data_dir.join("keys")
+    }
+
+    pub fn media_cache_dir(&self) -> PathBuf {
+        self.cache_dir.join("media")
     }
 }
 

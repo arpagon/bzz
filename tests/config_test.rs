@@ -103,6 +103,21 @@ fn community_theme_overrides_global_theme_and_can_inherit_again() {
 }
 
 #[test]
+fn media_limits_and_unknown_fields_fail_closed() {
+    let mut config = Config::default();
+    config.media.max_inline_rows = 1;
+    assert!(config.validate().is_err());
+    config.media.max_inline_rows = 12;
+    config.media.download_concurrency = 17;
+    assert!(config.validate().is_err());
+
+    let parsed = toml::from_str::<Config>(
+        "[media]\nenabled=true\nprotocol='auto'\nautoload='visible'\nunknown=true\n",
+    );
+    assert!(parsed.is_err());
+}
+
+#[test]
 fn empty_config_round_trips_with_private_paths() {
     let temporary = TempDir::new().unwrap();
     let paths = Paths {

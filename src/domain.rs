@@ -58,6 +58,8 @@ pub struct Message {
     pub pubkey: String,
     pub created_at: u64,
     pub content: String,
+    #[serde(default)]
+    pub attachments: Vec<crate::media::Attachment>,
     pub root_event_id: Option<String>,
     pub parent_event_id: Option<String>,
     pub deleted: bool,

@@ -1,10 +1,21 @@
 # bzz — Implementation Plan
 
-**Status:** Implemented through M9; MVP gates verified
+**Status:** Implemented through M9; MVP gates verified; post-MVP themes and secure media delivered
 **Repository / binary:** `arpagon/bzz` / `bzz`
 **Product shorthand:** “`slk`, but for Buzz”
 **Plan date:** 2026-07-30
 **Upstream snapshots:** Buzz `ede26863345a518ec46edd6d7692e0281883491b`; slk `8149c3b18ed04c259efe5feb545d040ab043d922`
+
+## Post-MVP amendments
+
+The deferred MVP scope below remains the historical implementation baseline.
+Built-in semantic themes were delivered through issue #1. Secure message media
+was subsequently designed in issue #2 and implemented with strict `imeta`
+projection, origin-bound Blossom authorization, SHA-256/size/MIME verification,
+private quota-managed cache/staging, bounded image decode, Kitty/Sixel/iTerm2/
+half-block rendering, previews, explicit saves, and sanitized uploads. See
+[`docs/media.md`](docs/media.md) for the current contract. Arbitrary external
+Markdown/profile images, media playback, and animated playback remain deferred.
 
 ## 1. TL;DR and recommendation
 

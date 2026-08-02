@@ -7,6 +7,7 @@ fn message(id: &str) -> Message {
         pubkey: "a".repeat(64),
         created_at: 1,
         content: id.into(),
+        attachments: Vec::new(),
         root_event_id: None,
         parent_event_id: None,
         deleted: false,

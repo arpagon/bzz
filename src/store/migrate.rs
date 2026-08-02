@@ -5,7 +5,10 @@ use sha2::{Digest as _, Sha256};
 
 use crate::error::{Error, Result};
 
-const MIGRATIONS: &[(u32, &str)] = &[(1, include_str!("../../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(u32, &str)] = &[
+    (1, include_str!("../../migrations/0001_init.sql")),
+    (2, include_str!("../../migrations/0002_media.sql")),
+];
 
 pub fn configure(connection: &Connection) -> Result<()> {
     connection.execute_batch(

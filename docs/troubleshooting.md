@@ -73,6 +73,48 @@ bzz theme reset
 An invalid theme never requires deleting identities, configuration, or the
 SQLite cache.
 
+## Attachment card but no inline image
+
+Inspect configured media behavior:
+
+```sh
+bzz media status
+```
+
+`protocol = "off"` always renders text cards. `autoload = "preview"` or `off`
+requires `p` before downloading. Images above `auto_download_bytes`, closed
+spoilers, generic files, videos, malformed descriptors, and external origins
+are intentionally not auto-fetched. A locked client can use only a previously
+verified cache entry.
+
+If automatic detection chose half blocks, `bzz` had no conservative hint for a
+supported graphics protocol. Kitty needs Unicode-placeholder support; Sixel
+must be enabled by the terminal; tmux must permit passthrough. An explicit
+`kitty`, `sixel`, or `iterm2` override is user-controlled and should be removed
+if it corrupts output.
+
+## Media access denied or integrity failure
+
+A `401`/`403` indicates that the relay requires Blossom read authorization and
+the current identity could not prove membership. Restore/unlock the configured
+identity and verify community membership. Hash, size, MIME, redirect, or decode
+failures are not bypassable; retry with `p`, then `r`, or ask the sender to
+upload the file again.
+
+Clear only media bytes without deleting messages:
+
+```sh
+bzz media clear --community <community-uuid> --yes
+```
+
+## Upload rejected
+
+The composer accepts regular non-symlink paths up to 100 MiB. SVG, executable,
+and active-content types are blocked. Images above 25 megapixels fail before
+upload. Animated PNG/WebP carrying ICC or EXIF data that cannot be removed
+without changing appearance fails closed. The relay remains authoritative and
+may enforce stricter limits.
+
 ## Broken terminal after a crash
 
 bzz installs a restoration panic hook. If the process is force-killed, run

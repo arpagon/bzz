@@ -19,7 +19,7 @@ fn fresh_database_has_expected_pragmas_and_schema() {
     let foreign_keys: u32 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
     assert_eq!(
         foreign_keys, 1,
         "foreign-key enforcement must remain enabled"
@@ -32,6 +32,14 @@ fn fresh_database_has_expected_pragmas_and_schema() {
         )
         .unwrap();
     assert_eq!(checksum.len(), 64);
+    let attachment_column: u32 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('drafts') WHERE name='attachments_json'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(attachment_column, 1);
     connection
         .execute(
             "UPDATE schema_migrations SET sha256='tampered' WHERE version=1",

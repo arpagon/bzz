@@ -21,6 +21,10 @@ pub enum KeyAction {
     PreviousPane,
     Finder,
     Theme,
+    Preview,
+    Attach,
+    RemoveAttachment,
+    RetryAttachments,
     Command,
     Escape,
     Character(char),
@@ -55,6 +59,7 @@ pub fn map_normal(key: KeyEvent, awaiting_g: bool) -> KeyAction {
         KeyCode::Enter => KeyAction::Open,
         KeyCode::Char('i') => KeyAction::Compose,
         KeyCode::Char('r') => KeyAction::React,
+        KeyCode::Char('p') => KeyAction::Preview,
         KeyCode::Char('D') => KeyAction::Delete,
         KeyCode::Char('U') => KeyAction::MarkUnread,
         KeyCode::Tab => KeyAction::NextPane,
@@ -71,6 +76,9 @@ pub fn map_insert(key: KeyEvent) -> KeyAction {
         (KeyModifiers::ALT, KeyCode::Enter) => KeyAction::Newline,
         (KeyModifiers::CONTROL, KeyCode::Char('j')) => KeyAction::Newline,
         (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Enter) => KeyAction::Submit,
+        (KeyModifiers::CONTROL, KeyCode::Char('a')) => KeyAction::Attach,
+        (KeyModifiers::CONTROL, KeyCode::Char('x')) => KeyAction::RemoveAttachment,
+        (KeyModifiers::CONTROL, KeyCode::Char('r')) => KeyAction::RetryAttachments,
         (_, KeyCode::Backspace) => KeyAction::Backspace,
         (modifiers, KeyCode::Char(character))
             if !modifiers.contains(KeyModifiers::CONTROL)

@@ -29,6 +29,17 @@ theme = "dracula" # optional; overrides the global UI theme
 sidebar_width = 28
 thread_width = 44
 theme = "bzz"
+
+[media]
+enabled = true
+protocol = "auto"            # auto|kitty|sixel|iterm2|halfblocks|off
+autoload = "visible"         # visible|preview|off
+max_inline_rows = 12
+auto_download_bytes = 26214400
+memory_cache_bytes = 67108864
+disk_cache_bytes = 536870912
+download_concurrency = 4
+decode_concurrency = 2
 ```
 
 The `key_ref` is an opaque OS-keychain account name, not a secret. Use
@@ -46,3 +57,11 @@ field takes precedence only while that community is active. Semantic overrides
 live in a separate, optional `theme.toml`; see [`themes.md`](themes.md). Theme
 configuration is presentation-only and is never synchronized through the
 relay.
+
+The strict `[media]` section controls terminal rendering and bounded local
+resources. Unknown fields are rejected. `autoload = "visible"` fetches valid,
+community-origin image descriptors near the rendered timeline; `preview`
+fetches only after `p`; `off` permits explicit save/upload but no automatic
+fetch. `protocol = "off"` disables graphics while retaining attachment cards.
+Cache/concurrency settings are validated against hard safety ceilings. See
+[`media.md`](media.md).

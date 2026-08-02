@@ -16,7 +16,9 @@ Apache License 2.0 text.
 The interaction design was independently implemented after studying
 `gammons/slk@8149c3b18ed04c259efe5feb545d040ab043d922`. The built-in theme
 palette data in `src/ui/theme/builtin.rs` is adapted from that MIT-licensed
-revision.
+revision. Its media architecture also informed capability probing, bounded
+fetch/cache work, partial-visibility fallbacks, and preview behavior; the Rust
+implementation is independent.
 
 > MIT License
 >
@@ -46,4 +48,16 @@ The semantic theme behavior and public `theme.toml` documentation were studied
 at `chojs23/concord@7cc1b98c6ad59067e8158d2ba0f61d7108f21daa`, which is
 GPL-3.0-only. No Concord source code, assets, or dependency are included. The
 smaller `bzz` group inventory, parser, resolver, and runtime ownership were
-implemented independently for Ratatui.
+implemented independently for Ratatui. Concord's bounded media workers,
+generation/LRU concepts, and visible-target behavior were also reviewed as
+behavior only; no GPL media implementation was copied.
+
+## ratatui-image
+
+`ratatui-image` v11.0.5 (`00920803a50e7b7763ceb69978be90c4391325ad`)
+is used under the MIT license for Kitty, Sixel, iTerm2, Unicode half-block, cell
+metric, and vertically sliced Ratatui image rendering. Default features are
+disabled so `bzz` does not introduce the optional native `libchafa` backend.
+Copyright belongs to Benjamin Große, Atanas Yankov, wooster0, and the
+ratatui-image contributors. The complete license is included in crate and SBOM
+metadata.

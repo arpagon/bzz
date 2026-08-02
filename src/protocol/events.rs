@@ -74,6 +74,7 @@ pub fn as_message(event: &Event) -> Option<Message> {
         pubkey: event.pubkey.to_hex(),
         created_at: event.created_at.as_secs(),
         content: event.content.clone(),
+        attachments: Vec::new(),
         root_event_id,
         parent_event_id,
         deleted: false,

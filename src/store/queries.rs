@@ -87,8 +87,8 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<Message>> {
         self.message_query(
-            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,o.last_error_code
-             FROM events e LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
+            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,o.last_error_code,e.tags_json,c.http_base_url
+             FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
              WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099) AND e.root_event_id IS NULL
              ORDER BY e.created_at DESC,e.event_id DESC LIMIT ?3",
             params![community_id.to_string(),channel_id.to_string(),i64::try_from(limit).unwrap_or(i64::MAX)],
@@ -97,8 +97,8 @@ impl Store {
 
     pub fn thread(&self, community_id: Uuid, root: &str, limit: usize) -> Result<Vec<Message>> {
         self.message_query(
-            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,o.last_error_code
-             FROM events e LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
+            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,o.last_error_code,e.tags_json,c.http_base_url
+             FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
              WHERE e.community_id=?1 AND e.kind IN (9,40002,40099) AND (e.event_id=?2 OR e.root_event_id=?2)
              ORDER BY e.created_at,e.event_id LIMIT ?3",
             params![community_id.to_string(),root,i64::try_from(limit).unwrap_or(i64::MAX)],
@@ -110,6 +110,15 @@ impl Store {
         let values = statement
             .query_map(parameters, |row| {
                 let state: Option<String> = row.get(8)?;
+                let content: String = row.get(4)?;
+                let tags_json: String = row.get(10)?;
+                let http_base: String = row.get(11)?;
+                let attachments = url::Url::parse(&http_base)
+                    .ok()
+                    .map(|base| crate::media::imeta::parse_tags(&tags_json, &content, &base))
+                    .unwrap_or_default();
+                let visible_content =
+                    crate::media::imeta::strip_attachment_lines(&content, &attachments);
                 Ok(Message {
                     event_id: row.get(0)?,
                     channel_id: Uuid::parse_str(&row.get::<_, String>(1)?).map_err(|error| {
@@ -121,7 +130,8 @@ impl Store {
                     })?,
                     pubkey: row.get(2)?,
                     created_at: u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
-                    content: row.get(4)?,
+                    content: visible_content,
+                    attachments,
                     root_event_id: row.get(5)?,
                     parent_event_id: row.get(6)?,
                     deleted: row.get::<_, Option<String>>(7)?.is_some(),
@@ -314,7 +324,20 @@ impl Store {
         root: Option<&str>,
         body: &str,
     ) -> Result<()> {
-        self.connection.execute("INSERT INTO drafts(community_id,channel_id,thread_root_id,body,updated_at) VALUES(?1,?2,?3,?4,unixepoch()) ON CONFLICT DO UPDATE SET body=excluded.body,updated_at=excluded.updated_at",params![community_id.to_string(),channel_id.to_string(),root.unwrap_or_default(),body])?;
+        self.save_draft_with_media(community_id, channel_id, root, body, &[])
+    }
+
+    pub fn save_draft_with_media(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+        root: Option<&str>,
+        body: &str,
+        attachments: &[crate::media::DraftAttachment],
+    ) -> Result<()> {
+        let attachments = serde_json::to_string(attachments)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        self.connection.execute("INSERT INTO drafts(community_id,channel_id,thread_root_id,body,attachments_json,updated_at) VALUES(?1,?2,?3,?4,?5,unixepoch()) ON CONFLICT DO UPDATE SET body=excluded.body,attachments_json=excluded.attachments_json,updated_at=excluded.updated_at",params![community_id.to_string(),channel_id.to_string(),root.unwrap_or_default(),body,attachments])?;
         Ok(())
     }
 
@@ -324,7 +347,42 @@ impl Store {
         channel_id: Uuid,
         root: Option<&str>,
     ) -> Result<String> {
-        self.connection.query_row("SELECT body FROM drafts WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3",params![community_id.to_string(),channel_id.to_string(),root.unwrap_or_default()],|row|row.get(0)).optional().map(|value|value.unwrap_or_default()).map_err(Into::into)
+        self.draft_with_media(community_id, channel_id, root)
+            .map(|(body, _)| body)
+    }
+
+    pub fn draft_with_media(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+        root: Option<&str>,
+    ) -> Result<(String, Vec<crate::media::DraftAttachment>)> {
+        let value = self.connection.query_row("SELECT body,attachments_json FROM drafts WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3",params![community_id.to_string(),channel_id.to_string(),root.unwrap_or_default()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).optional()?;
+        let Some((body, attachments)) = value else {
+            return Ok((String::new(), Vec::new()));
+        };
+        let attachments = serde_json::from_str(&attachments)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        Ok((body, attachments))
+    }
+
+    pub fn record_media_cache(
+        &self,
+        community_id: Uuid,
+        sha256: &str,
+        mime: &str,
+        byte_size: u64,
+        width: Option<u32>,
+        height: Option<u32>,
+    ) -> Result<()> {
+        if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(Error::Protocol("invalid media cache hash".into()));
+        }
+        self.connection.execute(
+            "INSERT INTO media_cache(community_id,sha256,variant,mime,byte_size,width,height,validated_at,last_accessed_at) VALUES(?1,?2,'original',?3,?4,?5,?6,unixepoch(),unixepoch()) ON CONFLICT DO UPDATE SET mime=excluded.mime,byte_size=excluded.byte_size,width=excluded.width,height=excluded.height,validated_at=unixepoch(),last_accessed_at=unixepoch()",
+            params![community_id.to_string(),sha256,mime,u64_to_i64(byte_size)?,width.map(i64::from),height.map(i64::from)],
+        )?;
+        Ok(())
     }
 
     pub fn unread_channels(

@@ -27,7 +27,7 @@ Expected result:
 
 - version `0.1.0`;
 - config, data, and cache under `BZZ_E2E_ROOT`;
-- `configuration, theme, and database are valid`;
+- `configuration, theme, media, and database are valid`;
 - no secrets in `.env` or command output.
 
 ## 1. Empty startup and terminal restoration
@@ -226,6 +226,24 @@ must never generate a new identity. Unlock the keychain and relaunch to recover.
   If only one relay is available, cover this case with the automated
   multi-community test instead of duplicating the same host.
 
+## 9. Images and attachments (generated fixtures only)
+
+Generate a tiny PNG and a plain-text file inside `BZZ_E2E_ROOT`; never use a
+personal photo/document. In the composer press `Ctrl-a`, enter the PNG path,
+wait for `1 attachment(s) ready`, and send. Verify another isolated client
+shows an attachment card and an inline image or documented half-block fallback.
+Press `p`, navigate with `[`/`]`, save with `s` to a new path, and compare
+SHA-256. Repeat with the text file; it must remain a card and must not download
+until explicit save.
+
+Restart online, then disconnect only the disposable copy and verify the image
+renders from its verified cache. Run `bzz media status`, clear that community's
+media cache, and verify locked/offline mode no longer fetches it. Confirm source
+paths and auth headers/events do not appear in output or SQLite. Content hashes
+may appear only as required integrity metadata in `imeta` and media-cache rows.
+Test an external/mismatched descriptor only with the automated fake server; do
+not inject hostile events into a shared relay.
+
 ## Results log
 
 | Section | Result | Evidence/notes |
@@ -239,6 +257,7 @@ must never generate a new identity. Unlock the keychain and relaunch to recover.
 | 6. Portable backup | ☐ | |
 | 7. Recovery | ☐ | |
 | 8. Network/multi-client | ☐ | |
+| 9. Images/attachments | ☐ | |
 
 ## Cleanup
 

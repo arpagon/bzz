@@ -31,8 +31,17 @@ impl MessageService {
         }
     }
     pub async fn send(&self, channel: Uuid, content: &str) -> Result<Event> {
+        self.send_with_media(channel, content, &[]).await
+    }
+    pub async fn send_with_media(
+        &self,
+        channel: Uuid,
+        content: &str,
+        attachments: &[crate::media::Attachment],
+    ) -> Result<Event> {
+        let (content, tags) = message_media(content, attachments)?;
         self.send_builder(
-            buzz_sdk::build_message(channel, content, None, &[], false, &[])
+            buzz_sdk::build_message(channel, &content, None, &[], false, &tags)
                 .map_err(|error| Error::Protocol(error.to_string()))?,
         )
         .await
@@ -44,14 +53,26 @@ impl MessageService {
         parent: &str,
         content: &str,
     ) -> Result<Event> {
+        self.reply_with_media(channel, root, parent, content, &[])
+            .await
+    }
+    pub async fn reply_with_media(
+        &self,
+        channel: Uuid,
+        root: &str,
+        parent: &str,
+        content: &str,
+        attachments: &[crate::media::Attachment],
+    ) -> Result<Event> {
         let thread = buzz_sdk::ThreadRef {
             root_event_id: EventId::from_hex(root)
                 .map_err(|error| Error::Protocol(error.to_string()))?,
             parent_event_id: EventId::from_hex(parent)
                 .map_err(|error| Error::Protocol(error.to_string()))?,
         };
+        let (content, tags) = message_media(content, attachments)?;
         self.send_builder(
-            buzz_sdk::build_message(channel, content, Some(&thread), &[], false, &[])
+            buzz_sdk::build_message(channel, &content, Some(&thread), &[], false, &tags)
                 .map_err(|error| Error::Protocol(error.to_string()))?,
         )
         .await
@@ -138,5 +159,63 @@ impl MessageService {
             }
         }
         Ok(event)
+    }
+}
+
+fn message_media(
+    content: &str,
+    attachments: &[crate::media::Attachment],
+) -> Result<(String, Vec<Vec<String>>)> {
+    if attachments.len() > 8 {
+        return Err(Error::Config(
+            "a message can contain at most 8 attachments".into(),
+        ));
+    }
+    let mut body = content.trim_end().to_owned();
+    let mut tags = Vec::with_capacity(attachments.len());
+    for (index, attachment) in attachments.iter().enumerate() {
+        if !attachment.valid() {
+            return Err(Error::Protocol(format!(
+                "attachment {} has an invalid descriptor",
+                index + 1
+            )));
+        }
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str(&attachment.markdown_line());
+        tags.push(attachment.imeta_tag());
+    }
+    Ok((body, tags))
+}
+
+#[cfg(test)]
+mod media_tests {
+    use super::message_media;
+    use crate::media::{Attachment, MediaKind};
+
+    #[test]
+    fn media_lines_and_tags_are_ordered() {
+        let attachment = Attachment {
+            index: 0,
+            url: "https://buzz.example/media/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png".into(),
+            mime: "image/png".into(),
+            sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            size: 4,
+            width: Some(1),
+            height: Some(1),
+            alt: None,
+            blurhash: None,
+            thumb: None,
+            poster: None,
+            filename: Some("safe.png".into()),
+            duration_millis: None,
+            kind: MediaKind::Image,
+            spoiler: false,
+            error: None,
+        };
+        let (content, tags) = message_media("hello", &[attachment]).unwrap();
+        assert!(content.contains("![image](https://buzz.example/media/"));
+        assert_eq!(tags[0][0], "imeta");
     }
 }

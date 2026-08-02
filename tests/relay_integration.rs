@@ -3,6 +3,7 @@ use std::{collections::HashSet, process::Command, time::Duration};
 use bzz::{
     auth::signer::SignerHandle,
     config::{Config, IdentityConfig, KeyBackend},
+    media::client::MediaClient,
     protocol::{http::HttpClient, types::QueryFilter},
     realtime::{
         session::{self, SessionEvent},
@@ -87,6 +88,52 @@ async fn real_relay_mvp_protocol_journey() {
         bzz::protocol::events::first_tag(event, "d").as_deref()
             == Some(channel.to_string().as_str())
     }));
+
+    let media_client = MediaClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        "localhost:3030".into(),
+        signer.clone(),
+        2,
+    )
+    .unwrap();
+    let media_root = tempfile::TempDir::new().unwrap();
+    let media_source = media_root.path().join("generated.txt");
+    tokio::fs::write(&media_source, b"generated bzz media fixture\n")
+        .await
+        .unwrap();
+    let attachment = media_client
+        .upload(
+            &media_source,
+            "application/octet-stream",
+            Some("generated.txt".into()),
+        )
+        .await
+        .unwrap();
+    let media_event = signer
+        .sign(
+            buzz_sdk::build_message(
+                channel,
+                &attachment.markdown_line(),
+                None,
+                &[],
+                false,
+                &[attachment.imeta_tag()],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(session.publish(media_event.clone()).await.unwrap().accepted);
+    let media_download = media_root.path().join("downloaded.bin");
+    media_client
+        .fetch(&attachment, &media_download)
+        .await
+        .unwrap();
+    assert_eq!(
+        tokio::fs::read(&media_download).await.unwrap(),
+        b"generated bzz media fixture\n"
+    );
+
     let identity = IdentityConfig {
         id: uuid::Uuid::new_v4(),
         label: "integration".into(),
@@ -245,7 +292,14 @@ async fn real_relay_mvp_protocol_journey() {
         .unwrap();
     assert_eq!(merged.contexts[&context_key], 20);
 
-    for event in [&profile, &root, &nested, &read_events[0], &read_events_b[0]] {
+    for event in [
+        &profile,
+        &root,
+        &nested,
+        &media_event,
+        &read_events[0],
+        &read_events_b[0],
+    ] {
         let found = http
             .query(&[QueryFilter {
                 ids: vec![event.id.to_hex()],

@@ -32,6 +32,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
         pubkey: self_pubkey.clone(),
         created_at: 1,
         content: "**bold** [safe](https://example.test) `code`".into(),
+        attachments: Vec::new(),
         root_event_id: None,
         parent_event_id: None,
         deleted: false,

@@ -11,6 +11,7 @@ fn bench_timeline(c: &mut Criterion) {
             pubkey: "a".repeat(64),
             created_at: index,
             content: format!("message **{index}** with unicode 🐝"),
+            attachments: Vec::new(),
             root_event_id: None,
             parent_event_id: None,
             deleted: false,

@@ -5,6 +5,7 @@ pub mod auth;
 pub mod config;
 pub mod domain;
 pub mod error;
+pub mod media;
 pub mod paths;
 pub mod protocol;
 pub mod realtime;

@@ -44,6 +44,11 @@ enum Command {
         #[command(subcommand)]
         command: CacheCommand,
     },
+    /// Inspect and manage terminal media support.
+    Media {
+        #[command(subcommand)]
+        command: MediaCommand,
+    },
     /// Inspect and select color themes.
     Theme {
         #[command(subcommand)]
@@ -180,6 +185,23 @@ enum CacheCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum MediaCommand {
+    /// Print configured protocol, limits, and disk-cache use.
+    Status,
+    /// Evict oldest verified blobs until the configured quota is met.
+    Prune,
+    /// Remove cached and staged media without altering messages.
+    Clear {
+        #[arg(long)]
+        community: Option<Uuid>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum ThemeCommand {
     /// List themes compiled into this bzz binary.
     List,
@@ -242,6 +264,7 @@ async fn run() -> Result<()> {
             community_command(command, &paths, &mut config).await
         }
         Some(Command::Cache { command }) => cache_command(command, &paths, &mut config),
+        Some(Command::Media { command }) => media_command(command, &paths, &config),
         Some(Command::Theme { command }) => theme_command(command, &paths, &mut config),
         Some(Command::Check) => {
             config.validate()?;
@@ -251,7 +274,7 @@ async fn run() -> Result<()> {
             }
             let mut store = Store::open(paths.database_file())?;
             store.sync_config(&config)?;
-            println!("configuration, theme, and database are valid");
+            println!("configuration, theme, media, and database are valid");
             Ok(())
         }
         Some(Command::Paths) => {
@@ -506,9 +529,15 @@ async fn community_command(
                 return Err(Error::Config(format!("community {id} does not exist")));
             }
             config.save(paths)?;
-            if purge && paths.database_file().exists() {
-                let store = Store::open(paths.database_file())?;
-                store.purge_community(id)?;
+            if purge {
+                if paths.database_file().exists() {
+                    let store = Store::open(paths.database_file())?;
+                    store.purge_community(id)?;
+                }
+                let media = paths.media_cache_dir().join(id.to_string());
+                if media.exists() {
+                    std::fs::remove_dir_all(&media).map_err(|error| Error::io(&media, error))?;
+                }
             }
             Ok(())
         }
@@ -548,9 +577,19 @@ fn cache_command(command: CacheCommand, paths: &Paths, config: &mut Config) -> R
                             .map_err(|error| Error::io(&candidate, error))?;
                     }
                 }
+                let media = paths.media_cache_dir();
+                if media.exists() {
+                    std::fs::remove_dir_all(&media).map_err(|error| Error::io(&media, error))?;
+                    std::fs::create_dir_all(&media).map_err(|error| Error::io(&media, error))?;
+                    bzz::paths::set_private_permissions(&media)?;
+                }
             } else if let Some(id) = community {
                 let store = Store::open(paths.database_file())?;
                 store.purge_community(id)?;
+                let media = paths.media_cache_dir().join(id.to_string());
+                if media.exists() {
+                    std::fs::remove_dir_all(&media).map_err(|error| Error::io(&media, error))?;
+                }
                 config.communities.retain(|entry| entry.id != id);
                 if config.default_community == Some(id) {
                     config.default_community = config.communities.first().map(|entry| entry.id);
@@ -562,6 +601,115 @@ fn cache_command(command: CacheCommand, paths: &Paths, config: &mut Config) -> R
             Ok(())
         }
     }
+}
+
+fn media_command(command: MediaCommand, paths: &Paths, config: &Config) -> Result<()> {
+    match command {
+        MediaCommand::Status => {
+            let used = directory_size(&paths.media_cache_dir())?;
+            println!(
+                "enabled:       {}\nprotocol:      {:?}\nautoload:      {:?}\ninline rows:   {}\ncache used:    {} bytes\ncache limit:   {} bytes\ndownload jobs: {}\ndecode jobs:   {}",
+                config.media.enabled,
+                config.media.protocol,
+                config.media.autoload,
+                config.media.max_inline_rows,
+                used,
+                config.media.disk_cache_bytes,
+                config.media.download_concurrency,
+                config.media.decode_concurrency,
+            );
+            Ok(())
+        }
+        MediaCommand::Prune => {
+            let removed =
+                prune_media_cache(&paths.media_cache_dir(), config.media.disk_cache_bytes)?;
+            println!("removed {removed} cached media file(s)");
+            Ok(())
+        }
+        MediaCommand::Clear {
+            community,
+            all,
+            yes,
+        } => {
+            if !yes {
+                return Err(Error::Config("media cache clear requires --yes".into()));
+            }
+            let path = if all {
+                paths.media_cache_dir()
+            } else if let Some(id) = community {
+                paths.media_cache_dir().join(id.to_string())
+            } else {
+                return Err(Error::Config("choose --all or --community <id>".into()));
+            };
+            if path.exists() {
+                std::fs::remove_dir_all(&path).map_err(|error| Error::io(&path, error))?;
+            }
+            std::fs::create_dir_all(&path).map_err(|error| Error::io(&path, error))?;
+            bzz::paths::set_private_permissions(&path)?;
+            Ok(())
+        }
+    }
+}
+
+fn prune_media_cache(path: &std::path::Path, limit: u64) -> Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let mut directories = vec![path.to_path_buf()];
+    let mut files = Vec::new();
+    let mut total = 0_u64;
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(&directory).map_err(|error| Error::io(&directory, error))? {
+            let entry = entry.map_err(|error| Error::io(&directory, error))?;
+            let metadata = entry
+                .metadata()
+                .map_err(|error| Error::io(entry.path(), error))?;
+            if metadata.is_dir() {
+                if entry.file_name() != "staging" {
+                    directories.push(entry.path());
+                }
+            } else if metadata.is_file() {
+                total = total.saturating_add(metadata.len());
+                files.push((
+                    metadata
+                        .modified()
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                    metadata.len(),
+                    entry.path(),
+                ));
+            }
+        }
+    }
+    files.sort_by_key(|(modified, _, _)| *modified);
+    let mut removed = 0;
+    for (_, size, file) in files {
+        if total <= limit {
+            break;
+        }
+        std::fs::remove_file(&file).map_err(|error| Error::io(&file, error))?;
+        total = total.saturating_sub(size);
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+fn directory_size(path: &std::path::Path) -> Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let mut total = 0_u64;
+    for entry in std::fs::read_dir(path).map_err(|error| Error::io(path, error))? {
+        let entry = entry.map_err(|error| Error::io(path, error))?;
+        let metadata = entry
+            .metadata()
+            .map_err(|error| Error::io(entry.path(), error))?;
+        if metadata.is_dir() {
+            total = total.saturating_add(directory_size(&entry.path())?);
+        } else if metadata.is_file() {
+            total = total.saturating_add(metadata.len());
+        }
+    }
+    Ok(total)
 }
 
 fn theme_command(command: ThemeCommand, paths: &Paths, config: &mut Config) -> Result<()> {
