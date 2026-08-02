@@ -199,8 +199,10 @@ fn same_file(before: &fs::Metadata, opened: &fs::Metadata) -> bool {
 #[cfg(windows)]
 fn same_file(before: &fs::Metadata, opened: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt as _;
-    before.volume_serial_number() == opened.volume_serial_number()
-        && before.file_index() == opened.file_index()
+    before.file_attributes() == opened.file_attributes()
+        && before.len() == opened.len()
+        && before.created().ok() == opened.created().ok()
+        && before.modified().ok() == opened.modified().ok()
 }
 
 #[cfg(not(any(unix, windows)))]
