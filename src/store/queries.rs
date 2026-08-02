@@ -550,6 +550,58 @@ impl Store {
         Ok(())
     }
 
+    pub fn clear_media_cache_entries(&self, community: Option<Uuid>) -> Result<usize> {
+        let removed = if let Some(community) = community {
+            self.connection.execute(
+                "DELETE FROM media_cache WHERE community_id=?1",
+                [community.to_string()],
+            )?
+        } else {
+            self.connection.execute("DELETE FROM media_cache", [])?
+        };
+        Ok(removed)
+    }
+
+    pub fn delete_media_cache_entries(&mut self, entries: &[(Uuid, String)]) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        for (community, hash) in entries {
+            transaction.execute(
+                "DELETE FROM media_cache WHERE community_id=?1 AND sha256=?2",
+                params![community.to_string(), hash],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn retain_media_cache_entries(
+        &mut self,
+        present: &std::collections::HashSet<(String, String)>,
+    ) -> Result<usize> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT community_id,sha256 FROM media_cache")?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(statement);
+        let stale = rows
+            .into_iter()
+            .filter(|entry| !present.contains(entry))
+            .collect::<Vec<_>>();
+        let transaction = self.connection.transaction()?;
+        for (community, hash) in &stale {
+            transaction.execute(
+                "DELETE FROM media_cache WHERE community_id=?1 AND sha256=?2",
+                params![community, hash],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(stale.len())
+    }
+
     pub fn purge_community(&self, community_id: Uuid) -> Result<()> {
         self.connection.execute(
             "DELETE FROM communities WHERE id=?1",

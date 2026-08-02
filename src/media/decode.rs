@@ -17,6 +17,7 @@ const MAX_PIXELS: u64 = 25_000_000;
 const MAX_AXIS: u32 = 16_384;
 const MAX_IMAGE_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 100 * 1024 * 1024;
+const MAX_VIDEO_BYTES: u64 = 500 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct StagedFile {
@@ -77,12 +78,20 @@ pub fn stage_file(source: &Path, staging_dir: &Path) -> Result<StagedFile> {
             "attachment path must be a regular non-symlink file".into(),
         ));
     }
-    if symlink.len() == 0 || symlink.len() > MAX_FILE_BYTES {
+    if symlink.len() == 0 || symlink.len() > MAX_VIDEO_BYTES {
         return Err(Error::Config(
             "attachment size is outside the supported range".into(),
         ));
     }
     let mut source_file = fs::File::open(source).map_err(|error| Error::io(source, error))?;
+    let opened = source_file
+        .metadata()
+        .map_err(|error| Error::io(source, error))?;
+    if !same_file(&symlink, &opened) {
+        return Err(Error::Config(
+            "attachment path changed while it was being opened".into(),
+        ));
+    }
     let mut prefix = [0_u8; 8 * 1024];
     let prefix_len = source_file
         .read(&mut prefix)
@@ -95,6 +104,12 @@ pub fn stage_file(source: &Path, staging_dir: &Path) -> Result<StagedFile> {
             "unsupported attachment type: {detected}"
         )));
     }
+    let upload_limit = upload_limit(detected);
+    if symlink.len() > upload_limit {
+        return Err(Error::Config(
+            "attachment exceeds the upload limit for its media type".into(),
+        ));
+    }
     fs::create_dir_all(staging_dir).map_err(|error| Error::io(staging_dir, error))?;
     set_private_permissions(staging_dir)?;
     let filename = sanitize_filename(
@@ -104,7 +119,18 @@ pub fn stage_file(source: &Path, staging_dir: &Path) -> Result<StagedFile> {
             .unwrap_or("file"),
     );
     if detected.starts_with("image/") {
-        let bytes = fs::read(source).map_err(|error| Error::io(source, error))?;
+        use std::io::Seek as _;
+        source_file
+            .rewind()
+            .map_err(|error| Error::io(source, error))?;
+        let mut bytes = Vec::with_capacity(usize::try_from(symlink.len()).unwrap_or(0));
+        source_file
+            .take(MAX_IMAGE_BYTES.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|error| Error::io(source, error))?;
+        if bytes.len() as u64 > MAX_IMAGE_BYTES {
+            return Err(Error::Config("image exceeds the upload limit".into()));
+        }
         let (body, mime) = sanitize_image(bytes, detected)?;
         if body.len() as u64 > MAX_IMAGE_BYTES {
             return Err(Error::Config(
@@ -135,7 +161,7 @@ pub fn stage_file(source: &Path, staging_dir: &Path) -> Result<StagedFile> {
             break;
         }
         copied = copied.saturating_add(read as u64);
-        if copied > MAX_FILE_BYTES {
+        if copied > upload_limit {
             let _ = fs::remove_file(&temporary);
             return Err(Error::Config("attachment exceeds the upload limit".into()));
         }
@@ -162,6 +188,36 @@ pub fn stage_file(source: &Path, staging_dir: &Path) -> Result<StagedFile> {
         sha256,
         size: copied,
     })
+}
+
+#[cfg(unix)]
+fn same_file(before: &fs::Metadata, opened: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    before.dev() == opened.dev() && before.ino() == opened.ino()
+}
+
+#[cfg(windows)]
+fn same_file(before: &fs::Metadata, opened: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    before.volume_serial_number() == opened.volume_serial_number()
+        && before.file_index() == opened.file_index()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_file(before: &fs::Metadata, opened: &fs::Metadata) -> bool {
+    before.len() == opened.len()
+        && before.modified().ok() == opened.modified().ok()
+        && before.created().ok() == opened.created().ok()
+}
+
+fn upload_limit(mime: &str) -> u64 {
+    if mime == "video/mp4" {
+        MAX_VIDEO_BYTES
+    } else if mime.starts_with("image/") {
+        MAX_IMAGE_BYTES
+    } else {
+        MAX_FILE_BYTES
+    }
 }
 
 fn write_staged_bytes(
@@ -528,6 +584,13 @@ mod tests {
     fn dimension_limits_are_checked() {
         assert!(validate_dimensions(1, 1).is_ok());
         assert!(validate_dimensions(16_384, 16_384).is_err());
+    }
+
+    #[test]
+    fn mp4_uses_the_relays_larger_explicit_upload_ceiling() {
+        assert_eq!(upload_limit("application/octet-stream"), 100 * 1024 * 1024);
+        assert_eq!(upload_limit("image/png"), 50 * 1024 * 1024);
+        assert_eq!(upload_limit("video/mp4"), 500 * 1024 * 1024);
     }
 
     #[test]

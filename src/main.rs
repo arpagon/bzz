@@ -621,8 +621,12 @@ fn media_command(command: MediaCommand, paths: &Paths, config: &Config) -> Resul
             Ok(())
         }
         MediaCommand::Prune => {
-            let removed =
+            let (removed, entries) =
                 prune_media_cache(&paths.media_cache_dir(), config.media.disk_cache_bytes)?;
+            if !entries.is_empty() && paths.database_file().exists() {
+                let mut store = Store::open(paths.database_file())?;
+                store.delete_media_cache_entries(&entries)?;
+            }
             println!("removed {removed} cached media file(s)");
             Ok(())
         }
@@ -646,42 +650,57 @@ fn media_command(command: MediaCommand, paths: &Paths, config: &Config) -> Resul
             }
             std::fs::create_dir_all(&path).map_err(|error| Error::io(&path, error))?;
             bzz::paths::set_private_permissions(&path)?;
+            if paths.database_file().exists() {
+                let store = Store::open(paths.database_file())?;
+                store.clear_media_cache_entries(if all { None } else { community })?;
+            }
             Ok(())
         }
     }
 }
 
-fn prune_media_cache(path: &std::path::Path, limit: u64) -> Result<usize> {
+fn prune_media_cache(path: &std::path::Path, limit: u64) -> Result<(usize, Vec<(Uuid, String)>)> {
     if !path.exists() {
-        return Ok(0);
+        return Ok((0, Vec::new()));
     }
     let mut directories = vec![path.to_path_buf()];
     let mut files = Vec::new();
     let mut total = 0_u64;
+    let mut visited = 0_usize;
     while let Some(directory) = directories.pop() {
         for entry in std::fs::read_dir(&directory).map_err(|error| Error::io(&directory, error))? {
             let entry = entry.map_err(|error| Error::io(&directory, error))?;
-            let metadata = entry
-                .metadata()
-                .map_err(|error| Error::io(entry.path(), error))?;
-            if metadata.is_dir() {
+            visited += 1;
+            if visited > 10_000 {
+                return Err(Error::Config(
+                    "media cache contains too many entries to prune safely".into(),
+                ));
+            }
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|error| Error::io(&path, error))?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
                 if entry.file_name() != "staging" {
-                    directories.push(entry.path());
+                    directories.push(path);
                 }
-            } else if metadata.is_file() {
+            } else if file_type.is_file() {
+                let metadata = entry.metadata().map_err(|error| Error::io(&path, error))?;
                 total = total.saturating_add(metadata.len());
                 files.push((
                     metadata
                         .modified()
                         .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
                     metadata.len(),
-                    entry.path(),
+                    path,
                 ));
             }
         }
     }
     files.sort_by_key(|(modified, _, _)| *modified);
     let mut removed = 0;
+    let mut removed_entries = Vec::new();
     for (_, size, file) in files {
         if total <= limit {
             break;
@@ -689,24 +708,57 @@ fn prune_media_cache(path: &std::path::Path, limit: u64) -> Result<usize> {
         std::fs::remove_file(&file).map_err(|error| Error::io(&file, error))?;
         total = total.saturating_sub(size);
         removed += 1;
+        if let Some(entry) = media_cache_identity(path, &file) {
+            removed_entries.push(entry);
+        }
     }
-    Ok(removed)
+    Ok((removed, removed_entries))
+}
+
+fn media_cache_identity(root: &std::path::Path, path: &std::path::Path) -> Option<(Uuid, String)> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut components = relative.components();
+    let community = components.next()?.as_os_str().to_str()?.parse().ok()?;
+    let filename = components.next()?.as_os_str().to_str()?;
+    if components.next().is_some() {
+        return None;
+    }
+    let hash = filename.split_once('.')?.0;
+    (hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')))
+    .then(|| (community, hash.to_owned()))
 }
 
 fn directory_size(path: &std::path::Path) -> Result<u64> {
     if !path.exists() {
         return Ok(0);
     }
+    let mut directories = vec![path.to_path_buf()];
     let mut total = 0_u64;
-    for entry in std::fs::read_dir(path).map_err(|error| Error::io(path, error))? {
-        let entry = entry.map_err(|error| Error::io(path, error))?;
-        let metadata = entry
-            .metadata()
-            .map_err(|error| Error::io(entry.path(), error))?;
-        if metadata.is_dir() {
-            total = total.saturating_add(directory_size(&entry.path())?);
-        } else if metadata.is_file() {
-            total = total.saturating_add(metadata.len());
+    let mut visited = 0_usize;
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(&directory).map_err(|error| Error::io(&directory, error))? {
+            let entry = entry.map_err(|error| Error::io(&directory, error))?;
+            visited += 1;
+            if visited > 10_000 {
+                return Err(Error::Config(
+                    "media cache contains too many entries to measure safely".into(),
+                ));
+            }
+            let entry_path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|error| Error::io(&entry_path, error))?;
+            if file_type.is_dir() {
+                directories.push(entry_path);
+            } else if file_type.is_file() {
+                let metadata = entry
+                    .metadata()
+                    .map_err(|error| Error::io(&entry_path, error))?;
+                total = total.saturating_add(metadata.len());
+            }
         }
     }
     Ok(total)

@@ -14,8 +14,10 @@ fragments are rejected.
 
 Image bodies are bounded and SHA-256/size/MIME checked before decode. JPEG,
 PNG, GIF, and WebP render inline. Animated formats intentionally show their
-first frame. Video and generic files remain text cards; a separately
-content-addressed video poster can be treated as an image in a future update.
+first frame. Video and generic files remain text cards. When a video carries a
+separately content-addressed `image` poster, an explicit preview fetches it with
+hash-scoped authorization, bounds and verifies its response MIME/size/hash, and
+renders it as a static image. Videos are never played.
 
 Press `p` on a message to open its attachment preview:
 
@@ -84,8 +86,11 @@ restart.
 Verified originals are stored under the private cache directory, partitioned
 by community UUID. No bytes are shared between communities. Cached media can
 render in locked/offline recovery mode, but no new authorization or network
-request is made. The default disk quota is 512 MiB with least-recently-modified
-eviction; staging files are not quota-evicted while referenced by a draft.
+request is made. Startup removes partial/symlink entries and reconciles stale
+SQLite metadata. The default disk quota is 512 MiB with access-time eviction;
+staging files are not quota-evicted while referenced by a draft. Prepared
+terminal images use a byte-weighted in-memory LRU and are rejected when one
+entry cannot fit the configured memory budget.
 
 Media cache files are plaintext, like the local SQLite message cache. Set
 `disk_cache_bytes = 0` for memory-only inline media. Use:
@@ -107,7 +112,7 @@ Cache removal cannot guarantee physical secure erasure on SSDs.
 | Image | 50 MiB |
 | GIF | 10 MiB |
 | Generic file | 100 MiB |
-| Video explicit save/upload | 500 MiB at the protocol layer |
+| Video explicit save/upload | 500 MiB |
 | Decoded image | 25 megapixels, 16,384 pixels per axis |
 | Inline height | 12 terminal rows |
 | Downloads/uploads | 4 concurrent |
@@ -115,5 +120,5 @@ Cache removal cannot guarantee physical secure erasure on SSDs.
 | Inbound descriptors rendered per message | 16 |
 | Outbound attachments | 8 |
 
-The local composer currently accepts files up to 100 MiB. Video playback is not
-implemented.
+The local composer accepts images up to 50 MiB, generic files up to 100 MiB,
+and MP4 video up to 500 MiB. Video playback is not implemented.

@@ -134,6 +134,44 @@ async fn real_relay_mvp_protocol_journey() {
         b"generated bzz media fixture\n"
     );
 
+    let mut generated_png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(3, 2)
+        .write_to(&mut generated_png, image::ImageFormat::Png)
+        .unwrap();
+    let generated_png = generated_png.into_inner();
+    let image_source = media_root.path().join("generated.png");
+    tokio::fs::write(&image_source, &generated_png)
+        .await
+        .unwrap();
+    let image_attachment = media_client
+        .upload(&image_source, "image/png", Some("generated.png".into()))
+        .await
+        .unwrap();
+    let image_event = signer
+        .sign(
+            buzz_sdk::build_message(
+                channel,
+                &image_attachment.markdown_line(),
+                None,
+                &[],
+                false,
+                &[image_attachment.imeta_tag()],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(session.publish(image_event.clone()).await.unwrap().accepted);
+    let image_download = media_root.path().join("downloaded.png");
+    media_client
+        .fetch(&image_attachment, &image_download)
+        .await
+        .unwrap();
+    assert_eq!(
+        tokio::fs::read(&image_download).await.unwrap(),
+        generated_png
+    );
+
     let identity = IdentityConfig {
         id: uuid::Uuid::new_v4(),
         label: "integration".into(),
@@ -187,6 +225,30 @@ async fn real_relay_mvp_protocol_journey() {
         .await
         .unwrap();
     assert!(session.publish(root.clone()).await.unwrap().accepted);
+    let image_thread = signer
+        .sign(
+            buzz_sdk::build_message(
+                channel,
+                &image_attachment.markdown_line(),
+                Some(&buzz_sdk::ThreadRef {
+                    root_event_id: root.id,
+                    parent_event_id: root.id,
+                }),
+                &[],
+                false,
+                &[image_attachment.imeta_tag()],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        session
+            .publish(image_thread.clone())
+            .await
+            .unwrap()
+            .accepted
+    );
     let direct = signer
         .sign(
             buzz_sdk::build_message(
@@ -297,6 +359,8 @@ async fn real_relay_mvp_protocol_journey() {
         &root,
         &nested,
         &media_event,
+        &image_event,
+        &image_thread,
         &read_events[0],
         &read_events_b[0],
     ] {
@@ -442,6 +506,13 @@ async fn real_relay_mvp_protocol_journey() {
             .iter()
             .all(|id| cached.iter().any(|message| &message.event_id == id))
     );
+    for expected in [&media_event, &image_event] {
+        let projected = cached
+            .iter()
+            .find(|message| message.event_id == expected.id.to_hex())
+            .expect("media message was cached");
+        assert_eq!(projected.attachments.len(), 1);
+    }
     let root_id = root.id.to_hex();
     let cached_thread = local_store
         .call({
@@ -455,6 +526,12 @@ async fn real_relay_mvp_protocol_journey() {
             .iter()
             .any(|message| message.event_id == nested.id.to_hex())
     );
+    let cached_thread_image = cached_thread
+        .iter()
+        .find(|message| message.event_id == image_thread.id.to_hex())
+        .expect("thread image was cached");
+    assert_eq!(cached_thread_image.attachments.len(), 1);
+    assert_eq!(cached_thread_image.attachments[0].mime, "image/png");
     let cached_reactions = local_store
         .call(move |store| store.reactions(local_community, &root_id))
         .await

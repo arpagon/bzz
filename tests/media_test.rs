@@ -158,6 +158,84 @@ async fn authenticated_media_download_is_hash_verified_and_origin_bound() {
 }
 
 #[tokio::test]
+async fn video_posters_are_hash_bound_and_magic_verified() {
+    let image = image::DynamicImage::new_rgb8(3, 2);
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let body = encoded.into_inner();
+    let hash = hex::encode(Sha256::digest(&body));
+    let (base, captured) = serve_once(body.clone(), "image/png").await;
+    let client = MediaClient::new(
+        base.clone(),
+        base.authority().to_owned(),
+        SignerHandle::spawn(Keys::generate()),
+        1,
+    )
+    .unwrap();
+    let temporary = TempDir::new().unwrap();
+    let destination = temporary.path().join("poster.png");
+    let poster_url = base.join(&format!("media/{hash}.png")).unwrap();
+    let verified = client
+        .fetch_poster(poster_url.as_str(), &hash, &destination)
+        .await
+        .unwrap();
+    assert_eq!(verified.sha256, hash);
+    assert_eq!(verified.mime, "image/png");
+    assert_eq!(verified.size, body.len() as u64);
+    assert_eq!(tokio::fs::read(destination).await.unwrap(), body);
+    let request = captured.lock().unwrap().clone();
+    assert!(request.to_ascii_lowercase().starts_with("get /media/"));
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: nostr ")
+    );
+}
+
+#[tokio::test]
+async fn startup_repair_drops_metadata_for_missing_cache_files() {
+    let temporary = TempDir::new().unwrap();
+    let paths = Paths {
+        config_dir: temporary.path().join("config"),
+        data_dir: temporary.path().join("data"),
+        cache_dir: temporary.path().join("cache"),
+    };
+    paths.ensure().unwrap();
+    let keys = Keys::generate();
+    let identity = Uuid::new_v4();
+    let community = Uuid::new_v4();
+    let config = Config {
+        identities: vec![IdentityConfig {
+            id: identity,
+            label: "repair".into(),
+            pubkey: keys.public_key().to_hex(),
+            backend: KeyBackend::Keychain,
+            key_ref: "repair".into(),
+        }],
+        communities: vec![CommunityConfig {
+            id: community,
+            label: "repair".into(),
+            relay_url: "wss://buzz.example/".into(),
+            identity_id: identity,
+            allow_insecure_localhost: false,
+            theme: None,
+        }],
+        default_community: Some(community),
+        ..Config::default()
+    };
+    let mut store = Store::open(paths.database_file()).unwrap();
+    store.sync_config(&config).unwrap();
+    store
+        .record_media_cache(community, &"9".repeat(64), "image/png", 42, None, None)
+        .unwrap();
+    let handle = StoreHandle::spawn(store).unwrap();
+    let runtime = MediaRuntime::new(config.media.clone(), &paths, handle);
+    assert_eq!(runtime.repair_cache_metadata().await.unwrap(), 1);
+}
+
+#[tokio::test]
 async fn verified_offline_images_are_prepared_off_the_ui_thread() {
     let temporary = TempDir::new().unwrap();
     let paths = Paths {
@@ -233,6 +311,91 @@ async fn verified_offline_images_are_prepared_off_the_ui_thread() {
         }
     }
     panic!("offline image was not prepared");
+}
+
+#[tokio::test]
+async fn verified_offline_video_posters_are_prepared_for_preview() {
+    let temporary = TempDir::new().unwrap();
+    let paths = Paths {
+        config_dir: temporary.path().join("config"),
+        data_dir: temporary.path().join("data"),
+        cache_dir: temporary.path().join("cache"),
+    };
+    paths.ensure().unwrap();
+    let keys = Keys::generate();
+    let identity = Uuid::new_v4();
+    let community = Uuid::new_v4();
+    let config = Config {
+        identities: vec![IdentityConfig {
+            id: identity,
+            label: "offline-poster".into(),
+            pubkey: keys.public_key().to_hex(),
+            backend: KeyBackend::Keychain,
+            key_ref: "offline-poster".into(),
+        }],
+        communities: vec![CommunityConfig {
+            id: community,
+            label: "offline-poster".into(),
+            relay_url: "wss://buzz.example/".into(),
+            identity_id: identity,
+            allow_insecure_localhost: false,
+            theme: None,
+        }],
+        default_community: Some(community),
+        ..Config::default()
+    };
+    let mut store = Store::open(paths.database_file()).unwrap();
+    store.sync_config(&config).unwrap();
+    let handle = StoreHandle::spawn(store).unwrap();
+    let mut media_config = config.media.clone();
+    media_config.protocol = MediaProtocol::Halfblocks;
+    let mut runtime = MediaRuntime::new(media_config, &paths, handle);
+    runtime.select_cached(community);
+
+    let image = image::DynamicImage::new_rgb8(3, 2);
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let body = encoded.into_inner();
+    let poster_hash = hex::encode(Sha256::digest(&body));
+    let video_hash = "4".repeat(64);
+    let attachment = Attachment {
+        index: 0,
+        url: format!("https://buzz.example/media/{video_hash}.mp4"),
+        mime: "video/mp4".into(),
+        sha256: video_hash,
+        size: 42,
+        width: None,
+        height: None,
+        alt: Some("generated video".into()),
+        blurhash: None,
+        thumb: None,
+        poster: Some(format!("https://buzz.example/media/{poster_hash}.png")),
+        filename: Some("generated.mp4".into()),
+        duration_millis: Some(1_000),
+        kind: MediaKind::Video,
+        spoiler: false,
+        error: None,
+    };
+    let cache = paths
+        .media_cache_dir()
+        .join(community.to_string())
+        .join(format!("{poster_hash}.png"));
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    std::fs::write(&cache, body).unwrap();
+    runtime.request_poster(&attachment, 20);
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        runtime.poll();
+        if matches!(
+            runtime.poster_state(&attachment, 20),
+            Some(MediaState::Ready(_))
+        ) {
+            return;
+        }
+    }
+    panic!("offline video poster was not prepared");
 }
 
 #[tokio::test]

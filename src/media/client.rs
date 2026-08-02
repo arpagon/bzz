@@ -39,7 +39,16 @@ pub struct MediaClient {
     transfer_slots: Arc<Semaphore>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedPoster {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub size: u64,
+    pub mime: String,
+}
+
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BlobDescriptor {
     url: String,
     sha256: String,
@@ -98,39 +107,7 @@ impl MediaClient {
             .map_err(|_| Error::Network("media transfer queue stopped".into()))?;
         let url = validate_media_url(&attachment.url, &self.base, Some(&attachment.sha256), false)
             .map_err(Error::Protocol)?;
-        let auth = self.get_auth(&attachment.sha256).await?;
-        let mut attempt = 0_u32;
-        let response = loop {
-            let response = self
-                .client
-                .get(&url)
-                .header(header::AUTHORIZATION, &auth)
-                .header(header::ACCEPT_ENCODING, "identity")
-                .send()
-                .await;
-            match response {
-                Ok(response)
-                    if attempt < 2
-                        && (response.status() == StatusCode::TOO_MANY_REQUESTS
-                            || response.status().is_server_error()) =>
-                {
-                    attempt += 1;
-                    tokio::time::sleep(Duration::from_millis(200 * (1 << attempt))).await;
-                }
-                Ok(response) => break response,
-                Err(error) if attempt < 2 && (error.is_connect() || error.is_timeout()) => {
-                    attempt += 1;
-                    tokio::time::sleep(Duration::from_millis(200 * (1 << attempt))).await;
-                }
-                Err(error) => return Err(Error::Network(error.to_string())),
-            }
-        };
-        if response.status().is_redirection() {
-            return Err(Error::Network("media redirect refused".into()));
-        }
-        if !response.status().is_success() {
-            return Err(status_error(response.status()));
-        }
+        let response = self.send_get(&url, &attachment.sha256).await?;
         if response
             .content_length()
             .is_some_and(|size| size != attachment.size || size > limit)
@@ -139,19 +116,23 @@ impl MediaClient {
                 "media response size does not match its descriptor".into(),
             ));
         }
-        if let Some(content_type) = response.headers().get(header::CONTENT_TYPE) {
-            let content_type = content_type
-                .to_str()
-                .unwrap_or_default()
-                .split(';')
-                .next()
-                .unwrap_or_default()
-                .trim();
-            if !content_type.eq_ignore_ascii_case(&attachment.mime) {
-                return Err(Error::Protocol(
-                    "media response MIME does not match its descriptor".into(),
-                ));
-            }
+        validate_identity_encoding(&response)?;
+        if let Some(response_hash) = response.headers().get("X-SHA-256")
+            && response_hash.to_str().unwrap_or_default() != attachment.sha256
+        {
+            return Err(Error::Protocol(
+                "media response hash header does not match its descriptor".into(),
+            ));
+        }
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .map(normalized_content_type)
+            .ok_or_else(|| Error::Protocol("media response MIME is missing".into()))?;
+        if !content_type.eq_ignore_ascii_case(&attachment.mime) {
+            return Err(Error::Protocol(
+                "media response MIME does not match its descriptor".into(),
+            ));
         }
         let parent = destination
             .parent()
@@ -233,6 +214,142 @@ impl MediaClient {
             }
         }
         Ok(destination.to_path_buf())
+    }
+
+    /// Fetch a separately content-addressed NIP-71 video poster. `imeta image`
+    /// carries a hash-bound URL but no size/MIME descriptor, so those values are
+    /// discovered from a bounded response and checked against the file magic.
+    pub async fn fetch_poster(
+        &self,
+        poster_url: &str,
+        expected_hash: &str,
+        destination: &Path,
+    ) -> Result<VerifiedPoster> {
+        let url = validate_media_url(poster_url, &self.base, Some(expected_hash), false)
+            .map_err(Error::Protocol)?;
+        if destination.exists() {
+            return verify_poster_file(destination, expected_hash).await;
+        }
+        let _permit = self
+            .transfer_slots
+            .acquire()
+            .await
+            .map_err(|_| Error::Network("media transfer queue stopped".into()))?;
+        let response = self.send_get(&url, expected_hash).await?;
+        validate_identity_encoding(&response)?;
+        let declared_size = response.content_length();
+        if declared_size.is_some_and(|size| size == 0 || size > IMAGE_LIMIT) {
+            return Err(Error::Protocol(
+                "video poster exceeds the image transfer limit".into(),
+            ));
+        }
+        if let Some(response_hash) = response.headers().get("X-SHA-256")
+            && response_hash.to_str().unwrap_or_default() != expected_hash
+        {
+            return Err(Error::Protocol(
+                "video poster hash header does not match its URL".into(),
+            ));
+        }
+        let mime = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .map(normalized_content_type)
+            .filter(|mime| supported_image_mime(mime))
+            .ok_or_else(|| Error::Protocol("video poster MIME is missing or unsupported".into()))?
+            .to_owned();
+        let limit = if mime == "image/gif" {
+            GIF_LIMIT
+        } else {
+            IMAGE_LIMIT
+        };
+        if response.content_length().is_some_and(|size| size > limit) {
+            return Err(Error::Protocol(
+                "video poster exceeds its format limit".into(),
+            ));
+        }
+
+        let parent = destination
+            .parent()
+            .ok_or_else(|| Error::Config("video poster cache path has no parent".into()))?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| Error::io(parent, error))?;
+        set_private_permissions(parent)?;
+        let temporary = parent.join(format!(".{}.part", Uuid::new_v4()));
+        let mut output = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .await
+            .map_err(|error| Error::io(&temporary, error))?;
+        set_private_permissions(&temporary)?;
+        let mut stream = response.bytes_stream();
+        let mut digest = Sha256::new();
+        let mut written = 0_u64;
+        let result = async {
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|error| Error::Network(error.to_string()))?;
+                written = written
+                    .checked_add(chunk.len() as u64)
+                    .ok_or_else(|| Error::Protocol("video poster size overflow".into()))?;
+                if written > limit {
+                    return Err(Error::Protocol(
+                        "video poster exceeded its transfer limit".into(),
+                    ));
+                }
+                digest.update(&chunk);
+                output
+                    .write_all(&chunk)
+                    .await
+                    .map_err(|error| Error::io(&temporary, error))?;
+            }
+            output
+                .flush()
+                .await
+                .map_err(|error| Error::io(&temporary, error))?;
+            output
+                .sync_all()
+                .await
+                .map_err(|error| Error::io(&temporary, error))?;
+            if declared_size.is_some_and(|size| size != written) {
+                return Err(Error::Protocol(
+                    "video poster response length is inconsistent".into(),
+                ));
+            }
+            if written == 0 || hex::encode(digest.finalize()) != expected_hash {
+                return Err(Error::Protocol("video poster hash mismatch".into()));
+            }
+            Ok(())
+        }
+        .await;
+        drop(output);
+        if let Err(error) = result {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return Err(error);
+        }
+        let inferred = infer::get_from_path(&temporary)
+            .map_err(|error| Error::io(&temporary, error))?
+            .map(|kind| kind.mime_type());
+        if inferred != Some(mime.as_str()) {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return Err(Error::Protocol(
+                "video poster bytes do not match the response MIME".into(),
+            ));
+        }
+        if let Err(error) = tokio::fs::rename(&temporary, destination).await {
+            if destination.exists() {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                return verify_poster_file(destination, expected_hash).await;
+            }
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return Err(Error::io(destination, error));
+        }
+        Ok(VerifiedPoster {
+            path: destination.to_path_buf(),
+            sha256: expected_hash.to_owned(),
+            size: written,
+            mime,
+        })
     }
 
     pub async fn upload(
@@ -363,6 +480,42 @@ impl MediaClient {
         })
     }
 
+    async fn send_get(&self, url: &str, sha256: &str) -> Result<reqwest::Response> {
+        let auth = self.get_auth(sha256).await?;
+        let mut attempt = 0_u32;
+        loop {
+            let response = self
+                .client
+                .get(url)
+                .header(header::AUTHORIZATION, &auth)
+                .header(header::ACCEPT_ENCODING, "identity")
+                .send()
+                .await;
+            match response {
+                Ok(response)
+                    if attempt < 2
+                        && (response.status() == StatusCode::TOO_MANY_REQUESTS
+                            || response.status().is_server_error()) =>
+                {
+                    attempt += 1;
+                    tokio::time::sleep(Duration::from_millis(200 * (1 << attempt))).await;
+                }
+                Ok(response) if response.status().is_redirection() => {
+                    return Err(Error::Network("media redirect refused".into()));
+                }
+                Ok(response) if !response.status().is_success() => {
+                    return Err(status_error(response.status()));
+                }
+                Ok(response) => return Ok(response),
+                Err(error) if attempt < 2 && (error.is_connect() || error.is_timeout()) => {
+                    attempt += 1;
+                    tokio::time::sleep(Duration::from_millis(200 * (1 << attempt))).await;
+                }
+                Err(error) => return Err(Error::Network(error.to_string())),
+            }
+        }
+    }
+
     async fn send_upload(
         &self,
         url: Url,
@@ -435,6 +588,38 @@ pub async fn verify_file(path: &Path, expected_hash: &str, expected_size: u64) -
     Ok(())
 }
 
+pub async fn verify_poster_file(path: &Path, expected_hash: &str) -> Result<VerifiedPoster> {
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|error| Error::io(path, error))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > IMAGE_LIMIT {
+        return Err(Error::Protocol(
+            "cached video poster exceeds the image limit".into(),
+        ));
+    }
+    if hash_file(path).await? != expected_hash {
+        return Err(Error::Protocol(
+            "cached video poster failed integrity verification".into(),
+        ));
+    }
+    let mime = infer::get_from_path(path)
+        .map_err(|error| Error::io(path, error))?
+        .map(|kind| kind.mime_type())
+        .filter(|mime| supported_image_mime(mime))
+        .ok_or_else(|| Error::Protocol("cached video poster type is unsupported".into()))?;
+    if mime == "image/gif" && metadata.len() > GIF_LIMIT {
+        return Err(Error::Protocol(
+            "cached video poster exceeds the GIF limit".into(),
+        ));
+    }
+    Ok(VerifiedPoster {
+        path: path.to_path_buf(),
+        sha256: expected_hash.to_owned(),
+        size: metadata.len(),
+        mime: mime.to_owned(),
+    })
+}
+
 async fn hash_file(path: &Path) -> Result<String> {
     use tokio::io::AsyncReadExt as _;
     let mut file = tokio::fs::File::open(path)
@@ -488,6 +673,36 @@ async fn read_response_limited(response: reqwest::Response, limit: usize) -> Res
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
+}
+
+fn validate_identity_encoding(response: &reqwest::Response) -> Result<()> {
+    if response
+        .headers()
+        .get(header::CONTENT_ENCODING)
+        .is_some_and(|value| !value.as_bytes().eq_ignore_ascii_case(b"identity"))
+    {
+        return Err(Error::Protocol(
+            "encoded media responses are not accepted".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn normalized_content_type(value: &header::HeaderValue) -> &str {
+    value
+        .to_str()
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+}
+
+fn supported_image_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+    )
 }
 
 fn transfer_limit(attachment: &Attachment) -> u64 {

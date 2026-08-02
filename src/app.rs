@@ -237,6 +237,15 @@ impl App {
         } else if let Some(community) = config.communities.get(selected_community) {
             media.select_cached(community.id);
         }
+        let media_notice = media
+            .repair_cache_metadata()
+            .await
+            .err()
+            .map(|error| format!("media cache repair: {}", public_media_error(&error)));
+        let notices = [status_error, theme_notice, media_notice]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         let mut app = Self {
             config,
             paths,
@@ -276,12 +285,7 @@ impl App {
             theme_picker: None,
             theme_before_preview: None,
             connection,
-            status_error: match (status_error, theme_notice) {
-                (Some(status), Some(theme)) => Some(format!("{status}; {theme}")),
-                (Some(status), None) => Some(status),
-                (None, Some(theme)) => Some(theme),
-                (None, None) => None,
-            },
+            status_error: (!notices.is_empty()).then(|| notices.join("; ")),
             should_quit: false,
             awaiting_g: false,
             cache_dirty: true,
@@ -2247,25 +2251,32 @@ impl App {
                 .wrap(Wrap { trim: false }),
             Rect::new(inner.x, inner.y, inner.width, inner.height.min(4)),
         );
-        if attachment.kind == crate::media::MediaKind::Image
+        let width = inner.width.saturating_sub(2).max(2);
+        let protocol = if attachment.kind == crate::media::MediaKind::Image
             && (!attachment.spoiler || self.preview_revealed)
         {
-            let width = inner.width.saturating_sub(2).max(2);
             self.media.request_inline(&attachment, width, true);
-            if let Some(crate::media::runtime::MediaState::Ready(protocol)) =
-                self.media.state(&attachment, width)
-            {
-                let image_area = Rect::new(
-                    inner.x,
-                    inner.y.saturating_add(4),
-                    inner.width,
-                    inner.height.saturating_sub(4),
-                );
-                frame.render_widget(
-                    SlicedImage::new(protocol.as_ref(), SignedPosition::from((1, 0))),
-                    image_area,
-                );
-            }
+            self.media.state(&attachment, width)
+        } else if attachment.kind == crate::media::MediaKind::Video
+            && attachment.poster.is_some()
+            && (!attachment.spoiler || self.preview_revealed)
+        {
+            self.media.request_poster(&attachment, width);
+            self.media.poster_state(&attachment, width)
+        } else {
+            None
+        };
+        if let Some(crate::media::runtime::MediaState::Ready(protocol)) = protocol {
+            let image_area = Rect::new(
+                inner.x,
+                inner.y.saturating_add(4),
+                inner.width,
+                inner.height.saturating_sub(4),
+            );
+            frame.render_widget(
+                SlicedImage::new(protocol.as_ref(), SignedPosition::from((1, 0))),
+                image_area,
+            );
         }
     }
 

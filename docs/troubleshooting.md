@@ -109,8 +109,9 @@ bzz media clear --community <community-uuid> --yes
 
 ## Upload rejected
 
-The composer accepts regular non-symlink paths up to 100 MiB. SVG, executable,
-and active-content types are blocked. Images above 25 megapixels fail before
+The composer accepts regular non-symlink paths up to 50 MiB for images,
+100 MiB for generic files, and 500 MiB for MP4 video. SVG, executable, and
+active-content types are blocked. Images above 25 megapixels fail before
 upload. Animated PNG/WebP carrying ICC or EXIF data that cannot be removed
 without changing appearance fails closed. The relay remains authoritative and
 may enforce stricter limits.
