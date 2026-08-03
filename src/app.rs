@@ -20,7 +20,10 @@ use uuid::Uuid;
 use crate::{
     auth::{IdentityManager, read_passphrase, signer::SignerHandle},
     config::{Config, KeyBackend, validate_relay_url},
-    domain::{Channel, ConnectionState, Message, Profile, Reaction},
+    domain::{
+        Channel, ConnectionState, InboxCategory, InboxItem, Message, Profile, Reaction,
+        SearchResultKind,
+    },
     error::{Error, Result},
     media::{client::MediaClient, runtime::MediaRuntime},
     paths::Paths,
@@ -32,15 +35,18 @@ use crate::{
     },
     render::sanitize,
     service::{
-        channels::ChannelService, messages::MessageService, profiles::ProfileService,
-        read_state::ReadStateService,
+        channels::ChannelService, dms::DmService, inbox::InboxService, messages::MessageService,
+        profiles::ProfileService, read_state::ReadStateService, search::SearchService,
     },
     store::writer::StoreHandle,
     sync::{outbox, read_state},
     ui::{
         composer::Composer,
+        dm_picker::DmPickerState,
+        inbox::InboxState,
         keymap::{KeyAction, map_insert, map_normal},
         layout,
+        search::SearchState,
         terminal::{TerminalGuard, Tui},
         theme::{self, BorderSurface, HighlightGroup, Theme, ThemeScope},
         theme_picker::ThemePicker,
@@ -61,6 +67,9 @@ enum Mode {
     MediaPreview,
     Attachment,
     SaveAttachment,
+    Inbox,
+    Search,
+    DmPicker,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Pane {
@@ -77,7 +86,10 @@ struct Runtime {
     events: broadcast::Receiver<SupervisorEvent>,
     http: HttpClient,
     channels: ChannelService,
+    dms: DmService,
+    inbox: InboxService,
     profiles: ProfileService,
+    search: SearchService,
     messages: MessageService,
     media: MediaClient,
     read_state: ReadStateService,
@@ -128,7 +140,16 @@ impl Runtime {
             events,
             http: http.clone(),
             channels: ChannelService::new(community.id, http.clone(), store.clone()),
+            dms: DmService::new(
+                community.id,
+                signer.clone(),
+                http.clone(),
+                store.clone(),
+                supervisor.clone(),
+            ),
+            inbox: InboxService::new(community.id, http.clone(), store.clone()),
             profiles: ProfileService::new(community.id, http.clone(), store.clone()),
+            search: SearchService::new(community.id, http.clone(), store.clone()),
             messages: MessageService::new(
                 community.id,
                 signer.clone(),
@@ -160,6 +181,24 @@ enum Background {
         message: String,
     },
     Saved,
+    InboxLoaded {
+        community: Uuid,
+        items: Vec<InboxItem>,
+    },
+    SearchLoaded {
+        community: Uuid,
+        generation: u64,
+        output: crate::service::search::SearchOutput,
+    },
+    DmOpened {
+        community: Uuid,
+        result: crate::service::dms::DmOpenResult,
+    },
+    DmHidden {
+        community: Uuid,
+        channel: Uuid,
+        confirmed: bool,
+    },
 }
 
 pub struct App {
@@ -187,6 +226,16 @@ pub struct App {
     reaction_index: usize,
     command: String,
     attachment_input: String,
+    inbox_items: Vec<InboxItem>,
+    inbox_state: InboxState,
+    inbox_loading: bool,
+    inbox_task: Option<tokio::task::JoinHandle<()>>,
+    search_state: SearchState,
+    search_dirty_since: Option<Instant>,
+    search_task: Option<tokio::task::JoinHandle<()>>,
+    dm_picker: DmPickerState,
+    dm_dirty_since: Option<Instant>,
+    dm_search_task: Option<tokio::task::JoinHandle<()>>,
     preview_index: usize,
     preview_revealed: bool,
     uploading_media: HashSet<String>,
@@ -206,6 +255,8 @@ pub struct App {
     read_dirty_since: Option<Instant>,
     last_cache_refresh: Instant,
     last_directory_refresh: Instant,
+    directory_task: Option<tokio::task::JoinHandle<()>>,
+    last_inbox_refresh: Instant,
     background_tx: mpsc::Sender<Background>,
     background_rx: mpsc::Receiver<Background>,
 }
@@ -277,6 +328,16 @@ impl App {
             reaction_index: 0,
             command: String::new(),
             attachment_input: String::new(),
+            inbox_items: Vec::new(),
+            inbox_state: InboxState::default(),
+            inbox_loading: false,
+            inbox_task: None,
+            search_state: SearchState::default(),
+            search_dirty_since: None,
+            search_task: None,
+            dm_picker: DmPickerState::default(),
+            dm_dirty_since: None,
+            dm_search_task: None,
             preview_index: 0,
             preview_revealed: false,
             uploading_media: HashSet::new(),
@@ -296,6 +357,8 @@ impl App {
             read_dirty_since: None,
             last_cache_refresh: Instant::now(),
             last_directory_refresh: Instant::now(),
+            directory_task: None,
+            last_inbox_refresh: Instant::now(),
             background_tx,
             background_rx,
         };
@@ -327,8 +390,17 @@ impl App {
                 maybe=input.next()=>if let Some(Ok(TerminalEvent::Key(key)))=maybe&&key.kind==KeyEventKind::Press{self.handle_key(key,&mut guard,&mut terminal).await?;},
                 network=next_network(&mut self.runtime)=>if let Some(event)=network{self.handle_network(event).await?;},
                 background=self.background_rx.recv()=>if let Some(event)=background{match event{
-                    Background::Changed=>self.cache_dirty=true,
-                    Background::Failed(message)=>self.status_error=Some(message),
+                    Background::Changed=>{
+                        self.cache_dirty=true;
+                        if self.mode==Mode::Inbox {
+                            self.spawn_inbox_load(false);
+                        }
+                    },
+                    Background::Failed(message)=>{
+                        self.status_error=Some(message);
+                        self.dm_picker.submitting=false;
+                        self.inbox_loading=false;
+                    },
                     Background::Staged { community, pending }=>{
                         if self.active_community_id()==Some(community)
                             && !self.composer.attachments.iter().any(|item| match item {
@@ -362,10 +434,74 @@ impl App {
                         }
                     }
                     Background::Saved=>self.status_error=Some("attachment saved".into()),
+                    Background::InboxLoaded { community, items }=>{
+                        if self.active_community_id()==Some(community) {
+                            self.inbox_items=items;
+                            self.inbox_state.reconcile(&self.inbox_items);
+                            self.cache_dirty=true;
+                            self.inbox_loading=false;
+                        }
+                    }
+                    Background::SearchLoaded { community, generation, output }=>{
+                        if self.active_community_id()==Some(community)
+                            && self.search_state.generation==generation
+                        {
+                            self.search_state.results=output.results;
+                            self.search_state.local_only=output.local_only;
+                            self.search_state.notice=output.notice;
+                            self.search_state.loading=false;
+                            self.search_state.reconcile();
+                        }
+                    }
+                    Background::DmOpened { community, result }=>{
+                        if self.active_community_id()==Some(community) {
+                            self.cache_dirty=true;
+                            self.hydrate_cache().await?;
+                            if let Some(index)=self.channels.iter().position(|channel|channel.id==result.channel_id) {
+                                self.selected_channel=index;
+                                self.showing_open_channel=false;
+                                self.load_selected_channel().await?;
+                                self.pane=Pane::Timeline;
+                            }
+                            self.mode=Mode::Normal;
+                            self.dm_picker= DmPickerState::default();
+                            self.dm_dirty_since=None;
+                            self.status_error=Some(if result.visibility_confirmed {
+                                "Private workspace DM opened (relay-readable; not end-to-end encrypted)".into()
+                            } else {
+                                "DM opened; waiting for the visibility snapshot".into()
+                            });
+                        }
+                    }
+                    Background::DmHidden { community, channel, confirmed }=>{
+                        if self.active_community_id()==Some(community) {
+                            self.cache_dirty=true;
+                            self.hydrate_cache().await?;
+                            self.status_error=Some(if confirmed {
+                                "DM hidden; reopen it by selecting the same participant set".into()
+                            } else {
+                                "DM hide accepted; waiting for the visibility snapshot".into()
+                            });
+                            if self.current_channel().is_some_and(|value|value.id==channel) {
+                                self.pane=Pane::Channels;
+                            }
+                        }
+                    }
                 }},
                 _=tick.tick()=>self.on_tick().await?,
                 _=&mut shutdown=>self.should_quit=true,
             }
+        }
+        for task in [
+            self.inbox_task.take(),
+            self.search_task.take(),
+            self.dm_search_task.take(),
+            self.directory_task.take(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            task.abort();
         }
         self.shutdown().await;
         guard.restore();
@@ -386,6 +522,7 @@ impl App {
         };
         let pubkey = runtime.signer.public_key().to_hex();
         let channels = runtime.channels.clone();
+        let inbox = runtime.inbox.clone();
         let profiles = runtime.profiles.clone();
         let http = runtime.http.clone();
         let supervisor = runtime.supervisor.clone();
@@ -400,6 +537,12 @@ impl App {
             .subscribe(
                 "global-stream",
                 subscriptions::global_stream(nostr::Timestamp::now().as_secs()),
+            )
+            .await?;
+        supervisor
+            .subscribe(
+                "personal",
+                subscriptions::personal(&pubkey, nostr::Timestamp::now().as_secs()),
             )
             .await?;
         supervisor
@@ -442,6 +585,7 @@ impl App {
                     .call(move |store| store.pin_relay_pubkey(community, &relay_pubkey))
                     .await?;
                 channels.refresh(&pubkey).await?;
+                let _ = inbox.refresh(&pubkey).await;
                 let _ = profiles.hydrate(authors).await;
                 let _ = outbox::flush(community, &http, &supervisor, &store).await;
                 Ok::<_, Error>(())
@@ -514,6 +658,164 @@ impl App {
         }
     }
 
+    fn spawn_directory_refresh(&mut self) {
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        if let Some(task) = self.directory_task.take() {
+            task.abort();
+        }
+        let service = runtime.channels.clone();
+        let pubkey = runtime.signer.public_key().to_hex();
+        let tx = self.background_tx.clone();
+        self.directory_task = Some(tokio::spawn(async move {
+            let result = service.refresh(&pubkey).await;
+            let _ = tx
+                .send(match result {
+                    Ok(_) => Background::Changed,
+                    Err(error) => Background::Failed(error.to_string()),
+                })
+                .await;
+        }));
+    }
+
+    fn spawn_inbox_load(&mut self, refresh_remote: bool) {
+        let Some(community) = self.active_community_id() else {
+            return;
+        };
+        let Some(identity_pubkey) = self.self_pubkey().map(str::to_owned) else {
+            return;
+        };
+        self.inbox_loading = true;
+        if let Some(task) = self.inbox_task.take() {
+            task.abort();
+        }
+        let runtime = self.runtime.as_ref().map(|runtime| runtime.inbox.clone());
+        let store = self.store.clone();
+        let tx = self.background_tx.clone();
+        self.inbox_task = Some(tokio::spawn(async move {
+            let result = async {
+                if refresh_remote && let Some(service) = &runtime {
+                    let _ = service.refresh(&identity_pubkey).await;
+                }
+                if let Some(service) = runtime {
+                    service.items(&identity_pubkey).await
+                } else {
+                    store
+                        .call(move |store| store.inbox_items(community, &identity_pubkey))
+                        .await
+                }
+            }
+            .await;
+            let event = match result {
+                Ok(items) => Background::InboxLoaded { community, items },
+                Err(error) => Background::Failed(error.to_string()),
+            };
+            let _ = tx.send(event).await;
+        }));
+    }
+
+    fn spawn_search(&mut self) {
+        let Some(community) = self.active_community_id() else {
+            return;
+        };
+        let Some(identity_pubkey) = self.self_pubkey().map(str::to_owned) else {
+            return;
+        };
+        let generation = self.search_state.generation;
+        let input = self.search_state.query.clone();
+        let channels = self.channels.clone();
+        let profiles = self.profiles.clone();
+        let service = self.runtime.as_ref().map(|runtime| runtime.search.clone());
+        let store = self.store.clone();
+        let tx = self.background_tx.clone();
+        if let Some(task) = self.search_task.take() {
+            task.abort();
+        }
+        self.search_task = Some(tokio::spawn(async move {
+            let local = SearchService::execute_local(
+                community,
+                &store,
+                &input,
+                &identity_pubkey,
+                &channels,
+                &profiles,
+            )
+            .await;
+            let mut local = match local {
+                Ok(output) => output,
+                Err(error) => {
+                    let _ = tx
+                        .send(Background::SearchLoaded {
+                            community,
+                            generation,
+                            output: crate::service::search::SearchOutput {
+                                local_only: service.is_none(),
+                                notice: Some(error.to_string()),
+                                ..crate::service::search::SearchOutput::default()
+                            },
+                        })
+                        .await;
+                    return;
+                }
+            };
+            local.local_only = service.is_none();
+            if service.is_some() && local.notice.is_none() {
+                local.notice = Some("searching the relay…".into());
+            }
+            let fallback = local.clone();
+            let _ = tx
+                .send(Background::SearchLoaded {
+                    community,
+                    generation,
+                    output: local,
+                })
+                .await;
+            if let Some(service) = service {
+                let output = service
+                    .execute(&input, &identity_pubkey, &channels, &profiles)
+                    .await
+                    .unwrap_or_else(|error| {
+                        let mut output = fallback;
+                        output.local_only = true;
+                        output.notice = Some(format!(
+                            "remote search unavailable; showing local results ({error})"
+                        ));
+                        output
+                    });
+                let _ = tx
+                    .send(Background::SearchLoaded {
+                        community,
+                        generation,
+                        output,
+                    })
+                    .await;
+            }
+        }));
+    }
+
+    fn spawn_dm_profile_search(&mut self) {
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        if self.mode != Mode::DmPicker {
+            return;
+        }
+        let service = runtime.search.clone();
+        let input = self.dm_picker.query.clone();
+        let tx = self.background_tx.clone();
+        if let Some(task) = self.dm_search_task.take() {
+            task.abort();
+        }
+        self.dm_search_task = Some(tokio::spawn(async move {
+            let event = match service.hydrate_profiles(&input).await {
+                Ok(_) => Background::Changed,
+                Err(error) => Background::Failed(error.to_string()),
+            };
+            let _ = tx.send(event).await;
+        }));
+    }
+
     async fn hydrate_cache(&mut self) -> Result<()> {
         let Some(community) = self.active_community_id() else {
             self.channels.clear();
@@ -541,15 +843,33 @@ impl App {
                 .unwrap_or(self.channels.len())
         };
         if let Some(channel) = self.current_channel().map(|channel| channel.id) {
+            let timeline_anchor = self.timeline.selected_event.clone();
             self.messages = self
                 .store
-                .call(move |store| store.messages(community, channel, 500))
+                .call(move |store| {
+                    let latest = store.messages(community, channel, 500)?;
+                    if let Some(anchor) = timeline_anchor
+                        && !latest.iter().any(|message| message.event_id == anchor)
+                    {
+                        return store.messages_around(community, channel, &anchor, 500);
+                    }
+                    Ok(latest)
+                })
                 .await?;
             self.timeline.reconcile(&self.messages);
             if let Some(root) = self.thread_root.clone() {
+                let thread_anchor = self.thread_timeline.selected_event.clone();
                 self.thread_messages = self
                     .store
-                    .call(move |store| store.thread(community, &root, 500))
+                    .call(move |store| {
+                        let latest = store.thread(community, &root, 500)?;
+                        if let Some(anchor) = thread_anchor
+                            && !latest.iter().any(|message| message.event_id == anchor)
+                        {
+                            return store.thread_around(community, channel, &root, &anchor, 500);
+                        }
+                        Ok(latest)
+                    })
                     .await?;
                 self.thread_timeline.reconcile(&self.thread_messages);
             }
@@ -580,6 +900,24 @@ impl App {
             .store
             .call(move |store| store.profiles(community))
             .await?;
+        let dm_participants = self
+            .store
+            .call(move |store| store.dm_participants_map(community))
+            .await?;
+        let self_pubkey = self.self_pubkey().unwrap_or_default().to_owned();
+        for channel in self
+            .channels
+            .iter_mut()
+            .filter(|channel| channel.kind.is_dm())
+        {
+            if let Some(participants) = dm_participants.get(&channel.id) {
+                channel.name = dm_label(participants, &self_pubkey, &self.profiles);
+            }
+        }
+        if self.mode == Mode::DmPicker {
+            let pubkey = self.self_pubkey().unwrap_or_default().to_owned();
+            self.dm_picker.reconcile(&self.profiles, &pubkey);
+        }
         let unknown_authors = self
             .messages
             .iter()
@@ -644,9 +982,28 @@ impl App {
                     let http = runtime.http.clone();
                     let supervisor = runtime.supervisor.clone();
                     let store = self.store.clone();
+                    let directory = runtime.channels.clone();
+                    let inbox = runtime.inbox.clone();
+                    let pubkey = runtime.signer.public_key().to_hex();
                     let tx = self.background_tx.clone();
                     tokio::spawn(async move {
-                        let result = outbox::flush(community, &http, &supervisor, &store).await;
+                        let result = async {
+                            let info = http.nip11().await?;
+                            let relay_pubkey = crate::protocol::http::relay_signing_pubkey(&info)
+                                .ok_or_else(|| {
+                                    Error::Protocol(
+                                        "NIP-11 document has no relay signing key".into(),
+                                    )
+                                })?
+                                .to_owned();
+                            store
+                                .call(move |store| store.pin_relay_pubkey(community, &relay_pubkey))
+                                .await?;
+                            directory.refresh(&pubkey).await?;
+                            let _ = inbox.refresh(&pubkey).await;
+                            outbox::flush(community, &http, &supervisor, &store).await
+                        }
+                        .await;
                         let _ = tx
                             .send(match result {
                                 Ok(_) => Background::Changed,
@@ -696,28 +1053,23 @@ impl App {
                             .await;
                     });
                 } else {
-                    let refresh_memberships = matches!(event.kind.as_u16(), 44_100 | 44_101);
+                    let kind = event.kind.as_u16();
+                    let membership_refresh = matches!(kind, 44_100 | 44_101);
                     match self
                         .store
                         .call(move |store| store.apply_event(community, &event).map(|_| ()))
                         .await
                     {
-                        Ok(()) => self.cache_dirty = true,
+                        Ok(()) => {
+                            self.cache_dirty = true;
+                            if matches!(kind, 9 | 40_002 | 30_622 | 46_010..=46_012) {
+                                self.spawn_inbox_load(false);
+                            }
+                        }
                         Err(error) => self.status_error = Some(error.to_string()),
                     }
-                    if refresh_memberships {
-                        let service = runtime.channels.clone();
-                        let pubkey = runtime.signer.public_key().to_hex();
-                        let tx = self.background_tx.clone();
-                        tokio::spawn(async move {
-                            let result = service.refresh(&pubkey).await;
-                            let _ = tx
-                                .send(match result {
-                                    Ok(_) => Background::Changed,
-                                    Err(error) => Background::Failed(error.to_string()),
-                                })
-                                .await;
-                        });
+                    if membership_refresh {
+                        self.spawn_directory_refresh();
                     }
                 }
             }
@@ -745,18 +1097,7 @@ impl App {
                     }
                     if let Some(runtime) = &self.runtime {
                         let _ = runtime.supervisor.close(subscription.clone()).await;
-                        let service = runtime.channels.clone();
-                        let pubkey = runtime.signer.public_key().to_hex();
-                        let tx = self.background_tx.clone();
-                        tokio::spawn(async move {
-                            let result = service.refresh(&pubkey).await;
-                            let _ = tx
-                                .send(match result {
-                                    Ok(_) => Background::Changed,
-                                    Err(error) => Background::Failed(error.to_string()),
-                                })
-                                .await;
-                        });
+                        self.spawn_directory_refresh();
                     }
                 }
                 self.status_error = Some(message);
@@ -772,6 +1113,26 @@ impl App {
 
     async fn on_tick(&mut self) -> Result<()> {
         self.media.poll();
+        if self
+            .search_dirty_since
+            .is_some_and(|since| since.elapsed() >= Duration::from_millis(300))
+        {
+            self.search_dirty_since = None;
+            self.spawn_search();
+        }
+        if self
+            .dm_dirty_since
+            .is_some_and(|since| since.elapsed() >= Duration::from_millis(300))
+        {
+            self.dm_dirty_since = None;
+            self.spawn_dm_profile_search();
+        }
+        if self.last_inbox_refresh.elapsed() >= Duration::from_secs(30) {
+            self.last_inbox_refresh = Instant::now();
+            if self.runtime.is_some() {
+                self.spawn_inbox_load(true);
+            }
+        }
         if self.cache_dirty || self.last_cache_refresh.elapsed() > Duration::from_secs(1) {
             self.hydrate_cache().await?;
             self.reconcile_subscriptions().await?;
@@ -784,20 +1145,7 @@ impl App {
         }
         if self.last_directory_refresh.elapsed() >= Duration::from_secs(300) {
             self.last_directory_refresh = Instant::now();
-            if let Some(runtime) = &self.runtime {
-                let service = runtime.channels.clone();
-                let pubkey = runtime.signer.public_key().to_hex();
-                let tx = self.background_tx.clone();
-                tokio::spawn(async move {
-                    let result = service.refresh(&pubkey).await;
-                    let _ = tx
-                        .send(match result {
-                            Ok(_) => Background::Changed,
-                            Err(error) => Background::Failed(error.to_string()),
-                        })
-                        .await;
-                });
-            }
+            self.spawn_directory_refresh();
         }
         if self
             .read_dirty_since
@@ -881,6 +1229,9 @@ impl App {
             Mode::MediaPreview => self.media_preview_key(key),
             Mode::Attachment => self.attachment_path_key(key, false).await?,
             Mode::SaveAttachment => self.attachment_path_key(key, true).await?,
+            Mode::Inbox => self.inbox_key(key).await?,
+            Mode::Search => self.search_key(key).await?,
+            Mode::DmPicker => self.dm_picker_key(key),
         }
         Ok(())
     }
@@ -893,6 +1244,22 @@ impl App {
             KeyAction::Finder => {
                 self.finder.clear();
                 self.mode = Mode::Finder
+            }
+            KeyAction::Search => self.open_search(),
+            KeyAction::Inbox => self.open_inbox(),
+            KeyAction::NewDm => self.open_dm_picker(None),
+            KeyAction::HideDm => self.hide_current_dm(),
+            KeyAction::AddDmMember => {
+                let channel = self
+                    .current_channel()
+                    .filter(|channel| channel.kind.is_dm())
+                    .map(|channel| channel.id);
+                if channel.is_some() {
+                    self.open_dm_picker(channel);
+                } else {
+                    self.status_error =
+                        Some("select a workspace DM before adding a participant".into());
+                }
             }
             KeyAction::Theme => self.open_theme_picker(),
             KeyAction::Preview => self.open_media_preview(),
@@ -1544,6 +1911,431 @@ impl App {
             .await
     }
 
+    fn open_inbox(&mut self) {
+        self.mode = Mode::Inbox;
+        self.inbox_state.narrow_detail = false;
+        self.spawn_inbox_load(self.runtime.is_some());
+    }
+
+    fn open_search(&mut self) {
+        self.mode = Mode::Search;
+        self.search_state = SearchState::default();
+        self.search_state.changed();
+        self.search_dirty_since = None;
+        self.spawn_search();
+    }
+
+    fn open_dm_picker(&mut self, add_to: Option<Uuid>) {
+        if self.runtime.is_none() {
+            self.status_error = Some(
+                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
+            );
+            return;
+        }
+        self.dm_picker = DmPickerState {
+            add_to,
+            ..DmPickerState::default()
+        };
+        self.dm_dirty_since = None;
+        if let Some(pubkey) = self.self_pubkey().map(str::to_owned) {
+            self.dm_picker.reconcile(&self.profiles, &pubkey);
+        }
+        self.mode = Mode::DmPicker;
+    }
+
+    fn hide_current_dm(&mut self) {
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some(
+                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
+            );
+            return;
+        };
+        let Some(channel) = self
+            .current_channel()
+            .filter(|channel| channel.kind.is_dm())
+            .map(|channel| channel.id)
+        else {
+            self.status_error = Some("select a workspace DM before hiding it".into());
+            return;
+        };
+        let service = runtime.dms.clone();
+        let community = runtime.community_id;
+        let tx = self.background_tx.clone();
+        self.status_error = Some("hiding DM…".into());
+        tokio::spawn(async move {
+            let event = match service.hide(channel).await {
+                Ok(confirmed) => Background::DmHidden {
+                    community,
+                    channel,
+                    confirmed,
+                },
+                Err(error) => Background::Failed(error.to_string()),
+            };
+            let _ = tx.send(event).await;
+        });
+    }
+
+    async fn search_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(task) = self.search_task.take() {
+                    task.abort();
+                }
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Backspace => {
+                self.search_state.query.pop();
+                self.search_state.changed();
+                self.search_dirty_since = Some(Instant::now());
+            }
+            KeyCode::Char('j') | KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.search_state.move_by(1)
+            }
+            KeyCode::Char('k') | KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.search_state.move_by(-1)
+            }
+            KeyCode::Down => self.search_state.move_by(1),
+            KeyCode::Up => self.search_state.move_by(-1),
+            KeyCode::Enter => self.open_search_result().await?,
+            KeyCode::Char(character)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                    && !character.is_control()
+                    && self.search_state.query.len() + character.len_utf8() <= 4_096 =>
+            {
+                self.search_state.query.push(character);
+                self.search_state.changed();
+                self.search_dirty_since = Some(Instant::now());
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn open_search_result(&mut self) -> Result<()> {
+        let Some(result) = self.search_state.selected().cloned() else {
+            return Ok(());
+        };
+        if let Some(task) = self.search_task.take() {
+            task.abort();
+        }
+        if result.kind == SearchResultKind::Person {
+            let Some(pubkey) = result.pubkey else {
+                return Ok(());
+            };
+            self.start_dm_open(vec![pubkey]);
+            return Ok(());
+        }
+        let Some(channel_id) = result.channel_id else {
+            return Ok(());
+        };
+        let Some(community) = self.active_community_id() else {
+            return Ok(());
+        };
+        if result.kind == SearchResultKind::Message {
+            let identity = self.self_pubkey().unwrap_or_default().to_owned();
+            let event_id = result.event_id.clone().unwrap_or_default();
+            let current = self
+                .store
+                .call(move |store| store.search_result_for_event(community, &identity, &event_id))
+                .await?;
+            if current.is_none() {
+                self.status_error =
+                    Some("the search result is deleted, hidden, or no longer accessible".into());
+                return Ok(());
+            }
+        }
+        self.open_channel_context(
+            channel_id,
+            result.event_id.as_deref(),
+            result.thread_root.as_deref(),
+        )
+        .await?;
+        self.mode = Mode::Normal;
+        Ok(())
+    }
+
+    fn dm_picker_key(&mut self, key: KeyEvent) {
+        let self_pubkey = self.self_pubkey().unwrap_or_default().to_owned();
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(task) = self.dm_search_task.take() {
+                    task.abort();
+                }
+                self.dm_picker = DmPickerState::default();
+                self.dm_dirty_since = None;
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Backspace if !self.dm_picker.submitting => {
+                self.dm_picker.query.pop();
+                self.dm_picker.reconcile(&self.profiles, &self_pubkey);
+                self.dm_dirty_since = Some(Instant::now());
+            }
+            KeyCode::Char('j')
+                if key.modifiers.contains(KeyModifiers::CONTROL) && !self.dm_picker.submitting =>
+            {
+                self.dm_picker.move_by(&self.profiles, &self_pubkey, 1);
+            }
+            KeyCode::Down if !self.dm_picker.submitting => {
+                self.dm_picker.move_by(&self.profiles, &self_pubkey, 1);
+            }
+            KeyCode::Char('k')
+                if key.modifiers.contains(KeyModifiers::CONTROL) && !self.dm_picker.submitting =>
+            {
+                self.dm_picker.move_by(&self.profiles, &self_pubkey, -1);
+            }
+            KeyCode::Up if !self.dm_picker.submitting => {
+                self.dm_picker.move_by(&self.profiles, &self_pubkey, -1);
+            }
+            KeyCode::Char(' ') if !self.dm_picker.submitting => {
+                if let Err(message) = self.dm_picker.toggle_selected() {
+                    self.status_error = Some(message.into());
+                }
+            }
+            KeyCode::Enter if !self.dm_picker.submitting => {
+                if self.dm_picker.recipients.is_empty() {
+                    self.status_error = Some("select at least one recipient with Space".into());
+                    return;
+                }
+                self.dm_picker.submitting = true;
+                if let Some(channel) = self.dm_picker.add_to {
+                    let Some(pubkey) = self.dm_picker.recipients.iter().next().cloned() else {
+                        return;
+                    };
+                    self.start_dm_add(channel, pubkey);
+                } else {
+                    self.start_dm_open(self.dm_picker.recipients.iter().cloned().collect());
+                }
+            }
+            KeyCode::Char(character)
+                if !self.dm_picker.submitting
+                    && !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                    && !character.is_control()
+                    && self.dm_picker.query.len() + character.len_utf8() <= 4_096 =>
+            {
+                self.dm_picker.query.push(character);
+                self.dm_picker.reconcile(&self.profiles, &self_pubkey);
+                self.dm_dirty_since = Some(Instant::now());
+            }
+            _ => {}
+        }
+    }
+
+    fn start_dm_open(&mut self, recipients: Vec<String>) {
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        let service = runtime.dms.clone();
+        let community = runtime.community_id;
+        let tx = self.background_tx.clone();
+        self.status_error = Some("opening private workspace DM…".into());
+        tokio::spawn(async move {
+            let event = match service.open(recipients).await {
+                Ok(result) => Background::DmOpened { community, result },
+                Err(error) => Background::Failed(error.to_string()),
+            };
+            let _ = tx.send(event).await;
+        });
+    }
+
+    fn start_dm_add(&mut self, channel: Uuid, pubkey: String) {
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        let service = runtime.dms.clone();
+        let community = runtime.community_id;
+        let tx = self.background_tx.clone();
+        self.status_error = Some("opening a new participant-set DM…".into());
+        tokio::spawn(async move {
+            let event = match service.add_member(channel, pubkey).await {
+                Ok(result) => Background::DmOpened { community, result },
+                Err(error) => Background::Failed(error.to_string()),
+            };
+            let _ = tx.send(event).await;
+        });
+    }
+
+    async fn inbox_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc if self.inbox_state.narrow_detail => {
+                self.inbox_state.narrow_detail = false;
+            }
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Char('j') | KeyCode::Down => self.inbox_state.move_by(&self.inbox_items, 1),
+            KeyCode::Char('k') | KeyCode::Up => self.inbox_state.move_by(&self.inbox_items, -1),
+            KeyCode::Char('f') => {
+                self.inbox_state.filter = self.inbox_state.filter.next();
+                self.inbox_state.reconcile(&self.inbox_items);
+            }
+            KeyCode::Enter => self.inbox_state.narrow_detail = true,
+            KeyCode::Char('o') => self.open_inbox_item(false).await?,
+            KeyCode::Char('i') => self.open_inbox_item(true).await?,
+            KeyCode::Char('m') => self.mark_selected_inbox_read().await?,
+            KeyCode::Char('U') => self.toggle_selected_inbox_unread().await?,
+            KeyCode::Char('a') => self.mark_all_loaded_inbox_read().await?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn open_inbox_item(&mut self, reply: bool) -> Result<()> {
+        let Some(item) = self.inbox_state.selected(&self.inbox_items).cloned() else {
+            return Ok(());
+        };
+        let Some(channel) = item.channel_id else {
+            self.status_error = Some("this read-only Inbox card has no channel context".into());
+            return Ok(());
+        };
+        self.open_channel_context(
+            channel,
+            item.event_id.as_deref(),
+            item.thread_root.as_deref(),
+        )
+        .await?;
+        self.mode = Mode::Normal;
+        if reply {
+            self.enter_composer().await?;
+        }
+        Ok(())
+    }
+
+    async fn open_channel_context(
+        &mut self,
+        channel: Uuid,
+        event_id: Option<&str>,
+        thread_root: Option<&str>,
+    ) -> Result<()> {
+        let Some(community) = self.active_community_id() else {
+            return Ok(());
+        };
+        let visible = self
+            .store
+            .call(move |store| {
+                Ok(store
+                    .channels(community)?
+                    .into_iter()
+                    .any(|value| value.id == channel))
+            })
+            .await?;
+        if !visible {
+            self.status_error =
+                Some("the source channel is unavailable or no longer accessible".into());
+            return Ok(());
+        }
+        if !self.channels.iter().any(|value| value.id == channel) {
+            self.cache_dirty = true;
+            self.hydrate_cache().await?;
+        }
+        let Some(index) = self.channels.iter().position(|value| value.id == channel) else {
+            self.status_error =
+                Some("the source channel is unavailable or no longer accessible".into());
+            return Ok(());
+        };
+        self.selected_channel = index;
+        self.showing_open_channel = !self.channels[index].is_member;
+        self.load_selected_channel().await?;
+        if let Some(root) = thread_root {
+            self.thread_root = Some(root.to_owned());
+            self.pane = Pane::Thread;
+            self.thread_timeline.selected_event = event_id.map(str::to_owned);
+        } else {
+            self.pane = Pane::Timeline;
+            self.timeline.selected_event = event_id.map(str::to_owned);
+        }
+        self.cache_dirty = true;
+        self.hydrate_cache().await?;
+        Ok(())
+    }
+
+    async fn mark_selected_inbox_read(&mut self) -> Result<()> {
+        let Some(item) = self.inbox_state.selected(&self.inbox_items).cloned() else {
+            return Ok(());
+        };
+        self.mark_inbox_item_read(&item).await?;
+        self.spawn_inbox_load(false);
+        Ok(())
+    }
+
+    async fn mark_inbox_item_read(&mut self, item: &InboxItem) -> Result<()> {
+        let Some(community) = self.active_community_id() else {
+            return Ok(());
+        };
+        let Some(identity) = self.self_pubkey().map(str::to_owned) else {
+            return Ok(());
+        };
+        let conversation = item.conversation_id.clone();
+        let created_at = item.created_at;
+        self.store
+            .call(move |store| {
+                store.set_inbox_override(
+                    community,
+                    &identity,
+                    &conversation,
+                    false,
+                    Some(created_at),
+                )
+            })
+            .await?;
+        if let Some(runtime) = &self.runtime {
+            let at = u32::try_from(item.created_at).unwrap_or(u32::MAX);
+            if item.categories.contains(&InboxCategory::Dm)
+                && let Some(channel) = item.channel_id
+            {
+                runtime.read_state.mark(&channel.to_string(), at).await?;
+            }
+            if let Some(root) = &item.thread_root {
+                runtime
+                    .read_state
+                    .mark(&format!("thread:{root}"), at)
+                    .await?;
+            }
+            if let Some(event_id) = &item.event_id {
+                runtime
+                    .read_state
+                    .mark(&format!("msg:{event_id}"), at)
+                    .await?;
+            }
+            self.read_dirty_since.get_or_insert_with(Instant::now);
+        }
+        Ok(())
+    }
+
+    async fn toggle_selected_inbox_unread(&mut self) -> Result<()> {
+        let Some(item) = self.inbox_state.selected(&self.inbox_items).cloned() else {
+            return Ok(());
+        };
+        let Some(community) = self.active_community_id() else {
+            return Ok(());
+        };
+        let Some(identity) = self.self_pubkey().map(str::to_owned) else {
+            return Ok(());
+        };
+        let conversation = item.conversation_id.clone();
+        let forced = !item.forced_unread;
+        self.store
+            .call(move |store| {
+                store.set_inbox_override(community, &identity, &conversation, forced, None)
+            })
+            .await?;
+        self.spawn_inbox_load(false);
+        Ok(())
+    }
+
+    async fn mark_all_loaded_inbox_read(&mut self) -> Result<()> {
+        let items = self
+            .inbox_state
+            .visible(&self.inbox_items)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        for item in &items {
+            self.mark_inbox_item_read(item).await?;
+        }
+        self.spawn_inbox_load(false);
+        Ok(())
+    }
+
     async fn text_overlay_key(&mut self, key: KeyEvent, mode: Mode) -> Result<()> {
         match key.code {
             KeyCode::Esc => self.mode = Mode::Normal,
@@ -1748,6 +2540,17 @@ impl App {
                     self.media.protocol_name()
                 ));
             }
+            crate::ui::command::Command::Inbox => self.open_inbox(),
+            crate::ui::command::Command::Search => self.open_search(),
+            crate::ui::command::Command::Dm => self.open_dm_picker(None),
+            crate::ui::command::Command::DmHide => self.hide_current_dm(),
+            crate::ui::command::Command::DmAdd => {
+                let channel = self
+                    .current_channel()
+                    .filter(|channel| channel.kind.is_dm())
+                    .map(|channel| channel.id);
+                self.open_dm_picker(channel);
+            }
             crate::ui::command::Command::PurgeCache => {
                 if let Some(community) = self.active_community_id() {
                     self.store
@@ -1817,8 +2620,14 @@ impl App {
                 self.last_marked.clear();
                 self.profile_requested.clear();
                 self.subscribed_channels.clear();
+                self.inbox_items.clear();
+                self.inbox_state = InboxState::default();
+                self.search_state = SearchState::default();
+                self.dm_picker = DmPickerState::default();
+                self.dm_dirty_since = None;
                 self.connection = ConnectionState::Connecting;
                 self.last_directory_refresh = Instant::now();
+                self.last_inbox_refresh = Instant::now();
                 self.hydrate_cache().await?;
                 self.start_sync().await?;
             }
@@ -1840,6 +2649,11 @@ impl App {
                     self.last_marked.clear();
                     self.profile_requested.clear();
                     self.subscribed_channels.clear();
+                    self.inbox_items.clear();
+                    self.inbox_state = InboxState::default();
+                    self.search_state = SearchState::default();
+                    self.dm_picker = DmPickerState::default();
+                    self.dm_dirty_since = None;
                     self.connection = connection;
                     self.status_error = Some(error.to_string());
                     self.hydrate_cache().await?;
@@ -2091,6 +2905,9 @@ impl App {
             Mode::MediaPreview => "MEDIA",
             Mode::Attachment => "ATTACH",
             Mode::SaveAttachment => "SAVE",
+            Mode::Inbox => "INBOX",
+            Mode::Search => "SEARCH",
+            Mode::DmPicker => "DM",
         };
         let mode_group = match self.mode {
             Mode::Insert => HighlightGroup::StatusModeInsert,
@@ -2212,6 +3029,37 @@ impl App {
                 " save attachment · no overwrite · Esc cancel ",
                 &self.attachment_input,
             ),
+            Mode::Inbox => {
+                frame.render_widget(Clear, area);
+                crate::ui::inbox::render(
+                    frame,
+                    area,
+                    &self.inbox_items,
+                    &self.profiles,
+                    &self.inbox_state,
+                    &self.theme,
+                    self.inbox_loading,
+                );
+            }
+            Mode::Search => {
+                crate::ui::search::render(
+                    frame,
+                    centered(area, 86, area.height.saturating_sub(4).min(28)),
+                    &self.search_state,
+                    &self.theme,
+                );
+            }
+            Mode::DmPicker => {
+                let self_pubkey = self.self_pubkey().unwrap_or_default();
+                crate::ui::dm_picker::render(
+                    frame,
+                    centered(area, 86, area.height.saturating_sub(4).min(28)),
+                    &self.dm_picker,
+                    &self.profiles,
+                    self_pubkey,
+                    &self.theme,
+                );
+            }
             Mode::Normal => {}
         }
     }
@@ -2457,6 +3305,34 @@ async fn next_network(runtime: &mut Option<Runtime>) -> Option<SupervisorEvent> 
         None => std::future::pending().await,
     }
 }
+fn dm_label(
+    participants: &[String],
+    self_pubkey: &str,
+    profiles: &HashMap<String, Profile>,
+) -> String {
+    let labels = participants
+        .iter()
+        .filter(|pubkey| pubkey.as_str() != self_pubkey)
+        .map(|pubkey| {
+            profiles
+                .get(pubkey)
+                .map_or_else(|| crate::domain::abbreviated_pubkey(pubkey), Profile::label)
+        })
+        .collect::<Vec<_>>();
+    match labels.as_slice() {
+        [] => "Private workspace DM".into(),
+        [label] => label.clone(),
+        many => {
+            let visible = many.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+            if many.len() > 3 {
+                format!("{visible} +{}", many.len() - 3)
+            } else {
+                visible
+            }
+        }
+    }
+}
+
 fn public_media_error(error: &Error) -> String {
     match error {
         Error::Config(message) | Error::Protocol(message) | Error::Access(message) => {
@@ -2659,6 +3535,6 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(text.contains("bzz keys"));
-        assert!(text.contains("Theme picker"));
+        assert!(text.contains("Inbox"));
     }
 }

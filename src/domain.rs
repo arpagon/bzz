@@ -18,10 +18,43 @@ pub struct Community {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ChannelKind {
+    Stream,
+    Forum,
+    Dm,
+    Other(String),
+}
+
+impl ChannelKind {
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "stream" => Self::Stream,
+            "forum" => Self::Forum,
+            "dm" => Self::Dm,
+            other => Self::Other(other.to_owned()),
+        }
+    }
+
+    pub const fn is_dm(&self) -> bool {
+        matches!(self, Self::Dm)
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Stream => "stream",
+            Self::Forum => "forum",
+            Self::Dm => "dm",
+            Self::Other(value) => value,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Channel {
     pub id: Uuid,
     pub name: String,
     pub about: String,
+    pub kind: ChannelKind,
     pub visibility: Visibility,
     pub is_member: bool,
     pub is_hidden: bool,
@@ -81,6 +114,58 @@ pub struct Reaction {
 pub struct ReadState {
     pub client_id: String,
     pub contexts: BTreeMap<String, u32>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum InboxCategory {
+    Mention,
+    Thread,
+    Dm,
+    NeedsAction,
+    Draft,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InboxItem {
+    pub conversation_id: String,
+    pub categories: Vec<InboxCategory>,
+    pub event_id: Option<String>,
+    pub channel_id: Option<Uuid>,
+    pub thread_root: Option<String>,
+    pub sender_pubkey: Option<String>,
+    pub created_at: u64,
+    pub preview: String,
+    pub unread_count: u32,
+    pub draft_count: u32,
+    pub forced_unread: bool,
+}
+
+impl InboxItem {
+    pub const fn unread(&self) -> bool {
+        self.forced_unread || self.unread_count > 0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum SearchResultKind {
+    Channel,
+    Dm,
+    Person,
+    Message,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SearchResult {
+    pub stable_id: String,
+    pub kind: SearchResultKind,
+    pub label: String,
+    pub detail: String,
+    pub channel_id: Option<Uuid>,
+    pub event_id: Option<String>,
+    pub thread_root: Option<String>,
+    pub pubkey: Option<String>,
+    pub created_at: u64,
+    pub remote_rank: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

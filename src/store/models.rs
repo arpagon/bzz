@@ -56,3 +56,13 @@ pub struct SyncCursor {
     pub high_event_id: String,
     pub complete_through: u64,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageSearchQuery {
+    pub fts_query: String,
+    pub author: Option<String>,
+    pub channel_id: Option<Uuid>,
+    pub since: Option<u64>,
+    pub until: Option<u64>,
+    pub limit: usize,
+}

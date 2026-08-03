@@ -1,8 +1,15 @@
 use bzz::{
-    domain::{Channel, Message, Reaction, Visibility},
+    domain::{
+        Channel, ChannelKind, InboxCategory, InboxItem, Message, Profile, Reaction, SearchResult,
+        SearchResultKind, Visibility,
+    },
     media::{Attachment, MediaKind},
     ui::{
+        dm_picker::{self, DmPickerState},
+        inbox::{self, InboxState},
+        search::{self, SearchState},
         sidebar,
+        theme::Theme,
         timeline::{self, TimelineState},
     },
 };
@@ -18,6 +25,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
             id: channel,
             name: "general".into(),
             about: "topic".into(),
+            kind: ChannelKind::Stream,
             visibility: Visibility::Public,
             is_member: true,
             is_hidden: false,
@@ -28,6 +36,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
             id: Uuid::new_v4(),
             name: "discover-only".into(),
             about: String::new(),
+            kind: ChannelKind::Stream,
             visibility: Visibility::Public,
             is_member: false,
             is_hidden: false,
@@ -207,4 +216,108 @@ fn narrow_terminal_layout_does_not_overlap() {
         assert!(panes.timeline.right() <= width);
         assert!(panes.status.bottom() <= height);
     }
+}
+
+#[test]
+fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
+    let channel = Uuid::new_v4();
+    let pubkey = "a".repeat(64);
+    let profile = Profile {
+        pubkey: pubkey.clone(),
+        display_name: Some("Generic Person".into()),
+        name: None,
+        picture: None,
+        nip05: None,
+        about: None,
+        event_id: "b".repeat(64),
+        created_at: 1,
+    };
+    let profiles = HashMap::from([(pubkey.clone(), profile)]);
+    let items = vec![InboxItem {
+        conversation_id: format!("dm:{channel}"),
+        categories: vec![InboxCategory::Dm, InboxCategory::Mention],
+        event_id: Some("c".repeat(64)),
+        channel_id: Some(channel),
+        thread_root: None,
+        sender_pubkey: Some(pubkey.clone()),
+        created_at: 1,
+        preview: "safe preview\u{1b}]52;bad".into(),
+        unread_count: 1,
+        draft_count: 0,
+        forced_unread: false,
+    }];
+    let mut inbox_state = InboxState::default();
+    inbox_state.reconcile(&items);
+    let theme = Theme::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            inbox::render(frame, area, &items, &profiles, &inbox_state, &theme, false);
+        })
+        .unwrap();
+    let wide = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(wide.contains("Inbox"));
+    assert!(wide.contains("Generic Person"));
+    assert!(!wide.contains('\u{1b}'));
+
+    let search_state = SearchState {
+        query: "generic".into(),
+        results: vec![SearchResult {
+            stable_id: format!("channel:{channel}"),
+            kind: SearchResultKind::Channel,
+            label: "general".into(),
+            detail: "workspace channel".into(),
+            channel_id: Some(channel),
+            event_id: None,
+            thread_root: None,
+            pubkey: None,
+            created_at: 1,
+            remote_rank: None,
+        }],
+        selected_id: Some(format!("channel:{channel}")),
+        ..SearchState::default()
+    };
+    terminal
+        .draw(|frame| search::render(frame, frame.area(), &search_state, &theme))
+        .unwrap();
+    let search_text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(search_text.contains("Search"));
+    assert!(search_text.contains("general"));
+
+    let mut dm_state = DmPickerState::default();
+    dm_state.reconcile(&profiles, &"f".repeat(64));
+    terminal
+        .draw(|frame| {
+            dm_picker::render(
+                frame,
+                frame.area(),
+                &dm_state,
+                &profiles,
+                &"f".repeat(64),
+                &theme,
+            );
+        })
+        .unwrap();
+    let dm_text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(dm_text.contains("not end-to-end encrypted"));
+    assert!(dm_text.contains("Generic Person"));
 }

@@ -4,7 +4,7 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: post-MVP development. Protocol compatibility is pinned to Buzz
+> Status: post-MVP Inbox, workspace DM, search, themes, and secure-media development. Protocol compatibility is pinned to Buzz
 > `ede26863345a518ec46edd6d7692e0281883491b`.
 
 ## Build
@@ -26,13 +26,20 @@ use `bzz-dev` paths and a separate OS-keychain service.
 - reaction toggles, own-message deletion, and encrypted cross-device read state;
 - Vim-style navigation, fuzzy channel finder, safe Markdown, and narrow layouts;
 - 60 built-in themes plus semantic `theme.toml` customization;
+- an active-community Inbox for mentions, relevant threads, workspace DMs,
+  read-only needs-action events, unread rows, and drafts;
+- Buzz Desktop-compatible one-to-one/group workspace DMs with owner-only hide
+  state and explicit non-E2EE labeling;
+- unified channel/DM/person/message search using offline SQLite FTS5 plus
+  authenticated NIP-50 prefix search and `from:`/`in:`/date operators;
 - secure Buzz `imeta`/Blossom attachments with verified offline caching;
 - inline JPEG/PNG/GIF/WebP first-frame rendering through Kitty, Sixel, iTerm2,
   or a Unicode half-block fallback;
 - image previews, explicit attachment saves, and sanitized image/file uploads.
 
-Search, direct messages, typing/presence, custom emoji, media playback, profile
-avatars, and message editing remain post-MVP.
+NIP-17 gift-wrap authoring/inbox, typing/presence, custom emoji, media playback,
+profile avatars, and message editing remain post-MVP. Workspace DMs are private
+relay channels, not end-to-end encrypted messages.
 
 ## First run
 
@@ -53,12 +60,14 @@ ordinary environment variables. Backups are password-encrypted NIP-49
 missing credential without changing its identity or communities with
 `bzz identity restore-backup`.
 
-Default keys: `j/k`, `gg/G`, `Ctrl-p`, `Ctrl-y`, `Enter`, `i`, `Ctrl-]`, `p`,
-`r`, `D`, `U`, `?`, and `Q`. `p` previews attachments and `Ctrl-a` adds a file
-while composing. `Ctrl-y` opens the reversible theme picker. Generate
-shell integration with `bzz completions <shell>`. Inside the TUI, `:reconnect`,
-`:resync`, `:theme reload`, `:purge-cache`, and `:lock` cover the main recovery,
-appearance, and security operations.
+Default keys include `j/k`, `gg/G`, `Ctrl-p`, `/` for search, `I` for Inbox,
+`Ctrl-n` for a new workspace DM, `H`/`A` to hide/add a DM participant,
+`Ctrl-y`, `Enter`, `i`, `Ctrl-]`, `p`, `r`, `D`, `U`, `?`, and `Q`. `p`
+previews attachments and `Ctrl-a` adds a file while composing. `Ctrl-y` opens
+the reversible theme picker. Generate shell integration with
+`bzz completions <shell>`. Inside the TUI, `:inbox`, `:search`, `:dm`,
+`:reconnect`, `:resync`, `:theme reload`, `:purge-cache`, and `:lock` cover the
+main conversation, recovery, appearance, and security operations.
 
 ## Media safety
 
@@ -99,7 +108,8 @@ CycloneDX SBOMs, and GitHub build-provenance attestations. Verification steps
 are in `docs/releasing.md`.
 
 See `docs/configuration.md`, [`docs/themes.md`](docs/themes.md),
-`docs/security.md`, `docs/protocol-compatibility.md`,
+[`docs/inbox-dms-search.md`](docs/inbox-dms-search.md), `docs/security.md`,
+`docs/protocol-compatibility.md`,
 `docs/troubleshooting.md`, the
 [basic-first manual E2E plan](docs/e2e-manual.md), and the
 [Herdr-assisted E2E guide](docs/e2e-herdr.md).

@@ -1,5 +1,7 @@
+use std::collections::BTreeSet;
+
 use nostr::{Event, JsonUtil as _};
-use rusqlite::{OptionalExtension as _, params};
+use rusqlite::{OptionalExtension as _, Transaction, params};
 use uuid::Uuid;
 
 use crate::{
@@ -15,7 +17,10 @@ use crate::{
 impl Store {
     pub fn apply_event(&mut self, community_id: Uuid, event: &Event) -> Result<bool> {
         verify(event)?;
-        if matches!(event.kind.as_u16(), 39_000..=39_003 | 44_100 | 44_101) {
+        if matches!(
+            event.kind.as_u16(),
+            30_622 | 39_000..=39_003 | 44_100 | 44_101
+        ) {
             let relay_pubkey = self.connection.query_row(
                 "SELECT relay_pubkey FROM communities WHERE id=?1",
                 [community_id.to_string()],
@@ -49,6 +54,11 @@ impl Store {
         let (root, parent) = thread_coordinates(event);
         let tags = serde_json::to_string(&event.tags)
             .map_err(|error| Error::Serialization(error.to_string()))?;
+        let http_base = self.connection.query_row(
+            "SELECT http_base_url FROM communities WHERE id=?1",
+            [community_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )?;
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "INSERT INTO events(community_id,event_id,kind,pubkey,created_at,channel_id,content,tags_json,raw_json,root_event_id,parent_event_id,received_at)
@@ -59,6 +69,10 @@ impl Store {
                 channel.map(|id| id.to_string()), event.content, tags, raw, root, parent,
             ],
         )?;
+        crate::store::search::project_event(&transaction, community_id, event, &http_base)?;
+        if event.kind.as_u16() == 30_622 {
+            apply_dm_visibility_snapshot(&transaction, community_id, event)?;
+        }
         if matches!(event.kind.as_u16(), 9 | 40_002 | 40_099)
             && let Some(channel) = channel
         {
@@ -82,37 +96,97 @@ impl Store {
                 Visibility::Private => "private",
             };
             transaction.execute(
-                "INSERT INTO channels(community_id,channel_id,name,about,visibility,is_hidden,metadata_event_id,metadata_created_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8)
-                 ON CONFLICT(community_id,channel_id) DO UPDATE SET name=excluded.name,about=excluded.about,visibility=excluded.visibility,is_hidden=excluded.is_hidden,metadata_event_id=excluded.metadata_event_id,metadata_created_at=excluded.metadata_created_at
+                "INSERT INTO channels(community_id,channel_id,name,about,channel_type,visibility,is_hidden,metadata_event_id,metadata_created_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,0,?7,?8)
+                 ON CONFLICT(community_id,channel_id) DO UPDATE SET name=excluded.name,about=excluded.about,channel_type=excluded.channel_type,visibility=excluded.visibility,metadata_event_id=excluded.metadata_event_id,metadata_created_at=excluded.metadata_created_at
                  WHERE (excluded.metadata_created_at,excluded.metadata_event_id) > (COALESCE(channels.metadata_created_at,0),COALESCE(channels.metadata_event_id,''))",
-                params![community_id.to_string(),channel.id.to_string(),channel.name,channel.about,visibility,channel.is_hidden,event.id.to_hex(),u64_to_i64(event.created_at.as_secs())?],
+                params![community_id.to_string(),channel.id.to_string(),channel.name,channel.about,channel.kind.as_str(),visibility,event.id.to_hex(),u64_to_i64(event.created_at.as_secs())?],
             )?;
+            if channel.kind.is_dm() {
+                let participant_count: usize = transaction.query_row(
+                    "SELECT count(*) FROM memberships WHERE community_id=?1 AND channel_id=?2",
+                    params![community_id.to_string(), channel.id.to_string()],
+                    |row| row.get(0),
+                )?;
+                if participant_count != 0 && !(2..=9).contains(&participant_count) {
+                    return Err(Error::Protocol(
+                        "DM metadata has an invalid participant set".into(),
+                    ));
+                }
+            }
         }
-        if event.kind.as_u16() == 39_002
-            && let Some(channel) = crate::protocol::events::first_tag(event, "d")
-            && Uuid::parse_str(&channel).is_ok()
-        {
+        if event.kind.as_u16() == 39_002 {
+            let d_tags = crate::protocol::events::tag_values(event, "d");
+            if d_tags.len() != 1 || Uuid::parse_str(&d_tags[0]).is_err() {
+                return Err(Error::Protocol(
+                    "membership snapshot has an invalid channel ID".into(),
+                ));
+            }
+            let channel = &d_tags[0];
+            let pubkeys = crate::protocol::events::tag_values(event, "p");
+            if pubkeys.len() > 10_000
+                || pubkeys.iter().any(|pubkey| {
+                    pubkey.len() != 64 || !pubkey.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+                || pubkeys.iter().collect::<BTreeSet<_>>().len() != pubkeys.len()
+            {
+                return Err(Error::Protocol(
+                    "membership snapshot has an invalid or oversized participant set".into(),
+                ));
+            }
+            let channel_type: Option<String> = transaction
+                .query_row(
+                    "SELECT channel_type FROM channels WHERE community_id=?1 AND channel_id=?2",
+                    params![community_id.to_string(), channel],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if channel_type.as_deref() == Some("dm") && !(2..=9).contains(&pubkeys.len()) {
+                return Err(Error::Protocol(
+                    "DM membership snapshot must contain 2-9 participants".into(),
+                ));
+            }
             transaction.execute(
                 "INSERT INTO channels(community_id,channel_id,name,visibility) VALUES(?1,?2,?2,'private') ON CONFLICT DO NOTHING",
                 params![community_id.to_string(),channel],
             )?;
-            transaction.execute(
-                "DELETE FROM memberships WHERE community_id=?1 AND channel_id=?2",
-                params![community_id.to_string(), channel],
-            )?;
-            for pubkey in crate::protocol::events::tag_values(event, "p") {
+            let source_event_id = event.id.to_hex();
+            let source_created_at = event.created_at.as_secs();
+            let existing = transaction
+                .query_row(
+                    "SELECT source_created_at,source_event_id FROM channel_membership_heads WHERE community_id=?1 AND channel_id=?2",
+                    params![community_id.to_string(), channel],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            let is_newer = existing.is_none_or(|(created_at, event_id)| {
+                let created_at = u64::try_from(created_at).unwrap_or(0);
+                source_created_at > created_at
+                    || (source_created_at == created_at && source_event_id < event_id)
+            });
+            if is_newer {
                 transaction.execute(
-                    "INSERT OR IGNORE INTO memberships(community_id,channel_id,pubkey,source_event_id) VALUES(?1,?2,?3,?4)",
-                    params![community_id.to_string(),channel,pubkey,event.id.to_hex()],
+                    "INSERT INTO channel_membership_heads(community_id,channel_id,source_event_id,source_created_at) VALUES(?1,?2,?3,?4)
+                     ON CONFLICT(community_id,channel_id) DO UPDATE SET source_event_id=excluded.source_event_id,source_created_at=excluded.source_created_at",
+                    params![community_id.to_string(),channel,source_event_id,u64_to_i64(source_created_at)?],
+                )?;
+                transaction.execute(
+                    "DELETE FROM memberships WHERE community_id=?1 AND channel_id=?2",
+                    params![community_id.to_string(), channel],
+                )?;
+                for pubkey in pubkeys {
+                    transaction.execute(
+                        "INSERT INTO memberships(community_id,channel_id,pubkey,source_event_id) VALUES(?1,?2,?3,?4)",
+                        params![community_id.to_string(),channel,pubkey,source_event_id],
+                    )?;
+                }
+                transaction.execute(
+                    "UPDATE channels SET member_count=(SELECT count(*) FROM memberships WHERE community_id=?1 AND channel_id=?2),
+                       is_member=EXISTS(SELECT 1 FROM memberships m JOIN communities c ON c.id=m.community_id JOIN identities i ON i.id=c.identity_id WHERE m.community_id=?1 AND m.channel_id=?2 AND m.pubkey=i.pubkey)
+                     WHERE community_id=?1 AND channel_id=?2",
+                    params![community_id.to_string(),channel],
                 )?;
             }
-            transaction.execute(
-                "UPDATE channels SET member_count=(SELECT count(*) FROM memberships WHERE community_id=?1 AND channel_id=?2),
-                   is_member=EXISTS(SELECT 1 FROM memberships m JOIN communities c ON c.id=m.community_id JOIN identities i ON i.id=c.identity_id WHERE m.community_id=?1 AND m.channel_id=?2 AND m.pubkey=i.pubkey)
-                 WHERE community_id=?1 AND channel_id=?2",
-                params![community_id.to_string(),channel],
-            )?;
         }
         if let Some(reaction) = as_reaction(event) {
             transaction.execute(
@@ -134,6 +208,11 @@ impl Store {
                     "UPDATE reactions SET deleted_by_event_id=COALESCE(deleted_by_event_id,?3) WHERE community_id=?1 AND reaction_event_id=?2 AND (?4=9005 OR pubkey=?5)",
                     params![community_id.to_string(),target,event.id.to_hex(),i64::from(event.kind.as_u16()),event.pubkey.to_hex()],
                 )?;
+                transaction.execute(
+                    "DELETE FROM search_documents WHERE community_id=?1 AND event_id=?2
+                     AND EXISTS(SELECT 1 FROM events WHERE community_id=?1 AND event_id=?2 AND deleted_by_event_id IS NOT NULL)",
+                    params![community_id.to_string(),target],
+                )?;
             }
         } else {
             transaction.execute(
@@ -143,6 +222,11 @@ impl Store {
             transaction.execute(
                 "UPDATE reactions SET deleted_by_event_id=(SELECT deletion_event_id FROM deletion_targets d WHERE d.community_id=?1 AND d.target_event_id=?2 AND (d.deletion_kind=9005 OR d.deletion_pubkey=?3) ORDER BY deletion_event_id LIMIT 1) WHERE community_id=?1 AND reaction_event_id=?2",
                 params![community_id.to_string(),event.id.to_hex(),event.pubkey.to_hex()],
+            )?;
+            transaction.execute(
+                "DELETE FROM search_documents WHERE community_id=?1 AND event_id=?2
+                 AND EXISTS(SELECT 1 FROM events WHERE community_id=?1 AND event_id=?2 AND deleted_by_event_id IS NOT NULL)",
+                params![community_id.to_string(),event.id.to_hex()],
             )?;
         }
         transaction.execute(
@@ -160,6 +244,77 @@ impl Store {
         )?;
         Ok(())
     }
+}
+
+fn apply_dm_visibility_snapshot(
+    transaction: &Transaction<'_>,
+    community_id: Uuid,
+    event: &Event,
+) -> Result<()> {
+    let self_pubkey: String = transaction.query_row(
+        "SELECT i.pubkey FROM communities c JOIN identities i ON i.id=c.identity_id WHERE c.id=?1",
+        [community_id.to_string()],
+        |row| row.get(0),
+    )?;
+    let d_tags = crate::protocol::events::tag_values(event, "d");
+    let p_tags = crate::protocol::events::tag_values(event, "p");
+    if d_tags.as_slice() != [self_pubkey.clone()] || p_tags.as_slice() != [self_pubkey.clone()] {
+        return Err(Error::Protocol(
+            "DM visibility snapshot does not belong to the active identity".into(),
+        ));
+    }
+    let source_event_id = event.id.to_hex();
+    let source_created_at = event.created_at.as_secs();
+    let existing = transaction
+        .query_row(
+            "SELECT source_created_at,source_event_id FROM dm_visibility_heads WHERE community_id=?1 AND identity_pubkey=?2",
+            params![community_id.to_string(),self_pubkey],
+            |row| Ok((row.get::<_, i64>(0)?,row.get::<_,String>(1)?)),
+        )
+        .optional()?;
+    if let Some((created_at, event_id)) = existing {
+        let created_at = u64::try_from(created_at).unwrap_or(0);
+        if source_created_at < created_at
+            || (source_created_at == created_at && source_event_id >= event_id)
+        {
+            return Ok(());
+        }
+    }
+    let h_tags = crate::protocol::events::tag_values(event, "h");
+    if h_tags.len() > 10_000 {
+        return Err(Error::Protocol(
+            "DM visibility snapshot contains too many channels".into(),
+        ));
+    }
+    let hidden = h_tags
+        .into_iter()
+        .map(|value| {
+            Uuid::parse_str(&value).map_err(|_| {
+                Error::Protocol("DM visibility snapshot has an invalid channel ID".into())
+            })
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    if hidden.len() > 10_000 {
+        return Err(Error::Protocol(
+            "DM visibility snapshot contains too many channels".into(),
+        ));
+    }
+    transaction.execute(
+        "INSERT INTO dm_visibility_heads(community_id,identity_pubkey,source_event_id,source_created_at) VALUES(?1,?2,?3,?4)
+         ON CONFLICT(community_id,identity_pubkey) DO UPDATE SET source_event_id=excluded.source_event_id,source_created_at=excluded.source_created_at",
+        params![community_id.to_string(),self_pubkey,source_event_id,u64_to_i64(source_created_at)?],
+    )?;
+    transaction.execute(
+        "DELETE FROM dm_visibility WHERE community_id=?1 AND identity_pubkey=?2",
+        params![community_id.to_string(), self_pubkey],
+    )?;
+    for channel_id in hidden {
+        transaction.execute(
+            "INSERT INTO dm_visibility(community_id,identity_pubkey,channel_id,source_event_id,source_created_at) VALUES(?1,?2,?3,?4,?5)",
+            params![community_id.to_string(),self_pubkey,channel_id.to_string(),source_event_id,u64_to_i64(source_created_at)?],
+        )?;
+    }
+    Ok(())
 }
 
 pub(crate) fn u64_to_i64(value: u64) -> Result<i64> {

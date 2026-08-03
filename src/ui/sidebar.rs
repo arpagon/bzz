@@ -28,7 +28,9 @@ pub fn render(
     let items = joined.iter().map(|(_, channel)| {
         let is_unread = unread.contains(&channel.id);
         let badge = if is_unread { "●" } else { " " };
-        let privacy = if matches!(channel.visibility, crate::domain::Visibility::Private) {
+        let privacy = if channel.kind.is_dm() {
+            "@"
+        } else if matches!(channel.visibility, crate::domain::Visibility::Private) {
             "🔒"
         } else {
             "#"

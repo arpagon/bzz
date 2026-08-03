@@ -1,7 +1,11 @@
+pub mod dm;
 pub mod events;
+pub mod inbox;
 pub mod migrate;
 pub mod models;
 pub mod queries;
+pub mod search;
+pub mod search_queries;
 pub mod writer;
 
 use std::path::{Path, PathBuf};
@@ -29,17 +33,21 @@ impl Store {
         migrate::configure(&connection)?;
         migrate::migrate(&mut connection, &path)?;
         set_private_permissions(&path)?;
-        Ok(Self { connection, path })
+        let mut store = Self { connection, path };
+        store.ensure_search_projections()?;
+        Ok(store)
     }
 
     pub fn open_memory() -> Result<Self> {
         let mut connection = Connection::open_in_memory()?;
         migrate::configure(&connection)?;
         migrate::migrate(&mut connection, Path::new(":memory:"))?;
-        Ok(Self {
+        let mut store = Self {
             connection,
             path: PathBuf::from(":memory:"),
-        })
+        };
+        store.ensure_search_projections()?;
+        Ok(store)
     }
 
     pub fn path(&self) -> &Path {

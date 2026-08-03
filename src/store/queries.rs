@@ -5,7 +5,7 @@ use rusqlite::{OptionalExtension as _, params};
 use uuid::Uuid;
 
 use crate::{
-    domain::{Channel, Message, Profile, Reaction, Visibility},
+    domain::{Channel, ChannelKind, Message, Profile, Reaction, Visibility},
     error::{Error, Result},
     store::{
         Store,
@@ -37,7 +37,21 @@ impl Store {
 
     pub fn channels(&self, community_id: Uuid) -> Result<Vec<Channel>> {
         let mut statement = self.connection.prepare(
-            "SELECT channel_id,name,about,visibility,is_member,is_hidden,member_count,last_event_at FROM channels WHERE community_id=?1 AND is_hidden=0 ORDER BY is_member DESC,name COLLATE NOCASE",
+            "SELECT c.channel_id,c.name,c.about,c.channel_type,c.visibility,c.is_member,
+                    CASE WHEN c.channel_type='dm' THEN EXISTS(
+                      SELECT 1 FROM dm_visibility v JOIN communities co ON co.id=v.community_id JOIN identities i ON i.id=co.identity_id
+                      WHERE v.community_id=c.community_id AND v.channel_id=c.channel_id AND v.identity_pubkey=i.pubkey
+                    ) ELSE c.is_hidden END,
+                    c.member_count,c.last_event_at
+             FROM channels c
+             WHERE c.community_id=?1 AND (
+               (c.channel_type<>'dm' AND c.is_hidden=0) OR
+               (c.channel_type='dm' AND NOT EXISTS(
+                 SELECT 1 FROM dm_visibility v JOIN communities co ON co.id=v.community_id JOIN identities i ON i.id=co.identity_id
+                 WHERE v.community_id=c.community_id AND v.channel_id=c.channel_id AND v.identity_pubkey=i.pubkey
+               ))
+             )
+             ORDER BY c.is_member DESC,(c.channel_type='dm') DESC,c.name COLLATE NOCASE",
         )?;
         let values = statement
             .query_map([community_id.to_string()], |row| {
@@ -51,16 +65,17 @@ impl Store {
                     })?,
                     name: row.get(1)?,
                     about: row.get(2)?,
-                    visibility: if row.get::<_, String>(3)? == "private" {
+                    kind: ChannelKind::parse(&row.get::<_, String>(3)?),
+                    visibility: if row.get::<_, String>(4)? == "private" {
                         Visibility::Private
                     } else {
                         Visibility::Public
                     },
-                    is_member: row.get(4)?,
-                    is_hidden: row.get(5)?,
-                    member_count: row.get(6)?,
+                    is_member: row.get(5)?,
+                    is_hidden: row.get(6)?,
+                    member_count: row.get(7)?,
                     last_event_at: row
-                        .get::<_, Option<i64>>(7)?
+                        .get::<_, Option<i64>>(8)?
                         .and_then(|value| u64::try_from(value).ok()),
                 })
             })?
@@ -93,6 +108,96 @@ impl Store {
              ORDER BY e.created_at DESC,e.event_id DESC LIMIT ?3",
             params![community_id.to_string(),channel_id.to_string(),i64::try_from(limit).unwrap_or(i64::MAX)],
         ).map(|mut values| { values.reverse(); values })
+    }
+
+    pub fn messages_around(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+        event_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Message>> {
+        self.context_messages(community_id, channel_id, None, event_id, limit)
+    }
+
+    pub fn thread_around(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+        root: &str,
+        event_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Message>> {
+        self.context_messages(community_id, channel_id, Some(root), event_id, limit)
+    }
+
+    fn context_messages(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+        root: Option<&str>,
+        event_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Message>> {
+        let limit = limit.clamp(1, 500);
+        let target = self
+            .connection
+            .query_row(
+                "SELECT created_at FROM events WHERE community_id=?1 AND channel_id=?2 AND event_id=?3 AND kind IN (9,40002,40099)",
+                params![community_id.to_string(), channel_id.to_string(), event_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        let Some(target) = target else {
+            return Ok(Vec::new());
+        };
+        let older_limit = (limit / 2).max(1);
+        let newer_limit = limit.saturating_sub(older_limit);
+        let scope = if root.is_some() {
+            "(e.event_id=?5 OR e.root_event_id=?5)"
+        } else {
+            "e.root_event_id IS NULL"
+        };
+        let columns = "e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,o.last_error_code,e.tags_json,c.http_base_url";
+        let older_sql = format!(
+            "SELECT {columns} FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
+             WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099) AND {scope}
+               AND (e.created_at<?3 OR (e.created_at=?3 AND e.event_id<=?4))
+             ORDER BY e.created_at DESC,e.event_id DESC LIMIT ?6"
+        );
+        let newer_sql = format!(
+            "SELECT {columns} FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
+             WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099) AND {scope}
+               AND (e.created_at>?3 OR (e.created_at=?3 AND e.event_id>?4))
+             ORDER BY e.created_at,e.event_id LIMIT ?6"
+        );
+        let scope_value = root.unwrap_or("");
+        let mut values = self.message_query(
+            &older_sql,
+            params![
+                community_id.to_string(),
+                channel_id.to_string(),
+                target,
+                event_id,
+                scope_value,
+                i64::try_from(older_limit).unwrap_or(250),
+            ],
+        )?;
+        values.reverse();
+        if newer_limit > 0 {
+            values.extend(self.message_query(
+                &newer_sql,
+                params![
+                    community_id.to_string(),
+                    channel_id.to_string(),
+                    target,
+                    event_id,
+                    scope_value,
+                    i64::try_from(newer_limit).unwrap_or(250),
+                ],
+            )?);
+        }
+        Ok(values)
     }
 
     pub fn thread(&self, community_id: Uuid, root: &str, limit: usize) -> Result<Vec<Message>> {
@@ -199,6 +304,12 @@ impl Store {
             "UPDATE outbox SET state=?3,last_error_code=?4,attempts=attempts+1,updated_at=unixepoch() WHERE community_id=?1 AND event_id=?2",
             params![community_id.to_string(),event_id,state.as_str(),error],
         )?;
+        if state == OutboxState::Rejected {
+            self.connection.execute(
+                "DELETE FROM search_documents WHERE community_id=?1 AND event_id=?2",
+                params![community_id.to_string(), event_id],
+            )?;
+        }
         Ok(())
     }
 

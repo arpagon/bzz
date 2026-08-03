@@ -29,6 +29,15 @@ async fn real_relay_mvp_protocol_journey() {
     let keys = Keys::generate();
     let pubkey = keys.public_key().to_hex();
     let channel = seed_member(&source, &pubkey);
+    let keys_b = Keys::generate();
+    let keys_c = Keys::generate();
+    let keys_outsider = Keys::generate();
+    let pubkey_b = keys_b.public_key().to_hex();
+    let pubkey_c = keys_c.public_key().to_hex();
+    let pubkey_outsider = keys_outsider.public_key().to_hex();
+    let _ = seed_member(&source, &pubkey_b);
+    let _ = seed_member(&source, &pubkey_c);
+    let _ = seed_member(&source, &pubkey_outsider);
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let signer = SignerHandle::spawn(keys);
@@ -49,6 +58,185 @@ async fn real_relay_mvp_protocol_journey() {
         bzz::protocol::http::relay_signing_pubkey(&info),
         Some("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
     );
+
+    let signer_b = SignerHandle::spawn(keys_b);
+    let (session_b, _) = session::connect(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        signer_b.clone(),
+    )
+    .await
+    .unwrap();
+    let http_b = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer_b.clone(),
+    )
+    .unwrap();
+    let signer_outsider = SignerHandle::spawn(keys_outsider);
+    let http_outsider = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer_outsider.clone(),
+    )
+    .unwrap();
+
+    let dm_open = signer
+        .sign(buzz_sdk::build_dm_open(&[pubkey_b.as_str()]).unwrap())
+        .await
+        .unwrap();
+    let dm_ack = session.publish(dm_open).await.unwrap();
+    assert!(dm_ack.accepted, "{}", dm_ack.message);
+    let dm_channel = command_channel_id(&dm_ack.message);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let dm_token = format!("bzz-dm-search-{}", uuid::Uuid::new_v4().simple());
+    let dm_message = signer
+        .sign(
+            buzz_sdk::build_message(
+                dm_channel,
+                &dm_token,
+                None,
+                &[pubkey_b.as_str()],
+                false,
+                &[],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(session.publish(dm_message.clone()).await.unwrap().accepted);
+    let dm_reply = signer_b
+        .sign(
+            buzz_sdk::build_message(
+                dm_channel,
+                "generated DM reply",
+                Some(&buzz_sdk::ThreadRef {
+                    root_event_id: dm_message.id,
+                    parent_event_id: dm_message.id,
+                }),
+                &[pubkey.as_str()],
+                false,
+                &[],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(session_b.publish(dm_reply.clone()).await.unwrap().accepted);
+
+    let b_dm_results = http_b
+        .query(&[QueryFilter {
+            kinds: vec![9],
+            search: Some(dm_token.clone()),
+            search_mode: Some(bzz::protocol::types::SearchMode::Prefix),
+            page: Some(0),
+            limit: Some(20),
+            ..QueryFilter::default()
+        }
+        .tag("h", [dm_channel.to_string()])])
+        .await
+        .unwrap();
+    assert!(b_dm_results.iter().any(|event| event.id == dm_message.id));
+    let outsider_dm = http_outsider
+        .query(&[QueryFilter {
+            kinds: vec![9],
+            search: Some(dm_token.clone()),
+            search_mode: Some(bzz::protocol::types::SearchMode::Prefix),
+            page: Some(0),
+            limit: Some(20),
+            ..QueryFilter::default()
+        }
+        .tag("h", [dm_channel.to_string()])])
+        .await
+        .unwrap();
+    assert!(
+        outsider_dm.is_empty(),
+        "a non-member received a DM search hit"
+    );
+    let mentions = http_b
+        .query(&[QueryFilter {
+            kinds: vec![9, 40_002],
+            limit: Some(100),
+            ..QueryFilter::default()
+        }
+        .tag("p", [pubkey_b.clone()])])
+        .await
+        .unwrap();
+    assert!(mentions.iter().any(|event| event.id == dm_message.id));
+
+    let add_c = signer
+        .sign(buzz_sdk::build_dm_add_member(dm_channel, &pubkey_c).unwrap())
+        .await
+        .unwrap();
+    let add_ack = session.publish(add_c).await.unwrap();
+    assert!(add_ack.accepted, "{}", add_ack.message);
+    let group_dm = command_channel_id(&add_ack.message);
+    assert_ne!(group_dm, dm_channel, "adding a member must open a new DM");
+
+    let hide = signer
+        .sign(
+            EventBuilder::new(Kind::Custom(41_012), "").tags([nostr::Tag::parse([
+                "h",
+                &dm_channel.to_string(),
+            ])
+            .unwrap()]),
+        )
+        .await
+        .unwrap();
+    assert!(session.publish(hide).await.unwrap().accepted);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let hidden = http
+        .query(&[QueryFilter {
+            kinds: vec![30_622],
+            limit: Some(1),
+            ..QueryFilter::default()
+        }
+        .tag("p", [pubkey.clone()])
+        .tag("d", [pubkey.clone()])])
+        .await
+        .unwrap();
+    assert!(hidden.iter().any(|event| {
+        bzz::protocol::events::tag_values(event, "h").contains(&dm_channel.to_string())
+    }));
+    let foreign_visibility = http_outsider
+        .query(&[QueryFilter {
+            kinds: vec![30_622],
+            limit: Some(1),
+            ..QueryFilter::default()
+        }
+        .tag("p", [pubkey.clone()])
+        .tag("d", [pubkey.clone()])])
+        .await;
+    assert!(foreign_visibility.is_err());
+    let reopen = signer
+        .sign(buzz_sdk::build_dm_open(&[pubkey_b.as_str()]).unwrap())
+        .await
+        .unwrap();
+    let reopen_ack = session.publish(reopen).await.unwrap();
+    assert!(reopen_ack.accepted);
+    assert_eq!(command_channel_id(&reopen_ack.message), dm_channel);
+
+    let gift_token = format!("gift-private-{}", uuid::Uuid::new_v4().simple());
+    let ephemeral = Keys::generate();
+    let gift = EventBuilder::new(Kind::Custom(1_059), &gift_token)
+        .tags([nostr::Tag::parse(["p", &pubkey_b]).unwrap()])
+        .sign_with_keys(&ephemeral)
+        .unwrap();
+    assert!(session.publish(gift).await.unwrap().accepted);
+    let gift_search = http_b
+        .query(&[QueryFilter {
+            kinds: vec![1_059],
+            search: Some(gift_token),
+            search_mode: Some(bzz::protocol::types::SearchMode::Prefix),
+            page: Some(0),
+            limit: Some(20),
+            ..QueryFilter::default()
+        }
+        .tag("p", [pubkey_b.clone()])])
+        .await
+        .unwrap();
+    assert!(
+        gift_search.is_empty(),
+        "NIP-17 gift wraps must not be searchable"
+    );
+
     let open_channels = http
         .query(&[QueryFilter {
             kinds: vec![39_000],
@@ -202,6 +390,8 @@ async fn real_relay_mvp_protocol_journey() {
         .await
         .unwrap();
     assert!(directory_report.channel_ids.contains(&channel));
+    assert!(directory_report.channel_ids.contains(&dm_channel));
+    assert!(directory_report.channel_ids.contains(&group_dm));
     let cached_channels = local_store
         .call(move |store| store.channels(local_community))
         .await
@@ -211,6 +401,44 @@ async fn real_relay_mvp_protocol_journey() {
             .iter()
             .any(|item| item.id == channel && item.is_member)
     );
+    assert!(cached_channels.iter().any(|item| {
+        item.id == dm_channel && item.is_member && item.kind == bzz::domain::ChannelKind::Dm
+    }));
+    let dm_backfill = backfill::channel(local_community, dm_channel, &http, &local_store, 100)
+        .await
+        .unwrap();
+    assert!(dm_backfill.content_events >= 2);
+    let dm_search_query = bzz::store::models::MessageSearchQuery {
+        fts_query: format!("\"{dm_token}\"*"),
+        author: None,
+        channel_id: Some(dm_channel),
+        since: None,
+        until: None,
+        limit: 20,
+    };
+    let local_dm_search = local_store
+        .call({
+            let pubkey = pubkey.clone();
+            move |store| store.search_messages(local_community, &pubkey, &dm_search_query)
+        })
+        .await
+        .unwrap();
+    assert!(
+        local_dm_search
+            .iter()
+            .any(|result| result.event_id.as_deref() == Some(dm_message.id.to_hex().as_str()))
+    );
+    let inbox = local_store
+        .call({
+            let pubkey = pubkey.clone();
+            move |store| store.inbox_items(local_community, &pubkey)
+        })
+        .await
+        .unwrap();
+    assert!(inbox.iter().any(|item| {
+        item.conversation_id == format!("dm:{dm_channel}")
+            && item.categories.contains(&bzz::domain::InboxCategory::Dm)
+    }));
 
     let profile = signer
         .sign(EventBuilder::new(
@@ -571,7 +799,21 @@ async fn real_relay_mvp_protocol_journey() {
         .unwrap();
     assert_eq!(stored.len(), 1);
     reconnected.shutdown().await;
+    session_b.shutdown().await;
+    signer_b.lock().await;
+    signer_outsider.lock().await;
     signer.lock().await;
+}
+
+fn command_channel_id(message: &str) -> uuid::Uuid {
+    let json = message.strip_prefix("response:").unwrap_or(message);
+    let value: serde_json::Value = serde_json::from_str(json).expect("DM command response JSON");
+    uuid::Uuid::parse_str(
+        value["channel_id"]
+            .as_str()
+            .expect("DM command response channel_id"),
+    )
+    .expect("DM command response UUID")
 }
 
 fn seed_member(source: &str, pubkey: &str) -> uuid::Uuid {

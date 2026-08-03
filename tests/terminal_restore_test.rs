@@ -25,6 +25,24 @@ fn normal_keymap_has_safe_quit_and_modal_navigation() {
         ),
         KeyAction::Theme
     );
+    assert_eq!(
+        map_normal(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE), false),
+        KeyAction::Search
+    );
+    assert_eq!(
+        map_normal(
+            KeyEvent::new(KeyCode::Char('I'), KeyModifiers::SHIFT),
+            false
+        ),
+        KeyAction::Inbox
+    );
+    assert_eq!(
+        map_normal(
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            false
+        ),
+        KeyAction::NewDm
+    );
 }
 
 #[test]

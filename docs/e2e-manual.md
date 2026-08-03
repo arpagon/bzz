@@ -25,7 +25,7 @@ debug builds deliberately use separate paths and keychain services.
 
 Expected result:
 
-- version `0.1.0`;
+- version `0.2.0`;
 - config, data, and cache under `BZZ_E2E_ROOT`;
 - `configuration, theme, media, and database are valid`;
 - no secrets in `.env` or command output.
@@ -244,6 +244,54 @@ may appear only as required integrity metadata in `imeta` and media-cache rows.
 Test an external/mismatched descriptor only with the automated fake server; do
 not inject hostile events into a shared relay.
 
+## 10. Inbox, workspace DMs, and search
+
+Use two or three disposable regular-member identities with independent SQLite
+databases. Never use the production owner identity.
+
+### Workspace DMs
+
+1. On client A press `Ctrl-n`, find B, select with `Space`, and press `Enter`.
+   Both clients must discover the same `@` DM and show the explicit
+   relay-readable/non-E2EE label.
+2. Exchange generated text, one thread reply, reaction, generated attachment,
+   draft, and read marker. Confirm one copy after reconnect.
+3. Open B again from A. It must reuse the same channel UUID. In the isolated
+   harness, drop the first `OK`; recovery must still find the same channel and
+   reuse the original signed command event.
+4. Press `A` in A/B, add C, and confirm a different group-DM UUID appears while
+   A/B remains unchanged.
+5. Press `H` on A. A's row disappears only after visibility confirmation; B's
+   row remains. Reopen the exact participant set and confirm A's row returns.
+6. With a fourth regular member, query/search the A/B channel. No event,
+   count, subscription, or search hit may be returned. The fourth member must
+   not read A's kind 30622 snapshot.
+
+### Inbox
+
+1. From B mention A in the dedicated channel and reply to a root A authored.
+2. Press `I` on A. The mention/thread must appear once even after reconnect;
+   the DM, a saved draft, and any generated needs-action fixture use their
+   corresponding filters.
+3. Use `Enter`, `o`, and `i`; exact channel/thread context and the existing
+   composer must open. Use `m`, `U`, and `a`; restart and confirm state.
+4. Repeat while offline/locked. Cached rows remain, no network call occurs, and
+   mutations that require signing remain unavailable.
+
+### Search
+
+1. Press `/` and search a generated channel, profile, and unique message token.
+   Confirm section ordering and exact navigation.
+2. Test `from:`, `in:`, `after:YYYY-MM-DD`, and `before:YYYY-MM-DD`. An unknown
+   or ambiguous person/channel must show a no-match notice rather than wider
+   results.
+3. Disconnect a disposable copy and repeat against cached content; the status
+   must say local-only.
+4. Hide a DM and delete a generated message. Neither may appear locally. A
+   non-member and another community must never receive the private hit.
+5. Publish a generated kind 1059 fixture only in the isolated automated relay;
+   NIP-50 and local FTS must not return it.
+
 ## Results log
 
 | Section | Result | Evidence/notes |
@@ -258,6 +306,7 @@ not inject hostile events into a shared relay.
 | 7. Recovery | ☐ | |
 | 8. Network/multi-client | ☐ | |
 | 9. Images/attachments | ☐ | |
+| 10. Inbox/DMs/search | ☐ | |
 
 ## Cleanup
 

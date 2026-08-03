@@ -61,6 +61,40 @@ Relay content is signature-verified and terminal controls/bidi overrides are
 replaced before rendering. Ordinary URLs remain inert. HTTP redirects are
 disabled so NIP-98 and Blossom authorization cannot cross origins.
 
+## Inbox, workspace DMs, and search
+
+Buzz workspace DMs use private hidden NIP-29 channels. Relay membership blocks
+other community members from reading the channel, but the relay processes and
+stores ordinary plaintext kind `9`/`40002` messages. Workspace DMs are not
+end-to-end encrypted. NIP-17/NIP-04/NIP-44 DM transport is not implemented and
+must not be inferred from the “private” label.
+
+DM command events are signed once, stored in the acknowledged outbox, and
+strictly bounded. A channel returned by the relay is displayed only after its
+UUID and exact participant set match relay-signed 39000/39002 discovery. The
+metadata `hidden` tag only classifies a DM. Viewer hiding comes exclusively
+from newest-wins kind 30622 carrying `p=self` and `d=self`, signed by the pinned
+NIP-11 relay key. Another viewer's snapshot is rejected even when fetched by
+ID. Locked mode cannot open, add to, hide, discover, or refresh a DM.
+
+Inbox does not duplicate message bodies. It derives rows from verified events,
+read contexts, drafts, memberships, and local overrides. Mark-unread never
+lowers a shared read marker. Needs-action cards are inert/read-only and cannot
+execute approval or workflow mutations.
+
+Local FTS5 indexes only sanitized kind 9/40002 searchable text in the active
+community partition. Generated attachment Markdown is removed. Hidden DMs,
+deleted events, rejected outbox rows, gift wraps, encrypted/user-private kinds,
+media bytes/metadata, paths, auth events, and secrets are excluded. Remote
+NIP-50 search is same-origin NIP-98 authenticated with redirects disabled.
+Every hit is signature-, community-, membership-, viewer-, deletion-, and
+kind-checked again before display. Search is never an authorization boundary.
+
+Queries, participant lists, message bodies, auth material, and full identifiers
+are not logged. Inputs, pages, response bytes, results, context hydration,
+actor queues, participant sets, and Inbox windows are bounded. Locked/offline
+search is local-only. See [`inbox-dms-search.md`](inbox-dms-search.md).
+
 ## Media
 
 Message media is fetched only from a complete `imeta` descriptor bound to the

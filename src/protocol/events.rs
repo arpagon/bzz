@@ -2,7 +2,7 @@ use nostr::Event;
 use uuid::Uuid;
 
 use crate::{
-    domain::{Channel, Message, Profile, Reaction, Visibility},
+    domain::{Channel, ChannelKind, Message, Profile, Reaction, Visibility},
     error::{Error, Result},
 };
 
@@ -131,13 +131,18 @@ pub fn as_channel(event: &Event) -> Option<Channel> {
     } else {
         Visibility::Public
     };
+    let kind =
+        first_tag(event, "t").map_or(ChannelKind::Stream, |value| ChannelKind::parse(&value));
     Some(Channel {
         id,
         name: first_tag(event, "name").unwrap_or_else(|| id.to_string()),
         about: first_tag(event, "about").unwrap_or_default(),
+        kind,
         visibility,
         is_member: false,
-        is_hidden: first_tag(event, "hidden").is_some(),
+        // NIP-29's bare `hidden` tag classifies workspace DMs and is not
+        // viewer-specific visibility. Kind 30622 owns the latter.
+        is_hidden: false,
         member_count: 0,
         last_event_at: None,
     })

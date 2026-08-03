@@ -104,6 +104,10 @@ Useful conventions:
 | Mark unread `U` | `shift+u` |
 | End `G` | `shift+g` |
 | Finder | `ctrl+p` |
+| Search | `/` |
+| Inbox | `shift+i` |
+| New workspace DM | `ctrl+n` |
+| Hide / add DM participant | `shift+h` / `shift+a` |
 | Thread | `ctrl+]` or `enter` |
 | Escape | `esc` |
 | Confirm | `enter` |
@@ -258,6 +262,38 @@ system credential manager, never its configuration. Verify through Herdr:
 
 Then quit with `shift+q`, run `identity restore-backup`, complete the passphrase
 manually, and wait for `NORMAL · online` again.
+
+### Inbox, workspace DMs, and search
+
+Use independent disposable panes/databases and generic generated profiles.
+Herdr may type public recipient labels and search terms, but never private
+message content intended to remain confidential.
+
+```bash
+# Inbox
+herdr pane send-keys "$BZZ_PANE" 'shift+i'
+sleep 0.3
+herdr pane read "$BZZ_PANE" --source visible --format text
+herdr pane send-keys "$BZZ_PANE" f down enter esc
+
+# Search
+herdr pane send-keys "$BZZ_PANE" /
+sleep 0.3
+herdr_type_ascii "$BZZ_PANE" "generated-token"
+sleep 0.5
+herdr pane read "$BZZ_PANE" --source visible --format text
+herdr pane send-keys "$BZZ_PANE" esc
+
+# New workspace DM (select with Space after filtering)
+herdr pane send-keys "$BZZ_PANE" ctrl+n
+sleep 0.3
+herdr_type_ascii "$BZZ_PANE" "Generic Person"
+herdr pane send-keys "$BZZ_PANE" space enter
+```
+
+Verify the DM modal visibly says it is not end-to-end encrypted. Do not automate
+an owner/admin identity. Hide/reopen and add-participant tests require the exact
+disposable participant set described in section 10 of the manual plan.
 
 ### Themes
 

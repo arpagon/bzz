@@ -1,11 +1,14 @@
 pub mod command;
 pub mod composer;
 pub mod confirm;
+pub mod dm_picker;
 pub mod finder;
 pub mod help;
+pub mod inbox;
 pub mod keymap;
 pub mod layout;
 pub mod reaction_picker;
+pub mod search;
 pub mod shell;
 pub mod sidebar;
 pub mod status;

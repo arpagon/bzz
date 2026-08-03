@@ -53,8 +53,8 @@ jobs:
       - name: Smoke-test release binary
         shell: bash
         run: ${{ matrix.binary }} --version
-      - name: Test identity, backup, config, and keymap on target OS
-        run: cargo test --locked --target ${{ matrix.target }} --lib --test auth_test --test config_test --test terminal_restore_test
+      - name: Test identity, backup, config, Inbox, DMs, search, and keymap on target OS
+        run: cargo test --locked --target ${{ matrix.target }} --lib --test auth_test --test config_test --test inbox_dm_search_test --test store_migration_test --test terminal_restore_test
       - name: Prepare temporary macOS keychain
         if: runner.os == 'macOS'
         shell: bash

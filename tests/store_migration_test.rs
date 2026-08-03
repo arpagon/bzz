@@ -2,6 +2,7 @@ use bzz::{
     config::{Config, IdentityConfig, KeyBackend},
     store::Store,
 };
+use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -19,7 +20,7 @@ fn fresh_database_has_expected_pragmas_and_schema() {
     let foreign_keys: u32 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
     assert_eq!(
         foreign_keys, 1,
         "foreign-key enforcement must remain enabled"
@@ -40,6 +41,17 @@ fn fresh_database_has_expected_pragmas_and_schema() {
         )
         .unwrap();
     assert_eq!(attachment_column, 1);
+    let fts_table: u32 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='search_fts'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        fts_table, 1,
+        "SQLite FTS5 must be available on every target"
+    );
     connection
         .execute(
             "UPDATE schema_migrations SET sha256='tampered' WHERE version=1",
@@ -48,6 +60,89 @@ fn fresh_database_has_expected_pragmas_and_schema() {
         .unwrap();
     drop(connection);
     assert!(Store::open(&path).is_err());
+}
+
+#[test]
+fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
+    let temporary = TempDir::new().unwrap();
+    let path = temporary.path().join("bzz.db");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let migration_1 = include_str!("../migrations/0001_init.sql");
+    let migration_2 = include_str!("../migrations/0002_media.sql");
+    connection.execute_batch(migration_1).unwrap();
+    connection
+        .execute(
+            "INSERT INTO schema_migrations(version,sha256,applied_at) VALUES(1,?1,0)",
+            [hex::encode(Sha256::digest(migration_1.as_bytes()))],
+        )
+        .unwrap();
+    connection.pragma_update(None, "user_version", 1).unwrap();
+    connection.execute_batch(migration_2).unwrap();
+    connection
+        .execute(
+            "INSERT INTO schema_migrations(version,sha256,applied_at) VALUES(2,?1,0)",
+            [hex::encode(Sha256::digest(migration_2.as_bytes()))],
+        )
+        .unwrap();
+    connection.pragma_update(None, "user_version", 2).unwrap();
+    let identity = Uuid::new_v4();
+    let community = Uuid::new_v4();
+    let channel = Uuid::new_v4();
+    let source_event = "1".repeat(64);
+    connection
+        .execute(
+            "INSERT INTO identities(id,pubkey,label,key_backend,key_ref,created_at) VALUES(?1,?2,'me','encrypted-file','test',0)",
+            rusqlite::params![identity.to_string(), "a".repeat(64)],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO communities(id,identity_id,relay_url,authority,http_base_url,label,created_at,updated_at) VALUES(?1,?2,'wss://migration.example','migration.example','https://migration.example','migration',0,0)",
+            rusqlite::params![community.to_string(), identity.to_string()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO channels(community_id,channel_id,name,visibility,is_member) VALUES(?1,?2,'DM','private',1)",
+            rusqlite::params![community.to_string(), channel.to_string()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO events(community_id,event_id,kind,pubkey,created_at,channel_id,content,tags_json,raw_json,received_at) VALUES(?1,?2,39002,?3,10,?4,'','[]','{}',10)",
+            rusqlite::params![community.to_string(), source_event, "b".repeat(64), channel.to_string()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO memberships(community_id,channel_id,pubkey,source_event_id) VALUES(?1,?2,?3,?4)",
+            rusqlite::params![community.to_string(), channel.to_string(), "a".repeat(64), source_event],
+        )
+        .unwrap();
+    drop(connection);
+
+    let store = Store::open(&path).unwrap();
+    store.search_integrity().unwrap();
+    drop(store);
+    let upgraded = rusqlite::Connection::open(&path).unwrap();
+    let version: u32 = upgraded
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 3);
+    let membership_head: String = upgraded
+        .query_row(
+            "SELECT source_event_id FROM channel_membership_heads WHERE community_id=?1 AND channel_id=?2",
+            rusqlite::params![community.to_string(), channel.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(membership_head, source_event);
+    assert!(
+        std::fs::read_dir(temporary.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(".bak"))
+    );
 }
 
 #[test]

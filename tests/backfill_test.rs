@@ -1,5 +1,5 @@
 use bzz::{
-    protocol::types::QueryFilter,
+    protocol::types::{QueryFilter, SearchMode},
     store::models::SyncCursor,
     sync::read_state::{ReadStateBlob, split},
 };
@@ -14,6 +14,9 @@ fn query_filter_preserves_composite_cursor_extensions() {
         thread_cursor: Some(9),
         thread_cursor_id: Some("b".repeat(64)),
         depth_limit: Some(64),
+        search: Some("hello".into()),
+        search_mode: Some(SearchMode::Prefix),
+        page: Some(2),
         ..QueryFilter::default()
     }
     .tag("h", ["channel".into()]);
@@ -21,6 +24,9 @@ fn query_filter_preserves_composite_cursor_extensions() {
     assert_eq!(value["until"], 10);
     assert_eq!(value["before_id"], "a".repeat(64));
     assert_eq!(value["#h"][0], "channel");
+    assert_eq!(value["search_mode"], "prefix");
+    assert_eq!(value["page"], 2);
+    filter.validate().unwrap();
     let cursor = SyncCursor {
         high_created_at: 10,
         high_event_id: "a".repeat(64),

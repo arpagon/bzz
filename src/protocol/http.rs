@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use futures_util::StreamExt as _;
 use nostr::Event;
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
@@ -55,19 +56,38 @@ impl HttpClient {
                 response.status()
             )));
         }
-        response
-            .json()
-            .await
-            .map_err(|error| Error::Protocol(error.to_string()))
+        let bytes = read_bounded_response(response, 1024 * 1024).await?;
+        serde_json::from_slice(&bytes)
+            .map_err(|error| Error::Protocol(format!("invalid NIP-11 response: {error}")))
     }
 
     pub async fn query(&self, filters: &[QueryFilter]) -> Result<Vec<Event>> {
+        if filters.len() > 16 {
+            return Err(Error::Config(
+                "a query may contain at most 16 filters".into(),
+            ));
+        }
+        for filter in filters {
+            filter.validate()?;
+        }
         let body =
             serde_json::to_vec(filters).map_err(|error| Error::Serialization(error.to_string()))?;
         let bytes = self.post("query", body).await?;
         let response: QueryResponse = serde_json::from_slice(&bytes)
             .map_err(|error| Error::Protocol(format!("invalid query response: {error}")))?;
-        Ok(response.into_events())
+        let events = response.into_events();
+        let maximum_events = filters
+            .iter()
+            .try_fold(0_usize, |total, filter| {
+                total.checked_add(filter.limit.unwrap_or(500) as usize)
+            })
+            .ok_or_else(|| Error::Protocol("query response count overflow".into()))?;
+        if events.len() > maximum_events {
+            return Err(Error::Protocol(
+                "relay returned more events than the query limit".into(),
+            ));
+        }
+        Ok(events)
     }
 
     pub async fn event(&self, event: &Event) -> Result<Value> {
@@ -106,10 +126,7 @@ impl HttpClient {
                 Err(error) => return Err(Error::Network(error.to_string())),
             };
             let status = response.status();
-            let bytes = response
-                .bytes()
-                .await
-                .map_err(|error| Error::Network(error.to_string()))?;
+            let bytes = read_bounded_response(response, 32 * 1024 * 1024).await?;
             if status.is_success() {
                 return Ok(bytes.to_vec());
             }
@@ -135,4 +152,31 @@ impl HttpClient {
             };
         }
     }
+}
+
+async fn read_bounded_response(response: reqwest::Response, maximum: usize) -> Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum as u64)
+    {
+        return Err(Error::Protocol(
+            "relay response exceeds the size limit".into(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| Error::Network(error.to_string()))?;
+        let next = bytes
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| Error::Protocol("relay response size overflow".into()))?;
+        if next > maximum {
+            return Err(Error::Protocol(
+                "relay response exceeds the size limit".into(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }

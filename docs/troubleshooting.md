@@ -73,6 +73,46 @@ bzz theme reset
 An invalid theme never requires deleting identities, configuration, or the
 SQLite cache.
 
+## Workspace DM is missing or still visible
+
+Workspace DMs are discovered through relay-signed 39000/39002 state. Use
+`:reconnect` and wait for directory refresh if a newly accepted DM reports that
+discovery is pending. Opening the same participant set must return the same
+channel. Adding a participant intentionally opens a different conversation.
+
+`H`/`:dm hide` does not delete the conversation. The row stays visible until a
+newer owner-only kind 30622 snapshot confirms it. Reopen a hidden DM by opening
+the same participant set with `Ctrl-n`/`:dm`; group DMs require the exact same
+set. A relay-key pin or owner mismatch is a security error and cannot be
+bypassed by changing local SQLite.
+
+Remember that “Private workspace DM” means relay membership-controlled, not
+end-to-end encrypted. NIP-17 gift wraps do not appear in this Inbox.
+
+## Search is local-only or misses a result
+
+Locked/offline mode deliberately uses only cached SQLite FTS5. Restore/unlock
+the configured identity and reconnect for NIP-50 completion. Remote typeahead
+starts at two characters and is debounced for 300 ms. `from:` and `in:` fail
+closed when they resolve to zero or multiple visible records; use a unique
+cached profile/channel label or exact channel UUID. Dates are UTC and use
+`YYYY-MM-DD`.
+
+Hidden DMs, deleted/rejected events, inaccessible channels, unsupported kinds,
+and attachment-only text are intentionally absent. If an accepted accessible
+message is missing after migration, restart once so the versioned local index
+rebuild/integrity check runs, then use `:resync` in its channel. Do not edit the
+FTS tables manually.
+
+## Inbox is empty or stale
+
+Inbox is scoped to the active community and combines mentions, relevant
+threads, visible DMs, read-only needs-action cards, and drafts. Online refresh
+runs every 30 seconds and live events are projected immediately. `f` cycles
+filters; verify that `Unread` or another narrow filter is not selected. In
+locked mode, Inbox is cache-only. `m` advances read state; `U` toggles only the
+local row override and never moves NIP-RS backward.
+
 ## Attachment card but no inline image
 
 Inspect configured media behavior:

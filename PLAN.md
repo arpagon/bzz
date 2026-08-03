@@ -1,6 +1,6 @@
 # bzz — Implementation Plan
 
-**Status:** Implemented through M9; MVP gates verified; post-MVP themes and secure media delivered
+**Status:** Implemented through M9; MVP gates verified; post-MVP themes, secure media, Inbox, workspace DMs, and unified search delivered
 **Repository / binary:** `arpagon/bzz` / `bzz`
 **Product shorthand:** “`slk`, but for Buzz”
 **Plan date:** 2026-07-30
@@ -16,6 +16,16 @@ private quota-managed cache/staging, bounded image decode, Kitty/Sixel/iTerm2/
 half-block rendering, previews, explicit saves, and sanitized uploads. See
 [`docs/media.md`](docs/media.md) for the current contract. Arbitrary external
 Markdown/profile images, media playback, and animated playback remain deferred.
+
+Issue #3 subsequently delivered the active-community Inbox, Buzz
+workspace-channel DMs, and unified local/remote search. Workspace DMs use
+41010/41011/41012 with relay-signed 39000/39002 discovery and owner-only 30622
+visibility; they are explicitly relay-readable and not NIP-17/E2EE. Inbox
+composes mentions, relevant NIP-10 activity, visible DMs, read-only
+46010–46012 cards, drafts, and existing read contexts. Search combines
+community-partitioned SQLite FTS5 with authenticated NIP-50 prefix queries and
+fails closed on unresolved operators/access. See
+[`docs/inbox-dms-search.md`](docs/inbox-dms-search.md) for the current contract.
 
 ## 1. TL;DR and recommendation
 
@@ -92,7 +102,7 @@ Both repositories were refreshed with the required `thirdparty` checkout script 
 
 ### Research conclusions that change the bootstrap assumptions
 
-1. **Buzz Desktop DMs and NIP-17 are not one feature.** The relay accepts standard kind `1059` NIP-17 gift wraps, but Desktop's workspace DM UX is private NIP-29 channels opened by kind `41010` and discovered through `39000`/`41001`. Both remain post-MVP; do not label a private-channel implementation “NIP-17.”
+1. **Buzz Desktop DMs and NIP-17 are not one feature.** The relay accepts standard kind `1059` NIP-17 gift wraps, but Desktop's workspace DM UX is private NIP-29 channels opened by kind `41010` and discovered through relay-signed `39000`/`39002` plus membership notifications. The pinned relay does not emit legacy kind `41001`. Workspace DMs are now implemented post-MVP and must never be labeled “NIP-17” or E2EE.
 2. **A global live subscription is insufficient.** Buzz intentionally isolates global and channel-scoped fan-out, so the client needs a channel subscription set rather than one Slack-like firehose.
 3. **Timestamp-only history cursors are insufficient.** Dense same-second traffic requires Buzz's HTTP bridge `before_id`/thread cursor extensions.
 4. **Read state is protocol state, not just a SQLite flag.** It is encrypted, grow-only/max-merged, multi-slot kind `30078` state and is part of MVP correctness.
@@ -123,18 +133,18 @@ Legend: **Yes** = supported, **Partial** = present but not the product-quality t
 | Vim navigation / fuzzy switcher | No | No | Yes | **MVP** |
 | Reconnect gap repair | Yes | Per command retries | Yes | **MVP** |
 | Optimistic UI with acknowledged truth | Yes | No | Yes | **MVP, pending outbox rows** |
-| Private-channel DMs/group DMs | Yes | Yes | Slack DMs | Later |
+| Private-channel DMs/group DMs | Yes | Yes | Slack DMs | **Implemented post-MVP; relay-readable NIP-29 channels** |
 | Raw NIP-17 gift-wrap inbox | Relay support | Partial/raw | N/A | Later, distinct from workspace DMs |
-| Message/profile search | Yes | Yes | Yes | Later |
-| Attachments / upload | Yes | Yes | Yes | Later |
-| Inline terminal images | N/A | No | Yes | Later |
+| Message/profile search | Yes | Yes | Yes | **Implemented post-MVP; local FTS5 + NIP-50** |
+| Attachments / upload | Yes | Yes | Yes | **Implemented post-MVP** |
+| Inline terminal images | N/A | No | Yes | **Implemented post-MVP** |
 | Presence and typing | Yes | Presence only | Yes | Later |
 | Message edit / kind `40003` overlay | Yes | Yes | Yes | Later; cache raw events in MVP |
 | Rich kind `40002` rendering | Yes | Partial | Slack Block Kit | **Partial: safe text fallback only** |
 | Custom emoji kind `30030` | Yes | Builder/commands | Yes | Later |
 | Desktop notifications | Yes | No | Yes | Later |
-| Themes / configurable bindings | Yes | No | Yes | Later; one built-in accessible theme/keymap in MVP |
-| Activity feed / approvals | Yes | Yes | N/A | Later |
+| Themes / configurable bindings | Yes | No | Yes | **60 semantic themes implemented post-MVP; custom bindings later** |
+| Activity feed / approvals | Yes | Yes | N/A | **Inbox/read-only approval status implemented; mutations later** |
 | Agents, ACP/MCP, Git, canvases, huddles | Yes | Yes | N/A | Explicit non-goal |
 
 ### MVP success statement
@@ -182,7 +192,8 @@ A user can configure two Buzz relay URLs, associate an identity without putting 
 - **Fully interpreted in MVP:** `0`, `5`, `7`, `9`, `30078`, `39000`, `39002`, `44100`, `44101`.
 - **Safely shown/recorded:** `40002` and `40099` as sanitized text; `9005` as deletion; `40003` stored but no edit overlay.
 - **Ignored but retained as raw signed events when encountered:** other channel-scoped kinds. Unknown events never execute terminal escapes or shell commands.
-- **Deferred:** `1059`, `1984`, `20001`, `20002`, `30030`, `30315`, `30622`, `39005`, `39006`, `40003` rendering, `40008`, `41001`, `41010`–`41012`, forums, jobs, workflows, Git, huddles, media, and agents.
+- **Implemented post-MVP:** relay-signed owner-only `30622`, workspace DM commands `41010`–`41012`, read-only Inbox events `46010`–`46012`, NIP-50 search, and secure media.
+- **Deferred:** `1059`, `1984`, `20001`, `20002`, `30030`, `30315`, `39005`, `39006`, `40003` rendering, `40008`, legacy `41001`, forums, jobs, workflow mutations, Git, huddles, media playback, and agents.
 
 ## 5. Architecture decision record
 

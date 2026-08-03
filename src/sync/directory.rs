@@ -13,6 +13,7 @@ use crate::{
 pub struct DirectoryReport {
     pub membership_events: usize,
     pub metadata_events: usize,
+    pub visibility_events: usize,
     pub channel_ids: BTreeSet<Uuid>,
 }
 
@@ -22,7 +23,7 @@ pub async fn refresh(
     http: &HttpClient,
     store: &StoreHandle,
 ) -> Result<DirectoryReport> {
-    let joined = query_all(
+    let mut joined = query_all(
         http,
         QueryFilter {
             kinds: vec![39_002],
@@ -31,6 +32,7 @@ pub async fn refresh(
         .tag("p", [self_pubkey.to_owned()]),
     )
     .await?;
+    joined.retain(|event| event.kind.as_u16() == 39_002);
     let mut ids = joined
         .iter()
         .filter(|event| {
@@ -70,6 +72,7 @@ pub async fn refresh(
             metadata.extend(member_metadata);
         }
     }
+    metadata.retain(|event| event.kind.as_u16() == 39_000);
     metadata.sort_by_key(|event| event.id);
     metadata.dedup_by_key(|event| event.id);
     ids.extend(
@@ -79,9 +82,21 @@ pub async fn refresh(
             .filter_map(|value| Uuid::parse_str(&value).ok()),
     );
     apply(community_id, metadata.clone(), store).await?;
+    let mut visibility = http
+        .query(&[QueryFilter {
+            kinds: vec![30_622],
+            limit: Some(1),
+            ..QueryFilter::default()
+        }
+        .tag("p", [self_pubkey.to_owned()])
+        .tag("d", [self_pubkey.to_owned()])])
+        .await?;
+    visibility.retain(|event| event.kind.as_u16() == 30_622);
+    apply(community_id, visibility.clone(), store).await?;
     Ok(DirectoryReport {
         membership_events: joined.len(),
         metadata_events: metadata.len(),
+        visibility_events: visibility.len(),
         channel_ids: ids,
     })
 }
@@ -99,7 +114,7 @@ pub async fn hydrate_profiles(
         .collect::<Vec<_>>();
     let mut count = 0;
     for chunk in authors.chunks(100) {
-        let events = http
+        let mut events = http
             .query(&[QueryFilter {
                 kinds: vec![0],
                 authors: chunk.to_vec(),
@@ -107,6 +122,7 @@ pub async fn hydrate_profiles(
                 ..QueryFilter::default()
             }])
             .await?;
+        events.retain(|event| event.kind.as_u16() == 0);
         count += events.len();
         apply(community_id, events, store).await?;
     }

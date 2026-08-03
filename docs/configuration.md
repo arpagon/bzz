@@ -50,7 +50,10 @@ pubkey without editing TOML.
 Only `wss://` root URLs are accepted by default. `ws://` requires both a
 loopback host and explicit acknowledgement. Credentials, queries, fragments,
 and non-root paths are rejected. Each relay authority is an isolated Buzz
-community; bzz never sends a client-selected tenant identifier.
+community; bzz never sends a client-selected tenant identifier. Inbox, DM
+visibility, and local FTS rows inherit that community/identity partition and
+have no separate configuration. Online Inbox/search use only the active
+community connection; locked mode is cache-only.
 
 `ui.theme` selects the global built-in theme. An optional community `theme`
 field takes precedence only while that community is active. Semantic overrides

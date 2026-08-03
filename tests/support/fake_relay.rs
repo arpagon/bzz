@@ -9,16 +9,23 @@ pub struct FakeRelay {
 }
 
 impl FakeRelay {
+    #[allow(dead_code)]
     pub async fn start() -> Self {
+        Self::start_with_event_ack(true, "stored").await
+    }
+
+    pub async fn start_with_event_ack(accepted: bool, message: &str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel();
+        let event_message = message.to_owned();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
                     _=&mut stop_rx=>break,
-                    accepted=listener.accept()=>{
-                        let (stream,_)=accepted.unwrap();
+                    connection=listener.accept()=>{
+                        let (stream,_)=connection.unwrap();
+                        let event_message = event_message.clone();
                         tokio::spawn(async move {
                             let mut socket=accept_async(stream).await.unwrap();
                             socket.send(Message::Text(r#"["AUTH","fake-challenge"]"#.into())).await.unwrap();
@@ -33,7 +40,7 @@ impl FakeRelay {
                                                 socket.send(Message::Text(serde_json::json!(["OK",event.id.to_hex(),true,"authenticated"]).to_string().into())).await.unwrap();
                                             }
                                             "REQ"=>{let id=value[1].as_str().unwrap();socket.send(Message::Text(serde_json::json!(["EOSE",id]).to_string().into())).await.unwrap();}
-                                            "EVENT"=>{let event=Event::from_json(value[1].to_string()).unwrap();socket.send(Message::Text(serde_json::json!(["OK",event.id.to_hex(),true,"stored"]).to_string().into())).await.unwrap();}
+                                            "EVENT"=>{let event=Event::from_json(value[1].to_string()).unwrap();socket.send(Message::Text(serde_json::json!(["OK",event.id.to_hex(),accepted,event_message]).to_string().into())).await.unwrap();}
                                             "CLOSE"=>{}
                                             _=>{}
                                         }

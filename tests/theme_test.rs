@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use bzz::{
-    domain::{Channel, Message, Profile, Reaction, Visibility},
+    domain::{Channel, ChannelKind, Message, Profile, Reaction, Visibility},
     ui::{
         sidebar,
         theme::{Theme, ThemeRegistry},
@@ -20,6 +20,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
         id: channel_id,
         name: "theme-test".into(),
         about: String::new(),
+        kind: ChannelKind::Stream,
         visibility: Visibility::Public,
         is_member: true,
         is_hidden: false,

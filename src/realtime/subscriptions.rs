@@ -32,6 +32,15 @@ pub fn membership(pubkey: &str, since: u64) -> Vec<Value> {
     vec![json!({"kinds":[44100,44101],"#p":[pubkey],"since":since.saturating_sub(30),"limit":100})]
 }
 
+pub fn personal(pubkey: &str, since: u64) -> Vec<Value> {
+    vec![json!({
+        "kinds":[30622,46010,46011,46012],
+        "#p":[pubkey],
+        "since":since.saturating_sub(300),
+        "limit":500
+    })]
+}
+
 pub fn read_state(pubkey: &str, since: u64) -> Vec<Value> {
     vec![json!({"kinds":[30078],"authors":[pubkey],"#t":["read-state"],"since":since,"limit":500})]
 }

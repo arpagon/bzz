@@ -30,6 +30,11 @@ pub enum RelayMessage {
 
 impl RelayMessage {
     pub fn parse(text: &str) -> Result<Self> {
+        if text.len() > 8 * 1024 * 1024 {
+            return Err(Error::Protocol(
+                "relay envelope exceeds the size limit".into(),
+            ));
+        }
         let value: Value = serde_json::from_str(text)
             .map_err(|error| Error::Protocol(format!("invalid relay JSON: {error}")))?;
         let array = value
@@ -54,13 +59,19 @@ impl RelayMessage {
                 })
             }
             "EOSE" if array.len() == 2 => Ok(Self::Eose(string(1)?.to_owned())),
-            "OK" if array.len() >= 4 => Ok(Self::Ok {
-                event_id: string(1)?.to_owned(),
-                accepted: array[2]
-                    .as_bool()
-                    .ok_or_else(|| Error::Protocol("malformed OK envelope".into()))?,
-                message: string(3)?.to_owned(),
-            }),
+            "OK" if array.len() >= 4 => {
+                let message = string(3)?;
+                if message.len() > 8_192 {
+                    return Err(Error::Protocol("OK message exceeds the size limit".into()));
+                }
+                Ok(Self::Ok {
+                    event_id: string(1)?.to_owned(),
+                    accepted: array[2]
+                        .as_bool()
+                        .ok_or_else(|| Error::Protocol("malformed OK envelope".into()))?,
+                    message: message.to_owned(),
+                })
+            }
             "NOTICE" if array.len() == 2 => Ok(Self::Notice(string(1)?.to_owned())),
             "CLOSED" if array.len() >= 3 => Ok(Self::Closed {
                 subscription: string(1)?.to_owned(),

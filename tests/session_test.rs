@@ -56,6 +56,12 @@ fn global_aux_and_membership_subscriptions_match_buzz_routing() {
     let membership = subscriptions::membership(&"a".repeat(64), 1_000);
     assert_eq!(membership[0]["kinds"], json!([44_100, 44_101]));
     assert_eq!(membership[0]["since"], json!(970));
+    let personal = subscriptions::personal(&"a".repeat(64), 1_000);
+    assert_eq!(personal[0]["#p"], json!(["a".repeat(64)]));
+    assert_eq!(
+        personal[0]["kinds"],
+        json!([30_622, 46_010, 46_011, 46_012])
+    );
 }
 
 #[test]
