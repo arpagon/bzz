@@ -34,6 +34,10 @@ pub enum KeyAction {
     Escape,
     Character(char),
     Backspace,
+    ForwardDelete,
+    Left,
+    Right,
+    Complete,
     Submit,
     Newline,
     Ignore,
@@ -90,6 +94,12 @@ pub fn map_insert(key: KeyEvent) -> KeyAction {
         (KeyModifiers::CONTROL, KeyCode::Char('x')) => KeyAction::RemoveAttachment,
         (KeyModifiers::CONTROL, KeyCode::Char('r')) => KeyAction::RetryAttachments,
         (_, KeyCode::Backspace) => KeyAction::Backspace,
+        (_, KeyCode::Delete) => KeyAction::ForwardDelete,
+        (_, KeyCode::Left) => KeyAction::Left,
+        (_, KeyCode::Right) => KeyAction::Right,
+        (_, KeyCode::Up) => KeyAction::Up,
+        (_, KeyCode::Down) => KeyAction::Down,
+        (_, KeyCode::Tab) => KeyAction::Complete,
         (modifiers, KeyCode::Char(character))
             if !modifiers.contains(KeyModifiers::CONTROL)
                 && !modifiers.contains(KeyModifiers::ALT) =>

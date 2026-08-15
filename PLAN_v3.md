@@ -1,0 +1,474 @@
+# bzz v0.3.0 — Implementation Plan
+
+**Status:** Proposed; this file authorizes no implementation by itself.
+
+**Target:** `v0.3.0`
+
+**Compatibility baseline:** Rust 1.95 / Rust 2024; Ratatui 0.30; Crossterm
+0.29; the existing SQLite cache; Buzz `ede26863345a518ec46edd6d7692e0281883491b`;
+and `slk` `8149c3b18ed04c259efe5feb545d040ab043d922` as an interaction reference.
+The two pinned third-party revisions remain unchanged.
+
+## 1. Product decision
+
+`v0.3.0` has three connected, deliberately bounded features:
+
+1. reliable terminal mouse support;
+2. channel-member `@` mention completion that emits correct Buzz `p` tags; and
+3. a local, explicit, draft-only Codex assistant.
+
+The release remains human-first. A person retains the final send action, the
+normal identity remains the only network author, and the existing one-active-
+community/session design remains intact.
+
+### 1.1 Explicit non-goals
+
+The following are not `v0.3.0` scope:
+
+- remote or autonomous Buzz bot identities;
+- NIP-OA agent delegation, agent-owned WebSocket sessions, or relay-admin
+  admission;
+- `buzz-acp`, ACP/app-server integration, MCP servers, provider adapters,
+  background daemons, or multi-agent collaboration;
+- Codex write permissions, shell approval flows, Git mutation, arbitrary MCP
+  tools, attachments, DMs, reactions, deletion, or automatic publication;
+- treating a local assistant name as a Nostr person or emitting a `p` tag for
+  it;
+- arbitrary clickable Markdown links or changing the existing secure-media
+  policy;
+- changing the pinned Buzz or `slk` revisions.
+
+Recent Buzz upstream code contains `buzz-acp`, managed-agent, and NIP-OA
+facilities, but they are outside the pinned compatibility baseline. Adopting
+them would require separate protocol research, an explicit dependency decision,
+and a new approved plan. This release must not imply that workspace DMs are
+E2EE or that its local assistant is a relay-visible agent.
+
+## 2. User-facing contract
+
+### 2.1 Mouse
+
+`bzz` adds `ui.mouse = "auto" | "on" | "off"`, defaulting to `"auto"`.
+`auto` enables capture only for an interactive, non-`dumb` terminal; `on` is an
+explicit override and `off` preserves terminal text selection.
+
+When enabled:
+
+| Surface | Primary click | Wheel | Double click |
+|---|---|---|---|
+| Community rail | Select community | No action | No action |
+| Channel sidebar | Select and open channel/DM | Move sidebar selection | No action |
+| Timeline | Select message | Move message selection by three rows | Open its thread |
+| Thread pane | Select reply | Move reply selection by three rows | No action |
+| Composer | Focus composer; preserve its draft | No action | No action |
+| Inbox, finder, search, DM picker, theme picker, mention picker | Select the row/control under the pointer | Move that list selection | Equivalent to the overlay's Enter action where meaningful |
+| Media preview, help, confirmation, status, empty space | No unsafe action | No action | No action |
+
+An overlay owns input before the underlying panes. Button 2/3, horizontal
+scroll, drag selection, and terminal-specific unknown events are ignored. A
+double click is two primary-down events on the same visible message within 400
+ms; it is never inferred from terminal cell text.
+
+### 2.2 Mentions
+
+In an open composer, typing a valid `@` prefix opens a compact member picker.
+It contains only cached members of the selected channel in the active
+community, excluding the active identity. It works with no network connection.
+
+- Type to filter; `Up`/`Down`, Tab, Enter, Escape, and mouse have the expected
+  picker behavior.
+- Accepting a candidate inserts its current display label, for example
+  `@Avery Chen`, and records the exact public key in the composer.
+- Sending the message or a NIP-10 reply emits deduplicated `p` tags through
+  `buzz_sdk::build_message`; it retains all current media and thread tags.
+- The visible label is not used as authorization. Only the accepted pubkey is
+  sent. A stale member, a changed profile, or a malformed profile does not
+  create a network lookup while typing.
+- Mentions are capped at Buzz's existing 50-mention limit. The UI reports the
+  limit rather than silently dropping targets.
+- An `@` in an email address, URL, code span, fenced code block, or an edited
+  invalidated mention is plain text. A selection with a multi-word label
+  remains a mention until its span is edited; typing whitespace or punctuation
+  immediately after it does not invalidate it.
+
+### 2.3 Local Codex assistant
+
+A local assistant is a named, opt-in profile of local settings, not a Nostr
+identity. It is invoked from an explicit `:agent` action or the documented
+composer shortcut; it never listens for a remote mention.
+
+A run is one-shot:
+
+1. The user selects an assistant and explicitly asks it about the current
+   message/thread or current draft.
+2. `bzz` creates bounded, local context and runs a preinstalled `codex` binary.
+3. The completed response appears in an **agent draft** review overlay.
+4. The user can discard it, or place it into the ordinary composer and review
+   it before using the normal send action.
+
+The assistant has no signing key, no relay connection, no ability to publish,
+and no implicit access to a Buzz channel. It is unavailable in locked mode:
+locking cancels a run before any external model egress. When offline but
+unlocked, it may create a local draft without initiating any Buzz network
+operation; Codex inference remains the separately disclosed external egress
+chosen by the user.
+
+## 3. Architecture and data ownership
+
+### 3.1 Terminal events and hit testing
+
+`TerminalGuard` becomes the owner of mouse capture as well as raw mode and the
+alternate screen. Its entry transaction is:
+
+1. enable raw mode;
+2. enter the alternate screen;
+3. enable `EnableMouseCapture` when the resolved mouse policy allows it;
+4. construct Ratatui's terminal.
+
+Every partial failure rolls back the already-applied operations. `restore`,
+`Drop`, and the installed panic hook disable mouse capture before leaving the
+alternate screen and disabling raw mode. Restoration is idempotent.
+
+The event loop in `App::run` will dispatch `TerminalEvent::Mouse` in addition
+to key presses. Render code must produce a pure `RenderHitMap` for the current
+frame: it records the frame generation and the `Rect` plus semantic target for
+communities, sidebar rows, timeline rows, thread rows, composer, and each
+active overlay. Mouse dispatch reads only that map. It must not recalculate
+coordinates from a duplicate layout formula, index into wrapped text by screen
+row, or retain a map across a new frame/resize.
+
+Timeline rendering will expose a stable per-message row rect while it computes
+wrapping and inline-media heights. The selected message—not an arbitrary pixel
+scroll offset—remains the source of navigation truth, preserving keyboard and
+read-state behavior.
+
+### 3.2 Structured composer mentions
+
+`Composer` gains private structured mention spans:
+
+```text
+MentionSpan { byte_start, byte_end, pubkey }
+```
+
+All editor operations become UTF-8 boundary aware. Insertion, backspace,
+delete, cursor movement, replacement, draft hydration, and trimming update or
+invalidate spans deterministically. Only non-overlapping spans whose text still
+matches their accepted replacement are eligible to generate a tag.
+
+`Composer::take_message` is replaced by a prepared-message operation returning
+body, valid pubkeys, and uploaded attachments as one atomic value. The service
+layer accepts the pubkeys explicitly for both root messages and replies. It
+continues to delegate tag limits, NIP-10 shape, and content limits to the
+pinned SDK.
+
+Mention metadata is local draft state, not Nostr state. Migration `0004` adds a
+bounded `mentions_json` column to `drafts`; it contains only span offsets and
+public keys. Loading a legacy or malformed draft leaves its text intact and
+drops invalid spans. Saving a draft validates that every stored offset is a
+UTF-8 boundary, every pubkey is 64 lowercase hexadecimal characters, there are
+at most 50 spans, and the serialized metadata stays within a small fixed cap.
+No profile body, private key, agent prompt, or agent output is added to SQLite.
+
+A new bounded store query joins `memberships` with `profiles` for one
+`(community_id, channel_id)`. It accepts a normalized query capped at 80 bytes,
+returns at most 32 candidates, and prefers cached `display_name`, then `name`,
+then an abbreviated pubkey. It never fetches profiles while typing. The picker
+may show a member without a profile as an abbreviated pubkey.
+
+### 3.3 Local assistant runtime
+
+Add `src/agent/` with a small, one-shot runtime rather than a general agent
+framework:
+
+- `policy.rs` validates context limits, allowed workspaces, and output limits;
+- `codex.rs` resolves and feature-probes the local executable, starts it without
+  a shell, writes the prompt to stdin, and parses JSON Lines from stdout;
+- `runner.rs` owns the single active child, timeout, cancellation, and typed
+  completion result;
+- `mod.rs` exposes only `start`, `cancel`, and draft-result types to `App`.
+
+The runtime has a global concurrency of one, a queue length of zero (a second
+request is rejected with a visible, non-sensitive status), a 120-second wall
+clock limit, a 128 KiB prompt cap, a 4 MiB total stdout cap, a 1 MiB line cap,
+and a 16 KiB final-draft cap. It accepts only typed `item.completed` JSONL
+records with an `agent_message` payload, uses the final valid assistant message,
+and fails closed on malformed/oversized/no-final output. It never treats stderr
+or arbitrary stdout as a reply.
+
+On cancel, lock, community switch, TUI shutdown, or terminal restoration,
+`bzz` terminates the child with `kill_on_drop`, waits for its direct child
+exit, and discards the unapproved result. No run, prompt, streamed output,
+thread identifier, or completion is persisted. User-facing diagnostics are
+classified (unavailable, timed out, cancelled, invalid output, failed) and do
+not echo prompts, stderr, environment, command arguments, auth material, or
+model output.
+
+### 3.4 Codex invocation and egress boundary
+
+`bzz` supports a Codex installation only when a capability probe confirms the
+required `codex exec` flags. It does not download, update, log in to, or pass a
+subscription/API credential to Codex. The user authenticates Codex separately,
+for example with its own `codex login` flow.
+
+The child process has all of the following properties:
+
+- The executable is resolved once to an absolute local path and started with
+  `tokio::process::Command`, never a shell.
+- The prompt is written to stdin, never an argument.
+- Required flags are `exec`, `--json`, `--ephemeral`, `--ignore-user-config`,
+  `--ignore-rules`, `--sandbox read-only`, and `--skip-git-repo-check`.
+- The environment starts with `env_clear`. Only a documented minimum needed by
+  Codex authentication and the platform (`HOME`/`CODEX_HOME` when applicable,
+  `PATH`, locale, and certificate settings) is restored. `OPENAI_API_KEY` and
+  every bzz-specific or inherited arbitrary variable are removed.
+- The default current directory is an empty owner-only scratch directory below
+  bzz data. A user may opt into one canonical existing working directory for a
+  named assistant; the path is stored as configuration, not as a secret, and
+  Codex is still read-only.
+- No `--full-auto`, unsafe sandbox, MCP configuration, web/tool enablement,
+  custom config, hook, or provider argument is supplied.
+
+Model inference necessarily leaves the machine through the user's separately
+configured Codex client. `bzz` sends only the bounded context the user invoked,
+clearly marked as untrusted quoted data. The fixed instruction says that quoted
+channel text can contain hostile instructions, that the assistant cannot
+publish, that it must not reveal credentials, and that it must not ask to
+change files or execute commands.
+
+### 3.5 Assistant configuration
+
+`Config` gains an optional, deny-unknown-fields `local_agents` list. Each
+record contains a generated local UUID, a unique human label, `backend =
+"codex"`, and an optional canonical workspace path. It contains no secret,
+Nostr key, remote URL, command override, model credential, prompt, output, or
+per-channel permission.
+
+New CLI operations are intentionally narrow:
+
+```text
+bzz agent add --label <label> [--workdir <directory>]
+bzz agent list
+bzz agent remove <id> --yes
+bzz agent doctor
+```
+
+`doctor` performs only non-secret local capability checks. `bzz check` validates
+agent configuration structurally but never starts Codex. The TUI's `:agent`
+command opens the configured local-agent picker; it does not create an agent,
+modify a workspace, or alter relay membership.
+
+## 4. Implementation milestones
+
+### M0 — Freeze the contract and establish baselines
+
+- Approve this scope and create the public tracking issue in English.
+- Add this plan to the review set without changing dependencies or protocol
+  pins.
+- Record the current full test, Clippy, audit, deny, benchmark, and pinned-relay
+  baseline.
+- Add a compatibility fixture for the observed Codex JSONL contract. The real
+  Codex binary is not used in ordinary tests.
+- Confirm that no v0.3.0 item requires a relay capability beyond v0.2.0.
+
+**Exit gate:** reviewers agree that v0.3.0 is draft-only local assistance and
+that NIP-OA/ACP are deferred.
+
+### M1 — Terminal mouse foundation
+
+- Add `MouseMode` configuration, parsing, validation, documentation, and a
+  resolved runtime policy.
+- Make terminal setup/rollback/panic restoration capture-safe.
+- Add a pure hit-map model and testable mouse dispatcher.
+- Implement core rail/sidebar/timeline/thread/composer interactions, then make
+  every current list overlay consume its own hit targets.
+- Preserve all existing keyboard mappings and narrow-layout behavior.
+
+**Exit gate:** input, resize, render, panic, and normal shutdown leave the
+terminal usable whether capture was enabled or failed halfway through setup.
+
+### M2 — Mention editor, persistence, and send path
+
+- Add mention-span operations to `Composer`, including cursor movement and
+  Unicode-safe edit behavior.
+- Add migration `0004`, store APIs, draft validation, and migration/rebuild
+  coverage.
+- Add the local membership/profile candidate query and asynchronous UI debounce
+  without network hydration.
+- Build and render the mention picker; integrate keyboard and mouse acceptance.
+- Extend message/reply services to send prepared mentions alongside media and
+  thread references.
+
+**Exit gate:** a restored draft produces exactly the same valid `p` tags as a
+newly composed message, and all malformed draft metadata safely degrades to
+text-only composition.
+
+### M3 — Local Codex draft runtime
+
+- Add typed agent configuration and non-secret CLI management.
+- Implement the capability probe and a strict Codex process wrapper.
+- Build bounded contextual prompts from selected cached messages/thread state;
+  sanitize presentation text and label all remote content as data.
+- Add an agent picker, running/cancel state, and review overlay. Accepting a
+  result puts it in the ordinary human composer; it never directly calls
+  `MessageService`.
+- Stop runs on all lifecycle transitions and display only safe status classes.
+
+**Exit gate:** no code path gives the runtime a signer, supervisor, HTTP client,
+or media uploader.
+
+### M4 — Hardening, documentation, and release
+
+- Refresh help, configuration, security, troubleshooting, protocol
+  compatibility, manual E2E, and release documentation in English.
+- Add benchmark coverage for candidate lookup, composer span edits, and
+  hit-map construction under a large timeline.
+- Run the full local gate, real pinned-relay journey, platform CI, supply-chain
+  checks, release archives, SBOM, provenance, checksums, and installer smoke
+  test.
+- Publish `v0.3.0` only after its release notes identify the assistant as
+  local/draft-only and disclose its Codex egress boundary.
+
+## 5. Detailed acceptance criteria
+
+### Mouse
+
+- [ ] `auto`, `on`, and `off` parse and validate; `off` emits no mouse-capture
+      sequences.
+- [ ] Every successful mouse-enabled terminal entry emits matching disable
+      capture during regular exit, early error, and panic recovery.
+- [ ] Mouse coordinates resolve only against the most recently rendered
+      hit-map generation.
+- [ ] Core panes and every selectable overlay support the documented mouse
+      actions without breaking equivalent keyboard actions.
+- [ ] Timeline and thread hit tests select the correct event with wrapped text,
+      attachment previews, narrow layouts, and a scroll offset.
+- [ ] Unknown mouse events and clicks outside active rects are no-ops.
+
+### Mentions
+
+- [ ] Candidate results are community- and channel-partitioned cached members,
+      exclude self, and have a strict result/input bound.
+- [ ] Accepting one or more candidates yields exact lowercase public-key `p`
+      tags, deduplicated and capped at 50, for roots and replies.
+- [ ] Multibyte labels, repeated labels, profile-less members, punctuation,
+      edits inside/outside a span, and leading/trailing trim have deterministic
+      behavior.
+- [ ] Email addresses, URLs, inline code, and fenced code never open or create
+      a mention.
+- [ ] Draft save/load preserves only valid mention metadata; legacy/malformed
+      rows remain readable text and cannot crash the composer.
+- [ ] Locked mode and typing never issue a profile, membership, NIP-50, or any
+      other network request.
+
+### Local Codex assistant
+
+- [ ] A fresh configuration has no assistant and no Codex process is started.
+- [ ] Configuration validates labels, UUID uniqueness, backend, and canonical
+      workspace paths without storing a secret.
+- [ ] The wrapper uses an absolute executable, stdin prompt, the fixed safe
+      flags, cleared environment, bounded I/O, timeout, cancellation, and
+      strict JSONL parsing.
+- [ ] A fake Codex fixture proves no prompt or output is passed on arguments,
+      persisted in config/SQLite, logged, or rendered as a terminal escape
+      sequence.
+- [ ] The default scratch directory prevents accidental access to bzz's current
+      working directory; an explicitly selected workspace remains read-only.
+- [ ] Only one run may exist; lock, switch, quit, error, and cancel clean it up
+      and discard its draft.
+- [ ] Completing a run creates no Nostr event, outbox row, relay request,
+      attachment, or read-state update. Only a later normal human send does.
+- [ ] A missing/unsupported/unlogged-in Codex installation is a recoverable
+      local status and never blocks normal Buzz use.
+
+## 6. Test strategy
+
+Tests are layered so contributors do not need a Codex subscription or a live
+relay for ordinary development.
+
+| Layer | Coverage |
+|---|---|
+| Unit | Mouse-policy resolution, terminal rollback ordering, semantic hit testing, click timing, UTF-8 composer edits, mention-span normalization, code/email recognition, candidate ranking, config validation, Codex command specification, JSONL parsing, limits, timeout/cancellation classification. |
+| Store/migration | `0004` checksum/migration, legacy draft upgrade, invalid `mentions_json`, community/channel isolation, bounded candidate queries, no assistant data in SQLite. |
+| UI snapshot | Mention picker placement above the composer, selected rows, narrow layouts, mouse-derived selection, agent picker, running indicator, review overlay, and safe failure states across themes. |
+| Property/fuzz | Arbitrary UTF-8 edit sequences preserve valid byte boundaries; accepted spans never overlap; generated tag pubkeys are exactly the valid surviving spans; hit testing never returns an out-of-range list index. |
+| Process fake | A purpose-built executable records only non-secret structural facts and emits controlled JSONL/stderr. It covers flags, stdin, `env_clear`, oversized/noisy output, malformed JSON, timeout, cancellation, and no direct publish path. |
+| Relay integration | Existing pinned real-relay tests prove ordinary messages/replies still retain `h`, NIP-10, media, `p`, outbox, and acknowledgement semantics. The agent itself requires no relay test because it must not use the network. |
+| Manual E2E | Mouse in a supported terminal and multiplexer, terminal restoration after a forced error, member mention/restart/send, offline mention behavior, and an explicitly configured read-only Codex draft review. |
+
+The mandatory commands remain:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo deny check
+cargo audit
+cargo bench --locked
+./scripts/test-relay.sh
+```
+
+CI continues to run formatting, warnings-as-errors, unit/store/UI coverage,
+supply-chain checks, release packaging, and the pinned real-relay workflow.
+No CI job invokes a real Codex account, transmits fixture prompts to a model, or
+requires a user credential.
+
+## 7. Security and privacy invariants
+
+1. `#![forbid(unsafe_code)]` remains at both crate roots.
+2. A local assistant has no Nostr secret, signer, network handle, relay URL,
+   membership, or ability to produce an event.
+3. Normal identity secrets remain exclusively in the keychain or explicit
+   encrypted-file fallback; they never enter Codex's arguments, stdin,
+   environment, config, database, logs, fixtures, screenshots, or docs.
+4. Codex's own login is outside bzz credential handling. `bzz` neither reads nor
+   serializes it.
+5. All model input is user-invoked, bounded, clearly delimited untrusted data;
+   output is untrusted text and passes the existing terminal-safe renderer.
+6. There is no automatic or background run, no remote prompt trigger, and no
+   automatic message publication.
+7. Mention discovery is local, bounded, host/community/channel partitioned,
+   and cannot grant authorization or bypass visibility.
+8. Mouse input maps only to explicit semantic actions; no click is translated
+   into shell text, URL opening, file access, media download, or destructive
+   operation without the existing confirmation flow.
+9. Locked mode remains cache-only: it does not sign, query, refresh, run agent
+   network work, or use remote profile/search endpoints.
+10. Existing media origin, redirect, hash, MIME, size, cache, and renderer
+    protections are unchanged.
+
+## 8. Documentation and release notes
+
+The release documentation must include:
+
+- the exact mouse policy and how to turn it off for terminal copy/select use;
+- mention scope, keyboard/mouse controls, draft behavior, and the difference
+  between visible `@name` text and the emitted `p` tag;
+- an explicit statement that local assistants are not Buzz users, bots,
+  workspace DMs, E2EE, ACP clients, or autonomous agents;
+- Codex prerequisites, the safe invocation policy, the optional read-only
+  workspace boundary, external inference egress, and troubleshooting for a
+  missing/unsupported binary;
+- migration and downgrade behavior for `drafts.mentions_json`;
+- validation evidence, performance results, checksums, SBOM, provenance, and
+  supported platform archives.
+
+All public prose, issue text, examples, fixtures, screenshots, and release
+demos remain English-only and use generic simulated data.
+
+## 9. Deferred follow-up: relay-visible agents
+
+A future proposal may consider a real Buzz agent only after all of the
+following are independently approved and validated against a deliberately
+updated compatibility baseline:
+
+1. a per-relay capability/admission model for NIP-OA or direct agent membership;
+2. distinct secure agent-key lifecycle, recovery, rotation, and revocation;
+3. exact behavior for closed relays and private NIP-29 channels;
+4. authenticated agent WebSocket/NIP-98 paths, owner delegation tags, and
+   protocol conformance tests;
+5. explicit permission and human-review policy for any automatic reply;
+6. ACP/provider adapter threat model, tool approvals, workspace isolation,
+   process supervision, secret filtering, and auditability.
+
+That work is not a small extension of this plan. It requires a new issue,
+research record, threat model, acceptance criteria, and release decision.

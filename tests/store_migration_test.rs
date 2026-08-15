@@ -20,7 +20,7 @@ fn fresh_database_has_expected_pragmas_and_schema() {
     let foreign_keys: u32 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     assert_eq!(
         foreign_keys, 1,
         "foreign-key enforcement must remain enabled"
@@ -41,6 +41,14 @@ fn fresh_database_has_expected_pragmas_and_schema() {
         )
         .unwrap();
     assert_eq!(attachment_column, 1);
+    let mention_column: u32 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('drafts') WHERE name='mentions_json'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(mention_column, 1);
     let fts_table: u32 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='search_fts'",
@@ -128,7 +136,7 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
     let version: u32 = upgraded
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     let membership_head: String = upgraded
         .query_row(
             "SELECT source_event_id FROM channel_membership_heads WHERE community_id=?1 AND channel_id=?2",

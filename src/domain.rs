@@ -85,6 +85,31 @@ impl Profile {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DraftMention {
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub pubkey: String,
+}
+
+impl DraftMention {
+    pub fn valid_for(&self, body: &str) -> bool {
+        self.byte_start < self.byte_end
+            && self.byte_end <= body.len()
+            && body.is_char_boundary(self.byte_start)
+            && body.is_char_boundary(self.byte_end)
+            && body[self.byte_start..self.byte_end].starts_with('@')
+            && self.pubkey.len() == 64
+            && self.pubkey.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MentionCandidate {
+    pub pubkey: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Message {
     pub event_id: String,
     pub channel_id: Uuid,

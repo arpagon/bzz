@@ -1,0 +1,1 @@
+ALTER TABLE drafts ADD COLUMN mentions_json TEXT NOT NULL DEFAULT '[]';

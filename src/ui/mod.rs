@@ -7,6 +7,7 @@ pub mod help;
 pub mod inbox;
 pub mod keymap;
 pub mod layout;
+pub mod mention_picker;
 pub mod reaction_picker;
 pub mod search;
 pub mod shell;

@@ -54,12 +54,34 @@ pub struct CommunityConfig {
     pub theme: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MouseMode {
+    Auto,
+    On,
+    Off,
+}
+
+impl MouseMode {
+    pub fn enabled(self) -> bool {
+        match self {
+            Self::On => true,
+            Self::Off => false,
+            Self::Auto => {
+                std::io::IsTerminal::is_terminal(&std::io::stdout())
+                    && std::env::var("TERM").is_ok_and(|term| term != "dumb")
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiConfig {
     pub sidebar_width: u16,
     pub thread_width: u16,
     pub theme: String,
+    pub mouse: MouseMode,
 }
 
 impl Default for UiConfig {
@@ -68,6 +90,7 @@ impl Default for UiConfig {
             sidebar_width: 28,
             thread_width: 44,
             theme: crate::ui::theme::DEFAULT_THEME_ID.into(),
+            mouse: MouseMode::Auto,
         }
     }
 }

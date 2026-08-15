@@ -5,7 +5,10 @@ use rusqlite::{OptionalExtension as _, params};
 use uuid::Uuid;
 
 use crate::{
-    domain::{Channel, ChannelKind, Message, Profile, Reaction, Visibility},
+    domain::{
+        Channel, ChannelKind, DraftMention, MentionCandidate, Message, Profile, Reaction,
+        Visibility,
+    },
     error::{Error, Result},
     store::{
         Store,
@@ -446,9 +449,38 @@ impl Store {
         body: &str,
         attachments: &[crate::media::DraftAttachment],
     ) -> Result<()> {
+        self.save_draft_with_media_mentions(community_id, channel_id, root, body, attachments, &[])
+    }
+
+    pub fn save_draft_with_media_mentions(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+        root: Option<&str>,
+        body: &str,
+        attachments: &[crate::media::DraftAttachment],
+        mentions: &[DraftMention],
+    ) -> Result<()> {
+        if body.len() > 64 * 1024 || mentions.len() > crate::ui::composer::MENTION_CAP {
+            return Err(Error::Config(
+                "draft mention metadata exceeds its safety cap".into(),
+            ));
+        }
+        if mentions.iter().any(|mention| !mention.valid_for(body)) {
+            return Err(Error::Config(
+                "draft contains invalid mention metadata".into(),
+            ));
+        }
         let attachments = serde_json::to_string(attachments)
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        self.connection.execute("INSERT INTO drafts(community_id,channel_id,thread_root_id,body,attachments_json,updated_at) VALUES(?1,?2,?3,?4,?5,unixepoch()) ON CONFLICT DO UPDATE SET body=excluded.body,attachments_json=excluded.attachments_json,updated_at=excluded.updated_at",params![community_id.to_string(),channel_id.to_string(),root.unwrap_or_default(),body,attachments])?;
+        let mentions = serde_json::to_string(mentions)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        if mentions.len() > 8 * 1024 {
+            return Err(Error::Config(
+                "draft mention metadata exceeds its safety cap".into(),
+            ));
+        }
+        self.connection.execute("INSERT INTO drafts(community_id,channel_id,thread_root_id,body,attachments_json,mentions_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,unixepoch()) ON CONFLICT DO UPDATE SET body=excluded.body,attachments_json=excluded.attachments_json,mentions_json=excluded.mentions_json,updated_at=excluded.updated_at",params![community_id.to_string(),channel_id.to_string(),root.unwrap_or_default(),body,attachments,mentions])?;
         Ok(())
     }
 
@@ -468,13 +500,78 @@ impl Store {
         channel_id: Uuid,
         root: Option<&str>,
     ) -> Result<(String, Vec<crate::media::DraftAttachment>)> {
-        let value = self.connection.query_row("SELECT body,attachments_json FROM drafts WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3",params![community_id.to_string(),channel_id.to_string(),root.unwrap_or_default()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).optional()?;
-        let Some((body, attachments)) = value else {
-            return Ok((String::new(), Vec::new()));
+        self.draft_with_media_mentions(community_id, channel_id, root)
+            .map(|(body, attachments, _)| (body, attachments))
+    }
+
+    pub fn draft_with_media_mentions(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+        root: Option<&str>,
+    ) -> Result<(
+        String,
+        Vec<crate::media::DraftAttachment>,
+        Vec<DraftMention>,
+    )> {
+        let value = self.connection.query_row("SELECT body,attachments_json,mentions_json FROM drafts WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3",params![community_id.to_string(),channel_id.to_string(),root.unwrap_or_default()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))).optional()?;
+        let Some((body, attachments, mentions)) = value else {
+            return Ok((String::new(), Vec::new(), Vec::new()));
         };
         let attachments = serde_json::from_str(&attachments)
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        Ok((body, attachments))
+        let mentions = serde_json::from_str::<Vec<DraftMention>>(&mentions)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|mention| mention.valid_for(&body))
+            .take(crate::ui::composer::MENTION_CAP)
+            .collect();
+        Ok((body, attachments, mentions))
+    }
+
+    pub fn mention_candidates(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+        self_pubkey: &str,
+        query: &str,
+    ) -> Result<Vec<MentionCandidate>> {
+        let query = query.trim();
+        if query.len() > 80 || query.chars().any(char::is_control) {
+            return Ok(Vec::new());
+        }
+        let pattern = format!("%{}%", escape_like(&query.to_ascii_lowercase()));
+        let mut statement = self.connection.prepare(
+            "SELECT m.pubkey,COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),'')
+             FROM memberships m LEFT JOIN profiles p ON p.community_id=m.community_id AND p.pubkey=m.pubkey
+             WHERE m.community_id=?1 AND m.channel_id=?2 AND lower(m.pubkey)<>lower(?3)
+               AND (lower(COALESCE(p.display_name,p.name,m.pubkey)) LIKE ?4 ESCAPE '\\')
+             ORDER BY lower(COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),m.pubkey)),m.pubkey
+             LIMIT 32",
+        )?;
+        statement
+            .query_map(
+                params![
+                    community_id.to_string(),
+                    channel_id.to_string(),
+                    self_pubkey,
+                    pattern
+                ],
+                |row| {
+                    let pubkey: String = row.get(0)?;
+                    let label: String = row.get(1)?;
+                    Ok(MentionCandidate {
+                        label: if label.is_empty() {
+                            crate::domain::abbreviated_pubkey(&pubkey)
+                        } else {
+                            label
+                        },
+                        pubkey,
+                    })
+                },
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     pub fn record_media_cache(
@@ -720,4 +817,11 @@ impl Store {
         )?;
         Ok(())
     }
+}
+
+fn escape_like(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }

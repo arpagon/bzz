@@ -46,6 +46,7 @@ use crate::{
         inbox::InboxState,
         keymap::{KeyAction, map_insert, map_normal},
         layout,
+        mention_picker::MentionPicker,
         search::SearchState,
         terminal::{TerminalGuard, Tui},
         theme::{self, BorderSurface, HighlightGroup, Theme, ThemeScope},
@@ -222,6 +223,7 @@ pub struct App {
     mode: Mode,
     pane: Pane,
     composer: Composer,
+    mention_picker: Option<MentionPicker>,
     finder: String,
     reaction_index: usize,
     command: String,
@@ -324,6 +326,7 @@ impl App {
             mode: Mode::Normal,
             pane: Pane::Channels,
             composer: Composer::default(),
+            mention_picker: None,
             finder: String::new(),
             reaction_index: 0,
             command: String::new(),
@@ -374,7 +377,7 @@ impl App {
             _ = &mut shutdown => return Ok(()),
             _ = tokio::task::yield_now() => {},
         }
-        let (mut guard, mut terminal) = TerminalGuard::enter()?;
+        let (mut guard, mut terminal) = TerminalGuard::enter(self.config.ui.mouse.enabled())?;
         self.media.initialize_terminal();
         terminal
             .draw(|frame| self.render(frame))
@@ -1448,13 +1451,12 @@ impl App {
             return Ok(());
         };
         let root = self.thread_root.clone();
-        let (body, attachments) = self
+        let (body, attachments, mentions) = self
             .store
-            .call(move |store| store.draft_with_media(community, channel, root.as_deref()))
+            .call(move |store| store.draft_with_media_mentions(community, channel, root.as_deref()))
             .await?;
-        self.composer.body = body;
-        self.composer.attachments = attachments;
-        self.composer.cursor = self.composer.body.len();
+        self.composer.set_draft(body, attachments, mentions);
+        self.refresh_mention_picker().await?;
         self.mode = Mode::Insert;
         let pending = self
             .composer
@@ -1472,10 +1474,42 @@ impl App {
     }
 
     async fn insert_action(&mut self, action: KeyAction) -> Result<()> {
+        if self.mention_picker.is_some() {
+            match action {
+                KeyAction::Up => {
+                    if let Some(picker) = &mut self.mention_picker {
+                        picker.move_by(-1);
+                    }
+                    return Ok(());
+                }
+                KeyAction::Down => {
+                    if let Some(picker) = &mut self.mention_picker {
+                        picker.move_by(1);
+                    }
+                    return Ok(());
+                }
+                KeyAction::Complete | KeyAction::Submit => {
+                    self.accept_mention();
+                    self.persist_draft().await?;
+                    return Ok(());
+                }
+                KeyAction::Escape => {
+                    self.mention_picker = None;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         match action {
-            KeyAction::Escape => self.mode = Mode::Normal,
+            KeyAction::Escape => {
+                self.mention_picker = None;
+                self.mode = Mode::Normal;
+            }
             KeyAction::Character(character) => self.composer.insert(character),
             KeyAction::Backspace => self.composer.backspace(),
+            KeyAction::ForwardDelete => self.composer.delete(),
+            KeyAction::Left => self.composer.move_left(),
+            KeyAction::Right => self.composer.move_right(),
             KeyAction::Newline => self.composer.newline(),
             KeyAction::Attach => {
                 self.attachment_input.clear();
@@ -1509,15 +1543,61 @@ impl App {
                 }
             }
             KeyAction::Submit => {
-                if let Some((body, attachments)) = self.composer.take_message() {
-                    self.queue_message(body, attachments);
+                if let Some(message) = self.composer.take_message() {
+                    self.queue_message(message);
                     self.mode = Mode::Normal
                 }
             }
             _ => {}
         }
+        self.refresh_mention_picker().await?;
         self.persist_draft().await
     }
+
+    async fn refresh_mention_picker(&mut self) -> Result<()> {
+        let Some(range) = self.composer.active_mention() else {
+            self.mention_picker = None;
+            return Ok(());
+        };
+        let Some(community) = self.active_community_id() else {
+            self.mention_picker = None;
+            return Ok(());
+        };
+        let Some(channel) = self.current_channel().map(|channel| channel.id) else {
+            self.mention_picker = None;
+            return Ok(());
+        };
+        let Some(self_pubkey) = self.self_pubkey().map(str::to_owned) else {
+            self.mention_picker = None;
+            return Ok(());
+        };
+        let query = self.composer.body[range.start + 1..range.end].to_owned();
+        let lookup = query.clone();
+        let candidates = self
+            .store
+            .call(move |store| store.mention_candidates(community, channel, &self_pubkey, &lookup))
+            .await?;
+        self.mention_picker = Some(MentionPicker::new(range, query, candidates));
+        Ok(())
+    }
+
+    fn accept_mention(&mut self) {
+        let selected = self.mention_picker.as_ref().and_then(|picker| {
+            picker
+                .selected()
+                .cloned()
+                .map(|candidate| (picker.range.clone(), candidate))
+        });
+        self.mention_picker = None;
+        if let Some((range, candidate)) = selected
+            && !self
+                .composer
+                .accept_mention(range, &candidate.label, &candidate.pubkey)
+        {
+            self.status_error = Some("could not add that mention".into());
+        }
+    }
+
     fn open_media_preview(&mut self) {
         if self
             .selected_message()
@@ -1746,20 +1826,22 @@ impl App {
         let root = self.thread_root.clone();
         let body = self.composer.body.clone();
         let attachments = self.composer.attachments.clone();
+        let mentions = self.composer.mentions().to_vec();
         self.store
             .call(move |store| {
-                store.save_draft_with_media(
+                store.save_draft_with_media_mentions(
                     community,
                     channel,
                     root.as_deref(),
                     &body,
                     &attachments,
+                    &mentions,
                 )
             })
             .await
     }
 
-    fn queue_message(&mut self, body: String, attachments: Vec<crate::media::Attachment>) {
+    fn queue_message(&mut self, message: crate::ui::composer::PreparedMessage) {
         let Some(runtime) = &self.runtime else { return };
         let Some(channel) = self.current_channel().map(|channel| channel.id) else {
             return;
@@ -1774,10 +1856,24 @@ impl App {
         tokio::spawn(async move {
             let result = if let (Some(root), Some(parent)) = (root, parent) {
                 service
-                    .reply_with_media(channel, &root, &parent, &body, &attachments)
+                    .reply_with_media_mentions(
+                        channel,
+                        &root,
+                        &parent,
+                        &message.body,
+                        &message.attachments,
+                        &message.mentions,
+                    )
                     .await
             } else {
-                service.send_with_media(channel, &body, &attachments).await
+                service
+                    .send_with_media_mentions(
+                        channel,
+                        &message.body,
+                        &message.attachments,
+                        &message.mentions,
+                    )
+                    .await
             };
             let _ = tx
                 .send(match result {
@@ -2596,7 +2692,7 @@ impl App {
         }
         let built = Runtime::build(&self.config, index, &self.paths, self.store.clone(), reuse);
         if needs_prompt {
-            let (new_guard, new_terminal) = TerminalGuard::enter()?;
+            let (new_guard, new_terminal) = TerminalGuard::enter(self.config.ui.mouse.enabled())?;
             *guard = new_guard;
             *terminal = new_terminal;
         }
@@ -3014,7 +3110,19 @@ impl App {
                     )
                     .wrap(Wrap { trim: false }),
                     popup,
-                )
+                );
+                if let Some(picker) = &self.mention_picker {
+                    let height = u16::try_from(picker.candidates.len().min(5) + 2).unwrap_or(7);
+                    let mention_area = Rect::new(
+                        popup.x,
+                        popup.y.saturating_sub(height),
+                        popup.width,
+                        height.min(popup.y.saturating_sub(area.y)),
+                    );
+                    if !mention_area.is_empty() {
+                        crate::ui::mention_picker::render(frame, mention_area, picker, &self.theme);
+                    }
+                }
             }
             Mode::MediaPreview => self.render_media_preview(frame, area),
             Mode::Attachment => self.render_prompt(

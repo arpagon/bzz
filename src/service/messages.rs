@@ -39,9 +39,21 @@ impl MessageService {
         content: &str,
         attachments: &[crate::media::Attachment],
     ) -> Result<Event> {
+        self.send_with_media_mentions(channel, content, attachments, &[])
+            .await
+    }
+
+    pub async fn send_with_media_mentions(
+        &self,
+        channel: Uuid,
+        content: &str,
+        attachments: &[crate::media::Attachment],
+        mentions: &[String],
+    ) -> Result<Event> {
         let (content, tags) = message_media(content, attachments)?;
+        let mentions = mention_references(mentions)?;
         self.send_builder(
-            buzz_sdk::build_message(channel, &content, None, &[], false, &tags)
+            buzz_sdk::build_message(channel, &content, None, &mentions, false, &tags)
                 .map_err(|error| Error::Protocol(error.to_string()))?,
         )
         .await
@@ -64,6 +76,19 @@ impl MessageService {
         content: &str,
         attachments: &[crate::media::Attachment],
     ) -> Result<Event> {
+        self.reply_with_media_mentions(channel, root, parent, content, attachments, &[])
+            .await
+    }
+
+    pub async fn reply_with_media_mentions(
+        &self,
+        channel: Uuid,
+        root: &str,
+        parent: &str,
+        content: &str,
+        attachments: &[crate::media::Attachment],
+        mentions: &[String],
+    ) -> Result<Event> {
         let thread = buzz_sdk::ThreadRef {
             root_event_id: EventId::from_hex(root)
                 .map_err(|error| Error::Protocol(error.to_string()))?,
@@ -71,8 +96,9 @@ impl MessageService {
                 .map_err(|error| Error::Protocol(error.to_string()))?,
         };
         let (content, tags) = message_media(content, attachments)?;
+        let mentions = mention_references(mentions)?;
         self.send_builder(
-            buzz_sdk::build_message(channel, &content, Some(&thread), &[], false, &tags)
+            buzz_sdk::build_message(channel, &content, Some(&thread), &mentions, false, &tags)
                 .map_err(|error| Error::Protocol(error.to_string()))?,
         )
         .await
@@ -160,6 +186,17 @@ impl MessageService {
         }
         Ok(event)
     }
+}
+
+fn mention_references(mentions: &[String]) -> Result<Vec<&str>> {
+    if mentions.len() > crate::ui::composer::MENTION_CAP
+        || mentions
+            .iter()
+            .any(|pubkey| !crate::ui::composer::valid_pubkey(pubkey))
+    {
+        return Err(Error::Protocol("invalid message mentions".into()));
+    }
+    Ok(mentions.iter().map(String::as_str).collect())
 }
 
 fn message_media(
