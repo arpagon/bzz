@@ -5,6 +5,7 @@ use std::{
 
 use crossterm::event::{
     Event as TerminalEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
 };
 use futures_util::StreamExt as _;
 use ratatui::{
@@ -261,6 +262,7 @@ pub struct App {
     last_inbox_refresh: Instant,
     background_tx: mpsc::Sender<Background>,
     background_rx: mpsc::Receiver<Background>,
+    last_panes: Option<layout::Panes>,
 }
 
 impl App {
@@ -364,6 +366,7 @@ impl App {
             last_inbox_refresh: Instant::now(),
             background_tx,
             background_rx,
+            last_panes: None,
         };
         app.hydrate_cache().await?;
         Ok(app)
@@ -390,7 +393,11 @@ impl App {
                 .draw(|frame| self.render(frame))
                 .map_err(|error| Error::io("terminal", error))?;
             tokio::select! {
-                maybe=input.next()=>if let Some(Ok(TerminalEvent::Key(key)))=maybe&&key.kind==KeyEventKind::Press{self.handle_key(key,&mut guard,&mut terminal).await?;},
+                maybe=input.next()=>if let Some(Ok(event))=maybe { match event {
+                    TerminalEvent::Key(key) if key.kind==KeyEventKind::Press => self.handle_key(key,&mut guard,&mut terminal).await?,
+                    TerminalEvent::Mouse(mouse) => self.handle_mouse(mouse,&mut guard,&mut terminal).await?,
+                    _ => {}
+                } },
                 network=next_network(&mut self.runtime)=>if let Some(event)=network{self.handle_network(event).await?;},
                 background=self.background_rx.recv()=>if let Some(event)=background{match event{
                     Background::Changed=>{
@@ -1169,6 +1176,75 @@ impl App {
                         .await;
                 });
             }
+        }
+        Ok(())
+    }
+
+    async fn handle_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        guard: &mut TerminalGuard,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        if self.mode != Mode::Normal {
+            return Ok(());
+        }
+        let Some(panes) = self.last_panes else {
+            return Ok(());
+        };
+        let contains = |area: Rect| {
+            mouse.column >= area.x
+                && mouse.column < area.right()
+                && mouse.row >= area.y
+                && mouse.row < area.bottom()
+        };
+        match mouse.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let delta = if matches!(mouse.kind, MouseEventKind::ScrollUp) {
+                    -3
+                } else {
+                    3
+                };
+                if panes.sidebar.is_some_and(contains) {
+                    self.pane = Pane::Channels;
+                    self.move_selection(delta);
+                } else if panes.thread.is_some_and(contains) {
+                    self.pane = Pane::Thread;
+                    self.move_selection(delta);
+                } else if contains(panes.timeline) {
+                    self.pane = Pane::Timeline;
+                    self.move_selection(delta);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(community) = panes.community.filter(|area| contains(*area)) {
+                    let index =
+                        usize::from(mouse.row.saturating_sub(community.y.saturating_add(1)));
+                    if index < self.config.communities.len() {
+                        self.switch_community(index, guard, terminal).await?;
+                    }
+                } else if let Some(sidebar) = panes.sidebar.filter(|area| contains(*area)) {
+                    let row = usize::from(mouse.row.saturating_sub(sidebar.y.saturating_add(1)));
+                    if let Some(index) = self
+                        .channels
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, channel)| channel.is_member)
+                        .map(|(index, _)| index)
+                        .nth(row)
+                    {
+                        self.selected_channel = index;
+                        self.showing_open_channel = false;
+                        self.load_selected_channel().await?;
+                        self.pane = Pane::Timeline;
+                    }
+                } else if contains(panes.timeline) {
+                    self.pane = Pane::Timeline;
+                } else if panes.thread.is_some_and(contains) {
+                    self.pane = Pane::Thread;
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -2850,6 +2926,7 @@ impl App {
             self.config.ui.sidebar_width,
             self.config.ui.thread_width,
         );
+        self.last_panes = Some(panes);
         if let Some(rail) = panes.community {
             self.render_communities(frame, rail);
         }
