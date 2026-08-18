@@ -548,16 +548,79 @@ all existing human-first security and protocol invariants.
 
 ## 9. Test and benchmark strategy
 
+v0.4 uses a test pyramid. Concord's observable testing approach informs the
+separation of input, state, rendering, and async updates, but no Concord test
+source, fixtures, strings, or helpers may be copied because it is GPL-3.0. All
+bzz test code and scenario data are independently authored.
+
+### 9.1 Hermetic CI layers
+
 | Layer | Coverage |
 |---|---|
-| Unit | Chord parsing/trie lookup, precedence, collision rejection, reducer transitions, focus cycles, scroll/selection split, action availability, explicit read decisions, stable conversation reconciliation. |
+| Unit | Chord parsing/trie lookup, scope precedence, disabling, collision rejection, sequence cancellation, reducer transitions, focus cycles, scroll/selection split, action availability, explicit read decisions, stable conversation reconciliation. |
 | Property/fuzz | Arbitrary valid terminal key streams cannot steal text input or panic; sequence tries remain bounded; generated Inbox event/draft orders retain stable IDs, caps, and visibility fences. |
+| Functional UI harness | Independently authored table-driven journeys inject key/mouse events into the router and reducer, record typed effects, and render through `ratatui::TestBackend`. It has fake/recording service effects only: no signer, real HTTP, relay, external process, or terminal is required. It proves, for example, that a leader sequence opens Inbox, a composer inserts literal text, a failed prefix is consumed, opening detail does not mark read, and an in-place reply emits only the ordinary user-approved send effect. |
 | Store/migration | `0005` checksum/backup/rebuild, interruption recovery, identity/community partitioning, cursor order, event-window fairness, projection invalidation, read/override behavior. |
-| UI snapshot | Which-key/help, action menus, focus highlights, wide/narrow workspace, Inbox list/detail/unread anchor, disabled actions, malformed-context error states, themes, and mouse-derived selection. |
-| Input/mouse | Latest-generation hit map, overlay ownership, click/double-click equivalence, viewport wheel behavior, wrapped Markdown/media, resize, detached scroll, terminal restore. |
+| UI snapshot | `TestBackend` buffer assertions/snapshots for which-key/help, action menus, focus highlights, wide/narrow workspace, Inbox list/detail/unread anchor, disabled actions, malformed-context error states, themes, and mouse-derived selection. Snapshots contain generated public fixtures only and assert no terminal control bytes. |
+| Input/mouse | Latest-generation hit map, overlay ownership, click/double-click equivalence, viewport wheel behavior, wrapped Markdown/media, resize, detached scroll, terminal restoration, and no background action from stale/empty hits. |
 | Relay integration | Pinned Buzz relay coverage for ordinary roots/replies/media/mentions, outbox acknowledgement, read state, DMs, Inbox refresh and access fences. No new protocol capability is assumed. |
 | Benchmarks | Keymap lookup, action derivation, measured row/hit-map construction, projection rebuild/update, first/deep Inbox pages, and noisy-conversation fairness at realistic and adversarial local-store sizes. |
-| Manual E2E | Supported terminal/multiplexer navigation, customized keymap, terminal recovery, responsive Inbox triage/reply/return, offline/locked cache, and real pinned-relay validation. |
+
+The functional UI harness is the deterministic CI authority for interaction
+semantics. It has a small public interface around terminal events and typed
+application effects; it must not duplicate renderer geometry, use sleeps, or
+assert a network side effect from a UI action.
+
+### 9.2 Herdr acceptance suite
+
+Herdr validates what hermetic tests cannot: the release binary in a real
+terminal/multiplexer, Crossterm input encoding, terminal restoration, and
+visible end-to-end behavior. It is an acceptance/self-hosted gate, not a
+replacement for unit/functional CI and not a bzz runtime dependency.
+
+Add a bzz-owned, independently authored scenario runner (planned as
+`scripts/test-tui-herdr.sh`) and versioned scenario manifest. Each scenario
+must specify only:
+
+- isolated config/data/cache directories, a release binary, and a disposable
+  non-admin identity/community/channel;
+- `send-keys` inputs, visible-output readiness predicates, and bounded
+  timeouts; never `send-text` for mode keys;
+- generated non-sensitive fixture text and expected visible labels; and
+- authoritative postconditions from the local store and/or pinned relay, not
+  merely terminal pixels.
+
+The suite covers, at minimum:
+
+1. startup/help/quit and restoration after normal/error exit;
+2. default and customized `keymap.toml`, leader/which-key cancellation,
+   focus traversal, narrow/wide resize, and composer text ownership;
+3. mouse click, double-click, wheel, overlay ownership, and semantic row
+   selection with wrapped/media messages;
+4. Inbox list/detail transitions, no implicit acknowledgement, explicit/bulk
+   read, in-place reply, canonical-context return, draft recovery, and offline
+   or locked cache behavior; and
+5. restart/outbox/relay acknowledgement verification using the existing pinned
+   protocol journey.
+
+Herdr scenarios may run only in a controlled self-hosted environment or by an
+operator. They use no secret in arguments, ordinary environment variables,
+fixtures, logs, screenshots, terminal automation, or repository files. Secret
+prompts, if a local test setup requires one, remain manual operator input.
+Failures retain sanitized visible output and structural evidence only.
+
+### 9.3 Gates by milestone
+
+- **Every change / ordinary CI:** format, strict Clippy, all deterministic unit,
+  property, store, functional-harness, and TestBackend tests.
+- **M1/M2 cutovers:** add an interaction journey before changing a default
+  binding or focus/input-owner transition.
+- **M3/M4 cutovers:** add migration/projection fairness coverage and a matching
+  Inbox functional journey before schema or route removal.
+- **Release candidate:** all ordinary CI, benchmarks, pinned relay integration,
+  and the Herdr acceptance suite against the release binary. A skipped Herdr
+  run is documented as a release exception rather than silently treated as
+  equivalent coverage.
 
 Mandatory release commands remain:
 
@@ -569,6 +632,8 @@ cargo deny check
 cargo audit
 cargo bench --bench timeline --bench store --bench media
 ./scripts/test-relay.sh
+# Controlled self-hosted/manual environment only:
+./scripts/test-tui-herdr.sh
 cargo build --release --locked
 ```
 
