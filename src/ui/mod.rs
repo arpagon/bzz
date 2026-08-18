@@ -4,6 +4,7 @@ pub mod confirm;
 pub mod dm_picker;
 pub mod finder;
 pub mod help;
+pub mod hit_map;
 pub mod inbox;
 pub mod keymap;
 pub mod layout;

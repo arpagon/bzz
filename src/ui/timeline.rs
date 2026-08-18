@@ -28,6 +28,12 @@ pub struct TimelineState {
     pub at_live_bottom: bool,
     pub newer: usize,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageHit {
+    pub event_id: String,
+    pub area: Rect,
+}
 impl TimelineState {
     pub fn reconcile(&mut self, messages: &[Message]) {
         if self.at_live_bottom {
@@ -102,6 +108,7 @@ pub fn render(
         focused,
         self_pubkey,
         None,
+        None,
     );
 }
 
@@ -131,6 +138,38 @@ pub fn render_with_media(
         focused,
         self_pubkey,
         Some(media),
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_with_media_and_hits(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    messages: &[Message],
+    profiles: &HashMap<String, Profile>,
+    reactions: &HashMap<String, Vec<Reaction>>,
+    state: &TimelineState,
+    title: &str,
+    theme: &Theme,
+    focused: bool,
+    self_pubkey: Option<&str>,
+    media: &mut MediaRuntime,
+    hits: &mut Vec<MessageHit>,
+) {
+    render_internal(
+        frame,
+        area,
+        messages,
+        profiles,
+        reactions,
+        state,
+        title,
+        theme,
+        focused,
+        self_pubkey,
+        Some(media),
+        Some(hits),
     );
 }
 
@@ -147,6 +186,7 @@ fn render_internal(
     focused: bool,
     self_pubkey: Option<&str>,
     mut media: Option<&mut MediaRuntime>,
+    mut hits: Option<&mut Vec<MessageHit>>,
 ) {
     let border_group = if focused {
         HighlightGroup::FocusedPaneBorder
@@ -230,7 +270,7 @@ fn render_internal(
     };
 
     let mut global_y = 0_u32;
-    for block in blocks {
+    for (index, block) in blocks.into_iter().enumerate() {
         let block_height = u32::from(block.height());
         if global_y + block_height <= scroll {
             global_y += block_height;
@@ -238,6 +278,19 @@ fn render_internal(
         }
         if global_y >= scroll + viewport {
             break;
+        }
+        let visible_start = global_y.max(scroll);
+        let visible_end = global_y.saturating_add(block_height).min(scroll + viewport);
+        if let Some(hits) = &mut hits {
+            let y = inner.y.saturating_add(
+                u16::try_from(visible_start.saturating_sub(scroll)).unwrap_or(u16::MAX),
+            );
+            let height =
+                u16::try_from(visible_end.saturating_sub(visible_start)).unwrap_or(u16::MAX);
+            (*hits).push(MessageHit {
+                event_id: messages[index].event_id.clone(),
+                area: Rect::new(inner.x, y, inner.width, height),
+            });
         }
         let mut row_y = global_y;
         for row in block.rows {

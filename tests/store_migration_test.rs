@@ -154,6 +154,38 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
 }
 
 #[test]
+fn malformed_persisted_mentions_degrade_to_plain_draft_text() {
+    let temporary = TempDir::new().unwrap();
+    let path = temporary.path().join("bzz.db");
+    let community = Uuid::new_v4();
+    let channel = Uuid::new_v4();
+    drop(Store::open(&path).unwrap());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch("PRAGMA foreign_keys=OFF;")
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO drafts(community_id,channel_id,thread_root_id,body,attachments_json,mentions_json,updated_at) VALUES(?1,?2,'','@Someone','[]',?3,0)",
+            rusqlite::params![
+                community.to_string(),
+                channel.to_string(),
+                format!("[{{\"byte_start\":0,\"byte_end\":8,\"pubkey\":\"{}\"}}]", "A".repeat(64)),
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    let store = Store::open(&path).unwrap();
+    let (body, attachments, mentions) = store
+        .draft_with_media_mentions(community, channel, None)
+        .unwrap();
+    assert_eq!(body, "@Someone");
+    assert!(attachments.is_empty());
+    assert!(mentions.is_empty());
+}
+
+#[test]
 fn config_sync_requires_and_preserves_identity_scope() {
     let mut store = Store::open_memory().unwrap();
     let identity = IdentityConfig {

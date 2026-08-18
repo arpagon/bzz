@@ -78,6 +78,18 @@ impl ThemePicker {
             .copied()
     }
 
+    pub fn select_id(&mut self, id: &str) -> bool {
+        let Some(selected) = self
+            .filtered
+            .iter()
+            .position(|index| self.entries.get(*index).is_some_and(|entry| entry.id == id))
+        else {
+            return false;
+        };
+        self.selected = selected;
+        true
+    }
+
     pub fn visible(&self, limit: usize) -> Vec<(ThemeEntry, bool)> {
         if self.filtered.is_empty() || limit == 0 {
             return Vec::new();

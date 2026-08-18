@@ -29,6 +29,7 @@ theme = "dracula" # optional; overrides the global UI theme
 sidebar_width = 28
 thread_width = 44
 theme = "bzz"
+mouse = "auto"              # auto|on|off
 
 [media]
 enabled = true
@@ -56,10 +57,12 @@ have no separate configuration. Online Inbox/search use only the active
 community connection; locked mode is cache-only.
 
 `ui.theme` selects the global built-in theme. An optional community `theme`
-field takes precedence only while that community is active. Semantic overrides
-live in a separate, optional `theme.toml`; see [`themes.md`](themes.md). Theme
-configuration is presentation-only and is never synchronized through the
-relay.
+field takes precedence only while that community is active. `ui.mouse = "auto"`
+enables mouse capture only on an interactive, non-`dumb` terminal; set it to
+`"on"` to force it or `"off"` to retain terminal text selection and avoid
+mouse-capture sequences. Semantic overrides live in a separate, optional
+`theme.toml`; see [`themes.md`](themes.md). UI configuration is
+presentation-only and is never synchronized through the relay.
 
 The strict `[media]` section controls terminal rendering and bounded local
 resources. Unknown fields are rejected. `autoload = "visible"` fetches valid,

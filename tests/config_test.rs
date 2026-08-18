@@ -1,5 +1,5 @@
 use bzz::{
-    config::{Config, validate_relay_url},
+    config::{Config, MouseMode, validate_relay_url},
     paths::Paths,
 };
 use tempfile::TempDir;
@@ -115,6 +115,27 @@ fn media_limits_and_unknown_fields_fail_closed() {
         "[media]\nenabled=true\nprotocol='auto'\nautoload='visible'\nunknown=true\n",
     );
     assert!(parsed.is_err());
+}
+
+#[test]
+fn mouse_policy_parses_strictly() {
+    for (value, expected) in [
+        ("auto", MouseMode::Auto),
+        ("on", MouseMode::On),
+        ("off", MouseMode::Off),
+    ] {
+        let config = toml::from_str::<Config>(&format!(
+            "[ui]\nsidebar_width=28\nthread_width=44\ntheme='bzz'\nmouse='{value}'\n"
+        ))
+        .unwrap();
+        assert_eq!(config.ui.mouse, expected);
+    }
+    assert!(
+        toml::from_str::<Config>(
+            "[ui]\nsidebar_width=28\nthread_width=44\ntheme='bzz'\nmouse='sometimes'\n"
+        )
+        .is_err()
+    );
 }
 
 #[test]

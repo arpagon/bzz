@@ -1,4 +1,6 @@
-use std::ops::Range;
+use std::{collections::HashSet, ops::Range};
+
+use unicode_width::UnicodeWidthChar;
 
 use crate::domain::DraftMention;
 
@@ -66,6 +68,40 @@ impl Composer {
         if let Some(character) = self.body[self.cursor..].chars().next() {
             self.cursor += character.len_utf8();
         }
+    }
+
+    /// Moves the cursor to a visible composer cell without ever splitting UTF-8.
+    /// Newlines and the renderer's fixed-width wrapping advance to the next row.
+    pub fn set_cursor_from_display(
+        &mut self,
+        target_row: usize,
+        target_column: usize,
+        width: usize,
+    ) {
+        let width = width.max(1);
+        let mut row = 0;
+        let mut column = 0;
+        for (index, character) in self.body.char_indices() {
+            if row == target_row && column >= target_column {
+                self.cursor = index;
+                return;
+            }
+            if character == '\n' {
+                if row == target_row {
+                    self.cursor = index;
+                    return;
+                }
+                row = row.saturating_add(1);
+                column = 0;
+            } else {
+                column = column.saturating_add(character.width().unwrap_or(0));
+                if column >= width {
+                    row = row.saturating_add(1);
+                    column = 0;
+                }
+            }
+        }
+        self.cursor = self.body.len();
     }
 
     pub fn active_mention(&self) -> Option<Range<usize>> {
@@ -152,6 +188,7 @@ impl Composer {
         let leading = self.body.len().saturating_sub(self.body.trim_start().len());
         let body = self.body.trim().to_owned();
         let end = leading.saturating_add(body.len());
+        let mut seen_mentions = HashSet::new();
         let mentions = self
             .mentions
             .iter()
@@ -160,6 +197,7 @@ impl Composer {
                     && mention.byte_end <= end
                     && mention.valid_for(&self.body)
             })
+            .filter(|mention| seen_mentions.insert(mention.pubkey.as_str()))
             .map(|mention| mention.pubkey.clone())
             .collect::<Vec<_>>();
         let attachments = std::mem::take(&mut self.attachments)
@@ -244,19 +282,25 @@ fn in_code_region(value: &str, cursor: usize) -> bool {
 }
 
 fn safe_label(label: &str) -> String {
-    label
-        .chars()
-        .filter(|character| !character.is_control())
-        .take_while(|_| true)
-        .collect::<String>()
+    let mut safe = String::new();
+    for character in label
         .trim()
         .chars()
-        .take(MAX_MENTION_LABEL_BYTES)
-        .collect()
+        .filter(|character| !character.is_control())
+    {
+        if safe.len().saturating_add(character.len_utf8()) > MAX_MENTION_LABEL_BYTES {
+            break;
+        }
+        safe.push(character);
+    }
+    safe
 }
 
 pub fn valid_pubkey(pubkey: &str) -> bool {
-    pubkey.len() == 64 && pubkey.bytes().all(|byte| byte.is_ascii_hexdigit())
+    pubkey.len() == 64
+        && pubkey.bytes().all(|byte| {
+            byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte.is_ascii_hexdigit())
+        })
 }
 
 #[cfg(test)]
@@ -317,5 +361,45 @@ mod tests {
             };
             assert!(composer.active_mention().is_none(), "{body}");
         }
+    }
+
+    #[test]
+    fn mouse_cursor_placement_preserves_utf8_boundaries_and_wraps() {
+        let mut composer = Composer {
+            body: "aébc\ndef".into(),
+            ..Composer::default()
+        };
+        composer.set_cursor_from_display(0, 2, 8);
+        assert_eq!(composer.cursor, "aé".len());
+        composer.set_cursor_from_display(1, 1, 8);
+        assert_eq!(composer.cursor, "aébc\nd".len());
+        composer.set_cursor_from_display(1, 0, 2);
+        assert!(composer.body.is_char_boundary(composer.cursor));
+        composer.set_draft("界ab".into(), vec![], vec![]);
+        composer.set_cursor_from_display(0, 2, 8);
+        assert_eq!(composer.cursor, "界".len());
+    }
+
+    #[test]
+    fn send_deduplicates_valid_lowercase_mentions() {
+        let mut composer = Composer::default();
+        composer.set_draft(
+            "@One @Two".into(),
+            vec![],
+            vec![
+                DraftMention {
+                    byte_start: 0,
+                    byte_end: 4,
+                    pubkey: KEY.into(),
+                },
+                DraftMention {
+                    byte_start: 5,
+                    byte_end: 9,
+                    pubkey: KEY.into(),
+                },
+            ],
+        );
+        assert_eq!(composer.take_message().unwrap().mentions, vec![KEY]);
+        assert!(!valid_pubkey(&"A".repeat(64)));
     }
 }

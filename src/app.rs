@@ -44,6 +44,7 @@ use crate::{
     ui::{
         composer::Composer,
         dm_picker::DmPickerState,
+        hit_map::{HitMap, HitTarget},
         inbox::InboxState,
         keymap::{KeyAction, map_insert, map_normal},
         layout,
@@ -262,7 +263,8 @@ pub struct App {
     last_inbox_refresh: Instant,
     background_tx: mpsc::Sender<Background>,
     background_rx: mpsc::Receiver<Background>,
-    last_panes: Option<layout::Panes>,
+    render_generation: u64,
+    last_hit_map: Option<HitMap>,
 }
 
 impl App {
@@ -366,7 +368,8 @@ impl App {
             last_inbox_refresh: Instant::now(),
             background_tx,
             background_rx,
-            last_panes: None,
+            render_generation: 0,
+            last_hit_map: None,
         };
         app.hydrate_cache().await?;
         Ok(app)
@@ -1186,63 +1189,161 @@ impl App {
         guard: &mut TerminalGuard,
         terminal: &mut Tui,
     ) -> Result<()> {
-        if self.mode != Mode::Normal {
+        let Some(target) = self
+            .last_hit_map
+            .as_ref()
+            .and_then(|map| map.hit(mouse.column, mouse.row))
+            .cloned()
+        else {
             return Ok(());
-        }
-        let Some(panes) = self.last_panes else {
-            return Ok(());
-        };
-        let contains = |area: Rect| {
-            mouse.column >= area.x
-                && mouse.column < area.right()
-                && mouse.row >= area.y
-                && mouse.row < area.bottom()
         };
         match mouse.kind {
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if self.mode == Mode::Normal => {
                 let delta = if matches!(mouse.kind, MouseEventKind::ScrollUp) {
                     -3
                 } else {
                     3
                 };
-                if panes.sidebar.is_some_and(contains) {
-                    self.pane = Pane::Channels;
-                    self.move_selection(delta);
-                } else if panes.thread.is_some_and(contains) {
-                    self.pane = Pane::Thread;
-                    self.move_selection(delta);
-                } else if contains(panes.timeline) {
-                    self.pane = Pane::Timeline;
-                    self.move_selection(delta);
+                match target {
+                    HitTarget::ChannelPane | HitTarget::Channel(_) => {
+                        self.pane = Pane::Channels;
+                        self.move_selection(delta);
+                    }
+                    HitTarget::Timeline | HitTarget::TimelineMessage(_) => {
+                        self.pane = Pane::Timeline;
+                        self.move_selection(delta);
+                    }
+                    HitTarget::Thread | HitTarget::ThreadMessage(_) => {
+                        self.pane = Pane::Thread;
+                        self.move_selection(delta);
+                    }
+                    _ => {}
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(community) = panes.community.filter(|area| contains(*area)) {
-                    let index =
-                        usize::from(mouse.row.saturating_sub(community.y.saturating_add(1)));
-                    if index < self.config.communities.len() {
-                        self.switch_community(index, guard, terminal).await?;
-                    }
-                } else if let Some(sidebar) = panes.sidebar.filter(|area| contains(*area)) {
-                    let row = usize::from(mouse.row.saturating_sub(sidebar.y.saturating_add(1)));
-                    if let Some(index) = self
+                self.activate_mouse_target(target, mouse, guard, terminal)
+                    .await?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn activate_mouse_target(
+        &mut self,
+        target: HitTarget,
+        mouse: MouseEvent,
+        guard: &mut TerminalGuard,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        match target {
+            HitTarget::Community(index)
+                if self.mode == Mode::Normal && index < self.config.communities.len() =>
+            {
+                self.switch_community(index, guard, terminal).await?;
+            }
+            HitTarget::ChannelPane if self.mode == Mode::Normal => self.pane = Pane::Channels,
+            HitTarget::Channel(index)
+                if self.mode == Mode::Normal
+                    && self
                         .channels
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, channel)| channel.is_member)
-                        .map(|(index, _)| index)
-                        .nth(row)
-                    {
-                        self.selected_channel = index;
-                        self.showing_open_channel = false;
-                        self.load_selected_channel().await?;
-                        self.pane = Pane::Timeline;
-                    }
-                } else if contains(panes.timeline) {
-                    self.pane = Pane::Timeline;
-                } else if panes.thread.is_some_and(contains) {
-                    self.pane = Pane::Thread;
+                        .get(index)
+                        .is_some_and(|channel| channel.is_member) =>
+            {
+                self.selected_channel = index;
+                self.showing_open_channel = false;
+                self.load_selected_channel().await?;
+                self.pane = Pane::Timeline;
+            }
+            HitTarget::Timeline if self.mode == Mode::Normal => self.pane = Pane::Timeline,
+            HitTarget::TimelineMessage(event_id) if self.mode == Mode::Normal => {
+                self.pane = Pane::Timeline;
+                self.timeline.selected_event = Some(event_id);
+                self.timeline.at_live_bottom = self.messages.last().is_some_and(|message| {
+                    self.timeline.selected_event.as_deref() == Some(&message.event_id)
+                });
+            }
+            HitTarget::Thread if self.mode == Mode::Normal => self.pane = Pane::Thread,
+            HitTarget::ThreadMessage(event_id) if self.mode == Mode::Normal => {
+                self.pane = Pane::Thread;
+                self.thread_timeline.selected_event = Some(event_id);
+                self.thread_timeline.at_live_bottom =
+                    self.thread_messages.last().is_some_and(|message| {
+                        self.thread_timeline.selected_event.as_deref() == Some(&message.event_id)
+                    });
+            }
+            HitTarget::Composer if self.mode == Mode::Insert => {
+                if let Some(area) = self
+                    .last_hit_map
+                    .as_ref()
+                    .and_then(|map| map.area_of(&HitTarget::Composer))
+                {
+                    self.composer.set_cursor_from_display(
+                        usize::from(mouse.row.saturating_sub(area.y)),
+                        usize::from(mouse.column.saturating_sub(area.x)),
+                        usize::from(area.width),
+                    );
+                    self.refresh_mention_picker().await?;
                 }
+            }
+            HitTarget::MentionCandidate(index) if self.mode == Mode::Insert => {
+                if let Some(picker) = &mut self.mention_picker
+                    && index < picker.candidates.len()
+                {
+                    picker.selected = index;
+                    self.accept_mention();
+                    self.persist_draft().await?;
+                }
+            }
+            HitTarget::FinderChannel(channel_id) if self.mode == Mode::Finder => {
+                if let Some(index) = self
+                    .channels
+                    .iter()
+                    .position(|channel| channel.id.to_string() == channel_id)
+                {
+                    self.selected_channel = index;
+                    self.showing_open_channel = !self.channels[index].is_member;
+                    self.load_selected_channel().await?;
+                    self.pane = Pane::Timeline;
+                }
+                self.mode = Mode::Normal;
+            }
+            HitTarget::Theme(id) if self.mode == Mode::Theme => {
+                if let Some(picker) = &mut self.theme_picker
+                    && picker.select_id(&id)
+                {
+                    self.preview_selected_theme();
+                }
+            }
+            HitTarget::Reaction(index)
+                if self.mode == Mode::Reaction
+                    && index < crate::ui::reaction_picker::REACTIONS.len() =>
+            {
+                self.reaction_index = index;
+            }
+            HitTarget::InboxItem(id)
+                if self.mode == Mode::Inbox
+                    && self
+                        .inbox_items
+                        .iter()
+                        .any(|item| item.conversation_id == id) =>
+            {
+                self.inbox_state.selected_id = Some(id);
+            }
+            HitTarget::SearchResult(id)
+                if self.mode == Mode::Search
+                    && self
+                        .search_state
+                        .results
+                        .iter()
+                        .any(|result| result.stable_id == id) =>
+            {
+                self.search_state.selected_id = Some(id);
+            }
+            HitTarget::DmCandidate(pubkey)
+                if self.mode == Mode::DmPicker && !self.dm_picker.submitting =>
+            {
+                self.dm_picker.selected_pubkey = Some(pubkey);
             }
             _ => {}
         }
@@ -2897,6 +2998,8 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) {
+        self.render_generation = self.render_generation.wrapping_add(1);
+        let mut hit_map = HitMap::new(self.render_generation);
         let area = frame.area();
         if area.width < 50 || area.height < 12 {
             frame.render_widget(
@@ -2912,11 +3015,13 @@ impl App {
                     ),
                 area,
             );
+            self.last_hit_map = Some(hit_map);
             return;
         }
         if self.config.communities.is_empty() {
             self.render_empty(frame, area);
-            self.render_overlay(frame, area);
+            self.render_overlay(frame, area, &mut hit_map);
+            self.last_hit_map = Some(hit_map);
             return;
         }
         let panes = layout::panes(
@@ -2926,11 +3031,27 @@ impl App {
             self.config.ui.sidebar_width,
             self.config.ui.thread_width,
         );
-        self.last_panes = Some(panes);
         if let Some(rail) = panes.community {
             self.render_communities(frame, rail);
+            for (index, _) in self.config.communities.iter().enumerate() {
+                if let Some(area) = list_row(rail, index, 1) {
+                    hit_map.push(area, HitTarget::Community(index));
+                }
+            }
         }
         if let Some(sidebar) = panes.sidebar {
+            hit_map.push(sidebar, HitTarget::ChannelPane);
+            for (row, (index, _)) in self
+                .channels
+                .iter()
+                .enumerate()
+                .filter(|(_, channel)| channel.is_member)
+                .enumerate()
+            {
+                if let Some(area) = list_row(sidebar, row, 1) {
+                    hit_map.push(area, HitTarget::Channel(index));
+                }
+            }
             crate::ui::sidebar::render(
                 frame,
                 sidebar,
@@ -2945,8 +3066,10 @@ impl App {
             .current_channel()
             .map_or_else(|| "timeline".to_owned(), |channel| channel.name.clone());
         let self_pubkey = self.self_pubkey().map(str::to_owned);
+        hit_map.push(panes.timeline, HitTarget::Timeline);
+        let mut timeline_hits = Vec::new();
         if self.mode == Mode::Normal {
-            timeline::render_with_media(
+            timeline::render_with_media_and_hits(
                 frame,
                 panes.timeline,
                 &self.messages,
@@ -2958,6 +3081,7 @@ impl App {
                 self.pane == Pane::Timeline,
                 self_pubkey.as_deref(),
                 &mut self.media,
+                &mut timeline_hits,
             );
         } else {
             timeline::render(
@@ -2973,9 +3097,14 @@ impl App {
                 self_pubkey.as_deref(),
             );
         }
+        for hit in timeline_hits {
+            hit_map.push(hit.area, HitTarget::TimelineMessage(hit.event_id));
+        }
         if let Some(thread) = panes.thread {
+            hit_map.push(thread, HitTarget::Thread);
+            let mut thread_hits = Vec::new();
             if self.mode == Mode::Normal {
-                timeline::render_with_media(
+                timeline::render_with_media_and_hits(
                     frame,
                     thread,
                     &self.thread_messages,
@@ -2987,6 +3116,7 @@ impl App {
                     self.pane == Pane::Thread,
                     self_pubkey.as_deref(),
                     &mut self.media,
+                    &mut thread_hits,
                 );
             } else {
                 timeline::render(
@@ -3002,9 +3132,13 @@ impl App {
                     self_pubkey.as_deref(),
                 );
             }
+            for hit in thread_hits {
+                hit_map.push(hit.area, HitTarget::ThreadMessage(hit.event_id));
+            }
         }
         self.render_status(frame, panes.status);
-        self.render_overlay(frame, area);
+        self.render_overlay(frame, area, &mut hit_map);
+        self.last_hit_map = Some(hit_map);
     }
     fn render_empty(&self, frame: &mut Frame<'_>, area: Rect) {
         frame.render_widget(
@@ -3108,7 +3242,7 @@ impl App {
             area,
         );
     }
-    fn render_overlay(&mut self, frame: &mut Frame<'_>, area: Rect) {
+    fn render_overlay(&mut self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
         match self.mode {
             Mode::Help => {
                 frame.render_widget(Clear, area);
@@ -3126,29 +3260,47 @@ impl App {
                     area,
                 )
             }
-            Mode::Finder => self.render_finder(frame, area),
+            Mode::Finder => self.render_finder(frame, area, hit_map),
             Mode::Command => {
                 self.render_prompt(frame, area, " command ", &format!(":{}", self.command))
             }
-            Mode::Theme => self.render_theme_picker(frame, area),
-            Mode::Reaction => self.render_prompt(
-                frame,
-                area,
-                " reaction · Enter toggle ",
-                crate::ui::reaction_picker::REACTIONS
-                    .iter()
-                    .enumerate()
-                    .map(|(index, value)| {
-                        if index == self.reaction_index {
-                            format!("[{value}]")
-                        } else {
-                            (*value).into()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("  ")
-                    .as_str(),
-            ),
+            Mode::Theme => self.render_theme_picker(frame, area, hit_map),
+            Mode::Reaction => {
+                let popup = centered(area, 70, 5);
+                let inner = inner_rect(popup);
+                let count = u16::try_from(crate::ui::reaction_picker::REACTIONS.len()).unwrap_or(1);
+                let width = (inner.width / count).max(1);
+                for index in 0..usize::from(count) {
+                    let x = inner.x.saturating_add(width.saturating_mul(index as u16));
+                    let final_width = if index + 1 == usize::from(count) {
+                        inner.right().saturating_sub(x)
+                    } else {
+                        width
+                    };
+                    hit_map.push(
+                        Rect::new(x, inner.y, final_width, inner.height),
+                        HitTarget::Reaction(index),
+                    );
+                }
+                self.render_prompt(
+                    frame,
+                    area,
+                    " reaction · Enter toggle ",
+                    crate::ui::reaction_picker::REACTIONS
+                        .iter()
+                        .enumerate()
+                        .map(|(index, value)| {
+                            if index == self.reaction_index {
+                                format!("[{value}]")
+                            } else {
+                                (*value).into()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("  ")
+                        .as_str(),
+                )
+            }
             Mode::ConfirmDelete => self.render_prompt(
                 frame,
                 area,
@@ -3157,6 +3309,8 @@ impl App {
             ),
             Mode::Insert => {
                 let popup = bottom_popup(area, 5);
+                let composer_inner = inner_rect(popup);
+                hit_map.push(composer_inner, HitTarget::Composer);
                 frame.render_widget(Clear, popup);
                 frame.render_widget(
                     Paragraph::new(format!(
@@ -3197,6 +3351,11 @@ impl App {
                         height.min(popup.y.saturating_sub(area.y)),
                     );
                     if !mention_area.is_empty() {
+                        for index in 0..picker.candidates.len().min(5) {
+                            if let Some(row) = list_row(mention_area, index, 1) {
+                                hit_map.push(row, HitTarget::MentionCandidate(index));
+                            }
+                        }
                         crate::ui::mention_picker::render(frame, mention_area, picker, &self.theme);
                     }
                 }
@@ -3216,6 +3375,7 @@ impl App {
             ),
             Mode::Inbox => {
                 frame.render_widget(Clear, area);
+                self.map_inbox_hits(area, hit_map);
                 crate::ui::inbox::render(
                     frame,
                     area,
@@ -3227,18 +3387,34 @@ impl App {
                 );
             }
             Mode::Search => {
-                crate::ui::search::render(
-                    frame,
-                    centered(area, 86, area.height.saturating_sub(4).min(28)),
-                    &self.search_state,
-                    &self.theme,
-                );
+                let popup = centered(area, 86, area.height.saturating_sub(4).min(28));
+                let offset = 1 + usize::from(self.search_state.notice.is_some());
+                for (index, result) in self.search_state.results.iter().enumerate() {
+                    if let Some(row) =
+                        list_row(popup, offset.saturating_add(index.saturating_mul(2)), 2)
+                    {
+                        hit_map.push(row, HitTarget::SearchResult(result.stable_id.clone()));
+                    }
+                }
+                crate::ui::search::render(frame, popup, &self.search_state, &self.theme);
             }
             Mode::DmPicker => {
+                let popup = centered(area, 86, area.height.saturating_sub(4).min(28));
                 let self_pubkey = self.self_pubkey().unwrap_or_default();
+                for (index, profile) in self
+                    .dm_picker
+                    .candidates(&self.profiles, self_pubkey)
+                    .into_iter()
+                    .take(100)
+                    .enumerate()
+                {
+                    if let Some(row) = list_row(popup, index.saturating_add(2), 1) {
+                        hit_map.push(row, HitTarget::DmCandidate(profile.pubkey.clone()));
+                    }
+                }
                 crate::ui::dm_picker::render(
                     frame,
-                    centered(area, 86, area.height.saturating_sub(4).min(28)),
+                    popup,
                     &self.dm_picker,
                     &self.profiles,
                     self_pubkey,
@@ -3313,15 +3489,21 @@ impl App {
         }
     }
 
-    fn render_finder(&self, frame: &mut Frame<'_>, area: Rect) {
+    fn render_finder(&self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
         let popup = centered(area, 70, 12);
         frame.render_widget(Clear, popup);
+        let ranked = crate::ui::finder::rank(&self.finder, &self.channels);
+        for (index, channel) in ranked.iter().take(8).enumerate() {
+            if let Some(row) = list_row(popup, index.saturating_add(1), 1) {
+                hit_map.push(row, HitTarget::FinderChannel(channel.id.to_string()));
+            }
+        }
         let mut items = vec![ListItem::new(format!(
             "> {}",
             sanitize::single_line(&self.finder)
         ))];
         items.extend(
-            crate::ui::finder::rank(&self.finder, &self.channels)
+            ranked
                 .into_iter()
                 .take(8)
                 .enumerate()
@@ -3347,12 +3529,17 @@ impl App {
             popup,
         );
     }
-    fn render_theme_picker(&self, frame: &mut Frame<'_>, area: Rect) {
+    fn render_theme_picker(&self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
         let popup = centered(area, 70, 18);
         frame.render_widget(Clear, popup);
         let Some(picker) = &self.theme_picker else {
             return;
         };
+        for (index, (entry, _)) in picker.visible(12).into_iter().enumerate() {
+            if let Some(row) = list_row(popup, index.saturating_add(1), 1) {
+                hit_map.push(row, HitTarget::Theme(entry.id.into()));
+            }
+        }
         let scope = match picker.scope() {
             ThemeScope::Global => "global",
             ThemeScope::Community => "community",
@@ -3392,6 +3579,43 @@ impl App {
             popup,
         );
     }
+    fn map_inbox_hits(&self, area: Rect, hit_map: &mut HitMap) {
+        let inner = inner_rect(area);
+        if inner.width < 88 && self.inbox_state.narrow_detail {
+            return;
+        }
+        let list = if inner.width < 88 {
+            inner
+        } else {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
+                .split(inner)[0]
+        };
+        for (index, item) in self
+            .inbox_state
+            .visible(&self.inbox_items)
+            .into_iter()
+            .enumerate()
+        {
+            let y = list
+                .y
+                .saturating_add(u16::try_from(index.saturating_mul(2)).unwrap_or(u16::MAX));
+            if y >= list.bottom() {
+                break;
+            }
+            hit_map.push(
+                Rect::new(
+                    list.x,
+                    y,
+                    list.width,
+                    list.bottom().saturating_sub(y).min(2),
+                ),
+                HitTarget::InboxItem(item.conversation_id.clone()),
+            );
+        }
+    }
+
     fn render_prompt(&self, frame: &mut Frame<'_>, area: Rect, title: &str, value: &str) {
         let popup = centered(area, 70, 5);
         frame.render_widget(Clear, popup);
@@ -3563,6 +3787,31 @@ fn bottom_popup(area: Rect, height: u16) -> Rect {
     }
 }
 
+fn inner_rect(area: Rect) -> Rect {
+    Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    )
+}
+
+fn list_row(area: Rect, row: usize, height: u16) -> Option<Rect> {
+    let inner = inner_rect(area);
+    let y = inner
+        .y
+        .saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
+    if y >= inner.bottom() {
+        return None;
+    }
+    Some(Rect::new(
+        inner.x,
+        y,
+        inner.width,
+        inner.bottom().saturating_sub(y).min(height),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -3570,13 +3819,14 @@ mod tests {
     use super::{Mode, clear_visible_unread, identity_recovery_connection};
     use crate::{
         config::Config,
-        domain::ConnectionState,
+        domain::{Channel, ChannelKind, ConnectionState, MentionCandidate, Message, Visibility},
         error::Error,
         paths::Paths,
         store::{Store, writer::StoreHandle},
+        ui::{hit_map::HitTarget, mention_picker::MentionPicker},
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect};
     use tempfile::TempDir;
     use uuid::Uuid;
 
@@ -3692,6 +3942,107 @@ mod tests {
         assert_eq!(app.theme.id(), "dracula");
         assert_eq!(app.config.communities[0].theme.as_deref(), Some("dracula"));
         assert_eq!(Config::load(&paths).unwrap(), app.config);
+    }
+
+    #[tokio::test]
+    async fn rendered_core_and_mention_rows_have_semantic_hit_targets() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+        let identity = crate::config::IdentityConfig {
+            id: Uuid::new_v4(),
+            label: "mouse-test".into(),
+            pubkey: "a".repeat(64),
+            backend: crate::config::KeyBackend::Keychain,
+            key_ref: "identity:mouse-test".into(),
+        };
+        app.config.identities.push(identity.clone());
+        app.config
+            .add_community(
+                "mouse-test".into(),
+                "wss://mouse.example".into(),
+                identity.id,
+                false,
+            )
+            .unwrap();
+        let channel_id = Uuid::new_v4();
+        app.channels = vec![Channel {
+            id: channel_id,
+            name: "general".into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 1,
+            last_event_at: None,
+        }];
+        app.messages = vec![Message {
+            event_id: "event-1".into(),
+            channel_id,
+            pubkey: identity.pubkey,
+            created_at: 1,
+            content: "hello".into(),
+            attachments: vec![],
+            root_event_id: None,
+            parent_event_id: None,
+            deleted: false,
+            pending: false,
+            rejected: None,
+        }];
+        app.timeline.reconcile(&app.messages);
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let panes = crate::ui::layout::panes(
+            terminal.size().unwrap().into(),
+            app.sidebar,
+            false,
+            app.config.ui.sidebar_width,
+            app.config.ui.thread_width,
+        );
+        let map = app.last_hit_map.as_ref().unwrap();
+        let sidebar = panes.sidebar.unwrap();
+        assert_eq!(
+            map.hit(sidebar.x.saturating_add(1), sidebar.y.saturating_add(1)),
+            Some(&HitTarget::Channel(0))
+        );
+        assert_eq!(
+            map.hit(
+                panes.timeline.x.saturating_add(1),
+                panes.timeline.y.saturating_add(1)
+            ),
+            Some(&HitTarget::TimelineMessage("event-1".into()))
+        );
+
+        app.mode = Mode::Insert;
+        app.mention_picker = Some(MentionPicker::new(
+            0..1,
+            String::new(),
+            vec![MentionCandidate {
+                pubkey: "b".repeat(64),
+                label: "member".into(),
+            }],
+        ));
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let popup = super::bottom_popup(terminal.size().unwrap().into(), 5);
+        let mention = Rect::new(popup.x, popup.y.saturating_sub(3), popup.width, 3);
+        assert_eq!(
+            app.last_hit_map
+                .as_ref()
+                .unwrap()
+                .hit(mention.x.saturating_add(1), mention.y.saturating_add(1)),
+            Some(&HitTarget::MentionCandidate(0))
+        );
     }
 
     #[tokio::test]

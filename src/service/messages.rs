@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use nostr::{Event, EventId};
 use uuid::Uuid;
 
@@ -196,7 +198,12 @@ fn mention_references(mentions: &[String]) -> Result<Vec<&str>> {
     {
         return Err(Error::Protocol("invalid message mentions".into()));
     }
-    Ok(mentions.iter().map(String::as_str).collect())
+    let mut seen = HashSet::new();
+    Ok(mentions
+        .iter()
+        .filter(|pubkey| seen.insert(pubkey.as_str()))
+        .map(String::as_str)
+        .collect())
 }
 
 fn message_media(
@@ -228,8 +235,18 @@ fn message_media(
 
 #[cfg(test)]
 mod media_tests {
-    use super::message_media;
+    use super::{mention_references, message_media};
     use crate::media::{Attachment, MediaKind};
+
+    #[test]
+    fn mention_references_are_deduplicated_and_canonical() {
+        let key = "a".repeat(64);
+        assert_eq!(
+            mention_references(&[key.clone(), key.clone()]).unwrap(),
+            vec![key.as_str()]
+        );
+        assert!(mention_references(&["A".repeat(64)]).is_err());
+    }
 
     #[test]
     fn media_lines_and_tags_are_ordered() {

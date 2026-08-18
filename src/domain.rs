@@ -99,7 +99,9 @@ impl DraftMention {
             && body.is_char_boundary(self.byte_end)
             && body[self.byte_start..self.byte_end].starts_with('@')
             && self.pubkey.len() == 64
-            && self.pubkey.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && self.pubkey.bytes().all(|byte| {
+                byte.is_ascii_digit() || (byte.is_ascii_lowercase() && byte.is_ascii_hexdigit())
+            })
     }
 }
 
