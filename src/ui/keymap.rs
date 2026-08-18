@@ -233,6 +233,10 @@ pub enum KeyLookup {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KeyMap {
     bindings: Vec<KeyBinding>,
+    // Scope-local suppressions are retained separately so disabling a global
+    // default in (for example) Inbox does not accidentally leave that global
+    // binding effective in the Inbox scope.
+    disabled: Vec<(KeyScope, KeySequence)>,
 }
 
 impl KeyMap {
@@ -315,7 +319,10 @@ impl KeyMap {
         add(KeyScope::Composer, &["home"], UiAction::MoveLineStart);
         add(KeyScope::Composer, &["end"], UiAction::MoveLineEnd);
 
-        let keymap = Self { bindings };
+        let keymap = Self {
+            bindings,
+            disabled: Vec::new(),
+        };
         keymap
             .validate()
             .expect("builtin keymap must be internally valid");
@@ -371,6 +378,10 @@ impl KeyMap {
                 keymap.bindings.retain(|candidate| {
                     !(candidate.scope == binding.scope && candidate.sequence == sequence)
                 });
+                keymap
+                    .disabled
+                    .retain(|(scope, existing)| *scope != binding.scope || existing != &sequence);
+                keymap.disabled.push((binding.scope, sequence));
                 continue;
             }
             let Some(action) = binding.action else {
@@ -382,6 +393,9 @@ impl KeyMap {
             keymap.bindings.retain(|candidate| {
                 !(candidate.scope == binding.scope && candidate.sequence == sequence)
             });
+            keymap
+                .disabled
+                .retain(|(scope, existing)| *scope != binding.scope || existing != &sequence);
             keymap.bindings.push(KeyBinding {
                 scope: binding.scope,
                 sequence,
@@ -434,7 +448,12 @@ impl KeyMap {
         } else {
             self.bindings
                 .iter()
-                .filter(|binding| binding.scope == KeyScope::Global)
+                .filter(|binding| {
+                    binding.scope == KeyScope::Global
+                        && !self.disabled.iter().any(|(disabled_scope, sequence)| {
+                            *disabled_scope == scope && *sequence == binding.sequence
+                        })
+                })
                 .collect::<Vec<_>>()
         };
         if scope == KeyScope::Global {
@@ -452,7 +471,9 @@ impl KeyMap {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.bindings.len() > MAX_BINDINGS.saturating_mul(KeyScope::ALL.len()) {
+        if self.bindings.len().saturating_add(self.disabled.len())
+            > MAX_BINDINGS.saturating_mul(KeyScope::ALL.len())
+        {
             return Err(Error::Config(
                 "keymap has too many effective bindings".into(),
             ));
@@ -717,6 +738,28 @@ mod tests {
         assert_eq!(
             keymap.lookup(KeyScope::Inbox, &[space, n]),
             KeyLookup::Action(UiAction::MarkRead)
+        );
+    }
+
+    #[test]
+    fn scoped_disable_suppresses_a_global_default_only_in_that_scope() {
+        let temporary = TempDir::new().unwrap();
+        let path = temporary.path().join("keymap.toml");
+        fs::write(
+            &path,
+            "[[binding]]\nscope = 'inbox'\nkeys = ['space', 'n']\ndisabled = true\n",
+        )
+        .unwrap();
+        let keymap = KeyMap::load_from(&path).unwrap();
+        let space = KeyChord::new(KeyCode::Char(' '), KeyModifiers::NONE);
+        let n = KeyChord::new(KeyCode::Char('n'), KeyModifiers::NONE);
+        assert_eq!(
+            keymap.lookup(KeyScope::Workspace, &[space, n]),
+            KeyLookup::Action(UiAction::OpenInbox)
+        );
+        assert_eq!(
+            keymap.lookup(KeyScope::Inbox, &[space, n]),
+            KeyLookup::NoMatch
         );
     }
 
