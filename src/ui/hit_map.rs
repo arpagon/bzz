@@ -21,6 +21,8 @@ pub enum HitTarget {
     InboxItem(String),
     SearchResult(String),
     DmCandidate(String),
+    LocalAgent(usize),
+    AgentDraftAccept,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -139,6 +139,26 @@ fn mouse_policy_parses_strictly() {
 }
 
 #[test]
+fn local_agents_are_unique_and_require_canonical_workdirs() {
+    let temporary = TempDir::new().unwrap();
+    let workspace = temporary.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let canonical = workspace.canonicalize().unwrap();
+    let mut config = Config::default();
+    let id = config
+        .add_local_agent("writer".into(), Some(workspace))
+        .unwrap();
+    assert_eq!(config.local_agents[0].id, id);
+    assert_eq!(
+        config.local_agents[0].workdir.as_deref(),
+        Some(canonical.as_path())
+    );
+    assert!(config.add_local_agent("WRITER".into(), None).is_err());
+    config.local_agents[0].workdir = Some(temporary.path().join("missing"));
+    assert!(config.validate().is_err());
+}
+
+#[test]
 fn empty_config_round_trips_with_private_paths() {
     let temporary = TempDir::new().unwrap();
     let paths = Paths {

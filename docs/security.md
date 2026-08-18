@@ -61,6 +61,27 @@ Relay content is signature-verified and terminal controls/bidi overrides are
 replaced before rendering. Ordinary URLs remain inert. HTTP redirects are
 disabled so NIP-98 and Blossom authorization cannot cross origins.
 
+## Local Codex drafts
+
+A configured local assistant is not a Nostr identity: it has no signer, relay
+connection, membership, publishing path, media uploader, or remote trigger.
+The user explicitly invokes it for the selected cached message. Its process is
+started without a shell from an absolute local executable, receives context on
+stdin rather than arguments, clears inherited environment values (including
+`OPENAI_API_KEY`), uses fixed `codex exec` JSON/ephemeral/read-only flags, and
+runs in either an empty owner-only scratch directory or an explicitly selected
+canonical read-only workspace. Codex authentication and model-network egress
+remain external to bzz and the user's responsibility.
+
+At most one run is allowed. Prompts, process output, stderr, thread IDs, and
+unapproved drafts are neither logged nor written to configuration or SQLite.
+Stdout is bounded and only a completed `agent_message` JSONL item is accepted;
+terminal controls in its draft are replaced before review. Timeout, cancel,
+lock, community switch, and shutdown discard the result and terminate the
+child. A completed draft appears only for human review; accepting it inserts
+text into the ordinary composer, whose separate human send action is still the
+sole publishing path.
+
 ## Inbox, workspace DMs, and search
 
 Buzz workspace DMs use private hidden NIP-29 channels. Relay membership blocks

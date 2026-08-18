@@ -4,6 +4,7 @@ use std::{io::Write as _, path::PathBuf};
 
 use bzz::{
     Result,
+    agent::{CodexExecutable, Doctor},
     app::App,
     auth::{IdentityManager, backup, read_passphrase},
     config::{Config, KeyBackend},
@@ -53,6 +54,11 @@ enum Command {
     Theme {
         #[command(subcommand)]
         command: ThemeCommand,
+    },
+    /// Manage local, draft-only assistants.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
     },
     /// Validate configuration and database migrations.
     Check,
@@ -202,6 +208,27 @@ enum MediaCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum AgentCommand {
+    /// Add a local Codex assistant without storing credentials.
+    Add {
+        #[arg(long)]
+        label: String,
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+    },
+    /// List configured local assistants.
+    List,
+    /// Remove a local assistant configuration.
+    Remove {
+        id: Uuid,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Check whether the locally installed Codex supports bzz's safe invocation.
+    Doctor,
+}
+
+#[derive(Debug, Subcommand)]
 enum ThemeCommand {
     /// List themes compiled into this bzz binary.
     List,
@@ -266,6 +293,7 @@ async fn run() -> Result<()> {
         Some(Command::Cache { command }) => cache_command(command, &paths, &mut config),
         Some(Command::Media { command }) => media_command(command, &paths, &config),
         Some(Command::Theme { command }) => theme_command(command, &paths, &mut config),
+        Some(Command::Agent { command }) => agent_command(command, &paths, &mut config).await,
         Some(Command::Check) => {
             config.validate()?;
             let warnings = bzz::ui::theme::check(&paths, configured_theme_names(&config))?;
@@ -826,6 +854,60 @@ fn theme_command(command: ThemeCommand, paths: &Paths, config: &mut Config) -> R
         }
         ThemeCommand::Path => {
             println!("{}", bzz::ui::theme::theme_path(paths).display());
+            Ok(())
+        }
+    }
+}
+
+async fn agent_command(command: AgentCommand, paths: &Paths, config: &mut Config) -> Result<()> {
+    match command {
+        AgentCommand::Add { label, workdir } => {
+            let id = config.add_local_agent(label, workdir)?;
+            config.save(paths)?;
+            println!("local agent: {id}");
+            Ok(())
+        }
+        AgentCommand::List => {
+            if config.local_agents.is_empty() {
+                println!("no local assistants are configured");
+            } else {
+                for agent in &config.local_agents {
+                    println!(
+                        "{}\t{}\tcodex\t{}",
+                        agent.id,
+                        bzz::render::sanitize::single_line(&agent.label),
+                        agent.workdir.as_ref().map_or_else(
+                            || "isolated scratch".into(),
+                            |path| bzz::render::sanitize::single_line(&path.display().to_string())
+                        )
+                    );
+                }
+            }
+            Ok(())
+        }
+        AgentCommand::Remove { id, yes } => {
+            if !yes {
+                return Err(Error::Config(
+                    "use --yes to remove a local assistant".into(),
+                ));
+            }
+            if !config.remove_local_agent(id) {
+                return Err(Error::Config(format!("local agent {id} does not exist")));
+            }
+            config.save(paths)?;
+            println!("removed local agent: {id}");
+            Ok(())
+        }
+        AgentCommand::Doctor => {
+            let doctor = match CodexExecutable::resolve() {
+                Some(executable) => executable.doctor().await,
+                None => Doctor::Unavailable,
+            };
+            match doctor {
+                Doctor::Ready => println!("codex: ready for draft-only read-only execution"),
+                Doctor::Unavailable => println!("codex: unavailable"),
+                Doctor::Unsupported => println!("codex: missing a required safe exec flag"),
+            }
             Ok(())
         }
     }

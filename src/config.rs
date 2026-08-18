@@ -1,4 +1,8 @@
-use std::{fs, io::Write as _, path::Path};
+use std::{
+    fs,
+    io::Write as _,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -22,6 +26,8 @@ pub struct Config {
     pub ui: UiConfig,
     #[serde(default)]
     pub media: MediaConfig,
+    #[serde(default)]
+    pub local_agents: Vec<LocalAgentConfig>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -52,6 +58,22 @@ pub struct CommunityConfig {
     pub allow_insecure_localhost: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LocalAgentBackend {
+    Codex,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalAgentConfig {
+    pub id: Uuid,
+    pub label: String,
+    pub backend: LocalAgentBackend,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -246,6 +268,37 @@ impl Config {
                 "default community {default} does not exist"
             )));
         }
+        let mut agent_ids = std::collections::HashSet::new();
+        let mut agent_labels = std::collections::HashSet::new();
+        for agent in &self.local_agents {
+            if !agent_ids.insert(agent.id) {
+                return Err(Error::Config(format!(
+                    "duplicate local agent id {}",
+                    agent.id
+                )));
+            }
+            validate_agent_label(&agent.label)?;
+            if !agent_labels.insert(agent.label.trim().to_ascii_lowercase()) {
+                return Err(Error::Config(format!(
+                    "duplicate local agent label {}",
+                    agent.label.trim()
+                )));
+            }
+            if let Some(workdir) = &agent.workdir {
+                let canonical = fs::canonicalize(workdir).map_err(|_| {
+                    Error::Config(format!(
+                        "local agent {} has an unavailable working directory",
+                        agent.id
+                    ))
+                })?;
+                if canonical != *workdir || !canonical.is_dir() {
+                    return Err(Error::Config(format!(
+                        "local agent {} working directory must be a canonical directory",
+                        agent.id
+                    )));
+                }
+            }
+        }
         validate_theme_name(&self.ui.theme, "ui.theme")?;
         for community in &self.communities {
             if let Some(theme) = &community.theme {
@@ -287,6 +340,54 @@ impl Config {
             ));
         }
         Ok(())
+    }
+
+    pub fn add_local_agent(&mut self, label: String, workdir: Option<PathBuf>) -> Result<Uuid> {
+        let workdir = workdir
+            .map(|path| {
+                let canonical = fs::canonicalize(&path).map_err(|_| {
+                    Error::Config(format!(
+                        "local agent working directory {} is unavailable",
+                        path.display()
+                    ))
+                })?;
+                if !canonical.is_dir() {
+                    return Err(Error::Config(
+                        "local agent working directory is not a directory".into(),
+                    ));
+                }
+                Ok(canonical)
+            })
+            .transpose()?;
+        let agent = LocalAgentConfig {
+            id: Uuid::new_v4(),
+            label,
+            backend: LocalAgentBackend::Codex,
+            workdir,
+        };
+        validate_agent_label(&agent.label)?;
+        if self
+            .local_agents
+            .iter()
+            .any(|entry| entry.label.trim().eq_ignore_ascii_case(agent.label.trim()))
+        {
+            return Err(Error::Config(
+                "a local agent already uses that label".into(),
+            ));
+        }
+        let id = agent.id;
+        self.local_agents.push(agent);
+        if let Err(error) = self.validate() {
+            self.local_agents.pop();
+            return Err(error);
+        }
+        Ok(id)
+    }
+
+    pub fn remove_local_agent(&mut self, id: Uuid) -> bool {
+        let before = self.local_agents.len();
+        self.local_agents.retain(|agent| agent.id != id);
+        self.local_agents.len() != before
     }
 
     pub fn add_community(
@@ -384,6 +485,16 @@ pub fn validate_relay_url(input: &str, allow_insecure_localhost: bool) -> Result
         http_base: http,
         authority,
     })
+}
+
+fn validate_agent_label(value: &str) -> Result<()> {
+    let label = value.trim();
+    if label.is_empty() || label.len() > 80 || label.chars().any(char::is_control) {
+        return Err(Error::Config(
+            "local agent label must be 1-80 visible characters".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_theme_name(value: &str, field: &str) -> Result<()> {
