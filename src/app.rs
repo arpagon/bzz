@@ -43,14 +43,17 @@ use crate::{
     store::writer::StoreHandle,
     sync::{outbox, read_state},
     ui::{
+        action::{WorkspaceEffect, WorkspaceState, reduce_workspace},
         composer::Composer,
         dm_picker::DmPickerState,
         hit_map::{HitMap, HitTarget},
         inbox::InboxState,
-        keymap::{KeyAction, map_insert, map_normal},
+        input::{InputContext, InputDispatch, InputOwner, InputRouter},
+        keymap::{KeyAction, KeyMap, KeyScope, UiAction, map_insert},
         layout,
         mention_picker::MentionPicker,
         search::SearchState,
+        state::{ComposerTarget, FocusSurface, Overlay, PresentationState, Route},
         terminal::{TerminalGuard, Tui},
         theme::{self, BorderSurface, HighlightGroup, Theme, ThemeScope},
         theme_picker::ThemePicker,
@@ -67,7 +70,7 @@ enum Mode {
     ConfirmDelete,
     Command,
     Theme,
-    Help,
+    ConfirmQuit,
     MediaPreview,
     Attachment,
     SaveAttachment,
@@ -253,10 +256,14 @@ pub struct App {
     theme: Theme,
     theme_picker: Option<ThemePicker>,
     theme_before_preview: Option<Theme>,
+    keymap: KeyMap,
+    input_router: InputRouter,
+    leader_started_at: Option<Instant>,
+    presentation: PresentationState,
+    community_cursor: usize,
     connection: ConnectionState,
     status_error: Option<String>,
     should_quit: bool,
-    awaiting_g: bool,
     cache_dirty: bool,
     manual_unread: HashSet<Uuid>,
     computed_unread: HashSet<Uuid>,
@@ -273,6 +280,8 @@ pub struct App {
     last_hit_map: Option<HitMap>,
 }
 
+const LEADER_TIMEOUT: Duration = Duration::from_millis(750);
+
 impl App {
     pub async fn new(config: Config, paths: Paths, store: StoreHandle) -> Result<Self> {
         let selected_community = config
@@ -280,6 +289,7 @@ impl App {
             .and_then(|id| config.communities.iter().position(|entry| entry.id == id))
             .unwrap_or_default();
         let (theme, theme_notice) = load_theme_safe(&config, selected_community, &paths);
+        let keymap = KeyMap::load(&paths)?;
         let (runtime, connection, status_error) = if config.communities.is_empty() {
             (None, ConnectionState::Offline, None)
         } else {
@@ -361,10 +371,14 @@ impl App {
             theme,
             theme_picker: None,
             theme_before_preview: None,
+            keymap,
+            input_router: InputRouter::default(),
+            leader_started_at: None,
+            presentation: PresentationState::default(),
+            community_cursor: selected_community,
             connection,
             status_error: (!notices.is_empty()).then(|| notices.join("; ")),
             should_quit: false,
-            awaiting_g: false,
             cache_dirty: true,
             manual_unread: HashSet::new(),
             computed_unread: HashSet::new(),
@@ -1134,6 +1148,16 @@ impl App {
     }
 
     async fn on_tick(&mut self) -> Result<()> {
+        if self
+            .leader_started_at
+            .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
+        {
+            self.input_router.cancel_sequence();
+            self.leader_started_at = None;
+            if self.presentation.overlay == Some(Overlay::WhichKey) {
+                self.presentation.overlay = None;
+            }
+        }
         self.media.poll();
         if self.agent_run.as_ref().is_some_and(AgentRun::is_finished) {
             let run = self.agent_run.take().expect("checked local agent run");
@@ -1213,6 +1237,12 @@ impl App {
         guard: &mut TerminalGuard,
         terminal: &mut Tui,
     ) -> Result<()> {
+        // Presentation overlays own pointer input. Until their specific mouse
+        // behavior is implemented, clicks cannot leak through to background
+        // hit targets from the underlying workspace frame.
+        if self.presentation.overlay.is_some() {
+            return Ok(());
+        }
         let Some(target) = self
             .last_hit_map
             .as_ref()
@@ -1391,29 +1421,16 @@ impl App {
         terminal: &mut Tui,
     ) -> Result<()> {
         match self.mode {
-            Mode::Normal => {
-                if let KeyCode::Char(digit @ '1'..='9') = key.code
-                    && key.modifiers.is_empty()
-                {
-                    let index = usize::from(digit as u8 - b'1');
-                    if index < self.config.communities.len() {
-                        self.switch_community(index, guard, terminal).await?;
-                    }
-                    return Ok(());
-                }
-                let action = map_normal(key, self.awaiting_g);
-                self.awaiting_g = matches!(key.code, KeyCode::Char('g'));
-                self.normal_action(action).await?;
-            }
+            Mode::Normal => self.handle_workspace_key(key, guard, terminal).await?,
             Mode::Insert => self.insert_action(map_insert(key)).await?,
-            Mode::Help => {
-                if matches!(
-                    key.code,
-                    KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')
-                ) {
-                    self.mode = Mode::Normal
+            Mode::ConfirmQuit => match key.code {
+                KeyCode::Char('y' | 'Y') => self.should_quit = true,
+                KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                    self.mode = Mode::Normal;
+                    self.presentation.overlay = None;
                 }
-            }
+                _ => {}
+            },
             Mode::Finder => self.text_overlay_key(key, Mode::Finder).await?,
             Mode::Command => self.text_overlay_key(key, Mode::Command).await?,
             Mode::Theme => self.theme_picker_key(key),
@@ -1459,100 +1476,181 @@ impl App {
         Ok(())
     }
 
-    async fn normal_action(&mut self, action: KeyAction) -> Result<()> {
-        match action {
-            KeyAction::Quit => self.should_quit = true,
-            KeyAction::Help => self.mode = Mode::Help,
-            KeyAction::ToggleSidebar => self.sidebar = !self.sidebar,
-            KeyAction::Finder => {
+    async fn handle_workspace_key(
+        &mut self,
+        key: KeyEvent,
+        guard: &mut TerminalGuard,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        let context = InputContext {
+            overlay_open: self.presentation.overlay.is_some(),
+            composer_completion_open: false,
+            composer_open: false,
+            filter_open: false,
+            route_scope: KeyScope::Workspace,
+        };
+        match self.input_router.dispatch(&self.keymap, context, key) {
+            InputDispatch::Action(action) => {
+                self.leader_started_at = None;
+                if self.presentation.overlay == Some(Overlay::WhichKey) {
+                    self.presentation.overlay = None;
+                }
+                self.dispatch_workspace_action(action, guard, terminal)
+                    .await?;
+            }
+            InputDispatch::Pending { .. } => {
+                self.leader_started_at.get_or_insert_with(Instant::now);
+                self.presentation.open_overlay(Overlay::WhichKey);
+            }
+            InputDispatch::Owned(InputOwner::Overlay) => self.handle_presentation_overlay_key(key),
+            InputDispatch::Owned(_) | InputDispatch::Noop => {
+                if !self.input_router.sequence_active() {
+                    self.leader_started_at = None;
+                }
+                if !self.input_router.sequence_active()
+                    && self.presentation.overlay == Some(Overlay::WhichKey)
+                {
+                    self.presentation.overlay = None;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_presentation_overlay_key(&mut self, key: KeyEvent) {
+        if self.presentation.overlay == Some(Overlay::Help)
+            && matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'q'))
+        {
+            self.presentation.overlay = None;
+        }
+    }
+
+    async fn dispatch_workspace_action(
+        &mut self,
+        action: UiAction,
+        guard: &mut TerminalGuard,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        let mut state = WorkspaceState::new(
+            self.presentation.clone(),
+            self.community_cursor,
+            self.config.communities.len(),
+            self.sidebar,
+            self.thread_root.is_some(),
+        );
+        let effect = reduce_workspace(&mut state, action);
+        self.presentation = state.presentation;
+        self.community_cursor = state.community_cursor;
+        self.sidebar = state.channels_visible;
+        self.apply_presentation_focus();
+
+        match effect {
+            WorkspaceEffect::None => {}
+            WorkspaceEffect::RequestQuitConfirmation => {
+                self.mode = Mode::ConfirmQuit;
+                self.presentation.open_overlay(Overlay::Confirmation);
+            }
+            WorkspaceEffect::CloseContext => self.thread_root = None,
+            WorkspaceEffect::EnsureContext => {
+                self.toggle_thread().await?;
+                if self.thread_root.is_some() {
+                    self.presentation.set_workspace_focus(FocusSurface::Context);
+                    self.apply_presentation_focus();
+                }
+            }
+            WorkspaceEffect::MoveSelection(delta) => self.move_selection(delta),
+            WorkspaceEffect::MoveSelectionToEdge { last } => self.move_to_edge(last),
+            WorkspaceEffect::ScrollViewport(_) => {
+                self.status_error = Some(
+                    "detached viewport scrolling is being completed with the M2 layout cutover"
+                        .into(),
+                );
+            }
+            WorkspaceEffect::ActivateFocused => self.open_selected().await?,
+            WorkspaceEffect::ActivateCommunity(index) => {
+                self.switch_community(index, guard, terminal).await?;
+            }
+            WorkspaceEffect::OpenComposer => self.enter_composer().await?,
+            WorkspaceEffect::OpenSearch => self.open_search(),
+            WorkspaceEffect::OpenInbox => self.open_inbox(),
+            WorkspaceEffect::OpenFinder => {
                 self.finder.clear();
-                self.mode = Mode::Finder
+                self.mode = Mode::Finder;
             }
-            KeyAction::Search => self.open_search(),
-            KeyAction::Inbox => self.open_inbox(),
-            KeyAction::NewDm => self.open_dm_picker(None),
-            KeyAction::HideDm => self.hide_current_dm(),
-            KeyAction::AddDmMember => {
-                let channel = self
-                    .current_channel()
-                    .filter(|channel| channel.kind.is_dm())
-                    .map(|channel| channel.id);
-                if channel.is_some() {
-                    self.open_dm_picker(channel);
-                } else {
-                    self.status_error =
-                        Some("select a workspace DM before adding a participant".into());
+            WorkspaceEffect::OpenContextActions => {
+                self.status_error = Some(
+                    "contextual actions are being completed with the M2 action-registry cutover"
+                        .into(),
+                );
+            }
+            WorkspaceEffect::Refresh => {
+                self.cache_dirty = true;
+                if self.runtime.is_some() {
+                    self.spawn_inbox_load(true);
                 }
             }
-            KeyAction::Theme => self.open_theme_picker(),
-            KeyAction::Preview => self.open_media_preview(),
-            KeyAction::Command => {
+            WorkspaceEffect::OpenOptions => self.open_theme_picker(),
+            WorkspaceEffect::OpenCommand => {
                 self.command.clear();
-                self.mode = Mode::Command
+                self.mode = Mode::Command;
             }
-            KeyAction::NextPane => {
-                self.pane = match self.pane {
-                    Pane::Channels => Pane::Timeline,
-                    Pane::Timeline => {
-                        if self.thread_root.is_some() {
-                            Pane::Thread
-                        } else {
-                            Pane::Channels
-                        }
-                    }
-                    Pane::Thread => Pane::Channels,
+            WorkspaceEffect::OpenDmPicker => self.open_dm_picker(None),
+            WorkspaceEffect::ToggleThread => self.toggle_thread().await?,
+            WorkspaceEffect::OpenMediaPreview => self.open_media_preview(),
+            WorkspaceEffect::OpenReaction => {
+                if self.runtime.is_none() {
+                    self.status_error = Some(
+                        "cached read-only mode: restore or unlock the identity, then restart bzz"
+                            .into(),
+                    );
+                } else if self.selected_message().is_some() {
+                    self.mode = Mode::Reaction;
                 }
             }
-            KeyAction::PreviousPane => {
-                self.pane = match self.pane {
-                    Pane::Channels => {
-                        if self.thread_root.is_some() {
-                            Pane::Thread
-                        } else {
-                            Pane::Timeline
-                        }
-                    }
-                    Pane::Timeline => Pane::Channels,
-                    Pane::Thread => Pane::Timeline,
-                }
-            }
-            KeyAction::Up => self.move_selection(-1),
-            KeyAction::Down => self.move_selection(1),
-            KeyAction::First => self.move_to_edge(false),
-            KeyAction::Last => self.move_to_edge(true),
-            KeyAction::PageUp => self.move_selection(-10),
-            KeyAction::PageDown => self.move_selection(10),
-            KeyAction::Open => self.open_selected().await?,
-            KeyAction::Compose => self.enter_composer().await?,
-            KeyAction::Thread => self.toggle_thread().await?,
-            KeyAction::React if self.runtime.is_some() && self.selected_message().is_some() => {
-                self.mode = Mode::Reaction
-            }
-            KeyAction::Delete
-                if self.selected_message().is_some_and(|message| {
+            WorkspaceEffect::ConfirmDelete => {
+                if self.runtime.is_none() {
+                    self.status_error = Some(
+                        "cached read-only mode: restore or unlock the identity, then restart bzz"
+                            .into(),
+                    );
+                } else if self.selected_message().is_some_and(|message| {
                     self.runtime.as_ref().is_some_and(|runtime| {
                         message.pubkey == runtime.signer.public_key().to_hex()
                     })
-                }) =>
-            {
-                self.mode = Mode::ConfirmDelete
+                }) {
+                    self.mode = Mode::ConfirmDelete;
+                }
             }
-            KeyAction::MarkUnread if self.runtime.is_some() => self.mark_unread().await?,
-            KeyAction::React | KeyAction::Delete | KeyAction::MarkUnread
-                if self.runtime.is_none() =>
-            {
-                self.status_error = Some(
-                    "cached read-only mode: restore or unlock the identity, then restart bzz"
-                        .into(),
-                )
+            WorkspaceEffect::MarkUnread => {
+                if self.runtime.is_none() {
+                    self.status_error = Some(
+                        "cached read-only mode: restore or unlock the identity, then restart bzz"
+                            .into(),
+                    );
+                } else {
+                    self.mark_unread().await?;
+                }
             }
-            KeyAction::Escape => {
-                self.thread_root = None;
-                self.pane = Pane::Timeline
+            WorkspaceEffect::Unavailable(action) => {
+                self.status_error = Some(format!(
+                    "{} is not available in this workspace",
+                    action.label()
+                ));
             }
-            _ => {}
         }
         Ok(())
+    }
+
+    fn apply_presentation_focus(&mut self) {
+        match self.presentation.focus {
+            FocusSurface::Channels => self.pane = Pane::Channels,
+            FocusSurface::Timeline => self.pane = Pane::Timeline,
+            FocusSurface::Context if self.thread_root.is_some() => self.pane = Pane::Thread,
+            FocusSurface::Communities
+            | FocusSurface::Context
+            | FocusSurface::InboxList
+            | FocusSurface::InboxDetail => {}
+        }
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -1580,6 +1678,16 @@ impl App {
         }
     }
     fn move_to_edge(&mut self, last: bool) {
+        if self.presentation.route == Route::Workspace
+            && self.presentation.focus == FocusSurface::Communities
+        {
+            self.community_cursor = if last {
+                self.config.communities.len().saturating_sub(1)
+            } else {
+                0
+            };
+            return;
+        }
         match self.pane {
             Pane::Channels => {
                 let joined = self
@@ -1671,11 +1779,19 @@ impl App {
             return Ok(());
         };
         let root = self.thread_root.clone();
+        let draft_root = root.clone();
         let (body, attachments, mentions) = self
             .store
-            .call(move |store| store.draft_with_media_mentions(community, channel, root.as_deref()))
+            .call(move |store| {
+                store.draft_with_media_mentions(community, channel, draft_root.as_deref())
+            })
             .await?;
         self.composer.set_draft(body, attachments, mentions);
+        self.presentation.composer_target = Some(ComposerTarget {
+            community_id: community,
+            channel_id: channel,
+            thread_root_id: root,
+        });
         self.refresh_mention_picker().await?;
         self.mode = Mode::Insert;
         let pending = self
@@ -1723,6 +1839,7 @@ impl App {
         match action {
             KeyAction::Escape => {
                 self.mention_picker = None;
+                self.presentation.composer_target = None;
                 self.mode = Mode::Normal;
             }
             KeyAction::Character(character) => self.composer.insert(character),
@@ -1765,6 +1882,7 @@ impl App {
             KeyAction::Submit => {
                 if let Some(message) = self.composer.take_message() {
                     self.queue_message(message);
+                    self.presentation.composer_target = None;
                     self.mode = Mode::Normal
                 }
             }
@@ -2598,7 +2716,13 @@ impl App {
             KeyCode::Esc if self.inbox_state.narrow_detail => {
                 self.inbox_state.narrow_detail = false;
             }
-            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.presentation.route = Route::Workspace;
+                self.presentation
+                    .set_workspace_focus(FocusSurface::Timeline);
+                self.apply_presentation_focus();
+            }
             KeyCode::Char('j') | KeyCode::Down => self.inbox_state.move_by(&self.inbox_items, 1),
             KeyCode::Char('k') | KeyCode::Up => self.inbox_state.move_by(&self.inbox_items, -1),
             KeyCode::Char('f') => {
@@ -2682,6 +2806,14 @@ impl App {
         }
         self.cache_dirty = true;
         self.hydrate_cache().await?;
+        self.presentation.route = Route::Workspace;
+        self.presentation
+            .set_workspace_focus(if self.thread_root.is_some() {
+                FocusSurface::Context
+            } else {
+                FocusSurface::Timeline
+            });
+        self.apply_presentation_focus();
         Ok(())
     }
 
@@ -3051,6 +3183,7 @@ impl App {
                 self.media.bind(runtime.community_id, runtime.media.clone());
                 self.runtime = Some(runtime);
                 self.selected_community = index;
+                self.community_cursor = index;
                 self.config.default_community = Some(target_id);
                 self.config.save(&self.paths)?;
                 self.reload_theme();
@@ -3080,6 +3213,7 @@ impl App {
                     }
                     self.media.select_cached(target_id);
                     self.selected_community = index;
+                    self.community_cursor = index;
                     self.config.default_community = Some(target_id);
                     self.config.save(&self.paths)?;
                     self.reload_theme();
@@ -3200,7 +3334,11 @@ impl App {
             self.config.ui.thread_width,
         );
         if let Some(rail) = panes.community {
-            self.render_communities(frame, rail);
+            self.render_communities(
+                frame,
+                rail,
+                self.presentation.focus == FocusSurface::Communities,
+            );
             for (index, _) in self.config.communities.iter().enumerate() {
                 if let Some(area) = list_row(rail, index, 1) {
                     hit_map.push(area, HitTarget::Community(index));
@@ -3319,7 +3457,7 @@ impl App {
                 Line::from("No communities are configured."),
                 Line::from("Run bzz identity new, then bzz community add."),
                 Line::default(),
-                Line::from("? help · Q quit"),
+                Line::from("? help · q quit"),
             ]))
             .style(self.theme.style(HighlightGroup::Normal))
             .alignment(Alignment::Center)
@@ -3334,7 +3472,7 @@ impl App {
             area,
         );
     }
-    fn render_communities(&self, frame: &mut Frame<'_>, area: Rect) {
+    fn render_communities(&self, frame: &mut Frame<'_>, area: Rect, focused: bool) {
         let items = self
             .config
             .communities
@@ -3348,7 +3486,7 @@ impl App {
                         .unwrap_or('?')
                         .to_string(),
                 )
-                .style(self.theme.style(if index == self.selected_community {
+                .style(self.theme.style(if index == self.community_cursor {
                     HighlightGroup::CommunitySelected
                 } else {
                     HighlightGroup::CommunityRail
@@ -3360,7 +3498,11 @@ impl App {
                 .block(
                     Block::bordered()
                         .border_type(self.theme.border_type(BorderSurface::Pane))
-                        .border_style(self.theme.style(HighlightGroup::PaneBorder))
+                        .border_style(self.theme.style(if focused {
+                            HighlightGroup::FocusedPaneBorder
+                        } else {
+                            HighlightGroup::PaneBorder
+                        }))
                         .title_style(self.theme.style(HighlightGroup::PaneTitle))
                         .title(" b "),
                 ),
@@ -3376,7 +3518,7 @@ impl App {
             Mode::ConfirmDelete => "CONFIRM",
             Mode::Command => "COMMAND",
             Mode::Theme => "THEME",
-            Mode::Help => "HELP",
+            Mode::ConfirmQuit => "CONFIRM QUIT",
             Mode::MediaPreview => "MEDIA",
             Mode::Attachment => "ATTACH",
             Mode::SaveAttachment => "SAVE",
@@ -3402,7 +3544,7 @@ impl App {
                 Span::styled(format!(" {mode} "), self.theme.style(mode_group)),
                 Span::styled(
                     format!(
-                        " · {connection} · img {} · {error} · ? help · Q quit",
+                        " · {connection} · img {} · {error} · ? help · q quit",
                         self.media.protocol_name()
                     ),
                     self.theme.style(HighlightGroup::StatusBar),
@@ -3413,23 +3555,60 @@ impl App {
         );
     }
     fn render_overlay(&mut self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
-        match self.mode {
-            Mode::Help => {
-                frame.render_widget(Clear, area);
-                frame.render_widget(
-                    Paragraph::new(crate::ui::help::HELP)
+        if self.mode == Mode::Normal {
+            match self.presentation.overlay {
+                Some(Overlay::Help) => {
+                    frame.render_widget(Clear, area);
+                    frame.render_widget(
+                        Paragraph::new(crate::ui::help::effective_keymap(
+                            &self.keymap,
+                            KeyScope::Workspace,
+                        ))
                         .style(self.theme.style(HighlightGroup::Normal))
                         .block(
                             Block::bordered()
                                 .border_type(self.theme.border_type(BorderSurface::Modal))
                                 .border_style(self.theme.style(HighlightGroup::ModalBorder))
                                 .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                                .title(" help "),
+                                .title(" effective keymap "),
                         )
                         .wrap(Wrap { trim: false }),
-                    area,
-                )
+                        area,
+                    );
+                    return;
+                }
+                Some(Overlay::WhichKey) => {
+                    let popup = centered(area, 48, 14);
+                    frame.render_widget(Clear, popup);
+                    frame.render_widget(
+                        Paragraph::new(crate::ui::help::which_key(
+                            &self.keymap,
+                            KeyScope::Workspace,
+                            self.input_router.sequence(),
+                        ))
+                        .style(self.theme.style(HighlightGroup::Normal))
+                        .block(
+                            Block::bordered()
+                                .border_type(self.theme.border_type(BorderSurface::Modal))
+                                .border_style(self.theme.style(HighlightGroup::ModalBorder))
+                                .title_style(self.theme.style(HighlightGroup::ModalTitle))
+                                .title(" leader "),
+                        )
+                        .wrap(Wrap { trim: false }),
+                        popup,
+                    );
+                    return;
+                }
+                _ => {}
             }
+        }
+        match self.mode {
+            Mode::ConfirmQuit => self.render_prompt(
+                frame,
+                area,
+                " quit bzz? ",
+                "Press y to quit or n/Esc to stay in bzz",
+            ),
             Mode::Finder => self.render_finder(frame, area, hit_map),
             Mode::Command => {
                 self.render_prompt(frame, area, " command ", &format!(":{}", self.command))
@@ -4114,6 +4293,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_leader_prefix_is_cancelled_without_an_action() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+        let _ = app.input_router.dispatch(
+            &app.keymap,
+            crate::ui::input::InputContext::workspace(),
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        app.leader_started_at = Some(std::time::Instant::now() - super::LEADER_TIMEOUT);
+        app.presentation
+            .open_overlay(crate::ui::state::Overlay::WhichKey);
+
+        app.on_tick().await.unwrap();
+
+        assert!(!app.input_router.sequence_active());
+        assert_ne!(
+            app.presentation.overlay,
+            Some(crate::ui::state::Overlay::WhichKey)
+        );
+    }
+
+    #[tokio::test]
     async fn invalid_theme_toml_falls_back_without_blocking_startup() {
         let temporary = TempDir::new().unwrap();
         let paths = Paths {
@@ -4298,6 +4509,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_state_renders_leader_which_key_overlay() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+        let _ = app.input_router.dispatch(
+            &app.keymap,
+            crate::ui::input::InputContext::workspace(),
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        app.presentation
+            .open_overlay(crate::ui::state::Overlay::WhichKey);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("leader"));
+        assert!(text.contains("open Inbox"));
+    }
+
+    #[tokio::test]
     async fn empty_state_renders_help_overlay() {
         let temporary = TempDir::new().unwrap();
         let paths = Paths {
@@ -4311,7 +4557,8 @@ mod tests {
         store.sync_config(&config).unwrap();
         let handle = StoreHandle::spawn(store).unwrap();
         let mut app = super::App::new(config, paths, handle).await.unwrap();
-        app.mode = Mode::Help;
+        app.presentation
+            .open_overlay(crate::ui::state::Overlay::Help);
 
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
@@ -4322,7 +4569,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(text.contains("bzz keys"));
-        assert!(text.contains("Inbox"));
+        assert!(text.contains("bzz effective keymap"));
+        assert!(text.contains("active scoped overrides"));
     }
 }

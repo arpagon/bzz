@@ -91,7 +91,9 @@ herdr pane send-keys "$BZZ_PANE" 'shift+?'
 sleep 0.3
 herdr pane send-keys "$BZZ_PANE" esc
 sleep 0.3
-herdr pane send-keys "$BZZ_PANE" 'shift+q'
+herdr pane send-keys "$BZZ_PANE" q
+sleep 0.3
+herdr pane send-keys "$BZZ_PANE" y
 ```
 
 Useful conventions:
@@ -99,16 +101,14 @@ Useful conventions:
 | bzz action | Herdr key |
 |---|---|
 | Help `?` | `shift+?` |
-| Quit `Q` | `shift+q` |
-| Delete `D` | `shift+d` |
-| Mark unread `U` | `shift+u` |
+| Quit (confirm) | `q`, then `y` |
+| Leader / which-key | `space` |
 | End `G` | `shift+g` |
-| Finder | `ctrl+p` |
+| Channel / DM switcher | `space space` |
 | Search | `/` |
-| Inbox | `shift+i` |
-| New workspace DM | `ctrl+n` |
-| Hide / add DM participant | `shift+h` / `shift+a` |
-| Thread | `ctrl+]` or `enter` |
+| Inbox | `space n` |
+| Theme options | `space o` |
+| Context | `4` or `enter` on a selected message |
 | Escape | `esc` |
 | Confirm | `enter` |
 
@@ -201,8 +201,8 @@ retaining it.
 This corresponds to sections 0–4 of the manual plan:
 
 1. Run version, paths, and check commands with `herdr pane run`.
-2. Start `bzz`, open help with `shift+?`, close it with `esc`, and quit with
-   `shift+q`.
+2. Start `bzz`, open help with `shift+?`, close it with `esc`, then quit with
+   `q` followed by `y`.
 3. Create the identity from the pane's shell; complete secret prompts manually.
 4. Configure a community and channel used exclusively for E2E testing.
 5. Start the TUI and wait for `NORMAL · online`.
@@ -260,7 +260,7 @@ system credential manager, never its configuration. Verify through Herdr:
 - `i`, `r`, and `D` are blocked;
 - the outbox is unchanged.
 
-Then quit with `shift+q`, run `identity restore-backup`, complete the passphrase
+Then quit with `q` followed by `y`, run `identity restore-backup`, complete the passphrase
 manually, and wait for `NORMAL · online` again.
 
 ### Inbox, workspace DMs, and search
@@ -271,7 +271,7 @@ message content intended to remain confidential.
 
 ```bash
 # Inbox
-herdr pane send-keys "$BZZ_PANE" 'shift+i'
+herdr pane send-keys "$BZZ_PANE" space n
 sleep 0.3
 herdr pane read "$BZZ_PANE" --source visible --format text
 herdr pane send-keys "$BZZ_PANE" f down enter esc
@@ -284,8 +284,8 @@ sleep 0.5
 herdr pane read "$BZZ_PANE" --source visible --format text
 herdr pane send-keys "$BZZ_PANE" esc
 
-# New workspace DM (select with Space after filtering)
-herdr pane send-keys "$BZZ_PANE" ctrl+n
+# New workspace DM (the explicit command opens the recipient picker)
+herdr pane send-keys "$BZZ_PANE" : d m enter
 sleep 0.3
 herdr_type_ascii "$BZZ_PANE" "Generic Person"
 herdr pane send-keys "$BZZ_PANE" space enter
@@ -300,7 +300,7 @@ disposable participant set described in section 10 of the manual plan.
 The picker can also be tested without relay-specific data:
 
 ```bash
-herdr pane send-keys "$BZZ_PANE" ctrl+y
+herdr pane send-keys "$BZZ_PANE" space o
 sleep 0.3
 herdr_type_ascii "$BZZ_PANE" "nord"
 herdr pane read "$BZZ_PANE" --source visible --format text
@@ -366,7 +366,8 @@ Verify:
 Close and remove only the temporary resources:
 
 ```bash
-herdr pane send-keys "$BZZ_SECOND_PANE" 'shift+q'
+herdr pane send-keys "$BZZ_SECOND_PANE" q
+herdr pane send-keys "$BZZ_SECOND_PANE" y
 herdr pane close "$BZZ_SECOND_PANE"
 rm -rf "$BZZ_SECOND_ROOT"
 ```

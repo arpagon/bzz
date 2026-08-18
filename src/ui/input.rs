@@ -198,6 +198,28 @@ mod tests {
     }
 
     #[test]
+    fn overlay_does_not_leak_global_navigation_to_the_workspace() {
+        let keymap = KeyMap::builtin();
+        let mut router = InputRouter::default();
+        let context = InputContext {
+            overlay_open: true,
+            ..InputContext::workspace()
+        };
+        assert_eq!(
+            router.dispatch(
+                &keymap,
+                context,
+                key(KeyCode::Char('j'), KeyModifiers::NONE)
+            ),
+            InputDispatch::Owned(InputOwner::Overlay)
+        );
+        assert_eq!(
+            router.dispatch(&keymap, context, key(KeyCode::Esc, KeyModifiers::NONE)),
+            InputDispatch::Action(UiAction::BackOrQuit)
+        );
+    }
+
+    #[test]
     fn composer_keeps_printable_text_out_of_the_leader_router() {
         let keymap = KeyMap::builtin();
         let mut router = InputRouter::default();

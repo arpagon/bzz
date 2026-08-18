@@ -70,6 +70,50 @@ mouse-capture sequences. Semantic overrides live in a separate, optional
 `theme.toml`; see [`themes.md`](themes.md). UI configuration is
 presentation-only and is never synchronized through the relay.
 
+## Keymap
+
+`keymap.toml` is an optional, non-secret file beside `config.toml` (`bzz paths`
+prints its parent directory). It is read once before bzz enters raw mode; run
+`bzz check` after editing it. A missing file uses the v0.4 defaults. A malformed
+file is rejected in full and is never partly applied or printed back to the
+terminal.
+
+```toml
+# Scope defaults to "global". This exact sequence replaces the builtin one
+# only while the Inbox is active.
+[[binding]]
+scope = "inbox"
+keys = ["space", "n"]
+action = "mark-read"
+
+# Disable an inherited global binding in one scope. `action` is forbidden here.
+[[binding]]
+scope = "inbox"
+keys = ["space", "n"]
+disabled = true
+```
+
+Each `[[binding]]` has only `scope`, `keys`, `action`, and `disabled`. Scopes
+are `global`, `workspace`, `inbox`, `composer`, `filter`, and `overlay`.
+`keys` is a one-to-four chord sequence. A chord is one printable character,
+`space`, `tab`, `backtab`, `enter`, `esc`, `backspace`, `delete`, `up`, `down`,
+`left`, `right`, `home`, `end`, `pageup`, or `pagedown`, optionally prefixed
+with `ctrl-`, `alt-`, and/or `shift-`. Uppercase characters imply `shift-`.
+
+The file is capped at 64 KiB and 128 declared bindings. Duplicate effective
+bindings, action/prefix ambiguity, unknown TOML fields, and text-owning scopes
+that capture ordinary printable characters are rejected. Composer bindings are
+limited to documented composer editing/completion actions; they cannot become
+workspace shortcuts. Overlay bindings likewise do not inherit background
+workspace actions.
+
+Defaults use `Space` as leader. Its popup shows valid continuations and expires
+after 750 ms without triggering a partial action. `?` opens generated help for
+the effective workspace keymap, including scoped overrides and disabled
+bindings. `q` closes the foremost owned UI state and asks before quitting the
+workspace. No keymap binding can invoke a shell or publish without the normal
+human send/confirmation path.
+
 `[[local_agents]]` configures named, local-only Codex draft assistants. It
 contains no credentials, Nostr identity, relay URL, prompt, or output. A
 configured `workdir` must already exist, be a canonical directory, and is used

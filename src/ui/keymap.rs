@@ -66,6 +66,60 @@ pub enum UiAction {
     MoveLineEnd,
 }
 
+impl UiAction {
+    /// Short bzz-owned label used by generated keymap help and which-key.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::BackOrQuit => "back / quit",
+            Self::OpenHelp => "show keymap help",
+            Self::ToggleCommunities => "toggle communities",
+            Self::ToggleChannels => "toggle channels",
+            Self::ToggleContext => "toggle context",
+            Self::FocusCommunities => "focus communities",
+            Self::FocusChannels => "focus channels",
+            Self::FocusTimeline => "focus timeline",
+            Self::FocusContext => "focus context",
+            Self::NextFocus => "next focus",
+            Self::PreviousFocus => "previous focus",
+            Self::SelectPrevious => "previous selection",
+            Self::SelectNext => "next selection",
+            Self::ScrollViewportUp => "scroll viewport up",
+            Self::ScrollViewportDown => "scroll viewport down",
+            Self::HalfPageUp => "half page up",
+            Self::HalfPageDown => "half page down",
+            Self::JumpTop => "jump to first",
+            Self::JumpBottom => "jump to last",
+            Self::ActivateFocused => "activate focused item",
+            Self::Compose => "compose",
+            Self::Filter => "filter",
+            Self::Search => "search",
+            Self::OpenInbox => "open Inbox",
+            Self::ChannelSwitcher => "channel / DM switcher",
+            Self::OpenContextActions => "contextual actions",
+            Self::Refresh => "refresh",
+            Self::OpenOptions => "options / theme",
+            Self::OpenCommand => "command prompt",
+            Self::NewDm => "new DM",
+            Self::ToggleThread => "toggle context",
+            Self::React => "react",
+            Self::Delete => "delete",
+            Self::MarkUnread => "mark unread",
+            Self::MarkRead => "mark read",
+            Self::Preview => "preview media",
+            Self::Submit => "send",
+            Self::InsertNewline => "insert newline",
+            Self::Complete => "complete",
+            Self::DeletePreviousWord => "delete previous word",
+            Self::DeleteToStart => "delete to line start",
+            Self::DeleteToEnd => "delete to line end",
+            Self::MoveWordLeft => "previous word",
+            Self::MoveWordRight => "next word",
+            Self::MoveLineStart => "line start",
+            Self::MoveLineEnd => "line end",
+        }
+    }
+}
+
 /// The part of the TUI that owns a binding. Scopes deliberately distinguish
 /// persistent routes from text-owning states, so a user keymap cannot make a
 /// printable composer character execute a workspace action.
@@ -111,6 +165,44 @@ impl KeyChord {
 
     pub const fn from_event(event: KeyEvent) -> Self {
         Self::new(event.code, event.modifiers)
+    }
+
+    /// A terminal-independent, bounded label for generated help. This is not
+    /// parsed at dispatch time and never includes user configuration text.
+    pub fn label(self) -> String {
+        let mut parts = Vec::with_capacity(4);
+        if self.modifiers.contains(KeyModifiers::CONTROL) {
+            parts.push("Ctrl".to_owned());
+        }
+        if self.modifiers.contains(KeyModifiers::ALT) {
+            parts.push("Alt".to_owned());
+        }
+        if self.modifiers.contains(KeyModifiers::SHIFT) {
+            parts.push("Shift".to_owned());
+        }
+        let key = match self.code {
+            KeyCode::Backspace => "Backspace".into(),
+            KeyCode::Enter => "Enter".into(),
+            KeyCode::Left => "Left".into(),
+            KeyCode::Right => "Right".into(),
+            KeyCode::Up => "Up".into(),
+            KeyCode::Down => "Down".into(),
+            KeyCode::Home => "Home".into(),
+            KeyCode::End => "End".into(),
+            KeyCode::PageUp => "PageUp".into(),
+            KeyCode::PageDown => "PageDown".into(),
+            KeyCode::Tab => "Tab".into(),
+            KeyCode::BackTab => "BackTab".into(),
+            KeyCode::Delete => "Delete".into(),
+            KeyCode::Insert => "Insert".into(),
+            KeyCode::Esc => "Esc".into(),
+            KeyCode::F(number) => format!("F{number}"),
+            KeyCode::Char(' ') => "Space".into(),
+            KeyCode::Char(character) => character.to_string(),
+            _ => "key".into(),
+        };
+        parts.push(key);
+        parts.join("+")
     }
 
     pub fn matches(self, event: KeyEvent) -> bool {
@@ -180,9 +272,11 @@ impl KeyChord {
         key.map(|code| Self { code, modifiers }).ok_or(())
     }
 
-    fn is_plain_printable(self) -> bool {
+    fn is_text_input(self) -> bool {
         matches!(self.code, KeyCode::Char(character) if !character.is_control())
-            && self.modifiers.is_empty()
+            && !self
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
     }
 }
 
@@ -194,6 +288,14 @@ pub struct KeySequence(Vec<KeyChord>);
 impl KeySequence {
     pub fn chords(&self) -> &[KeyChord] {
         &self.0
+    }
+
+    pub fn label(&self) -> String {
+        self.0
+            .iter()
+            .map(|chord| chord.label())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     fn parse(values: &[String]) -> std::result::Result<Self, ()> {
@@ -301,6 +403,12 @@ impl KeyMap {
         add(KeyScope::Global, &["space", "r"], UiAction::Refresh);
         add(KeyScope::Global, &["space", "o"], UiAction::OpenOptions);
         add(KeyScope::Global, &[":"], UiAction::OpenCommand);
+
+        // Overlays never inherit workspace actions: their owner explicitly
+        // decides which small set of close/confirm keys it accepts.
+        add(KeyScope::Overlay, &["esc"], UiAction::BackOrQuit);
+        add(KeyScope::Overlay, &["q"], UiAction::BackOrQuit);
+        add(KeyScope::Overlay, &["?"], UiAction::BackOrQuit);
 
         add(KeyScope::Composer, &["esc"], UiAction::BackOrQuit);
         add(KeyScope::Composer, &["enter"], UiAction::Submit);
@@ -439,11 +547,20 @@ impl KeyMap {
         next
     }
 
+    pub fn disabled_bindings(&self, scope: KeyScope) -> Vec<&KeySequence> {
+        self.disabled
+            .iter()
+            .filter(|(disabled_scope, _)| *disabled_scope == scope)
+            .map(|(_, sequence)| sequence)
+            .collect()
+    }
+
     pub fn effective_bindings(&self, scope: KeyScope) -> Vec<&KeyBinding> {
         // Text-owning states deliberately do not inherit global bindings:
-        // literal `i`, `Space`, `j`, etc. must remain text. They carry their
-        // own tightly constrained edit map instead.
-        let mut effective = if scope.owns_text() {
+        // literal `i`, `Space`, `j`, etc. must remain text. Overlay owners
+        // likewise never inherit background workspace actions. Both carry
+        // their own tightly constrained bindings instead.
+        let mut effective = if scope.owns_text() || scope == KeyScope::Overlay {
             Vec::new()
         } else {
             self.bindings
@@ -489,19 +606,26 @@ impl KeyMap {
                     ));
                 }
                 if scope.owns_text()
-                    && binding
-                        .sequence
-                        .chords()
-                        .first()
-                        .is_some_and(|chord| chord.is_plain_printable())
+                    && (binding.sequence.chords().len() != 1
+                        || binding
+                            .sequence
+                            .chords()
+                            .first()
+                            .is_some_and(|chord| chord.is_text_input()))
                 {
                     return Err(Error::Config(
-                        "keymap cannot bind a printable character in a text-owning scope".into(),
+                        "keymap cannot bind a printable character or sequence in a text-owning scope"
+                            .into(),
                     ));
                 }
                 if scope == KeyScope::Composer && !composer_action(binding.action) {
                     return Err(Error::Config(
                         "keymap composer scope permits only composer editing actions".into(),
+                    ));
+                }
+                if scope == KeyScope::Filter && !filter_action(binding.action) {
+                    return Err(Error::Config(
+                        "keymap filter scope permits only filter input actions".into(),
                     ));
                 }
             }
@@ -543,6 +667,24 @@ fn composer_action(action: UiAction) -> bool {
     )
 }
 
+fn filter_action(action: UiAction) -> bool {
+    matches!(
+        action,
+        UiAction::BackOrQuit
+            | UiAction::SelectPrevious
+            | UiAction::SelectNext
+            | UiAction::ActivateFocused
+            | UiAction::Complete
+            | UiAction::DeletePreviousWord
+            | UiAction::DeleteToStart
+            | UiAction::DeleteToEnd
+            | UiAction::MoveWordLeft
+            | UiAction::MoveWordRight
+            | UiAction::MoveLineStart
+            | UiAction::MoveLineEnd
+    )
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct KeymapFile {
@@ -562,36 +704,12 @@ struct KeymapFileBinding {
     disabled: bool,
 }
 
-// The v0.3 normal and insert mappers remain while M1 migrates the event router
-// one vertical slice at a time. New paths must use `KeyMap` above; these are
-// removed once all old Mode branches are cut over.
+// The legacy insert adapter remains while the composer is migrated in a later
+// vertical slice. Workspace navigation must use `KeyMap` and `InputRouter`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyAction {
-    Quit,
-    Help,
     Up,
     Down,
-    First,
-    Last,
-    PageUp,
-    PageDown,
-    Open,
-    Compose,
-    Thread,
-    React,
-    Delete,
-    MarkUnread,
-    ToggleSidebar,
-    NextPane,
-    PreviousPane,
-    Finder,
-    Search,
-    Inbox,
-    NewDm,
-    HideDm,
-    AddDmMember,
-    Theme,
-    Preview,
     Attach,
     RemoveAttachment,
     RetryAttachments,
@@ -606,47 +724,6 @@ pub enum KeyAction {
     Submit,
     Newline,
     Ignore,
-}
-
-pub fn map_normal(key: KeyEvent, awaiting_g: bool) -> KeyAction {
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        return match key.code {
-            KeyCode::Char('c') => KeyAction::Quit,
-            KeyCode::Char('t' | 'p') => KeyAction::Finder,
-            KeyCode::Char('b') => KeyAction::ToggleSidebar,
-            KeyCode::Char(']') => KeyAction::Thread,
-            KeyCode::Char('u') => KeyAction::PageUp,
-            KeyCode::Char('d') => KeyAction::PageDown,
-            KeyCode::Char('y') => KeyAction::Theme,
-            KeyCode::Char('n') => KeyAction::NewDm,
-            _ => KeyAction::Ignore,
-        };
-    }
-    match key.code {
-        KeyCode::Char('Q') => KeyAction::Quit,
-        KeyCode::Char('?') => KeyAction::Help,
-        KeyCode::Char('j') | KeyCode::Down => KeyAction::Down,
-        KeyCode::Char('k') | KeyCode::Up => KeyAction::Up,
-        KeyCode::Char('g') if awaiting_g => KeyAction::First,
-        KeyCode::Char('G') => KeyAction::Last,
-        KeyCode::PageUp => KeyAction::PageUp,
-        KeyCode::PageDown => KeyAction::PageDown,
-        KeyCode::Enter => KeyAction::Open,
-        KeyCode::Char('i') => KeyAction::Compose,
-        KeyCode::Char('r') => KeyAction::React,
-        KeyCode::Char('p') => KeyAction::Preview,
-        KeyCode::Char('/') => KeyAction::Search,
-        KeyCode::Char('I') => KeyAction::Inbox,
-        KeyCode::Char('H') => KeyAction::HideDm,
-        KeyCode::Char('A') => KeyAction::AddDmMember,
-        KeyCode::Char('D') => KeyAction::Delete,
-        KeyCode::Char('U') => KeyAction::MarkUnread,
-        KeyCode::Tab => KeyAction::NextPane,
-        KeyCode::BackTab => KeyAction::PreviousPane,
-        KeyCode::Char(':') => KeyAction::Command,
-        KeyCode::Esc => KeyAction::Escape,
-        _ => KeyAction::Ignore,
-    }
 }
 
 pub fn map_insert(key: KeyEvent) -> KeyAction {
@@ -777,6 +854,36 @@ mod tests {
         .unwrap();
         let error = KeyMap::load_from(&path).unwrap_err().to_string();
         assert!(!error.contains(hostile));
+    }
+
+    #[test]
+    fn text_scopes_reject_shifted_characters_and_sequences() {
+        let temporary = TempDir::new().unwrap();
+        let path = temporary.path().join("keymap.toml");
+        fs::write(
+            &path,
+            "[[binding]]\nscope = 'composer'\nkeys = ['X']\naction = 'submit'\n",
+        )
+        .unwrap();
+        assert!(KeyMap::load_from(&path).is_err());
+        fs::write(
+            &path,
+            "[[binding]]\nscope = 'filter'\nkeys = ['ctrl-k', 'x']\naction = 'delete-to-end'\n",
+        )
+        .unwrap();
+        assert!(KeyMap::load_from(&path).is_err());
+    }
+
+    #[test]
+    fn filter_scope_rejects_workspace_actions() {
+        let temporary = TempDir::new().unwrap();
+        let path = temporary.path().join("keymap.toml");
+        fs::write(
+            &path,
+            "[[binding]]\nscope = 'filter'\nkeys = ['ctrl-r']\naction = 'refresh'\n",
+        )
+        .unwrap();
+        assert!(KeyMap::load_from(&path).is_err());
     }
 
     #[test]

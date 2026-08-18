@@ -1,47 +1,66 @@
-use bzz::ui::keymap::{KeyAction, map_insert, map_normal};
+use bzz::ui::{
+    input::{InputContext, InputDispatch, InputRouter},
+    keymap::{KeyAction, KeyMap, UiAction, map_insert},
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+    KeyEvent::new(code, modifiers)
+}
+
 #[test]
-fn normal_keymap_has_safe_quit_and_modal_navigation() {
+fn workspace_keymap_uses_typed_navigation_and_leader_sequences() {
+    let keymap = KeyMap::builtin();
+    let mut router = InputRouter::default();
+    let workspace = InputContext::workspace();
+
     assert_eq!(
-        map_normal(
-            KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT),
-            false
+        router.dispatch(
+            &keymap,
+            workspace,
+            key(KeyCode::Char('j'), KeyModifiers::NONE)
         ),
-        KeyAction::Quit
+        InputDispatch::Action(UiAction::SelectNext)
     );
-    assert_eq!(
-        map_normal(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), false),
-        KeyAction::Down
-    );
-    assert_eq!(
-        map_normal(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), true),
-        KeyAction::First
-    );
-    assert_eq!(
-        map_normal(
-            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
-            false
+    assert!(matches!(
+        router.dispatch(
+            &keymap,
+            workspace,
+            key(KeyCode::Char('g'), KeyModifiers::NONE)
         ),
-        KeyAction::Theme
-    );
+        InputDispatch::Pending { .. }
+    ));
     assert_eq!(
-        map_normal(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE), false),
-        KeyAction::Search
-    );
-    assert_eq!(
-        map_normal(
-            KeyEvent::new(KeyCode::Char('I'), KeyModifiers::SHIFT),
-            false
+        router.dispatch(
+            &keymap,
+            workspace,
+            key(KeyCode::Char('g'), KeyModifiers::NONE)
         ),
-        KeyAction::Inbox
+        InputDispatch::Action(UiAction::JumpTop)
+    );
+    assert!(matches!(
+        router.dispatch(
+            &keymap,
+            workspace,
+            key(KeyCode::Char(' '), KeyModifiers::NONE)
+        ),
+        InputDispatch::Pending { .. }
+    ));
+    assert_eq!(
+        router.dispatch(
+            &keymap,
+            workspace,
+            key(KeyCode::Char('n'), KeyModifiers::NONE)
+        ),
+        InputDispatch::Action(UiAction::OpenInbox)
     );
     assert_eq!(
-        map_normal(
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            false
+        router.dispatch(
+            &keymap,
+            workspace,
+            key(KeyCode::Char('Q'), KeyModifiers::SHIFT)
         ),
-        KeyAction::NewDm
+        InputDispatch::Owned(bzz::ui::input::InputOwner::Route)
     );
 }
 
