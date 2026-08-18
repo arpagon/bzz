@@ -4,8 +4,8 @@ use serde::Deserialize;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     process::ChildStdout,
+    sync::watch,
     task::JoinHandle,
-    time::timeout,
 };
 
 use super::{
@@ -48,6 +48,7 @@ impl RunFailure {
 
 pub struct AgentRun {
     task: JoinHandle<Result<AgentDraft, RunFailure>>,
+    cancel: watch::Sender<bool>,
 }
 
 impl AgentRun {
@@ -56,11 +57,14 @@ impl AgentRun {
     }
 
     pub async fn finish(self) -> Result<AgentDraft, RunFailure> {
-        self.task.await.unwrap_or(Err(RunFailure::Cancelled))
+        let Self { task, cancel } = self;
+        let result = task.await.unwrap_or(Err(RunFailure::Cancelled));
+        drop(cancel);
+        result
     }
 
     pub fn cancel(&self) {
-        self.task.abort();
+        let _ = self.cancel.send(true);
     }
 }
 
@@ -85,15 +89,24 @@ pub fn start(
     let cwd = configured_workdir
         .or_else(|| scratch.as_ref().map(|scratch| scratch.0.clone()))
         .ok_or(RunFailure::Failed)?;
+    let (cancel, cancelled) = watch::channel(false);
     let task = tokio::spawn(async move {
         let _scratch = scratch;
-        match executable.doctor().await {
-            Doctor::Ready => run(executable, prompt, cwd).await,
+        let mut cancelled = cancelled;
+        let doctor = tokio::select! {
+            doctor = executable.doctor() => doctor,
+            changed = cancelled.changed() => {
+                let _ = changed;
+                return Err(RunFailure::Cancelled);
+            }
+        };
+        match doctor {
+            Doctor::Ready => run(executable, prompt, cwd, cancelled).await,
             Doctor::Unavailable => Err(RunFailure::Unavailable),
             Doctor::Unsupported => Err(RunFailure::Unavailable),
         }
     });
-    Ok(AgentRun { task })
+    Ok(AgentRun { task, cancel })
 }
 
 struct ScratchDirectory(PathBuf);
@@ -108,6 +121,7 @@ async fn run(
     executable: CodexExecutable,
     prompt: String,
     cwd: PathBuf,
+    mut cancelled: watch::Receiver<bool>,
 ) -> Result<AgentDraft, RunFailure> {
     let mut child = command(&executable, &cwd)
         .spawn()
@@ -125,17 +139,26 @@ async fn run(
         tokio::io::copy(&mut stderr, &mut sink).await
     });
     let output = tokio::spawn(read_jsonl(stdout));
-    let status = timeout(RUN_TIMEOUT, child.wait()).await;
-    if status.is_err() {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
-        output.abort();
-        let _ = stderr_drain.await;
-        return Err(RunFailure::TimedOut);
-    }
-    let status = status
-        .map_err(|_| RunFailure::TimedOut)?
-        .map_err(|_| RunFailure::Failed)?;
+    let status = tokio::select! {
+        status = child.wait() => status.map_err(|_| RunFailure::Failed)?,
+        _ = tokio::time::sleep(RUN_TIMEOUT) => {
+            prompt_writer.abort();
+            output.abort();
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = stderr_drain.await;
+            return Err(RunFailure::TimedOut);
+        }
+        changed = cancelled.changed() => {
+            let _ = changed;
+            prompt_writer.abort();
+            output.abort();
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = stderr_drain.await;
+            return Err(RunFailure::Cancelled);
+        }
+    };
     let _ = prompt_writer.await;
     let _ = stderr_drain.await;
     let draft = output
