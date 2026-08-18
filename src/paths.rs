@@ -53,6 +53,10 @@ impl Paths {
         self.config_dir.join("theme.toml")
     }
 
+    pub fn keymap_file(&self) -> PathBuf {
+        self.config_dir.join("keymap.toml")
+    }
+
     pub fn database_file(&self) -> PathBuf {
         self.data_dir.join("bzz.db")
     }

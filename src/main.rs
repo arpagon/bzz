@@ -296,6 +296,7 @@ async fn run() -> Result<()> {
         Some(Command::Agent { command }) => agent_command(command, &paths, &mut config).await,
         Some(Command::Check) => {
             config.validate()?;
+            bzz::ui::keymap::KeyMap::load(&paths)?;
             let warnings = bzz::ui::theme::check(&paths, configured_theme_names(&config))?;
             for warning in warnings {
                 eprintln!("warning: {warning}");
@@ -307,6 +308,7 @@ async fn run() -> Result<()> {
         }
         Some(Command::Paths) => {
             println!("config: {}", paths.config_file().display());
+            println!("keymap: {}", paths.keymap_file().display());
             println!("theme:  {}", paths.theme_file().display());
             println!("data:   {}", paths.database_file().display());
             println!("cache:  {}", paths.cache_dir.display());
@@ -314,6 +316,11 @@ async fn run() -> Result<()> {
         }
         Some(Command::Completions { .. }) => Ok(()),
         None => {
+            // Validate keymap.toml before entering raw mode. The M1 router
+            // consumes this typed map during its vertical-slice cutover; this
+            // early load already guarantees malformed input cannot leave a
+            // user in a partially initialized terminal.
+            bzz::ui::keymap::KeyMap::load(&paths)?;
             let mut store = Store::open(paths.database_file())?;
             store.sync_config(&config)?;
             let handle = StoreHandle::spawn(store)?;
