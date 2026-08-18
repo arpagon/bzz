@@ -42,11 +42,15 @@ fn bench_store(c: &mut Criterion) {
         .sign_with_keys(&relay)
         .unwrap();
     store.apply_event(community, &metadata).unwrap();
+    let mut membership_tags = vec![
+        Tag::parse(["d", &channel.to_string()]).unwrap(),
+        Tag::parse(["p", &identity.pubkey]).unwrap(),
+    ];
+    for index in 0..1_000 {
+        membership_tags.push(Tag::parse(["p", &format!("{index:064x}")]).unwrap());
+    }
     let membership = EventBuilder::new(Kind::Custom(39_002), "")
-        .tags([
-            Tag::parse(["d", &channel.to_string()]).unwrap(),
-            Tag::parse(["p", &identity.pubkey]).unwrap(),
-        ])
+        .tags(membership_tags)
         .sign_with_keys(&relay)
         .unwrap();
     store.apply_event(community, &membership).unwrap();
@@ -91,6 +95,15 @@ fn bench_store(c: &mut Criterion) {
     });
     c.bench_function("project Inbox over 100k", |bench| {
         bench.iter(|| black_box(store.inbox_items(community, &identity.pubkey).unwrap()))
+    });
+    c.bench_function("mention candidates over 1k cached members", |bench| {
+        bench.iter(|| {
+            black_box(
+                store
+                    .mention_candidates(community, channel, &identity.pubkey, "000")
+                    .unwrap(),
+            )
+        })
     });
 }
 criterion_group!(benches, bench_store);

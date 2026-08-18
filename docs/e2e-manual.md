@@ -25,7 +25,7 @@ debug builds deliberately use separate paths and keychain services.
 
 Expected result:
 
-- version `0.2.0`;
+- version `0.3.0`;
 - config, data, and cache under `BZZ_E2E_ROOT`;
 - `configuration, theme, media, and database are valid`;
 - no secrets in `.env` or command output.
@@ -116,6 +116,39 @@ restart.
 
 **Stop here during the first session.** If sections 0–4 pass, the essential
 journey is validated.
+
+## 4.1 Mouse, mentions, and local draft assistance (optional)
+
+Use only the dedicated E2E channel and generated text. Do not invoke a model
+with production/private messages. Set `ui.mouse = "on"` or use a supported
+interactive terminal with the default `"auto"` policy. Click a timeline row,
+use the wheel, double-click a message to open its thread, click the composer,
+and quit. The selected row must match keyboard navigation and the terminal must
+restore normal text selection after exit.
+
+With a second disposable member in the same channel, type `@` in the composer,
+select that cached member, save the draft with `Esc`, restart, then send a
+generated message. Verify that the visible label remains intact and the
+published event carries exactly one lowercase `p` tag for the selected member.
+Repeat offline: candidates must come from cache and no profile/member lookup may
+be sent.
+
+The following optional assistant check creates external Codex inference egress
+through the user's separately authenticated installation; it is never required
+for the relay journey:
+
+```bash
+"$BZZ_BIN" agent add --label e2e-local-drafter
+"$BZZ_BIN" agent doctor
+```
+
+Select a generated cached message, use `:agent`, select `e2e-local-drafter`,
+and wait for the review overlay. Discard once. On a second run, accept the
+review draft and verify it appears only in the ordinary composer; quit without
+sending. Start a third run, cancel with `Esc`, then lock or switch community
+while it is running. No Nostr event, outbox row, attachment, or saved draft may
+be created by any of these actions. Remove the test profile afterward with
+`"$BZZ_BIN" agent remove <id> --yes`.
 
 ## 5. Conversation
 

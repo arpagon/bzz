@@ -1,5 +1,14 @@
-use bzz::{domain::Message, render::sanitize, ui::timeline::TimelineState};
+use bzz::{
+    domain::Message,
+    render::sanitize,
+    ui::{
+        composer::Composer,
+        hit_map::{HitMap, HitTarget},
+        timeline::TimelineState,
+    },
+};
 use criterion::{Criterion, criterion_group, criterion_main};
+use ratatui::layout::Rect;
 use std::hint::black_box;
 use uuid::Uuid;
 
@@ -33,6 +42,30 @@ fn bench_timeline(c: &mut Criterion) {
     c.bench_function("sanitize 64KiB", |bench| {
         let text = "safe text 🐝\n".repeat(5_000);
         bench.iter(|| black_box(sanitize::text(black_box(&text))))
+    });
+    c.bench_function("composer unicode insert and cursor move", |bench| {
+        bench.iter(|| {
+            let mut composer = Composer::default();
+            composer.body = "draft 🐝 ".repeat(2_000);
+            composer.cursor = composer.body.len();
+            composer.insert('x');
+            for _ in 0..100 {
+                composer.move_left();
+            }
+            black_box(composer)
+        })
+    });
+    c.bench_function("semantic hit map build and resolve 10k", |bench| {
+        bench.iter(|| {
+            let mut map = HitMap::new(1);
+            for index in 0..10_000_u16 {
+                map.push(
+                    Rect::new(0, index, 100, 1),
+                    HitTarget::TimelineMessage(format!("{index:064x}")),
+                );
+            }
+            black_box(map.hit(20, 9_999).is_some())
+        })
     });
 }
 criterion_group!(benches, bench_timeline);

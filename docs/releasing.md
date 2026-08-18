@@ -14,8 +14,9 @@
    Smoke-test both the OS credential backend and encrypted fallback before
    publishing package-manager manifests.
 
-Cache schema changes are called out in release notes. Schema v3 adds Inbox/DM
-visibility projections and SQLite FTS5. Release validation must open an upgraded
-v2 fixture on Linux, macOS, and Windows, pass the FTS integrity/rebuild check,
-and verify owner-only 30622 isolation before publishing. Downgrades restore the
-pre-migration backup rather than running reverse SQL.
+Cache schema changes are called out in release notes. Schema v4 adds bounded
+local `drafts.mentions_json` metadata. Release validation must open upgraded
+v2/v3 fixtures on Linux, macOS, and Windows, pass the FTS integrity/rebuild
+check, verify owner-only 30622 isolation, and confirm malformed stored mention
+metadata degrades to ordinary draft text before publishing. Downgrades restore
+the pre-migration backup rather than running reverse SQL.

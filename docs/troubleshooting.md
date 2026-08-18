@@ -156,10 +156,34 @@ upload. Animated PNG/WebP carrying ICC or EXIF data that cannot be removed
 without changing appearance fails closed. The relay remains authoritative and
 may enforce stricter limits.
 
+## Mouse prevents terminal selection or looks wrong
+
+Set `ui.mouse = "off"` in `config.toml` to preserve terminal text selection;
+this prevents bzz from emitting mouse-capture sequences. `"auto"` is the
+default and enables capture only in an interactive non-`dumb` terminal, while
+`"on"` is an explicit override. Button 2/3, drag selection, horizontal scroll,
+and unknown mouse events intentionally do nothing.
+
+## Local Codex assistant is unavailable
+
+The assistant is optional and never affects normal Buzz operation. Check the
+local executable and its required read-only flags without starting a model run:
+
+```sh
+bzz agent doctor
+```
+
+Install/authenticate Codex separately, then add a non-secret profile with
+`bzz agent add --label <label>`. bzz accepts only a capability-compatible local
+binary; it does not download, log in to, or receive a Codex credential. A
+configured workdir must be a canonical existing directory and remains
+read-only. `:agent` requires an unlocked identity and a selected cached message;
+its result is a review draft, not a published Buzz message.
+
 ## Broken terminal after a crash
 
-bzz installs a restoration panic hook. If the process is force-killed, run
-`reset` or `stty sane`.
+bzz installs a restoration panic hook, including mouse-capture restoration. If
+the process is force-killed, run `reset` or `stty sane`.
 
 ## Development relay
 
