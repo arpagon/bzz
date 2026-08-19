@@ -52,6 +52,23 @@ The status line distinguishes offline, authenticating, backfilling, and
 access-revoked states. Use `:reconnect`, then `:resync` if an old-timestamp
 event is missing.
 
+## Invalid keymap
+
+`bzz check` validates `keymap.toml` before the TUI enters raw mode. A malformed,
+conflicting, oversized, or text-stealing binding is rejected in full; bzz does
+not apply a partial map. Move the file aside, verify recovery, then reintroduce
+small changes:
+
+```sh
+bzz paths # copy the printed keymap path
+mv /path/from/bzz-paths/keymap.toml /path/from/bzz-paths/keymap.toml.disabled
+bzz check
+```
+
+The generated `?` help shows the effective route-local map, including disabled
+bindings. Do not bind ordinary printable Composer or filter text to workspace
+actions; that is intentionally rejected.
+
 ## Invalid or unreadable theme
 
 Validate both the selected built-ins and the optional override:

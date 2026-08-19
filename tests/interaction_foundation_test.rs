@@ -9,6 +9,7 @@ use bzz::ui::{
     state::{PresentationState, Route},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use proptest::prelude::*;
 use tempfile::TempDir;
 
 fn key(character: char) -> KeyEvent {
@@ -141,5 +142,41 @@ fn composer_text_is_owned_before_workspace_shortcuts() {
             router.dispatch(&keymap, composer, key(character)),
             InputDispatch::Owned(InputOwner::Composer)
         );
+    }
+}
+
+proptest! {
+    #[test]
+    fn printable_composer_streams_never_reach_route_actions(
+        input in proptest::collection::vec("[ -~]", 0..128),
+    ) {
+        let keymap = KeyMap::builtin();
+        let mut router = InputRouter::default();
+        let composer = InputContext {
+            composer_open: true,
+            ..InputContext::workspace()
+        };
+        for fragment in input {
+            for character in fragment.chars() {
+                prop_assert_eq!(
+                    router.dispatch(&keymap, composer, key(character)),
+                    InputDispatch::Owned(InputOwner::Composer),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn arbitrary_workspace_key_streams_keep_sequences_bounded(
+        input in proptest::collection::vec("[ -~]", 0..256),
+    ) {
+        let keymap = KeyMap::builtin();
+        let mut router = InputRouter::default();
+        for fragment in input {
+            for character in fragment.chars() {
+                let _ = router.dispatch(&keymap, InputContext::workspace(), key(character));
+                prop_assert!(router.sequence().len() <= 4);
+            }
+        }
     }
 }

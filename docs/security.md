@@ -61,6 +61,25 @@ Relay content is signature-verified and terminal controls/bidi overrides are
 replaced before rendering. Ordinary URLs remain inert. HTTP redirects are
 disabled so NIP-98 and Blossom authorization cannot cross origins.
 
+## Interaction boundary
+
+The v0.4 interaction layer is a clean-room bzz implementation: it contains no
+Concord code, assets, test fixtures, strings, or dependency. Key and mouse
+input resolves into bounded typed actions, then presentation reducers emit
+named effects. Those reducers, generated help, TestBackend functional harness,
+and hit maps have no signer, relay, HTTP client, media uploader, agent runner,
+shell, or secret-bearing configuration. `App` is the only adapter that may
+validate and execute an effect against the active community and identity.
+
+Opening Inbox detail is local presentation only and never acknowledges a
+conversation. Context, reply, read, and bulk-read operations independently
+revalidate active community, identity, membership, DM visibility, and bounded
+local context. In particular, Inbox context is a derived local view over
+`events`, not a second message authority. The Herdr acceptance runner accepts
+only release-binary paths, isolated non-secret directories, logical key events,
+and sanitized visible labels; it deliberately refuses credential-bearing
+fixture automation.
+
 ## Local Codex drafts
 
 A configured local assistant is not a Nostr identity: it has no signer, relay

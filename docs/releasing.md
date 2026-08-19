@@ -14,9 +14,15 @@
    Smoke-test both the OS credential backend and encrypted fallback before
    publishing package-manager manifests.
 
-Cache schema changes are called out in release notes. Schema v4 adds bounded
-local `drafts.mentions_json` metadata. Release validation must open upgraded
-v2/v3 fixtures on Linux, macOS, and Windows, pass the FTS integrity/rebuild
-check, verify owner-only 30622 isolation, and confirm malformed stored mention
+Cache schema changes are called out in release notes. Schema v5 adds the
+rebuildable, community/identity-scoped Inbox conversations projection while
+schema v4 added bounded local `drafts.mentions_json` metadata. Release
+validation must open upgraded v2/v3/v4 fixtures on Linux, macOS, and Windows,
+pass FTS and Inbox-projection integrity/rebuild checks, verify owner-only 30622
+isolation and Inbox identity/DM fences, and confirm malformed stored mention
 metadata degrades to ordinary draft text before publishing. Downgrades restore
 the pre-migration backup rather than running reverse SQL.
+
+For v0.4, also run the deterministic functional TUI harness in ordinary CI and
+record a controlled release-binary Herdr acceptance run (or an explicit release
+exception). See [`release-v0.4.0.md`](release-v0.4.0.md).

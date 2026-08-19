@@ -116,6 +116,20 @@ the foremost owned UI state and asks before quitting the workspace. No keymap
 binding can invoke a shell or publish without the normal human
 send/confirmation path.
 
+The accepted action names are the kebab-case forms of the generated help
+labels: route actions include `open-inbox`, `open-context-actions`,
+`activate-focused`, `compose`, `filter`, `mark-read`, `mark-unread`,
+`mark-visible-read`, and `open-canonical-context`; navigation and viewport
+actions include `select-next`, `select-previous`, `jump-top`, `jump-bottom`,
+`scroll-viewport-up`, `scroll-viewport-down`, `half-page-up`, and
+`half-page-down`. `mark-read`, `mark-unread`, `mark-visible-read`, and
+`open-canonical-context` are Inbox-only. Composer-only editing names are
+`submit`, `insert-newline`, `complete`, `delete-previous-word`,
+`delete-to-start`, `delete-to-end`, `move-word-left`, `move-word-right`,
+`move-line-start`, and `move-line-end`. Use `?` inside the relevant route as
+the authoritative effective binding list; it includes local disabled bindings
+and actions unavailable for the current selection.
+
 `[[local_agents]]` configures named, local-only Codex draft assistants. It
 contains no credentials, Nostr identity, relay URL, prompt, or output. A
 configured `workdir` must already exist, be a canonical directory, and is used

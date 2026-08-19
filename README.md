@@ -4,8 +4,8 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.3.0 adds mouse interaction, offline channel-member mentions, and
-> opt-in local draft-only Codex assistance. Protocol compatibility is pinned to
+> Status: v0.4.0 is in development with a clean-room typed interaction model
+> and conversational Inbox workspace. Protocol compatibility remains pinned to
 > Buzz `ede26863345a518ec46edd6d7692e0281883491b`.
 
 ## Build
@@ -71,9 +71,14 @@ to traverse them, `j`/`k` or `Ctrl-n`/`Ctrl-p` to change selection, and
 switcher, `Space n` opens Inbox, `Space a` opens contextual actions, `Space o`
 opens theme options, and `?` shows the generated effective-keymap help. `q`
 unwinds owned UI state and asks before
-quitting. `i` opens the ordinary composer; `@` opens cached channel-member
-completion and `Ctrl-a` adds a file while composing. `:agent` opens an
-explicitly configured local Codex draft assistant. Generate shell integration
+quitting. `i` opens the ordinary composer; in Inbox it targets the selected
+validated channel/thread without silently marking work read. Inbox uses `f` to
+cycle filters, `Enter` for detail, `o` for canonical source context, `m`/`U`
+for explicit read/unread state, and `a` for confirmed visible bulk-read. Wide
+terminals retain list/detail together; on narrow terminals `Esc` returns from
+detail to the list. `@` opens cached channel-member completion and `Ctrl-a`
+adds a file while composing. `:agent` opens an explicitly configured local
+Codex draft assistant. Generate shell integration
 with `bzz completions <shell>`. Inside the TUI, `:inbox`, `:search`, `:dm`,
 `:agent`, `:reconnect`, `:resync`, `:theme reload`, `:purge-cache`, and `:lock`
 cover the main conversation, recovery, appearance, and security operations.
@@ -110,6 +115,14 @@ The pinned real-relay journey is opt-in because it starts Docker services:
 
 ```sh
 BZZ_BUZZ_SOURCE=/path/to/block/buzz ./scripts/test-relay.sh
+```
+
+In a controlled Herdr pane with a disposable shell target, run release-TUI
+acceptance smoke scenarios (they use no identities or secrets):
+
+```sh
+BZZ_BIN="$PWD/target/release/bzz" BZZ_HERDR_PANE=<pane-id> \
+  ./scripts/test-tui-herdr.sh
 ```
 
 Tagged releases provide Linux, macOS, and Windows archives, SHA-256 checksums,

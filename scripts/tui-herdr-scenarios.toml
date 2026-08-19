@@ -1,0 +1,63 @@
+# Versioned, non-secret acceptance scenarios for scripts/test-tui-herdr.sh.
+# Automated scenarios use an empty isolated configuration. Operator scenarios
+# are documented in docs/e2e-herdr.md and require public disposable fixtures.
+version = 1
+
+[[scenario]]
+id = "startup-help-quit"
+kind = "automated"
+description = "Release binary starts with an empty isolated profile, opens generated help, and restores its terminal on normal quit."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["shift+?"]
+visible = "effective keymap"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = ["q", "y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "custom-keymap-inbox"
+kind = "automated"
+description = "An isolated custom keymap routes a sequence to Inbox without using terminal text paste."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+keymap = '''
+[[binding]]
+scope = "workspace"
+keys = ["ctrl-x", "i"]
+action = "open-inbox"
+'''
+
+[[scenario.step]]
+keys = ["ctrl-x", "i"]
+visible = "Inbox"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = ["q", "y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "operator-inbox-triage"
+kind = "operator"
+description = "Disposable non-admin Inbox fixture: narrow/wide detail, explicit and bulk read, in-place reply, canonical return, draft recovery, and locked/offline cache evidence."
+ready = "Inbox"
+exit = ""
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "opening does not acknowledge"
+
+[[scenario.step]]
+keys = ["i"]
+visible = "message"

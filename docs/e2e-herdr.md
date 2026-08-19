@@ -17,6 +17,38 @@ contents in commands, arguments, ordinary variables, logs, or screenshots.
 
 ## 1. Prepare the process
 
+### Automated release-binary smoke scenarios
+
+The versioned bzz-owned runner at `scripts/test-tui-herdr.sh` is the controlled
+acceptance smoke gate for Crossterm key encoding, generated help, custom
+keymaps, normal exit, and terminal restoration. It creates fresh owner-only
+config/data/cache directories for every automated scenario and never creates
+an identity, relay, channel, or secret-bearing configuration.
+
+Build the release binary, choose a **disposable shell pane** (not an agent or
+user's working pane), then run the default automated scenarios from a
+Herdr-managed controlling pane:
+
+```bash
+cargo build --release --locked
+export BZZ_BIN="$PWD/target/release/bzz"
+export BZZ_HERDR_PANE=w1:p2 # replace with the disposable pane ID
+./scripts/test-tui-herdr.sh --list
+./scripts/test-tui-herdr.sh
+```
+
+The runner uses `herdr pane send-keys` only; it never uses `send-text` to
+operate bzz. Its manifest is
+[`../scripts/tui-herdr-scenarios.toml`](../scripts/tui-herdr-scenarios.toml).
+Run a named automated scenario with
+`./scripts/test-tui-herdr.sh --scenario startup-help-quit`. `--all` reports an
+operator scenario as manual rather than trying to access fixture credentials or
+content. Preserve only sanitized visible output and the normal-exit marker;
+Inbox/relay authority is established by the manual store/relay postconditions
+below.
+
+### Manual disposable-fixture journey
+
 Create `.env` from the template and set only non-secret values:
 
 ```bash
@@ -260,6 +292,14 @@ Then quit with `q` followed by `y`, run `identity restore-backup`, complete the 
 manually, and wait for `NORMAL · online` again.
 
 ### Inbox, workspace DMs, and search
+
+This is the `operator-inbox-triage` manifest scenario. Run it only with the
+non-admin disposable identity, relay, channel, and generated fixture described
+in the manual plan. The visible screen is supporting evidence; after explicit
+or bulk read, reply, restart, and relay acknowledgement, query the isolated
+SQLite cache and pinned relay as the authoritative postconditions. Do not put
+credentials, private content, or real identifiers in the manifest, shell
+arguments, environment, output, or screenshots.
 
 Use independent disposable panes/databases and generic generated profiles.
 Herdr may type public recipient labels and search terms, but never private
