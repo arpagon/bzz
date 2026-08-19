@@ -1,8 +1,7 @@
 # bzz v0.4.0 (release draft)
 
-> **Status:** unreleased. Do not treat this document as a tag, artifact, or
-> compatibility attestation until its validation checklist has recorded a
-> release-candidate commit and evidence.
+> **Status:** published as [`v0.4.0`](https://github.com/arpagon/bzz/releases/tag/v0.4.0)
+> on 2026-08-19. Release and artifact verification evidence is recorded below.
 
 `v0.4.0` is a clean-room interaction and Inbox cutover. It retains bzz's
 `MIT OR Apache-2.0` license and the pinned Buzz protocol revision
@@ -69,8 +68,25 @@ publish, or sign.
   for this release. `cargo deny` has only the configured duplicate-version
   warnings.
 
-After the tag workflow finishes, record clean-VM checksum, archive, SBOM, and
-provenance verification here before publishing any package-manager manifests.
+### Published artifact verification
+
+- The tagged release targets `e83d346a356553c719ed71ba5d7760777b99f2b9` and
+  the release workflow passed: [run 32274135708](https://github.com/arpagon/bzz/actions/runs/32274135708).
+  It built and smoke-tested release binaries on Linux, macOS (Intel and ARM),
+  and Windows hosted runners.
+- All six entries in the downloaded `sha256.sum` verified successfully:
+  five platform archives and `source.tar.gz`.
+- All 17 attested release subjects (archives, per-file hashes, installers,
+  SBOM, Homebrew formula, manifest, and source) verified with
+  `gh attestation verify`, scoped to `arpagon/bzz`,
+  `.github/workflows/release.yml`, and `refs/tags/v0.4.0`.
+- The downloaded CycloneDX SBOM identifies `bzz 0.4.0` under
+  `MIT OR Apache-2.0` and the exact pinned Buzz revision. The downloaded Linux
+  archive unpacked cleanly and its binary reported `bzz 0.4.0`.
+
+Hosted CI supplies the supported-platform clean-runner coverage; a separate
+operator clean-VM installer/keychain exercise remains the prerequisite for
+publishing any package-manager manifest.
 
 Required commands are:
 
