@@ -46,6 +46,9 @@ pub struct ComposerTarget {
     pub community_id: Uuid,
     pub channel_id: Uuid,
     pub thread_root_id: Option<String>,
+    /// The validated parent event for an ordinary reply. Root-only replies use
+    /// the root as their parent; a top-level target has no parent.
+    pub parent_event_id: Option<String>,
 }
 
 /// Identity-based selection is independent from pixel/row scrolling. Lists may
@@ -127,6 +130,9 @@ pub struct PresentationState {
     pub focus: FocusSurface,
     pub overlay: Option<Overlay>,
     pub composer_target: Option<ComposerTarget>,
+    /// Canonical context opened from Inbox returns here on the next back
+    /// action. It is presentation-only and never changes message authority.
+    pub inbox_return: bool,
 }
 
 impl PresentationState {
@@ -134,6 +140,22 @@ impl PresentationState {
         self.route = Route::Inbox;
         self.focus = FocusSurface::InboxList;
         self.overlay = None;
+        self.inbox_return = false;
+    }
+
+    pub fn open_inbox_context(&mut self, detail: bool) {
+        self.route = Route::Workspace;
+        self.focus = if detail {
+            FocusSurface::Context
+        } else {
+            FocusSurface::Timeline
+        };
+        self.overlay = None;
+        self.inbox_return = true;
+    }
+
+    pub fn clear_inbox_return(&mut self) {
+        self.inbox_return = false;
     }
 
     /// Returns true when this call consumed a route transition. The caller may
@@ -148,6 +170,10 @@ impl PresentationState {
         if self.route == Route::Inbox {
             self.route = Route::Workspace;
             self.focus = FocusSurface::Timeline;
+            return true;
+        }
+        if self.inbox_return {
+            self.enter_inbox();
             return true;
         }
         false
@@ -243,12 +269,27 @@ mod tests {
             community_id: Uuid::new_v4(),
             channel_id: Uuid::new_v4(),
             thread_root_id: None,
+            parent_event_id: None,
         });
         assert!(state.back());
         assert!(state.back());
         assert_eq!(state.route, Route::Workspace);
         assert_eq!(state.focus, FocusSurface::Timeline);
         assert!(!state.back());
+    }
+
+    #[test]
+    fn canonical_inbox_context_returns_without_reselecting_work() {
+        let mut state = PresentationState::default();
+        state.enter_inbox();
+        state.open_inbox_context(true);
+        assert_eq!(state.route, Route::Workspace);
+        assert_eq!(state.focus, FocusSurface::Context);
+        assert!(state.inbox_return);
+        assert!(state.back());
+        assert_eq!(state.route, Route::Inbox);
+        assert_eq!(state.focus, FocusSurface::InboxList);
+        assert!(!state.inbox_return);
     }
 
     #[test]

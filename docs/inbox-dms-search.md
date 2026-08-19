@@ -14,10 +14,15 @@ surfaces added after `v0.1.0`. Protocol behavior remains pinned to Buzz
 | Hide the selected DM | — | `:dm hide` |
 | Add one DM participant | — | `:dm add` |
 
-Inbox uses `j/k`, `f` to cycle filters, `Enter` for detail, `o` to open the
-source, `i` to open and reply, `m` to mark read, `U` to toggle a local unread
-override, and `a` to mark every loaded row read. On narrow terminals, `Esc`
-returns from detail before closing Inbox.
+Inbox is a route-local workspace. `j/k` selects list work, `f` cycles filters,
+and `Enter` focuses detail (or opens the narrow detail screen). `i` opens the
+ordinary composer directly at the validated Inbox channel/thread without
+silently changing read state; `o` opens canonical source context and `q`/`Esc`
+returns to the same Inbox selection. `m` marks the selected conversation read,
+`U` toggles its local unread override, and `a` marks only currently visible
+rows read after confirmation when more than one row is affected. Wide terminals
+show list and detail together; narrow terminals return from detail to the list
+before leaving Inbox.
 
 Search accepts ordinary text and `from:`, `in:`, `after:YYYY-MM-DD`, and
 `before:YYYY-MM-DD`. Dates use local midnight; `after:` is inclusive and

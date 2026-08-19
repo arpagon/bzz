@@ -94,6 +94,21 @@ impl InboxService {
             .await
     }
 
+    pub async fn conversation_context(
+        &self,
+        identity_pubkey: &str,
+        conversation_id: &str,
+    ) -> Result<Vec<crate::domain::Message>> {
+        let identity_pubkey = identity_pubkey.to_owned();
+        let conversation_id = conversation_id.to_owned();
+        let community_id = self.community_id;
+        self.store
+            .call(move |store| {
+                store.inbox_conversation_context(community_id, &identity_pubkey, &conversation_id)
+            })
+            .await
+    }
+
     async fn query_pages(&self, mut filter: QueryFilter, pages: usize) -> Result<Vec<Event>> {
         const PAGE_SIZE: u32 = 100;
         let mut result = Vec::new();

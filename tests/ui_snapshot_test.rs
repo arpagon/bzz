@@ -267,6 +267,19 @@ fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
         latest_draft_at: None,
         forced_unread: false,
     }];
+    let messages = vec![Message {
+        event_id: "c".repeat(64),
+        channel_id: channel,
+        pubkey: pubkey.clone(),
+        created_at: 1,
+        content: "bounded detail body".into(),
+        attachments: vec![],
+        root_event_id: None,
+        parent_event_id: None,
+        deleted: false,
+        pending: false,
+        rejected: None,
+    }];
     let mut inbox_state = InboxState::default();
     inbox_state.reconcile(&items);
     let theme = Theme::default();
@@ -274,7 +287,19 @@ fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
     terminal
         .draw(|frame| {
             let area = frame.area();
-            inbox::render(frame, area, &items, &profiles, &inbox_state, &theme, false);
+            inbox::render(
+                frame,
+                area,
+                &mut inbox_state,
+                inbox::InboxView {
+                    items: &items,
+                    messages: &messages,
+                    profiles: &profiles,
+                    focus: bzz::ui::state::FocusSurface::InboxList,
+                    theme: &theme,
+                    loading: false,
+                },
+            );
         })
         .unwrap();
     let wide = terminal
@@ -286,6 +311,8 @@ fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
         .collect::<String>();
     assert!(wide.contains("Inbox"));
     assert!(wide.contains("Generic Person"));
+    assert!(wide.contains("first unread"));
+    assert!(wide.contains("bounded detail body"));
     assert!(!wide.contains('\u{1b}'));
 
     let search_state = SearchState {

@@ -13,6 +13,10 @@ use crate::ui::{
 pub struct ActionContext {
     pub route: Route,
     pub focus: FocusSurface,
+    pub has_inbox_selection: bool,
+    pub inbox_has_context: bool,
+    pub inbox_can_reply: bool,
+    pub inbox_visible_count: usize,
     pub has_channel: bool,
     pub has_selected_event: bool,
     pub selected_event_is_own: bool,
@@ -72,6 +76,8 @@ pub const fn keymap_allows(scope: KeyScope, action: UiAction) -> bool {
         KeyScope::Global | KeyScope::Workspace => !matches!(
             action,
             UiAction::MarkRead
+                | UiAction::MarkVisibleRead
+                | UiAction::OpenCanonicalContext
                 | UiAction::Submit
                 | UiAction::InsertNewline
                 | UiAction::Complete
@@ -90,10 +96,6 @@ pub const fn keymap_allows(scope: KeyScope, action: UiAction) -> bool {
 /// before unavailable ones, which leaves unavailable operations discoverable
 /// without making selection execute or broaden an operation.
 pub fn derive(context: ActionContext) -> Vec<ContextAction> {
-    if context.route != Route::Workspace {
-        return Vec::new();
-    }
-
     let mut enabled = Vec::new();
     let mut unavailable = Vec::new();
     let mut add = |entry: ContextAction| {
@@ -104,8 +106,45 @@ pub fn derive(context: ActionContext) -> Vec<ContextAction> {
         }
     };
 
-    match context.focus {
-        FocusSurface::Communities => {
+    match (context.route, context.focus) {
+        (Route::Inbox, FocusSurface::InboxList | FocusSurface::InboxDetail) => {
+            add(inbox_action(
+                context,
+                UiAction::Compose,
+                "reply in place",
+                context.inbox_can_reply,
+                "selected Inbox work has no reply target",
+            ));
+            add(inbox_action(
+                context,
+                UiAction::OpenCanonicalContext,
+                "open source context",
+                context.inbox_has_context,
+                "selected Inbox work has no source context",
+            ));
+            add(inbox_action(
+                context,
+                UiAction::MarkRead,
+                "mark read",
+                context.has_inbox_selection,
+                "select Inbox work first",
+            ));
+            add(inbox_action(
+                context,
+                UiAction::MarkUnread,
+                "mark unread",
+                context.has_inbox_selection,
+                "select Inbox work first",
+            ));
+            add(inbox_action(
+                context,
+                UiAction::MarkVisibleRead,
+                "mark visible rows read",
+                context.inbox_visible_count > 0,
+                "no Inbox rows are visible",
+            ));
+        }
+        (Route::Workspace, FocusSurface::Communities) => {
             add(ContextAction::enabled(
                 UiAction::ActivateFocused,
                 "open community",
@@ -115,7 +154,7 @@ pub fn derive(context: ActionContext) -> Vec<ContextAction> {
                 "workspace options",
             ));
         }
-        FocusSurface::Channels => {
+        (Route::Workspace, FocusSurface::Channels) => {
             add(ContextAction::enabled(
                 UiAction::ActivateFocused,
                 "open channel",
@@ -130,7 +169,7 @@ pub fn derive(context: ActionContext) -> Vec<ContextAction> {
                 "find channel or DM",
             ));
         }
-        FocusSurface::Timeline | FocusSurface::Context => {
+        (Route::Workspace, FocusSurface::Timeline | FocusSurface::Context) => {
             add(channel_action(context, UiAction::Compose, "reply"));
             add(event_action(
                 context,
@@ -154,11 +193,29 @@ pub fn derive(context: ActionContext) -> Vec<ContextAction> {
             ));
             add(media_action(context));
         }
-        FocusSurface::InboxList | FocusSurface::InboxDetail => {}
+        _ => {}
     }
 
     enabled.extend(unavailable);
     enabled
+}
+
+const fn inbox_action(
+    context: ActionContext,
+    action: UiAction,
+    label: &'static str,
+    available: bool,
+    missing_reason: &'static str,
+) -> ContextAction {
+    if !context.has_inbox_selection {
+        ContextAction::unavailable(action, label, "select Inbox work first")
+    } else if !available {
+        ContextAction::unavailable(action, label, missing_reason)
+    } else if matches!(action, UiAction::Compose) && !context.can_publish {
+        ContextAction::unavailable(action, label, "identity is locked or unavailable")
+    } else {
+        ContextAction::enabled(action, label)
+    }
 }
 
 const fn channel_action(
@@ -288,6 +345,10 @@ mod tests {
         ActionContext {
             route: Route::Workspace,
             focus: FocusSurface::Timeline,
+            has_inbox_selection: false,
+            inbox_has_context: false,
+            inbox_can_reply: false,
+            inbox_visible_count: 0,
             has_channel: true,
             has_selected_event: true,
             selected_event_is_own: false,
@@ -315,6 +376,39 @@ mod tests {
             Some("only your own message can be deleted")
         );
         assert!(react < delete);
+    }
+
+    #[test]
+    fn inbox_actions_keep_read_and_context_explicit() {
+        let actions = derive(ActionContext {
+            route: Route::Inbox,
+            focus: FocusSurface::InboxList,
+            has_inbox_selection: true,
+            inbox_has_context: true,
+            inbox_can_reply: true,
+            inbox_visible_count: 2,
+            has_channel: false,
+            has_selected_event: false,
+            selected_event_is_own: false,
+            selected_event_has_media: false,
+            context_open: false,
+            can_publish: true,
+        });
+        assert!(
+            actions
+                .iter()
+                .any(|entry| { entry.enabled && entry.action == UiAction::OpenCanonicalContext })
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|entry| entry.enabled && entry.action == UiAction::MarkRead)
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|entry| entry.enabled && entry.action == UiAction::MarkVisibleRead)
+        );
     }
 
     #[test]

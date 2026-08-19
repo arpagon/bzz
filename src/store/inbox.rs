@@ -4,7 +4,7 @@ use rusqlite::{OptionalExtension as _, Transaction, params};
 use uuid::Uuid;
 
 use crate::{
-    domain::{InboxCategory, InboxCursor, InboxItem, InboxPage},
+    domain::{InboxCategory, InboxCursor, InboxItem, InboxPage, Message},
     error::{Error, Result},
     render::sanitize,
     store::{Store, events::u64_to_i64},
@@ -105,6 +105,61 @@ impl Store {
             )?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
+    }
+
+    /// Load a bounded, still-authorized context around the projection's stable
+    /// unread anchor (or latest event). Event bodies remain authoritative
+    /// `events` rows; this does not turn the Inbox projection into a store.
+    pub fn inbox_conversation_context(
+        &self,
+        community_id: Uuid,
+        identity_pubkey: &str,
+        conversation_id: &str,
+    ) -> Result<Vec<Message>> {
+        if !self.inbox_identity_matches(community_id, identity_pubkey)?
+            || !valid_conversation_id(conversation_id)
+        {
+            return Ok(Vec::new());
+        }
+        let row = self
+            .connection
+            .query_row(
+                "SELECT p.channel_id,p.thread_root_id,
+                    COALESCE(p.first_unread_event_id,p.latest_event_id)
+             FROM inbox_conversations p
+             JOIN channels c ON c.community_id=p.community_id AND c.channel_id=p.channel_id
+             WHERE p.community_id=?1 AND p.identity_pubkey=?2 AND p.conversation_id=?3
+               AND c.is_member=1
+               AND NOT EXISTS(
+                 SELECT 1 FROM dm_visibility v WHERE c.channel_type='dm'
+                   AND v.community_id=p.community_id AND v.identity_pubkey=?2
+                   AND v.channel_id=p.channel_id
+               )",
+                params![community_id.to_string(), identity_pubkey, conversation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((Some(channel), root, Some(anchor))) = row else {
+            return Ok(Vec::new());
+        };
+        let Ok(channel_id) = Uuid::parse_str(&channel) else {
+            return Ok(Vec::new());
+        };
+        if !valid_event_id(&anchor) || root.as_ref().is_some_and(|value| !valid_event_id(value)) {
+            return Ok(Vec::new());
+        }
+        match root {
+            Some(root) => {
+                self.thread_around(community_id, channel_id, &root, &anchor, EVENT_WINDOW_CAP)
+            }
+            None => self.messages_around(community_id, channel_id, &anchor, EVENT_WINDOW_CAP),
+        }
     }
 
     pub(crate) fn mark_inbox_projection_dirty(&self, community_id: Uuid) -> Result<()> {

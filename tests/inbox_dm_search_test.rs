@@ -138,6 +138,23 @@ fn dm_metadata_and_owner_visibility_are_distinct() {
         limit: 20,
     };
     let own = fixture.own.public_key().to_hex();
+    let conversation_id = format!("dm:{channel}");
+    assert!(
+        fixture
+            .store
+            .inbox_items(fixture.community, &own)
+            .unwrap()
+            .iter()
+            .any(|item| item.conversation_id == conversation_id)
+    );
+    assert_eq!(
+        fixture
+            .store
+            .inbox_conversation_context(fixture.community, &own, &conversation_id)
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(
         fixture
             .store
@@ -178,6 +195,14 @@ fn dm_metadata_and_owner_visibility_are_distinct() {
             .unwrap()
             .is_empty(),
         "viewer-hidden DMs must not surface from local FTS"
+    );
+    assert!(
+        fixture
+            .store
+            .inbox_conversation_context(fixture.community, &own, &conversation_id)
+            .unwrap()
+            .is_empty(),
+        "viewer-hidden DMs must not surface through Inbox detail"
     );
 
     let foreign = Keys::generate();
@@ -543,7 +568,17 @@ fn inbox_projection_is_bounded_cursor_stable_and_not_starved_by_one_dm() {
         .unwrap();
     assert_eq!(dm_item.unread_count, 80);
     assert_eq!(dm_item.first_unread_at, Some(100));
-    assert!(dm_item.first_unread_event_id.is_some());
+    let unread_anchor = dm_item.first_unread_event_id.clone().unwrap();
+    let context = fixture
+        .store
+        .inbox_conversation_context(fixture.community, &own, &dm_id)
+        .unwrap();
+    assert!(context.len() <= 64);
+    assert!(
+        context
+            .iter()
+            .any(|message| message.event_id == unread_anchor)
+    );
 
     fixture.message(&author, dm, "newest DM", None, false, 300);
     let refreshed = fixture.store.inbox_items(fixture.community, &own).unwrap();

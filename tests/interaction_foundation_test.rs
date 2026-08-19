@@ -5,7 +5,7 @@ use bzz::ui::{
     action::{WorkspaceEffect, WorkspaceState, reduce_workspace},
     actions::{ActionContext, ActionMenu, derive as derive_actions},
     input::{InputContext, InputDispatch, InputOwner, InputRouter},
-    keymap::{KeyMap, UiAction},
+    keymap::{KeyMap, KeyScope, UiAction},
     state::{PresentationState, Route},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -77,6 +77,10 @@ fn leader_context_actions_are_derived_before_any_effect_executes() {
     let mut menu = ActionMenu::new(derive_actions(ActionContext {
         route: Route::Workspace,
         focus: bzz::ui::state::FocusSurface::Timeline,
+        has_inbox_selection: false,
+        inbox_has_context: false,
+        inbox_can_reply: false,
+        inbox_visible_count: 0,
         has_channel: true,
         has_selected_event: true,
         selected_event_is_own: false,
@@ -96,6 +100,31 @@ fn leader_context_actions_are_derived_before_any_effect_executes() {
     );
     menu.move_by(1);
     assert!(menu.selected().is_some());
+}
+
+#[test]
+fn inbox_scope_routes_only_explicit_triage_effects() {
+    let keymap = KeyMap::builtin();
+    let context = InputContext {
+        overlay_open: false,
+        composer_completion_open: false,
+        composer_open: false,
+        filter_open: false,
+        route_scope: KeyScope::Inbox,
+    };
+    let mut router = InputRouter::default();
+    assert_eq!(
+        router.dispatch(&keymap, context, key('m')),
+        InputDispatch::Action(UiAction::MarkRead)
+    );
+    assert_eq!(
+        router.dispatch(&keymap, context, key('o')),
+        InputDispatch::Action(UiAction::OpenCanonicalContext)
+    );
+    assert_eq!(
+        router.dispatch(&keymap, context, key('a')),
+        InputDispatch::Action(UiAction::MarkVisibleRead)
+    );
 }
 
 #[test]

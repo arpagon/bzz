@@ -311,8 +311,12 @@ databases. Never use the production owner identity.
 2. Press `Space n` on A. The mention/thread must appear once even after reconnect;
    the DM, a saved draft, and any generated needs-action fixture use their
    corresponding filters.
-3. Use `Enter`, `o`, and `i`; exact channel/thread context and the existing
-   composer must open. Use `m`, `U`, and `a`; restart and confirm state.
+3. Verify wide list/detail and narrow list→detail transitions. `Enter` must
+   not acknowledge work. `i` opens the ordinary composer at the selected
+   channel/thread without leaving Inbox; `o` opens exact canonical context and
+   `q` returns to the same selected conversation. Use `m`, `U`, and `a`;
+   `a` must confirm when it affects multiple visible rows. Restart and confirm
+   state.
 4. Repeat while offline/locked. Cached rows remain, no network call occurs, and
    mutations that require signing remain unavailable.
 

@@ -55,6 +55,8 @@ pub enum UiAction {
     Delete,
     MarkUnread,
     MarkRead,
+    MarkVisibleRead,
+    OpenCanonicalContext,
     Preview,
     Submit,
     InsertNewline,
@@ -109,6 +111,8 @@ impl UiAction {
             Self::Delete => "delete",
             Self::MarkUnread => "mark unread",
             Self::MarkRead => "mark read",
+            Self::MarkVisibleRead => "mark visible rows read",
+            Self::OpenCanonicalContext => "open canonical context",
             Self::Preview => "preview media",
             Self::Submit => "send",
             Self::InsertNewline => "insert newline",
@@ -415,6 +419,14 @@ impl KeyMap {
         add(KeyScope::Overlay, &["esc"], UiAction::BackOrQuit);
         add(KeyScope::Overlay, &["q"], UiAction::BackOrQuit);
         add(KeyScope::Overlay, &["?"], UiAction::BackOrQuit);
+
+        // Inbox owns its personal-work operations. These scoped bindings do
+        // not apply to a workspace timeline or any text-owning input.
+        add(KeyScope::Inbox, &["f"], UiAction::Filter);
+        add(KeyScope::Inbox, &["o"], UiAction::OpenCanonicalContext);
+        add(KeyScope::Inbox, &["m"], UiAction::MarkRead);
+        add(KeyScope::Inbox, &["U"], UiAction::MarkUnread);
+        add(KeyScope::Inbox, &["a"], UiAction::MarkVisibleRead);
 
         add(KeyScope::Composer, &["esc"], UiAction::BackOrQuit);
         add(KeyScope::Composer, &["enter"], UiAction::Submit);

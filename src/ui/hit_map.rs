@@ -18,6 +18,8 @@ pub enum HitTarget {
     FinderChannel(String),
     Theme(String),
     Reaction(usize),
+    InboxList,
+    InboxDetail,
     InboxItem(String),
     SearchResult(String),
     DmCandidate(String),

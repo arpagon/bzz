@@ -120,6 +120,132 @@ pub enum WorkspaceEffect {
 }
 
 /// Reduce one action using only presentation and local workspace facts.
+/// Local Inbox-route state used by the reducer. Conversation data, event
+/// bodies, and services stay outside this type; it only describes focus and a
+/// narrow-screen detail transition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InboxWorkspaceState {
+    pub presentation: PresentationState,
+    pub narrow_layout: bool,
+    pub narrow_detail: bool,
+    pub detail_available: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InboxEffect {
+    None,
+    MoveSelection(isize),
+    MoveSelectionToEdge { last: bool },
+    ScrollList(ViewportScroll),
+    ScrollDetail(ViewportScroll),
+    CycleFilter,
+    LoadDetail,
+    OpenComposer,
+    OpenCanonicalContext,
+    MarkRead,
+    MarkUnread,
+    ConfirmMarkVisibleRead,
+    OpenContextActions,
+    Refresh,
+    RequestQuitConfirmation,
+    Unavailable(UiAction),
+}
+
+/// Reduce an Inbox route interaction without accessing messages, a store, a
+/// signer, or a relay. The application performs the named effect only after
+/// validating its selected conversation.
+pub fn reduce_inbox(state: &mut InboxWorkspaceState, action: UiAction) -> InboxEffect {
+    match action {
+        UiAction::BackOrQuit => {
+            if state.presentation.overlay.take().is_some() {
+                InboxEffect::None
+            } else if state.narrow_layout && state.narrow_detail {
+                state.narrow_detail = false;
+                state.presentation.set_inbox_focus(false);
+                InboxEffect::None
+            } else if state.presentation.back() {
+                InboxEffect::None
+            } else {
+                InboxEffect::RequestQuitConfirmation
+            }
+        }
+        UiAction::OpenHelp => {
+            state.presentation.open_overlay(Overlay::Help);
+            InboxEffect::None
+        }
+        UiAction::NextFocus => {
+            if state.detail_available {
+                state
+                    .presentation
+                    .set_inbox_focus(state.presentation.focus != FocusSurface::InboxDetail);
+            }
+            InboxEffect::None
+        }
+        UiAction::PreviousFocus => {
+            if state.detail_available {
+                state
+                    .presentation
+                    .set_inbox_focus(state.presentation.focus == FocusSurface::InboxList);
+            }
+            InboxEffect::None
+        }
+        UiAction::SelectPrevious => match state.presentation.focus {
+            FocusSurface::InboxList => InboxEffect::MoveSelection(-1),
+            FocusSurface::InboxDetail => InboxEffect::ScrollDetail(ViewportScroll::Lines(-1)),
+            _ => InboxEffect::None,
+        },
+        UiAction::SelectNext => match state.presentation.focus {
+            FocusSurface::InboxList => InboxEffect::MoveSelection(1),
+            FocusSurface::InboxDetail => InboxEffect::ScrollDetail(ViewportScroll::Lines(1)),
+            _ => InboxEffect::None,
+        },
+        UiAction::JumpTop => match state.presentation.focus {
+            FocusSurface::InboxList => InboxEffect::MoveSelectionToEdge { last: false },
+            FocusSurface::InboxDetail => InboxEffect::ScrollDetail(ViewportScroll::HalfPage(-1)),
+            _ => InboxEffect::None,
+        },
+        UiAction::JumpBottom => match state.presentation.focus {
+            FocusSurface::InboxList => InboxEffect::MoveSelectionToEdge { last: true },
+            FocusSurface::InboxDetail => InboxEffect::ScrollDetail(ViewportScroll::HalfPage(1)),
+            _ => InboxEffect::None,
+        },
+        UiAction::ScrollViewportUp => match state.presentation.focus {
+            FocusSurface::InboxList => InboxEffect::ScrollList(ViewportScroll::Lines(-1)),
+            FocusSurface::InboxDetail => InboxEffect::ScrollDetail(ViewportScroll::Lines(-1)),
+            _ => InboxEffect::None,
+        },
+        UiAction::ScrollViewportDown => match state.presentation.focus {
+            FocusSurface::InboxList => InboxEffect::ScrollList(ViewportScroll::Lines(1)),
+            FocusSurface::InboxDetail => InboxEffect::ScrollDetail(ViewportScroll::Lines(1)),
+            _ => InboxEffect::None,
+        },
+        UiAction::HalfPageUp => match state.presentation.focus {
+            FocusSurface::InboxList => InboxEffect::ScrollList(ViewportScroll::HalfPage(-1)),
+            FocusSurface::InboxDetail => InboxEffect::ScrollDetail(ViewportScroll::HalfPage(-1)),
+            _ => InboxEffect::None,
+        },
+        UiAction::HalfPageDown => match state.presentation.focus {
+            FocusSurface::InboxList => InboxEffect::ScrollList(ViewportScroll::HalfPage(1)),
+            FocusSurface::InboxDetail => InboxEffect::ScrollDetail(ViewportScroll::HalfPage(1)),
+            _ => InboxEffect::None,
+        },
+        UiAction::ActivateFocused => {
+            state.presentation.set_inbox_focus(true);
+            state.narrow_detail = state.narrow_layout;
+            InboxEffect::LoadDetail
+        }
+        UiAction::Filter => InboxEffect::CycleFilter,
+        UiAction::Compose => InboxEffect::OpenComposer,
+        UiAction::OpenCanonicalContext => InboxEffect::OpenCanonicalContext,
+        UiAction::MarkRead => InboxEffect::MarkRead,
+        UiAction::MarkUnread => InboxEffect::MarkUnread,
+        UiAction::MarkVisibleRead => InboxEffect::ConfirmMarkVisibleRead,
+        UiAction::OpenContextActions => InboxEffect::OpenContextActions,
+        UiAction::Refresh => InboxEffect::Refresh,
+        unsupported => InboxEffect::Unavailable(unsupported),
+    }
+}
+
 pub fn reduce_workspace(state: &mut WorkspaceState, action: UiAction) -> WorkspaceEffect {
     match action {
         UiAction::BackOrQuit => {
@@ -257,7 +383,10 @@ mod tests {
         state::{FocusSurface, Overlay, PresentationState, Route},
     };
 
-    use super::{ViewportScroll, WorkspaceEffect, WorkspaceState, reduce_workspace};
+    use super::{
+        InboxEffect, InboxWorkspaceState, ViewportScroll, WorkspaceEffect, WorkspaceState,
+        reduce_inbox, reduce_workspace,
+    };
 
     fn state() -> WorkspaceState {
         WorkspaceState::new(PresentationState::default(), 0, 3, true, true, false)
@@ -326,6 +455,36 @@ mod tests {
             reduce_workspace(&mut state, UiAction::MarkRead),
             WorkspaceEffect::Unavailable(UiAction::MarkRead)
         );
+    }
+
+    #[test]
+    fn inbox_route_uses_named_effects_and_never_acknowledges_on_open() {
+        let mut presentation = PresentationState::default();
+        presentation.enter_inbox();
+        let mut state = InboxWorkspaceState {
+            presentation,
+            narrow_layout: true,
+            narrow_detail: true,
+            detail_available: true,
+        };
+        assert_eq!(
+            reduce_inbox(&mut state, UiAction::ActivateFocused),
+            InboxEffect::LoadDetail
+        );
+        assert_eq!(
+            reduce_inbox(&mut state, UiAction::Compose),
+            InboxEffect::OpenComposer
+        );
+        assert_eq!(
+            reduce_inbox(&mut state, UiAction::OpenCanonicalContext),
+            InboxEffect::OpenCanonicalContext
+        );
+        assert_eq!(
+            reduce_inbox(&mut state, UiAction::BackOrQuit),
+            InboxEffect::None
+        );
+        assert!(!state.narrow_detail);
+        assert_eq!(state.presentation.route, Route::Inbox);
     }
 
     #[test]

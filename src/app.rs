@@ -43,7 +43,10 @@ use crate::{
     store::writer::StoreHandle,
     sync::{outbox, read_state},
     ui::{
-        action::{ViewportScroll, WorkspaceEffect, WorkspaceState, reduce_workspace},
+        action::{
+            InboxEffect, InboxWorkspaceState, ViewportScroll, WorkspaceEffect, WorkspaceState,
+            reduce_inbox, reduce_workspace,
+        },
         actions::{ActionContext, ActionMenu, derive as derive_actions},
         composer::Composer,
         dm_picker::DmPickerState,
@@ -69,13 +72,13 @@ enum Mode {
     Finder,
     Reaction,
     ConfirmDelete,
+    ConfirmInboxRead,
     Command,
     Theme,
     ConfirmQuit,
     MediaPreview,
     Attachment,
     SaveAttachment,
-    Inbox,
     Search,
     DmPicker,
     AgentPicker,
@@ -188,6 +191,11 @@ enum Background {
         community: Uuid,
         items: Vec<InboxItem>,
     },
+    InboxDetailLoaded {
+        community: Uuid,
+        conversation_id: String,
+        messages: Vec<Message>,
+    },
     SearchLoaded {
         community: Uuid,
         generation: u64,
@@ -230,9 +238,13 @@ pub struct App {
     command: String,
     attachment_input: String,
     inbox_items: Vec<InboxItem>,
+    inbox_messages: Vec<Message>,
     inbox_state: InboxState,
     inbox_loading: bool,
+    inbox_detail_loading: bool,
     inbox_task: Option<tokio::task::JoinHandle<()>>,
+    inbox_detail_task: Option<tokio::task::JoinHandle<()>>,
+    pending_inbox_read: Vec<InboxItem>,
     search_state: SearchState,
     search_dirty_since: Option<Instant>,
     search_task: Option<tokio::task::JoinHandle<()>>,
@@ -349,9 +361,13 @@ impl App {
             command: String::new(),
             attachment_input: String::new(),
             inbox_items: Vec::new(),
+            inbox_messages: Vec::new(),
             inbox_state: InboxState::default(),
             inbox_loading: false,
+            inbox_detail_loading: false,
             inbox_task: None,
+            inbox_detail_task: None,
+            pending_inbox_read: Vec::new(),
             search_state: SearchState::default(),
             search_dirty_since: None,
             search_task: None,
@@ -431,7 +447,7 @@ impl App {
                 background=self.background_rx.recv()=>if let Some(event)=background{match event{
                     Background::Changed=>{
                         self.cache_dirty=true;
-                        if self.mode==Mode::Inbox {
+                        if self.presentation.route == Route::Inbox {
                             self.spawn_inbox_load(false);
                         }
                     },
@@ -439,6 +455,7 @@ impl App {
                         self.status_error=Some(message);
                         self.dm_picker.submitting=false;
                         self.inbox_loading=false;
+                        self.inbox_detail_loading=false;
                     },
                     Background::Staged { community, pending }=>{
                         if self.active_community_id()==Some(community)
@@ -477,8 +494,24 @@ impl App {
                         if self.active_community_id()==Some(community) {
                             self.inbox_items=items;
                             self.inbox_state.reconcile(&self.inbox_items);
+                            if self.presentation.route == Route::Inbox {
+                                self.spawn_inbox_detail_load();
+                            }
                             self.cache_dirty=true;
                             self.inbox_loading=false;
+                        }
+                    }
+                    Background::InboxDetailLoaded { community, conversation_id, messages }=>{
+                        if self.active_community_id()==Some(community)
+                            && self.presentation.route == Route::Inbox
+                            && self.inbox_state.selected_id() == Some(conversation_id.as_str())
+                        {
+                            self.inbox_messages=messages;
+                            let anchor=self.inbox_state.selected(&self.inbox_items)
+                                .and_then(|item| item.first_unread_event_id.as_deref());
+                            self.inbox_state.reconcile_detail(&self.inbox_messages, anchor);
+                            self.cache_dirty=true;
+                            self.inbox_detail_loading=false;
                         }
                     }
                     Background::SearchLoaded { community, generation, output }=>{
@@ -533,6 +566,7 @@ impl App {
         }
         for task in [
             self.inbox_task.take(),
+            self.inbox_detail_task.take(),
             self.search_task.take(),
             self.dm_search_task.take(),
             self.directory_task.take(),
@@ -748,6 +782,50 @@ impl App {
             .await;
             let event = match result {
                 Ok(items) => Background::InboxLoaded { community, items },
+                Err(error) => Background::Failed(error.to_string()),
+            };
+            let _ = tx.send(event).await;
+        }));
+    }
+
+    fn spawn_inbox_detail_load(&mut self) {
+        let Some(community) = self.active_community_id() else {
+            return;
+        };
+        let Some(identity_pubkey) = self.self_pubkey().map(str::to_owned) else {
+            return;
+        };
+        let Some(conversation_id) = self.inbox_state.selected_id().map(str::to_owned) else {
+            self.inbox_messages.clear();
+            self.inbox_detail_loading = false;
+            return;
+        };
+        self.inbox_detail_loading = true;
+        if let Some(task) = self.inbox_detail_task.take() {
+            task.abort();
+        }
+        let service = self.runtime.as_ref().map(|runtime| runtime.inbox.clone());
+        let store = self.store.clone();
+        let tx = self.background_tx.clone();
+        self.inbox_detail_task = Some(tokio::spawn(async move {
+            let result = if let Some(service) = service {
+                service
+                    .conversation_context(&identity_pubkey, &conversation_id)
+                    .await
+            } else {
+                let context_id = conversation_id.clone();
+                store
+                    .call(move |store| {
+                        store.inbox_conversation_context(community, &identity_pubkey, &context_id)
+                    })
+                    .await
+            };
+            let event = match result {
+                Ok(messages) => Background::InboxDetailLoaded {
+                    community,
+                    conversation_id,
+                    messages,
+                },
                 Err(error) => Background::Failed(error.to_string()),
             };
             let _ = tx.send(event).await;
@@ -1264,7 +1342,7 @@ impl App {
                     self.action_menu = None;
                     if let Some(entry) = entry {
                         if entry.enabled {
-                            self.dispatch_workspace_action(entry.action, guard, terminal)
+                            self.dispatch_route_action(entry.action, guard, terminal)
                                 .await?;
                         } else if let Some(reason) = entry.reason {
                             self.status_error = Some(format!("{}: {reason}", entry.label));
@@ -1308,6 +1386,16 @@ impl App {
                     HitTarget::Thread | HitTarget::ThreadMessage(_) => {
                         self.presentation.set_workspace_focus(FocusSurface::Context);
                         self.scroll_focused_viewport(ViewportScroll::Lines(delta));
+                    }
+                    HitTarget::InboxList | HitTarget::InboxItem(_)
+                        if self.presentation.route == Route::Inbox =>
+                    {
+                        self.presentation.set_inbox_focus(false);
+                        self.inbox_state.scroll_list(delta, &self.inbox_items);
+                    }
+                    HitTarget::InboxDetail if self.presentation.route == Route::Inbox => {
+                        self.presentation.set_inbox_focus(true);
+                        self.inbox_state.scroll_detail(delta, &self.inbox_messages);
                     }
                     _ => {}
                 }
@@ -1387,6 +1475,32 @@ impl App {
                     });
                 self.thread_timeline.keep_selection_visible = true;
             }
+            HitTarget::InboxList
+                if self.mode == Mode::Normal && self.presentation.route == Route::Inbox =>
+            {
+                self.presentation.set_inbox_focus(false);
+            }
+            HitTarget::InboxItem(id)
+                if self.mode == Mode::Normal
+                    && self.presentation.route == Route::Inbox
+                    && self
+                        .inbox_items
+                        .iter()
+                        .any(|item| item.conversation_id == id) =>
+            {
+                self.inbox_state.select(id);
+                self.presentation.set_inbox_focus(false);
+                self.spawn_inbox_detail_load();
+                if double_click {
+                    self.inbox_state.narrow_detail = self.inbox_state.narrow_layout;
+                    self.presentation.set_inbox_focus(true);
+                }
+            }
+            HitTarget::InboxDetail
+                if self.mode == Mode::Normal && self.presentation.route == Route::Inbox =>
+            {
+                self.presentation.set_inbox_focus(true);
+            }
             HitTarget::Composer if self.mode == Mode::Insert => {
                 if let Some(area) = self
                     .last_hit_map
@@ -1437,15 +1551,6 @@ impl App {
             {
                 self.reaction_index = index;
             }
-            HitTarget::InboxItem(id)
-                if self.mode == Mode::Inbox
-                    && self
-                        .inbox_items
-                        .iter()
-                        .any(|item| item.conversation_id == id) =>
-            {
-                self.inbox_state.selected_id = Some(id);
-            }
             HitTarget::SearchResult(id)
                 if self.mode == Mode::Search
                     && self
@@ -1483,6 +1588,9 @@ impl App {
         terminal: &mut Tui,
     ) -> Result<()> {
         match self.mode {
+            Mode::Normal if self.presentation.route == Route::Inbox => {
+                self.handle_inbox_route_key(key, guard, terminal).await?
+            }
             Mode::Normal => self.handle_workspace_key(key, guard, terminal).await?,
             Mode::Insert => self.insert_action(map_insert(key)).await?,
             Mode::ConfirmQuit => match key.code {
@@ -1519,10 +1627,21 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('n' | 'N') => self.mode = Mode::Normal,
                 _ => {}
             },
+            Mode::ConfirmInboxRead => match key.code {
+                KeyCode::Char('y' | 'Y') => {
+                    self.mark_pending_inbox_read().await?;
+                    self.mode = Mode::Normal;
+                }
+                KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                    self.pending_inbox_read.clear();
+                    self.presentation.overlay = None;
+                    self.mode = Mode::Normal;
+                }
+                _ => {}
+            },
             Mode::MediaPreview => self.media_preview_key(key),
             Mode::Attachment => self.attachment_path_key(key, false).await?,
             Mode::SaveAttachment => self.attachment_path_key(key, true).await?,
-            Mode::Inbox => self.inbox_key(key).await?,
             Mode::Search => self.search_key(key).await?,
             Mode::DmPicker => self.dm_picker_key(key),
             Mode::AgentPicker => self.agent_picker_key(key),
@@ -1587,6 +1706,49 @@ impl App {
         Ok(())
     }
 
+    async fn handle_inbox_route_key(
+        &mut self,
+        key: KeyEvent,
+        guard: &mut TerminalGuard,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        let context = InputContext {
+            overlay_open: self.presentation.overlay.is_some(),
+            composer_completion_open: false,
+            composer_open: false,
+            filter_open: false,
+            route_scope: KeyScope::Inbox,
+        };
+        match self.input_router.dispatch(&self.keymap, context, key) {
+            InputDispatch::Action(action) => {
+                self.leader_started_at = None;
+                if self.presentation.overlay == Some(Overlay::WhichKey) {
+                    self.presentation.overlay = None;
+                }
+                self.dispatch_inbox_action(action, guard, terminal).await?;
+            }
+            InputDispatch::Pending { .. } => {
+                self.leader_started_at.get_or_insert_with(Instant::now);
+                self.presentation.open_overlay(Overlay::WhichKey);
+            }
+            InputDispatch::Owned(InputOwner::Overlay) => {
+                self.handle_presentation_overlay_key(key, guard, terminal)
+                    .await?
+            }
+            InputDispatch::Owned(_) | InputDispatch::Noop => {
+                if !self.input_router.sequence_active() {
+                    self.leader_started_at = None;
+                }
+                if !self.input_router.sequence_active()
+                    && self.presentation.overlay == Some(Overlay::WhichKey)
+                {
+                    self.presentation.overlay = None;
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn handle_presentation_overlay_key(
         &mut self,
         key: KeyEvent,
@@ -1618,7 +1780,7 @@ impl App {
                     self.action_menu = None;
                     if let Some(entry) = entry {
                         if entry.enabled {
-                            self.dispatch_workspace_action(entry.action, guard, terminal)
+                            self.dispatch_route_action(entry.action, guard, terminal)
                                 .await?;
                         } else if let Some(reason) = entry.reason {
                             self.status_error = Some(format!("{}: {reason}", entry.label));
@@ -1630,6 +1792,106 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    async fn dispatch_route_action(
+        &mut self,
+        action: UiAction,
+        guard: &mut TerminalGuard,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        if self.presentation.route == Route::Inbox {
+            self.dispatch_inbox_action(action, guard, terminal).await
+        } else {
+            self.dispatch_workspace_action(action, guard, terminal)
+                .await
+        }
+    }
+
+    async fn dispatch_inbox_action(
+        &mut self,
+        action: UiAction,
+        _guard: &mut TerminalGuard,
+        _terminal: &mut Tui,
+    ) -> Result<()> {
+        let mut state = InboxWorkspaceState {
+            presentation: self.presentation.clone(),
+            narrow_layout: self.inbox_state.narrow_layout,
+            narrow_detail: self.inbox_state.narrow_detail,
+            detail_available: self.inbox_state.selected(&self.inbox_items).is_some(),
+        };
+        let effect = reduce_inbox(&mut state, action);
+        self.presentation = state.presentation;
+        self.inbox_state.narrow_detail = state.narrow_detail;
+        match effect {
+            InboxEffect::None => {}
+            InboxEffect::MoveSelection(delta) => {
+                self.inbox_state.move_by(&self.inbox_items, delta);
+                self.spawn_inbox_detail_load();
+            }
+            InboxEffect::MoveSelectionToEdge { last } => {
+                self.inbox_state.move_to_edge(&self.inbox_items, last);
+                self.spawn_inbox_detail_load();
+            }
+            InboxEffect::ScrollList(scroll) => self.scroll_inbox_list(scroll),
+            InboxEffect::ScrollDetail(scroll) => self.scroll_inbox_detail(scroll),
+            InboxEffect::CycleFilter => {
+                self.inbox_state.filter = self.inbox_state.filter.next();
+                self.inbox_state.reconcile(&self.inbox_items);
+                self.spawn_inbox_detail_load();
+            }
+            InboxEffect::LoadDetail => self.spawn_inbox_detail_load(),
+            InboxEffect::OpenComposer => self.reply_to_inbox().await?,
+            InboxEffect::OpenCanonicalContext => self.open_inbox_item().await?,
+            InboxEffect::MarkRead => self.mark_selected_inbox_read().await?,
+            InboxEffect::MarkUnread => self.toggle_selected_inbox_unread().await?,
+            InboxEffect::ConfirmMarkVisibleRead => self.confirm_visible_inbox_read().await?,
+            InboxEffect::OpenContextActions => {
+                let actions = derive_actions(self.action_context());
+                if actions.is_empty() {
+                    self.status_error = Some("no actions are available here".into());
+                } else {
+                    self.action_menu = Some(ActionMenu::new(actions));
+                    self.presentation.open_overlay(Overlay::Actions);
+                }
+            }
+            InboxEffect::Refresh => {
+                self.cache_dirty = true;
+                self.spawn_inbox_load(self.runtime.is_some());
+            }
+            InboxEffect::RequestQuitConfirmation => {
+                self.mode = Mode::ConfirmQuit;
+                self.presentation.open_overlay(Overlay::Confirmation);
+            }
+            InboxEffect::Unavailable(action) => {
+                self.status_error = Some(format!("{} is not available in Inbox", action.label()));
+            }
+        }
+        Ok(())
+    }
+
+    fn scroll_inbox_list(&mut self, scroll: ViewportScroll) {
+        let amount = match scroll {
+            ViewportScroll::Lines(lines) => lines,
+            ViewportScroll::HalfPage(direction) => {
+                isize::try_from((self.inbox_state.list_viewport.viewport_height / 2).max(1))
+                    .unwrap_or(1)
+                    .saturating_mul(direction)
+            }
+        };
+        self.inbox_state.scroll_list(amount, &self.inbox_items);
+    }
+
+    fn scroll_inbox_detail(&mut self, scroll: ViewportScroll) {
+        let amount = match scroll {
+            ViewportScroll::Lines(lines) => lines,
+            ViewportScroll::HalfPage(direction) => {
+                isize::try_from((self.inbox_state.detail_viewport.viewport_height / 2).max(1))
+                    .unwrap_or(1)
+                    .saturating_mul(direction)
+            }
+        };
+        self.inbox_state.scroll_detail(amount, &self.inbox_messages);
     }
 
     async fn dispatch_workspace_action(
@@ -1951,12 +2213,6 @@ impl App {
         Ok(())
     }
     async fn enter_composer(&mut self) -> Result<()> {
-        if self.runtime.is_none() {
-            self.status_error = Some(
-                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
-            );
-            return Ok(());
-        }
         let Some(community) = self.active_community_id() else {
             return Ok(());
         };
@@ -1964,6 +2220,31 @@ impl App {
             return Ok(());
         };
         let root = self.thread_root.clone();
+        let parent = self
+            .selected_message()
+            .map(|message| message.event_id.clone())
+            .or_else(|| root.clone());
+        self.open_composer_target(community, channel, root, parent)
+            .await
+    }
+
+    async fn open_composer_target(
+        &mut self,
+        community: Uuid,
+        channel: Uuid,
+        root: Option<String>,
+        parent: Option<String>,
+    ) -> Result<()> {
+        if self.runtime.is_none() {
+            self.status_error = Some(
+                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
+            );
+            return Ok(());
+        }
+        if self.active_community_id() != Some(community) {
+            self.status_error = Some("the composer target belongs to a different community".into());
+            return Ok(());
+        }
         let draft_root = root.clone();
         let (body, attachments, mentions) = self
             .store
@@ -1976,6 +2257,7 @@ impl App {
             community_id: community,
             channel_id: channel,
             thread_root_id: root,
+            parent_event_id: parent,
         });
         self.refresh_mention_picker().await?;
         self.mode = Mode::Insert;
@@ -2082,14 +2364,16 @@ impl App {
             self.mention_picker = None;
             return Ok(());
         };
-        let Some(community) = self.active_community_id() else {
+        let Some(target) = self.presentation.composer_target.clone() else {
             self.mention_picker = None;
             return Ok(());
         };
-        let Some(channel) = self.current_channel().map(|channel| channel.id) else {
+        if self.active_community_id() != Some(target.community_id) {
             self.mention_picker = None;
             return Ok(());
-        };
+        }
+        let community = target.community_id;
+        let channel = target.channel_id;
         let Some(self_pubkey) = self.self_pubkey().map(str::to_owned) else {
             self.mention_picker = None;
             return Ok(());
@@ -2340,13 +2624,15 @@ impl App {
     }
 
     async fn persist_draft(&self) -> Result<()> {
-        let Some(community) = self.active_community_id() else {
+        let Some(target) = self.presentation.composer_target.clone() else {
             return Ok(());
         };
-        let Some(channel) = self.current_channel().map(|channel| channel.id) else {
+        if self.active_community_id() != Some(target.community_id) {
             return Ok(());
-        };
-        let root = self.thread_root.clone();
+        }
+        let community = target.community_id;
+        let channel = target.channel_id;
+        let root = target.thread_root_id;
         let body = self.composer.body.clone();
         let attachments = self.composer.attachments.clone();
         let mentions = self.composer.mentions().to_vec();
@@ -2366,15 +2652,17 @@ impl App {
 
     fn queue_message(&mut self, message: crate::ui::composer::PreparedMessage) {
         let Some(runtime) = &self.runtime else { return };
-        let Some(channel) = self.current_channel().map(|channel| channel.id) else {
+        let Some(target) = self.presentation.composer_target.clone() else {
             return;
         };
+        if runtime.community_id != target.community_id {
+            self.status_error = Some("the composer target belongs to a different community".into());
+            return;
+        }
         let service = runtime.messages.clone();
-        let root = self.thread_root.clone();
-        let parent = self
-            .selected_message()
-            .map(|message| message.event_id.clone())
-            .or_else(|| root.clone());
+        let channel = target.channel_id;
+        let root = target.thread_root_id;
+        let parent = target.parent_event_id.or_else(|| root.clone());
         let tx = self.background_tx.clone();
         tokio::spawn(async move {
             let result = if let (Some(root), Some(parent)) = (root, parent) {
@@ -2531,8 +2819,9 @@ impl App {
     }
 
     fn open_inbox(&mut self) {
-        self.mode = Mode::Inbox;
+        self.presentation.enter_inbox();
         self.inbox_state.narrow_detail = false;
+        self.inbox_messages.clear();
         self.spawn_inbox_load(self.runtime.is_some());
     }
 
@@ -2896,35 +3185,7 @@ impl App {
         });
     }
 
-    async fn inbox_key(&mut self, key: KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Esc if self.inbox_state.narrow_detail => {
-                self.inbox_state.narrow_detail = false;
-            }
-            KeyCode::Esc => {
-                self.mode = Mode::Normal;
-                self.presentation.route = Route::Workspace;
-                self.presentation
-                    .set_workspace_focus(FocusSurface::Timeline);
-            }
-            KeyCode::Char('j') | KeyCode::Down => self.inbox_state.move_by(&self.inbox_items, 1),
-            KeyCode::Char('k') | KeyCode::Up => self.inbox_state.move_by(&self.inbox_items, -1),
-            KeyCode::Char('f') => {
-                self.inbox_state.filter = self.inbox_state.filter.next();
-                self.inbox_state.reconcile(&self.inbox_items);
-            }
-            KeyCode::Enter => self.inbox_state.narrow_detail = true,
-            KeyCode::Char('o') => self.open_inbox_item(false).await?,
-            KeyCode::Char('i') => self.open_inbox_item(true).await?,
-            KeyCode::Char('m') => self.mark_selected_inbox_read().await?,
-            KeyCode::Char('U') => self.toggle_selected_inbox_unread().await?,
-            KeyCode::Char('a') => self.mark_all_loaded_inbox_read().await?,
-            _ => {}
-        }
-        Ok(())
-    }
-
-    async fn open_inbox_item(&mut self, reply: bool) -> Result<()> {
+    async fn open_inbox_item(&mut self) -> Result<()> {
         let Some(item) = self.inbox_state.selected(&self.inbox_items).cloned() else {
             return Ok(());
         };
@@ -2932,17 +3193,89 @@ impl App {
             self.status_error = Some("this read-only Inbox card has no channel context".into());
             return Ok(());
         };
-        self.open_channel_context(
-            channel,
-            item.event_id.as_deref(),
-            item.thread_root.as_deref(),
-        )
-        .await?;
-        self.mode = Mode::Normal;
-        if reply {
-            self.enter_composer().await?;
+        let Some(community) = self.active_community_id() else {
+            return Ok(());
+        };
+        let member = self
+            .store
+            .call(move |store| {
+                Ok(store
+                    .channels(community)?
+                    .into_iter()
+                    .any(|value| value.id == channel && value.is_member))
+            })
+            .await?;
+        if !member {
+            self.status_error =
+                Some("the Inbox source is unavailable or no longer accessible".into());
+            return Ok(());
         }
+        if item.event_id.is_some() && !item.categories.contains(&InboxCategory::NeedsAction) {
+            let Some(identity) = self.self_pubkey().map(str::to_owned) else {
+                return Ok(());
+            };
+            let conversation_id = item.conversation_id.clone();
+            let context = self
+                .store
+                .call(move |store| {
+                    store.inbox_conversation_context(community, &identity, &conversation_id)
+                })
+                .await?;
+            if context.is_empty() {
+                self.status_error =
+                    Some("the Inbox context is deleted, hidden, or no longer accessible".into());
+                return Ok(());
+            }
+        }
+        if !self
+            .open_channel_context(
+                channel,
+                (!item.categories.contains(&InboxCategory::NeedsAction))
+                    .then_some(item.event_id.as_deref())
+                    .flatten(),
+                item.thread_root.as_deref(),
+            )
+            .await?
+        {
+            return Ok(());
+        }
+        self.presentation
+            .open_inbox_context(item.thread_root.is_some());
         Ok(())
+    }
+
+    async fn reply_to_inbox(&mut self) -> Result<()> {
+        let Some(item) = self.inbox_state.selected(&self.inbox_items).cloned() else {
+            return Ok(());
+        };
+        let Some(community) = self.active_community_id() else {
+            return Ok(());
+        };
+        if item.categories.contains(&InboxCategory::NeedsAction) {
+            self.status_error =
+                Some("needs-action cards are informational and cannot be replied to".into());
+            return Ok(());
+        }
+        let Some(channel) = item.channel_id else {
+            self.status_error = Some("this Inbox work has no reply target".into());
+            return Ok(());
+        };
+        let visible = self
+            .store
+            .call(move |store| {
+                Ok(store
+                    .channels(community)?
+                    .into_iter()
+                    .any(|value| value.id == channel && value.is_member))
+            })
+            .await?;
+        if !visible {
+            self.status_error =
+                Some("the Inbox reply target is unavailable or no longer accessible".into());
+            return Ok(());
+        }
+        self.open_composer_target(community, channel, item.thread_root, item.event_id)
+            .await
     }
 
     async fn open_channel_context(
@@ -2950,9 +3283,9 @@ impl App {
         channel: Uuid,
         event_id: Option<&str>,
         thread_root: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let Some(community) = self.active_community_id() else {
-            return Ok(());
+            return Ok(false);
         };
         let visible = self
             .store
@@ -2966,7 +3299,7 @@ impl App {
         if !visible {
             self.status_error =
                 Some("the source channel is unavailable or no longer accessible".into());
-            return Ok(());
+            return Ok(false);
         }
         if !self.channels.iter().any(|value| value.id == channel) {
             self.cache_dirty = true;
@@ -2975,7 +3308,7 @@ impl App {
         let Some(index) = self.channels.iter().position(|value| value.id == channel) else {
             self.status_error =
                 Some("the source channel is unavailable or no longer accessible".into());
-            return Ok(());
+            return Ok(false);
         };
         self.select_channel_index(index);
         self.showing_open_channel = !self.channels[index].is_member;
@@ -2996,7 +3329,7 @@ impl App {
         }
         self.cache_dirty = true;
         self.hydrate_cache().await?;
-        Ok(())
+        Ok(true)
     }
 
     async fn mark_selected_inbox_read(&mut self) -> Result<()> {
@@ -3073,16 +3406,33 @@ impl App {
         Ok(())
     }
 
-    async fn mark_all_loaded_inbox_read(&mut self) -> Result<()> {
+    async fn confirm_visible_inbox_read(&mut self) -> Result<()> {
         let items = self
             .inbox_state
             .visible(&self.inbox_items)
             .into_iter()
             .cloned()
             .collect::<Vec<_>>();
+        if items.is_empty() {
+            return Ok(());
+        }
+        if items.len() == 1 {
+            self.mark_inbox_item_read(&items[0]).await?;
+            self.spawn_inbox_load(false);
+            return Ok(());
+        }
+        self.pending_inbox_read = items;
+        self.mode = Mode::ConfirmInboxRead;
+        self.presentation.open_overlay(Overlay::Confirmation);
+        Ok(())
+    }
+
+    async fn mark_pending_inbox_read(&mut self) -> Result<()> {
+        let items = std::mem::take(&mut self.pending_inbox_read);
         for item in &items {
             self.mark_inbox_item_read(item).await?;
         }
+        self.presentation.overlay = None;
         self.spawn_inbox_load(false);
         Ok(())
     }
@@ -3379,6 +3729,7 @@ impl App {
                 self.profile_requested.clear();
                 self.subscribed_channels.clear();
                 self.inbox_items.clear();
+                self.inbox_messages.clear();
                 self.inbox_state = InboxState::default();
                 self.search_state = SearchState::default();
                 self.dm_picker = DmPickerState::default();
@@ -3410,6 +3761,7 @@ impl App {
                     self.profile_requested.clear();
                     self.subscribed_channels.clear();
                     self.inbox_items.clear();
+                    self.inbox_messages.clear();
                     self.inbox_state = InboxState::default();
                     self.search_state = SearchState::default();
                     self.dm_picker = DmPickerState::default();
@@ -3521,10 +3873,17 @@ impl App {
 
     fn action_context(&self) -> ActionContext {
         let selected = self.selected_message();
+        let inbox_selected = self.inbox_state.selected(&self.inbox_items);
         let self_pubkey = self.self_pubkey();
         ActionContext {
             route: self.presentation.route,
             focus: self.presentation.focus,
+            has_inbox_selection: inbox_selected.is_some(),
+            inbox_has_context: inbox_selected.is_some_and(|item| item.channel_id.is_some()),
+            inbox_can_reply: inbox_selected.is_some_and(|item| {
+                item.channel_id.is_some() && !item.categories.contains(&InboxCategory::NeedsAction)
+            }),
+            inbox_visible_count: self.inbox_state.visible(&self.inbox_items).len(),
             has_channel: self.current_channel().is_some(),
             has_selected_event: selected.is_some(),
             selected_event_is_own: selected
@@ -3597,6 +3956,12 @@ impl App {
         }
         if self.config.communities.is_empty() {
             self.render_empty(frame, area);
+            self.render_overlay(frame, area, &mut hit_map);
+            self.last_hit_map = Some(hit_map);
+            return;
+        }
+        if self.presentation.route == Route::Inbox {
+            self.render_inbox_workspace(frame, area, &mut hit_map);
             self.render_overlay(frame, area, &mut hit_map);
             self.last_hit_map = Some(hit_map);
             return;
@@ -3740,6 +4105,57 @@ impl App {
         self.render_overlay(frame, area, &mut hit_map);
         self.last_hit_map = Some(hit_map);
     }
+    fn render_inbox_workspace(&mut self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
+        let vertical = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(area);
+        let route_layout = crate::ui::inbox::render(
+            frame,
+            vertical[0],
+            &mut self.inbox_state,
+            crate::ui::inbox::InboxView {
+                items: &self.inbox_items,
+                messages: &self.inbox_messages,
+                profiles: &self.profiles,
+                focus: self.presentation.focus,
+                theme: &self.theme,
+                loading: self.inbox_loading || self.inbox_detail_loading,
+            },
+        );
+        if let Some(list) = route_layout.list {
+            hit_map.push(list, HitTarget::InboxList);
+            for (row, item) in self
+                .inbox_state
+                .visible(&self.inbox_items)
+                .into_iter()
+                .skip(self.inbox_state.list_viewport.scroll)
+                .take(usize::from(list.height.saturating_div(2).max(1)))
+                .enumerate()
+            {
+                let y = list
+                    .y
+                    .saturating_add(u16::try_from(row.saturating_mul(2)).unwrap_or(u16::MAX));
+                if y >= list.bottom() {
+                    break;
+                }
+                hit_map.push(
+                    Rect::new(
+                        list.x,
+                        y,
+                        list.width,
+                        list.bottom().saturating_sub(y).min(2),
+                    ),
+                    HitTarget::InboxItem(item.conversation_id.clone()),
+                );
+            }
+        }
+        if let Some(detail) = route_layout.detail {
+            hit_map.push(detail, HitTarget::InboxDetail);
+        }
+        self.render_status(frame, vertical[1]);
+    }
+
     fn render_empty(&self, frame: &mut Frame<'_>, area: Rect) {
         frame.render_widget(
             Paragraph::new(Text::from(vec![
@@ -3819,18 +4235,18 @@ impl App {
     }
     fn render_status(&self, frame: &mut Frame<'_>, area: Rect) {
         let mode = match self.mode {
+            Mode::Normal if self.presentation.route == Route::Inbox => "INBOX",
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
             Mode::Finder => "FINDER",
             Mode::Reaction => "REACTION",
-            Mode::ConfirmDelete => "CONFIRM",
+            Mode::ConfirmDelete | Mode::ConfirmInboxRead => "CONFIRM",
             Mode::Command => "COMMAND",
             Mode::Theme => "THEME",
             Mode::ConfirmQuit => "CONFIRM QUIT",
             Mode::MediaPreview => "MEDIA",
             Mode::Attachment => "ATTACH",
             Mode::SaveAttachment => "SAVE",
-            Mode::Inbox => "INBOX",
             Mode::Search => "SEARCH",
             Mode::DmPicker => "DM",
             Mode::AgentPicker => "AGENT",
@@ -3871,7 +4287,11 @@ impl App {
                     frame.render_widget(
                         Paragraph::new(crate::ui::help::effective_keymap_with_actions(
                             &self.keymap,
-                            KeyScope::Workspace,
+                            if self.presentation.route == Route::Inbox {
+                                KeyScope::Inbox
+                            } else {
+                                KeyScope::Workspace
+                            },
                             &actions,
                         ))
                         .style(self.theme.style(HighlightGroup::Normal))
@@ -3893,7 +4313,11 @@ impl App {
                     frame.render_widget(
                         Paragraph::new(crate::ui::help::which_key(
                             &self.keymap,
-                            KeyScope::Workspace,
+                            if self.presentation.route == Route::Inbox {
+                                KeyScope::Inbox
+                            } else {
+                                KeyScope::Workspace
+                            },
                             self.input_router.sequence(),
                         ))
                         .style(self.theme.style(HighlightGroup::Normal))
@@ -3970,6 +4394,15 @@ impl App {
                 " delete message? ",
                 "Press y to delete or n/Esc to cancel",
             ),
+            Mode::ConfirmInboxRead => self.render_prompt(
+                frame,
+                area,
+                " mark visible Inbox work read? ",
+                &format!(
+                    "Press y to mark {} conversation(s) read or n/Esc to cancel",
+                    self.pending_inbox_read.len()
+                ),
+            ),
             Mode::Insert => {
                 let popup = bottom_popup(area, 5);
                 let composer_inner = inner_rect(popup);
@@ -4036,19 +4469,6 @@ impl App {
                 " save attachment · no overwrite · Esc cancel ",
                 &self.attachment_input,
             ),
-            Mode::Inbox => {
-                frame.render_widget(Clear, area);
-                self.map_inbox_hits(area, hit_map);
-                crate::ui::inbox::render(
-                    frame,
-                    area,
-                    &self.inbox_items,
-                    &self.profiles,
-                    &self.inbox_state,
-                    &self.theme,
-                    self.inbox_loading,
-                );
-            }
             Mode::Search => {
                 let popup = centered(area, 86, area.height.saturating_sub(4).min(28));
                 let offset = 1 + usize::from(self.search_state.notice.is_some());
@@ -4357,43 +4777,6 @@ impl App {
             popup,
         );
     }
-    fn map_inbox_hits(&self, area: Rect, hit_map: &mut HitMap) {
-        let inner = inner_rect(area);
-        if inner.width < 88 && self.inbox_state.narrow_detail {
-            return;
-        }
-        let list = if inner.width < 88 {
-            inner
-        } else {
-            Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(46), Constraint::Percentage(54)])
-                .split(inner)[0]
-        };
-        for (index, item) in self
-            .inbox_state
-            .visible(&self.inbox_items)
-            .into_iter()
-            .enumerate()
-        {
-            let y = list
-                .y
-                .saturating_add(u16::try_from(index.saturating_mul(2)).unwrap_or(u16::MAX));
-            if y >= list.bottom() {
-                break;
-            }
-            hit_map.push(
-                Rect::new(
-                    list.x,
-                    y,
-                    list.width,
-                    list.bottom().saturating_sub(y).min(2),
-                ),
-                HitTarget::InboxItem(item.conversation_id.clone()),
-            );
-        }
-    }
-
     fn render_prompt(&self, frame: &mut Frame<'_>, area: Rect, title: &str, value: &str) {
         let popup = centered(area, 70, 5);
         frame.render_widget(Clear, popup);
@@ -4608,7 +4991,10 @@ mod tests {
     use super::{Mode, clear_visible_unread, identity_recovery_connection};
     use crate::{
         config::Config,
-        domain::{Channel, ChannelKind, ConnectionState, MentionCandidate, Message, Visibility},
+        domain::{
+            Channel, ChannelKind, ConnectionState, InboxCategory, InboxItem, MentionCandidate,
+            Message, Visibility,
+        },
         error::Error,
         paths::Paths,
         store::{Store, writer::StoreHandle},
@@ -4769,6 +5155,68 @@ mod tests {
         assert_eq!(app.theme.id(), "dracula");
         assert_eq!(app.config.communities[0].theme.as_deref(), Some("dracula"));
         assert_eq!(Config::load(&paths).unwrap(), app.config);
+    }
+
+    #[tokio::test]
+    async fn inbox_workspace_emits_list_detail_and_row_hit_targets() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+        let identity = crate::config::IdentityConfig {
+            id: Uuid::new_v4(),
+            label: "inbox-test".into(),
+            pubkey: "a".repeat(64),
+            backend: crate::config::KeyBackend::Keychain,
+            key_ref: "identity:inbox-test".into(),
+        };
+        app.config.identities.push(identity.clone());
+        app.config
+            .add_community(
+                "inbox-test".into(),
+                "wss://inbox.example".into(),
+                identity.id,
+                false,
+            )
+            .unwrap();
+        let channel = Uuid::new_v4();
+        let item = InboxItem {
+            conversation_id: format!("event:{}", "b".repeat(64)),
+            categories: vec![InboxCategory::Mention],
+            event_id: Some("b".repeat(64)),
+            channel_id: Some(channel),
+            thread_root: None,
+            sender_pubkey: Some(identity.pubkey),
+            created_at: 1,
+            preview: "Inbox row".into(),
+            unread_count: 1,
+            first_unread_event_id: Some("b".repeat(64)),
+            first_unread_at: Some(1),
+            draft_count: 0,
+            latest_draft_at: None,
+            forced_unread: false,
+        };
+        app.inbox_items = vec![item.clone()];
+        app.inbox_state.reconcile(&app.inbox_items);
+        app.presentation.enter_inbox();
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let map = app.last_hit_map.as_ref().unwrap();
+        assert!(map.area_of(&HitTarget::InboxList).is_some());
+        assert!(map.area_of(&HitTarget::InboxDetail).is_some());
+        assert!(
+            map.area_of(&HitTarget::InboxItem(item.conversation_id))
+                .is_some()
+        );
     }
 
     #[tokio::test]
