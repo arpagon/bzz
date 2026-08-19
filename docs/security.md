@@ -170,7 +170,7 @@ signing state.
 ## Dependency advisory
 
 `cargo audit` currently reports `RUSTSEC-2024-0384` (`instant` is unmaintained)
-as a warning through the revision-pinned `nostr` dependency. It is not a known
-vulnerability and is not directly selected by bzz; re-evaluate it on every
-Buzz compatibility-SHA update and remove the transitive crate when upstream
-permits.
+through the revision-pinned `nostr` dependency and `RUSTSEC-2026-0253` (panic
+safety in `lru`) through the pinned `ratatui` stack. They are transitive and
+not directly selected by bzz. Re-evaluate both on every Buzz or Ratatui
+compatibility update; do not change a pin solely to silence an advisory.

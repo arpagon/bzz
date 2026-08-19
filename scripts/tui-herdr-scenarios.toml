@@ -19,7 +19,11 @@ keys = ["esc"]
 visible = "Welcome to bzz"
 
 [[scenario.step]]
-keys = ["q", "y"]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario]]
@@ -31,20 +35,32 @@ exit = "__BZZ_HERDR_EXIT__:0"
 keymap = '''
 [[binding]]
 scope = "workspace"
-keys = ["ctrl-x", "i"]
+keys = ["z", "i"]
 action = "open-inbox"
 '''
 
 [[scenario.step]]
-keys = ["ctrl-x", "i"]
-visible = "Inbox"
+keys = ["z", "i"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = ["shift+?"]
+visible = "mark visible rows read"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
 
 [[scenario.step]]
 keys = ["q"]
 visible = "Welcome to bzz"
 
 [[scenario.step]]
-keys = ["q", "y"]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario]]

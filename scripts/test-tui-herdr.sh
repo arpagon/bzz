@@ -8,7 +8,6 @@ set -euo pipefail
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 manifest=${BZZ_HERDR_MANIFEST:-"$repo_root/scripts/tui-herdr-scenarios.toml"}
 selection=${BZZ_HERDR_SCENARIOS:-automated}
-process_timeout=${BZZ_HERDR_PROCESS_TIMEOUT_SECONDS:-45}
 
 usage() {
     cat <<'EOF'
@@ -22,7 +21,6 @@ Required environment for execution:
 Optional environment:
   BZZ_HERDR_SCENARIOS=automated|all|ID[,ID...]
   BZZ_HERDR_MANIFEST=<path>
-  BZZ_HERDR_PROCESS_TIMEOUT_SECONDS=10..120 (default: 45)
 
 Only automated empty-profile scenarios run by default. Operator scenarios
 require the public disposable fixture and postconditions in docs/e2e-herdr.md;
@@ -46,11 +44,6 @@ elif [[ $# -ne 0 ]]; then
 fi
 
 [[ -f $manifest ]] || { echo "missing scenario manifest: $manifest" >&2; exit 2; }
-[[ $process_timeout =~ ^[0-9]+$ ]] && (( process_timeout >= 10 && process_timeout <= 120 )) || {
-    echo "BZZ_HERDR_PROCESS_TIMEOUT_SECONDS must be an integer from 10 through 120" >&2
-    exit 2
-}
-
 # Emit one tab-delimited header and step rows. The manifest is data, never
 # sourced as shell; control characters make it fail closed before any terminal
 # command is issued.
@@ -128,7 +121,7 @@ binary=${BZZ_BIN:-"$repo_root/target/release/bzz"}
     echo "BZZ_BIN must be an executable absolute release binary (build with cargo build --release --locked)" >&2
     exit 2
 }
-herdr pane process-info "$pane" >/dev/null
+herdr pane process-info --pane "$pane" >/dev/null
 
 root=$(mktemp -d "${TMPDIR:-/tmp}/bzz-herdr.XXXXXXXX")
 cleanup() {
@@ -155,13 +148,17 @@ run_scenario() {
 
     # All values are local paths or a validated executable. printf %q creates
     # one shell word per value for the disposable target pane; no credential or
-    # fixture value is passed to the process.
+    # fixture value is passed to the process. Every visual wait below is bounded
+    # by Herdr, which is portable to the controlled target shell.
     local command
     printf -v command \
-        'timeout %q env BZZ_CONFIG_DIR=%q BZZ_DATA_DIR=%q BZZ_CACHE_DIR=%q %q; status=$?; printf "__BZZ_HERDR_EXIT__:%%s\\n" "$status"' \
-        "$process_timeout" "$config" "$data" "$cache" "$binary"
-    herdr pane run "$pane" "$command"
-    herdr pane wait-output "$pane" --source visible --match "$ready" --timeout 15000
+        'env BZZ_CONFIG_DIR=%q BZZ_DATA_DIR=%q BZZ_CACHE_DIR=%q %q; status=$?; printf "__BZZ_HERDR_EXIT__:%%s\\n" "$status"' \
+        "$config" "$data" "$cache" "$binary"
+    # Clear only the disposable terminal surface so a prior visible label
+    # cannot satisfy a later readiness predicate. Scrollback is never saved.
+    herdr pane run "$pane" "printf '\\033[2J\\033[H'" >/dev/null
+    herdr pane run "$pane" "$command" >/dev/null
+    herdr pane wait-output "$pane" --source visible --match "$ready" --timeout 15000 >/dev/null
     printf 'scenario %s ready\n' "$identifier"
 }
 
@@ -183,8 +180,8 @@ for row in "${scenarios[@]}"; do
             [[ -n $active_identifier ]] || { echo "malformed manifest step" >&2; exit 2; }
             IFS=, read -r -a keys <<<"$first"
             # Deliberately never use `send-text`: this is key-event coverage.
-            herdr pane send-keys "$pane" "${keys[@]}"
-            herdr pane wait-output "$pane" --source visible --match "$second" --timeout 15000
+            herdr pane send-keys "$pane" "${keys[@]}" >/dev/null
+            herdr pane wait-output "$pane" --source visible --match "$second" --timeout 15000 >/dev/null
             printf 'scenario %s observed %s\n' "$active_identifier" "$second"
             if [[ $second == "$active_exit" ]]; then
                 active_identifier=
