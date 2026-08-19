@@ -233,6 +233,7 @@ impl Store {
             "UPDATE outbox SET state='delivered',updated_at=unixepoch(),last_error_code=NULL WHERE community_id=?1 AND event_id=?2",
             params![community_id.to_string(),event.id.to_hex()],
         )?;
+        crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
         transaction.commit()?;
         Ok(true)
     }
@@ -242,7 +243,7 @@ impl Store {
             "UPDATE outbox SET state='delivered',updated_at=unixepoch(),last_error_code=NULL WHERE community_id=?1 AND event_id=?2",
             params![community_id.to_string(),event_id],
         )?;
-        Ok(())
+        self.mark_inbox_projection_dirty(community_id)
     }
 }
 

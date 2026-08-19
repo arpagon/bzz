@@ -34,6 +34,7 @@ impl Store {
                 params![community_id.to_string(), channel.to_string()],
             )?;
         }
+        crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
         transaction.commit()?;
         Ok(())
     }
@@ -293,7 +294,7 @@ impl Store {
              ON CONFLICT(community_id,event_id) DO NOTHING",
             params![community_id.to_string(),event.id.to_hex(),event.as_json(),i64::from(event.kind.as_u16()),crate::protocol::events::channel_id(event).map(|id|id.to_string())],
         )?;
-        Ok(())
+        self.mark_inbox_projection_dirty(community_id)
     }
 
     pub fn set_outbox_state(
@@ -313,7 +314,7 @@ impl Store {
                 params![community_id.to_string(), event_id],
             )?;
         }
-        Ok(())
+        self.mark_inbox_projection_dirty(community_id)
     }
 
     pub fn pending_outbox(&self, community_id: Uuid) -> Result<Vec<OutboxItem>> {
@@ -355,6 +356,7 @@ impl Store {
              ON CONFLICT(community_id,identity_pubkey,context_id) DO UPDATE SET read_at=max(read_contexts.read_at,excluded.read_at),publishable=max(read_contexts.publishable,excluded.publishable)",
             params![community_id.to_string(),pubkey,context,i64::from(read_at),publishable],
         )?;
+        self.mark_inbox_projection_dirty_for_identity(community_id, pubkey)?;
         self.connection.query_row("SELECT read_at FROM read_contexts WHERE community_id=?1 AND identity_pubkey=?2 AND context_id=?3",params![community_id.to_string(),pubkey,context],|row|row.get(0)).map_err(Into::into)
     }
 
@@ -376,6 +378,7 @@ impl Store {
                 params![community_id.to_string(),pubkey,context,i64::from(*read_at),u64_to_i64(source_created_at)?],
             )?;
         }
+        crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
         transaction.commit()?;
         Ok(())
     }
@@ -481,7 +484,7 @@ impl Store {
             ));
         }
         self.connection.execute("INSERT INTO drafts(community_id,channel_id,thread_root_id,body,attachments_json,mentions_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,unixepoch()) ON CONFLICT DO UPDATE SET body=excluded.body,attachments_json=excluded.attachments_json,mentions_json=excluded.mentions_json,updated_at=excluded.updated_at",params![community_id.to_string(),channel_id.to_string(),root.unwrap_or_default(),body,attachments,mentions])?;
-        Ok(())
+        self.mark_inbox_projection_dirty(community_id)
     }
 
     pub fn draft(

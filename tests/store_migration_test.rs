@@ -20,7 +20,7 @@ fn fresh_database_has_expected_pragmas_and_schema() {
     let foreign_keys: u32 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     assert_eq!(
         foreign_keys, 1,
         "foreign-key enforcement must remain enabled"
@@ -136,7 +136,15 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
     let version: u32 = upgraded
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
+    let inbox_projection_table: u32 = upgraded
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='inbox_conversations'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(inbox_projection_table, 1);
     let membership_head: String = upgraded
         .query_row(
             "SELECT source_event_id FROM channel_membership_heads WHERE community_id=?1 AND channel_id=?2",

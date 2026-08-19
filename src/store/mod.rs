@@ -76,6 +76,9 @@ impl Store {
             )?;
         }
         transaction.commit()?;
+        for community in &config.communities {
+            self.mark_inbox_projection_dirty(community.id)?;
+        }
         Ok(())
     }
 }

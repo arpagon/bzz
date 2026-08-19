@@ -84,11 +84,13 @@ Included rows are:
 - read-only kind `46010/46011/46012` cards addressed to `p=self`;
 - nonempty channel/thread drafts.
 
-Rows group by `dm:<channel-uuid>`, `thread:<validated-NIP-10-root>`, or a stable
-event/draft identifier. Delivery through HTTP, live subscriptions, reconnect,
-search, and outbox echo deduplicates by `(community,event_id)`. The selected
-conversation remains stable when newer activity changes its representative
-event.
+Rows group by `dm:<channel-uuid>`, `thread:<validated-NIP-10-root>`,
+`event:<event-id>`, or `draft:<channel-uuid>`. Delivery through HTTP, live
+subscriptions, reconnect, search, and outbox echo deduplicates by
+`(community,event_id)`. The selected conversation remains stable when newer
+activity changes its representative event. A draft-only conversation is shown
+only by `Drafts`; independently actionable conversations can also show a draft
+badge in `All`.
 
 Unread state reuses the existing channel, `thread:<root>`, and
 `msg:<event-id>` contexts. `m` advances those markers monotonically. `U` is a
@@ -97,9 +99,14 @@ unread. Channel-less needs-action cards use local done state only. Approval
 buttons are deliberately not implemented; the cards are informational.
 
 Inbox performs a bounded five-page mention query, two-page needs-action query,
-30-second online refresh, and local live/reconnect projection. It displays at
-most 500 conversations from a bounded candidate window. Locked mode performs
-no refresh and renders only SQLite state.
+30-second online refresh, and local live/reconnect projection. Migration 0005
+materializes a rebuildable local projection scoped to the active community and
+identity: every conversation retains latest activity, first-unread anchor,
+unread count, draft metadata, and at most 64 event IDs (bodies remain in the
+ordinary event store). Candidate windows are capped before a busy conversation
+can crowd out another one. Pages are ordered by
+`(latest_activity_at DESC, conversation_id ASC)` and use that same local cursor.
+Locked mode performs no refresh and renders only SQLite state.
 
 ## Unified search model
 
@@ -149,7 +156,11 @@ Migration `0003_inbox_dm_search.sql` adds:
 - `inbox_overrides`;
 - `search_documents`, external-content `search_fts`, and integrity triggers.
 
-The existing pre-migration SQLite backup/checksum policy applies. Downgrading
+Migration `0005_inbox_conversations.sql` adds only derived `inbox_conversations`,
+its dirty/rebuild metadata, and bounded event-ID windows. It stores a sanitized
+bounded preview, never message bodies or credentials, and is invalidated by
+events, deletion, membership/DM visibility, drafts, read state, overrides, and
+outbox delivery changes. The existing pre-migration SQLite backup/checksum policy applies. Downgrading
 requires restoring the generated pre-migration backup; no reverse migration is
 provided. All rows remain community-partitioned, and viewer-specific rows also
 carry the identity pubkey.

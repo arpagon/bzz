@@ -261,7 +261,10 @@ fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
         created_at: 1,
         preview: "safe preview\u{1b}]52;bad".into(),
         unread_count: 1,
+        first_unread_event_id: Some("c".repeat(64)),
+        first_unread_at: Some(1),
         draft_count: 0,
+        latest_draft_at: None,
         forced_unread: false,
     }];
     let mut inbox_state = InboxState::default();

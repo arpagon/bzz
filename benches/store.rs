@@ -60,17 +60,27 @@ fn bench_store(c: &mut Criterion) {
         } else {
             ""
         };
-        let event = buzz_sdk::build_message(
-            channel,
-            &format!("message {index}{token}"),
-            None,
-            &[],
-            false,
-            &[],
-        )
-        .unwrap()
-        .sign_with_keys(&keys)
-        .unwrap();
+        let event = if index % 1_000 == 0 {
+            EventBuilder::new(Kind::Custom(9), format!("message {index}{token}"))
+                .tags([
+                    Tag::parse(["h", &channel.to_string()]).unwrap(),
+                    Tag::parse(["p", &identity.pubkey]).unwrap(),
+                ])
+                .sign_with_keys(&keys)
+                .unwrap()
+        } else {
+            buzz_sdk::build_message(
+                channel,
+                &format!("message {index}{token}"),
+                None,
+                &[],
+                false,
+                &[],
+            )
+            .unwrap()
+            .sign_with_keys(&keys)
+            .unwrap()
+        };
         store.apply_event(community, &event).unwrap();
     }
     c.bench_function("query latest 500 of 100k", |bench| {
@@ -93,8 +103,39 @@ fn bench_store(c: &mut Criterion) {
             )
         })
     });
-    c.bench_function("project Inbox over 100k", |bench| {
-        bench.iter(|| black_box(store.inbox_items(community, &identity.pubkey).unwrap()))
+    c.bench_function("rebuild Inbox projection over 100k", |bench| {
+        bench.iter(|| {
+            store
+                .advance_read(community, &identity.pubkey, "benchmark:dirty", 0, false)
+                .unwrap();
+            black_box(
+                store
+                    .inbox_page(community, &identity.pubkey, None, 50)
+                    .unwrap(),
+            )
+        })
+    });
+    let first_page = store
+        .inbox_page(community, &identity.pubkey, None, 50)
+        .unwrap();
+    let cursor = first_page.next_cursor.clone();
+    c.bench_function("Inbox first page", |bench| {
+        bench.iter(|| {
+            black_box(
+                store
+                    .inbox_page(community, &identity.pubkey, None, 50)
+                    .unwrap(),
+            )
+        })
+    });
+    c.bench_function("Inbox cursor page", |bench| {
+        bench.iter(|| {
+            black_box(
+                store
+                    .inbox_page(community, &identity.pubkey, cursor.as_ref(), 50)
+                    .unwrap(),
+            )
+        })
     });
     c.bench_function("mention candidates over 1k cached members", |bench| {
         bench.iter(|| {

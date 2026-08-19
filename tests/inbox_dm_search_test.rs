@@ -489,6 +489,84 @@ fn inbox_groups_mentions_threads_dms_actions_and_drafts() {
 }
 
 #[test]
+fn inbox_projection_is_bounded_cursor_stable_and_not_starved_by_one_dm() {
+    let mut fixture = Fixture::new();
+    let dm = Uuid::new_v4();
+    let stream = Uuid::new_v4();
+    let author = Keys::generate();
+    fixture.channel(dm, true, &[&author]);
+    fixture.channel(stream, false, &[&author]);
+    for index in 0..80_u64 {
+        fixture.message(
+            &author,
+            dm,
+            &format!("busy DM {index}"),
+            None,
+            false,
+            100 + index,
+        );
+    }
+    let quiet = fixture.message(&author, stream, "quiet direct mention", None, true, 1);
+    let own = fixture.own.public_key().to_hex();
+
+    let first = fixture
+        .store
+        .inbox_page(fixture.community, &own, None, 1)
+        .unwrap();
+    assert_eq!(first.items.len(), 1);
+    let cursor = first.next_cursor.clone().expect("second conversation page");
+    let second = fixture
+        .store
+        .inbox_page(fixture.community, &own, Some(&cursor), 1)
+        .unwrap();
+    assert_eq!(second.items.len(), 1);
+    assert!(
+        second
+            .items
+            .iter()
+            .any(|item| { item.conversation_id == format!("event:{}", quiet.id.to_hex()) })
+    );
+
+    let dm_id = format!("dm:{dm}");
+    let window = fixture
+        .store
+        .inbox_conversation_event_ids(fixture.community, &own, &dm_id)
+        .unwrap();
+    assert_eq!(window.len(), 64);
+    assert!(window.iter().all(|event_id| event_id.len() == 64));
+    let dm_item = fixture
+        .store
+        .inbox_items(fixture.community, &own)
+        .unwrap()
+        .into_iter()
+        .find(|item| item.conversation_id == dm_id)
+        .unwrap();
+    assert_eq!(dm_item.unread_count, 80);
+    assert_eq!(dm_item.first_unread_at, Some(100));
+    assert!(dm_item.first_unread_event_id.is_some());
+
+    fixture.message(&author, dm, "newest DM", None, false, 300);
+    let refreshed = fixture.store.inbox_items(fixture.community, &own).unwrap();
+    assert_eq!(
+        refreshed
+            .iter()
+            .find(|item| item.conversation_id == format!("dm:{dm}"))
+            .unwrap()
+            .created_at,
+        300,
+        "an event invalidates and rebuilds the derived projection"
+    );
+    let foreign = Keys::generate();
+    assert!(
+        fixture
+            .store
+            .inbox_items(fixture.community, &foreign.public_key().to_hex())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn exact_channel_and_thread_context_keeps_targets_outside_default_windows() {
     let mut fixture = Fixture::new();
     let channel = Uuid::new_v4();

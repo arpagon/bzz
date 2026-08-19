@@ -163,7 +163,10 @@ pub struct InboxItem {
     pub created_at: u64,
     pub preview: String,
     pub unread_count: u32,
+    pub first_unread_event_id: Option<String>,
+    pub first_unread_at: Option<u64>,
     pub draft_count: u32,
+    pub latest_draft_at: Option<u64>,
     pub forced_unread: bool,
 }
 
@@ -171,6 +174,26 @@ impl InboxItem {
     pub const fn unread(&self) -> bool {
         self.forced_unread || self.unread_count > 0
     }
+
+    pub fn draft_only(&self) -> bool {
+        self.categories.contains(&InboxCategory::Draft)
+            && self
+                .categories
+                .iter()
+                .all(|category| *category == InboxCategory::Draft)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InboxCursor {
+    pub latest_activity_at: u64,
+    pub conversation_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InboxPage {
+    pub items: Vec<InboxItem>,
+    pub next_cursor: Option<InboxCursor>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]

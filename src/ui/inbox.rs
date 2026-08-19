@@ -52,7 +52,7 @@ impl InboxFilter {
 
     pub fn matches(self, item: &InboxItem) -> bool {
         match self {
-            Self::All => true,
+            Self::All => !item.draft_only(),
             Self::Mentions => item.categories.contains(&InboxCategory::Mention),
             Self::Threads => item.categories.contains(&InboxCategory::Thread),
             Self::Dms => item.categories.contains(&InboxCategory::Dm),
@@ -300,5 +300,36 @@ fn relative_time(timestamp: u64) -> String {
         format!("{}h", age / 3_600)
     } else {
         format!("{}d", age / 86_400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use crate::domain::{InboxCategory, InboxItem};
+
+    use super::InboxFilter;
+
+    #[test]
+    fn all_excludes_a_draft_only_conversation() {
+        let draft = InboxItem {
+            conversation_id: format!("draft:{}", Uuid::nil()),
+            categories: vec![InboxCategory::Draft],
+            event_id: None,
+            channel_id: Some(Uuid::nil()),
+            thread_root: None,
+            sender_pubkey: None,
+            created_at: 1,
+            preview: "draft".into(),
+            unread_count: 0,
+            first_unread_event_id: None,
+            first_unread_at: None,
+            draft_count: 1,
+            latest_draft_at: Some(1),
+            forced_unread: false,
+        };
+        assert!(!InboxFilter::All.matches(&draft));
+        assert!(InboxFilter::Drafts.matches(&draft));
     }
 }

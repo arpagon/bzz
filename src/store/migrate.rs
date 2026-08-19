@@ -10,6 +10,10 @@ const MIGRATIONS: &[(u32, &str)] = &[
     (2, include_str!("../../migrations/0002_media.sql")),
     (3, include_str!("../../migrations/0003_inbox_dm_search.sql")),
     (4, include_str!("../../migrations/0004_mentions.sql")),
+    (
+        5,
+        include_str!("../../migrations/0005_inbox_conversations.sql"),
+    ),
 ];
 
 pub fn configure(connection: &Connection) -> Result<()> {

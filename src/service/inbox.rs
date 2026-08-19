@@ -2,7 +2,7 @@ use nostr::Event;
 use uuid::Uuid;
 
 use crate::{
-    domain::InboxItem,
+    domain::{InboxCursor, InboxItem, InboxPage},
     error::{Error, Result},
     protocol::{http::HttpClient, types::QueryFilter},
     store::writer::StoreHandle,
@@ -76,10 +76,21 @@ impl InboxService {
     }
 
     pub async fn items(&self, identity_pubkey: &str) -> Result<Vec<InboxItem>> {
+        Ok(self.page(identity_pubkey, None, 500).await?.items)
+    }
+
+    pub async fn page(
+        &self,
+        identity_pubkey: &str,
+        cursor: Option<InboxCursor>,
+        limit: usize,
+    ) -> Result<InboxPage> {
         let identity_pubkey = identity_pubkey.to_owned();
         let community_id = self.community_id;
         self.store
-            .call(move |store| store.inbox_items(community_id, &identity_pubkey))
+            .call(move |store| {
+                store.inbox_page(community_id, &identity_pubkey, cursor.as_ref(), limit)
+            })
             .await
     }
 
