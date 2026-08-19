@@ -30,6 +30,7 @@ pub enum Overlay {
     WhichKey,
     Actions,
     Finder,
+    Command,
     Search,
     Theme,
     Reaction,
@@ -39,6 +40,19 @@ pub enum Overlay {
     DmPicker,
     AgentPicker,
     AgentReview,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfirmationKind {
+    Quit,
+    Delete,
+    InboxRead,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachmentPrompt {
+    Upload,
+    Save,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -130,6 +144,8 @@ pub struct PresentationState {
     pub focus: FocusSurface,
     pub overlay: Option<Overlay>,
     pub composer_target: Option<ComposerTarget>,
+    pub confirmation: Option<ConfirmationKind>,
+    pub attachment_prompt: Option<AttachmentPrompt>,
     /// Canonical context opened from Inbox returns here on the next back
     /// action. It is presentation-only and never changes message authority.
     pub inbox_return: bool,
@@ -139,7 +155,7 @@ impl PresentationState {
     pub fn enter_inbox(&mut self) {
         self.route = Route::Inbox;
         self.focus = FocusSurface::InboxList;
-        self.overlay = None;
+        self.close_overlay();
         self.inbox_return = false;
     }
 
@@ -150,7 +166,7 @@ impl PresentationState {
         } else {
             FocusSurface::Timeline
         };
-        self.overlay = None;
+        self.close_overlay();
         self.inbox_return = true;
     }
 
@@ -161,7 +177,8 @@ impl PresentationState {
     /// Returns true when this call consumed a route transition. The caller may
     /// then decide whether a second back action should request quit.
     pub fn back(&mut self) -> bool {
-        if self.overlay.take().is_some() {
+        if self.overlay.is_some() {
+            self.close_overlay();
             return true;
         }
         if self.composer_target.take().is_some() {
@@ -181,6 +198,22 @@ impl PresentationState {
 
     pub fn open_overlay(&mut self, overlay: Overlay) {
         self.overlay = Some(overlay);
+    }
+
+    pub fn close_overlay(&mut self) {
+        self.overlay = None;
+        self.confirmation = None;
+        self.attachment_prompt = None;
+    }
+
+    pub fn open_confirmation(&mut self, kind: ConfirmationKind) {
+        self.overlay = Some(Overlay::Confirmation);
+        self.confirmation = Some(kind);
+    }
+
+    pub fn open_attachment_prompt(&mut self, prompt: AttachmentPrompt) {
+        self.overlay = Some(Overlay::Attachment);
+        self.attachment_prompt = Some(prompt);
     }
 
     pub fn set_workspace_focus(&mut self, focus: FocusSurface) {
@@ -302,5 +335,18 @@ mod tests {
         assert_eq!(state.focus, FocusSurface::InboxList);
         state.set_inbox_focus(true);
         assert_eq!(state.focus, FocusSurface::InboxDetail);
+    }
+
+    #[test]
+    fn typed_prompts_clear_with_their_overlay() {
+        let mut state = PresentationState::default();
+        state.open_confirmation(super::ConfirmationKind::InboxRead);
+        assert_eq!(state.overlay, Some(Overlay::Confirmation));
+        assert!(state.back());
+        assert_eq!(state.overlay, None);
+        assert_eq!(state.confirmation, None);
+        state.open_attachment_prompt(super::AttachmentPrompt::Save);
+        state.close_overlay();
+        assert_eq!(state.attachment_prompt, None);
     }
 }

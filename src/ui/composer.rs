@@ -70,6 +70,90 @@ impl Composer {
         }
     }
 
+    pub fn delete_previous_word(&mut self) {
+        let before = &self.body[..self.cursor];
+        let mut start = self.cursor;
+        for (index, character) in before.char_indices().rev() {
+            if !character.is_whitespace() {
+                start = index + character.len_utf8();
+                break;
+            }
+            start = index;
+        }
+        for (index, character) in self.body[..start].char_indices().rev() {
+            if character.is_whitespace() {
+                break;
+            }
+            start = index;
+        }
+        self.replace_range(start..self.cursor, "");
+    }
+
+    pub fn delete_to_line_start(&mut self) {
+        let start = self.body[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |index| index.saturating_add(1));
+        self.replace_range(start..self.cursor, "");
+    }
+
+    pub fn delete_to_line_end(&mut self) {
+        let end = self.body[self.cursor..]
+            .find('\n')
+            .map_or(self.body.len(), |offset| self.cursor.saturating_add(offset));
+        self.replace_range(self.cursor..end, "");
+    }
+
+    pub fn move_word_left(&mut self) {
+        let before = &self.body[..self.cursor];
+        let mut target = 0;
+        let mut in_word = false;
+        for (index, character) in before.char_indices().rev() {
+            if !in_word {
+                if !character.is_whitespace() {
+                    in_word = true;
+                    target = index;
+                }
+            } else if character.is_whitespace() {
+                self.cursor = index.saturating_add(character.len_utf8());
+                return;
+            } else {
+                target = index;
+            }
+        }
+        self.cursor = target;
+    }
+
+    pub fn move_word_right(&mut self) {
+        let after = &self.body[self.cursor..];
+        let mut in_current_word = after
+            .chars()
+            .next()
+            .is_some_and(|character| !character.is_whitespace());
+        for (offset, character) in after.char_indices() {
+            if in_current_word {
+                if character.is_whitespace() {
+                    in_current_word = false;
+                }
+            } else if !character.is_whitespace() {
+                self.cursor = self.cursor.saturating_add(offset);
+                return;
+            }
+        }
+        self.cursor = self.body.len();
+    }
+
+    pub fn move_to_line_start(&mut self) {
+        self.cursor = self.body[..self.cursor]
+            .rfind('\n')
+            .map_or(0, |index| index.saturating_add(1));
+    }
+
+    pub fn move_to_line_end(&mut self) {
+        self.cursor = self.body[self.cursor..]
+            .find('\n')
+            .map_or(self.body.len(), |offset| self.cursor.saturating_add(offset));
+    }
+
     /// Moves the cursor to a visible composer cell without ever splitting UTF-8.
     /// Newlines and the renderer's fixed-width wrapping advance to the next row.
     pub fn set_cursor_from_display(
@@ -378,6 +462,31 @@ mod tests {
         composer.set_draft("界ab".into(), vec![], vec![]);
         composer.set_cursor_from_display(0, 2, 8);
         assert_eq!(composer.cursor, "界".len());
+    }
+
+    #[test]
+    fn owned_word_and_line_edits_preserve_utf8_boundaries() {
+        let mut composer = Composer {
+            body: "one two\n界three".into(),
+            cursor: 0,
+            ..Composer::default()
+        };
+        composer.move_word_right();
+        assert_eq!(composer.cursor, "one ".len());
+        composer.move_word_right();
+        assert_eq!(composer.cursor, "one two\n".len());
+        composer.move_word_left();
+        assert_eq!(composer.cursor, "one ".len());
+        composer.delete_to_line_end();
+        assert_eq!(composer.body, "one \n界three");
+        composer.move_word_right();
+        composer.move_to_line_end();
+        composer.delete_previous_word();
+        assert_eq!(composer.body, "one \n");
+        assert!(composer.body.is_char_boundary(composer.cursor));
+        composer.move_to_line_start();
+        composer.delete_to_line_start();
+        assert_eq!(composer.body, "one \n");
     }
 
     #[test]

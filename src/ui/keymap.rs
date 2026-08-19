@@ -727,8 +727,9 @@ struct KeymapFileBinding {
     disabled: bool,
 }
 
-// The legacy insert adapter remains while the composer is migrated in a later
-// vertical slice. Workspace navigation must use `KeyMap` and `InputRouter`.
+// The composer receives this adapter only after `InputRouter` grants its
+// typed composer owner the key. It converts owned printable/cursor/attachment
+// input into bounded local edits; route actions are resolved separately.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyAction {
     Up,

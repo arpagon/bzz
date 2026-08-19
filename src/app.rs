@@ -57,7 +57,10 @@ use crate::{
         layout,
         mention_picker::MentionPicker,
         search::SearchState,
-        state::{ComposerTarget, FocusSurface, Overlay, PresentationState, Route, ViewportState},
+        state::{
+            AttachmentPrompt, ComposerTarget, ConfirmationKind, FocusSurface, Overlay,
+            PresentationState, Route, ViewportState,
+        },
         terminal::{TerminalGuard, Tui},
         theme::{self, BorderSurface, HighlightGroup, Theme, ThemeScope},
         theme_picker::ThemePicker,
@@ -65,25 +68,6 @@ use crate::{
     },
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Mode {
-    Normal,
-    Insert,
-    Finder,
-    Reaction,
-    ConfirmDelete,
-    ConfirmInboxRead,
-    Command,
-    Theme,
-    ConfirmQuit,
-    MediaPreview,
-    Attachment,
-    SaveAttachment,
-    Search,
-    DmPicker,
-    AgentPicker,
-    AgentReview,
-}
 struct Runtime {
     community_id: Uuid,
     identity_id: Uuid,
@@ -230,7 +214,6 @@ pub struct App {
     thread_root: Option<String>,
     timeline: TimelineState,
     thread_timeline: TimelineState,
-    mode: Mode,
     composer: Composer,
     mention_picker: Option<MentionPicker>,
     finder: String,
@@ -353,7 +336,6 @@ impl App {
                 at_live_bottom: true,
                 ..TimelineState::default()
             },
-            mode: Mode::Normal,
             composer: Composer::default(),
             mention_picker: None,
             finder: String::new(),
@@ -535,7 +517,7 @@ impl App {
                                 self.load_selected_channel().await?;
                                 self.presentation.set_workspace_focus(FocusSurface::Timeline);
                             }
-                            self.mode=Mode::Normal;
+                            self.presentation.close_overlay();
                             self.dm_picker= DmPickerState::default();
                             self.dm_dirty_since=None;
                             self.status_error=Some(if result.visibility_confirmed {
@@ -915,7 +897,7 @@ impl App {
         let Some(runtime) = &self.runtime else {
             return;
         };
-        if self.mode != Mode::DmPicker {
+        if self.presentation.overlay != Some(Overlay::DmPicker) {
             return;
         }
         let service = runtime.search.clone();
@@ -1032,7 +1014,7 @@ impl App {
                 channel.name = dm_label(participants, &self_pubkey, &self.profiles);
             }
         }
-        if self.mode == Mode::DmPicker {
+        if self.presentation.overlay == Some(Overlay::DmPicker) {
             let pubkey = self.self_pubkey().unwrap_or_default().to_owned();
             self.dm_picker.reconcile(&self.profiles, &pubkey);
         }
@@ -1246,12 +1228,12 @@ impl App {
             match run.finish().await {
                 Ok(draft) => {
                     self.agent_draft = Some(draft.text);
-                    self.mode = Mode::AgentReview;
+                    self.presentation.open_overlay(Overlay::AgentReview);
                     self.status_error = None;
                 }
                 Err(failure) => {
                     self.agent_draft = None;
-                    self.mode = Mode::Normal;
+                    self.presentation.close_overlay();
                     self.status_error = Some(failure.message().into());
                 }
             }
@@ -1283,7 +1265,8 @@ impl App {
         if ((self.presentation.focus == FocusSurface::Timeline && self.timeline.at_live_bottom)
             || (self.presentation.focus == FocusSurface::Context
                 && self.thread_timeline.at_live_bottom))
-            && self.mode == Mode::Normal
+            && self.presentation.overlay.is_none()
+            && self.presentation.composer_target.is_none()
         {
             self.mark_current_read().await?;
         }
@@ -1361,7 +1344,9 @@ impl App {
             return Ok(());
         };
         match mouse.kind {
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if self.mode == Mode::Normal => {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if self.presentation.composer_target.is_none() =>
+            {
                 let delta = if matches!(mouse.kind, MouseEventKind::ScrollUp) {
                     -3
                 } else {
@@ -1419,7 +1404,9 @@ impl App {
         let double_click = self.record_primary_click(&target);
         match target {
             HitTarget::Community(index)
-                if self.mode == Mode::Normal && index < self.config.communities.len() =>
+                if self.presentation.overlay.is_none()
+                    && self.presentation.composer_target.is_none()
+                    && index < self.config.communities.len() =>
             {
                 self.select_community_index(index);
                 self.presentation
@@ -1428,11 +1415,16 @@ impl App {
                     self.switch_community(index, guard, terminal).await?;
                 }
             }
-            HitTarget::ChannelPane if self.mode == Mode::Normal => self
-                .presentation
-                .set_workspace_focus(FocusSurface::Channels),
+            HitTarget::ChannelPane
+                if self.presentation.overlay.is_none()
+                    && self.presentation.composer_target.is_none() =>
+            {
+                self.presentation
+                    .set_workspace_focus(FocusSurface::Channels)
+            }
             HitTarget::Channel(index)
-                if self.mode == Mode::Normal
+                if self.presentation.overlay.is_none()
+                    && self.presentation.composer_target.is_none()
                     && self
                         .channels
                         .get(index)
@@ -1448,10 +1440,17 @@ impl App {
                         .set_workspace_focus(FocusSurface::Timeline);
                 }
             }
-            HitTarget::Timeline if self.mode == Mode::Normal => self
-                .presentation
-                .set_workspace_focus(FocusSurface::Timeline),
-            HitTarget::TimelineMessage(event_id) if self.mode == Mode::Normal => {
+            HitTarget::Timeline
+                if self.presentation.overlay.is_none()
+                    && self.presentation.composer_target.is_none() =>
+            {
+                self.presentation
+                    .set_workspace_focus(FocusSurface::Timeline)
+            }
+            HitTarget::TimelineMessage(event_id)
+                if self.presentation.overlay.is_none()
+                    && self.presentation.composer_target.is_none() =>
+            {
                 self.presentation
                     .set_workspace_focus(FocusSurface::Timeline);
                 self.timeline.selected_event = Some(event_id);
@@ -1463,10 +1462,16 @@ impl App {
                     self.toggle_thread().await?;
                 }
             }
-            HitTarget::Thread if self.mode == Mode::Normal => {
+            HitTarget::Thread
+                if self.presentation.overlay.is_none()
+                    && self.presentation.composer_target.is_none() =>
+            {
                 self.presentation.set_workspace_focus(FocusSurface::Context)
             }
-            HitTarget::ThreadMessage(event_id) if self.mode == Mode::Normal => {
+            HitTarget::ThreadMessage(event_id)
+                if self.presentation.overlay.is_none()
+                    && self.presentation.composer_target.is_none() =>
+            {
                 self.presentation.set_workspace_focus(FocusSurface::Context);
                 self.thread_timeline.selected_event = Some(event_id);
                 self.thread_timeline.at_live_bottom =
@@ -1476,12 +1481,15 @@ impl App {
                 self.thread_timeline.keep_selection_visible = true;
             }
             HitTarget::InboxList
-                if self.mode == Mode::Normal && self.presentation.route == Route::Inbox =>
+                if self.presentation.overlay.is_none()
+                    && self.presentation.composer_target.is_none()
+                    && self.presentation.route == Route::Inbox =>
             {
                 self.presentation.set_inbox_focus(false);
             }
             HitTarget::InboxItem(id)
-                if self.mode == Mode::Normal
+                if self.presentation.overlay.is_none()
+                    && self.presentation.composer_target.is_none()
                     && self.presentation.route == Route::Inbox
                     && self
                         .inbox_items
@@ -1497,11 +1505,16 @@ impl App {
                 }
             }
             HitTarget::InboxDetail
-                if self.mode == Mode::Normal && self.presentation.route == Route::Inbox =>
+                if self.presentation.overlay.is_none()
+                    && self.presentation.composer_target.is_none()
+                    && self.presentation.route == Route::Inbox =>
             {
                 self.presentation.set_inbox_focus(true);
             }
-            HitTarget::Composer if self.mode == Mode::Insert => {
+            HitTarget::Composer
+                if self.presentation.overlay.is_none()
+                    && self.presentation.composer_target.is_some() =>
+            {
                 if let Some(area) = self
                     .last_hit_map
                     .as_ref()
@@ -1515,7 +1528,10 @@ impl App {
                     self.refresh_mention_picker().await?;
                 }
             }
-            HitTarget::MentionCandidate(index) if self.mode == Mode::Insert => {
+            HitTarget::MentionCandidate(index)
+                if self.presentation.overlay.is_none()
+                    && self.presentation.composer_target.is_some() =>
+            {
                 if let Some(picker) = &mut self.mention_picker
                     && index < picker.candidates.len()
                 {
@@ -1524,7 +1540,9 @@ impl App {
                     self.persist_draft().await?;
                 }
             }
-            HitTarget::FinderChannel(channel_id) if self.mode == Mode::Finder => {
+            HitTarget::FinderChannel(channel_id)
+                if self.presentation.overlay == Some(Overlay::Finder) =>
+            {
                 if let Some(index) = self
                     .channels
                     .iter()
@@ -1536,9 +1554,9 @@ impl App {
                     self.presentation
                         .set_workspace_focus(FocusSurface::Timeline);
                 }
-                self.mode = Mode::Normal;
+                self.presentation.close_overlay();
             }
-            HitTarget::Theme(id) if self.mode == Mode::Theme => {
+            HitTarget::Theme(id) if self.presentation.overlay == Some(Overlay::Theme) => {
                 if let Some(picker) = &mut self.theme_picker
                     && picker.select_id(&id)
                 {
@@ -1546,13 +1564,13 @@ impl App {
                 }
             }
             HitTarget::Reaction(index)
-                if self.mode == Mode::Reaction
+                if self.presentation.overlay == Some(Overlay::Reaction)
                     && index < crate::ui::reaction_picker::REACTIONS.len() =>
             {
                 self.reaction_index = index;
             }
             HitTarget::SearchResult(id)
-                if self.mode == Mode::Search
+                if self.presentation.overlay == Some(Overlay::Search)
                     && self
                         .search_state
                         .results
@@ -1562,18 +1580,21 @@ impl App {
                 self.search_state.selected_id = Some(id);
             }
             HitTarget::DmCandidate(pubkey)
-                if self.mode == Mode::DmPicker && !self.dm_picker.submitting =>
+                if self.presentation.overlay == Some(Overlay::DmPicker)
+                    && !self.dm_picker.submitting =>
             {
                 self.dm_picker.selected_pubkey = Some(pubkey);
             }
             HitTarget::LocalAgent(index)
-                if self.mode == Mode::AgentPicker
+                if self.presentation.overlay == Some(Overlay::AgentPicker)
                     && self.agent_run.is_none()
                     && index < self.config.local_agents.len() =>
             {
                 self.agent_picker_index = index;
             }
-            HitTarget::AgentDraftAccept if self.mode == Mode::AgentReview => {
+            HitTarget::AgentDraftAccept
+                if self.presentation.overlay == Some(Overlay::AgentReview) =>
+            {
                 self.accept_agent_draft().await?;
             }
             _ => {}
@@ -1587,25 +1608,45 @@ impl App {
         guard: &mut TerminalGuard,
         terminal: &mut Tui,
     ) -> Result<()> {
-        match self.mode {
-            Mode::Normal if self.presentation.route == Route::Inbox => {
-                self.handle_inbox_route_key(key, guard, terminal).await?
-            }
-            Mode::Normal => self.handle_workspace_key(key, guard, terminal).await?,
-            Mode::Insert => self.insert_action(map_insert(key)).await?,
-            Mode::ConfirmQuit => match key.code {
-                KeyCode::Char('y' | 'Y') => self.should_quit = true,
-                KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
-                    self.mode = Mode::Normal;
-                    self.presentation.overlay = None;
+        match self.presentation.overlay {
+            Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) => {
+                if self.presentation.route == Route::Inbox {
+                    self.handle_inbox_route_key(key, guard, terminal).await?
+                } else {
+                    self.handle_workspace_key(key, guard, terminal).await?
                 }
-                _ => {}
+            }
+            Some(Overlay::Confirmation) => match self.presentation.confirmation {
+                Some(ConfirmationKind::Quit) => match key.code {
+                    KeyCode::Char('y' | 'Y') => self.should_quit = true,
+                    KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                        self.presentation.close_overlay();
+                    }
+                    _ => {}
+                },
+                Some(ConfirmationKind::Delete) => match key.code {
+                    KeyCode::Char('y' | 'Y') => {
+                        self.delete_selected();
+                        self.presentation.close_overlay();
+                    }
+                    KeyCode::Esc | KeyCode::Char('n' | 'N') => self.presentation.close_overlay(),
+                    _ => {}
+                },
+                Some(ConfirmationKind::InboxRead) => match key.code {
+                    KeyCode::Char('y' | 'Y') => self.mark_pending_inbox_read().await?,
+                    KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                        self.pending_inbox_read.clear();
+                        self.presentation.close_overlay();
+                    }
+                    _ => {}
+                },
+                None => self.presentation.close_overlay(),
             },
-            Mode::Finder => self.text_overlay_key(key, Mode::Finder).await?,
-            Mode::Command => self.text_overlay_key(key, Mode::Command).await?,
-            Mode::Theme => self.theme_picker_key(key),
-            Mode::Reaction => match key.code {
-                KeyCode::Esc => self.mode = Mode::Normal,
+            Some(Overlay::Finder) => self.text_overlay_key(key, true).await?,
+            Some(Overlay::Command) => self.text_overlay_key(key, false).await?,
+            Some(Overlay::Theme) => self.theme_picker_key(key),
+            Some(Overlay::Reaction) => match key.code {
+                KeyCode::Esc => self.presentation.close_overlay(),
                 KeyCode::Char('j') | KeyCode::Down => {
                     self.reaction_index =
                         (self.reaction_index + 1) % crate::ui::reaction_picker::REACTIONS.len()
@@ -1619,42 +1660,69 @@ impl App {
                 KeyCode::Enter => self.send_reaction(),
                 _ => {}
             },
-            Mode::ConfirmDelete => match key.code {
-                KeyCode::Char('y' | 'Y') => {
-                    self.delete_selected();
-                    self.mode = Mode::Normal
-                }
-                KeyCode::Esc | KeyCode::Char('n' | 'N') => self.mode = Mode::Normal,
-                _ => {}
-            },
-            Mode::ConfirmInboxRead => match key.code {
-                KeyCode::Char('y' | 'Y') => {
-                    self.mark_pending_inbox_read().await?;
-                    self.mode = Mode::Normal;
-                }
-                KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
-                    self.pending_inbox_read.clear();
-                    self.presentation.overlay = None;
-                    self.mode = Mode::Normal;
-                }
-                _ => {}
-            },
-            Mode::MediaPreview => self.media_preview_key(key),
-            Mode::Attachment => self.attachment_path_key(key, false).await?,
-            Mode::SaveAttachment => self.attachment_path_key(key, true).await?,
-            Mode::Search => self.search_key(key).await?,
-            Mode::DmPicker => self.dm_picker_key(key),
-            Mode::AgentPicker => self.agent_picker_key(key),
-            Mode::AgentReview => match key.code {
+            Some(Overlay::MediaPreview) => self.media_preview_key(key),
+            Some(Overlay::Attachment) => {
+                let save = self.presentation.attachment_prompt == Some(AttachmentPrompt::Save);
+                self.attachment_path_key(key, save).await?
+            }
+            Some(Overlay::Search) => self.search_key(key).await?,
+            Some(Overlay::DmPicker) => self.dm_picker_key(key),
+            Some(Overlay::AgentPicker) => self.agent_picker_key(key),
+            Some(Overlay::AgentReview) => match key.code {
                 KeyCode::Enter => self.accept_agent_draft().await?,
                 KeyCode::Esc => {
                     self.agent_draft = None;
-                    self.mode = Mode::Normal;
+                    self.presentation.close_overlay();
                 }
                 _ => {}
             },
+            None if self.presentation.composer_target.is_some() => {
+                self.handle_composer_key(key).await?
+            }
+            None if self.presentation.route == Route::Inbox => {
+                self.handle_inbox_route_key(key, guard, terminal).await?
+            }
+            None => self.handle_workspace_key(key, guard, terminal).await?,
         }
         Ok(())
+    }
+
+    async fn handle_composer_key(&mut self, key: KeyEvent) -> Result<()> {
+        let context = InputContext {
+            overlay_open: false,
+            composer_completion_open: self.mention_picker.is_some(),
+            composer_open: true,
+            filter_open: false,
+            route_scope: KeyScope::Workspace,
+        };
+        match self.input_router.dispatch(&self.keymap, context, key) {
+            InputDispatch::Action(action) => self.composer_router_action(action).await?,
+            InputDispatch::Owned(InputOwner::Composer)
+            | InputDispatch::Owned(InputOwner::ComposerCompletion) => {
+                self.insert_action(map_insert(key)).await?;
+            }
+            InputDispatch::Pending { .. } | InputDispatch::Owned(_) | InputDispatch::Noop => {}
+        }
+        Ok(())
+    }
+
+    async fn composer_router_action(&mut self, action: UiAction) -> Result<()> {
+        match action {
+            UiAction::BackOrQuit => self.insert_action(KeyAction::Escape).await?,
+            UiAction::Submit => self.insert_action(KeyAction::Submit).await?,
+            UiAction::InsertNewline => self.insert_action(KeyAction::Newline).await?,
+            UiAction::Complete => self.insert_action(KeyAction::Complete).await?,
+            UiAction::DeletePreviousWord => self.composer.delete_previous_word(),
+            UiAction::DeleteToStart => self.composer.delete_to_line_start(),
+            UiAction::DeleteToEnd => self.composer.delete_to_line_end(),
+            UiAction::MoveWordLeft => self.composer.move_word_left(),
+            UiAction::MoveWordRight => self.composer.move_word_right(),
+            UiAction::MoveLineStart => self.composer.move_to_line_start(),
+            UiAction::MoveLineEnd => self.composer.move_to_line_end(),
+            _ => return Ok(()),
+        }
+        self.refresh_mention_picker().await?;
+        self.persist_draft().await
     }
 
     async fn handle_workspace_key(
@@ -1860,8 +1928,7 @@ impl App {
                 self.spawn_inbox_load(self.runtime.is_some());
             }
             InboxEffect::RequestQuitConfirmation => {
-                self.mode = Mode::ConfirmQuit;
-                self.presentation.open_overlay(Overlay::Confirmation);
+                self.presentation.open_confirmation(ConfirmationKind::Quit);
             }
             InboxEffect::Unavailable(action) => {
                 self.status_error = Some(format!("{} is not available in Inbox", action.label()));
@@ -1918,8 +1985,7 @@ impl App {
         match effect {
             WorkspaceEffect::None => {}
             WorkspaceEffect::RequestQuitConfirmation => {
-                self.mode = Mode::ConfirmQuit;
-                self.presentation.open_overlay(Overlay::Confirmation);
+                self.presentation.open_confirmation(ConfirmationKind::Quit);
             }
             WorkspaceEffect::CloseContext => self.thread_root = None,
             WorkspaceEffect::EnsureContext => {
@@ -1943,7 +2009,7 @@ impl App {
             WorkspaceEffect::OpenInbox => self.open_inbox(),
             WorkspaceEffect::OpenFinder => {
                 self.finder.clear();
-                self.mode = Mode::Finder;
+                self.presentation.open_overlay(Overlay::Finder);
             }
             WorkspaceEffect::OpenContextActions => {
                 let actions = derive_actions(self.action_context());
@@ -1963,7 +2029,7 @@ impl App {
             WorkspaceEffect::OpenOptions => self.open_theme_picker(),
             WorkspaceEffect::OpenCommand => {
                 self.command.clear();
-                self.mode = Mode::Command;
+                self.presentation.open_overlay(Overlay::Command);
             }
             WorkspaceEffect::OpenDmPicker => self.open_dm_picker(None),
             WorkspaceEffect::ToggleThread => self.toggle_thread().await?,
@@ -1975,7 +2041,7 @@ impl App {
                             .into(),
                     );
                 } else if self.selected_message().is_some() {
-                    self.mode = Mode::Reaction;
+                    self.presentation.open_overlay(Overlay::Reaction);
                 }
             }
             WorkspaceEffect::ConfirmDelete => {
@@ -1989,7 +2055,8 @@ impl App {
                         message.pubkey == runtime.signer.public_key().to_hex()
                     })
                 }) {
-                    self.mode = Mode::ConfirmDelete;
+                    self.presentation
+                        .open_confirmation(ConfirmationKind::Delete);
                 }
             }
             WorkspaceEffect::MarkUnread => {
@@ -2260,7 +2327,6 @@ impl App {
             parent_event_id: parent,
         });
         self.refresh_mention_picker().await?;
-        self.mode = Mode::Insert;
         let pending = self
             .composer
             .attachments
@@ -2307,7 +2373,6 @@ impl App {
             KeyAction::Escape => {
                 self.mention_picker = None;
                 self.presentation.composer_target = None;
-                self.mode = Mode::Normal;
             }
             KeyAction::Character(character) => self.composer.insert(character),
             KeyAction::Backspace => self.composer.backspace(),
@@ -2317,7 +2382,8 @@ impl App {
             KeyAction::Newline => self.composer.newline(),
             KeyAction::Attach => {
                 self.attachment_input.clear();
-                self.mode = Mode::Attachment;
+                self.presentation
+                    .open_attachment_prompt(AttachmentPrompt::Upload);
             }
             KeyAction::RemoveAttachment => {
                 if let Some(crate::media::DraftAttachment::Pending(pending)) =
@@ -2349,8 +2415,7 @@ impl App {
             KeyAction::Submit => {
                 if let Some(message) = self.composer.take_message() {
                     self.queue_message(message);
-                    self.presentation.composer_target = None;
-                    self.mode = Mode::Normal
+                    self.presentation.composer_target = None
                 }
             }
             _ => {}
@@ -2412,7 +2477,7 @@ impl App {
         {
             self.preview_index = 0;
             self.preview_revealed = false;
-            self.mode = Mode::MediaPreview;
+            self.presentation.open_overlay(Overlay::MediaPreview);
         } else {
             self.status_error = Some("the selected message has no attachments".into());
         }
@@ -2425,7 +2490,7 @@ impl App {
 
     fn media_preview_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
+            KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
             KeyCode::Char('[') | KeyCode::Left => {
                 self.preview_index = self.preview_index.saturating_sub(1);
                 self.preview_revealed = false;
@@ -2445,7 +2510,8 @@ impl App {
             }
             KeyCode::Char('s') => {
                 self.attachment_input.clear();
-                self.mode = Mode::SaveAttachment;
+                self.presentation
+                    .open_attachment_prompt(AttachmentPrompt::Save);
             }
             _ => {}
         }
@@ -2454,11 +2520,11 @@ impl App {
     async fn attachment_path_key(&mut self, key: KeyEvent, save: bool) -> Result<()> {
         match key.code {
             KeyCode::Esc => {
-                self.mode = if save {
-                    Mode::MediaPreview
+                if save {
+                    self.presentation.open_overlay(Overlay::MediaPreview);
                 } else {
-                    Mode::Insert
-                };
+                    self.presentation.close_overlay();
+                }
                 self.attachment_input.clear();
             }
             KeyCode::Backspace => {
@@ -2473,10 +2539,10 @@ impl App {
                 self.attachment_input.clear();
                 if save {
                     self.save_preview_attachment(path);
-                    self.mode = Mode::MediaPreview;
+                    self.presentation.open_overlay(Overlay::MediaPreview);
                 } else {
                     self.start_attachment_upload(path);
-                    self.mode = Mode::Insert;
+                    self.presentation.close_overlay();
                 }
             }
             KeyCode::Char(character)
@@ -2726,7 +2792,7 @@ impl App {
                 })
                 .await;
         });
-        self.mode = Mode::Normal;
+        self.presentation.close_overlay();
     }
     fn delete_selected(&mut self) {
         let Some(runtime) = &self.runtime else { return };
@@ -2826,7 +2892,7 @@ impl App {
     }
 
     fn open_search(&mut self) {
-        self.mode = Mode::Search;
+        self.presentation.open_overlay(Overlay::Search);
         self.search_state = SearchState::default();
         self.search_state.changed();
         self.search_dirty_since = None;
@@ -2848,14 +2914,14 @@ impl App {
         self.agent_picker_index = self
             .agent_picker_index
             .min(self.config.local_agents.len().saturating_sub(1));
-        self.mode = Mode::AgentPicker;
+        self.presentation.open_overlay(Overlay::AgentPicker);
     }
 
     fn agent_picker_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
                 self.cancel_agent_run();
-                self.mode = Mode::Normal;
+                self.presentation.close_overlay();
             }
             KeyCode::Char('j') | KeyCode::Down if self.agent_run.is_none() => {
                 self.agent_picker_index = self
@@ -2936,11 +3002,12 @@ impl App {
 
     async fn accept_agent_draft(&mut self) -> Result<()> {
         let Some(draft) = self.agent_draft.take() else {
-            self.mode = Mode::Normal;
+            self.presentation.close_overlay();
             return Ok(());
         };
+        self.presentation.close_overlay();
         self.enter_composer().await?;
-        if self.mode != Mode::Insert {
+        if self.presentation.composer_target.is_none() {
             return Ok(());
         }
         if !self.composer.body.trim().is_empty() {
@@ -2969,7 +3036,7 @@ impl App {
         if let Some(pubkey) = self.self_pubkey().map(str::to_owned) {
             self.dm_picker.reconcile(&self.profiles, &pubkey);
         }
-        self.mode = Mode::DmPicker;
+        self.presentation.open_overlay(Overlay::DmPicker);
     }
 
     fn hide_current_dm(&mut self) {
@@ -3010,7 +3077,7 @@ impl App {
                 if let Some(task) = self.search_task.take() {
                     task.abort();
                 }
-                self.mode = Mode::Normal;
+                self.presentation.close_overlay();
             }
             KeyCode::Backspace => {
                 self.search_state.query.pop();
@@ -3080,7 +3147,7 @@ impl App {
             result.thread_root.as_deref(),
         )
         .await?;
-        self.mode = Mode::Normal;
+        self.presentation.close_overlay();
         Ok(())
     }
 
@@ -3093,7 +3160,7 @@ impl App {
                 }
                 self.dm_picker = DmPickerState::default();
                 self.dm_dirty_since = None;
-                self.mode = Mode::Normal;
+                self.presentation.close_overlay();
             }
             KeyCode::Backspace if !self.dm_picker.submitting => {
                 self.dm_picker.query.pop();
@@ -3422,8 +3489,8 @@ impl App {
             return Ok(());
         }
         self.pending_inbox_read = items;
-        self.mode = Mode::ConfirmInboxRead;
-        self.presentation.open_overlay(Overlay::Confirmation);
+        self.presentation
+            .open_confirmation(ConfirmationKind::InboxRead);
         Ok(())
     }
 
@@ -3432,30 +3499,30 @@ impl App {
         for item in &items {
             self.mark_inbox_item_read(item).await?;
         }
-        self.presentation.overlay = None;
+        self.presentation.close_overlay();
         self.spawn_inbox_load(false);
         Ok(())
     }
 
-    async fn text_overlay_key(&mut self, key: KeyEvent, mode: Mode) -> Result<()> {
+    async fn text_overlay_key(&mut self, key: KeyEvent, finder: bool) -> Result<()> {
         match key.code {
-            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Esc => self.presentation.close_overlay(),
             KeyCode::Backspace => {
-                if mode == Mode::Finder {
+                if finder {
                     self.finder.pop();
                 } else {
                     self.command.pop();
                 }
             }
             KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if mode == Mode::Finder {
+                if finder {
                     self.finder.push(character)
                 } else {
                     self.command.push(character)
                 }
             }
             KeyCode::Enter => {
-                if mode == Mode::Finder {
+                if finder {
                     if let Some(found) =
                         crate::ui::finder::rank(&self.finder, &self.channels).first()
                         && let Some(index) = self
@@ -3470,10 +3537,10 @@ impl App {
                         self.presentation
                             .set_workspace_focus(FocusSurface::Timeline);
                     }
-                    self.mode = Mode::Normal
+                    self.presentation.close_overlay();
                 } else {
                     self.execute_command().await?;
-                    self.mode = Mode::Normal
+                    self.presentation.close_overlay();
                 }
             }
             _ => {}
@@ -3488,7 +3555,7 @@ impl App {
         };
         self.theme_before_preview = Some(self.theme.clone());
         self.theme_picker = Some(ThemePicker::open(self.theme.id(), scope));
-        self.mode = Mode::Theme;
+        self.presentation.open_overlay(Overlay::Theme);
     }
 
     fn theme_picker_key(&mut self, key: KeyEvent) {
@@ -3498,7 +3565,7 @@ impl App {
                     self.theme = theme;
                 }
                 self.theme_picker = None;
-                self.mode = Mode::Normal;
+                self.presentation.close_overlay();
                 return;
             }
             KeyCode::Enter => {
@@ -3583,7 +3650,7 @@ impl App {
             self.theme_before_preview = None;
         }
         self.theme_picker = None;
-        self.mode = Mode::Normal;
+        self.presentation.close_overlay();
     }
 
     fn reload_theme(&mut self) {
@@ -4033,7 +4100,7 @@ impl App {
         let self_pubkey = self.self_pubkey().map(str::to_owned);
         hit_map.push(panes.timeline, HitTarget::Timeline);
         let mut timeline_hits = Vec::new();
-        if self.mode == Mode::Normal {
+        if self.presentation.overlay.is_none() && self.presentation.composer_target.is_none() {
             timeline::render_with_media_and_hits(
                 frame,
                 panes.timeline,
@@ -4068,7 +4135,7 @@ impl App {
         if let Some(thread) = panes.thread {
             hit_map.push(thread, HitTarget::Thread);
             let mut thread_hits = Vec::new();
-            if self.mode == Mode::Normal {
+            if self.presentation.overlay.is_none() && self.presentation.composer_target.is_none() {
                 timeline::render_with_media_and_hits(
                     frame,
                     thread,
@@ -4234,27 +4301,39 @@ impl App {
         );
     }
     fn render_status(&self, frame: &mut Frame<'_>, area: Rect) {
-        let mode = match self.mode {
-            Mode::Normal if self.presentation.route == Route::Inbox => "INBOX",
-            Mode::Normal => "NORMAL",
-            Mode::Insert => "INSERT",
-            Mode::Finder => "FINDER",
-            Mode::Reaction => "REACTION",
-            Mode::ConfirmDelete | Mode::ConfirmInboxRead => "CONFIRM",
-            Mode::Command => "COMMAND",
-            Mode::Theme => "THEME",
-            Mode::ConfirmQuit => "CONFIRM QUIT",
-            Mode::MediaPreview => "MEDIA",
-            Mode::Attachment => "ATTACH",
-            Mode::SaveAttachment => "SAVE",
-            Mode::Search => "SEARCH",
-            Mode::DmPicker => "DM",
-            Mode::AgentPicker => "AGENT",
-            Mode::AgentReview => "REVIEW",
+        let mode = match self.presentation.overlay {
+            Some(Overlay::Finder) => "FINDER",
+            Some(Overlay::Command) => "COMMAND",
+            Some(Overlay::Theme) => "THEME",
+            Some(Overlay::Reaction) => "REACTION",
+            Some(Overlay::Confirmation) => match self.presentation.confirmation {
+                Some(ConfirmationKind::Quit) => "CONFIRM QUIT",
+                _ => "CONFIRM",
+            },
+            Some(Overlay::MediaPreview) => "MEDIA",
+            Some(Overlay::Attachment) => match self.presentation.attachment_prompt {
+                Some(AttachmentPrompt::Save) => "SAVE",
+                _ => "ATTACH",
+            },
+            Some(Overlay::Search) => "SEARCH",
+            Some(Overlay::DmPicker) => "DM",
+            Some(Overlay::AgentPicker) => "AGENT",
+            Some(Overlay::AgentReview) => "REVIEW",
+            Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) | None
+                if self.presentation.composer_target.is_some() =>
+            {
+                "INSERT"
+            }
+            Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) | None
+                if self.presentation.route == Route::Inbox =>
+            {
+                "INBOX"
+            }
+            Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) | None => "NORMAL",
         };
-        let mode_group = match self.mode {
-            Mode::Insert => HighlightGroup::StatusModeInsert,
-            Mode::Command => HighlightGroup::StatusModeCommand,
+        let mode_group = match self.presentation.overlay {
+            Some(Overlay::Command) => HighlightGroup::StatusModeCommand,
+            _ if self.presentation.composer_target.is_some() => HighlightGroup::StatusModeInsert,
             _ => HighlightGroup::StatusMode,
         };
         let connection = crate::ui::status::connection_label(self.connection);
@@ -4279,80 +4358,90 @@ impl App {
         );
     }
     fn render_overlay(&mut self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
-        if self.mode == Mode::Normal {
-            match self.presentation.overlay {
-                Some(Overlay::Help) => {
-                    let actions = derive_actions(self.action_context());
-                    frame.render_widget(Clear, area);
-                    frame.render_widget(
-                        Paragraph::new(crate::ui::help::effective_keymap_with_actions(
-                            &self.keymap,
-                            if self.presentation.route == Route::Inbox {
-                                KeyScope::Inbox
-                            } else {
-                                KeyScope::Workspace
-                            },
-                            &actions,
-                        ))
-                        .style(self.theme.style(HighlightGroup::Normal))
-                        .block(
-                            Block::bordered()
-                                .border_type(self.theme.border_type(BorderSurface::Modal))
-                                .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                                .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                                .title(" effective keymap "),
-                        )
-                        .wrap(Wrap { trim: false }),
-                        area,
-                    );
-                    return;
-                }
-                Some(Overlay::WhichKey) => {
-                    let popup = centered(area, 48, 14);
-                    frame.render_widget(Clear, popup);
-                    frame.render_widget(
-                        Paragraph::new(crate::ui::help::which_key(
-                            &self.keymap,
-                            if self.presentation.route == Route::Inbox {
-                                KeyScope::Inbox
-                            } else {
-                                KeyScope::Workspace
-                            },
-                            self.input_router.sequence(),
-                        ))
-                        .style(self.theme.style(HighlightGroup::Normal))
-                        .block(
-                            Block::bordered()
-                                .border_type(self.theme.border_type(BorderSurface::Modal))
-                                .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                                .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                                .title(" leader "),
-                        )
-                        .wrap(Wrap { trim: false }),
-                        popup,
-                    );
-                    return;
-                }
-                Some(Overlay::Actions) => {
-                    self.render_action_menu(frame, area, hit_map);
-                    return;
-                }
-                _ => {}
+        match self.presentation.overlay {
+            Some(Overlay::Help) => {
+                let actions = derive_actions(self.action_context());
+                frame.render_widget(Clear, area);
+                frame.render_widget(
+                    Paragraph::new(crate::ui::help::effective_keymap_with_actions(
+                        &self.keymap,
+                        if self.presentation.route == Route::Inbox {
+                            KeyScope::Inbox
+                        } else {
+                            KeyScope::Workspace
+                        },
+                        &actions,
+                    ))
+                    .style(self.theme.style(HighlightGroup::Normal))
+                    .block(
+                        Block::bordered()
+                            .border_type(self.theme.border_type(BorderSurface::Modal))
+                            .border_style(self.theme.style(HighlightGroup::ModalBorder))
+                            .title_style(self.theme.style(HighlightGroup::ModalTitle))
+                            .title(" effective keymap "),
+                    )
+                    .wrap(Wrap { trim: false }),
+                    area,
+                );
             }
-        }
-        match self.mode {
-            Mode::ConfirmQuit => self.render_prompt(
-                frame,
-                area,
-                " quit bzz? ",
-                "Press y to quit or n/Esc to stay in bzz",
-            ),
-            Mode::Finder => self.render_finder(frame, area, hit_map),
-            Mode::Command => {
+            Some(Overlay::WhichKey) => {
+                let popup = centered(area, 48, 14);
+                frame.render_widget(Clear, popup);
+                frame.render_widget(
+                    Paragraph::new(crate::ui::help::which_key(
+                        &self.keymap,
+                        if self.presentation.route == Route::Inbox {
+                            KeyScope::Inbox
+                        } else {
+                            KeyScope::Workspace
+                        },
+                        self.input_router.sequence(),
+                    ))
+                    .style(self.theme.style(HighlightGroup::Normal))
+                    .block(
+                        Block::bordered()
+                            .border_type(self.theme.border_type(BorderSurface::Modal))
+                            .border_style(self.theme.style(HighlightGroup::ModalBorder))
+                            .title_style(self.theme.style(HighlightGroup::ModalTitle))
+                            .title(" leader "),
+                    )
+                    .wrap(Wrap { trim: false }),
+                    popup,
+                );
+            }
+            Some(Overlay::Actions) => {
+                self.render_action_menu(frame, area, hit_map);
+            }
+            Some(Overlay::Confirmation) => match self.presentation.confirmation {
+                Some(ConfirmationKind::Quit) => self.render_prompt(
+                    frame,
+                    area,
+                    " quit bzz? ",
+                    "Press y to quit or n/Esc to stay in bzz",
+                ),
+                Some(ConfirmationKind::Delete) => self.render_prompt(
+                    frame,
+                    area,
+                    " delete message? ",
+                    "Press y to delete or n/Esc to cancel",
+                ),
+                Some(ConfirmationKind::InboxRead) => self.render_prompt(
+                    frame,
+                    area,
+                    " mark visible Inbox work read? ",
+                    &format!(
+                        "Press y to mark {} conversation(s) read or n/Esc to cancel",
+                        self.pending_inbox_read.len()
+                    ),
+                ),
+                None => {}
+            },
+            Some(Overlay::Finder) => self.render_finder(frame, area, hit_map),
+            Some(Overlay::Command) => {
                 self.render_prompt(frame, area, " command ", &format!(":{}", self.command))
             }
-            Mode::Theme => self.render_theme_picker(frame, area, hit_map),
-            Mode::Reaction => {
+            Some(Overlay::Theme) => self.render_theme_picker(frame, area, hit_map),
+            Some(Overlay::Reaction) => {
                 let popup = centered(area, 70, 5);
                 let inner = inner_rect(popup);
                 let count = u16::try_from(crate::ui::reaction_picker::REACTIONS.len()).unwrap_or(1);
@@ -4388,22 +4477,7 @@ impl App {
                         .as_str(),
                 )
             }
-            Mode::ConfirmDelete => self.render_prompt(
-                frame,
-                area,
-                " delete message? ",
-                "Press y to delete or n/Esc to cancel",
-            ),
-            Mode::ConfirmInboxRead => self.render_prompt(
-                frame,
-                area,
-                " mark visible Inbox work read? ",
-                &format!(
-                    "Press y to mark {} conversation(s) read or n/Esc to cancel",
-                    self.pending_inbox_read.len()
-                ),
-            ),
-            Mode::Insert => {
+            None if self.presentation.composer_target.is_some() => {
                 let popup = bottom_popup(area, 5);
                 let composer_inner = inner_rect(popup);
                 hit_map.push(composer_inner, HitTarget::Composer);
@@ -4456,20 +4530,18 @@ impl App {
                     }
                 }
             }
-            Mode::MediaPreview => self.render_media_preview(frame, area),
-            Mode::Attachment => self.render_prompt(
+            Some(Overlay::MediaPreview) => self.render_media_preview(frame, area),
+            Some(Overlay::Attachment) => self.render_prompt(
                 frame,
                 area,
-                " attach file · Enter upload · Esc cancel ",
+                if self.presentation.attachment_prompt == Some(AttachmentPrompt::Save) {
+                    " save attachment · no overwrite · Esc cancel "
+                } else {
+                    " attach file · Enter upload · Esc cancel "
+                },
                 &self.attachment_input,
             ),
-            Mode::SaveAttachment => self.render_prompt(
-                frame,
-                area,
-                " save attachment · no overwrite · Esc cancel ",
-                &self.attachment_input,
-            ),
-            Mode::Search => {
+            Some(Overlay::Search) => {
                 let popup = centered(area, 86, area.height.saturating_sub(4).min(28));
                 let offset = 1 + usize::from(self.search_state.notice.is_some());
                 for (index, result) in self.search_state.results.iter().enumerate() {
@@ -4481,7 +4553,7 @@ impl App {
                 }
                 crate::ui::search::render(frame, popup, &self.search_state, &self.theme);
             }
-            Mode::DmPicker => {
+            Some(Overlay::DmPicker) => {
                 let popup = centered(area, 86, area.height.saturating_sub(4).min(28));
                 let self_pubkey = self.self_pubkey().unwrap_or_default();
                 for (index, profile) in self
@@ -4504,9 +4576,9 @@ impl App {
                     &self.theme,
                 );
             }
-            Mode::AgentPicker => self.render_agent_picker(frame, area, hit_map),
-            Mode::AgentReview => self.render_agent_review(frame, area, hit_map),
-            Mode::Normal => {}
+            Some(Overlay::AgentPicker) => self.render_agent_picker(frame, area, hit_map),
+            Some(Overlay::AgentReview) => self.render_agent_review(frame, area, hit_map),
+            None => {}
         }
     }
     fn render_action_menu(&self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
@@ -4557,7 +4629,7 @@ impl App {
         let popup = centered(area, 86, 80.min(area.height.saturating_sub(2)));
         frame.render_widget(Clear, popup);
         let Some(attachment) = self.preview_attachment().cloned() else {
-            self.mode = Mode::Normal;
+            self.presentation.close_overlay();
             return;
         };
         let block = Block::bordered()
@@ -4988,7 +5060,7 @@ fn list_row(area: Rect, row: usize, height: u16) -> Option<Rect> {
 mod tests {
     use std::collections::HashSet;
 
-    use super::{Mode, clear_visible_unread, identity_recovery_connection};
+    use super::{clear_visible_unread, identity_recovery_connection};
     use crate::{
         config::Config,
         domain::{
@@ -5003,7 +5075,7 @@ mod tests {
             hit_map::HitTarget,
             keymap::UiAction,
             mention_picker::MentionPicker,
-            state::Overlay,
+            state::{ComposerTarget, Overlay},
         },
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -5300,7 +5372,12 @@ mod tests {
             Some(&HitTarget::TimelineMessage("event-1".into()))
         );
 
-        app.mode = Mode::Insert;
+        app.presentation.composer_target = Some(ComposerTarget {
+            community_id: app.config.communities[0].id,
+            channel_id,
+            thread_root_id: None,
+            parent_event_id: None,
+        });
         app.mention_picker = Some(MentionPicker::new(
             0..1,
             String::new(),
