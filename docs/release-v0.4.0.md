@@ -50,8 +50,29 @@ publish, or sign.
 
 ## Release-candidate evidence
 
-Record the candidate commit, platform artifact checks, and any explicitly
-approved exception here before tagging. Required commands are:
+### Recorded candidate
+
+- Package candidate: `082fc4bcfc1ba2e338d1f372b8ae5f9ce6c7a70e`
+  (`release: v0.4.0`), validated 2026-08-19.
+- Required local gates passed against the committed locked dependency graph:
+  formatting, strict Clippy, all-target test targets, `cargo deny check`,
+  `cargo audit`, release build, and timeline/store/media benchmarks.
+- The controlled final release-binary Herdr run passed both declared scenarios
+  in a disposable pane without credentials. Pinned real-relay integration
+  passed using a temporary checkout at
+  `ede26863345a518ec46edd6d7692e0281883491b`.
+- CI and pinned-Buzz integration passed for the candidate:
+  [CI](https://github.com/arpagon/bzz/actions/runs/32219695390) and
+  [integration](https://github.com/arpagon/bzz/actions/runs/32219695457).
+- `cargo audit` has only the documented, transitive `instant` unmaintained and
+  `lru` panic-safety advisories; dependency pins were deliberately not changed
+  for this release. `cargo deny` has only the configured duplicate-version
+  warnings.
+
+After the tag workflow finishes, record clean-VM checksum, archive, SBOM, and
+provenance verification here before publishing any package-manager manifests.
+
+Required commands are:
 
 ```sh
 cargo fmt --check
