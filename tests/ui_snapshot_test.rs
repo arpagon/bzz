@@ -9,6 +9,7 @@ use bzz::{
         inbox::{self, InboxState},
         search::{self, SearchState},
         sidebar,
+        state::ViewportState,
         theme::Theme,
         timeline::{self, TimelineState},
     },
@@ -82,6 +83,12 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
     let self_pubkey = "b".repeat(64);
     let backend = TestBackend::new(100, 20);
     let mut terminal = Terminal::new(backend).unwrap();
+    let mut timeline_state = TimelineState {
+        selected_event: Some("a".repeat(64)),
+        at_live_bottom: true,
+        newer: 0,
+        ..TimelineState::default()
+    };
     terminal
         .draw(|frame| {
             let [left, right] = ratatui::layout::Layout::horizontal([
@@ -93,7 +100,10 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                 frame,
                 left,
                 &channels,
-                0,
+                &ViewportState {
+                    selected_id: Some(channel.to_string()),
+                    ..ViewportState::default()
+                },
                 &HashSet::from([channel]),
                 &theme,
                 true,
@@ -104,11 +114,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                 &messages,
                 &HashMap::new(),
                 &reactions,
-                &TimelineState {
-                    selected_event: Some("a".repeat(64)),
-                    at_live_bottom: true,
-                    newer: 0,
-                },
+                &mut timeline_state,
                 "general",
                 &theme,
                 true,
@@ -165,6 +171,7 @@ fn attachment_cards_remain_visible_without_a_graphics_protocol() {
     };
     let backend = TestBackend::new(80, 12);
     let mut terminal = Terminal::new(backend).unwrap();
+    let mut timeline_state = TimelineState::default();
     terminal
         .draw(|frame| {
             timeline::render(
@@ -173,7 +180,7 @@ fn attachment_cards_remain_visible_without_a_graphics_protocol() {
                 &[message],
                 &HashMap::new(),
                 &HashMap::new(),
-                &TimelineState::default(),
+                &mut timeline_state,
                 "media",
                 &bzz::ui::theme::Theme::default(),
                 true,
@@ -200,14 +207,25 @@ fn narrow_terminal_layout_does_not_overlap() {
     let configured = bzz::ui::layout::panes(
         ratatui::layout::Rect::new(0, 0, 120, 25),
         true,
+        true,
         false,
         18,
         60,
     );
     assert_eq!(configured.sidebar.unwrap().width, 18);
+    let hidden_community = bzz::ui::layout::panes(
+        ratatui::layout::Rect::new(0, 0, 120, 25),
+        false,
+        true,
+        false,
+        18,
+        60,
+    );
+    assert!(hidden_community.community.is_none());
     for (width, height) in [(50, 12), (69, 15), (100, 25), (140, 40)] {
         let panes = bzz::ui::layout::panes(
             ratatui::layout::Rect::new(0, 0, width, height),
+            true,
             true,
             true,
             28,

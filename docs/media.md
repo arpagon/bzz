@@ -19,7 +19,8 @@ separately content-addressed `image` poster, an explicit preview fetches it with
 hash-scoped authorization, bounds and verifies its response MIME/size/hash, and
 renders it as a static image. Videos are never played.
 
-Press `p` on a message to open its attachment preview:
+Select a message and choose **preview media** from `Space a` to open its
+attachment preview:
 
 - `[` / `]`: previous/next attachment;
 - `Enter`: reveal a descriptor-backed spoiler;

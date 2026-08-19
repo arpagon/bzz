@@ -34,6 +34,7 @@ fn bench_timeline(c: &mut Criterion) {
                 selected_event: Some(format!("{:064x}", 5_000)),
                 at_live_bottom: false,
                 newer: 0,
+                ..TimelineState::default()
             };
             state.move_by(black_box(&messages), 1);
             black_box(state);

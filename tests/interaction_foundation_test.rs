@@ -3,6 +3,7 @@
 
 use bzz::ui::{
     action::{WorkspaceEffect, WorkspaceState, reduce_workspace},
+    actions::{ActionContext, ActionMenu, derive as derive_actions},
     input::{InputContext, InputDispatch, InputOwner, InputRouter},
     keymap::{KeyMap, UiAction},
     state::{PresentationState, Route},
@@ -18,7 +19,7 @@ fn key(character: char) -> KeyEvent {
 fn leader_inbox_journey_only_changes_presentation_and_emits_a_named_effect() {
     let keymap = KeyMap::builtin();
     let mut router = InputRouter::default();
-    let mut state = WorkspaceState::new(PresentationState::default(), 0, 1, true, false);
+    let mut state = WorkspaceState::new(PresentationState::default(), 0, 1, true, true, false);
 
     assert!(matches!(
         router.dispatch(&keymap, InputContext::workspace(), key(' ')),
@@ -59,6 +60,42 @@ fn custom_sequence_routes_without_terminal_io() {
         router.dispatch(&keymap, InputContext::workspace(), key('i')),
         InputDispatch::Action(UiAction::OpenInbox)
     );
+}
+
+#[test]
+fn leader_context_actions_are_derived_before_any_effect_executes() {
+    let keymap = KeyMap::builtin();
+    let mut router = InputRouter::default();
+    assert!(matches!(
+        router.dispatch(&keymap, InputContext::workspace(), key(' ')),
+        InputDispatch::Pending { .. }
+    ));
+    assert_eq!(
+        router.dispatch(&keymap, InputContext::workspace(), key('a')),
+        InputDispatch::Action(UiAction::OpenContextActions)
+    );
+    let mut menu = ActionMenu::new(derive_actions(ActionContext {
+        route: Route::Workspace,
+        focus: bzz::ui::state::FocusSurface::Timeline,
+        has_channel: true,
+        has_selected_event: true,
+        selected_event_is_own: false,
+        selected_event_has_media: false,
+        context_open: false,
+        can_publish: true,
+    }));
+    assert!(
+        menu.entries()
+            .iter()
+            .any(|entry| entry.enabled && entry.action == UiAction::React)
+    );
+    assert!(
+        menu.entries()
+            .iter()
+            .any(|entry| !entry.enabled && entry.action == UiAction::Delete)
+    );
+    menu.move_by(1);
+    assert!(menu.selected().is_some());
 }
 
 #[test]

@@ -82,7 +82,7 @@ channel. Adding a participant intentionally opens a different conversation.
 
 `H`/`:dm hide` does not delete the conversation. The row stays visible until a
 newer owner-only kind 30622 snapshot confirms it. Reopen a hidden DM by opening
-the same participant set with `Ctrl-n`/`:dm`; group DMs require the exact same
+the same participant set with `:dm`; group DMs require the exact same
 set. A relay-key pin or owner mismatch is a security error and cannot be
 bypassed by changing local SQLite.
 

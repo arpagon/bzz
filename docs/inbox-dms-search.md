@@ -8,11 +8,11 @@ surfaces added after `v0.1.0`. Protocol behavior remains pinned to Buzz
 
 | Surface/action | Key | Command |
 |---|---|---|
-| Open Inbox | `I` | `:inbox` |
+| Open Inbox | `Space n` | `:inbox` |
 | Open unified search | `/` | `:search` |
-| Open a workspace DM | `Ctrl-n` | `:dm` |
-| Hide the selected DM | `H` | `:dm hide` |
-| Add one DM participant | `A` | `:dm add` |
+| Open a workspace DM | — | `:dm` |
+| Hide the selected DM | — | `:dm hide` |
+| Add one DM participant | — | `:dm add` |
 
 Inbox uses `j/k`, `f` to cycle filters, `Enter` for detail, `o` to open the
 source, `i` to open and reply, `m` to mark read, `U` to toggle a local unread

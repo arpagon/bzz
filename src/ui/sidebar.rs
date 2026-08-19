@@ -8,14 +8,17 @@ use ratatui::{
 use crate::{
     domain::Channel,
     render::sanitize,
-    ui::theme::{BorderSurface, HighlightGroup, Theme},
+    ui::{
+        state::ViewportState,
+        theme::{BorderSurface, HighlightGroup, Theme},
+    },
 };
 
 pub fn render(
     frame: &mut Frame<'_>,
     area: Rect,
     channels: &[Channel],
-    selected: usize,
+    viewport: &ViewportState,
     unread: &std::collections::HashSet<uuid::Uuid>,
     theme: &Theme,
     focused: bool,
@@ -45,8 +48,13 @@ pub fn render(
             HighlightGroup::SidebarText
         }))
     });
-    let mut state =
-        ListState::default().with_selected(joined.iter().position(|(index, _)| *index == selected));
+    let mut state = ListState::default()
+        .with_selected(viewport.selected_id.as_ref().and_then(|selected| {
+            joined
+                .iter()
+                .position(|(_, channel)| channel.id.to_string() == *selected)
+        }))
+        .with_offset(viewport.scroll);
     let border_group = if focused {
         HighlightGroup::FocusedPaneBorder
     } else {

@@ -29,6 +29,8 @@ pub enum UiAction {
     FocusContext,
     NextFocus,
     PreviousFocus,
+    ResizeFocusedNarrow,
+    ResizeFocusedWide,
     SelectPrevious,
     SelectNext,
     ScrollViewportUp,
@@ -81,6 +83,8 @@ impl UiAction {
             Self::FocusContext => "focus context",
             Self::NextFocus => "next focus",
             Self::PreviousFocus => "previous focus",
+            Self::ResizeFocusedNarrow => "narrow focused side pane",
+            Self::ResizeFocusedWide => "widen focused side pane",
             Self::SelectPrevious => "previous selection",
             Self::SelectNext => "next selection",
             Self::ScrollViewportUp => "scroll viewport up",
@@ -367,6 +371,8 @@ impl KeyMap {
         add(KeyScope::Global, &["backtab"], UiAction::PreviousFocus);
         add(KeyScope::Global, &["h"], UiAction::PreviousFocus);
         add(KeyScope::Global, &["l"], UiAction::NextFocus);
+        add(KeyScope::Global, &["alt-h"], UiAction::ResizeFocusedNarrow);
+        add(KeyScope::Global, &["alt-l"], UiAction::ResizeFocusedWide);
         add(KeyScope::Global, &["j"], UiAction::SelectNext);
         add(KeyScope::Global, &["down"], UiAction::SelectNext);
         add(KeyScope::Global, &["ctrl-n"], UiAction::SelectNext);
@@ -616,6 +622,11 @@ impl KeyMap {
                     return Err(Error::Config(
                         "keymap cannot bind a printable character or sequence in a text-owning scope"
                             .into(),
+                    ));
+                }
+                if !crate::ui::actions::keymap_allows(scope, binding.action) {
+                    return Err(Error::Config(
+                        "keymap action is not valid in this input scope".into(),
                     ));
                 }
                 if scope == KeyScope::Composer && !composer_action(binding.action) {
@@ -883,6 +894,20 @@ mod tests {
             "[[binding]]\nscope = 'filter'\nkeys = ['ctrl-r']\naction = 'refresh'\n",
         )
         .unwrap();
+        assert!(KeyMap::load_from(&path).is_err());
+    }
+
+    #[test]
+    fn registry_rejects_actions_outside_their_scope() {
+        let temporary = TempDir::new().unwrap();
+        let path = temporary.path().join("keymap.toml");
+        fs::write(
+            &path,
+            "[[binding]]\nscope = 'overlay'\nkeys = ['enter']\naction = 'open-inbox'\n",
+        )
+        .unwrap();
+        assert!(KeyMap::load_from(&path).is_err());
+        fs::write(&path, "[[binding]]\nkeys = ['m']\naction = 'mark-read'\n").unwrap();
         assert!(KeyMap::load_from(&path).is_err());
     }
 

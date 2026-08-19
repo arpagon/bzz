@@ -15,6 +15,7 @@ pub struct WorkspaceState {
     pub presentation: PresentationState,
     pub community_cursor: usize,
     pub community_count: usize,
+    pub communities_visible: bool,
     pub channels_visible: bool,
     pub context_visible: bool,
 }
@@ -24,6 +25,7 @@ impl WorkspaceState {
         presentation: PresentationState,
         community_cursor: usize,
         community_count: usize,
+        communities_visible: bool,
         channels_visible: bool,
         context_visible: bool,
     ) -> Self {
@@ -31,6 +33,7 @@ impl WorkspaceState {
             presentation,
             community_cursor: community_cursor.min(community_count.saturating_sub(1)),
             community_count,
+            communities_visible,
             channels_visible,
             context_visible,
         }
@@ -42,7 +45,7 @@ impl WorkspaceState {
 
     fn cycle_focus(&mut self, delta: isize) {
         let mut surfaces = Vec::with_capacity(4);
-        if self.community_count > 0 {
+        if self.communities_visible && self.community_count > 0 {
             surfaces.push(FocusSurface::Communities);
         }
         if self.channels_visible {
@@ -76,6 +79,14 @@ impl WorkspaceState {
     }
 }
 
+/// A detached viewport movement. It deliberately carries no row identity, so
+/// selecting a message and scrolling its rendered rows are separate actions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ViewportScroll {
+    Lines(isize),
+    HalfPage(isize),
+}
+
 /// Named effects emitted by [`reduce_workspace`]. None of these values holds a
 /// capability; the application adapter independently validates availability
 /// before performing an operation.
@@ -87,7 +98,8 @@ pub enum WorkspaceEffect {
     EnsureContext,
     MoveSelection(isize),
     MoveSelectionToEdge { last: bool },
-    ScrollViewport(isize),
+    ScrollViewport(ViewportScroll),
+    ResizeFocusedSidePane(isize),
     ActivateFocused,
     ActivateCommunity(usize),
     OpenComposer,
@@ -125,7 +137,14 @@ pub fn reduce_workspace(state: &mut WorkspaceState, action: UiAction) -> Workspa
             state.presentation.open_overlay(Overlay::Help);
             WorkspaceEffect::None
         }
-        UiAction::ToggleCommunities | UiAction::ToggleChannels => {
+        UiAction::ToggleCommunities => {
+            state.communities_visible = !state.communities_visible;
+            if !state.communities_visible && state.presentation.focus == FocusSurface::Communities {
+                state.focus_workspace(FocusSurface::Timeline);
+            }
+            WorkspaceEffect::None
+        }
+        UiAction::ToggleChannels => {
             state.channels_visible = !state.channels_visible;
             if !state.channels_visible && state.presentation.focus == FocusSurface::Channels {
                 state.focus_workspace(FocusSurface::Timeline);
@@ -142,10 +161,12 @@ pub fn reduce_workspace(state: &mut WorkspaceState, action: UiAction) -> Workspa
             }
         }
         UiAction::FocusCommunities => {
+            state.communities_visible = true;
             state.focus_workspace(FocusSurface::Communities);
             WorkspaceEffect::None
         }
         UiAction::FocusChannels => {
+            state.channels_visible = true;
             state.focus_workspace(FocusSurface::Channels);
             WorkspaceEffect::None
         }
@@ -169,6 +190,8 @@ pub fn reduce_workspace(state: &mut WorkspaceState, action: UiAction) -> Workspa
             state.cycle_focus(-1);
             WorkspaceEffect::None
         }
+        UiAction::ResizeFocusedNarrow => WorkspaceEffect::ResizeFocusedSidePane(-1),
+        UiAction::ResizeFocusedWide => WorkspaceEffect::ResizeFocusedSidePane(1),
         UiAction::SelectPrevious => {
             if state.presentation.focus == FocusSurface::Communities {
                 state.move_community_cursor(-1);
@@ -185,8 +208,8 @@ pub fn reduce_workspace(state: &mut WorkspaceState, action: UiAction) -> Workspa
                 WorkspaceEffect::MoveSelection(1)
             }
         }
-        UiAction::HalfPageUp => WorkspaceEffect::MoveSelection(-10),
-        UiAction::HalfPageDown => WorkspaceEffect::MoveSelection(10),
+        UiAction::HalfPageUp => WorkspaceEffect::ScrollViewport(ViewportScroll::HalfPage(-1)),
+        UiAction::HalfPageDown => WorkspaceEffect::ScrollViewport(ViewportScroll::HalfPage(1)),
         UiAction::JumpTop if state.presentation.focus == FocusSurface::Communities => {
             state.community_cursor = 0;
             WorkspaceEffect::None
@@ -197,8 +220,8 @@ pub fn reduce_workspace(state: &mut WorkspaceState, action: UiAction) -> Workspa
         }
         UiAction::JumpTop => WorkspaceEffect::MoveSelectionToEdge { last: false },
         UiAction::JumpBottom => WorkspaceEffect::MoveSelectionToEdge { last: true },
-        UiAction::ScrollViewportUp => WorkspaceEffect::ScrollViewport(-1),
-        UiAction::ScrollViewportDown => WorkspaceEffect::ScrollViewport(1),
+        UiAction::ScrollViewportUp => WorkspaceEffect::ScrollViewport(ViewportScroll::Lines(-1)),
+        UiAction::ScrollViewportDown => WorkspaceEffect::ScrollViewport(ViewportScroll::Lines(1)),
         UiAction::ActivateFocused => {
             if state.presentation.focus == FocusSurface::Communities {
                 WorkspaceEffect::ActivateCommunity(state.community_cursor)
@@ -234,10 +257,10 @@ mod tests {
         state::{FocusSurface, Overlay, PresentationState, Route},
     };
 
-    use super::{WorkspaceEffect, WorkspaceState, reduce_workspace};
+    use super::{ViewportScroll, WorkspaceEffect, WorkspaceState, reduce_workspace};
 
     fn state() -> WorkspaceState {
-        WorkspaceState::new(PresentationState::default(), 0, 3, true, false)
+        WorkspaceState::new(PresentationState::default(), 0, 3, true, true, false)
     }
 
     #[test]
@@ -286,6 +309,17 @@ mod tests {
     }
 
     #[test]
+    fn detached_scroll_effect_never_moves_selection() {
+        let mut state = state();
+        let selected_before = state.community_cursor;
+        assert_eq!(
+            reduce_workspace(&mut state, UiAction::HalfPageDown),
+            WorkspaceEffect::ScrollViewport(ViewportScroll::HalfPage(1))
+        );
+        assert_eq!(state.community_cursor, selected_before);
+    }
+
+    #[test]
     fn unavailable_actions_remain_typed_and_do_not_fall_through() {
         let mut state = state();
         assert_eq!(
@@ -296,7 +330,7 @@ mod tests {
 
     #[test]
     fn back_closes_context_before_requesting_quit() {
-        let mut state = WorkspaceState::new(PresentationState::default(), 0, 0, true, true);
+        let mut state = WorkspaceState::new(PresentationState::default(), 0, 0, true, true, true);
         state
             .presentation
             .set_workspace_focus(FocusSurface::Context);

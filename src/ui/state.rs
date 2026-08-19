@@ -89,8 +89,35 @@ impl ViewportState {
             self.selected_id = ids.first().cloned();
             self.keep_selection_visible = true;
         }
-        let max_scroll = ids.len().saturating_sub(self.viewport_height.max(1));
+        self.reconcile_scroll(&ids);
+    }
+
+    /// Clamp scrolling and, after an explicit selection change, bring the
+    /// stable selected ID into view without translating it through a row index.
+    pub fn reconcile_scroll(&mut self, visible_ids: &[String]) {
+        let height = self.viewport_height.max(1);
+        let max_scroll = visible_ids.len().saturating_sub(height);
         self.scroll = self.scroll.min(max_scroll);
+        if !self.keep_selection_visible {
+            return;
+        }
+        let Some(selected) = &self.selected_id else {
+            return;
+        };
+        let Some(index) = visible_ids.iter().position(|id| id == selected) else {
+            return;
+        };
+        if index < self.scroll {
+            self.scroll = index;
+        } else if index >= self.scroll.saturating_add(height) {
+            self.scroll = index.saturating_add(1).saturating_sub(height);
+        }
+        self.keep_selection_visible = false;
+    }
+
+    pub fn set_viewport_height(&mut self, height: usize, visible_ids: &[String]) {
+        self.viewport_height = height.max(1);
+        self.reconcile_scroll(visible_ids);
     }
 }
 
@@ -186,6 +213,23 @@ mod tests {
         assert_eq!(viewport.selected_id.as_deref(), Some("event-2"));
         assert_eq!(viewport.scroll, 4);
         assert!(!viewport.keep_selection_visible);
+    }
+
+    #[test]
+    fn selection_scrolls_into_view_without_changing_selection_identity() {
+        let mut viewport = ViewportState {
+            viewport_height: 2,
+            scroll: 0,
+            ..ViewportState::default()
+        };
+        let ids = ["a", "b", "c", "d"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        viewport.select(Some("d".into()));
+        viewport.reconcile_scroll(&ids);
+        assert_eq!(viewport.selected_id.as_deref(), Some("d"));
+        assert_eq!(viewport.scroll, 2);
     }
 
     #[test]

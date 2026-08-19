@@ -23,6 +23,7 @@ pub enum HitTarget {
     DmCandidate(String),
     LocalAgent(usize),
     AgentDraftAccept,
+    ActionMenu(crate::ui::keymap::UiAction),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

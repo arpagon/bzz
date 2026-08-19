@@ -68,8 +68,9 @@ missing credential without changing its identity or communities with
 Default navigation uses `1`–`4` to focus workspace surfaces, `Tab`/`h`/`l`
 to traverse them, `j`/`k` or `Ctrl-n`/`Ctrl-p` to change selection, and
 `gg`/`G` for edges. `Space` is the leader: `Space Space` opens the channel/DM
-switcher, `Space n` opens Inbox, `Space o` opens theme options, and `?` shows
-the generated effective-keymap help. `q` unwinds owned UI state and asks before
+switcher, `Space n` opens Inbox, `Space a` opens contextual actions, `Space o`
+opens theme options, and `?` shows the generated effective-keymap help. `q`
+unwinds owned UI state and asks before
 quitting. `i` opens the ordinary composer; `@` opens cached channel-member
 completion and `Ctrl-a` adds a file while composing. `:agent` opens an
 explicitly configured local Codex draft assistant. Generate shell integration

@@ -4,6 +4,7 @@ use bzz::{
     domain::{Channel, ChannelKind, Message, Profile, Reaction, Visibility},
     ui::{
         sidebar,
+        state::ViewportState,
         theme::{Theme, ThemeRegistry},
         timeline::{self, TimelineState},
     },
@@ -64,10 +65,11 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
             deleted: false,
         }],
     )]);
-    let state = TimelineState {
+    let mut state = TimelineState {
         selected_event: Some(event_id),
         at_live_bottom: true,
         newer: 0,
+        ..TimelineState::default()
     };
 
     for entry in ThemeRegistry::entries() {
@@ -85,7 +87,10 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
                         frame,
                         left,
                         &channels,
-                        0,
+                        &ViewportState {
+                            selected_id: Some(channel_id.to_string()),
+                            ..ViewportState::default()
+                        },
                         &HashSet::from([channel_id]),
                         &theme,
                         true,
@@ -96,7 +101,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
                         &messages,
                         &profiles,
                         &reactions,
-                        &state,
+                        &mut state,
                         "theme-test",
                         &theme,
                         false,

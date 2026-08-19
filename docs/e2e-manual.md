@@ -36,7 +36,8 @@ Expected result:
 "$BZZ_BIN"
 ```
 
-Verify `Welcome to bzz`, open/close help with `?`/`Esc`, and quit with `Q`.
+Verify `Welcome to bzz`, open/close help with `?`/`Esc`, then quit with `q`
+and confirm with `y`.
 The terminal must restore its cursor, echo, and normal screen.
 
 ## 2. Identity and backup (basic)
@@ -105,7 +106,7 @@ Neither `access denied`, `clock skew`, nor a pubkey change should appear.
 1. Select the dedicated E2E channel with `j/k` and `Enter`.
 2. Press `i`, type `E2E basic <date-time>`, and press `Enter`.
 3. Wait for `[pending]` to disappear.
-4. Quit with `Q`, reopen bzz, and locate the same message.
+4. Quit with `q`, confirm with `y`, reopen bzz, and locate the same message.
 
 If the relay responds with `channel is archived`, retain the rejection evidence
 but switch to an active E2E channel; do not publish in an arbitrary production
@@ -154,14 +155,17 @@ be created by any of these actions. Remove the test profile afterward with
 
 - Draft: press `i`, type text, press `Esc`, then press `i` again; the text
   reappears.
-- Thread: select a message, press `Enter`/`Ctrl-]`, reply, and close with `Esc`.
-- Reaction: press `r`, select a reaction, and press `Enter`; repeat to remove the
-  same reaction.
-- Own deletion: select your message, press `D`, and confirm with `y`.
-- Unread: press `U`, verify the indicator, open another channel, return to the
-  E2E channel with the finder, then press `Enter` and `G`; the indicator must
-  disappear even when the remote marker was already ahead.
-- Finder: press `Ctrl-p`; an empty query must prioritize joined `#` channels.
+- Thread: select a message, press `Enter` or use `Space a` → **open context**,
+  reply, and close with `Esc`.
+- Reaction: press `Space a`, choose **react**, then select a reaction and press
+  `Enter`; repeat to remove the same reaction.
+- Own deletion: select your message, press `Space a`, choose **delete own
+  message**, and confirm with `y`.
+- Unread: press `Space a`, choose **mark unread**, verify the indicator, open
+  another channel with the channel/DM switcher, return to the E2E channel, then
+  press `Enter` and `G`; the indicator must disappear even when the remote
+  marker was already ahead.
+- Finder: press `Space Space`; an empty query must prioritize joined `#` channels.
   Also find an open `+` channel, open it without publishing, and return to the
   E2E channel.
 
@@ -170,7 +174,7 @@ can never delete another user's message.
 
 ### Appearance
 
-1. Press `Ctrl-y`, filter for `nord`, and move the selection: the view changes
+1. Press `Space o`, filter for `nord`, and move the selection: the view changes
    without modifying messages or unread state.
 2. Press `Esc`: the exact previous theme must return.
 3. Reopen the picker, select a theme, and press `Enter`; restart and verify that
@@ -265,7 +269,8 @@ Generate a tiny PNG and a plain-text file inside `BZZ_E2E_ROOT`; never use a
 personal photo/document. In the composer press `Ctrl-a`, enter the PNG path,
 wait for `1 attachment(s) ready`, and send. Verify another isolated client
 shows an attachment card and an inline image or documented half-block fallback.
-Press `p`, navigate with `[`/`]`, save with `s` to a new path, and compare
+Open **preview media** through `Space a`, navigate with `[`/`]`, save with `s`
+to a new path, and compare
 SHA-256. Repeat with the text file; it must remain a card and must not download
 until explicit save.
 
@@ -284,7 +289,7 @@ databases. Never use the production owner identity.
 
 ### Workspace DMs
 
-1. On client A press `Ctrl-n`, find B, select with `Space`, and press `Enter`.
+1. On client A run `:dm`, find B, select with `Space`, and press `Enter`.
    Both clients must discover the same `@` DM and show the explicit
    relay-readable/non-E2EE label.
 2. Exchange generated text, one thread reply, reaction, generated attachment,
@@ -292,9 +297,9 @@ databases. Never use the production owner identity.
 3. Open B again from A. It must reuse the same channel UUID. In the isolated
    harness, drop the first `OK`; recovery must still find the same channel and
    reuse the original signed command event.
-4. Press `A` in A/B, add C, and confirm a different group-DM UUID appears while
-   A/B remains unchanged.
-5. Press `H` on A. A's row disappears only after visibility confirmation; B's
+4. Run `:dm add` in A/B, add C, and confirm a different group-DM UUID appears
+   while A/B remains unchanged.
+5. Run `:dm hide` on A. A's row disappears only after visibility confirmation; B's
    row remains. Reopen the exact participant set and confirm A's row returns.
 6. With a fourth regular member, query/search the A/B channel. No event,
    count, subscription, or search hit may be returned. The fourth member must
@@ -303,7 +308,7 @@ databases. Never use the production owner identity.
 ### Inbox
 
 1. From B mention A in the dedicated channel and reply to a root A authored.
-2. Press `I` on A. The mention/thread must appear once even after reconnect;
+2. Press `Space n` on A. The mention/thread must appear once even after reconnect;
    the DM, a saved draft, and any generated needs-action fixture use their
    corresponding filters.
 3. Use `Enter`, `o`, and `i`; exact channel/thread context and the existing

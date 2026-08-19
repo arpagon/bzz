@@ -80,16 +80,16 @@ terminal.
 
 ```toml
 # Scope defaults to "global". This exact sequence replaces the builtin one
-# only while the Inbox is active.
+# only while the workspace route is active.
 [[binding]]
-scope = "inbox"
-keys = ["space", "n"]
-action = "mark-read"
+scope = "workspace"
+keys = ["space", "o"]
+action = "open-help"
 
 # Disable an inherited global binding in one scope. `action` is forbidden here.
 [[binding]]
-scope = "inbox"
-keys = ["space", "n"]
+scope = "workspace"
+keys = ["space", "o"]
 disabled = true
 ```
 
@@ -109,10 +109,12 @@ workspace actions.
 
 Defaults use `Space` as leader. Its popup shows valid continuations and expires
 after 750 ms without triggering a partial action. `?` opens generated help for
-the effective workspace keymap, including scoped overrides and disabled
-bindings. `q` closes the foremost owned UI state and asks before quitting the
-workspace. No keymap binding can invoke a shell or publish without the normal
-human send/confirmation path.
+the effective workspace keymap, including scoped overrides, disabled bindings,
+and contextual availability. `Alt-h`/`Alt-l` resize the focused channel or
+context pane in bounded two-cell steps; the width is saved locally. `q` closes
+the foremost owned UI state and asks before quitting the workspace. No keymap
+binding can invoke a shell or publish without the normal human
+send/confirmation path.
 
 `[[local_agents]]` configures named, local-only Codex draft assistants. It
 contains no credentials, Nostr identity, relay URL, prompt, or output. A

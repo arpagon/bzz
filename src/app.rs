@@ -43,7 +43,8 @@ use crate::{
     store::writer::StoreHandle,
     sync::{outbox, read_state},
     ui::{
-        action::{WorkspaceEffect, WorkspaceState, reduce_workspace},
+        action::{ViewportScroll, WorkspaceEffect, WorkspaceState, reduce_workspace},
+        actions::{ActionContext, ActionMenu, derive as derive_actions},
         composer::Composer,
         dm_picker::DmPickerState,
         hit_map::{HitMap, HitTarget},
@@ -53,7 +54,7 @@ use crate::{
         layout,
         mention_picker::MentionPicker,
         search::SearchState,
-        state::{ComposerTarget, FocusSurface, Overlay, PresentationState, Route},
+        state::{ComposerTarget, FocusSurface, Overlay, PresentationState, Route, ViewportState},
         terminal::{TerminalGuard, Tui},
         theme::{self, BorderSurface, HighlightGroup, Theme, ThemeScope},
         theme_picker::ThemePicker,
@@ -80,13 +81,6 @@ enum Mode {
     AgentPicker,
     AgentReview,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Pane {
-    Channels,
-    Timeline,
-    Thread,
-}
-
 struct Runtime {
     community_id: Uuid,
     identity_id: Uuid,
@@ -229,7 +223,6 @@ pub struct App {
     timeline: TimelineState,
     thread_timeline: TimelineState,
     mode: Mode,
-    pane: Pane,
     composer: Composer,
     mention_picker: Option<MentionPicker>,
     finder: String,
@@ -252,10 +245,14 @@ pub struct App {
     preview_index: usize,
     preview_revealed: bool,
     uploading_media: HashSet<String>,
+    community_rail: bool,
     sidebar: bool,
+    community_viewport: ViewportState,
+    channel_viewport: ViewportState,
     theme: Theme,
     theme_picker: Option<ThemePicker>,
     theme_before_preview: Option<Theme>,
+    action_menu: Option<ActionMenu>,
     keymap: KeyMap,
     input_router: InputRouter,
     leader_started_at: Option<Instant>,
@@ -278,6 +275,7 @@ pub struct App {
     background_rx: mpsc::Receiver<Background>,
     render_generation: u64,
     last_hit_map: Option<HitMap>,
+    last_primary_click: Option<(HitTarget, Instant)>,
 }
 
 const LEADER_TIMEOUT: Duration = Duration::from_millis(750);
@@ -344,7 +342,6 @@ impl App {
                 ..TimelineState::default()
             },
             mode: Mode::Normal,
-            pane: Pane::Channels,
             composer: Composer::default(),
             mention_picker: None,
             finder: String::new(),
@@ -367,10 +364,14 @@ impl App {
             preview_index: 0,
             preview_revealed: false,
             uploading_media: HashSet::new(),
+            community_rail: true,
             sidebar: true,
+            community_viewport: ViewportState::default(),
+            channel_viewport: ViewportState::default(),
             theme,
             theme_picker: None,
             theme_before_preview: None,
+            action_menu: None,
             keymap,
             input_router: InputRouter::default(),
             leader_started_at: None,
@@ -393,7 +394,9 @@ impl App {
             background_rx,
             render_generation: 0,
             last_hit_map: None,
+            last_primary_click: None,
         };
+        app.sync_workspace_viewports();
         app.hydrate_cache().await?;
         Ok(app)
     }
@@ -494,10 +497,10 @@ impl App {
                             self.cache_dirty=true;
                             self.hydrate_cache().await?;
                             if let Some(index)=self.channels.iter().position(|channel|channel.id==result.channel_id) {
-                                self.selected_channel=index;
+                                self.select_channel_index(index);
                                 self.showing_open_channel=false;
                                 self.load_selected_channel().await?;
-                                self.pane=Pane::Timeline;
+                                self.presentation.set_workspace_focus(FocusSurface::Timeline);
                             }
                             self.mode=Mode::Normal;
                             self.dm_picker= DmPickerState::default();
@@ -519,7 +522,7 @@ impl App {
                                 "DM hide accepted; waiting for the visibility snapshot".into()
                             });
                             if self.current_channel().is_some_and(|value|value.id==channel) {
-                                self.pane=Pane::Channels;
+                                self.presentation.set_workspace_focus(FocusSurface::Channels);
                             }
                         }
                     }
@@ -878,6 +881,7 @@ impl App {
                 .position(|channel| channel.is_member)
                 .unwrap_or(self.channels.len())
         };
+        self.sync_workspace_viewports();
         if let Some(channel) = self.current_channel().map(|channel| channel.id) {
             let timeline_anchor = self.timeline.selected_event.clone();
             self.messages = self
@@ -1198,8 +1202,9 @@ impl App {
             self.hydrate_cache().await?;
             self.reconcile_subscriptions().await?;
         }
-        if ((self.pane == Pane::Timeline && self.timeline.at_live_bottom)
-            || (self.pane == Pane::Thread && self.thread_timeline.at_live_bottom))
+        if ((self.presentation.focus == FocusSurface::Timeline && self.timeline.at_live_bottom)
+            || (self.presentation.focus == FocusSurface::Context
+                && self.thread_timeline.at_live_bottom))
             && self.mode == Mode::Normal
         {
             self.mark_current_read().await?;
@@ -1237,10 +1242,36 @@ impl App {
         guard: &mut TerminalGuard,
         terminal: &mut Tui,
     ) -> Result<()> {
-        // Presentation overlays own pointer input. Until their specific mouse
-        // behavior is implemented, clicks cannot leak through to background
-        // hit targets from the underlying workspace frame.
+        // Presentation overlays own pointer input. An action-menu click only
+        // changes its menu selection; it never leaks to or activates the
+        // workspace beneath it.
         if self.presentation.overlay.is_some() {
+            if self.presentation.overlay == Some(Overlay::Actions)
+                && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                && let Some(HitTarget::ActionMenu(action)) = self
+                    .last_hit_map
+                    .as_ref()
+                    .and_then(|map| map.hit(mouse.column, mouse.row))
+                    .cloned()
+            {
+                let double_click = self.record_primary_click(&HitTarget::ActionMenu(action));
+                if let Some(menu) = &mut self.action_menu {
+                    menu.select_action(action);
+                }
+                if double_click {
+                    let entry = self.action_menu.as_ref().and_then(ActionMenu::selected);
+                    self.presentation.overlay = None;
+                    self.action_menu = None;
+                    if let Some(entry) = entry {
+                        if entry.enabled {
+                            self.dispatch_workspace_action(entry.action, guard, terminal)
+                                .await?;
+                        } else if let Some(reason) = entry.reason {
+                            self.status_error = Some(format!("{}: {reason}", entry.label));
+                        }
+                    }
+                }
+            }
             return Ok(());
         }
         let Some(target) = self
@@ -1259,17 +1290,24 @@ impl App {
                     3
                 };
                 match target {
+                    HitTarget::Community(_) => {
+                        self.presentation
+                            .set_workspace_focus(FocusSurface::Communities);
+                        self.scroll_focused_viewport(ViewportScroll::Lines(delta));
+                    }
                     HitTarget::ChannelPane | HitTarget::Channel(_) => {
-                        self.pane = Pane::Channels;
-                        self.move_selection(delta);
+                        self.presentation
+                            .set_workspace_focus(FocusSurface::Channels);
+                        self.scroll_focused_viewport(ViewportScroll::Lines(delta));
                     }
                     HitTarget::Timeline | HitTarget::TimelineMessage(_) => {
-                        self.pane = Pane::Timeline;
-                        self.move_selection(delta);
+                        self.presentation
+                            .set_workspace_focus(FocusSurface::Timeline);
+                        self.scroll_focused_viewport(ViewportScroll::Lines(delta));
                     }
                     HitTarget::Thread | HitTarget::ThreadMessage(_) => {
-                        self.pane = Pane::Thread;
-                        self.move_selection(delta);
+                        self.presentation.set_workspace_focus(FocusSurface::Context);
+                        self.scroll_focused_viewport(ViewportScroll::Lines(delta));
                     }
                     _ => {}
                 }
@@ -1290,13 +1328,21 @@ impl App {
         guard: &mut TerminalGuard,
         terminal: &mut Tui,
     ) -> Result<()> {
+        let double_click = self.record_primary_click(&target);
         match target {
             HitTarget::Community(index)
                 if self.mode == Mode::Normal && index < self.config.communities.len() =>
             {
-                self.switch_community(index, guard, terminal).await?;
+                self.select_community_index(index);
+                self.presentation
+                    .set_workspace_focus(FocusSurface::Communities);
+                if double_click {
+                    self.switch_community(index, guard, terminal).await?;
+                }
             }
-            HitTarget::ChannelPane if self.mode == Mode::Normal => self.pane = Pane::Channels,
+            HitTarget::ChannelPane if self.mode == Mode::Normal => self
+                .presentation
+                .set_workspace_focus(FocusSurface::Channels),
             HitTarget::Channel(index)
                 if self.mode == Mode::Normal
                     && self
@@ -1304,27 +1350,42 @@ impl App {
                         .get(index)
                         .is_some_and(|channel| channel.is_member) =>
             {
-                self.selected_channel = index;
+                self.select_channel_index(index);
                 self.showing_open_channel = false;
-                self.load_selected_channel().await?;
-                self.pane = Pane::Timeline;
+                self.presentation
+                    .set_workspace_focus(FocusSurface::Channels);
+                if double_click {
+                    self.load_selected_channel().await?;
+                    self.presentation
+                        .set_workspace_focus(FocusSurface::Timeline);
+                }
             }
-            HitTarget::Timeline if self.mode == Mode::Normal => self.pane = Pane::Timeline,
+            HitTarget::Timeline if self.mode == Mode::Normal => self
+                .presentation
+                .set_workspace_focus(FocusSurface::Timeline),
             HitTarget::TimelineMessage(event_id) if self.mode == Mode::Normal => {
-                self.pane = Pane::Timeline;
+                self.presentation
+                    .set_workspace_focus(FocusSurface::Timeline);
                 self.timeline.selected_event = Some(event_id);
                 self.timeline.at_live_bottom = self.messages.last().is_some_and(|message| {
                     self.timeline.selected_event.as_deref() == Some(&message.event_id)
                 });
+                self.timeline.keep_selection_visible = true;
+                if double_click {
+                    self.toggle_thread().await?;
+                }
             }
-            HitTarget::Thread if self.mode == Mode::Normal => self.pane = Pane::Thread,
+            HitTarget::Thread if self.mode == Mode::Normal => {
+                self.presentation.set_workspace_focus(FocusSurface::Context)
+            }
             HitTarget::ThreadMessage(event_id) if self.mode == Mode::Normal => {
-                self.pane = Pane::Thread;
+                self.presentation.set_workspace_focus(FocusSurface::Context);
                 self.thread_timeline.selected_event = Some(event_id);
                 self.thread_timeline.at_live_bottom =
                     self.thread_messages.last().is_some_and(|message| {
                         self.thread_timeline.selected_event.as_deref() == Some(&message.event_id)
                     });
+                self.thread_timeline.keep_selection_visible = true;
             }
             HitTarget::Composer if self.mode == Mode::Insert => {
                 if let Some(area) = self
@@ -1355,10 +1416,11 @@ impl App {
                     .iter()
                     .position(|channel| channel.id.to_string() == channel_id)
                 {
-                    self.selected_channel = index;
+                    self.select_channel_index(index);
                     self.showing_open_channel = !self.channels[index].is_member;
                     self.load_selected_channel().await?;
-                    self.pane = Pane::Timeline;
+                    self.presentation
+                        .set_workspace_focus(FocusSurface::Timeline);
                 }
                 self.mode = Mode::Normal;
             }
@@ -1495,6 +1557,11 @@ impl App {
                 if self.presentation.overlay == Some(Overlay::WhichKey) {
                     self.presentation.overlay = None;
                 }
+                if self.presentation.overlay == Some(Overlay::Actions)
+                    && action == UiAction::BackOrQuit
+                {
+                    self.action_menu = None;
+                }
                 self.dispatch_workspace_action(action, guard, terminal)
                     .await?;
             }
@@ -1502,7 +1569,10 @@ impl App {
                 self.leader_started_at.get_or_insert_with(Instant::now);
                 self.presentation.open_overlay(Overlay::WhichKey);
             }
-            InputDispatch::Owned(InputOwner::Overlay) => self.handle_presentation_overlay_key(key),
+            InputDispatch::Owned(InputOwner::Overlay) => {
+                self.handle_presentation_overlay_key(key, guard, terminal)
+                    .await?
+            }
             InputDispatch::Owned(_) | InputDispatch::Noop => {
                 if !self.input_router.sequence_active() {
                     self.leader_started_at = None;
@@ -1517,12 +1587,49 @@ impl App {
         Ok(())
     }
 
-    fn handle_presentation_overlay_key(&mut self, key: KeyEvent) {
-        if self.presentation.overlay == Some(Overlay::Help)
-            && matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'q'))
-        {
-            self.presentation.overlay = None;
+    async fn handle_presentation_overlay_key(
+        &mut self,
+        key: KeyEvent,
+        guard: &mut TerminalGuard,
+        terminal: &mut Tui,
+    ) -> Result<()> {
+        match self.presentation.overlay {
+            Some(Overlay::Help) if matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'q')) => {
+                self.presentation.overlay = None;
+            }
+            Some(Overlay::Actions) => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.presentation.overlay = None;
+                    self.action_menu = None;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if let Some(menu) = &mut self.action_menu {
+                        menu.move_by(1);
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if let Some(menu) = &mut self.action_menu {
+                        menu.move_by(-1);
+                    }
+                }
+                KeyCode::Enter => {
+                    let entry = self.action_menu.as_ref().and_then(ActionMenu::selected);
+                    self.presentation.overlay = None;
+                    self.action_menu = None;
+                    if let Some(entry) = entry {
+                        if entry.enabled {
+                            self.dispatch_workspace_action(entry.action, guard, terminal)
+                                .await?;
+                        } else if let Some(reason) = entry.reason {
+                            self.status_error = Some(format!("{}: {reason}", entry.label));
+                        }
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
         }
+        Ok(())
     }
 
     async fn dispatch_workspace_action(
@@ -1535,14 +1642,16 @@ impl App {
             self.presentation.clone(),
             self.community_cursor,
             self.config.communities.len(),
+            self.community_rail,
             self.sidebar,
             self.thread_root.is_some(),
         );
         let effect = reduce_workspace(&mut state, action);
         self.presentation = state.presentation;
         self.community_cursor = state.community_cursor;
+        self.select_community_index(self.community_cursor);
+        self.community_rail = state.communities_visible;
         self.sidebar = state.channels_visible;
-        self.apply_presentation_focus();
 
         match effect {
             WorkspaceEffect::None => {}
@@ -1555,16 +1664,13 @@ impl App {
                 self.toggle_thread().await?;
                 if self.thread_root.is_some() {
                     self.presentation.set_workspace_focus(FocusSurface::Context);
-                    self.apply_presentation_focus();
                 }
             }
             WorkspaceEffect::MoveSelection(delta) => self.move_selection(delta),
             WorkspaceEffect::MoveSelectionToEdge { last } => self.move_to_edge(last),
-            WorkspaceEffect::ScrollViewport(_) => {
-                self.status_error = Some(
-                    "detached viewport scrolling is being completed with the M2 layout cutover"
-                        .into(),
-                );
+            WorkspaceEffect::ScrollViewport(scroll) => self.scroll_focused_viewport(scroll),
+            WorkspaceEffect::ResizeFocusedSidePane(delta) => {
+                self.resize_focused_side_pane(delta)?
             }
             WorkspaceEffect::ActivateFocused => self.open_selected().await?,
             WorkspaceEffect::ActivateCommunity(index) => {
@@ -1578,10 +1684,13 @@ impl App {
                 self.mode = Mode::Finder;
             }
             WorkspaceEffect::OpenContextActions => {
-                self.status_error = Some(
-                    "contextual actions are being completed with the M2 action-registry cutover"
-                        .into(),
-                );
+                let actions = derive_actions(self.action_context());
+                if actions.is_empty() {
+                    self.status_error = Some("no actions are available here".into());
+                } else {
+                    self.action_menu = Some(ActionMenu::new(actions));
+                    self.presentation.open_overlay(Overlay::Actions);
+                }
             }
             WorkspaceEffect::Refresh => {
                 self.cache_dirty = true;
@@ -1641,21 +1750,90 @@ impl App {
         Ok(())
     }
 
-    fn apply_presentation_focus(&mut self) {
+    fn scroll_focused_viewport(&mut self, scroll: ViewportScroll) {
+        let apply = |timeline: &mut TimelineState| match scroll {
+            ViewportScroll::Lines(lines) => timeline.scroll_by(lines),
+            ViewportScroll::HalfPage(direction) => timeline.scroll_half_page(direction),
+        };
         match self.presentation.focus {
-            FocusSurface::Channels => self.pane = Pane::Channels,
-            FocusSurface::Timeline => self.pane = Pane::Timeline,
-            FocusSurface::Context if self.thread_root.is_some() => self.pane = Pane::Thread,
-            FocusSurface::Communities
-            | FocusSurface::Context
-            | FocusSurface::InboxList
-            | FocusSurface::InboxDetail => {}
+            FocusSurface::Timeline => apply(&mut self.timeline),
+            FocusSurface::Context => apply(&mut self.thread_timeline),
+            FocusSurface::Communities => {
+                let ids = self.community_ids();
+                match scroll {
+                    ViewportScroll::Lines(lines) => {
+                        self.community_viewport.scroll_by(lines, ids.len())
+                    }
+                    ViewportScroll::HalfPage(direction) => {
+                        let amount =
+                            isize::try_from((self.community_viewport.viewport_height / 2).max(1))
+                                .unwrap_or(1);
+                        self.community_viewport
+                            .scroll_by(amount.saturating_mul(direction), ids.len());
+                    }
+                }
+            }
+            FocusSurface::Channels => {
+                let ids = self.visible_channel_ids();
+                match scroll {
+                    ViewportScroll::Lines(lines) => {
+                        self.channel_viewport.scroll_by(lines, ids.len())
+                    }
+                    ViewportScroll::HalfPage(direction) => {
+                        let amount =
+                            isize::try_from((self.channel_viewport.viewport_height / 2).max(1))
+                                .unwrap_or(1);
+                        self.channel_viewport
+                            .scroll_by(amount.saturating_mul(direction), ids.len());
+                    }
+                }
+            }
+            FocusSurface::InboxList | FocusSurface::InboxDetail => {}
         }
     }
 
+    fn resize_focused_side_pane(&mut self, direction: isize) -> Result<()> {
+        let (width, minimum, maximum, label) = match self.presentation.focus {
+            FocusSurface::Channels => (
+                &mut self.config.ui.sidebar_width,
+                18_u16,
+                60_u16,
+                "channel pane",
+            ),
+            FocusSurface::Context => (
+                &mut self.config.ui.thread_width,
+                30_u16,
+                80_u16,
+                "context pane",
+            ),
+            _ => {
+                self.status_error =
+                    Some("focus the channel or context pane before resizing".into());
+                return Ok(());
+            }
+        };
+        let step = 2_i16.saturating_mul(i16::try_from(direction.signum()).unwrap_or_default());
+        let next = width.saturating_add_signed(step).clamp(minimum, maximum);
+        if next == *width {
+            self.status_error = Some(format!("{label} is already at its safe width limit"));
+            return Ok(());
+        }
+        *width = next;
+        self.config.save(&self.paths)?;
+        self.status_error = Some(format!("{label} width saved as {next}"));
+        Ok(())
+    }
+
     fn move_selection(&mut self, delta: isize) {
-        match self.pane {
-            Pane::Channels => {
+        match self.presentation.focus {
+            FocusSurface::Communities => {
+                self.community_cursor = self
+                    .community_cursor
+                    .saturating_add_signed(delta)
+                    .min(self.config.communities.len().saturating_sub(1));
+                self.select_community_index(self.community_cursor);
+            }
+            FocusSurface::Channels => {
                 let joined = self
                     .channels
                     .iter()
@@ -1669,27 +1847,27 @@ impl App {
                         .position(|index| *index == self.selected_channel)
                         .unwrap_or_default();
                     let next = current.saturating_add_signed(delta).min(joined.len() - 1);
-                    self.selected_channel = joined[next];
+                    self.select_channel_index(joined[next]);
                     self.showing_open_channel = false;
                 }
             }
-            Pane::Timeline => self.timeline.move_by(&self.messages, delta),
-            Pane::Thread => self.thread_timeline.move_by(&self.thread_messages, delta),
+            FocusSurface::Timeline => self.timeline.move_by(&self.messages, delta),
+            FocusSurface::Context => self.thread_timeline.move_by(&self.thread_messages, delta),
+            FocusSurface::InboxList | FocusSurface::InboxDetail => {}
         }
     }
+
     fn move_to_edge(&mut self, last: bool) {
-        if self.presentation.route == Route::Workspace
-            && self.presentation.focus == FocusSurface::Communities
-        {
-            self.community_cursor = if last {
-                self.config.communities.len().saturating_sub(1)
-            } else {
-                0
-            };
-            return;
-        }
-        match self.pane {
-            Pane::Channels => {
+        match self.presentation.focus {
+            FocusSurface::Communities => {
+                self.community_cursor = if last {
+                    self.config.communities.len().saturating_sub(1)
+                } else {
+                    0
+                };
+                self.select_community_index(self.community_cursor);
+            }
+            FocusSurface::Channels => {
                 let joined = self
                     .channels
                     .iter()
@@ -1698,38 +1876,44 @@ impl App {
                     .map(|(index, _)| index)
                     .collect::<Vec<_>>();
                 if let Some(index) = if last { joined.last() } else { joined.first() } {
-                    self.selected_channel = *index;
+                    self.select_channel_index(*index);
                     self.showing_open_channel = false;
                 }
             }
-            Pane::Timeline => {
+            FocusSurface::Timeline => {
                 self.timeline.selected_event = (if last {
                     self.messages.last()
                 } else {
                     self.messages.first()
                 })
                 .map(|message| message.event_id.clone());
-                self.timeline.at_live_bottom = last
+                self.timeline.at_live_bottom = last;
+                self.timeline.keep_selection_visible = true;
             }
-            Pane::Thread => {
+            FocusSurface::Context => {
                 self.thread_timeline.selected_event = (if last {
                     self.thread_messages.last()
                 } else {
                     self.thread_messages.first()
                 })
                 .map(|message| message.event_id.clone());
-                self.thread_timeline.at_live_bottom = last
+                self.thread_timeline.at_live_bottom = last;
+                self.thread_timeline.keep_selection_visible = true;
             }
+            FocusSurface::InboxList | FocusSurface::InboxDetail => {}
         }
     }
 
     async fn open_selected(&mut self) -> Result<()> {
-        match self.pane {
-            Pane::Channels => {
+        match self.presentation.focus {
+            FocusSurface::Communities => {}
+            FocusSurface::Channels => {
                 self.load_selected_channel().await?;
-                self.pane = Pane::Timeline
+                self.presentation
+                    .set_workspace_focus(FocusSurface::Timeline);
             }
-            Pane::Timeline | Pane::Thread => self.toggle_thread().await?,
+            FocusSurface::Timeline | FocusSurface::Context => self.toggle_thread().await?,
+            FocusSurface::InboxList | FocusSurface::InboxDetail => {}
         }
         Ok(())
     }
@@ -1750,7 +1934,8 @@ impl App {
     async fn toggle_thread(&mut self) -> Result<()> {
         if self.thread_root.is_some() {
             self.thread_root = None;
-            self.pane = Pane::Timeline;
+            self.presentation
+                .set_workspace_focus(FocusSurface::Timeline);
             return Ok(());
         }
         if let Some(message) = self.selected_message() {
@@ -1759,7 +1944,7 @@ impl App {
                 .clone()
                 .unwrap_or_else(|| message.event_id.clone());
             self.thread_root = Some(root);
-            self.pane = Pane::Thread;
+            self.presentation.set_workspace_focus(FocusSurface::Context);
             self.cache_dirty = true;
             self.hydrate_cache().await?;
         }
@@ -2294,7 +2479,7 @@ impl App {
             return Ok(());
         };
         let mut marks = Vec::new();
-        if self.pane == Pane::Thread
+        if self.presentation.focus == FocusSurface::Context
             && let Some(root) = &self.thread_root
             && let Some(last) = self.thread_messages.last()
         {
@@ -2721,7 +2906,6 @@ impl App {
                 self.presentation.route = Route::Workspace;
                 self.presentation
                     .set_workspace_focus(FocusSurface::Timeline);
-                self.apply_presentation_focus();
             }
             KeyCode::Char('j') | KeyCode::Down => self.inbox_state.move_by(&self.inbox_items, 1),
             KeyCode::Char('k') | KeyCode::Up => self.inbox_state.move_by(&self.inbox_items, -1),
@@ -2793,27 +2977,25 @@ impl App {
                 Some("the source channel is unavailable or no longer accessible".into());
             return Ok(());
         };
-        self.selected_channel = index;
+        self.select_channel_index(index);
         self.showing_open_channel = !self.channels[index].is_member;
         self.load_selected_channel().await?;
+        self.presentation.route = Route::Workspace;
         if let Some(root) = thread_root {
             self.thread_root = Some(root.to_owned());
-            self.pane = Pane::Thread;
             self.thread_timeline.selected_event = event_id.map(str::to_owned);
+            self.thread_timeline.at_live_bottom = event_id.is_none();
+            self.thread_timeline.keep_selection_visible = true;
+            self.presentation.set_workspace_focus(FocusSurface::Context);
         } else {
-            self.pane = Pane::Timeline;
             self.timeline.selected_event = event_id.map(str::to_owned);
+            self.timeline.at_live_bottom = event_id.is_none();
+            self.timeline.keep_selection_visible = true;
+            self.presentation
+                .set_workspace_focus(FocusSurface::Timeline);
         }
         self.cache_dirty = true;
         self.hydrate_cache().await?;
-        self.presentation.route = Route::Workspace;
-        self.presentation
-            .set_workspace_focus(if self.thread_root.is_some() {
-                FocusSurface::Context
-            } else {
-                FocusSurface::Timeline
-            });
-        self.apply_presentation_focus();
         Ok(())
     }
 
@@ -2931,10 +3113,12 @@ impl App {
                             .iter()
                             .position(|channel| channel.id == found.id)
                     {
-                        self.selected_channel = index;
-                        self.showing_open_channel = !found.is_member;
+                        let found_is_member = found.is_member;
+                        self.select_channel_index(index);
+                        self.showing_open_channel = !found_is_member;
                         self.load_selected_channel().await?;
-                        self.pane = Pane::Timeline;
+                        self.presentation
+                            .set_workspace_focus(FocusSurface::Timeline);
                     }
                     self.mode = Mode::Normal
                 } else {
@@ -3183,11 +3367,12 @@ impl App {
                 self.media.bind(runtime.community_id, runtime.media.clone());
                 self.runtime = Some(runtime);
                 self.selected_community = index;
-                self.community_cursor = index;
+                self.select_community_index(index);
                 self.config.default_community = Some(target_id);
                 self.config.save(&self.paths)?;
                 self.reload_theme();
                 self.selected_channel = 0;
+                self.channel_viewport = ViewportState::default();
                 self.showing_open_channel = false;
                 self.thread_root = None;
                 self.last_marked.clear();
@@ -3213,11 +3398,12 @@ impl App {
                     }
                     self.media.select_cached(target_id);
                     self.selected_community = index;
-                    self.community_cursor = index;
+                    self.select_community_index(index);
                     self.config.default_community = Some(target_id);
                     self.config.save(&self.paths)?;
                     self.reload_theme();
                     self.selected_channel = 0;
+                    self.channel_viewport = ViewportState::default();
                     self.showing_open_channel = false;
                     self.thread_root = None;
                     self.last_marked.clear();
@@ -3237,6 +3423,67 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn community_ids(&self) -> Vec<String> {
+        self.config
+            .communities
+            .iter()
+            .map(|community| community.id.to_string())
+            .collect()
+    }
+
+    fn visible_channel_ids(&self) -> Vec<String> {
+        self.channels
+            .iter()
+            .filter(|channel| channel.is_member)
+            .map(|channel| channel.id.to_string())
+            .collect()
+    }
+
+    fn sync_workspace_viewports(&mut self) {
+        let community_ids = self.community_ids();
+        if self.community_viewport.selected_id.is_none() {
+            self.community_viewport.select(
+                self.config
+                    .communities
+                    .get(self.selected_community)
+                    .map(|community| community.id.to_string()),
+            );
+        }
+        self.community_viewport.reconcile(community_ids);
+
+        if self.showing_open_channel {
+            self.channel_viewport.selected_id = None;
+            return;
+        }
+        let channel_ids = self.visible_channel_ids();
+        self.channel_viewport.reconcile(channel_ids);
+        if let Some(selected) = self.channel_viewport.selected_id.as_deref()
+            && let Some(index) = self
+                .channels
+                .iter()
+                .position(|channel| channel.id.to_string() == selected)
+        {
+            self.selected_channel = index;
+        }
+    }
+
+    fn select_channel_index(&mut self, index: usize) {
+        let Some(channel) = self.channels.get(index) else {
+            return;
+        };
+        self.selected_channel = index;
+        self.channel_viewport.select(Some(channel.id.to_string()));
+    }
+
+    fn select_community_index(&mut self, index: usize) {
+        let Some(community) = self.config.communities.get(index) else {
+            return;
+        };
+        self.community_cursor = index;
+        self.community_viewport
+            .select(Some(community.id.to_string()));
     }
 
     fn active_community_id(&self) -> Option<Uuid> {
@@ -3261,15 +3508,31 @@ impl App {
             .map(|identity| identity.pubkey.as_str())
     }
     fn selected_message(&self) -> Option<&Message> {
-        match self.pane {
-            Pane::Thread => self
-                .thread_timeline
+        if self.presentation.focus == FocusSurface::Context {
+            self.thread_timeline
                 .selected_index(&self.thread_messages)
-                .and_then(|index| self.thread_messages.get(index)),
-            _ => self
-                .timeline
+                .and_then(|index| self.thread_messages.get(index))
+        } else {
+            self.timeline
                 .selected_index(&self.messages)
-                .and_then(|index| self.messages.get(index)),
+                .and_then(|index| self.messages.get(index))
+        }
+    }
+
+    fn action_context(&self) -> ActionContext {
+        let selected = self.selected_message();
+        let self_pubkey = self.self_pubkey();
+        ActionContext {
+            route: self.presentation.route,
+            focus: self.presentation.focus,
+            has_channel: self.current_channel().is_some(),
+            has_selected_event: selected.is_some(),
+            selected_event_is_own: selected
+                .is_some_and(|message| self_pubkey.is_some_and(|pubkey| message.pubkey == pubkey)),
+            selected_event_has_media: selected
+                .is_some_and(|message| !message.attachments.is_empty()),
+            context_open: self.thread_root.is_some(),
+            can_publish: self.runtime.is_some(),
         }
     }
 
@@ -3299,13 +3562,25 @@ impl App {
         }
     }
 
+    fn record_primary_click(&mut self, target: &HitTarget) -> bool {
+        let now = Instant::now();
+        let repeated = self
+            .last_primary_click
+            .as_ref()
+            .is_some_and(|(previous, when)| {
+                previous == target && now.duration_since(*when) <= Duration::from_millis(500)
+            });
+        self.last_primary_click = Some((target.clone(), now));
+        repeated
+    }
+
     fn render(&mut self, frame: &mut Frame<'_>) {
         self.render_generation = self.render_generation.wrapping_add(1);
         let mut hit_map = HitMap::new(self.render_generation);
         let area = frame.area();
         if area.width < 50 || area.height < 12 {
             frame.render_widget(
-                Paragraph::new("bzz needs at least 50×12\nResize the terminal or press Q to quit")
+                Paragraph::new("bzz needs at least 50×12\nResize the terminal or press q to quit")
                     .style(self.theme.style(HighlightGroup::Normal))
                     .alignment(Alignment::Center)
                     .block(
@@ -3328,30 +3603,49 @@ impl App {
         }
         let panes = layout::panes(
             area,
+            self.community_rail,
             self.sidebar,
             self.thread_root.is_some(),
             self.config.ui.sidebar_width,
             self.config.ui.thread_width,
         );
+        if (self.presentation.focus == FocusSurface::Communities && panes.community.is_none())
+            || (self.presentation.focus == FocusSurface::Channels && panes.sidebar.is_none())
+            || (self.presentation.focus == FocusSurface::Context && panes.thread.is_none())
+        {
+            self.presentation
+                .set_workspace_focus(FocusSurface::Timeline);
+        }
         if let Some(rail) = panes.community {
+            let ids = self.community_ids();
+            self.community_viewport
+                .set_viewport_height(usize::from(inner_rect(rail).height), &ids);
             self.render_communities(
                 frame,
                 rail,
                 self.presentation.focus == FocusSurface::Communities,
             );
-            for (index, _) in self.config.communities.iter().enumerate() {
-                if let Some(area) = list_row(rail, index, 1) {
+            for (row, index) in (self.community_viewport.scroll..self.config.communities.len())
+                .take(usize::from(inner_rect(rail).height))
+                .enumerate()
+            {
+                if let Some(area) = list_row(rail, row, 1) {
                     hit_map.push(area, HitTarget::Community(index));
                 }
             }
         }
         if let Some(sidebar) = panes.sidebar {
+            let ids = self.visible_channel_ids();
+            self.channel_viewport
+                .set_viewport_height(usize::from(inner_rect(sidebar).height), &ids);
             hit_map.push(sidebar, HitTarget::ChannelPane);
             for (row, (index, _)) in self
                 .channels
                 .iter()
                 .enumerate()
                 .filter(|(_, channel)| channel.is_member)
+                .skip(self.channel_viewport.scroll)
+                .take(usize::from(inner_rect(sidebar).height))
                 .enumerate()
             {
                 if let Some(area) = list_row(sidebar, row, 1) {
@@ -3362,10 +3656,10 @@ impl App {
                 frame,
                 sidebar,
                 &self.channels,
-                self.selected_channel,
+                &self.channel_viewport,
                 &self.unread_channels(),
                 &self.theme,
-                self.pane == Pane::Channels,
+                self.presentation.focus == FocusSurface::Channels,
             );
         }
         let title = self
@@ -3381,10 +3675,10 @@ impl App {
                 &self.messages,
                 &self.profiles,
                 &self.reactions,
-                &self.timeline,
+                &mut self.timeline,
                 &title,
                 &self.theme,
-                self.pane == Pane::Timeline,
+                self.presentation.focus == FocusSurface::Timeline,
                 self_pubkey.as_deref(),
                 &mut self.media,
                 &mut timeline_hits,
@@ -3396,10 +3690,10 @@ impl App {
                 &self.messages,
                 &self.profiles,
                 &self.reactions,
-                &self.timeline,
+                &mut self.timeline,
                 &title,
                 &self.theme,
-                self.pane == Pane::Timeline,
+                self.presentation.focus == FocusSurface::Timeline,
                 self_pubkey.as_deref(),
             );
         }
@@ -3416,10 +3710,10 @@ impl App {
                     &self.thread_messages,
                     &self.profiles,
                     &self.reactions,
-                    &self.thread_timeline,
+                    &mut self.thread_timeline,
                     "thread",
                     &self.theme,
-                    self.pane == Pane::Thread,
+                    self.presentation.focus == FocusSurface::Context,
                     self_pubkey.as_deref(),
                     &mut self.media,
                     &mut thread_hits,
@@ -3431,10 +3725,10 @@ impl App {
                     &self.thread_messages,
                     &self.profiles,
                     &self.reactions,
-                    &self.thread_timeline,
+                    &mut self.thread_timeline,
                     "thread",
                     &self.theme,
-                    self.pane == Pane::Thread,
+                    self.presentation.focus == FocusSurface::Context,
                     self_pubkey.as_deref(),
                 );
             }
@@ -3473,26 +3767,39 @@ impl App {
         );
     }
     fn render_communities(&self, frame: &mut Frame<'_>, area: Rect, focused: bool) {
-        let items = self
-            .config
-            .communities
-            .iter()
-            .enumerate()
-            .map(|(index, community)| {
-                ListItem::new(
-                    sanitize::single_line(&community.label)
-                        .chars()
-                        .next()
-                        .unwrap_or('?')
-                        .to_string(),
-                )
-                .style(self.theme.style(if index == self.community_cursor {
-                    HighlightGroup::CommunitySelected
-                } else {
-                    HighlightGroup::CommunityRail
-                }))
+        let items = self.config.communities.iter().map(|community| {
+            let selected = self
+                .community_viewport
+                .selected_id
+                .as_ref()
+                .is_some_and(|id| id == &community.id.to_string());
+            ListItem::new(
+                sanitize::single_line(&community.label)
+                    .chars()
+                    .next()
+                    .unwrap_or('?')
+                    .to_string(),
+            )
+            .style(self.theme.style(if selected {
+                HighlightGroup::CommunitySelected
+            } else {
+                HighlightGroup::CommunityRail
+            }))
+        });
+        let selected = self
+            .community_viewport
+            .selected_id
+            .as_ref()
+            .and_then(|selected| {
+                self.config
+                    .communities
+                    .iter()
+                    .position(|community| community.id.to_string() == *selected)
             });
-        frame.render_widget(
+        let mut state = ratatui::widgets::ListState::default()
+            .with_selected(selected)
+            .with_offset(self.community_viewport.scroll);
+        frame.render_stateful_widget(
             List::new(items)
                 .style(self.theme.style(HighlightGroup::CommunityRail))
                 .block(
@@ -3507,6 +3814,7 @@ impl App {
                         .title(" b "),
                 ),
             area,
+            &mut state,
         );
     }
     fn render_status(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -3558,11 +3866,13 @@ impl App {
         if self.mode == Mode::Normal {
             match self.presentation.overlay {
                 Some(Overlay::Help) => {
+                    let actions = derive_actions(self.action_context());
                     frame.render_widget(Clear, area);
                     frame.render_widget(
-                        Paragraph::new(crate::ui::help::effective_keymap(
+                        Paragraph::new(crate::ui::help::effective_keymap_with_actions(
                             &self.keymap,
                             KeyScope::Workspace,
+                            &actions,
                         ))
                         .style(self.theme.style(HighlightGroup::Normal))
                         .block(
@@ -3597,6 +3907,10 @@ impl App {
                         .wrap(Wrap { trim: false }),
                         popup,
                     );
+                    return;
+                }
+                Some(Overlay::Actions) => {
+                    self.render_action_menu(frame, area, hit_map);
                     return;
                 }
                 _ => {}
@@ -3775,6 +4089,50 @@ impl App {
             Mode::Normal => {}
         }
     }
+    fn render_action_menu(&self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
+        let Some(menu) = &self.action_menu else {
+            return;
+        };
+        let height = u16::try_from(menu.entries().len().saturating_add(4)).unwrap_or(u16::MAX);
+        let popup = centered(area, 86, height.min(area.height.saturating_sub(2)).max(4));
+        let entries = menu.entries();
+        for (index, entry) in entries.iter().enumerate() {
+            if let Some(row) = list_row(popup, index, 1) {
+                hit_map.push(row, HitTarget::ActionMenu(entry.action));
+            }
+        }
+        let items = entries.iter().map(|entry| {
+            let text = match entry.reason {
+                Some(reason) => format!("{} — {reason}", entry.label),
+                None => entry.label.to_owned(),
+            };
+            ListItem::new(text).style(self.theme.style(if entry.enabled {
+                HighlightGroup::Normal
+            } else {
+                HighlightGroup::SidebarText
+            }))
+        });
+        let selected = menu
+            .selected()
+            .and_then(|selected| entries.iter().position(|entry| *entry == selected));
+        let mut state = ratatui::widgets::ListState::default().with_selected(selected);
+        frame.render_widget(Clear, popup);
+        frame.render_stateful_widget(
+            List::new(items)
+                .highlight_symbol("› ")
+                .highlight_style(self.theme.style(HighlightGroup::SelectedRow))
+                .block(
+                    Block::bordered()
+                        .border_type(self.theme.border_type(BorderSurface::Modal))
+                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
+                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
+                        .title(" actions · Enter run · Esc close "),
+                ),
+            popup,
+            &mut state,
+        );
+    }
+
     fn render_media_preview(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let popup = centered(area, 86, 80.min(area.height.saturating_sub(2)));
         frame.render_widget(Clear, popup);
@@ -4254,7 +4612,13 @@ mod tests {
         error::Error,
         paths::Paths,
         store::{Store, writer::StoreHandle},
-        ui::{hit_map::HitTarget, mention_picker::MentionPicker},
+        ui::{
+            actions::{ActionMenu, ContextAction},
+            hit_map::HitTarget,
+            keymap::UiAction,
+            mention_picker::MentionPicker,
+            state::Overlay,
+        },
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
@@ -4468,6 +4832,7 @@ mod tests {
         terminal.draw(|frame| app.render(frame)).unwrap();
         let panes = crate::ui::layout::panes(
             terminal.size().unwrap().into(),
+            app.community_rail,
             app.sidebar,
             false,
             app.config.ui.sidebar_width,
@@ -4541,6 +4906,50 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("leader"));
         assert!(text.contains("open Inbox"));
+    }
+
+    #[tokio::test]
+    async fn empty_state_renders_contextual_actions_overlay() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+        app.action_menu = Some(ActionMenu::new(vec![
+            ContextAction {
+                action: UiAction::Compose,
+                label: "reply",
+                enabled: true,
+                reason: None,
+            },
+            ContextAction {
+                action: UiAction::Delete,
+                label: "delete own message",
+                enabled: false,
+                reason: Some("only your own message can be deleted"),
+            },
+        ]));
+        app.presentation.open_overlay(Overlay::Actions);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("actions"));
+        assert!(text.contains("reply"));
+        assert!(text.contains("only your own message can be deleted"));
     }
 
     #[tokio::test]

@@ -11,6 +11,7 @@ pub struct Panes {
 
 pub fn panes(
     area: Rect,
+    community: bool,
     sidebar: bool,
     thread: bool,
     sidebar_width: u16,
@@ -38,10 +39,11 @@ pub fn panes(
                 .saturating_add(sidebar_space)
                 .saturating_add(thread_width);
     let thread_space = if show_thread { thread_width } else { 0 };
-    let show_community = body.width
-        >= 34_u16
-            .saturating_add(sidebar_space)
-            .saturating_add(thread_space);
+    let show_community = community
+        && body.width
+            >= 34_u16
+                .saturating_add(sidebar_space)
+                .saturating_add(thread_space);
     let mut constraints = vec![];
     if show_community {
         constraints.push(Constraint::Length(4));

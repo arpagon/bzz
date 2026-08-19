@@ -107,6 +107,7 @@ Useful conventions:
 | Channel / DM switcher | `space space` |
 | Search | `/` |
 | Inbox | `space n` |
+| Contextual actions | `space a` |
 | Theme options | `space o` |
 | Context | `4` or `enter` on a selected message |
 | Escape | `esc` |
@@ -233,18 +234,13 @@ herdr pane send-keys "$BZZ_PANE" esc
 sleep 0.3
 herdr pane send-keys "$BZZ_PANE" i
 
-# Selected reaction
-herdr pane send-keys "$BZZ_PANE" r
+# Contextual actions: inspect the owned menu, choose the visible action with
+# j/k, then press Enter. Reaction opens its own picker; deletion still asks y.
+herdr pane send-keys "$BZZ_PANE" space a
 sleep 0.3
-herdr pane send-keys "$BZZ_PANE" enter
+herdr pane read "$BZZ_PANE" --source visible --format text
 
-# Delete own message
-herdr pane send-keys "$BZZ_PANE" 'shift+d'
-sleep 0.3
-herdr pane send-keys "$BZZ_PANE" y
-
-# Mark unread and return to the end
-herdr pane send-keys "$BZZ_PANE" 'shift+u'
+# Mark unread through the same menu, then return to the end.
 herdr pane send-keys "$BZZ_PANE" 'shift+g'
 
 # Lock the process
@@ -257,7 +253,7 @@ system credential manager, never its configuration. Verify through Herdr:
 - history remains visible;
 - `identity missing` state;
 - no connection from the process;
-- `i`, `r`, and `D` are blocked;
+- compose and publish-capable contextual actions are unavailable;
 - the outbox is unchanged.
 
 Then quit with `q` followed by `y`, run `identity restore-backup`, complete the passphrase

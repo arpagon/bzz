@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 use ratatui_image::sliced::{SignedPosition, SlicedImage, SlicedProtocol};
 
@@ -27,6 +27,13 @@ pub struct TimelineState {
     pub selected_event: Option<String>,
     pub at_live_bottom: bool,
     pub newer: usize,
+    /// Measured terminal rows above the visible viewport. It is independent
+    /// from selected_event so J/K and wheel input can inspect history without
+    /// changing the active message.
+    pub scroll: usize,
+    pub viewport_height: usize,
+    pub content_height: usize,
+    pub keep_selection_visible: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,10 +46,12 @@ impl TimelineState {
         if self.at_live_bottom {
             self.selected_event = messages.last().map(|message| message.event_id.clone());
             self.newer = 0;
+            self.keep_selection_visible = true;
         } else if let Some(selected) = &self.selected_event
             && !messages.iter().any(|message| &message.event_id == selected)
         {
             self.selected_event = messages.last().map(|message| message.event_id.clone());
+            self.keep_selection_visible = true;
         }
     }
     pub fn selected_index(&self, messages: &[Message]) -> Option<usize> {
@@ -58,6 +67,54 @@ impl TimelineState {
         let next = current.saturating_add_signed(delta).min(messages.len() - 1);
         self.selected_event = Some(messages[next].event_id.clone());
         self.at_live_bottom = next == messages.len() - 1;
+        self.keep_selection_visible = true;
+    }
+
+    pub fn scroll_by(&mut self, delta: isize) {
+        let viewport = self.viewport_height.max(1);
+        let max_scroll = self.content_height.saturating_sub(viewport);
+        self.scroll = self.scroll.saturating_add_signed(delta).min(max_scroll);
+        self.at_live_bottom = self.scroll == max_scroll;
+        if self.at_live_bottom {
+            self.newer = 0;
+        }
+        self.keep_selection_visible = false;
+    }
+
+    pub fn scroll_half_page(&mut self, direction: isize) {
+        let amount = isize::try_from((self.viewport_height.max(2) / 2).max(1)).unwrap_or(1);
+        self.scroll_by(amount.saturating_mul(direction));
+    }
+
+    fn reconcile_layout(
+        &mut self,
+        content_height: usize,
+        viewport_height: usize,
+        selected_top: Option<usize>,
+        selected_bottom: Option<usize>,
+    ) {
+        self.content_height = content_height;
+        self.viewport_height = viewport_height.max(1);
+        let max_scroll = self.content_height.saturating_sub(self.viewport_height);
+        if self.at_live_bottom {
+            self.scroll = max_scroll;
+            self.keep_selection_visible = false;
+            return;
+        }
+        self.scroll = self.scroll.min(max_scroll);
+        if !self.keep_selection_visible {
+            return;
+        }
+        if let (Some(top), Some(bottom)) = (selected_top, selected_bottom) {
+            if bottom.saturating_sub(top) >= self.viewport_height {
+                self.scroll = top.min(max_scroll);
+            } else if top < self.scroll {
+                self.scroll = top;
+            } else if bottom > self.scroll.saturating_add(self.viewport_height) {
+                self.scroll = bottom.saturating_sub(self.viewport_height).min(max_scroll);
+            }
+        }
+        self.keep_selection_visible = false;
     }
 }
 
@@ -72,15 +129,21 @@ struct MessageBlock {
 }
 
 impl MessageBlock {
-    fn height(&self) -> u16 {
+    fn height(&self, width: u16) -> u16 {
         self.rows
             .iter()
             .map(|row| match row {
-                TimelineRow::Text(_) => 1,
+                TimelineRow::Text(line) => text_height(line, width),
                 TimelineRow::Image(protocol) => protocol.size().height,
             })
             .fold(0_u16, u16::saturating_add)
     }
+}
+
+fn text_height(line: &Line<'_>, width: u16) -> u16 {
+    let width = usize::from(width.max(1));
+    let cells = line.width().max(1);
+    u16::try_from(cells.div_ceil(width)).unwrap_or(u16::MAX)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -90,7 +153,7 @@ pub fn render(
     messages: &[Message],
     profiles: &HashMap<String, Profile>,
     reactions: &HashMap<String, Vec<Reaction>>,
-    state: &TimelineState,
+    state: &mut TimelineState,
     title: &str,
     theme: &Theme,
     focused: bool,
@@ -119,7 +182,7 @@ pub fn render_with_media(
     messages: &[Message],
     profiles: &HashMap<String, Profile>,
     reactions: &HashMap<String, Vec<Reaction>>,
-    state: &TimelineState,
+    state: &mut TimelineState,
     title: &str,
     theme: &Theme,
     focused: bool,
@@ -149,7 +212,7 @@ pub fn render_with_media_and_hits(
     messages: &[Message],
     profiles: &HashMap<String, Profile>,
     reactions: &HashMap<String, Vec<Reaction>>,
-    state: &TimelineState,
+    state: &mut TimelineState,
     title: &str,
     theme: &Theme,
     focused: bool,
@@ -180,7 +243,7 @@ fn render_internal(
     messages: &[Message],
     profiles: &HashMap<String, Profile>,
     reactions: &HashMap<String, Vec<Reaction>>,
-    state: &TimelineState,
+    state: &mut TimelineState,
     title: &str,
     theme: &Theme,
     focused: bool,
@@ -234,7 +297,10 @@ fn render_internal(
             )
         })
         .collect::<Vec<_>>();
-    let heights = blocks.iter().map(MessageBlock::height).collect::<Vec<_>>();
+    let heights = blocks
+        .iter()
+        .map(|block| block.height(inner.width))
+        .collect::<Vec<_>>();
     let total = heights.iter().copied().fold(0_u32, |total, height| {
         total.saturating_add(u32::from(height))
     });
@@ -257,21 +323,17 @@ fn render_internal(
                 total.saturating_add(u32::from(height))
             })
     });
-    let scroll = if state.at_live_bottom {
-        total.saturating_sub(viewport)
-    } else if let (Some(top), Some(bottom)) = (selected_top, selected_bottom) {
-        if bottom.saturating_sub(top) >= viewport {
-            top
-        } else {
-            bottom.saturating_sub(viewport).min(top)
-        }
-    } else {
-        total.saturating_sub(viewport)
-    };
+    state.reconcile_layout(
+        usize::try_from(total).unwrap_or(usize::MAX),
+        usize::try_from(viewport).unwrap_or(usize::MAX),
+        selected_top.and_then(|value| usize::try_from(value).ok()),
+        selected_bottom.and_then(|value| usize::try_from(value).ok()),
+    );
+    let scroll = u32::try_from(state.scroll).unwrap_or(u32::MAX);
 
     let mut global_y = 0_u32;
     for (index, block) in blocks.into_iter().enumerate() {
-        let block_height = u32::from(block.height());
+        let block_height = u32::from(block.height(inner.width));
         if global_y + block_height <= scroll {
             global_y += block_height;
             continue;
@@ -295,22 +357,33 @@ fn render_internal(
         let mut row_y = global_y;
         for row in block.rows {
             let row_height = match &row {
-                TimelineRow::Text(_) => 1,
+                TimelineRow::Text(line) => u32::from(text_height(line, inner.width)),
                 TimelineRow::Image(protocol) => u32::from(protocol.size().height),
             };
             if row_y + row_height > scroll && row_y < scroll + viewport {
                 match row {
                     TimelineRow::Text(line) => {
-                        let y = inner.y
-                            + u16::try_from(row_y.saturating_sub(scroll)).unwrap_or(u16::MAX);
-                        if y < inner.bottom() {
+                        let visible_top = row_y.max(scroll);
+                        let visible_bottom = row_y
+                            .saturating_add(row_height)
+                            .min(scroll.saturating_add(viewport));
+                        let skipped = visible_top.saturating_sub(row_y);
+                        let y = inner.y.saturating_add(
+                            u16::try_from(visible_top.saturating_sub(scroll)).unwrap_or(u16::MAX),
+                        );
+                        let height = u16::try_from(visible_bottom.saturating_sub(visible_top))
+                            .unwrap_or(u16::MAX);
+                        if y < inner.bottom() && height > 0 {
                             frame.render_widget(
-                                Paragraph::new(line).style(theme.style(if block.selected {
-                                    HighlightGroup::SelectedRow
-                                } else {
-                                    HighlightGroup::Normal
-                                })),
-                                Rect::new(inner.x, y, inner.width, 1),
+                                Paragraph::new(line)
+                                    .style(theme.style(if block.selected {
+                                        HighlightGroup::SelectedRow
+                                    } else {
+                                        HighlightGroup::Normal
+                                    }))
+                                    .wrap(Wrap { trim: false })
+                                    .scroll((u16::try_from(skipped).unwrap_or(u16::MAX), 0)),
+                                Rect::new(inner.x, y, inner.width, height),
                             );
                         }
                     }

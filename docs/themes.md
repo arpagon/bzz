@@ -58,7 +58,7 @@ the global selection.
 
 ## Interactive picker
 
-Press `Ctrl-y` in normal mode:
+Press `Space o` in normal mode:
 
 - type to filter;
 - use `j/k` or the arrow keys to preview;
