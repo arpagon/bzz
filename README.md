@@ -4,9 +4,9 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.4.0 is in development with a clean-room typed interaction model
-> and conversational Inbox workspace. Protocol compatibility remains pinned to
-> Buzz `ede26863345a518ec46edd6d7692e0281883491b`.
+> Status: v0.4.0 adds a clean-room typed interaction model and conversational
+> Inbox workspace. Protocol compatibility remains pinned to Buzz
+> `ede26863345a518ec46edd6d7692e0281883491b`.
 
 ## Build
 
