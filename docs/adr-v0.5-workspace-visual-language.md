@@ -37,8 +37,8 @@ The implementation has these deliberate boundaries:
   untrusted output or independently recalculating pointer geometry.
 
 The behavior contract and acceptance criteria are in
-[`PLAN_v5.md`](../PLAN_v5.md). This ADR supplements the v0.4 interaction
-boundary in [`adr-v0.4-clean-room-interaction.md`](adr-v0.4-clean-room-interaction.md).
+[`v0.5.0.md`](planning/2026-08-20/v0.5.0.md). This ADR supplements the v0.4
+interaction boundary in [`adr-v0.4-clean-room-interaction.md`](adr-v0.4-clean-room-interaction.md).
 
 ## Consequences
 

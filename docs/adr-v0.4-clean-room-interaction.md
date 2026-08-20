@@ -20,7 +20,7 @@ Contributors must not copy, translate, adapt, vendor, link, or derive bzz code,
 tests, comments, user-facing strings, configuration samples, or assets from
 Concord. The implementation uses bzz-owned Rust types, keymap grammar, reducer,
 rendering, tests, and documentation. The behavior contract is specified in
-[`PLAN_v4.md`](../PLAN_v4.md).
+[`v0.4.0.md`](planning/2026-08-18/v0.4.0.md).
 
 The work also retains bzz's existing generation-bound semantic `HitMap`; pointer
 events are resolved against the most recently completed bzz render generation
