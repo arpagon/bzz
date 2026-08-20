@@ -4,9 +4,9 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.4.0 adds a clean-room typed interaction model and conversational
-> Inbox workspace. Protocol compatibility remains pinned to Buzz
-> `ede26863345a518ec46edd6d7692e0281883491b`.
+> Status: v0.5.0 adds a clean-room calm workspace shell with readable
+> conversations and a persistent writing dock. Protocol compatibility remains
+> pinned to Buzz `ede26863345a518ec46edd6d7692e0281883491b`.
 
 ## Build
 
@@ -25,7 +25,9 @@ use `bzz-dev` paths and a separate OS-keychain service.
 - cached/offline channel history, profiles, threads, unread markers, and drafts;
 - acknowledged sends with durable ambiguous-outcome recovery;
 - reaction toggles, own-message deletion, and encrypted cross-device read state;
-- Vim-style navigation, fuzzy channel finder, safe Markdown, and narrow layouts;
+- Vim-style navigation, fuzzy channel finder, safe Markdown, and responsive narrow layouts;
+- labelled community/channel directories, a bounded readable conversation measure,
+  deterministic local author markers, date/group rhythm, and a visible writing dock;
 - 60 built-in themes plus semantic `theme.toml` customization;
 - an active-community Inbox for mentions, relevant threads, workspace DMs,
   read-only needs-action events, unread rows, and drafts;
@@ -67,12 +69,16 @@ missing credential without changing its identity or communities with
 
 Default navigation uses `1`–`4` to focus workspace surfaces, `Tab`/`h`/`l`
 to traverse them, `j`/`k` or `Ctrl-n`/`Ctrl-p` to change selection, and
-`gg`/`G` for edges. `Space` is the leader: `Space Space` opens the channel/DM
-switcher, `Space n` opens Inbox, `Space a` opens contextual actions, `Space o`
-opens theme options, and `?` shows the generated effective-keymap help. `q`
-unwinds owned UI state and asks before
-quitting. `i` opens the ordinary composer; in Inbox it targets the selected
-validated channel/thread without silently marking work read. Inbox uses `f` to
+`gg`/`G` for edges. The workspace shows labelled communities, channels, the
+conversation, and an on-demand context pane. Each message has a compact local
+avatar marker derived without fetching profile pictures. `Space` is the
+leader: `Space Space` opens the channel/DM switcher, `Space n` opens Inbox,
+`Space a` opens contextual actions, `Space o` opens theme options, and `?`
+shows the generated effective-keymap help. `q` unwinds owned UI state and asks
+before quitting. The visible writing dock activates with `i` or a click; in
+read-only/locked state it explains why writing is unavailable. In Inbox, `i`
+targets the selected validated channel/thread without silently marking work
+read. Inbox uses `f` to
 cycle filters, `Enter` for detail, `o` for canonical source context, `m`/`U`
 for explicit read/unread state, and `a` for confirmed visible bulk-read. Wide
 terminals retain list/detail together; on narrow terminals `Esc` returns from
@@ -135,8 +141,9 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/security.md`](docs/security.md),
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
-[the v0.3.0 release notes](docs/release-v0.3.0.md), the
-[basic-first manual E2E plan](docs/e2e-manual.md), and the
+[the v0.5.0 release notes](docs/release-v0.5.0.md), the
+[basic-first manual E2E plan](docs/e2e-manual.md),
+[workspace validation evidence](docs/validation-v0.5.md), and the
 [Herdr-assisted E2E guide](docs/e2e-herdr.md).
 
 ## License

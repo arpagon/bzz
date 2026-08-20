@@ -4,7 +4,7 @@ use bzz::{
     domain::Message,
     ui::{
         theme::Theme,
-        timeline::{self, TimelineState},
+        timeline::{self, TimelineState, avatar_marker},
     },
 };
 use ratatui::{Terminal, backend::TestBackend};
@@ -24,6 +24,14 @@ fn message(id: &str) -> Message {
         rejected: None,
     }
 }
+#[test]
+fn local_avatar_marker_is_stable_and_never_uses_remote_profile_data() {
+    let key = "a".repeat(64);
+    assert_eq!(avatar_marker(&key, "Renan"), avatar_marker(&key, "Renan"));
+    assert_eq!(avatar_marker(&key, "\u{1b}[31m"), "[●3]");
+    assert!(!avatar_marker(&key, "Renan").contains('\u{1b}'));
+}
+
 #[test]
 fn history_anchor_does_not_jump_on_new_message() {
     let mut state = TimelineState {

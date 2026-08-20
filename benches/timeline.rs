@@ -4,12 +4,14 @@ use bzz::{
     ui::{
         composer::Composer,
         hit_map::{HitMap, HitTarget},
-        timeline::TimelineState,
+        redraw_gate::RedrawGate,
+        theme::Theme,
+        timeline::{self, TimelineState},
     },
 };
 use criterion::{Criterion, criterion_group, criterion_main};
-use ratatui::layout::Rect;
-use std::hint::black_box;
+use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+use std::{collections::HashMap, hint::black_box};
 use uuid::Uuid;
 
 fn bench_timeline(c: &mut Criterion) {
@@ -66,6 +68,47 @@ fn bench_timeline(c: &mut Criterion) {
                 );
             }
             black_box(map.hit(20, 9_999).is_some())
+        })
+    });
+    let render_messages = messages.iter().take(500).cloned().collect::<Vec<_>>();
+    let theme = Theme::default();
+    c.bench_function(
+        "timeline render 500 messages at 110-cell measure",
+        |bench| {
+            let mut terminal = Terminal::new(TestBackend::new(180, 48)).unwrap();
+            bench.iter(|| {
+                let mut state = TimelineState {
+                    at_live_bottom: true,
+                    ..TimelineState::default()
+                };
+                terminal
+                    .draw(|frame| {
+                        timeline::render_limited(
+                            frame,
+                            frame.area(),
+                            &render_messages,
+                            &HashMap::new(),
+                            &HashMap::new(),
+                            &mut state,
+                            "benchmark",
+                            &theme,
+                            true,
+                            None,
+                            110,
+                        );
+                    })
+                    .unwrap();
+                black_box(state.content_height)
+            })
+        },
+    );
+    c.bench_function("redraw gate 1k idle ticks", |bench| {
+        bench.iter(|| {
+            let mut gate = RedrawGate::default();
+            black_box(gate.take()); // initial frame
+            for _ in 0..1_000 {
+                black_box(gate.take());
+            }
         })
     });
 }

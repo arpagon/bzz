@@ -28,6 +28,7 @@ theme = "dracula" # optional; overrides the global UI theme
 [ui]
 sidebar_width = 28
 thread_width = 44
+message_width = 110        # readable message measure; 48..200 cells
 theme = "bzz"
 mouse = "auto"              # auto|on|off
 
@@ -66,8 +67,14 @@ community connection; locked mode is cache-only.
 field takes precedence only while that community is active. `ui.mouse = "auto"`
 enables mouse capture only on an interactive, non-`dumb` terminal; set it to
 `"on"` to force it or `"off"` to retain terminal text selection and avoid
-mouse-capture sequences. Semantic overrides live in a separate, optional
-`theme.toml`; see [`themes.md`](themes.md). UI configuration is
+mouse-capture sequences. `ui.message_width` caps only the rendered text
+measure in a wider conversation pane; it never truncates, stores, or changes
+message content. The workspace uses labelled local community rows, local
+deterministic author markers, and a visible writing dock. Author markers
+never fetch `Profile.picture` or another URL. The dock activates with `i` or a
+click and uses the ordinary existing draft/outbox; it is visibly disabled when
+the active identity cannot publish. Semantic overrides live in a separate,
+optional `theme.toml`; see [`themes.md`](themes.md). UI configuration is
 presentation-only and is never synchronized through the relay.
 
 ## Keymap

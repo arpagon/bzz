@@ -80,7 +80,9 @@ define_groups! {
     SelectionMarker => "SelectionMarker",
     UnreadNotice => "UnreadNotice",
     MessageAuthor => "MessageAuthor",
+    MessageAvatar => "MessageAvatar",
     MessageTimestamp => "MessageTimestamp",
+    MessageDateSeparator => "MessageDateSeparator",
     MessageBody => "MessageBody",
     MessageDeleted => "MessageDeleted",
     Reaction => "Reaction",
@@ -91,6 +93,8 @@ define_groups! {
     MediaWarning => "MediaWarning",
     MediaError => "MediaError",
     Composer => "Composer",
+    ComposerHint => "ComposerHint",
+    ComposerDisabled => "ComposerDisabled",
     ComposerTitle => "ComposerTitle",
     ComposerBorder => "ComposerBorder",
     ActiveComposerBorder => "ActiveComposerBorder",
@@ -480,7 +484,17 @@ fn default_definitions() -> [HighlightDefinition; HighlightGroup::COUNT] {
         Some(H::Info),
         Style::default().add_modifier(Modifier::BOLD),
     );
+    set(
+        H::MessageAvatar,
+        Some(H::MessageAuthor),
+        Style::default().add_modifier(Modifier::BOLD),
+    );
     set(H::MessageTimestamp, Some(H::Muted), Style::default());
+    set(
+        H::MessageDateSeparator,
+        Some(H::Muted),
+        Style::default().add_modifier(Modifier::DIM),
+    );
     set(H::MessageBody, Some(H::Normal), Style::default());
     set(
         H::MessageDeleted,
@@ -495,6 +509,12 @@ fn default_definitions() -> [HighlightDefinition; HighlightGroup::COUNT] {
     set(H::MediaWarning, Some(H::Warning), Style::default());
     set(H::MediaError, Some(H::Error), Style::default());
     set(H::Composer, Some(H::Normal), Style::default());
+    set(
+        H::ComposerHint,
+        Some(H::Muted),
+        Style::default().add_modifier(Modifier::ITALIC),
+    );
+    set(H::ComposerDisabled, Some(H::Warning), Style::default());
     set(H::ComposerTitle, Some(H::Title), Style::default());
     set(H::ComposerBorder, Some(H::Border), Style::default());
     set(
@@ -834,6 +854,7 @@ fn contrast_warnings(theme: &Theme) -> Vec<String> {
     [
         (HighlightGroup::Normal, 3.0_f64),
         (HighlightGroup::SelectedRow, 3.0_f64),
+        (HighlightGroup::Composer, 3.0_f64),
         (HighlightGroup::StatusBar, 3.0_f64),
     ]
     .into_iter()
@@ -901,6 +922,13 @@ fn export_palette(palette: &Palette) -> String {
         palette.primary,
         palette.text,
         palette.surface_dark,
+    );
+    output.push_str(
+        "\n# Conversation-shell semantic links\n\
+         [highlight.MessageAvatar]\nlink = \"MessageAuthor\"\n\
+         [highlight.MessageDateSeparator]\nlink = \"Muted\"\ndim = true\n\
+         [highlight.ComposerHint]\nlink = \"Muted\"\nitalic = true\n\
+         [highlight.ComposerDisabled]\nlink = \"Warning\"\n",
     );
     if palette.id == DEFAULT_THEME_ID {
         output = output.replace("\"\"", "\"terminal_default\"");
@@ -1056,6 +1084,10 @@ foreground = "yellow"
         let output = temporary.path().join("nord.toml");
         export_to("nord", &output).unwrap();
         let before = fs::read(&output).unwrap();
+        let text = String::from_utf8(before.clone()).unwrap();
+        assert!(text.contains("[highlight.MessageAvatar]"));
+        assert!(text.contains("[highlight.ComposerDisabled]"));
+        assert!(parse(&text).is_ok());
         assert!(export_to("nord", &output).is_err());
         assert_eq!(fs::read(&output).unwrap(), before);
         #[cfg(unix)]

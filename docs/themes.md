@@ -43,6 +43,7 @@ Selection is stored in `config.toml`:
 [ui]
 sidebar_width = 28
 thread_width = 44
+message_width = 110
 theme = "nord"
 
 [[communities]]
@@ -166,9 +167,11 @@ Panels and navigation:
 
 Conversation and composer:
 
-- `MessageAuthor`, `MessageTimestamp`, `MessageBody`, `MessageDeleted`;
+- `MessageAuthor`, `MessageAvatar`, `MessageTimestamp`,
+  `MessageDateSeparator`, `MessageBody`, `MessageDeleted`;
 - `Reaction`, `SelfReaction`;
-- `Composer`, `ComposerTitle`, `ComposerBorder`, `ActiveComposerBorder`.
+- `Composer`, `ComposerHint`, `ComposerDisabled`, `ComposerTitle`,
+  `ComposerBorder`, `ActiveComposerBorder`.
 
 Status and Markdown:
 
@@ -176,15 +179,16 @@ Status and Markdown:
 - `MarkdownLink`, `MarkdownCode`, `MarkdownMarker`.
 
 Component groups link to semantic parents. For example,
-`MessageAuthor -> Info`, `Pending -> Warning`,
+`MessageAuthor -> Info`, `MessageAvatar -> MessageAuthor`,
+`MessageDateSeparator -> Muted`, `ComposerHint -> Muted`,
+`ComposerDisabled -> Warning`, `Pending -> Warning`,
 `FocusedPaneBorder -> FocusBorder`, and `MessageDeleted -> Muted`. Changing a
 parent updates children that remain linked; overriding a child changes only
 that component.
 
-Themes written for Concord can reuse common group names and field grammar.
-Discord-specific groups are unknown to `bzz`, produce a warning, and are
-ignored. This is behavioral compatibility for the shared semantic subset, not
-source-code reuse or full Concord UI compatibility.
+Unknown highlight groups produce a warning and are ignored. Theme files are
+bzz-owned presentation configuration; they do not import another application's
+visual language, assets, or behavior.
 
 ### Border shapes
 

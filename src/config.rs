@@ -102,6 +102,9 @@ impl MouseMode {
 pub struct UiConfig {
     pub sidebar_width: u16,
     pub thread_width: u16,
+    /// Maximum readable message measure on a wide conversation surface.
+    /// The pane may be narrower; this never changes stored content.
+    pub message_width: u16,
     pub theme: String,
     pub mouse: MouseMode,
 }
@@ -111,6 +114,7 @@ impl Default for UiConfig {
         Self {
             sidebar_width: 28,
             thread_width: 44,
+            message_width: 110,
             theme: crate::ui::theme::DEFAULT_THEME_ID.into(),
             mouse: MouseMode::Auto,
         }
@@ -313,6 +317,11 @@ impl Config {
         if !(30..=80).contains(&self.ui.thread_width) {
             return Err(Error::Config(
                 "ui.thread_width must be between 30 and 80".into(),
+            ));
+        }
+        if !(48..=200).contains(&self.ui.message_width) {
+            return Err(Error::Config(
+                "ui.message_width must be between 48 and 200".into(),
             ));
         }
         if !(2..=40).contains(&self.media.max_inline_rows) {

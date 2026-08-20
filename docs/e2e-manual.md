@@ -25,7 +25,7 @@ debug builds deliberately use separate paths and keychain services.
 
 Expected result:
 
-- version `0.3.0`;
+- candidate version `0.5.0`;
 - config, data, and cache under `BZZ_E2E_ROOT`;
 - `configuration, theme, media, and database are valid`;
 - no secrets in `.env` or command output.
@@ -171,6 +171,24 @@ be created by any of these actions. Remove the test profile afterward with
 
 Verify that threads, reactions, and deletions are not duplicated and that you
 can never delete another user's message.
+
+### Workspace shell and writing dock
+
+Use a disposable channel containing generated text only. At a wide terminal
+size, verify that the labelled community and channel directories identify the
+active workspace, the conversation has a bounded readable measure, each author
+retains a label beside its local marker, and nearby same-author messages group
+without losing their timestamps or date context. Open context and press `q` to
+close it; the conversation must regain the space rather than leaving an empty
+column.
+
+Press `i` and verify that the persistent writing dock becomes the normal
+multiline composer, uses the exact channel/thread target, preserves a draft
+when cancelled, and sends only through the existing explicit human action.
+Resize the terminal until side panes hide: the dock, status line, focused route,
+and `?` help must remain usable and must not overlap. Repeat after temporarily
+locking/removing the disposable credential: the dock must remain visible,
+explain that it is read-only, and neither connect nor publish.
 
 ### Appearance
 

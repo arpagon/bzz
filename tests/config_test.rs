@@ -111,6 +111,12 @@ fn media_limits_and_unknown_fields_fail_closed() {
     config.media.download_concurrency = 17;
     assert!(config.validate().is_err());
 
+    let mut config = Config::default();
+    config.ui.message_width = 47;
+    assert!(config.validate().is_err());
+    config.ui.message_width = 201;
+    assert!(config.validate().is_err());
+
     let parsed = toml::from_str::<Config>(
         "[media]\nenabled=true\nprotocol='auto'\nautoload='visible'\nunknown=true\n",
     );
@@ -129,6 +135,7 @@ fn mouse_policy_parses_strictly() {
         ))
         .unwrap();
         assert_eq!(config.ui.mouse, expected);
+        assert_eq!(config.ui.message_width, 110);
     }
     assert!(
         toml::from_str::<Config>(

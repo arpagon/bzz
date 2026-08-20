@@ -13,6 +13,7 @@ pub mod keymap;
 pub mod layout;
 pub mod mention_picker;
 pub mod reaction_picker;
+pub mod redraw_gate;
 pub mod search;
 pub mod shell;
 pub mod sidebar;

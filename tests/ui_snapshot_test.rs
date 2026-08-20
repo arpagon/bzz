@@ -131,9 +131,65 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
     assert!(text.contains("general"));
     assert!(!text.contains("discover-only"));
     assert!(text.contains("hello"));
+    assert!(text.contains("[●B]"));
     assert!(text.contains("+ 1"));
     assert!(!text.contains('\x1b'));
     assert!(!text.contains('\x07'));
+}
+
+#[test]
+fn nearby_same_author_messages_share_a_compact_header_and_keep_date_context() {
+    let channel = Uuid::new_v4();
+    let messages = ["first", "second"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, content)| Message {
+            event_id: format!("event-{index}"),
+            channel_id: channel,
+            pubkey: "a".repeat(64),
+            created_at: 1_700_000_000 + u64::try_from(index).unwrap_or_default() * 60,
+            content: content.into(),
+            attachments: vec![],
+            root_event_id: None,
+            parent_event_id: None,
+            deleted: false,
+            pending: false,
+            rejected: None,
+        })
+        .collect::<Vec<_>>();
+    let mut state = TimelineState {
+        at_live_bottom: true,
+        ..TimelineState::default()
+    };
+    let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+    terminal
+        .draw(|frame| {
+            timeline::render_limited(
+                frame,
+                frame.area(),
+                &messages,
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut state,
+                "general",
+                &Theme::default(),
+                true,
+                None,
+                60,
+            );
+        })
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert_eq!(text.matches("[●A]").count(), 1);
+    assert!(text.contains("────"));
+    assert!(text.contains("first"));
+    assert!(text.contains("second"));
 }
 
 #[test]
@@ -311,6 +367,7 @@ fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
         .collect::<String>();
     assert!(wide.contains("Inbox"));
     assert!(wide.contains("Generic Person"));
+    assert!(wide.contains("[●G]"));
     assert!(wide.contains("first unread"));
     assert!(wide.contains("bounded detail body"));
     assert!(!wide.contains('\u{1b}'));

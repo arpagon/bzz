@@ -19,6 +19,7 @@ use crate::{
     ui::{
         state::{FocusSurface, ViewportState},
         theme::{BorderSurface, HighlightGroup, Theme},
+        timeline::avatar_marker,
     },
 };
 
@@ -269,7 +270,7 @@ pub fn render(
         .border_style(theme.style(HighlightGroup::PaneBorder))
         .title_style(theme.style(HighlightGroup::PaneTitle))
         .title(format!(
-            " Inbox · {} · f filter · Enter detail · o source · i reply · m/U read/unread · a visible read ",
+            " Inbox · {} · f filters · Enter detail · ? help ",
             state.filter.label()
         ));
     frame.render_widget(outer, area);
@@ -352,13 +353,21 @@ fn list_item(
                 .map_or_else(|| crate::domain::abbreviated_pubkey(pubkey), Profile::label)
         })
         .unwrap_or_else(|| "draft".into());
+    let sender = sanitize::single_line(&sender);
+    let avatar = item
+        .sender_pubkey
+        .as_deref()
+        .map(|pubkey| avatar_marker(pubkey, &sender))
+        .unwrap_or_else(|| "[✎]".into());
     ListItem::new(vec![
         Line::from(vec![
-            Span::raw(format!("{unread} [{categories}] ")),
+            Span::raw(format!("{unread} ")),
             Span::styled(
-                sanitize::single_line(&sender),
-                theme.style(HighlightGroup::MessageAuthor),
+                format!("{avatar} "),
+                theme.style(HighlightGroup::MessageAvatar),
             ),
+            Span::raw(format!("[{categories}] ")),
+            Span::styled(sender, theme.style(HighlightGroup::MessageAuthor)),
             Span::raw(format!("  {}", relative_time(item.created_at))),
         ]),
         Line::from(format!(
@@ -457,11 +466,13 @@ fn detail_lines(
             || crate::domain::abbreviated_pubkey(&message.pubkey),
             Profile::label,
         );
+        let author = sanitize::single_line(&author);
         lines.push(Line::default());
         lines.push(Line::styled(
             format!(
-                "{} · {}",
-                sanitize::single_line(&author),
+                "{} {} · {}",
+                avatar_marker(&message.pubkey, &author),
+                author,
                 relative_time(message.created_at)
             ),
             theme.style(HighlightGroup::MessageAuthor),

@@ -806,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_use_concord_style_navigation_without_legacy_conflicts() {
+    fn defaults_use_modal_navigation_without_legacy_conflicts() {
         let keymap = KeyMap::builtin();
         let previous = KeyChord::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
         let inbox = KeyChord::new(KeyCode::Char('I'), KeyModifiers::SHIFT);

@@ -146,6 +146,22 @@ fn text_height(line: &Line<'_>, width: u16) -> u16 {
     u16::try_from(cells.div_ceil(width)).unwrap_or(u16::MAX)
 }
 
+/// Keeps conversation text to a readable measure on ultrawide terminals while
+/// retaining the full pane border and a small left breathing space.
+fn readable_area(inner: Rect, message_width: Option<u16>) -> Rect {
+    let Some(max_width) = message_width else {
+        return inner;
+    };
+    let width = inner.width.min(max_width.max(1));
+    let left_padding = u16::from(width < inner.width);
+    Rect::new(
+        inner.x.saturating_add(left_padding),
+        inner.y,
+        width.min(inner.width.saturating_sub(left_padding)),
+        inner.height,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     frame: &mut Frame<'_>,
@@ -172,6 +188,40 @@ pub fn render(
         self_pubkey,
         None,
         None,
+        None,
+    );
+}
+
+/// Renders the timeline with a bounded readable text measure. The surrounding
+/// pane remains full-width; only message content is constrained.
+#[allow(clippy::too_many_arguments)]
+pub fn render_limited(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    messages: &[Message],
+    profiles: &HashMap<String, Profile>,
+    reactions: &HashMap<String, Vec<Reaction>>,
+    state: &mut TimelineState,
+    title: &str,
+    theme: &Theme,
+    focused: bool,
+    self_pubkey: Option<&str>,
+    message_width: u16,
+) {
+    render_internal(
+        frame,
+        area,
+        messages,
+        profiles,
+        reactions,
+        state,
+        title,
+        theme,
+        focused,
+        self_pubkey,
+        None,
+        None,
+        Some(message_width),
     );
 }
 
@@ -201,6 +251,7 @@ pub fn render_with_media(
         focused,
         self_pubkey,
         Some(media),
+        None,
         None,
     );
 }
@@ -233,6 +284,41 @@ pub fn render_with_media_and_hits(
         self_pubkey,
         Some(media),
         Some(hits),
+        None,
+    );
+}
+
+/// Equivalent to [`render_with_media_and_hits`] with a bounded message measure.
+#[allow(clippy::too_many_arguments)]
+pub fn render_with_media_and_hits_limited(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    messages: &[Message],
+    profiles: &HashMap<String, Profile>,
+    reactions: &HashMap<String, Vec<Reaction>>,
+    state: &mut TimelineState,
+    title: &str,
+    theme: &Theme,
+    focused: bool,
+    self_pubkey: Option<&str>,
+    media: &mut MediaRuntime,
+    hits: &mut Vec<MessageHit>,
+    message_width: u16,
+) {
+    render_internal(
+        frame,
+        area,
+        messages,
+        profiles,
+        reactions,
+        state,
+        title,
+        theme,
+        focused,
+        self_pubkey,
+        Some(media),
+        Some(hits),
+        Some(message_width),
     );
 }
 
@@ -250,6 +336,7 @@ fn render_internal(
     self_pubkey: Option<&str>,
     mut media: Option<&mut MediaRuntime>,
     mut hits: Option<&mut Vec<MessageHit>>,
+    message_width: Option<u16>,
 ) {
     let border_group = if focused {
         HighlightGroup::FocusedPaneBorder
@@ -267,8 +354,12 @@ fn render_internal(
     if inner.is_empty() {
         return;
     }
+    let content = readable_area(inner, message_width);
+    if content.is_empty() {
+        return;
+    }
 
-    let image_width = inner.width.saturating_sub(4).max(2);
+    let image_width = content.width.saturating_sub(4).max(2);
     let selected_index = state.selected_index(messages);
     if let Some(runtime) = media.as_deref_mut() {
         let center = selected_index.unwrap_or_else(|| messages.len().saturating_sub(1));
@@ -287,6 +378,7 @@ fn render_internal(
         .map(|(index, message)| {
             message_block(
                 message,
+                messages.get(index.saturating_sub(1)).filter(|_| index > 0),
                 profiles,
                 reactions,
                 theme,
@@ -299,12 +391,12 @@ fn render_internal(
         .collect::<Vec<_>>();
     let heights = blocks
         .iter()
-        .map(|block| block.height(inner.width))
+        .map(|block| block.height(content.width))
         .collect::<Vec<_>>();
     let total = heights.iter().copied().fold(0_u32, |total, height| {
         total.saturating_add(u32::from(height))
     });
-    let viewport = u32::from(inner.height);
+    let viewport = u32::from(content.height);
     let selected_bottom = selected_index.map(|selected| {
         heights
             .iter()
@@ -333,7 +425,7 @@ fn render_internal(
 
     let mut global_y = 0_u32;
     for (index, block) in blocks.into_iter().enumerate() {
-        let block_height = u32::from(block.height(inner.width));
+        let block_height = u32::from(block.height(content.width));
         if global_y + block_height <= scroll {
             global_y += block_height;
             continue;
@@ -344,20 +436,20 @@ fn render_internal(
         let visible_start = global_y.max(scroll);
         let visible_end = global_y.saturating_add(block_height).min(scroll + viewport);
         if let Some(hits) = &mut hits {
-            let y = inner.y.saturating_add(
+            let y = content.y.saturating_add(
                 u16::try_from(visible_start.saturating_sub(scroll)).unwrap_or(u16::MAX),
             );
             let height =
                 u16::try_from(visible_end.saturating_sub(visible_start)).unwrap_or(u16::MAX);
             (*hits).push(MessageHit {
                 event_id: messages[index].event_id.clone(),
-                area: Rect::new(inner.x, y, inner.width, height),
+                area: Rect::new(content.x, y, content.width, height),
             });
         }
         let mut row_y = global_y;
         for row in block.rows {
             let row_height = match &row {
-                TimelineRow::Text(line) => u32::from(text_height(line, inner.width)),
+                TimelineRow::Text(line) => u32::from(text_height(line, content.width)),
                 TimelineRow::Image(protocol) => u32::from(protocol.size().height),
             };
             if row_y + row_height > scroll && row_y < scroll + viewport {
@@ -368,12 +460,12 @@ fn render_internal(
                             .saturating_add(row_height)
                             .min(scroll.saturating_add(viewport));
                         let skipped = visible_top.saturating_sub(row_y);
-                        let y = inner.y.saturating_add(
+                        let y = content.y.saturating_add(
                             u16::try_from(visible_top.saturating_sub(scroll)).unwrap_or(u16::MAX),
                         );
                         let height = u16::try_from(visible_bottom.saturating_sub(visible_top))
                             .unwrap_or(u16::MAX);
-                        if y < inner.bottom() && height > 0 {
+                        if y < content.bottom() && height > 0 {
                             frame.render_widget(
                                 Paragraph::new(line)
                                     .style(theme.style(if block.selected {
@@ -383,7 +475,7 @@ fn render_internal(
                                     }))
                                     .wrap(Wrap { trim: false })
                                     .scroll((u16::try_from(skipped).unwrap_or(u16::MAX), 0)),
-                                Rect::new(inner.x, y, inner.width, height),
+                                Rect::new(content.x, y, content.width, height),
                             );
                         }
                     }
@@ -394,7 +486,7 @@ fn render_internal(
                             2,
                             relative_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
                         ));
-                        frame.render_widget(SlicedImage::new(protocol.as_ref(), position), inner);
+                        frame.render_widget(SlicedImage::new(protocol.as_ref(), position), content);
                     }
                 }
             }
@@ -407,6 +499,7 @@ fn render_internal(
 #[allow(clippy::too_many_arguments)]
 fn message_block(
     message: &Message,
+    previous: Option<&Message>,
     profiles: &HashMap<String, Profile>,
     reactions: &HashMap<String, Vec<Reaction>>,
     theme: &Theme,
@@ -419,20 +512,41 @@ fn message_block(
         .get(&message.pubkey)
         .map(Profile::label)
         .unwrap_or_else(|| crate::domain::abbreviated_pubkey(&message.pubkey));
+    let author = sanitize::single_line(&author);
+    let grouped = previous.is_some_and(|previous| same_message_group(previous, message));
+    let mut rows = vec![];
+    if previous.is_none_or(|previous| day_key(previous.created_at) != day_key(message.created_at)) {
+        rows.push(TimelineRow::Text(Line::styled(
+            format!("──── {} ────", format_day(message.created_at)),
+            theme.style(HighlightGroup::MessageDateSeparator),
+        )));
+    }
     let mut header = vec![];
     if selected {
         header.push(Span::styled("▌", theme.style(HighlightGroup::SelectedRow)));
     } else {
         header.push(Span::raw(" "));
     }
-    header.push(Span::styled(
-        sanitize::single_line(&author),
-        theme.style(HighlightGroup::MessageAuthor),
-    ));
-    header.push(Span::styled(
-        format!("  {}", format_time(message.created_at)),
-        theme.style(HighlightGroup::MessageTimestamp),
-    ));
+    if grouped {
+        header.push(Span::raw("    "));
+        header.push(Span::styled(
+            format_time(message.created_at),
+            theme.style(HighlightGroup::MessageTimestamp),
+        ));
+    } else {
+        header.push(Span::styled(
+            format!("{} ", avatar_marker(&message.pubkey, &author)),
+            theme.style(HighlightGroup::MessageAvatar),
+        ));
+        header.push(Span::styled(
+            author,
+            theme.style(HighlightGroup::MessageAuthor),
+        ));
+        header.push(Span::styled(
+            format!("  {}", format_time(message.created_at)),
+            theme.style(HighlightGroup::MessageTimestamp),
+        ));
+    }
     if message.deleted {
         header.push(Span::styled(
             " [deleted]",
@@ -449,15 +563,18 @@ fn message_block(
             theme.style(HighlightGroup::Rejected),
         ));
     }
-    let mut rows = vec![TimelineRow::Text(Line::from(header))];
+    rows.push(TimelineRow::Text(Line::from(header)));
     if message.deleted {
         rows.push(TimelineRow::Text(Line::styled(
-            "  message deleted",
+            "     message deleted",
             theme.style(HighlightGroup::MessageDeleted),
         )));
     } else {
         for line in markdown::render(&message.content, theme).lines {
-            let mut spans = vec![Span::styled("  ", theme.style(HighlightGroup::MessageBody))];
+            let mut spans = vec![Span::styled(
+                "     ",
+                theme.style(HighlightGroup::MessageBody),
+            )];
             spans.extend(line.spans);
             rows.push(TimelineRow::Text(Line::from(spans)));
         }
@@ -511,7 +628,7 @@ fn attachment_line(
         }
     };
     Line::from(vec![
-        Span::styled("  ▣ ", theme.style(HighlightGroup::MediaBorder)),
+        Span::styled("     ▣ ", theme.style(HighlightGroup::MediaBorder)),
         Span::styled(
             sanitize::single_line(attachment.label()),
             theme.style(HighlightGroup::MessageBody),
@@ -549,7 +666,7 @@ fn reaction_line(
     if aggregate.is_empty() {
         return None;
     }
-    let mut spans = vec![Span::raw("  ")];
+    let mut spans = vec![Span::raw("     ")];
     for (index, (emoji, (count, own))) in aggregate.into_iter().enumerate() {
         if index > 0 {
             spans.push(Span::raw("  "));
@@ -566,13 +683,104 @@ fn reaction_line(
     Some(Line::from(spans))
 }
 
-fn format_time(timestamp: u64) -> String {
-    time::OffsetDateTime::from_unix_timestamp(i64::try_from(timestamp).unwrap_or(0))
+/// A compact, local-only author marker. It deliberately derives its shape
+/// from the already-rendered public key and never follows a profile-picture
+/// URL or starts I/O. The visible initial is merely a readable supplement; the
+/// author label remains the identity-bearing text.
+pub fn avatar_marker(pubkey: &str, author: &str) -> String {
+    const SHAPES: [char; 4] = ['●', '◆', '■', '▲'];
+    let hash = pubkey.bytes().fold(0_u8, |value, byte| {
+        value.wrapping_mul(33).wrapping_add(byte)
+    });
+    let initial = author
+        .chars()
+        .find(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_uppercase())
+        .or_else(|| {
+            pubkey
+                .chars()
+                .find(|character| character.is_ascii_alphanumeric())
+        })
+        .unwrap_or('?');
+    format!("[{}{initial}]", SHAPES[usize::from(hash) % SHAPES.len()])
+}
+
+fn same_message_group(previous: &Message, current: &Message) -> bool {
+    previous.pubkey == current.pubkey
+        && !previous.deleted
+        && !current.deleted
+        && day_key(previous.created_at) == day_key(current.created_at)
+        && current.created_at.saturating_sub(previous.created_at) <= 5 * 60
+}
+
+fn local_time(timestamp: u64) -> Option<time::OffsetDateTime> {
+    time::OffsetDateTime::from_unix_timestamp(i64::try_from(timestamp).ok()?)
         .ok()
         .map(|value| {
-            let local = value
-                .to_offset(time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC));
-            format!("{:02}:{:02}", local.hour(), local.minute())
+            value.to_offset(time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC))
         })
+}
+
+fn day_key(timestamp: u64) -> (i32, u16) {
+    local_time(timestamp)
+        .map(|value| (value.year(), value.ordinal()))
+        .unwrap_or((0, 0))
+}
+
+fn format_day(timestamp: u64) -> String {
+    local_time(timestamp)
+        .map(|value| {
+            format!(
+                "{:04}-{:02}-{:02}",
+                value.year(),
+                u8::from(value.month()),
+                value.day()
+            )
+        })
+        .unwrap_or_else(|| "unknown date".into())
+}
+
+fn format_time(timestamp: u64) -> String {
+    local_time(timestamp)
+        .map(|value| format!("{:02}:{:02}", value.hour(), value.minute()))
         .unwrap_or_else(|| "--:--".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{readable_area, same_message_group};
+    use crate::domain::Message;
+    use ratatui::layout::Rect;
+    use uuid::Uuid;
+
+    fn message(pubkey: &str, created_at: u64) -> Message {
+        Message {
+            event_id: format!("{pubkey}-{created_at}"),
+            channel_id: Uuid::nil(),
+            pubkey: pubkey.into(),
+            created_at,
+            content: String::new(),
+            attachments: vec![],
+            root_event_id: None,
+            parent_event_id: None,
+            deleted: false,
+            pending: false,
+            rejected: None,
+        }
+    }
+
+    #[test]
+    fn readable_area_keeps_the_pane_but_bounds_message_measure() {
+        let area = readable_area(Rect::new(4, 2, 180, 10), Some(110));
+        assert_eq!(area, Rect::new(5, 2, 110, 10));
+        assert_eq!(readable_area(Rect::new(0, 0, 80, 5), Some(110)).width, 80);
+    }
+
+    #[test]
+    fn same_author_messages_group_only_within_a_short_same_day_run() {
+        let first = message("a", 1_700_000_000);
+        assert!(same_message_group(&first, &message("a", 1_700_000_299)));
+        assert!(!same_message_group(&first, &message("a", 1_700_000_301)));
+        assert!(!same_message_group(&first, &message("b", 1_700_000_100)));
+    }
 }

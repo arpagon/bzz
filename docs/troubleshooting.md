@@ -34,6 +34,16 @@ bzz identity restore-backup <identity-id> --input identity.ncryptsec
 The command rejects backups for a different pubkey. A raw nsec can instead be
 entered without echo through `bzz identity restore <identity-id>`.
 
+## Writing dock is read-only
+
+The visible dock is deliberately disabled when no joined channel is selected or
+the configured identity is missing, locked, offline without an identity, or
+otherwise cannot publish. It remains a local presentation surface: clicking it
+or pressing `i` must not create a replacement identity, refresh a relay, or
+send a message. Select a joined channel, then restore/unlock the same configured
+identity and restart. Any existing ordinary draft remains local; the dock does
+not use a second draft store.
+
 ## No credential service
 
 Create/import with the encrypted-file backend. On Linux, a graphical Secret

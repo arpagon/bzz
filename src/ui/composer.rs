@@ -154,6 +154,53 @@ impl Composer {
             .map_or(self.body.len(), |offset| self.cursor.saturating_add(offset));
     }
 
+    /// Returns the number of terminal rows needed to render the body at a
+    /// fixed width. It uses the same newline and Unicode-cell wrapping rules as
+    /// pointer cursor placement, so a dock can reserve space without covering
+    /// conversation content.
+    pub fn display_rows(&self, width: usize) -> usize {
+        let width = width.max(1);
+        let mut rows = 1_usize;
+        let mut column = 0_usize;
+        for character in self.body.chars() {
+            if character == '\n' {
+                rows = rows.saturating_add(1);
+                column = 0;
+                continue;
+            }
+            column = column.saturating_add(character.width().unwrap_or(0));
+            if column >= width {
+                rows = rows.saturating_add(1);
+                column = 0;
+            }
+        }
+        rows
+    }
+
+    /// Returns the terminal row and column of the UTF-8 cursor using the same
+    /// wrapping contract as [`Self::set_cursor_from_display`].
+    pub fn cursor_display_position(&self, width: usize) -> (usize, usize) {
+        let width = width.max(1);
+        let mut row = 0_usize;
+        let mut column = 0_usize;
+        for (index, character) in self.body.char_indices() {
+            if index >= self.cursor {
+                return (row, column);
+            }
+            if character == '\n' {
+                row = row.saturating_add(1);
+                column = 0;
+                continue;
+            }
+            column = column.saturating_add(character.width().unwrap_or(0));
+            if column >= width {
+                row = row.saturating_add(1);
+                column = 0;
+            }
+        }
+        (row, column)
+    }
+
     /// Moves the cursor to a visible composer cell without ever splitting UTF-8.
     /// Newlines and the renderer's fixed-width wrapping advance to the next row.
     pub fn set_cursor_from_display(
@@ -445,6 +492,21 @@ mod tests {
             };
             assert!(composer.active_mention().is_none(), "{body}");
         }
+    }
+
+    #[test]
+    fn display_rows_matches_newline_and_unicode_cell_wrapping() {
+        let composer = Composer {
+            body: "ab界\ncd".into(),
+            ..Composer::default()
+        };
+        assert_eq!(composer.display_rows(8), 2);
+        assert_eq!(composer.display_rows(2), 5);
+        let mut cursor = composer.clone();
+        cursor.cursor = "ab界\n".len();
+        assert_eq!(cursor.cursor_display_position(8), (1, 0));
+        cursor.cursor = cursor.body.len();
+        assert_eq!(cursor.cursor_display_position(2), (4, 0));
     }
 
     #[test]

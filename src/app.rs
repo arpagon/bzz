@@ -56,6 +56,7 @@ use crate::{
         keymap::{KeyAction, KeyMap, KeyScope, UiAction, map_insert},
         layout,
         mention_picker::MentionPicker,
+        redraw_gate::RedrawGate,
         search::SearchState,
         state::{
             AttachmentPrompt, ComposerTarget, ConfirmationKind, FocusSurface, Overlay,
@@ -409,23 +410,30 @@ impl App {
         }
         let (mut guard, mut terminal) = TerminalGuard::enter(self.config.ui.mouse.enabled())?;
         self.media.initialize_terminal();
-        terminal
-            .draw(|frame| self.render(frame))
-            .map_err(|error| Error::io("terminal", error))?;
         self.start_sync().await?;
         let mut input = EventStream::new();
         let mut tick = tokio::time::interval(Duration::from_millis(100));
+        let mut redraw = RedrawGate::default();
         while !self.should_quit {
-            terminal
-                .draw(|frame| self.render(frame))
-                .map_err(|error| Error::io("terminal", error))?;
+            if redraw.take() {
+                terminal
+                    .draw(|frame| self.render(frame))
+                    .map_err(|error| Error::io("terminal", error))?;
+            }
             tokio::select! {
-                maybe=input.next()=>if let Some(Ok(event))=maybe { match event {
-                    TerminalEvent::Key(key) if key.kind==KeyEventKind::Press => self.handle_key(key,&mut guard,&mut terminal).await?,
-                    TerminalEvent::Mouse(mouse) => self.handle_mouse(mouse,&mut guard,&mut terminal).await?,
-                    _ => {}
-                } },
-                network=next_network(&mut self.runtime)=>if let Some(event)=network{self.handle_network(event).await?;},
+                maybe=input.next()=>{
+                    if let Some(Ok(event))=maybe { match event {
+                        TerminalEvent::Key(key) if key.kind==KeyEventKind::Press => self.handle_key(key,&mut guard,&mut terminal).await?,
+                        TerminalEvent::Mouse(mouse) => self.handle_mouse(mouse,&mut guard,&mut terminal).await?,
+                        TerminalEvent::Resize(_, _) => {},
+                        _ => {}
+                    } }
+                    redraw.request();
+                },
+                network=next_network(&mut self.runtime)=>{
+                    if let Some(event)=network { self.handle_network(event).await?; }
+                    redraw.request();
+                },
                 background=self.background_rx.recv()=>if let Some(event)=background{match event{
                     Background::Changed=>{
                         self.cache_dirty=true;
@@ -541,8 +549,10 @@ impl App {
                             }
                         }
                     }
-                }},
-                _=tick.tick()=>self.on_tick().await?,
+                    }
+                    redraw.request();
+                },
+                _=tick.tick()=>redraw.request_if(self.on_tick().await?),
                 _=&mut shutdown=>self.should_quit=true,
             }
         }
@@ -919,7 +929,10 @@ impl App {
         let Some(community) = self.active_community_id() else {
             self.channels.clear();
             self.messages.clear();
+            self.thread_messages.clear();
             self.reactions.clear();
+            self.cache_dirty = false;
+            self.last_cache_refresh = Instant::now();
             return Ok(());
         };
         self.channels = self
@@ -1211,7 +1224,11 @@ impl App {
         Ok(())
     }
 
-    async fn on_tick(&mut self) -> Result<()> {
+    /// Performs bounded timer work and reports whether it changed visible
+    /// presentation. The run loop can therefore remain idle without emitting a
+    /// full terminal frame every 100 ms.
+    async fn on_tick(&mut self) -> Result<bool> {
+        let mut changed = self.media.poll();
         if self
             .leader_started_at
             .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
@@ -1221,8 +1238,8 @@ impl App {
             if self.presentation.overlay == Some(Overlay::WhichKey) {
                 self.presentation.overlay = None;
             }
+            changed = true;
         }
-        self.media.poll();
         if self.agent_run.as_ref().is_some_and(AgentRun::is_finished) {
             let run = self.agent_run.take().expect("checked local agent run");
             match run.finish().await {
@@ -1237,6 +1254,7 @@ impl App {
                     self.status_error = Some(failure.message().into());
                 }
             }
+            changed = true;
         }
         if self
             .search_dirty_since
@@ -1244,6 +1262,7 @@ impl App {
         {
             self.search_dirty_since = None;
             self.spawn_search();
+            changed = true;
         }
         if self
             .dm_dirty_since
@@ -1251,15 +1270,19 @@ impl App {
         {
             self.dm_dirty_since = None;
             self.spawn_dm_profile_search();
+            changed = true;
         }
         if self.last_inbox_refresh.elapsed() >= Duration::from_secs(30) {
             self.last_inbox_refresh = Instant::now();
             if self.runtime.is_some() {
                 self.spawn_inbox_load(true);
+                changed = true;
             }
         }
-        if self.cache_dirty || self.last_cache_refresh.elapsed() > Duration::from_secs(1) {
+        let cache_was_dirty = self.cache_dirty;
+        if cache_was_dirty || self.last_cache_refresh.elapsed() > Duration::from_secs(1) {
             self.hydrate_cache().await?;
+            changed |= cache_was_dirty;
             self.reconcile_subscriptions().await?;
         }
         if ((self.presentation.focus == FocusSurface::Timeline && self.timeline.at_live_bottom)
@@ -1268,7 +1291,9 @@ impl App {
             && self.presentation.overlay.is_none()
             && self.presentation.composer_target.is_none()
         {
+            let unread_before = (self.computed_unread.len(), self.manual_unread.len());
             self.mark_current_read().await?;
+            changed |= unread_before != (self.computed_unread.len(), self.manual_unread.len());
         }
         if self.last_directory_refresh.elapsed() >= Duration::from_secs(300) {
             self.last_directory_refresh = Instant::now();
@@ -1294,7 +1319,7 @@ impl App {
                 });
             }
         }
-        Ok(())
+        Ok(changed)
     }
 
     async fn handle_mouse(
@@ -1511,11 +1536,10 @@ impl App {
             {
                 self.presentation.set_inbox_focus(true);
             }
-            HitTarget::Composer
-                if self.presentation.overlay.is_none()
-                    && self.presentation.composer_target.is_some() =>
-            {
-                if let Some(area) = self
+            HitTarget::Composer if self.presentation.overlay.is_none() => {
+                if self.presentation.composer_target.is_none() {
+                    self.enter_composer().await?;
+                } else if let Some(area) = self
                     .last_hit_map
                     .as_ref()
                     .and_then(|map| map.area_of(&HitTarget::Composer))
@@ -4033,13 +4057,14 @@ impl App {
             self.last_hit_map = Some(hit_map);
             return;
         }
-        let panes = layout::panes(
+        let panes = layout::panes_with_composer(
             area,
             self.community_rail,
             self.sidebar,
             self.thread_root.is_some(),
             self.config.ui.sidebar_width,
             self.config.ui.thread_width,
+            self.composer_dock_height(),
         );
         if (self.presentation.focus == FocusSurface::Communities && panes.community.is_none())
             || (self.presentation.focus == FocusSurface::Channels && panes.sidebar.is_none())
@@ -4101,7 +4126,7 @@ impl App {
         hit_map.push(panes.timeline, HitTarget::Timeline);
         let mut timeline_hits = Vec::new();
         if self.presentation.overlay.is_none() && self.presentation.composer_target.is_none() {
-            timeline::render_with_media_and_hits(
+            timeline::render_with_media_and_hits_limited(
                 frame,
                 panes.timeline,
                 &self.messages,
@@ -4114,9 +4139,10 @@ impl App {
                 self_pubkey.as_deref(),
                 &mut self.media,
                 &mut timeline_hits,
+                self.config.ui.message_width,
             );
         } else {
-            timeline::render(
+            timeline::render_limited(
                 frame,
                 panes.timeline,
                 &self.messages,
@@ -4127,6 +4153,7 @@ impl App {
                 &self.theme,
                 self.presentation.focus == FocusSurface::Timeline,
                 self_pubkey.as_deref(),
+                self.config.ui.message_width,
             );
         }
         for hit in timeline_hits {
@@ -4134,39 +4161,48 @@ impl App {
         }
         if let Some(thread) = panes.thread {
             hit_map.push(thread, HitTarget::Thread);
+            let thread_title = format!(
+                " context · {} messages · q close ",
+                self.thread_messages.len()
+            );
             let mut thread_hits = Vec::new();
             if self.presentation.overlay.is_none() && self.presentation.composer_target.is_none() {
-                timeline::render_with_media_and_hits(
+                timeline::render_with_media_and_hits_limited(
                     frame,
                     thread,
                     &self.thread_messages,
                     &self.profiles,
                     &self.reactions,
                     &mut self.thread_timeline,
-                    "thread",
+                    &thread_title,
                     &self.theme,
                     self.presentation.focus == FocusSurface::Context,
                     self_pubkey.as_deref(),
                     &mut self.media,
                     &mut thread_hits,
+                    self.config.ui.message_width,
                 );
             } else {
-                timeline::render(
+                timeline::render_limited(
                     frame,
                     thread,
                     &self.thread_messages,
                     &self.profiles,
                     &self.reactions,
                     &mut self.thread_timeline,
-                    "thread",
+                    &thread_title,
                     &self.theme,
                     self.presentation.focus == FocusSurface::Context,
                     self_pubkey.as_deref(),
+                    self.config.ui.message_width,
                 );
             }
             for hit in thread_hits {
                 hit_map.push(hit.area, HitTarget::ThreadMessage(hit.event_id));
             }
+        }
+        if let Some(composer) = panes.composer {
+            self.render_composer_dock(frame, composer, &mut hit_map);
         }
         self.render_status(frame, panes.status);
         self.render_overlay(frame, area, &mut hit_map);
@@ -4256,13 +4292,11 @@ impl App {
                 .selected_id
                 .as_ref()
                 .is_some_and(|id| id == &community.id.to_string());
-            ListItem::new(
+            let marker = if selected { "●" } else { "·" };
+            ListItem::new(Line::from(format!(
+                "{marker} {}",
                 sanitize::single_line(&community.label)
-                    .chars()
-                    .next()
-                    .unwrap_or('?')
-                    .to_string(),
-            )
+            )))
             .style(self.theme.style(if selected {
                 HighlightGroup::CommunitySelected
             } else {
@@ -4294,12 +4328,131 @@ impl App {
                             HighlightGroup::PaneBorder
                         }))
                         .title_style(self.theme.style(HighlightGroup::PaneTitle))
-                        .title(" b "),
-                ),
+                        .title(" communities "),
+                )
+                .highlight_style(self.theme.style(HighlightGroup::Selection))
+                .highlight_symbol("› "),
             area,
             &mut state,
         );
     }
+    /// Computes a bounded dock height before shell measurement. The text model
+    /// uses identical Unicode wrapping for mouse placement, so the dock never
+    /// overlays the timeline simply because a draft spans several rows.
+    fn composer_dock_height(&self) -> u16 {
+        if self.presentation.composer_target.is_none() {
+            return 3;
+        }
+        let attachment_row = u16::from(!self.composer.attachments.is_empty());
+        let body_rows = u16::try_from(self.composer.display_rows(80)).unwrap_or(u16::MAX);
+        body_rows
+            .saturating_add(attachment_row)
+            .saturating_add(2)
+            .clamp(5, 12)
+    }
+
+    fn render_composer_dock(&mut self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
+        let active = self.presentation.composer_target.is_some();
+        let channel = self
+            .current_channel()
+            .map(|channel| sanitize::single_line(&channel.name))
+            .unwrap_or_else(|| "conversation".into());
+        let target = if self.thread_root.is_some() {
+            format!("reply in #{channel}")
+        } else {
+            format!("message #{channel}")
+        };
+        let (title, content, border, content_group) = if active {
+            let attachments = if self.composer.attachments.is_empty() {
+                String::new()
+            } else {
+                let ready = self
+                    .composer
+                    .attachments
+                    .iter()
+                    .filter(|attachment| attachment.uploaded().is_some())
+                    .count();
+                format!(
+                    "\n{ready}/{} attachment(s) ready",
+                    self.composer.attachments.len()
+                )
+            };
+            (
+                format!(" {target} · Enter send · Ctrl-a attach · Esc close "),
+                format!("{}{}", sanitize::text(&self.composer.body), attachments),
+                HighlightGroup::ActiveComposerBorder,
+                HighlightGroup::Composer,
+            )
+        } else if self.current_channel().is_none() {
+            (
+                " message ".into(),
+                "Select a joined channel to write.".into(),
+                HighlightGroup::ComposerBorder,
+                HighlightGroup::ComposerHint,
+            )
+        } else if self.runtime.is_none() {
+            (
+                format!(" {target} "),
+                "Read-only: restore or unlock the identity to write.".into(),
+                HighlightGroup::ComposerBorder,
+                HighlightGroup::ComposerDisabled,
+            )
+        } else {
+            (
+                format!(" {target} "),
+                "Press i or click here to write.".into(),
+                HighlightGroup::ComposerBorder,
+                HighlightGroup::ComposerHint,
+            )
+        };
+        let block = Block::bordered()
+            .border_type(self.theme.border_type(BorderSurface::Composer))
+            .border_style(self.theme.style(border))
+            .title_style(self.theme.style(HighlightGroup::ComposerTitle))
+            .title(title);
+        let inner = block.inner(area);
+        hit_map.push(inner, HitTarget::Composer);
+        frame.render_widget(
+            Paragraph::new(content)
+                .style(self.theme.style(content_group))
+                .block(block)
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+        if active && !inner.is_empty() {
+            let (row, column) = self
+                .composer
+                .cursor_display_position(usize::from(inner.width));
+            frame.set_cursor_position((
+                inner
+                    .x
+                    .saturating_add(u16::try_from(column).unwrap_or(u16::MAX))
+                    .min(inner.right().saturating_sub(1)),
+                inner
+                    .y
+                    .saturating_add(u16::try_from(row).unwrap_or(u16::MAX))
+                    .min(inner.bottom().saturating_sub(1)),
+            ));
+        }
+        if active && let Some(picker) = &self.mention_picker {
+            let height = u16::try_from(picker.candidates.len().min(5) + 2).unwrap_or(7);
+            let mention_area = Rect::new(
+                area.x,
+                area.y.saturating_sub(height),
+                area.width,
+                height.min(area.y),
+            );
+            if !mention_area.is_empty() {
+                for index in 0..picker.candidates.len().min(5) {
+                    if let Some(row) = list_row(mention_area, index, 1) {
+                        hit_map.push(row, HitTarget::MentionCandidate(index));
+                    }
+                }
+                crate::ui::mention_picker::render(frame, mention_area, picker, &self.theme);
+            }
+        }
+    }
+
     fn render_status(&self, frame: &mut Frame<'_>, area: Rect) {
         let mode = match self.presentation.overlay {
             Some(Overlay::Finder) => "FINDER",
@@ -4476,59 +4629,6 @@ impl App {
                         .join("  ")
                         .as_str(),
                 )
-            }
-            None if self.presentation.composer_target.is_some() => {
-                let popup = bottom_popup(area, 5);
-                let composer_inner = inner_rect(popup);
-                hit_map.push(composer_inner, HitTarget::Composer);
-                frame.render_widget(Clear, popup);
-                frame.render_widget(
-                    Paragraph::new(format!(
-                        "{}{}",
-                        sanitize::text(&self.composer.body),
-                        if self.composer.attachments.is_empty() {
-                            String::new()
-                        } else {
-                            let ready = self
-                                .composer
-                                .attachments
-                                .iter()
-                                .filter(|attachment| attachment.uploaded().is_some())
-                                .count();
-                            format!(
-                                "\n{ready}/{} attachment(s) ready",
-                                self.composer.attachments.len()
-                            )
-                        }
-                    ))
-                    .style(self.theme.style(HighlightGroup::Composer))
-                    .block(
-                        Block::bordered()
-                            .border_type(self.theme.border_type(BorderSurface::Composer))
-                            .border_style(self.theme.style(HighlightGroup::ActiveComposerBorder))
-                            .title_style(self.theme.style(HighlightGroup::ComposerTitle))
-                            .title(" message · Ctrl-a attach · Ctrl-r retry · Ctrl-x remove "),
-                    )
-                    .wrap(Wrap { trim: false }),
-                    popup,
-                );
-                if let Some(picker) = &self.mention_picker {
-                    let height = u16::try_from(picker.candidates.len().min(5) + 2).unwrap_or(7);
-                    let mention_area = Rect::new(
-                        popup.x,
-                        popup.y.saturating_sub(height),
-                        popup.width,
-                        height.min(popup.y.saturating_sub(area.y)),
-                    );
-                    if !mention_area.is_empty() {
-                        for index in 0..picker.candidates.len().min(5) {
-                            if let Some(row) = list_row(mention_area, index, 1) {
-                                hit_map.push(row, HitTarget::MentionCandidate(index));
-                            }
-                        }
-                        crate::ui::mention_picker::render(frame, mention_area, picker, &self.theme);
-                    }
-                }
             }
             Some(Overlay::MediaPreview) => self.render_media_preview(frame, area),
             Some(Overlay::Attachment) => self.render_prompt(
@@ -5011,15 +5111,6 @@ fn centered(area: Rect, percent: u16, height: u16) -> Rect {
         .split(rows[1]);
     cols[1]
 }
-fn bottom_popup(area: Rect, height: u16) -> Rect {
-    Rect {
-        x: area.x.saturating_add(2),
-        y: area.bottom().saturating_sub(height + 1),
-        width: area.width.saturating_sub(4),
-        height: height.min(area.height),
-    }
-}
-
 fn bounded_agent_text(value: &str, limit: usize) -> &str {
     if value.len() <= limit {
         return value;
@@ -5112,6 +5203,25 @@ mod tests {
         assert!(!computed.contains(&channel));
         assert!(!manual.contains(&channel));
         assert!(!clear_visible_unread(&mut computed, &mut manual, channel));
+    }
+
+    #[tokio::test]
+    async fn idle_tick_does_not_request_a_redraw_without_visible_work() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+
+        assert!(!app.cache_dirty);
+        assert!(!app.on_tick().await.unwrap());
     }
 
     #[tokio::test]
@@ -5350,15 +5460,25 @@ mod tests {
 
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
-        let panes = crate::ui::layout::panes(
+        let panes = crate::ui::layout::panes_with_composer(
             terminal.size().unwrap().into(),
             app.community_rail,
             app.sidebar,
             false,
             app.config.ui.sidebar_width,
             app.config.ui.thread_width,
+            app.composer_dock_height(),
         );
         let map = app.last_hit_map.as_ref().unwrap();
+        assert!(map.area_of(&HitTarget::Composer).is_some());
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("Read-only: restore or unlock the identity to write."));
         let sidebar = panes.sidebar.unwrap();
         assert_eq!(
             map.hit(sidebar.x.saturating_add(1), sidebar.y.saturating_add(1)),
@@ -5387,8 +5507,17 @@ mod tests {
             }],
         ));
         terminal.draw(|frame| app.render(frame)).unwrap();
-        let popup = super::bottom_popup(terminal.size().unwrap().into(), 5);
-        let mention = Rect::new(popup.x, popup.y.saturating_sub(3), popup.width, 3);
+        let panes = crate::ui::layout::panes_with_composer(
+            terminal.size().unwrap().into(),
+            app.community_rail,
+            app.sidebar,
+            false,
+            app.config.ui.sidebar_width,
+            app.config.ui.thread_width,
+            app.composer_dock_height(),
+        );
+        let dock = panes.composer.unwrap();
+        let mention = Rect::new(dock.x, dock.y.saturating_sub(3), dock.width, 3);
         assert_eq!(
             app.last_hit_map
                 .as_ref()
