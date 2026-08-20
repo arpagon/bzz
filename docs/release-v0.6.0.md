@@ -14,13 +14,15 @@ protocol feature, or dependency is introduced.
   then activity), recent, and alphabetical modes. `Space s` cycles modes while
   preserving selection by channel ID; it cannot mutate a read marker,
   subscription, stored channel, or relay state.
-- **Local graphical author markers:** Kitty, Sixel, and iTerm2 terminals can
-  display a bounded generated identicon over the existing text marker. The
-  marker stays textual on unsupported/disabled terminals. No `Profile.picture`,
-  URL, remote download, or avatar disk cache is used.
+- **Local author markers:** every terminal uses a compact deterministic shape
+  and initial derived from already-visible local identity data. No
+  `Profile.picture`, URL, remote download, avatar disk cache, or terminal-image
+  overlay is used.
 - **Practical Markdown:** headings, quote gutters, ordered/unordered lists,
-  task items, rules, bounded tables, inline code, and fenced code blocks render
-  with safe local structure. Links remain inert visible text.
+  task items, rules, inline code, and fenced code blocks render with safe local
+  structure. Tables use measured Unicode grids where they fit, or labelled row
+  records when wide data would make columns misleading. Links remain inert
+  visible text.
 - **Copy and select:** `y` explicitly copies sanitized message source via a
   64-KiB-bounded OSC 52 payload. `v` starts a logical event-ID range and `y`
   copies it in chronological order. `ui.clipboard = "disabled"` suppresses all
@@ -33,8 +35,8 @@ protocol feature, or dependency is introduced.
 ## Security and clean-room boundary
 
 The implementation and all fixtures are bzz-owned. The decisions for local
-identicons, safe presentation, clipboard encoding, and direct reaction entry
-are in
+author markers, safe presentation, clipboard encoding, and direct reaction
+entry are in
 [`adr-v0.6-organized-conversations.md`](adr-v0.6-organized-conversations.md).
 In particular, presentation does not fetch profile images or URLs, copy text
 automatically, echo clipboard content, invoke a shell, alter Inbox reads, or

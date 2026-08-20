@@ -34,7 +34,7 @@ nostr = { version = "0.44", features = ["nip44", "nip49", "nip98"] }
 nucleo-matcher = "0.3"
 pulldown-cmark = { version = "0.13", default-features = false }
 rand = "0.9"
-ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29", "layout-cache"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29", "layout-cache", "unstable-rendered-line-info"] }
 ratatui-image = { version = "=11.0.5", default-features = false, features = ["crossterm"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 rpassword = "7"

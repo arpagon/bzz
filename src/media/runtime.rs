@@ -5,7 +5,6 @@ use std::{
     sync::Arc,
 };
 
-use image::{DynamicImage, Rgba, RgbaImage};
 use ratatui::layout::Size;
 use ratatui_image::{
     FontSize, Resize,
@@ -58,9 +57,6 @@ pub struct MediaRuntime {
     client: Option<MediaClient>,
     store: StoreHandle,
     states: HashMap<String, MediaState>,
-    /// Small locally generated images for author markers. They never carry a
-    /// URL, profile field, or disk-cache identity.
-    identicons: HashMap<String, Arc<SlicedProtocol>>,
     in_flight: HashSet<String>,
     weights: HashMap<String, u64>,
     last_used: HashMap<String, u64>,
@@ -86,7 +82,6 @@ impl MediaRuntime {
             client: None,
             store,
             states: HashMap::new(),
-            identicons: HashMap::new(),
             in_flight: HashSet::new(),
             weights: HashMap::new(),
             last_used: HashMap::new(),
@@ -148,37 +143,6 @@ impl MediaRuntime {
 
     pub fn protocol_name(&self) -> &str {
         &self.protocol_name
-    }
-
-    /// Returns a tiny local visual marker only for a real graphics protocol.
-    /// Textual author markers remain rendered beneath it and are therefore the
-    /// accessible fallback for half-block, disabled, and narrow terminals.
-    pub fn identicon(&mut self, pubkey: &str) -> Option<Arc<SlicedProtocol>> {
-        if !self.config.enabled
-            || !matches!(
-                self.picker.protocol_type(),
-                ProtocolType::Kitty | ProtocolType::Sixel | ProtocolType::Iterm2
-            )
-        {
-            return None;
-        }
-        if let Some(protocol) = self.identicons.get(pubkey) {
-            return Some(protocol.clone());
-        }
-        if self.identicons.len() >= 64 {
-            self.identicons.clear();
-        }
-        let image = DynamicImage::ImageRgba8(identicon_image(pubkey));
-        let protocol = SlicedProtocol::new_with_resize(
-            &self.picker,
-            image,
-            Size::new(4, 1),
-            Resize::Fit(None),
-        )
-        .ok()?;
-        let protocol = Arc::new(protocol);
-        self.identicons.insert(pubkey.into(), protocol.clone());
-        Some(protocol)
     }
 
     pub fn state(&self, attachment: &Attachment, width: u16) -> Option<&MediaState> {
@@ -522,7 +486,6 @@ impl MediaRuntime {
 
     fn clear_memory_state(&mut self) {
         self.states.clear();
-        self.identicons.clear();
         self.in_flight.clear();
         self.weights.clear();
         self.last_used.clear();
@@ -605,37 +568,6 @@ impl MediaRuntime {
         self.clear_memory_state();
         Ok(())
     }
-}
-
-/// Builds a symmetric five-by-five image from a public key. The transparent
-/// cells let the terminal theme show through; no network or profile metadata
-/// participates in this rendering.
-fn identicon_image(pubkey: &str) -> RgbaImage {
-    let hash = pubkey.bytes().fold(0_u32, |value, byte| {
-        value.wrapping_mul(33).wrapping_add(u32::from(byte))
-    });
-    let foreground = Rgba([
-        72_u8.saturating_add((hash & 0x7f) as u8),
-        72_u8.saturating_add(((hash >> 8) & 0x7f) as u8),
-        72_u8.saturating_add(((hash >> 16) & 0x7f) as u8),
-        255,
-    ]);
-    let mut image = RgbaImage::new(10, 10);
-    for y in 0..5 {
-        for x in 0..3 {
-            let bit = (hash >> ((y * 3 + x) % 24)) & 1 == 1;
-            if bit {
-                for mirror_x in [x, 4 - x] {
-                    for pixel_y in (y * 2)..(y * 2 + 2) {
-                        for pixel_x in (mirror_x * 2)..(mirror_x * 2 + 2) {
-                            image.put_pixel(pixel_x, pixel_y, foreground);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    image
 }
 
 fn safe_picker() -> Picker {
@@ -875,19 +807,6 @@ mod tests {
         assert_eq!(
             prepared_weight(&image::DynamicImage::new_rgb8(4, 2)),
             65_600
-        );
-    }
-
-    #[test]
-    fn identicon_is_local_deterministic_and_bounded() {
-        let first = identicon_image("public-key-a");
-        assert_eq!(first, identicon_image("public-key-a"));
-        assert_ne!(first, identicon_image("public-key-b"));
-        assert_eq!(first.dimensions(), (10, 10));
-        assert!(
-            first
-                .pixels()
-                .all(|pixel| pixel.0[3] == 0 || pixel.0[3] == 255)
         );
     }
 

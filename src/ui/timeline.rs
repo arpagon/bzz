@@ -173,9 +173,6 @@ impl TimelineState {
 
 enum TimelineRow {
     Text(Line<'static>),
-    /// The line always carries a textual marker. A graphics-capable terminal
-    /// may overlay it with a local identicon at render time.
-    Avatar(Line<'static>, String),
     Image(Arc<SlicedProtocol>),
 }
 
@@ -190,7 +187,7 @@ impl MessageBlock {
         self.rows
             .iter()
             .map(|row| match row {
-                TimelineRow::Text(line) | TimelineRow::Avatar(line, _) => text_height(line, width),
+                TimelineRow::Text(line) => text_height(line, width),
                 TimelineRow::Image(protocol) => protocol.size().height,
             })
             .fold(0_u16, u16::saturating_add)
@@ -198,9 +195,18 @@ impl MessageBlock {
 }
 
 fn text_height(line: &Line<'_>, width: u16) -> u16 {
-    let width = usize::from(width.max(1));
-    let cells = line.width().max(1);
-    u16::try_from(cells.div_ceil(width)).unwrap_or(u16::MAX)
+    let width = width.max(1);
+    // The overwhelmingly common one-row case needs no reflow allocation.
+    // Longer lines use the same Paragraph/Wrap implementation as rendering:
+    // dividing total display width undercounts when a word moves to the next
+    // row and desynchronizes scroll coordinates.
+    if line.width() <= usize::from(width) {
+        return 1;
+    }
+    let count = Paragraph::new(line.clone())
+        .wrap(Wrap { trim: false })
+        .line_count(width);
+    u16::try_from(count.max(1)).unwrap_or(u16::MAX)
 }
 
 /// Keeps conversation text to a readable measure on ultrawide terminals while
@@ -508,18 +514,12 @@ fn render_internal(
         let mut row_y = global_y;
         for row in block.rows {
             let row_height = match &row {
-                TimelineRow::Text(line) | TimelineRow::Avatar(line, _) => {
-                    u32::from(text_height(line, content.width))
-                }
+                TimelineRow::Text(line) => u32::from(text_height(line, content.width)),
                 TimelineRow::Image(protocol) => u32::from(protocol.size().height),
             };
             if row_y + row_height > scroll && row_y < scroll + viewport {
-                let avatar_pubkey = match &row {
-                    TimelineRow::Avatar(_, pubkey) => Some(pubkey.clone()),
-                    _ => None,
-                };
                 match row {
-                    TimelineRow::Text(line) | TimelineRow::Avatar(line, _) => {
+                    TimelineRow::Text(line) => {
                         let visible_top = row_y.max(scroll);
                         let visible_bottom = row_y
                             .saturating_add(row_height)
@@ -542,21 +542,6 @@ fn render_internal(
                                     .scroll((u16::try_from(skipped).unwrap_or(u16::MAX), 0)),
                                 Rect::new(content.x, y, content.width, height),
                             );
-                            if let Some(pubkey) = avatar_pubkey.as_deref()
-                                && let Some(runtime) = media.as_deref_mut()
-                                && let Some(protocol) = runtime.identicon(pubkey)
-                            {
-                                let relative_y = i32::try_from(row_y).unwrap_or(i32::MAX)
-                                    - i32::try_from(scroll).unwrap_or(i32::MAX);
-                                let position = SignedPosition::from((
-                                    1,
-                                    relative_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-                                ));
-                                frame.render_widget(
-                                    SlicedImage::new(protocol.as_ref(), position),
-                                    content,
-                                );
-                            }
                         }
                     }
                     TimelineRow::Image(protocol) => {
@@ -644,21 +629,17 @@ fn message_block(
             theme.style(HighlightGroup::Rejected),
         ));
     }
-    if grouped {
-        rows.push(TimelineRow::Text(Line::from(header)));
-    } else {
-        rows.push(TimelineRow::Avatar(
-            Line::from(header),
-            message.pubkey.clone(),
-        ));
-    }
+    rows.push(TimelineRow::Text(Line::from(header)));
     if message.deleted {
         rows.push(TimelineRow::Text(Line::styled(
             "     message deleted",
             theme.style(HighlightGroup::MessageDeleted),
         )));
     } else {
-        for line in markdown::render(&message.content, theme).lines {
+        for line in
+            markdown::render_with_width(&message.content, theme, image_width.saturating_sub(1))
+                .lines
+        {
             let mut spans = vec![Span::styled(
                 "     ",
                 theme.style(HighlightGroup::MessageBody),
@@ -840,7 +821,7 @@ fn format_time(timestamp: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{TimelineState, readable_area, same_message_group};
+    use super::{TimelineState, readable_area, same_message_group, text_height};
     use crate::domain::Message;
     use ratatui::layout::Rect;
     use uuid::Uuid;
@@ -880,6 +861,14 @@ mod tests {
         assert_eq!(state.copy_indexes(&messages), vec![0, 1, 2]);
         assert_eq!(state.toggle_copy_selection(&messages), Some(0));
         assert_eq!(state.copy_indexes(&messages), vec![2]);
+    }
+
+    #[test]
+    fn word_wrapped_rows_use_the_same_height_as_the_paragraph_renderer() {
+        assert_eq!(
+            text_height(&ratatui::text::Line::raw("12345 12345 12345"), 10),
+            3
+        );
     }
 
     #[test]

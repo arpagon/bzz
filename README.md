@@ -5,7 +5,7 @@ fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
 > Status: v0.6.0 organizes local channel order, expands safe conversation
-> actions, and adds local graphical identicons without profile-image fetching.
+> actions, and retains local deterministic author markers without profile-image fetching.
 > Protocol compatibility remains pinned to Buzz
 > `ede26863345a518ec46edd6d7692e0281883491b`.
 
@@ -28,8 +28,8 @@ use `bzz-dev` paths and a separate OS-keychain service.
 - reaction toggles, own-message deletion, and encrypted cross-device read state;
 - Vim-style navigation, fuzzy channel finder, safe Markdown, and responsive narrow layouts;
 - labelled community/channel directories with local smart/recent/A–Z ordering,
-  bounded readable measure, Kitty/Sixel/iTerm2 local identicons with text fallback,
-  practical safe Markdown, date/group rhythm, and a visible writing dock;
+  bounded readable measure, deterministic local author markers, practical safe
+  Markdown, date/group rhythm, and a visible writing dock;
 - 60 built-in themes plus semantic `theme.toml` customization;
 - an active-community Inbox for mentions, relevant threads, workspace DMs,
   read-only needs-action events, unread rows, and drafts;

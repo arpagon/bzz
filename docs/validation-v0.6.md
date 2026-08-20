@@ -33,29 +33,33 @@ Criterion `timeline` measurements on AMD Ryzen 7 3700X/Linux 6.11/rustc 1.95:
 
 | Case | Result |
 |---|---:|
-| Timeline render: 500 messages, 180×48, 110-cell measure | 1.923–1.963 ms |
-| Redraw gate: 1,000 idle admissions | 285.62–290.02 ns |
+| Timeline render: 500 messages, 180×48, 110-cell measure | 1.7704–1.8097 ms |
+| Redraw gate: 1,000 idle admissions | 285.17–298.20 ns |
 
 The redraw-gate unit coverage continues to prove zero extra frame admissions
-across 1,000 idle ticks after the initial frame.
+across 1,000 idle ticks after the initial frame. Timeline geometry uses the
+same Paragraph word-wrapper as painting once a line exceeds the measure, while
+the common one-row case remains allocation-free.
 
 ## New behavior coverage
 
 - Sidebar ordering tests verify smart/recent/alphabetical ordering and stable
   tie breaks; app viewports use the same ordered ID sequence for render, mouse,
   and keyboard navigation.
-- Identicon tests prove deterministic 10×10 local raster generation. Existing
-  text-marker and no-control rendering tests cover the fallback.
-- Markdown tests cover headings, quotes, lists, code fences, tables, bounded
-  cells, inert links, and escape sanitization.
+- Avatar-marker tests prove deterministic local shape/initial rendering with no
+  profile-image I/O or terminal-image overlay.
+- Markdown tests cover headings, quotes, lists, code fences, measured Unicode
+  grids, labelled wide-table records, bounded cells, inert links, and escape
+  sanitization. A timeline geometry test proves word-wrapped rows use the same
+  height as the Paragraph renderer.
 - OSC 52 tests cover base64-only framing and the 64-KiB refusal. Timeline copy
   range tests verify event-ID anchors and chronological ranges. Typed reducer
   and keymap tests cover copy/sort/reaction entry without service access.
 
 ## Manual review required
 
-Before a v0.6 tag, inspect the release binary in Kitty (and one non-graphics
-terminal) using generated/disposable content. Exercise `Space s`, `r`, `v`/
-`y`, Markdown blocks, and `ui.clipboard = "disabled"`; confirm local identicons
-overlay rather than replace author text and no private payload is shown in
-status feedback.
+Before a v0.6 tag, inspect the release binary in a graphics terminal and one
+non-graphics terminal using generated/disposable content. Exercise `Space s`,
+`r`, `v`/`y`, Markdown blocks (including a wide table), and
+`ui.clipboard = "disabled"`; confirm author markers remain stable while
+scrolling and no private payload is shown in status feedback.
