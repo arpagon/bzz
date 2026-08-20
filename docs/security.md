@@ -80,6 +80,14 @@ only release-binary paths, isolated non-secret directories, logical key events,
 and sanitized visible labels; it deliberately refuses credential-bearing
 fixture automation.
 
+A local copy action sanitizes selected source Markdown, limits it to 64 KiB,
+and base64-encodes it before emitting OSC 52. It is never automatic, never
+prints copied text, never invokes a shell clipboard helper, and can be disabled
+with `ui.clipboard = "disabled"`. Logical multi-message selection is event-ID
+based presentation state: it cannot advance reads, subscribe, fetch, sign, or
+publish. Local graphical author identicons derive only from already-visible
+public keys; profile-picture fields and arbitrary URLs remain inert.
+
 ## Local Codex drafts
 
 A configured local assistant is not a Nostr identity: it has no signer, relay

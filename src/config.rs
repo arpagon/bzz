@@ -97,6 +97,46 @@ impl MouseMode {
     }
 }
 
+/// Private local ordering for the joined-channel directory. It is intentionally
+/// presentation-only: no sort mode changes a subscription, marker, or stored
+/// channel record.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChannelSort {
+    #[default]
+    Smart,
+    Recent,
+    Alphabetical,
+}
+
+impl ChannelSort {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Smart => "smart",
+            Self::Recent => "recent",
+            Self::Alphabetical => "A-Z",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::Smart => Self::Recent,
+            Self::Recent => Self::Alphabetical,
+            Self::Alphabetical => Self::Smart,
+        }
+    }
+}
+
+/// OSC 52 is emitted only after an explicit copy action. Disabling it leaves
+/// terminal-native selection available without bzz writing clipboard data.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClipboardMode {
+    Disabled,
+    #[default]
+    Osc52,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiConfig {
@@ -105,6 +145,8 @@ pub struct UiConfig {
     /// Maximum readable message measure on a wide conversation surface.
     /// The pane may be narrower; this never changes stored content.
     pub message_width: u16,
+    pub channel_sort: ChannelSort,
+    pub clipboard: ClipboardMode,
     pub theme: String,
     pub mouse: MouseMode,
 }
@@ -115,6 +157,8 @@ impl Default for UiConfig {
             sidebar_width: 28,
             thread_width: 44,
             message_width: 110,
+            channel_sort: ChannelSort::Smart,
+            clipboard: ClipboardMode::Osc52,
             theme: crate::ui::theme::DEFAULT_THEME_ID.into(),
             mouse: MouseMode::Auto,
         }

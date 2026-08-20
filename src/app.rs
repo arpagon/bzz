@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::{
     agent::{AgentRun, CodexExecutable, RunFailure, start as start_agent},
     auth::{IdentityManager, read_passphrase, signer::SignerHandle},
-    config::{Config, KeyBackend, validate_relay_url},
+    config::{ClipboardMode, Config, KeyBackend, validate_relay_url},
     domain::{
         Channel, ConnectionState, InboxCategory, InboxItem, Message, Profile, Reaction,
         SearchResultKind,
@@ -62,7 +62,7 @@ use crate::{
             AttachmentPrompt, ComposerTarget, ConfirmationKind, FocusSurface, Overlay,
             PresentationState, Route, ViewportState,
         },
-        terminal::{TerminalGuard, Tui},
+        terminal::{TerminalGuard, Tui, copy_osc52},
         theme::{self, BorderSurface, HighlightGroup, Theme, ThemeScope},
         theme_picker::ThemePicker,
         timeline::{self, TimelineState},
@@ -935,25 +935,19 @@ impl App {
             self.last_cache_refresh = Instant::now();
             return Ok(());
         };
+        let selected_channel_id = self.current_channel().map(|channel| channel.id);
         self.channels = self
             .store
             .call(move |store| store.channels(community))
             .await?;
-        self.selected_channel = if self.showing_open_channel {
-            self.selected_channel
-                .min(self.channels.len().saturating_sub(1))
-        } else if self
-            .channels
-            .get(self.selected_channel)
-            .is_some_and(|channel| channel.is_member)
-        {
-            self.selected_channel
-        } else {
-            self.channels
-                .iter()
-                .position(|channel| channel.is_member)
-                .unwrap_or(self.channels.len())
-        };
+        self.selected_channel = selected_channel_id
+            .and_then(|id| self.channels.iter().position(|channel| channel.id == id))
+            .or_else(|| {
+                self.channels
+                    .iter()
+                    .position(|channel| self.showing_open_channel || channel.is_member)
+            })
+            .unwrap_or(self.channels.len());
         self.sync_workspace_viewports();
         if let Some(channel) = self.current_channel().map(|channel| channel.id) {
             let timeline_anchor = self.timeline.selected_event.clone();
@@ -1671,6 +1665,10 @@ impl App {
             Some(Overlay::Theme) => self.theme_picker_key(key),
             Some(Overlay::Reaction) => match key.code {
                 KeyCode::Esc => self.presentation.close_overlay(),
+                KeyCode::Char(digit @ '1'..='8') => {
+                    self.reaction_index = usize::from(digit as u8 - b'1');
+                    self.send_reaction();
+                }
                 KeyCode::Char('j') | KeyCode::Down => {
                     self.reaction_index =
                         (self.reaction_index + 1) % crate::ui::reaction_picker::REACTIONS.len()
@@ -2031,6 +2029,7 @@ impl App {
             WorkspaceEffect::OpenComposer => self.enter_composer().await?,
             WorkspaceEffect::OpenSearch => self.open_search(),
             WorkspaceEffect::OpenInbox => self.open_inbox(),
+            WorkspaceEffect::CycleChannelSort => self.cycle_channel_sort()?,
             WorkspaceEffect::OpenFinder => {
                 self.finder.clear();
                 self.presentation.open_overlay(Overlay::Finder);
@@ -2057,6 +2056,8 @@ impl App {
             }
             WorkspaceEffect::OpenDmPicker => self.open_dm_picker(None),
             WorkspaceEffect::ToggleThread => self.toggle_thread().await?,
+            WorkspaceEffect::ToggleCopySelection => self.toggle_copy_selection(),
+            WorkspaceEffect::CopyMessages => self.copy_selected_messages(),
             WorkspaceEffect::OpenMediaPreview => self.open_media_preview(),
             WorkspaceEffect::OpenReaction => {
                 if self.runtime.is_none() {
@@ -2145,6 +2146,91 @@ impl App {
         }
     }
 
+    fn toggle_copy_selection(&mut self) {
+        let count = match self.presentation.focus {
+            FocusSurface::Timeline => self.timeline.toggle_copy_selection(&self.messages),
+            FocusSurface::Context => self
+                .thread_timeline
+                .toggle_copy_selection(&self.thread_messages),
+            _ => None,
+        };
+        self.status_error = Some(match count {
+            Some(0) => "message selection cancelled".into(),
+            Some(1) => "message selection started · move then y to copy".into(),
+            Some(count) => format!("{count} messages selected · y to copy"),
+            None => "focus a selected message before starting a copy range".into(),
+        });
+    }
+
+    fn copy_selected_messages(&mut self) {
+        if self.config.ui.clipboard == ClipboardMode::Disabled {
+            self.status_error = Some("clipboard is disabled in [ui].clipboard".into());
+            return;
+        }
+        let (messages, indexes, selected_range) = match self.presentation.focus {
+            FocusSurface::Timeline => (
+                &self.messages,
+                self.timeline.copy_indexes(&self.messages),
+                self.timeline.copy_anchor.is_some(),
+            ),
+            FocusSurface::Context => (
+                &self.thread_messages,
+                self.thread_timeline.copy_indexes(&self.thread_messages),
+                self.thread_timeline.copy_anchor.is_some(),
+            ),
+            _ => {
+                self.status_error = Some("focus a selected message before copying".into());
+                return;
+            }
+        };
+        let mut selected = indexes
+            .into_iter()
+            .filter_map(|index| messages.get(index))
+            .collect::<Vec<_>>();
+        selected.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.event_id.cmp(&right.event_id))
+        });
+        let text = selected
+            .iter()
+            .map(|message| sanitize::text(&message.content))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if text.is_empty() {
+            self.status_error = Some("selected message has no copyable text".into());
+            return;
+        }
+        match copy_osc52(&text) {
+            Ok(bytes) => {
+                if selected_range {
+                    match self.presentation.focus {
+                        FocusSurface::Timeline => self.timeline.copy_anchor = None,
+                        FocusSurface::Context => self.thread_timeline.copy_anchor = None,
+                        _ => {}
+                    }
+                }
+                self.status_error = Some(format!(
+                    "copied {} message(s), {} bytes to clipboard",
+                    selected.len(),
+                    bytes
+                ));
+            }
+            Err(error) => self.status_error = Some(format!("copy unavailable: {error}")),
+        }
+    }
+
+    fn cycle_channel_sort(&mut self) -> Result<()> {
+        self.config.ui.channel_sort = self.config.ui.channel_sort.next();
+        self.config.save(&self.paths)?;
+        self.sync_workspace_viewports();
+        self.status_error = Some(format!(
+            "channel order: {}",
+            self.config.ui.channel_sort.label()
+        ));
+        Ok(())
+    }
+
     fn resize_focused_side_pane(&mut self, direction: isize) -> Result<()> {
         let (width, minimum, maximum, label) = match self.presentation.focus {
             FocusSurface::Channels => (
@@ -2187,13 +2273,7 @@ impl App {
                 self.select_community_index(self.community_cursor);
             }
             FocusSurface::Channels => {
-                let joined = self
-                    .channels
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, channel)| channel.is_member)
-                    .map(|(index, _)| index)
-                    .collect::<Vec<_>>();
+                let joined = self.ordered_channel_indexes();
                 if !joined.is_empty() {
                     let current = joined
                         .iter()
@@ -2221,13 +2301,7 @@ impl App {
                 self.select_community_index(self.community_cursor);
             }
             FocusSurface::Channels => {
-                let joined = self
-                    .channels
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, channel)| channel.is_member)
-                    .map(|(index, _)| index)
-                    .collect::<Vec<_>>();
+                let joined = self.ordered_channel_indexes();
                 if let Some(index) = if last { joined.last() } else { joined.first() } {
                     self.select_channel_index(*index);
                     self.showing_open_channel = false;
@@ -3876,11 +3950,18 @@ impl App {
             .collect()
     }
 
+    fn ordered_channel_indexes(&self) -> Vec<usize> {
+        crate::ui::sidebar::ordered_indexes(
+            &self.channels,
+            &self.unread_channels(),
+            self.config.ui.channel_sort,
+        )
+    }
+
     fn visible_channel_ids(&self) -> Vec<String> {
-        self.channels
-            .iter()
-            .filter(|channel| channel.is_member)
-            .map(|channel| channel.id.to_string())
+        self.ordered_channel_indexes()
+            .into_iter()
+            .map(|index| self.channels[index].id.to_string())
             .collect()
     }
 
@@ -4096,11 +4177,9 @@ impl App {
             self.channel_viewport
                 .set_viewport_height(usize::from(inner_rect(sidebar).height), &ids);
             hit_map.push(sidebar, HitTarget::ChannelPane);
-            for (row, (index, _)) in self
-                .channels
-                .iter()
-                .enumerate()
-                .filter(|(_, channel)| channel.is_member)
+            for (row, index) in self
+                .ordered_channel_indexes()
+                .into_iter()
                 .skip(self.channel_viewport.scroll)
                 .take(usize::from(inner_rect(sidebar).height))
                 .enumerate()
@@ -4115,6 +4194,7 @@ impl App {
                 &self.channels,
                 &self.channel_viewport,
                 &self.unread_channels(),
+                self.config.ui.channel_sort,
                 &self.theme,
                 self.presentation.focus == FocusSurface::Channels,
             );

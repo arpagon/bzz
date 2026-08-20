@@ -44,6 +44,7 @@ pub enum UiAction {
     Filter,
     Search,
     OpenInbox,
+    CycleChannelSort,
     ChannelSwitcher,
     OpenContextActions,
     Refresh,
@@ -51,6 +52,8 @@ pub enum UiAction {
     OpenCommand,
     NewDm,
     ToggleThread,
+    ToggleCopySelection,
+    CopyMessages,
     React,
     Delete,
     MarkUnread,
@@ -100,6 +103,7 @@ impl UiAction {
             Self::Filter => "filter",
             Self::Search => "search",
             Self::OpenInbox => "open Inbox",
+            Self::CycleChannelSort => "cycle channel sort",
             Self::ChannelSwitcher => "channel / DM switcher",
             Self::OpenContextActions => "contextual actions",
             Self::Refresh => "refresh",
@@ -107,6 +111,8 @@ impl UiAction {
             Self::OpenCommand => "command prompt",
             Self::NewDm => "new DM",
             Self::ToggleThread => "toggle context",
+            Self::ToggleCopySelection => "start/cancel message selection",
+            Self::CopyMessages => "copy selected message(s)",
             Self::React => "react",
             Self::Delete => "delete",
             Self::MarkUnread => "mark unread",
@@ -392,12 +398,20 @@ impl KeyMap {
         add(KeyScope::Global, &["enter"], UiAction::ActivateFocused);
         add(KeyScope::Global, &["i"], UiAction::Compose);
         add(KeyScope::Global, &["/"], UiAction::Filter);
+        add(KeyScope::Global, &["v"], UiAction::ToggleCopySelection);
+        add(KeyScope::Global, &["y"], UiAction::CopyMessages);
+        add(KeyScope::Global, &["r"], UiAction::React);
         add(
             KeyScope::Global,
             &["space", "space"],
             UiAction::ChannelSwitcher,
         );
         add(KeyScope::Global, &["space", "n"], UiAction::OpenInbox);
+        add(
+            KeyScope::Global,
+            &["space", "s"],
+            UiAction::CycleChannelSort,
+        );
         add(
             KeyScope::Global,
             &["space", "a"],
@@ -818,6 +832,19 @@ mod tests {
             keymap.lookup(KeyScope::Workspace, &[inbox]),
             KeyLookup::NoMatch
         );
+        for (key, action) in [
+            ('r', UiAction::React),
+            ('v', UiAction::ToggleCopySelection),
+            ('y', UiAction::CopyMessages),
+        ] {
+            assert_eq!(
+                keymap.lookup(
+                    KeyScope::Workspace,
+                    &[KeyChord::new(KeyCode::Char(key), KeyModifiers::NONE)],
+                ),
+                KeyLookup::Action(action)
+            );
+        }
     }
 
     #[test]

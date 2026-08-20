@@ -180,6 +180,11 @@ pub fn derive(context: ActionContext) -> Vec<ContextAction> {
                     "open context"
                 },
             ));
+            add(event_action(
+                context,
+                UiAction::CopyMessages,
+                "copy message",
+            ));
             add(event_publish_action(context, UiAction::React, "react"));
             add(own_event_action(
                 context,

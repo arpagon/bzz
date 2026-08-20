@@ -29,6 +29,8 @@ theme = "dracula" # optional; overrides the global UI theme
 sidebar_width = 28
 thread_width = 44
 message_width = 110        # readable message measure; 48..200 cells
+channel_sort = "smart"      # smart|recent|alphabetical
+clipboard = "osc52"         # osc52|disabled; only writes after explicit y
 theme = "bzz"
 mouse = "auto"              # auto|on|off
 
@@ -73,9 +75,15 @@ message content. The workspace uses labelled local community rows, local
 deterministic author markers, and a visible writing dock. Author markers
 never fetch `Profile.picture` or another URL. The dock activates with `i` or a
 click and uses the ordinary existing draft/outbox; it is visibly disabled when
-the active identity cannot publish. Semantic overrides live in a separate,
-optional `theme.toml`; see [`themes.md`](themes.md). UI configuration is
-presentation-only and is never synchronized through the relay.
+the active identity cannot publish. `ui.channel_sort` is a local sidebar order:
+`smart` places existing unread work before recent activity, `recent` uses local
+activity time, and `alphabetical` uses sanitized labels. `Space s` cycles it and
+persists the result; it cannot affect a subscription, unread marker, or relay
+request. `ui.clipboard = "osc52"` permits only explicit `y` actions to write a
+sanitized, bounded payload to the terminal clipboard; use `"disabled"` to
+prevent bzz from emitting clipboard sequences. Semantic overrides live in a
+separate, optional `theme.toml`; see [`themes.md`](themes.md). UI configuration
+is presentation-only and is never synchronized through the relay.
 
 ## Keymap
 

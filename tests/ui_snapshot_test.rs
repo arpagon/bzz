@@ -1,4 +1,5 @@
 use bzz::{
+    config::ChannelSort,
     domain::{
         Channel, ChannelKind, InboxCategory, InboxItem, Message, Profile, Reaction, SearchResult,
         SearchResultKind, Visibility,
@@ -105,6 +106,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                     ..ViewportState::default()
                 },
                 &HashSet::from([channel]),
+                ChannelSort::Smart,
                 &theme,
                 true,
             );

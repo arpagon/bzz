@@ -105,6 +105,7 @@ pub enum WorkspaceEffect {
     OpenComposer,
     OpenSearch,
     OpenInbox,
+    CycleChannelSort,
     OpenFinder,
     OpenContextActions,
     Refresh,
@@ -112,6 +113,8 @@ pub enum WorkspaceEffect {
     OpenCommand,
     OpenDmPicker,
     ToggleThread,
+    ToggleCopySelection,
+    CopyMessages,
     OpenMediaPreview,
     OpenReaction,
     ConfirmDelete,
@@ -361,6 +364,7 @@ pub fn reduce_workspace(state: &mut WorkspaceState, action: UiAction) -> Workspa
             state.presentation.enter_inbox();
             WorkspaceEffect::OpenInbox
         }
+        UiAction::CycleChannelSort => WorkspaceEffect::CycleChannelSort,
         UiAction::ChannelSwitcher => WorkspaceEffect::OpenFinder,
         UiAction::OpenContextActions => WorkspaceEffect::OpenContextActions,
         UiAction::Refresh => WorkspaceEffect::Refresh,
@@ -368,8 +372,31 @@ pub fn reduce_workspace(state: &mut WorkspaceState, action: UiAction) -> Workspa
         UiAction::OpenCommand => WorkspaceEffect::OpenCommand,
         UiAction::NewDm => WorkspaceEffect::OpenDmPicker,
         UiAction::ToggleThread => WorkspaceEffect::ToggleThread,
+        UiAction::ToggleCopySelection
+            if matches!(
+                state.presentation.focus,
+                FocusSurface::Timeline | FocusSurface::Context
+            ) =>
+        {
+            WorkspaceEffect::ToggleCopySelection
+        }
+        UiAction::CopyMessages
+            if matches!(
+                state.presentation.focus,
+                FocusSurface::Timeline | FocusSurface::Context
+            ) =>
+        {
+            WorkspaceEffect::CopyMessages
+        }
         UiAction::Preview => WorkspaceEffect::OpenMediaPreview,
-        UiAction::React => WorkspaceEffect::OpenReaction,
+        UiAction::React
+            if matches!(
+                state.presentation.focus,
+                FocusSurface::Timeline | FocusSurface::Context
+            ) =>
+        {
+            WorkspaceEffect::OpenReaction
+        }
         UiAction::Delete => WorkspaceEffect::ConfirmDelete,
         UiAction::MarkUnread => WorkspaceEffect::MarkUnread,
         unsupported => WorkspaceEffect::Unavailable(unsupported),
@@ -446,6 +473,23 @@ mod tests {
             WorkspaceEffect::ScrollViewport(ViewportScroll::HalfPage(1))
         );
         assert_eq!(state.community_cursor, selected_before);
+    }
+
+    #[test]
+    fn copy_and_sort_actions_stay_presentation_only() {
+        let mut state = state();
+        assert_eq!(
+            reduce_workspace(&mut state, UiAction::ToggleCopySelection),
+            WorkspaceEffect::ToggleCopySelection
+        );
+        assert_eq!(
+            reduce_workspace(&mut state, UiAction::CopyMessages),
+            WorkspaceEffect::CopyMessages
+        );
+        assert_eq!(
+            reduce_workspace(&mut state, UiAction::CycleChannelSort),
+            WorkspaceEffect::CycleChannelSort
+        );
     }
 
     #[test]

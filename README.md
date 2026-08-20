@@ -4,9 +4,10 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.5.0 adds a clean-room calm workspace shell with readable
-> conversations and a persistent writing dock. Protocol compatibility remains
-> pinned to Buzz `ede26863345a518ec46edd6d7692e0281883491b`.
+> Status: v0.6.0 organizes local channel order, expands safe conversation
+> actions, and adds local graphical identicons without profile-image fetching.
+> Protocol compatibility remains pinned to Buzz
+> `ede26863345a518ec46edd6d7692e0281883491b`.
 
 ## Build
 
@@ -26,8 +27,9 @@ use `bzz-dev` paths and a separate OS-keychain service.
 - acknowledged sends with durable ambiguous-outcome recovery;
 - reaction toggles, own-message deletion, and encrypted cross-device read state;
 - Vim-style navigation, fuzzy channel finder, safe Markdown, and responsive narrow layouts;
-- labelled community/channel directories, a bounded readable conversation measure,
-  deterministic local author markers, date/group rhythm, and a visible writing dock;
+- labelled community/channel directories with local smart/recent/A–Z ordering,
+  bounded readable measure, Kitty/Sixel/iTerm2 local identicons with text fallback,
+  practical safe Markdown, date/group rhythm, and a visible writing dock;
 - 60 built-in themes plus semantic `theme.toml` customization;
 - an active-community Inbox for mentions, relevant threads, workspace DMs,
   read-only needs-action events, unread rows, and drafts;
@@ -73,10 +75,13 @@ to traverse them, `j`/`k` or `Ctrl-n`/`Ctrl-p` to change selection, and
 conversation, and an on-demand context pane. Each message has a compact local
 avatar marker derived without fetching profile pictures. `Space` is the
 leader: `Space Space` opens the channel/DM switcher, `Space n` opens Inbox,
-`Space a` opens contextual actions, `Space o` opens theme options, and `?`
-shows the generated effective-keymap help. `q` unwinds owned UI state and asks
-before quitting. The visible writing dock activates with `i` or a click; in
-read-only/locked state it explains why writing is unavailable. In Inbox, `i`
+`Space s` cycles local channel ordering, `Space a` opens contextual actions,
+`Space o` opens theme options, and `?` shows the generated effective-keymap
+help. On a selected conversation message, `r` opens reactions, `y` explicitly
+copies sanitized text through OSC 52, and `v` starts/cancels a logical
+multi-message copy range. `q` unwinds owned UI state and asks before quitting.
+The visible writing dock activates with `i` or a click; in read-only/locked
+state it explains why writing is unavailable. In Inbox, `i`
 targets the selected validated channel/thread without silently marking work
 read. Inbox uses `f` to
 cycle filters, `Enter` for detail, `o` for canonical source context, `m`/`U`
@@ -141,9 +146,9 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/security.md`](docs/security.md),
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
-[the v0.5.0 release notes](docs/release-v0.5.0.md), the
+[the v0.6.0 release notes](docs/release-v0.6.0.md), the
 [basic-first manual E2E plan](docs/e2e-manual.md),
-[workspace validation evidence](docs/validation-v0.5.md), and the
+[workspace validation evidence](docs/validation-v0.6.md), and the
 [Herdr-assisted E2E guide](docs/e2e-herdr.md).
 
 ## License

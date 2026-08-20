@@ -168,6 +168,21 @@ be created by any of these actions. Remove the test profile afterward with
 - Finder: press `Space Space`; an empty query must prioritize joined `#` channels.
   Also find an open `+` channel, open it without publishing, and return to the
   E2E channel.
+- Channel order: use `Space s` through smart, recent, and alphabetical order.
+  The selected channel must stay selected by ID; no read marker, relay refresh,
+  or subscription may result from the sort change.
+- Reactions: select a generated message and press `r`. Use `1`–`8` or
+  `Enter` to choose a reaction, then repeat to remove the same own reaction.
+  `Esc` must publish nothing.
+- Copy: select a generated message and press `y`; verify the terminal clipboard
+  receives only its sanitized source text. Press `v`, move to a second generated
+  message, then `y`; verify chronological text from the bounded range and no
+  read-state change. Set `ui.clipboard = "disabled"` and confirm no OSC 52 copy
+  occurs. For partial text, set `ui.mouse = "off"` and use terminal-native
+  selection rather than creating an application range.
+- Markdown: publish generated headings, quotes, ordered lists, task items,
+  tables, inline code, and a fenced code block. Verify visible structure,
+  predictable wrapping, inert links, and no terminal control output.
 
 Verify that threads, reactions, and deletions are not duplicated and that you
 can never delete another user's message.

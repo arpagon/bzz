@@ -1,4 +1,10 @@
-use std::{io, panic, sync::Once};
+use std::{
+    io::{self, Write as _},
+    panic,
+    sync::Once,
+};
+
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
@@ -12,6 +18,37 @@ use crate::error::{Error, Result};
 static PANIC_HOOK: Once = Once::new();
 
 pub type Tui = Terminal<CrosstermBackend<io::Stdout>>;
+
+/// Upper bound for one explicit OSC 52 copy. It limits terminal output as well
+/// as accidental clipboard retention of an unexpectedly large message range.
+pub const MAX_CLIPBOARD_BYTES: usize = 64 * 1024;
+
+/// Builds a control-safe OSC 52 command. The payload is base64 only; user text
+/// is never interpolated into a terminal control sequence.
+pub fn osc52_sequence(text: &str) -> Result<Vec<u8>> {
+    if text.len() > MAX_CLIPBOARD_BYTES {
+        return Err(Error::Unsupported(format!(
+            "copy exceeds the {} KiB clipboard safety limit",
+            MAX_CLIPBOARD_BYTES / 1024
+        )));
+    }
+    let encoded = STANDARD.encode(text.as_bytes());
+    Ok(format!("\x1b]52;c;{encoded}\x07").into_bytes())
+}
+
+/// Copies text only after an explicit user action. Callers provide already
+/// sanitized source text; this method never prints that text in a status line.
+pub fn copy_osc52(text: &str) -> Result<usize> {
+    let sequence = osc52_sequence(text)?;
+    let mut stdout = io::stdout();
+    stdout
+        .write_all(&sequence)
+        .map_err(|error| Error::io("terminal clipboard", error))?;
+    stdout
+        .flush()
+        .map_err(|error| Error::io("terminal clipboard", error))?;
+    Ok(text.len())
+}
 
 pub struct TerminalGuard {
     active: bool,
@@ -77,4 +114,22 @@ fn install_panic_hook() {
             previous(info);
         }));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_CLIPBOARD_BYTES, osc52_sequence};
+
+    #[test]
+    fn osc52_encodes_text_without_interpolating_terminal_controls() {
+        let sequence = osc52_sequence("hello\u{1b}]unsafe").unwrap();
+        assert!(sequence.starts_with(b"\x1b]52;c;"));
+        assert!(sequence.ends_with(b"\x07"));
+        assert!(!sequence[7..sequence.len() - 1].contains(&0x1b));
+    }
+
+    #[test]
+    fn osc52_refuses_oversized_content() {
+        assert!(osc52_sequence(&"x".repeat(MAX_CLIPBOARD_BYTES + 1)).is_err());
+    }
 }

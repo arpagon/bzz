@@ -183,6 +183,19 @@ upload. Animated PNG/WebP carrying ICC or EXIF data that cannot be removed
 without changing appearance fails closed. The relay remains authoritative and
 may enforce stricter limits.
 
+## Copying a message does not reach the clipboard
+
+`y` copies only the selected timeline/context message or the local range started
+with `v`; bzz never copies text automatically. It sanitizes source Markdown,
+limits one copy to 64 KiB, and emits OSC 52 only when `ui.clipboard = "osc52"`.
+Set that value if an older config disabled it. Some terminal emulators ask for
+permission or disable OSC 52; check their clipboard/privacy setting. bzz does
+not invoke shell clipboard helpers or print copied content.
+
+For an arbitrary character range, use the terminal's own selection: set
+`ui.mouse = "off"`, then use your terminal emulator's normal drag/copy gesture.
+Logical `v` selection is whole messages by design and never changes read state.
+
 ## Mouse prevents terminal selection or looks wrong
 
 Set `ui.mouse = "off"` in `config.toml` to preserve terminal text selection;

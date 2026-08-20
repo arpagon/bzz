@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use bzz::{
+    config::ChannelSort,
     domain::{Channel, ChannelKind, Message, Profile, Reaction, Visibility},
     ui::{
         sidebar,
@@ -92,6 +93,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
                             ..ViewportState::default()
                         },
                         &HashSet::from([channel_id]),
+                        ChannelSort::Smart,
                         &theme,
                         true,
                     );

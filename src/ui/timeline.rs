@@ -34,6 +34,10 @@ pub struct TimelineState {
     pub viewport_height: usize,
     pub content_height: usize,
     pub keep_selection_visible: bool,
+    /// Anchor for an explicit local copy range. It is an event ID, never a row
+    /// coordinate, so asynchronous arrivals and wrapping cannot change what a
+    /// user selected.
+    pub copy_anchor: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,7 +57,56 @@ impl TimelineState {
             self.selected_event = messages.last().map(|message| message.event_id.clone());
             self.keep_selection_visible = true;
         }
+        if self
+            .copy_anchor
+            .as_ref()
+            .is_some_and(|anchor| !messages.iter().any(|message| &message.event_id == anchor))
+        {
+            self.copy_anchor = None;
+        }
     }
+
+    /// Starts a local range at the current selected event, or cancels an
+    /// existing range. It never changes timeline selection or read state.
+    pub fn toggle_copy_selection(&mut self, messages: &[Message]) -> Option<usize> {
+        if self.copy_anchor.take().is_some() {
+            return Some(0);
+        }
+        let index = self.selected_index(messages)?;
+        self.copy_anchor = Some(messages[index].event_id.clone());
+        Some(1)
+    }
+
+    /// Inclusive bounds in the current stable timeline sequence for the local
+    /// copy range. With no anchor, they describe the selected one-message
+    /// range and allocate nothing during ordinary rendering.
+    pub fn copy_bounds(&self, messages: &[Message]) -> Option<(usize, usize)> {
+        let selected = self.selected_index(messages)?;
+        let anchor = self
+            .copy_anchor
+            .as_ref()
+            .and_then(|event_id| {
+                messages
+                    .iter()
+                    .position(|message| &message.event_id == event_id)
+            })
+            .unwrap_or(selected);
+        Some(if anchor <= selected {
+            (anchor, selected)
+        } else {
+            (selected, anchor)
+        })
+    }
+
+    /// Indexes in the current stable timeline sequence included by the local
+    /// copy range. This allocating helper is used only by the explicit copy
+    /// action; renderers use [`Self::copy_bounds`].
+    pub fn copy_indexes(&self, messages: &[Message]) -> Vec<usize> {
+        self.copy_bounds(messages)
+            .map(|(start, end)| (start..=end).collect())
+            .unwrap_or_default()
+    }
+
     pub fn selected_index(&self, messages: &[Message]) -> Option<usize> {
         self.selected_event
             .as_ref()
@@ -120,12 +173,16 @@ impl TimelineState {
 
 enum TimelineRow {
     Text(Line<'static>),
+    /// The line always carries a textual marker. A graphics-capable terminal
+    /// may overlay it with a local identicon at render time.
+    Avatar(Line<'static>, String),
     Image(Arc<SlicedProtocol>),
 }
 
 struct MessageBlock {
     rows: Vec<TimelineRow>,
     selected: bool,
+    copy_selected: bool,
 }
 
 impl MessageBlock {
@@ -133,7 +190,7 @@ impl MessageBlock {
         self.rows
             .iter()
             .map(|row| match row {
-                TimelineRow::Text(line) => text_height(line, width),
+                TimelineRow::Text(line) | TimelineRow::Avatar(line, _) => text_height(line, width),
                 TimelineRow::Image(protocol) => protocol.size().height,
             })
             .fold(0_u16, u16::saturating_add)
@@ -372,6 +429,7 @@ fn render_internal(
         }
     }
 
+    let copy_bounds = state.copy_bounds(messages);
     let blocks = messages
         .iter()
         .enumerate()
@@ -384,6 +442,7 @@ fn render_internal(
                 theme,
                 self_pubkey,
                 selected_index == Some(index),
+                copy_bounds.is_some_and(|(start, end)| (start..=end).contains(&index)),
                 media.as_deref(),
                 image_width,
             )
@@ -449,12 +508,18 @@ fn render_internal(
         let mut row_y = global_y;
         for row in block.rows {
             let row_height = match &row {
-                TimelineRow::Text(line) => u32::from(text_height(line, content.width)),
+                TimelineRow::Text(line) | TimelineRow::Avatar(line, _) => {
+                    u32::from(text_height(line, content.width))
+                }
                 TimelineRow::Image(protocol) => u32::from(protocol.size().height),
             };
             if row_y + row_height > scroll && row_y < scroll + viewport {
+                let avatar_pubkey = match &row {
+                    TimelineRow::Avatar(_, pubkey) => Some(pubkey.clone()),
+                    _ => None,
+                };
                 match row {
-                    TimelineRow::Text(line) => {
+                    TimelineRow::Text(line) | TimelineRow::Avatar(line, _) => {
                         let visible_top = row_y.max(scroll);
                         let visible_bottom = row_y
                             .saturating_add(row_height)
@@ -468,7 +533,7 @@ fn render_internal(
                         if y < content.bottom() && height > 0 {
                             frame.render_widget(
                                 Paragraph::new(line)
-                                    .style(theme.style(if block.selected {
+                                    .style(theme.style(if block.selected || block.copy_selected {
                                         HighlightGroup::SelectedRow
                                     } else {
                                         HighlightGroup::Normal
@@ -477,6 +542,21 @@ fn render_internal(
                                     .scroll((u16::try_from(skipped).unwrap_or(u16::MAX), 0)),
                                 Rect::new(content.x, y, content.width, height),
                             );
+                            if let Some(pubkey) = avatar_pubkey.as_deref()
+                                && let Some(runtime) = media.as_deref_mut()
+                                && let Some(protocol) = runtime.identicon(pubkey)
+                            {
+                                let relative_y = i32::try_from(row_y).unwrap_or(i32::MAX)
+                                    - i32::try_from(scroll).unwrap_or(i32::MAX);
+                                let position = SignedPosition::from((
+                                    1,
+                                    relative_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                                ));
+                                frame.render_widget(
+                                    SlicedImage::new(protocol.as_ref(), position),
+                                    content,
+                                );
+                            }
                         }
                     }
                     TimelineRow::Image(protocol) => {
@@ -505,6 +585,7 @@ fn message_block(
     theme: &Theme,
     self_pubkey: Option<&str>,
     selected: bool,
+    copy_selected: bool,
     media: Option<&MediaRuntime>,
     image_width: u16,
 ) -> MessageBlock {
@@ -563,7 +644,14 @@ fn message_block(
             theme.style(HighlightGroup::Rejected),
         ));
     }
-    rows.push(TimelineRow::Text(Line::from(header)));
+    if grouped {
+        rows.push(TimelineRow::Text(Line::from(header)));
+    } else {
+        rows.push(TimelineRow::Avatar(
+            Line::from(header),
+            message.pubkey.clone(),
+        ));
+    }
     if message.deleted {
         rows.push(TimelineRow::Text(Line::styled(
             "     message deleted",
@@ -592,7 +680,11 @@ fn message_block(
             rows.push(TimelineRow::Text(line));
         }
     }
-    MessageBlock { rows, selected }
+    MessageBlock {
+        rows,
+        selected,
+        copy_selected,
+    }
 }
 
 fn attachment_line(
@@ -748,7 +840,7 @@ fn format_time(timestamp: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{readable_area, same_message_group};
+    use super::{TimelineState, readable_area, same_message_group};
     use crate::domain::Message;
     use ratatui::layout::Rect;
     use uuid::Uuid;
@@ -774,6 +866,20 @@ mod tests {
         let area = readable_area(Rect::new(4, 2, 180, 10), Some(110));
         assert_eq!(area, Rect::new(5, 2, 110, 10));
         assert_eq!(readable_area(Rect::new(0, 0, 80, 5), Some(110)).width, 80);
+    }
+
+    #[test]
+    fn copy_range_uses_event_ids_and_keeps_chronological_indexes() {
+        let messages = vec![message("a", 1), message("b", 2), message("c", 3)];
+        let mut state = TimelineState {
+            selected_event: Some(messages[0].event_id.clone()),
+            ..TimelineState::default()
+        };
+        assert_eq!(state.toggle_copy_selection(&messages), Some(1));
+        state.selected_event = Some(messages[2].event_id.clone());
+        assert_eq!(state.copy_indexes(&messages), vec![0, 1, 2]);
+        assert_eq!(state.toggle_copy_selection(&messages), Some(0));
+        assert_eq!(state.copy_indexes(&messages), vec![2]);
     }
 
     #[test]
