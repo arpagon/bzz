@@ -4530,7 +4530,7 @@ impl App {
                 )
             };
             (
-                format!(" {target} · Enter send · Ctrl-l clear · Ctrl-a attach · Esc close "),
+                format!(" {target} · Enter send · Ctrl-c clear · Ctrl-a attach · Esc close "),
                 format!("{}{}", sanitize::text(&self.composer.body), attachments),
                 HighlightGroup::ActiveComposerBorder,
                 HighlightGroup::Composer,

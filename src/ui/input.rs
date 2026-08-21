@@ -247,7 +247,7 @@ mod tests {
             router.dispatch(
                 &keymap,
                 context,
-                key(KeyCode::Char('l'), KeyModifiers::CONTROL)
+                key(KeyCode::Char('c'), KeyModifiers::CONTROL)
             ),
             InputDispatch::Action(UiAction::ClearComposer)
         );

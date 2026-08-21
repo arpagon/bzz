@@ -456,7 +456,7 @@ impl KeyMap {
         );
         add(KeyScope::Composer, &["ctrl-u"], UiAction::DeleteToStart);
         add(KeyScope::Composer, &["ctrl-k"], UiAction::DeleteToEnd);
-        add(KeyScope::Composer, &["ctrl-l"], UiAction::ClearComposer);
+        add(KeyScope::Composer, &["ctrl-c"], UiAction::ClearComposer);
         add(KeyScope::Composer, &["ctrl-left"], UiAction::MoveWordLeft);
         add(KeyScope::Composer, &["ctrl-right"], UiAction::MoveWordRight);
         add(KeyScope::Composer, &["home"], UiAction::MoveLineStart);
@@ -826,7 +826,7 @@ mod tests {
     #[test]
     fn composer_has_a_confirmable_clear_draft_binding() {
         let keymap = KeyMap::builtin();
-        let clear = KeyChord::new(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        let clear = KeyChord::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(
             keymap.lookup(KeyScope::Composer, &[clear]),
             KeyLookup::Action(UiAction::ClearComposer)
