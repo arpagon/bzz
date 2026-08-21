@@ -604,11 +604,18 @@ impl Store {
         let mut statement = self.connection.prepare(
             "SELECT DISTINCT e.channel_id
              FROM events e
-             LEFT JOIN read_contexts r ON r.community_id=e.community_id
-               AND r.identity_pubkey=?2 AND r.context_id=e.channel_id
+             LEFT JOIN read_contexts channel_read ON channel_read.community_id=e.community_id
+               AND channel_read.identity_pubkey=?2 AND channel_read.context_id=e.channel_id
+             LEFT JOIN read_contexts thread_read ON thread_read.community_id=e.community_id
+               AND thread_read.identity_pubkey=?2
+               AND thread_read.context_id='thread:' || e.root_event_id
+             LEFT JOIN read_contexts message_read ON message_read.community_id=e.community_id
+               AND message_read.identity_pubkey=?2
+               AND message_read.context_id='msg:' || e.event_id
              WHERE e.community_id=?1 AND e.channel_id IS NOT NULL
                AND e.kind IN (9,40002,40099) AND e.pubkey<>?2
-               AND e.deleted_by_event_id IS NULL AND e.created_at>COALESCE(r.read_at,0)",
+               AND e.deleted_by_event_id IS NULL
+               AND e.created_at>max(COALESCE(channel_read.read_at,0),COALESCE(thread_read.read_at,0),COALESCE(message_read.read_at,0))",
         )?;
         let values = statement
             .query_map(params![community_id.to_string(), identity_pubkey], |row| {

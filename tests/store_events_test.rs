@@ -5,7 +5,7 @@ use bzz::{
         models::{OutboxState, SyncCursor},
     },
 };
-use nostr::{EventBuilder, Keys, Tag};
+use nostr::{EventBuilder, Keys, Tag, Timestamp};
 use proptest::prelude::*;
 use uuid::Uuid;
 
@@ -169,6 +169,61 @@ fn relay_projection_requires_the_pinned_nip11_key() {
         store
             .pin_relay_pubkey(community, &Keys::generate().public_key().to_hex())
             .is_err()
+    );
+}
+
+#[test]
+fn thread_read_markers_clear_their_sidebar_unread_indicator() {
+    let (mut store, community, channel, other) = fixture();
+    let self_pubkey = "a".repeat(64);
+    let root = buzz_sdk::build_message(channel, "root", None, &[], false, &[])
+        .unwrap()
+        .custom_created_at(Timestamp::from(10))
+        .sign_with_keys(&other)
+        .unwrap();
+    let reply = buzz_sdk::build_message(
+        channel,
+        "reply",
+        Some(&buzz_sdk::ThreadRef {
+            root_event_id: root.id,
+            parent_event_id: root.id,
+        }),
+        &[],
+        false,
+        &[],
+    )
+    .unwrap()
+    .custom_created_at(Timestamp::from(20))
+    .sign_with_keys(&other)
+    .unwrap();
+    store.apply_event(community, &root).unwrap();
+    store.apply_event(community, &reply).unwrap();
+    store
+        .advance_read(community, &self_pubkey, &channel.to_string(), 10, true)
+        .unwrap();
+
+    assert!(
+        store
+            .unread_channels(community, &self_pubkey)
+            .unwrap()
+            .contains(&channel)
+    );
+
+    store
+        .advance_read(
+            community,
+            &self_pubkey,
+            &format!("thread:{}", root.id.to_hex()),
+            20,
+            true,
+        )
+        .unwrap();
+
+    assert!(
+        !store
+            .unread_channels(community, &self_pubkey)
+            .unwrap()
+            .contains(&channel)
     );
 }
 

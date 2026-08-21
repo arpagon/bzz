@@ -2357,6 +2357,9 @@ impl App {
         self.cache_dirty = true;
         self.hydrate_cache().await?;
         if let Some(channel) = self.current_channel().map(|channel| channel.id) {
+            // A reopened channel must get a fresh durable read-state attempt;
+            // `last_marked` is only an in-session write coalescer.
+            self.last_marked.remove(&channel.to_string());
             self.subscribe_channel(channel).await?;
             self.spawn_backfill(channel);
         }
