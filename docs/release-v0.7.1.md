@@ -1,6 +1,6 @@
 # bzz v0.7.1 release notes
 
-> **Approved release: v0.7.1.**
+> **Published: v0.7.1 (2026-08-21).**
 
 ## Relay-hosted profile photographs
 
