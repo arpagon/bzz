@@ -52,6 +52,16 @@ implemented independently for Ratatui. Concord's bounded media workers,
 generation/LRU concepts, and visible-target behavior were also reviewed as
 behavior only; no GPL media implementation was copied.
 
+## arboard
+
+`arboard` v3.6.1 is a pinned direct dependency under MIT OR Apache-2.0. bzz
+uses its documented native clipboard API only behind the explicit, one-shot
+composer import boundary; bzz's precedence, staging, state, configuration, and
+tests are independently authored. Its Wayland data-control support is included
+for desktop compatibility and degrades locally when unavailable. Its Windows
+bridge `clipboard-win` v5.4.1 uses the permissive Boost Software License 1.0;
+that standard license is explicitly approved in `deny.toml`.
+
 ## ratatui-image
 
 `ratatui-image` v11.0.5 (`00920803a50e7b7763ceb69978be90c4391325ad`)

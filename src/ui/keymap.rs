@@ -68,6 +68,10 @@ pub enum UiAction {
     DeleteToStart,
     DeleteToEnd,
     ClearComposer,
+    PasteClipboard,
+    AttachFile,
+    RemoveLastAttachment,
+    RetryAttachments,
     MoveWordLeft,
     MoveWordRight,
     MoveLineStart,
@@ -128,6 +132,10 @@ impl UiAction {
             Self::DeleteToStart => "delete to line start",
             Self::DeleteToEnd => "delete to line end",
             Self::ClearComposer => "clear draft",
+            Self::PasteClipboard => "paste text or attachments",
+            Self::AttachFile => "attach local file",
+            Self::RemoveLastAttachment => "remove last attachment",
+            Self::RetryAttachments => "retry failed attachments",
             Self::MoveWordLeft => "previous word",
             Self::MoveWordRight => "next word",
             Self::MoveLineStart => "line start",
@@ -457,6 +465,14 @@ impl KeyMap {
         add(KeyScope::Composer, &["ctrl-u"], UiAction::DeleteToStart);
         add(KeyScope::Composer, &["ctrl-k"], UiAction::DeleteToEnd);
         add(KeyScope::Composer, &["ctrl-c"], UiAction::ClearComposer);
+        add(KeyScope::Composer, &["ctrl-v"], UiAction::PasteClipboard);
+        add(KeyScope::Composer, &["ctrl-o"], UiAction::AttachFile);
+        add(
+            KeyScope::Composer,
+            &["delete"],
+            UiAction::RemoveLastAttachment,
+        );
+        add(KeyScope::Composer, &["ctrl-r"], UiAction::RetryAttachments);
         add(KeyScope::Composer, &["ctrl-left"], UiAction::MoveWordLeft);
         add(KeyScope::Composer, &["ctrl-right"], UiAction::MoveWordRight);
         add(KeyScope::Composer, &["home"], UiAction::MoveLineStart);
@@ -701,6 +717,10 @@ fn composer_action(action: UiAction) -> bool {
             | UiAction::DeleteToStart
             | UiAction::DeleteToEnd
             | UiAction::ClearComposer
+            | UiAction::PasteClipboard
+            | UiAction::AttachFile
+            | UiAction::RemoveLastAttachment
+            | UiAction::RetryAttachments
             | UiAction::MoveWordLeft
             | UiAction::MoveWordRight
             | UiAction::MoveLineStart
@@ -752,9 +772,6 @@ struct KeymapFileBinding {
 pub enum KeyAction {
     Up,
     Down,
-    Attach,
-    RemoveAttachment,
-    RetryAttachments,
     Command,
     Escape,
     Character(char),
@@ -774,9 +791,6 @@ pub fn map_insert(key: KeyEvent) -> KeyAction {
         (KeyModifiers::ALT, KeyCode::Enter) => KeyAction::Newline,
         (KeyModifiers::CONTROL, KeyCode::Char('j')) => KeyAction::Newline,
         (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Enter) => KeyAction::Submit,
-        (KeyModifiers::CONTROL, KeyCode::Char('a')) => KeyAction::Attach,
-        (KeyModifiers::CONTROL, KeyCode::Char('x')) => KeyAction::RemoveAttachment,
-        (KeyModifiers::CONTROL, KeyCode::Char('r')) => KeyAction::RetryAttachments,
         (_, KeyCode::Backspace) => KeyAction::Backspace,
         (_, KeyCode::Delete) => KeyAction::ForwardDelete,
         (_, KeyCode::Left) => KeyAction::Left,
@@ -830,6 +844,39 @@ mod tests {
         assert_eq!(
             keymap.lookup(KeyScope::Composer, &[clear]),
             KeyLookup::Action(UiAction::ClearComposer)
+        );
+    }
+
+    #[test]
+    fn composer_clipboard_and_attachment_bindings_are_typed() {
+        let keymap = KeyMap::builtin();
+        for (key, action) in [
+            (
+                KeyChord::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                UiAction::PasteClipboard,
+            ),
+            (
+                KeyChord::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+                UiAction::AttachFile,
+            ),
+            (
+                KeyChord::new(KeyCode::Delete, KeyModifiers::NONE),
+                UiAction::RemoveLastAttachment,
+            ),
+            (
+                KeyChord::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+                UiAction::RetryAttachments,
+            ),
+        ] {
+            assert_eq!(
+                keymap.lookup(KeyScope::Composer, &[key]),
+                KeyLookup::Action(action)
+            );
+        }
+        let legacy = KeyChord::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert_eq!(
+            keymap.lookup(KeyScope::Composer, &[legacy]),
+            KeyLookup::NoMatch
         );
     }
 

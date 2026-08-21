@@ -98,6 +98,10 @@ impl Attachment {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PendingAttachment {
+    /// Random local attachment identity used to reject stale worker results.
+    /// It is unrelated to a source path or clipboard representation.
+    #[serde(default)]
+    pub id: String,
     pub cache_name: String,
     pub mime: String,
     pub filename: String,
@@ -109,6 +113,7 @@ pub struct PendingAttachment {
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum DraftAttachment {
     Pending(PendingAttachment),
+    Failed(PendingAttachment),
     Uploaded(Attachment),
 }
 
@@ -116,8 +121,26 @@ impl DraftAttachment {
     pub fn uploaded(&self) -> Option<&Attachment> {
         match self {
             Self::Uploaded(attachment) => Some(attachment),
-            Self::Pending(_) => None,
+            Self::Pending(_) | Self::Failed(_) => None,
         }
+    }
+
+    pub fn pending(&self) -> Option<&PendingAttachment> {
+        match self {
+            Self::Pending(attachment) | Self::Failed(attachment) => Some(attachment),
+            Self::Uploaded(_) => None,
+        }
+    }
+
+    pub fn pending_mut(&mut self) -> Option<&mut PendingAttachment> {
+        match self {
+            Self::Pending(attachment) | Self::Failed(attachment) => Some(attachment),
+            Self::Uploaded(_) => None,
+        }
+    }
+
+    pub const fn is_failed(&self) -> bool {
+        matches!(self, Self::Failed(_))
     }
 }
 
@@ -133,5 +156,29 @@ pub fn human_size(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DraftAttachment, PendingAttachment};
+
+    #[test]
+    fn older_pending_attachment_metadata_gets_an_empty_repairable_id() {
+        let attachment = serde_json::from_str::<DraftAttachment>(
+            r#"{"state":"pending","cache_name":"a.txt","mime":"text/plain","filename":"a.txt","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            attachment.pending(),
+            Some(&PendingAttachment {
+                id: String::new(),
+                cache_name: "a.txt".into(),
+                mime: "text/plain".into(),
+                filename: "a.txt".into(),
+                sha256: "a".repeat(64),
+                size: 1,
+            })
+        );
     }
 }

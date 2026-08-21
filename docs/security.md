@@ -83,7 +83,14 @@ fixture automation.
 A local copy action sanitizes selected source Markdown, limits it to 64 KiB,
 and base64-encodes it before emitting OSC 52. It is never automatic, never
 prints copied text, never invokes a shell clipboard helper, and can be disabled
-with `ui.clipboard = "disabled"`. Logical multi-message selection is event-ID
+with `ui.clipboard = "disabled"`. Native clipboard *reads* are a separate
+composer-only capability: `Ctrl-v` reads once only after explicit user input
+when `media.clipboard_import = "explicit"`; bzz never polls, watches, logs,
+indexes, syncs, or persists clipboard bytes, source paths, URIs, or native
+formats. File lists, bitmaps, and text have a fixed precedence and bounds;
+files and bitmaps must pass the ordinary private staging/sanitization pipeline
+before upload. `"off"` disables native reads without disabling OSC-52 writes.
+Logical multi-message selection is event-ID
 based presentation state: it cannot advance reads, subscribe, fetch, sign, or
 publish. The textual author marker derives only from an already-visible public
 key. When `ui.profile_avatars = "trusted"`, the kind-0 `picture` field is the

@@ -1,5 +1,6 @@
 pub mod avatar;
 pub mod client;
+pub mod clipboard;
 pub mod decode;
 pub mod imeta;
 pub mod model;

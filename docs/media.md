@@ -50,10 +50,30 @@ executed, or passed to a shell.
 
 ## Sending media
 
-While composing, press `Ctrl-a`, enter a local path, and press `Enter`. The path
-must identify a regular non-symlink file. `bzz` never persists the source path.
-It copies the bytes into an owner-only content-addressed staging directory and
-uploads them to the active community.
+While composing, `Ctrl-v` performs one explicit native clipboard read. A copied
+native file list (up to eight files) becomes attachments; a copied bitmap becomes
+one bounded, metadata-free `pasted-image.png`; otherwise bounded plain text is
+inserted at the cursor. bzz never polls or watches the clipboard. It does not
+log, index, synchronize, or persist clipboard data, file paths/URIs, or native
+clipboard format names.
+
+`Delete` removes the newest processing, queued, failed, or ready attachment.
+`Ctrl-r` retries failed staged uploads. `Ctrl-c` asks before clearing text and
+attachments. `Ctrl-o` opens the explicit local-path fallback: enter a path and
+press `Enter`. A fallback path must identify a regular non-symlink file, and
+bzz never persists that source path. Native clipboard access is controlled by
+`media.clipboard_import = "explicit" | "off"`; it is independent of
+`ui.clipboard`, which controls OSC-52 *writes*. Unsupported desktop clipboard
+backends fail closed with a local status; bzz does not invoke a shell helper or
+file chooser. Terminal bracketed text paste remains ordinary composer input.
+
+Every accepted file or image is copied into an owner-only content-addressed
+staging directory before upload. While any row is processing, queued, uploading,
+or failed, `Enter` cannot send the draft. Clipboard bitmaps are bounded to the existing
+25-megapixel/16,384-axis decoder ceiling and their PNG encoding is capped at the
+50 MiB image ceiling. Each attachment has an opaque local ID bound to the
+composer target, so clear/remove/close/switch and late worker results cannot
+resurrect it in another draft.
 
 Static JPEG, PNG, and WebP images are decoded under pixel/allocation limits,
 have orientation applied, and are re-encoded without private metadata. GIF,
@@ -144,11 +164,14 @@ Cache removal cannot guarantee physical secure erasure on SSDs.
 | Generic file | 100 MiB |
 | Video explicit save/upload | 500 MiB |
 | Decoded image | 25 megapixels, 16,384 pixels per axis |
+| Native clipboard text | 64 KiB |
+| Native clipboard files | 8 |
+| Clipboard PNG encoding | 50 MiB |
 | Inline height | 12 terminal rows |
 | Downloads/uploads | 4 concurrent |
 | Decodes/resizes | 2 concurrent |
 | Inbound descriptors rendered per message | 16 |
-| Outbound attachments | 8 |
+| Outbound attachments (including processing/failed rows) | 8 |
 
 The local composer accepts images up to 50 MiB, generic files up to 100 MiB,
 and MP4 video up to 500 MiB. Video playback is not implemented.

@@ -25,7 +25,7 @@ debug builds deliberately use separate paths and keychain services.
 
 Expected result:
 
-- candidate version `0.5.0`;
+- candidate version `0.8.0`;
 - config, data, and cache under `BZZ_E2E_ROOT`;
 - `configuration, theme, media, and database are valid`;
 - no secrets in `.env` or command output.
@@ -325,13 +325,31 @@ must never generate a new identity. Unlock the keychain and relaunch to recover.
 ## 9. Images and attachments (generated fixtures only)
 
 Generate a tiny PNG and a plain-text file inside `BZZ_E2E_ROOT`; never use a
-personal photo/document. In the composer press `Ctrl-a`, enter the PNG path,
-wait for `1 attachment(s) ready`, and send. Verify another isolated client
-shows an attachment card and an inline image or documented half-block fallback.
-Open **preview media** through `Space a`, navigate with `[`/`]`, save with `s`
-to a new path, and compare
-SHA-256. Repeat with the text file; it must remain a card and must not download
-until explicit save.
+personal photo/document. Copy the PNG in the desktop file manager, open the
+composer, and press `Ctrl-v`. Verify a source-free `processing`/`queued` row
+becomes `[ready]`, then send. Copy a disposable screenshot or generated bitmap
+and repeat: it must become one `pasted-image.png` attachment without retaining
+clipboard pixels after staging. Copy normal generated text and press `Ctrl-v`;
+it must appear at the composer cursor without creating an attachment or sending
+anything. A copied native file list must win over an accompanying text/image
+clipboard representation.
+
+Use `Delete` to remove the newest queued/ready item and verify it cannot return
+when a late upload finishes. Force an isolated upload failure, verify a
+`[failed]` row, then use `Ctrl-r` to retry. Type a body plus an attachment,
+press `Ctrl-c`, cancel with `n`, then repeat and confirm with `y`; after reopen,
+the persisted draft must be empty. Set `media.clipboard_import = "off"`,
+restart, and verify `Ctrl-v` does not read native clipboard data while ordinary
+terminal text paste still works. In a clipboard-unavailable desktop session,
+use `Ctrl-o`, enter the generated PNG path, and verify the same secure staging
+path works. No source path, URI, clipboard text, bitmap, or native format may
+appear in SQLite, normal status, or retained evidence.
+
+Verify another isolated client shows an attachment card and an inline image or
+documented half-block fallback. Open **preview media** through `Space a`,
+navigate with `[`/`]`, save with `s` to a new path, and compare SHA-256. Repeat
+with the text file; it must remain a card and must not download until explicit
+save.
 
 Restart online, then disconnect only the disposable copy and verify the image
 renders from its verified cache. Run `bzz media status`, clear that community's

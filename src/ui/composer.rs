@@ -40,6 +40,33 @@ impl Composer {
         self.insert('\n');
     }
 
+    /// Inserts already-normalized explicit paste text as one bounded edit.
+    /// The caller owns control-character filtering; this method preserves the
+    /// same mention-boundary contract as typed input without an O(n²) loop.
+    pub fn insert_text(&mut self, value: &str) {
+        if value.is_empty()
+            || value.len() > 64 * 1024
+            || value
+                .chars()
+                .any(|character| character.is_control() && character != '\n')
+        {
+            return;
+        }
+        if self
+            .mentions
+            .iter()
+            .any(|mention| mention.byte_end == self.cursor)
+            && value
+                .chars()
+                .next()
+                .is_some_and(|character| !mention_boundary(character))
+        {
+            self.mentions
+                .retain(|mention| mention.byte_end != self.cursor);
+        }
+        self.replace_range(self.cursor..self.cursor, value);
+    }
+
     pub fn backspace(&mut self) {
         if self.cursor == 0 {
             return;
@@ -344,7 +371,8 @@ impl Composer {
             .into_iter()
             .filter_map(|attachment| match attachment {
                 crate::media::DraftAttachment::Uploaded(attachment) => Some(attachment),
-                crate::media::DraftAttachment::Pending(_) => None,
+                crate::media::DraftAttachment::Pending(_)
+                | crate::media::DraftAttachment::Failed(_) => None,
             })
             .collect();
         self.body.clear();
@@ -561,12 +589,42 @@ mod tests {
     }
 
     #[test]
+    fn explicit_paste_keeps_utf8_and_uses_mention_boundaries() {
+        let mut composer = Composer::default();
+        composer.set_draft(
+            "@One".into(),
+            vec![],
+            vec![DraftMention {
+                byte_start: 0,
+                byte_end: 4,
+                pubkey: KEY.into(),
+            }],
+        );
+        composer.insert_text(", pasted\n界");
+        assert_eq!(composer.body, "@One, pasted\n界");
+        assert_eq!(composer.mentions().len(), 1);
+        composer.set_draft(
+            "@One".into(),
+            vec![],
+            vec![DraftMention {
+                byte_start: 0,
+                byte_end: 4,
+                pubkey: KEY.into(),
+            }],
+        );
+        composer.insert_text("word");
+        assert!(composer.mentions().is_empty());
+        assert!(composer.body.is_char_boundary(composer.cursor));
+    }
+
+    #[test]
     fn clear_removes_text_mentions_and_attachments() {
         let mut composer = Composer::default();
         composer.set_draft(
             "@One".into(),
             vec![crate::media::DraftAttachment::Pending(
                 crate::media::PendingAttachment {
+                    id: "one".into(),
                     cache_name: "one".into(),
                     mime: "text/plain".into(),
                     filename: "one.txt".into(),

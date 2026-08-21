@@ -31,6 +31,7 @@ pub struct StagedFile {
 impl StagedFile {
     pub fn pending(&self) -> crate::media::PendingAttachment {
         crate::media::PendingAttachment {
+            id: String::new(),
             cache_name: self
                 .path
                 .file_name()
@@ -68,6 +69,44 @@ pub fn decode_image(path: &Path) -> Result<DynamicImage> {
         .map_err(|_| Error::Protocol("image could not be decoded safely".into()))?;
     validate_dimensions(image.width(), image.height())?;
     Ok(image)
+}
+
+/// Stages already-owned bytes such as an explicit clipboard bitmap. The caller
+/// must not retain the input after this returns; only sanitized,
+/// content-addressed staging metadata leaves this function.
+pub fn stage_bytes(staging_dir: &Path, filename: &str, bytes: Vec<u8>) -> Result<StagedFile> {
+    if bytes.is_empty() || bytes.len() as u64 > MAX_VIDEO_BYTES {
+        return Err(Error::Config(
+            "attachment size is outside the supported range".into(),
+        ));
+    }
+    let detected = infer::get(&bytes)
+        .map(|kind| kind.mime_type())
+        .unwrap_or("application/octet-stream");
+    if blocked_mime(detected) {
+        return Err(Error::Config(format!(
+            "unsupported attachment type: {detected}"
+        )));
+    }
+    if bytes.len() as u64 > upload_limit(detected) {
+        return Err(Error::Config(
+            "attachment exceeds the upload limit for its media type".into(),
+        ));
+    }
+    fs::create_dir_all(staging_dir).map_err(|error| Error::io(staging_dir, error))?;
+    set_private_permissions(staging_dir)?;
+    let filename = sanitize_filename(filename);
+    let (body, mime) = if detected.starts_with("image/") {
+        sanitize_image(bytes, detected)?
+    } else {
+        (bytes, detected.to_owned())
+    };
+    if body.len() as u64 > upload_limit(&mime) {
+        return Err(Error::Config(
+            "processed attachment exceeds the upload limit".into(),
+        ));
+    }
+    write_staged_bytes(staging_dir, &body, mime, filename)
 }
 
 pub fn stage_file(source: &Path, staging_dir: &Path) -> Result<StagedFile> {
@@ -131,13 +170,7 @@ pub fn stage_file(source: &Path, staging_dir: &Path) -> Result<StagedFile> {
         if bytes.len() as u64 > MAX_IMAGE_BYTES {
             return Err(Error::Config("image exceeds the upload limit".into()));
         }
-        let (body, mime) = sanitize_image(bytes, detected)?;
-        if body.len() as u64 > MAX_IMAGE_BYTES {
-            return Err(Error::Config(
-                "processed attachment exceeds the upload limit".into(),
-            ));
-        }
-        return write_staged_bytes(staging_dir, &body, mime, filename);
+        return stage_bytes(staging_dir, &filename, bytes);
     }
     use std::io::{Seek as _, Write as _};
     source_file

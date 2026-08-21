@@ -69,6 +69,10 @@ pub const fn keymap_allows(scope: KeyScope, action: UiAction) -> bool {
                 | UiAction::DeleteToStart
                 | UiAction::DeleteToEnd
                 | UiAction::ClearComposer
+                | UiAction::PasteClipboard
+                | UiAction::AttachFile
+                | UiAction::RemoveLastAttachment
+                | UiAction::RetryAttachments
                 | UiAction::MoveWordLeft
                 | UiAction::MoveWordRight
                 | UiAction::MoveLineStart
@@ -86,6 +90,10 @@ pub const fn keymap_allows(scope: KeyScope, action: UiAction) -> bool {
                 | UiAction::DeleteToStart
                 | UiAction::DeleteToEnd
                 | UiAction::ClearComposer
+                | UiAction::PasteClipboard
+                | UiAction::AttachFile
+                | UiAction::RemoveLastAttachment
+                | UiAction::RetryAttachments
                 | UiAction::MoveWordLeft
                 | UiAction::MoveWordRight
                 | UiAction::MoveLineStart

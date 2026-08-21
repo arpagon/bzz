@@ -4,10 +4,10 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.7.1 candidate fixes relay-hosted authenticated profile avatars,
-> retains credential-free external avatars and deterministic textual fallbacks,
-> and preserves v0.6 conversation actions. Protocol compatibility remains pinned to Buzz
-> `ede26863345a518ec46edd6d7692e0281883491b`.
+> Status: v0.8.0 candidate adds explicit clipboard-first composer attachments
+> while retaining authenticated relay avatars, credential-free external avatars,
+> deterministic textual fallbacks, and prior conversation actions. Protocol
+> compatibility remains pinned to Buzz `ede26863345a518ec46edd6d7692e0281883491b`.
 
 ## Build
 
@@ -88,8 +88,10 @@ read. Inbox uses `f` to
 cycle filters, `Enter` for detail, `o` for canonical source context, `m`/`U`
 for explicit read/unread state, and `a` for confirmed visible bulk-read. Wide
 terminals retain list/detail together; on narrow terminals `Esc` returns from
-detail to the list. `@` opens cached channel-member completion and `Ctrl-a`
-adds a file while composing. `:agent` opens an explicitly configured local
+detail to the list. `@` opens cached channel-member completion. In the composer,
+`Ctrl-v` explicitly pastes copied files, an image, or text; `Delete` removes the
+newest attachment, `Ctrl-r` retries failed uploads, and `Ctrl-o` opens the
+local-path fallback. `:agent` opens an explicitly configured local
 Codex draft assistant. Generate shell integration
 with `bzz completions <shell>`. Inside the TUI, `:inbox`, `:search`, `:dm`,
 `:agent`, `:reconnect`, `:resync`, `:theme reload`, `:purge-cache`, and `:lock`
@@ -153,8 +155,9 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/security.md`](docs/security.md),
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
-[the v0.7.0 release notes](docs/release-v0.7.0.md), the
-[v0.7.1 relay-avatar candidate](docs/release-v0.7.1.md), and the
+[the v0.8.0 clipboard-attachment notes](docs/release-v0.8.0.md),
+[v0.8.0 validation](docs/validation-v0.8.0.md),
+[the v0.7.1 relay-avatar release](docs/release-v0.7.1.md), and the
 [basic-first manual E2E plan](docs/e2e-manual.md),
 [v0.7.0 avatar validation evidence](docs/validation-v0.7.md),
 [v0.7.1 relay-avatar validation](docs/validation-v0.7.1.md),

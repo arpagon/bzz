@@ -1,5 +1,8 @@
 use bzz::{
-    config::{ChannelSort, ClipboardMode, Config, MouseMode, ProfileAvatars, validate_relay_url},
+    config::{
+        ChannelSort, ClipboardImportMode, ClipboardMode, Config, MouseMode, ProfileAvatars,
+        validate_relay_url,
+    },
     paths::Paths,
 };
 use tempfile::TempDir;
@@ -155,6 +158,17 @@ fn mouse_policy_parses_strictly() {
     assert_eq!(config.ui.clipboard, ClipboardMode::Disabled);
     assert_eq!(config.ui.profile_avatars, ProfileAvatars::Off);
     assert!(toml::from_str::<Config>("[ui]\nprofile_avatars='sometimes'\n").is_err());
+}
+
+#[test]
+fn clipboard_import_is_explicit_by_default_and_strict_when_configured() {
+    assert_eq!(
+        Config::default().media.clipboard_import,
+        ClipboardImportMode::Explicit
+    );
+    let config = toml::from_str::<Config>("[media]\nclipboard_import='off'\n").unwrap();
+    assert_eq!(config.media.clipboard_import, ClipboardImportMode::Off);
+    assert!(toml::from_str::<Config>("[media]\nclipboard_import='always'\n").is_err());
 }
 
 #[test]

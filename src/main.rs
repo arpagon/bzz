@@ -656,10 +656,11 @@ fn media_command(command: MediaCommand, paths: &Paths, config: &Config) -> Resul
             let used = directory_size(&paths.media_cache_dir())?;
             let avatar_used = directory_size(&paths.avatar_cache_dir())?;
             println!(
-                "enabled:         {}\nprotocol:        {:?}\nautoload:        {:?}\ninline rows:     {}\nmessage cache:   {} bytes / {} bytes\nprofile avatars: {:?}\navatar cache:    {} bytes / 16777216 bytes\ndownload jobs:   {}\ndecode jobs:     {}",
+                "enabled:         {}\nprotocol:        {:?}\nautoload:        {:?}\nclipboard import: {:?}\ninline rows:     {}\nmessage cache:   {} bytes / {} bytes\nprofile avatars: {:?}\navatar cache:    {} bytes / 16777216 bytes\ndownload jobs:   {}\ndecode jobs:     {}",
                 config.media.enabled,
                 config.media.protocol,
                 config.media.autoload,
+                config.media.clipboard_import,
                 config.media.max_inline_rows,
                 used,
                 config.media.disk_cache_bytes,

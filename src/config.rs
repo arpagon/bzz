@@ -197,12 +197,23 @@ pub enum MediaAutoload {
     Off,
 }
 
+/// Native clipboard reads occur only for an explicit composer paste. This is
+/// separate from `ui.clipboard`, which controls explicit OSC-52 writes.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClipboardImportMode {
+    Off,
+    #[default]
+    Explicit,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MediaConfig {
     pub enabled: bool,
     pub protocol: MediaProtocol,
     pub autoload: MediaAutoload,
+    pub clipboard_import: ClipboardImportMode,
     pub max_inline_rows: u16,
     pub auto_download_bytes: u64,
     pub memory_cache_bytes: u64,
@@ -217,6 +228,7 @@ impl Default for MediaConfig {
             enabled: true,
             protocol: MediaProtocol::Auto,
             autoload: MediaAutoload::Visible,
+            clipboard_import: ClipboardImportMode::Explicit,
             max_inline_rows: 12,
             auto_download_bytes: 25 * 1024 * 1024,
             memory_cache_bytes: 64 * 1024 * 1024,

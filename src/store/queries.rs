@@ -487,6 +487,11 @@ impl Store {
                 "draft mention metadata exceeds its safety cap".into(),
             ));
         }
+        if attachments.len() > 8 {
+            return Err(Error::Config(
+                "a draft can contain at most 8 attachments".into(),
+            ));
+        }
         if mentions.iter().any(|mention| !mention.valid_for(body)) {
             return Err(Error::Config(
                 "draft contains invalid mention metadata".into(),
@@ -503,6 +508,53 @@ impl Store {
         }
         self.connection.execute("INSERT INTO drafts(community_id,channel_id,thread_root_id,body,attachments_json,mentions_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,unixepoch()) ON CONFLICT DO UPDATE SET body=excluded.body,attachments_json=excluded.attachments_json,mentions_json=excluded.mentions_json,updated_at=excluded.updated_at",params![community_id.to_string(),channel_id.to_string(),root.unwrap_or_default(),body,attachments,mentions])?;
         self.mark_inbox_projection_dirty(community_id)
+    }
+
+    /// Replaces exactly one locally staged draft attachment by its opaque
+    /// attachment ID. This lets a background upload finish after its composer
+    /// is closed without replacing another draft or re-reading source input.
+    pub fn replace_draft_attachment(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+        root: Option<&str>,
+        attachment_id: &str,
+        replacement: crate::media::DraftAttachment,
+    ) -> Result<bool> {
+        let current = self
+            .connection
+            .query_row(
+                "SELECT attachments_json FROM drafts WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3",
+                params![community_id.to_string(), channel_id.to_string(), root.unwrap_or_default()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(current) = current else {
+            return Ok(false);
+        };
+        let mut attachments = serde_json::from_str::<Vec<crate::media::DraftAttachment>>(&current)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        let Some(index) = attachments.iter().position(|attachment| {
+            attachment
+                .pending()
+                .is_some_and(|pending| pending.id == attachment_id)
+        }) else {
+            return Ok(false);
+        };
+        attachments[index] = replacement;
+        for (index, attachment) in attachments.iter_mut().enumerate() {
+            if let crate::media::DraftAttachment::Uploaded(value) = attachment {
+                value.index = index;
+            }
+        }
+        let attachments = serde_json::to_string(&attachments)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        self.connection.execute(
+            "UPDATE drafts SET attachments_json=?4,updated_at=unixepoch() WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3",
+            params![community_id.to_string(), channel_id.to_string(), root.unwrap_or_default(), attachments],
+        )?;
+        self.mark_inbox_projection_dirty(community_id)?;
+        Ok(true)
     }
 
     pub fn draft(

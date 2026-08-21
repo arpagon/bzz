@@ -643,6 +643,7 @@ fn stored_imeta_is_projected_and_the_generated_body_line_is_hidden() {
     assert!(messages[0].attachments[0].valid());
 
     let pending = DraftAttachment::Pending(PendingAttachment {
+        id: "test-pending".into(),
         cache_name: format!("{hash}.png"),
         mime: "image/png".into(),
         filename: "generated.png".into(),
@@ -660,7 +661,30 @@ fn stored_imeta_is_projected_and_the_generated_body_line_is_hidden() {
         .unwrap();
     let (body, attachments) = store.draft_with_media(community, channel, None).unwrap();
     assert_eq!(body, "draft");
-    assert_eq!(attachments, vec![pending]);
+    assert_eq!(attachments, vec![pending.clone()]);
+
+    let mut uploaded = messages[0].attachments[0].clone();
+    uploaded.index = 99;
+    assert!(
+        store
+            .replace_draft_attachment(
+                community,
+                channel,
+                None,
+                "test-pending",
+                DraftAttachment::Uploaded(uploaded),
+            )
+            .unwrap()
+    );
+    assert!(
+        !store
+            .replace_draft_attachment(community, channel, None, "unknown-pending", pending,)
+            .unwrap()
+    );
+    let (_, attachments) = store.draft_with_media(community, channel, None).unwrap();
+    assert!(
+        matches!(attachments.as_slice(), [DraftAttachment::Uploaded(value)] if value.index == 0)
+    );
 }
 
 #[tokio::test]

@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -21,13 +22,20 @@ use uuid::Uuid;
 use crate::{
     agent::{AgentRun, CodexExecutable, RunFailure, start as start_agent},
     auth::{IdentityManager, read_passphrase, signer::SignerHandle},
-    config::{ClipboardMode, Config, KeyBackend, validate_relay_url},
+    config::{ClipboardImportMode, ClipboardMode, Config, KeyBackend, validate_relay_url},
     domain::{
         Channel, ConnectionState, InboxCategory, InboxItem, Message, Profile, Reaction,
         SearchResultKind,
     },
     error::{Error, Result},
-    media::{client::MediaClient, runtime::MediaRuntime},
+    media::{
+        client::MediaClient,
+        clipboard::{
+            ClipboardContents, ClipboardReader, NativeClipboard, encode_clipboard_png,
+            sanitize_pasted_text,
+        },
+        runtime::MediaRuntime,
+    },
     paths::Paths,
     protocol::http::HttpClient,
     realtime::{
@@ -153,22 +161,40 @@ impl Runtime {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StagingAttachment {
+    id: String,
+    filename: String,
+}
+
 #[derive(Debug)]
 enum Background {
     Changed,
     Failed(String),
+    ClipboardImported {
+        target: ComposerTarget,
+        contents: Box<ClipboardContents>,
+    },
     Staged {
+        target: ComposerTarget,
         community: Uuid,
         pending: crate::media::PendingAttachment,
     },
+    StageFailed {
+        target: ComposerTarget,
+        attachment_id: String,
+        message: String,
+    },
     Uploaded {
+        target: ComposerTarget,
         community: Uuid,
-        sha256: String,
+        attachment_id: String,
         attachment: Box<crate::media::Attachment>,
     },
     UploadFailed {
+        target: ComposerTarget,
         community: Uuid,
-        sha256: String,
+        pending: crate::media::PendingAttachment,
         message: String,
     },
     Saved,
@@ -240,6 +266,9 @@ pub struct App {
     dm_search_task: Option<tokio::task::JoinHandle<()>>,
     preview_index: usize,
     preview_revealed: bool,
+    clipboard: Arc<dyn ClipboardReader>,
+    staging_attachments: Vec<StagingAttachment>,
+    staging_media: HashSet<String>,
     uploading_media: HashSet<String>,
     community_rail: bool,
     sidebar: bool,
@@ -371,6 +400,9 @@ impl App {
             dm_search_task: None,
             preview_index: 0,
             preview_revealed: false,
+            clipboard: Arc::new(NativeClipboard),
+            staging_attachments: Vec::new(),
+            staging_media: HashSet::new(),
             uploading_media: HashSet::new(),
             community_rail: true,
             sidebar: true,
@@ -433,6 +465,7 @@ impl App {
                 maybe=input.next()=>{
                     if let Some(Ok(event))=maybe { match event {
                         TerminalEvent::Key(key) if key.kind==KeyEventKind::Press => self.handle_key(key,&mut guard,&mut terminal).await?,
+                        TerminalEvent::Paste(text) => self.handle_terminal_paste(text).await?,
                         TerminalEvent::Mouse(mouse) => self.handle_mouse(mouse,&mut guard,&mut terminal).await?,
                         TerminalEvent::Resize(_, _) => {},
                         _ => {}
@@ -456,36 +489,84 @@ impl App {
                         self.inbox_loading=false;
                         self.inbox_detail_loading=false;
                     },
-                    Background::Staged { community, pending }=>{
-                        if self.active_community_id()==Some(community)
-                            && !self.composer.attachments.iter().any(|item| match item {
-                                crate::media::DraftAttachment::Pending(value)=>value.sha256==pending.sha256,
-                                crate::media::DraftAttachment::Uploaded(value)=>value.sha256==pending.sha256,
-                            })
-                        {
+                    Background::ClipboardImported { target, contents }=>{
+                        if self.presentation.composer_target.as_ref() == Some(&target) {
+                            self.handle_clipboard_contents(target, *contents).await?;
+                        }
+                    }
+                    Background::Staged { target, community, pending }=>{
+                        self.staging_attachments.retain(|item| item.id != pending.id);
+                        let accepted = self.staging_media.remove(&pending.id)
+                            && self.active_community_id() == Some(community)
+                            && self.presentation.composer_target.as_ref() == Some(&target)
+                            && self.composer.attachments.len() < 8;
+                        if accepted {
                             self.composer.attachments.push(
                                 crate::media::DraftAttachment::Pending(pending.clone())
                             );
                             self.persist_draft().await?;
-                            self.start_pending_upload(pending);
+                            self.start_pending_upload(target, pending);
+                        } else {
+                            self.remove_staged_attachment(community, pending);
                         }
                     }
-                    Background::Uploaded { community, sha256, attachment }=>{
-                        self.uploading_media.remove(&format!("{community}:{sha256}"));
-                        if self.active_community_id()==Some(community)
-                            && let Some((index, item))=self.composer.attachments.iter_mut().enumerate().find(|(_, item)| matches!(item, crate::media::DraftAttachment::Pending(value) if value.sha256==sha256))
+                    Background::StageFailed { target, attachment_id, message }=>{
+                        self.staging_media.remove(&attachment_id);
+                        self.staging_attachments.retain(|item| item.id != attachment_id);
+                        if self.presentation.composer_target.as_ref() == Some(&target) {
+                            self.status_error = Some(message);
+                        }
+                    }
+                    Background::Uploaded { target, community, attachment_id, attachment }=>{
+                        self.uploading_media.remove(&attachment_id);
+                        let active = self.active_community_id() == Some(community)
+                            && self.presentation.composer_target.as_ref() == Some(&target);
+                        let replacement = crate::media::DraftAttachment::Uploaded(*attachment);
+                        if active
+                            && let Some((index, item)) = self.composer.attachments.iter_mut().enumerate().find(|(_, item)| matches!(item, crate::media::DraftAttachment::Pending(value) if value.id == attachment_id))
                         {
-                            let mut attachment=*attachment;
-                            attachment.index=index;
-                            *item=crate::media::DraftAttachment::Uploaded(attachment);
-                            self.status_error=None;
+                            let mut replacement = replacement;
+                            if let crate::media::DraftAttachment::Uploaded(value) = &mut replacement {
+                                value.index = index;
+                            }
+                            *item = replacement;
+                            self.status_error = None;
                             self.persist_draft().await?;
+                        } else {
+                            let root = target.thread_root_id.clone();
+                            self.store.call(move |store| {
+                                store.replace_draft_attachment(
+                                    community,
+                                    target.channel_id,
+                                    root.as_deref(),
+                                    &attachment_id,
+                                    replacement,
+                                )
+                            }).await?;
                         }
                     }
-                    Background::UploadFailed { community, sha256, message }=>{
-                        self.uploading_media.remove(&format!("{community}:{sha256}"));
-                        if self.active_community_id()==Some(community) {
-                            self.status_error=Some(message);
+                    Background::UploadFailed { target, community, pending, message }=>{
+                        self.uploading_media.remove(&pending.id);
+                        let active = self.active_community_id() == Some(community)
+                            && self.presentation.composer_target.as_ref() == Some(&target);
+                        let replacement = crate::media::DraftAttachment::Failed(pending.clone());
+                        if active
+                            && let Some(item) = self.composer.attachments.iter_mut().find(|item| matches!(item, crate::media::DraftAttachment::Pending(value) if value.id == pending.id))
+                        {
+                            *item = replacement;
+                            self.status_error = Some(message);
+                            self.persist_draft().await?;
+                        } else {
+                            let root = target.thread_root_id.clone();
+                            self.store.call(move |store| {
+                                store.replace_draft_attachment(
+                                    community,
+                                    target.channel_id,
+                                    root.as_deref(),
+                                    &pending.id,
+                                    replacement,
+                                )
+                            }).await?;
                         }
                     }
                     Background::Saved=>self.status_error=Some("attachment saved".into()),
@@ -1624,6 +1705,22 @@ impl App {
         Ok(())
     }
 
+    async fn handle_terminal_paste(&mut self, text: String) -> Result<()> {
+        if self.presentation.overlay.is_some() || self.presentation.composer_target.is_none() {
+            return Ok(());
+        }
+        match sanitize_pasted_text(&text) {
+            Ok(text) if text.is_empty() => {}
+            Ok(text) => {
+                self.composer.insert_text(&text);
+                self.refresh_mention_picker().await?;
+                self.persist_draft().await?;
+            }
+            Err(rejection) => self.status_error = Some(rejection.status().into()),
+        }
+        Ok(())
+    }
+
     async fn handle_key(
         &mut self,
         key: KeyEvent,
@@ -1752,12 +1849,24 @@ impl App {
             UiAction::DeleteToStart => self.composer.delete_to_line_start(),
             UiAction::DeleteToEnd => self.composer.delete_to_line_end(),
             UiAction::ClearComposer => {
-                if !self.composer.body.is_empty() || !self.composer.attachments.is_empty() {
+                if !self.composer.body.is_empty()
+                    || !self.composer.attachments.is_empty()
+                    || !self.staging_attachments.is_empty()
+                {
                     self.presentation
                         .open_confirmation(ConfirmationKind::ClearDraft);
                 }
                 return Ok(());
             }
+            UiAction::PasteClipboard => return self.import_clipboard().await,
+            UiAction::AttachFile => {
+                self.attachment_input.clear();
+                self.presentation
+                    .open_attachment_prompt(AttachmentPrompt::Upload);
+                return Ok(());
+            }
+            UiAction::RemoveLastAttachment => return self.remove_last_attachment().await,
+            UiAction::RetryAttachments => return self.retry_failed_attachments().await,
             UiAction::MoveWordLeft => self.composer.move_word_left(),
             UiAction::MoveWordRight => self.composer.move_word_right(),
             UiAction::MoveLineStart => self.composer.move_to_line_start(),
@@ -2445,12 +2554,16 @@ impl App {
             })
             .await?;
         self.composer.set_draft(body, attachments, mentions);
-        self.presentation.composer_target = Some(ComposerTarget {
+        let target = ComposerTarget {
             community_id: community,
             channel_id: channel,
             thread_root_id: root,
             parent_event_id: parent,
-        });
+        };
+        self.presentation.composer_target = Some(target.clone());
+        if self.repair_pending_attachment_ids() {
+            self.persist_draft().await?;
+        }
         self.refresh_mention_picker().await?;
         let pending = self
             .composer
@@ -2458,13 +2571,27 @@ impl App {
             .iter()
             .filter_map(|attachment| match attachment {
                 crate::media::DraftAttachment::Pending(value) => Some(value.clone()),
-                crate::media::DraftAttachment::Uploaded(_) => None,
+                crate::media::DraftAttachment::Failed(_)
+                | crate::media::DraftAttachment::Uploaded(_) => None,
             })
             .collect::<Vec<_>>();
         for attachment in pending {
-            self.start_pending_upload(attachment);
+            self.start_pending_upload(target.clone(), attachment);
         }
         Ok(())
+    }
+
+    fn repair_pending_attachment_ids(&mut self) -> bool {
+        let mut changed = false;
+        for attachment in &mut self.composer.attachments {
+            if let Some(pending) = attachment.pending_mut()
+                && Uuid::parse_str(&pending.id).is_err()
+            {
+                pending.id = Uuid::new_v4().to_string();
+                changed = true;
+            }
+        }
+        changed
     }
 
     async fn insert_action(&mut self, action: KeyAction) -> Result<()> {
@@ -2497,6 +2624,8 @@ impl App {
         match action {
             KeyAction::Escape => {
                 self.mention_picker = None;
+                self.staging_media.clear();
+                self.staging_attachments.clear();
                 self.presentation.composer_target = None;
             }
             KeyAction::Character(character) => self.composer.insert(character),
@@ -2505,34 +2634,12 @@ impl App {
             KeyAction::Left => self.composer.move_left(),
             KeyAction::Right => self.composer.move_right(),
             KeyAction::Newline => self.composer.newline(),
-            KeyAction::Attach => {
-                self.attachment_input.clear();
-                self.presentation
-                    .open_attachment_prompt(AttachmentPrompt::Upload);
-            }
-            KeyAction::RemoveAttachment => {
-                if let Some(crate::media::DraftAttachment::Pending(pending)) =
-                    self.composer.attachments.pop()
-                {
-                    self.discard_pending_attachment(pending);
-                }
-            }
-            KeyAction::RetryAttachments => {
-                let pending = self
-                    .composer
-                    .attachments
-                    .iter()
-                    .filter_map(|attachment| match attachment {
-                        crate::media::DraftAttachment::Pending(value) => Some(value.clone()),
-                        crate::media::DraftAttachment::Uploaded(_) => None,
-                    })
-                    .collect::<Vec<_>>();
-                for attachment in pending {
-                    self.start_pending_upload(attachment);
-                }
-            }
             KeyAction::Submit => {
-                if let Some(message) = self.composer.take_message() {
+                if !self.staging_attachments.is_empty() {
+                    self.status_error = Some("attachment processing is not ready to send".into());
+                } else if !self.composer.sendable() && !self.composer.attachments.is_empty() {
+                    self.status_error = Some("wait for every attachment to become ready".into());
+                } else if let Some(message) = self.composer.take_message() {
                     self.queue_message(message);
                     self.presentation.composer_target = None
                 }
@@ -2543,22 +2650,84 @@ impl App {
         self.persist_draft().await
     }
 
-    fn discard_pending_attachment(&mut self, pending: crate::media::PendingAttachment) {
-        let Some(community) = self.active_community_id() else {
+    fn discard_pending_attachment(
+        &mut self,
+        community: Uuid,
+        pending: crate::media::PendingAttachment,
+    ) {
+        self.uploading_media.remove(&pending.id);
+        if pending.cache_name.contains(['/', '\\']) {
             return;
-        };
-        self.uploading_media
-            .remove(&format!("{community}:{}", pending.sha256));
+        }
         let path = self.media.staging_dir(community).join(pending.cache_name);
         tokio::spawn(async move {
             let _ = tokio::fs::remove_file(path).await;
         });
     }
 
+    fn remove_staged_attachment(&self, community: Uuid, pending: crate::media::PendingAttachment) {
+        if pending.cache_name.contains(['/', '\\']) {
+            return;
+        }
+        let path = self.media.staging_dir(community).join(pending.cache_name);
+        tokio::spawn(async move {
+            let _ = tokio::fs::remove_file(path).await;
+        });
+    }
+
+    async fn remove_last_attachment(&mut self) -> Result<()> {
+        if let Some(staging) = self.staging_attachments.pop() {
+            self.staging_media.remove(&staging.id);
+            self.status_error = Some("attachment removed".into());
+            return Ok(());
+        }
+        let Some(attachment) = self.composer.attachments.pop() else {
+            self.composer.delete();
+            self.refresh_mention_picker().await?;
+            return self.persist_draft().await;
+        };
+        if let Some(pending) = attachment.pending().cloned()
+            && let Some(target) = self.presentation.composer_target.as_ref()
+        {
+            self.discard_pending_attachment(target.community_id, pending);
+        }
+        self.status_error = Some("attachment removed".into());
+        self.persist_draft().await
+    }
+
+    async fn retry_failed_attachments(&mut self) -> Result<()> {
+        let Some(target) = self.presentation.composer_target.clone() else {
+            return Ok(());
+        };
+        let mut retry = Vec::new();
+        for attachment in &mut self.composer.attachments {
+            if let crate::media::DraftAttachment::Failed(pending) = attachment {
+                let pending = pending.clone();
+                *attachment = crate::media::DraftAttachment::Pending(pending.clone());
+                retry.push(pending);
+            }
+        }
+        if retry.is_empty() {
+            return Ok(());
+        }
+        self.persist_draft().await?;
+        for pending in retry {
+            self.start_pending_upload(target.clone(), pending);
+        }
+        Ok(())
+    }
+
     async fn clear_composer_draft(&mut self) -> Result<()> {
+        self.staging_media.clear();
+        self.staging_attachments.clear();
+        let community = self
+            .presentation
+            .composer_target
+            .as_ref()
+            .map(|target| target.community_id);
         for attachment in self.composer.clear() {
-            if let crate::media::DraftAttachment::Pending(pending) = attachment {
-                self.discard_pending_attachment(pending);
+            if let (Some(community), Some(pending)) = (community, attachment.pending().cloned()) {
+                self.discard_pending_attachment(community, pending);
             }
         }
         self.mention_picker = None;
@@ -2699,12 +2868,44 @@ impl App {
         Ok(())
     }
 
-    fn start_attachment_upload(&mut self, source: std::path::PathBuf) {
-        if self.composer.attachments.len() >= 8 {
-            self.status_error = Some("a message can contain at most 8 attachments".into());
-            return;
+    fn attachment_capacity(&self) -> usize {
+        8_usize.saturating_sub(
+            self.composer
+                .attachments
+                .len()
+                .saturating_add(self.staging_attachments.len()),
+        )
+    }
+
+    fn reserve_attachment_staging(
+        &mut self,
+        filename: String,
+    ) -> Option<(ComposerTarget, Uuid, String)> {
+        let target = self.presentation.composer_target.clone()?;
+        if self.active_community_id() != Some(target.community_id) {
+            return None;
         }
-        let Some(community) = self.active_community_id() else {
+        if self.attachment_capacity() == 0 {
+            self.status_error = Some("a message can contain at most 8 attachments".into());
+            return None;
+        }
+        let attachment_id = Uuid::new_v4().to_string();
+        self.staging_media.insert(attachment_id.clone());
+        self.staging_attachments.push(StagingAttachment {
+            id: attachment_id.clone(),
+            filename: crate::media::decode::sanitize_filename(&filename),
+        });
+        Some((target.clone(), target.community_id, attachment_id))
+    }
+
+    fn start_attachment_upload(&mut self, source: std::path::PathBuf) {
+        let filename = source
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("file");
+        let Some((target, community, attachment_id)) =
+            self.reserve_attachment_staging(filename.to_owned())
+        else {
             return;
         };
         let staging = self.media.staging_dir(community);
@@ -2717,35 +2918,147 @@ impl App {
             .await
             .map_err(|_| Error::Protocol("attachment worker stopped".into()))
             .and_then(std::convert::identity);
-            let _ = tx
-                .send(match result {
-                    Ok(staged) => Background::Staged {
+            let event = match result {
+                Ok(staged) => {
+                    let mut pending = staged.pending();
+                    pending.id = attachment_id;
+                    Background::Staged {
+                        target,
                         community,
-                        pending: staged.pending(),
-                    },
-                    Err(error) => Background::Failed(public_media_error(&error)),
-                })
-                .await;
+                        pending,
+                    }
+                }
+                Err(error) => Background::StageFailed {
+                    target,
+                    attachment_id,
+                    message: public_media_error(&error),
+                },
+            };
+            let _ = tx.send(event).await;
         });
     }
 
-    fn start_pending_upload(&mut self, pending: crate::media::PendingAttachment) {
+    fn start_clipboard_image_stage(&mut self, image: crate::media::clipboard::ClipboardImage) {
+        let Some((target, community, attachment_id)) =
+            self.reserve_attachment_staging("pasted image".into())
+        else {
+            return;
+        };
+        let staging = self.media.staging_dir(community);
+        let tx = self.background_tx.clone();
+        self.status_error = Some("processing pasted image…".into());
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                let (filename, bytes) = encode_clipboard_png(image)
+                    .map_err(|rejection| Error::Protocol(rejection.status().into()))?;
+                crate::media::decode::stage_bytes(&staging, &filename, bytes)
+            })
+            .await
+            .map_err(|_| Error::Protocol("attachment worker stopped".into()))
+            .and_then(std::convert::identity);
+            let event = match result {
+                Ok(staged) => {
+                    let mut pending = staged.pending();
+                    pending.id = attachment_id;
+                    Background::Staged {
+                        target,
+                        community,
+                        pending,
+                    }
+                }
+                Err(error) => Background::StageFailed {
+                    target,
+                    attachment_id,
+                    message: public_media_error(&error),
+                },
+            };
+            let _ = tx.send(event).await;
+        });
+    }
+
+    async fn import_clipboard(&mut self) -> Result<()> {
+        if self.config.media.clipboard_import != ClipboardImportMode::Explicit {
+            self.status_error = Some("clipboard import is disabled".into());
+            return Ok(());
+        }
+        let Some(target) = self.presentation.composer_target.clone() else {
+            return Ok(());
+        };
+        let reader = self.clipboard.clone();
+        let tx = self.background_tx.clone();
+        self.status_error = Some("reading clipboard…".into());
+        tokio::spawn(async move {
+            let contents = tokio::task::spawn_blocking(move || reader.read_once())
+                .await
+                .unwrap_or(ClipboardContents::Unavailable);
+            let _ = tx
+                .send(Background::ClipboardImported {
+                    target,
+                    contents: Box::new(contents),
+                })
+                .await;
+        });
+        Ok(())
+    }
+
+    async fn handle_clipboard_contents(
+        &mut self,
+        _target: ComposerTarget,
+        contents: ClipboardContents,
+    ) -> Result<()> {
+        match contents {
+            ClipboardContents::Files(paths) => {
+                if paths.len() > self.attachment_capacity() {
+                    self.status_error = Some("clipboard files exceed the attachment limit".into());
+                    return Ok(());
+                }
+                for path in paths {
+                    self.start_attachment_upload(path);
+                }
+            }
+            ClipboardContents::Image(image) => self.start_clipboard_image_stage(image),
+            ClipboardContents::Text(text) => {
+                self.composer.insert_text(&text);
+                self.status_error = None;
+                self.refresh_mention_picker().await?;
+                self.persist_draft().await?;
+            }
+            ClipboardContents::Empty => {
+                self.status_error = Some("clipboard has no pasteable content".into());
+            }
+            ClipboardContents::Unavailable => {
+                self.status_error =
+                    Some("native clipboard is unavailable; use Ctrl-o to attach a file".into());
+            }
+            ClipboardContents::Rejected(rejection) => {
+                self.status_error = Some(rejection.status().into());
+            }
+        }
+        Ok(())
+    }
+
+    fn start_pending_upload(
+        &mut self,
+        target: ComposerTarget,
+        pending: crate::media::PendingAttachment,
+    ) {
         let Some(runtime) = &self.runtime else {
             self.status_error =
                 Some("attachment staged; upload waits for an unlocked identity".into());
             return;
         };
         let community = runtime.community_id;
-        let job = format!("{community}:{}", pending.sha256);
-        if !self.uploading_media.insert(job) {
+        if community != target.community_id || self.active_community_id() != Some(community) {
             return;
         }
-        if pending.cache_name.contains(['/', '\\'])
+        if Uuid::parse_str(&pending.id).is_err()
+            || pending.cache_name.contains(['/', '\\'])
             || !pending.cache_name.starts_with(&pending.sha256)
         {
-            self.uploading_media
-                .remove(&format!("{community}:{}", pending.sha256));
             self.status_error = Some("staged attachment metadata is invalid".into());
+            return;
+        }
+        if !self.uploading_media.insert(pending.id.clone()) {
             return;
         }
         let path = self.media.staging_dir(community).join(&pending.cache_name);
@@ -2759,20 +3072,21 @@ impl App {
             if result.is_ok() {
                 let _ = tokio::fs::remove_file(&path).await;
             }
-            let _ = tx
-                .send(match result {
-                    Ok(attachment) => Background::Uploaded {
-                        community,
-                        sha256: pending.sha256,
-                        attachment: Box::new(attachment),
-                    },
-                    Err(error) => Background::UploadFailed {
-                        community,
-                        sha256: pending.sha256,
-                        message: public_media_error(&error),
-                    },
-                })
-                .await;
+            let event = match result {
+                Ok(attachment) => Background::Uploaded {
+                    target,
+                    community,
+                    attachment_id: pending.id,
+                    attachment: Box::new(attachment),
+                },
+                Err(error) => Background::UploadFailed {
+                    target,
+                    community,
+                    pending,
+                    message: public_media_error(&error),
+                },
+            };
+            let _ = tx.send(event).await;
         });
     }
 
@@ -4495,10 +4809,17 @@ impl App {
         if self.presentation.composer_target.is_none() {
             return 3;
         }
-        let attachment_row = u16::from(!self.composer.attachments.is_empty());
+        let attachment_count = self
+            .composer
+            .attachments
+            .len()
+            .saturating_add(self.staging_attachments.len());
+        let attachment_rows = u16::try_from(attachment_count.min(3))
+            .unwrap_or(u16::MAX)
+            .saturating_add(u16::from(attachment_count > 3));
         let body_rows = u16::try_from(self.composer.display_rows(80)).unwrap_or(u16::MAX);
         body_rows
-            .saturating_add(attachment_row)
+            .saturating_add(attachment_rows)
             .saturating_add(2)
             .clamp(5, 12)
     }
@@ -4515,22 +4836,54 @@ impl App {
             format!("message #{channel}")
         };
         let (title, content, border, content_group) = if active {
-            let attachments = if self.composer.attachments.is_empty() {
+            let mut attachment_lines = self
+                .composer
+                .attachments
+                .iter()
+                .map(|attachment| match attachment {
+                    crate::media::DraftAttachment::Pending(pending) => {
+                        let state = if self.uploading_media.contains(&pending.id) {
+                            "uploading"
+                        } else {
+                            "queued"
+                        };
+                        format!(
+                            "[{state}] {} · {}",
+                            sanitize::single_line(&pending.filename),
+                            crate::media::model::human_size(pending.size)
+                        )
+                    }
+                    crate::media::DraftAttachment::Failed(pending) => format!(
+                        "[failed] {} · Ctrl-r retry",
+                        sanitize::single_line(&pending.filename)
+                    ),
+                    crate::media::DraftAttachment::Uploaded(attachment) => format!(
+                        "[ready] {} · {}",
+                        sanitize::single_line(attachment.label()),
+                        crate::media::model::human_size(attachment.size)
+                    ),
+                })
+                .chain(self.staging_attachments.iter().map(|attachment| {
+                    format!(
+                        "[processing] {}",
+                        sanitize::single_line(&attachment.filename)
+                    )
+                }))
+                .collect::<Vec<_>>();
+            let overflow = attachment_lines.len().saturating_sub(3);
+            attachment_lines.truncate(3);
+            if overflow > 0 {
+                attachment_lines.push(format!("+{overflow} more attachment(s)"));
+            }
+            let attachments = if attachment_lines.is_empty() {
                 String::new()
             } else {
-                let ready = self
-                    .composer
-                    .attachments
-                    .iter()
-                    .filter(|attachment| attachment.uploaded().is_some())
-                    .count();
-                format!(
-                    "\n{ready}/{} attachment(s) ready",
-                    self.composer.attachments.len()
-                )
+                format!("\n{}", attachment_lines.join("\n"))
             };
             (
-                format!(" {target} · Enter send · Ctrl-c clear · Ctrl-a attach · Esc close "),
+                format!(
+                    " {target} · Enter send · Ctrl-v paste · Ctrl-o file · Del remove · Ctrl-c clear · Esc close "
+                ),
                 format!("{}{}", sanitize::text(&self.composer.body), attachments),
                 HighlightGroup::ActiveComposerBorder,
                 HighlightGroup::Composer,
@@ -5858,6 +6211,37 @@ mod tests {
                 .hit(mention.x.saturating_add(1), mention.y.saturating_add(1)),
             Some(&HitTarget::MentionCandidate(0))
         );
+
+        app.mention_picker = None;
+        app.community_rail = false;
+        app.sidebar = false;
+        app.composer
+            .attachments
+            .push(crate::media::DraftAttachment::Pending(
+                crate::media::PendingAttachment {
+                    id: Uuid::new_v4().to_string(),
+                    cache_name: "a".repeat(64) + ".txt",
+                    mime: "text/plain".into(),
+                    filename: "generated.txt".into(),
+                    sha256: "a".repeat(64),
+                    size: 12,
+                },
+            ));
+        app.staging_attachments.push(super::StagingAttachment {
+            id: Uuid::new_v4().to_string(),
+            filename: "pasted-image.png".into(),
+        });
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let queue = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(queue.contains("Ctrl-v paste"));
+        assert!(queue.contains("[queued] generated.txt"));
+        assert!(queue.contains("[processing] pasted-image.png"));
     }
 
     #[tokio::test]

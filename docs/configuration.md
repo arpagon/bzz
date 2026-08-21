@@ -45,6 +45,7 @@ workdir = "/home/example/read-only-workspace" # optional; canonical existing dir
 enabled = true
 protocol = "auto"            # auto|kitty|sixel|iterm2|halfblocks|off
 autoload = "visible"         # visible|preview|off
+clipboard_import = "explicit" # explicit|off; native reads only after Ctrl-v
 max_inline_rows = 12
 auto_download_bytes = 26214400
 memory_cache_bytes = 67108864
@@ -149,8 +150,10 @@ actions include `select-next`, `select-previous`, `jump-top`, `jump-bottom`,
 `half-page-down`. `mark-read`, `mark-unread`, `mark-visible-read`, and
 `open-canonical-context` are Inbox-only. Composer-only editing names are
 `submit`, `insert-newline`, `complete`, `delete-previous-word`,
-`delete-to-start`, `delete-to-end`, `move-word-left`, `move-word-right`,
-`move-line-start`, and `move-line-end`. Use `?` inside the relevant route as
+`delete-to-start`, `delete-to-end`, `clear-composer`, `paste-clipboard`,
+`attach-file`, `remove-last-attachment`, `retry-attachments`,
+`move-word-left`, `move-word-right`, `move-line-start`, and `move-line-end`.
+Use `?` inside the relevant route as
 the authoritative effective binding list; it includes local disabled bindings
 and actions unavailable for the current selection.
 
@@ -165,7 +168,10 @@ to bzz. A selected assistant only creates an unpersisted review draft; normal
 human composer send remains the sole publishing path.
 
 The strict `[media]` section controls terminal rendering and bounded local
-resources. Unknown fields are rejected. `autoload = "visible"` fetches valid,
+resources. Unknown fields are rejected. `clipboard_import = "explicit"` is the
+default and permits one native clipboard read only after `Ctrl-v` while the
+composer is open; `"off"` disables that read without changing `ui.clipboard`,
+which controls explicit OSC-52 writes. `autoload = "visible"` fetches valid,
 community-origin image descriptors near the rendered timeline; `preview`
 fetches only after `p`; `off` permits explicit save/upload but no automatic
 fetch. `protocol = "off"` disables graphics while retaining attachment cards.

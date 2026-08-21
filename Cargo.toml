@@ -1,6 +1,6 @@
 [package]
 name = "bzz"
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.95"
 description = "A human-first terminal client for Buzz communities"
@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 argon2 = "0.5"
+arboard = { version = "=3.6.1", default-features = false, features = ["image-data", "wayland-data-control"] }
 async-trait = "0.1"
 base64 = "0.22"
 buzz-core = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "ede26863345a518ec46edd6d7692e0281883491b" }
