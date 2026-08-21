@@ -1,6 +1,6 @@
 # v0.8.0 clipboard-first attachment validation
 
-**Status:** Local automated validation completed 2026-08-21. Native desktop
+**Status:** Local and CI validation completed 2026-08-21. Native desktop
 clipboard and release-artifact review remain required before tagging.
 
 ## Completed gates
@@ -18,6 +18,11 @@ clipboard and release-artifact review remain required before tagging.
   `instant` and `lru` were reported.
 - `cargo build --release --locked`, `target/release/bzz --version` (`bzz 0.8.0`),
   `target/release/bzz check`, and `target/release/bzz media status` passed.
+- GitHub [CI run 32519434260](https://github.com/arpagon/bzz/actions/runs/32519434260)
+  passed Linux, macOS (Intel/Apple Silicon), Windows, and test jobs for
+  implementation commit `83f7760`; pinned relay integration
+  [run 32519434326](https://github.com/arpagon/bzz/actions/runs/32519434326)
+  also passed.
 
 ## Automated behavioral coverage
 
