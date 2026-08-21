@@ -1,6 +1,6 @@
 # bzz v0.7.1 release notes
 
-> **Candidate — not yet published.**
+> **Approved release: v0.7.1.**
 
 ## Relay-hosted profile photographs
 

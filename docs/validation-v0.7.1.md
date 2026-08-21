@@ -1,6 +1,6 @@
 # v0.7.1 relay-avatar validation
 
-**Status:** Candidate; not published.
+**Status:** Approved for release.
 
 ## Automated boundary coverage
 
