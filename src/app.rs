@@ -2933,10 +2933,16 @@ impl App {
         Ok(())
     }
     async fn mark_current_read(&mut self) -> Result<()> {
-        let Some(runtime) = &self.runtime else {
+        let Some(community) = self.active_community_id() else {
             return Ok(());
         };
-        let service = runtime.read_state.clone();
+        let Some(identity) = self.self_pubkey().map(str::to_owned) else {
+            return Ok(());
+        };
+        let service = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.read_state.clone());
         let Some(channel) = self.current_channel().map(|channel| channel.id) else {
             return Ok(());
         };
@@ -2973,7 +2979,17 @@ impl App {
             {
                 continue;
             }
-            service.mark(&context, at).await?;
+            if let Some(service) = &service {
+                service.mark(&context, at).await?;
+            } else {
+                let identity = identity.clone();
+                let context_for_store = context.clone();
+                self.store
+                    .call(move |store| {
+                        store.advance_read(community, &identity, &context_for_store, at, true)
+                    })
+                    .await?;
+            }
             self.last_marked.insert(context, at);
             advanced = true;
         }
@@ -2982,7 +2998,7 @@ impl App {
         {
             self.persist_manual_unread().await?;
         }
-        if advanced {
+        if advanced && service.is_some() {
             self.read_dirty_since.get_or_insert_with(Instant::now);
         }
         Ok(())
@@ -5343,6 +5359,77 @@ mod tests {
         assert!(!computed.contains(&channel));
         assert!(!manual.contains(&channel));
         assert!(!clear_visible_unread(&mut computed, &mut manual, channel));
+    }
+
+    #[tokio::test]
+    async fn cached_workspace_read_is_persisted_without_a_runtime() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let identity = crate::config::IdentityConfig {
+            id: Uuid::new_v4(),
+            label: "offline-read".into(),
+            pubkey: "a".repeat(64),
+            backend: crate::config::KeyBackend::Keychain,
+            key_ref: "identity:offline-read".into(),
+        };
+        let mut config = Config::default();
+        config.identities.push(identity.clone());
+        let community = config
+            .add_community(
+                "offline-read".into(),
+                "wss://offline-read.example".into(),
+                identity.id,
+                false,
+            )
+            .unwrap();
+        config.default_community = Some(community);
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+        let channel = Uuid::new_v4();
+        app.channels = vec![Channel {
+            id: channel,
+            name: "offline".into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 1,
+            last_event_at: Some(42),
+        }];
+        app.messages = vec![Message {
+            event_id: "event-1".into(),
+            channel_id: channel,
+            pubkey: "b".repeat(64),
+            created_at: 42,
+            content: "cached".into(),
+            attachments: vec![],
+            root_event_id: None,
+            parent_event_id: None,
+            deleted: false,
+            pending: false,
+            rejected: None,
+        }];
+        app.timeline.at_live_bottom = true;
+        app.computed_unread.insert(channel);
+
+        app.mark_current_read().await.unwrap();
+
+        let pubkey = identity.pubkey;
+        let contexts = app
+            .store
+            .call(move |store| store.read_contexts(community, &pubkey, false))
+            .await
+            .unwrap();
+        assert_eq!(contexts.get(&channel.to_string()), Some(&42));
+        assert!(!app.computed_unread.contains(&channel));
     }
 
     #[test]
