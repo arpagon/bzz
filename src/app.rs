@@ -1288,12 +1288,7 @@ impl App {
             changed |= cache_was_dirty;
             self.reconcile_subscriptions().await?;
         }
-        if ((self.presentation.focus == FocusSurface::Timeline && self.timeline.at_live_bottom)
-            || (self.presentation.focus == FocusSurface::Context
-                && self.thread_timeline.at_live_bottom))
-            && self.presentation.overlay.is_none()
-            && self.presentation.composer_target.is_none()
-        {
+        if should_mark_visible_read(&self.presentation, &self.timeline, &self.thread_timeline) {
             let unread_before = (self.computed_unread.len(), self.manual_unread.len());
             self.mark_current_read().await?;
             changed |= unread_before != (self.computed_unread.len(), self.manual_unread.len());
@@ -2940,10 +2935,13 @@ impl App {
             return Ok(());
         };
         let mut marks = Vec::new();
+        let mut visible_channel = false;
         if self.presentation.focus == FocusSurface::Context
             && let Some(root) = &self.thread_root
             && let Some(last) = self.thread_messages.last()
+            && last.channel_id == channel
         {
+            visible_channel = true;
             marks.push((
                 format!("thread:{root}"),
                 u32::try_from(last.created_at).unwrap_or(u32::MAX),
@@ -2954,11 +2952,11 @@ impl App {
                     u32::try_from(message.created_at).unwrap_or(u32::MAX),
                 )
             }));
-        } else if let Some(last) = self.messages.last() {
-            marks.push((
-                channel.to_string(),
-                u32::try_from(last.created_at).unwrap_or(u32::MAX),
-            ));
+        } else if let Some((context, at)) =
+            timeline_read_mark(&self.timeline, channel, &self.messages)
+        {
+            visible_channel = true;
+            marks.push((context, at));
         }
         let mut advanced = false;
         for (context, at) in marks {
@@ -2973,7 +2971,9 @@ impl App {
             self.last_marked.insert(context, at);
             advanced = true;
         }
-        if clear_visible_unread(&mut self.computed_unread, &mut self.manual_unread, channel) {
+        if visible_channel
+            && clear_visible_unread(&mut self.computed_unread, &mut self.manual_unread, channel)
+        {
             self.persist_manual_unread().await?;
         }
         if advanced {
@@ -5119,6 +5119,43 @@ fn identity_recovery_connection(error: &Error) -> Option<ConnectionState> {
     }
 }
 
+/// Returns whether the visible workspace content is safe to acknowledge as
+/// read. The channel list may retain focus while the selected channel's
+/// timeline remains visibly at its live edge, so focus alone is not evidence
+/// that the content was not read.
+fn should_mark_visible_read(
+    presentation: &PresentationState,
+    timeline: &TimelineState,
+    thread_timeline: &TimelineState,
+) -> bool {
+    presentation.route == Route::Workspace
+        && presentation.overlay.is_none()
+        && presentation.composer_target.is_none()
+        && if presentation.focus == FocusSurface::Context {
+            thread_timeline.at_live_bottom
+        } else {
+            timeline.at_live_bottom
+        }
+}
+
+/// Produces a channel read marker only when the bottom of the displayed
+/// timeline belongs to the currently selected channel. This prevents a rapid
+/// sidebar selection change from acknowledging a channel whose messages have
+/// not been loaded yet.
+fn timeline_read_mark(
+    timeline: &TimelineState,
+    channel: Uuid,
+    messages: &[Message],
+) -> Option<(String, u32)> {
+    let last = messages.last()?;
+    (timeline.at_live_bottom && last.channel_id == channel).then(|| {
+        (
+            channel.to_string(),
+            u32::try_from(last.created_at).unwrap_or(u32::MAX),
+        )
+    })
+}
+
 fn clear_visible_unread(
     computed: &mut HashSet<Uuid>,
     manual: &mut HashSet<Uuid>,
@@ -5244,7 +5281,10 @@ fn list_row(area: Rect, row: usize, height: u16) -> Option<Rect> {
 mod tests {
     use std::collections::HashSet;
 
-    use super::{clear_visible_unread, identity_recovery_connection};
+    use super::{
+        clear_visible_unread, identity_recovery_connection, should_mark_visible_read,
+        timeline_read_mark,
+    };
     use crate::{
         config::Config,
         domain::{
@@ -5259,7 +5299,8 @@ mod tests {
             hit_map::HitTarget,
             keymap::UiAction,
             mention_picker::MentionPicker,
-            state::{ComposerTarget, Overlay},
+            state::{ComposerTarget, FocusSurface, Overlay, PresentationState, Route},
+            timeline::TimelineState,
         },
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -5296,6 +5337,69 @@ mod tests {
         assert!(!computed.contains(&channel));
         assert!(!manual.contains(&channel));
         assert!(!clear_visible_unread(&mut computed, &mut manual, channel));
+    }
+
+    #[test]
+    fn visible_timeline_is_acknowledged_even_when_sidebar_has_focus() {
+        let mut presentation = PresentationState {
+            route: Route::Workspace,
+            focus: FocusSurface::Channels,
+            ..PresentationState::default()
+        };
+        let timeline = TimelineState {
+            at_live_bottom: true,
+            ..TimelineState::default()
+        };
+        let mut thread = TimelineState::default();
+
+        assert!(should_mark_visible_read(&presentation, &timeline, &thread));
+
+        presentation.focus = FocusSurface::Context;
+        assert!(!should_mark_visible_read(&presentation, &timeline, &thread));
+        thread.at_live_bottom = true;
+        assert!(should_mark_visible_read(&presentation, &timeline, &thread));
+
+        presentation.overlay = Some(Overlay::Help);
+        assert!(!should_mark_visible_read(&presentation, &timeline, &thread));
+        presentation.overlay = None;
+        presentation.route = Route::Inbox;
+        assert!(!should_mark_visible_read(&presentation, &timeline, &thread));
+    }
+
+    #[test]
+    fn timeline_read_marker_requires_the_selected_channel_at_its_live_edge() {
+        let channel = Uuid::new_v4();
+        let message = Message {
+            event_id: "event-1".into(),
+            channel_id: channel,
+            pubkey: "a".repeat(64),
+            created_at: 42,
+            content: "hello".into(),
+            attachments: vec![],
+            root_event_id: None,
+            parent_event_id: None,
+            deleted: false,
+            pending: false,
+            rejected: None,
+        };
+        let mut timeline = TimelineState {
+            at_live_bottom: true,
+            ..TimelineState::default()
+        };
+
+        assert_eq!(
+            timeline_read_mark(&timeline, channel, std::slice::from_ref(&message)),
+            Some((channel.to_string(), 42))
+        );
+        assert_eq!(
+            timeline_read_mark(&timeline, Uuid::new_v4(), std::slice::from_ref(&message)),
+            None
+        );
+        timeline.at_live_bottom = false;
+        assert_eq!(
+            timeline_read_mark(&timeline, channel, std::slice::from_ref(&message)),
+            None
+        );
     }
 
     #[tokio::test]
