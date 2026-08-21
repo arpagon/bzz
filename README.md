@@ -4,8 +4,8 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.6.0 organizes local channel order, expands safe conversation
-> actions, and retains local deterministic author markers without profile-image fetching.
+> Status: v0.7 development keeps v0.6's local conversation actions and adds
+> optional, credential-free public profile avatars with deterministic textual fallbacks.
 > Protocol compatibility remains pinned to Buzz
 > `ede26863345a518ec46edd6d7692e0281883491b`.
 
@@ -47,7 +47,7 @@ use `bzz-dev` paths and a separate OS-keychain service.
   publishing.
 
 NIP-17 gift-wrap authoring/inbox, typing/presence, custom emoji, media playback,
-profile avatars, and message editing remain post-MVP. Workspace DMs are private
+and message editing remain post-MVP. Workspace DMs are private
 relay channels, not end-to-end encrypted messages.
 
 ## First run
@@ -72,8 +72,9 @@ missing credential without changing its identity or communities with
 Default navigation uses `1`–`4` to focus workspace surfaces, `Tab`/`h`/`l`
 to traverse them, `j`/`k` or `Ctrl-n`/`Ctrl-p` to change selection, and
 `gg`/`G` for edges. The workspace shows labelled communities, channels, the
-conversation, and an on-demand context pane. Each message has a compact local
-avatar marker derived without fetching profile pictures. `Space` is the
+conversation, and an on-demand context pane. Each message has a compact
+textual avatar marker; supported graphics terminals may additionally show a
+bounded public profile photograph according to `ui.profile_avatars`. `Space` is the
 leader: `Space Space` opens the channel/DM switcher, `Space n` opens Inbox,
 `Space s` cycles local channel ordering, `Space a` opens contextual actions,
 `Space o` opens theme options, and `?` shows the generated effective-keymap
@@ -96,8 +97,11 @@ cover the main conversation, recovery, appearance, and security operations.
 
 ## Media safety
 
-Only descriptor-backed media on the active Buzz community origin is fetched;
-arbitrary Markdown and profile-picture URLs stay inert. Main blobs are fetched
+Only descriptor-backed message media on the active Buzz community origin is
+fetched; arbitrary Markdown URLs stay inert. Independently, the default
+`ui.profile_avatars = "trusted"` may retrieve a bounded public kind-0 `picture`
+with no credentials, relay authorization, cookies, proxy, or identifying
+header; set it to `"off"` to keep profile URLs inert. Main blobs are fetched
 without redirects, authenticated with short-lived blob-scoped Blossom events,
 and size/MIME/SHA-256 verified before decode, display, save, or offline reuse.
 Generic files are never auto-downloaded or executed. Local image uploads are
@@ -105,7 +109,8 @@ bounded, orientation-corrected, and stripped of private metadata before their
 exact uploaded bytes are hashed.
 
 Use `bzz media status` to inspect configured limits and `bzz media clear --all
---yes` to remove plaintext owner-only media cache files. See
+--yes` to remove plaintext owner-only message-media and profile-avatar cache
+files. See
 [`docs/media.md`](docs/media.md) for protocols, configuration, key bindings,
 cache behavior, and terminal compatibility.
 

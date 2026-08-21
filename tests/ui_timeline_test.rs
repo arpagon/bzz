@@ -25,7 +25,7 @@ fn message(id: &str) -> Message {
     }
 }
 #[test]
-fn local_avatar_marker_is_stable_and_never_uses_remote_profile_data() {
+fn textual_avatar_marker_is_stable_and_control_free() {
     let key = "a".repeat(64);
     assert_eq!(avatar_marker(&key, "Renan"), avatar_marker(&key, "Renan"));
     assert_eq!(avatar_marker(&key, "\u{1b}[31m"), "[●3]");

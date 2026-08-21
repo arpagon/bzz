@@ -85,8 +85,11 @@ and base64-encodes it before emitting OSC 52. It is never automatic, never
 prints copied text, never invokes a shell clipboard helper, and can be disabled
 with `ui.clipboard = "disabled"`. Logical multi-message selection is event-ID
 based presentation state: it cannot advance reads, subscribe, fetch, sign, or
-publish. Local author markers derive only from already-visible public keys;
-profile-picture fields and arbitrary URLs remain inert.
+publish. The textual author marker derives only from an already-visible public
+key. When `ui.profile_avatars = "trusted"`, the public kind-0 `picture` field
+is the single exception: it is fetched only by the bounded, credential-free
+profile-avatar client, and only while unlocked on a graphics-capable terminal.
+Set it to `"off"` to keep every profile URL inert.
 
 ## Local Codex drafts
 
@@ -147,9 +150,18 @@ search is local-only. See [`inbox-dms-search.md`](inbox-dms-search.md).
 
 Message media is fetched only from a complete `imeta` descriptor bound to the
 active community's exact relay HTTP(S) origin and canonical content-addressed
-path. Arbitrary Markdown and profile-picture URLs never trigger a request.
-Blossom read/upload authorization uses short-lived signed kind `24242` events;
-headers/events, source paths, full hashes, and content are not logged.
+path. Arbitrary Markdown URLs never trigger a request. A separate profile
+avatar path may fetch a kind-0 `picture` only when enabled: it permits HTTPS
+public domain hosts on port 443, rejects credentials/fragments/private and
+local destinations, validates and re-pins every redirect hop to public DNS
+answers, disables proxies and redirects in the HTTP client, and accepts only
+bounded JPEG/PNG/GIF/WebP MIME and matching magic bytes. It has no media
+client, cookies, user-agent, NIP-98, signer, relay authorization, or
+community header. Its private cache is isolated by community and identity,
+uses SHA-256 URL digests rather than URL filenames, and is capped at 256 files
+or 16 MiB per scope. Blossom read/upload authorization uses short-lived signed
+kind `24242` events; headers/events, source paths, full hashes, and content are
+not logged.
 
 Downloads are streamed into owner-only create-new temporary files. Declared
 size, hard transfer limit, response MIME, sniffed image type, exact byte count,

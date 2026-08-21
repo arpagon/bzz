@@ -174,6 +174,22 @@ Clear only media bytes without deleting messages:
 bzz media clear --community <community-uuid> --yes
 ```
 
+## Textual marker but no profile photograph
+
+A profile photograph is optional. It is shown only with
+`ui.profile_avatars = "trusted"`, while the active identity is unlocked, and
+when the selected terminal-media protocol is Kitty, Sixel, or iTerm2. Restart
+or run `:media reload` after changing terminal capability settings. Halfblocks
+and `protocol = "off"` intentionally keep the textual marker and make no
+avatar request.
+
+The profile URL must be public HTTPS on port 443 with a supported JPEG, PNG,
+GIF, or WebP response. Loopback/private hosts, IP literals, credentials,
+fragments, unsafe redirects, oversized responses, bad MIME/magic, and failed
+decodes remain markers only. Set `ui.profile_avatars = "off"` to prevent all
+profile-avatar requests. `bzz media clear --community <community-uuid> --yes`
+also removes that community's private avatar files.
+
 ## Upload rejected
 
 The composer accepts regular non-symlink paths up to 50 MiB for images,

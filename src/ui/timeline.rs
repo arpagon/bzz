@@ -173,6 +173,9 @@ impl TimelineState {
 
 enum TimelineRow {
     Text(Line<'static>),
+    /// Profile photographs occupy their own measured row. They are never
+    /// painted over author text, so scrolling cannot leave terminal cells.
+    AvatarImage(Arc<SlicedProtocol>),
     Image(Arc<SlicedProtocol>),
 }
 
@@ -188,7 +191,9 @@ impl MessageBlock {
             .iter()
             .map(|row| match row {
                 TimelineRow::Text(line) => text_height(line, width),
-                TimelineRow::Image(protocol) => protocol.size().height,
+                TimelineRow::AvatarImage(protocol) | TimelineRow::Image(protocol) => {
+                    protocol.size().height
+                }
             })
             .fold(0_u16, u16::saturating_add)
     }
@@ -423,6 +428,7 @@ fn render_internal(
     }
 
     let image_width = content.width.saturating_sub(4).max(2);
+    const AVATAR_WIDTH: u16 = 4;
     let selected_index = state.selected_index(messages);
     if let Some(runtime) = media.as_deref_mut() {
         let center = selected_index.unwrap_or_else(|| messages.len().saturating_sub(1));
@@ -431,6 +437,12 @@ fn render_internal(
         for message in &messages[start..end] {
             for attachment in &message.attachments {
                 runtime.request_inline(attachment, image_width, false);
+            }
+            if let Some(picture) = profiles
+                .get(&message.pubkey)
+                .and_then(|profile| profile.picture.as_deref())
+            {
+                runtime.request_avatar(&message.pubkey, picture, AVATAR_WIDTH);
             }
         }
     }
@@ -451,6 +463,7 @@ fn render_internal(
                 copy_bounds.is_some_and(|(start, end)| (start..=end).contains(&index)),
                 media.as_deref(),
                 image_width,
+                AVATAR_WIDTH,
             )
         })
         .collect::<Vec<_>>();
@@ -515,7 +528,9 @@ fn render_internal(
         for row in block.rows {
             let row_height = match &row {
                 TimelineRow::Text(line) => u32::from(text_height(line, content.width)),
-                TimelineRow::Image(protocol) => u32::from(protocol.size().height),
+                TimelineRow::AvatarImage(protocol) | TimelineRow::Image(protocol) => {
+                    u32::from(protocol.size().height)
+                }
             };
             if row_y + row_height > scroll && row_y < scroll + viewport {
                 match row {
@@ -543,6 +558,15 @@ fn render_internal(
                                 Rect::new(content.x, y, content.width, height),
                             );
                         }
+                    }
+                    TimelineRow::AvatarImage(protocol) => {
+                        let relative_y = i32::try_from(row_y).unwrap_or(i32::MAX)
+                            - i32::try_from(scroll).unwrap_or(i32::MAX);
+                        let position = SignedPosition::from((
+                            1,
+                            relative_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                        ));
+                        frame.render_widget(SlicedImage::new(protocol.as_ref(), position), content);
                     }
                     TimelineRow::Image(protocol) => {
                         let relative_y = i32::try_from(row_y).unwrap_or(i32::MAX)
@@ -573,6 +597,7 @@ fn message_block(
     copy_selected: bool,
     media: Option<&MediaRuntime>,
     image_width: u16,
+    avatar_width: u16,
 ) -> MessageBlock {
     let author = profiles
         .get(&message.pubkey)
@@ -630,6 +655,22 @@ fn message_block(
         ));
     }
     rows.push(TimelineRow::Text(Line::from(header)));
+    if !grouped
+        && let Some(protocol) = profiles
+            .get(&message.pubkey)
+            .and_then(|profile| profile.picture.as_deref())
+            .and_then(|picture| {
+                media.and_then(|runtime| {
+                    runtime.avatar_state(&message.pubkey, picture, avatar_width)
+                })
+            })
+            .and_then(|state| match state {
+                MediaState::Ready(protocol) => Some(protocol.clone()),
+                MediaState::Loading | MediaState::Failed(_) => None,
+            })
+    {
+        rows.push(TimelineRow::AvatarImage(protocol));
+    }
     if message.deleted {
         rows.push(TimelineRow::Text(Line::styled(
             "     message deleted",

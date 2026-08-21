@@ -6,11 +6,21 @@ Buzz Blossom endpoints pinned at revision
 
 ## Receiving media
 
-Only a complete, valid `imeta` descriptor can trigger a request. Its URL must
-use the active community's exact HTTP(S) origin and canonical
+Message-media fetching requires a complete, valid `imeta` descriptor. Its URL
+must use the active community's exact HTTP(S) origin and canonical
 `/media/<sha256>.<extension>` path. Redirects, external origins, arbitrary
-Markdown images, profile-picture URLs, URL credentials, query strings, and
-fragments are rejected.
+Markdown images, URL credentials, query strings, and fragments are rejected.
+
+Profile photographs are a separate, opt-out presentation feature described in
+[configuration](configuration.md). They never use the authenticated message
+media client or its authorization path. The avatar client permits only
+credential-free HTTPS public-domain requests on port 443, disables ambient
+proxies and automatic redirects, checks every manual redirect target, and
+pins public DNS answers for each request. It accepts at most 2 MiB of JPEG,
+PNG, GIF, or WebP only when the response MIME agrees with the bytes. The
+existing image decoder then enforces its pixel/axis bounds. A ready avatar is a
+measured graphics row in Kitty, Sixel, or iTerm2; it remains a textual marker
+in all other cases.
 
 Image bodies are bounded and SHA-256/size/MIME checked before decode. JPEG,
 PNG, GIF, and WebP render inline. Animated formats intentionally show their
@@ -84,14 +94,20 @@ restart.
 
 ## Cache and privacy
 
-Verified originals are stored under the private cache directory, partitioned
-by community UUID. No bytes are shared between communities. Cached media can
-render in locked/offline recovery mode, but no new authorization or network
-request is made. Startup removes partial/symlink entries and reconciles stale
-SQLite metadata. The default disk quota is 512 MiB with access-time eviction;
-staging files are not quota-evicted while referenced by a draft. Prepared
-terminal images use a byte-weighted in-memory LRU and are rejected when one
-entry cannot fit the configured memory budget.
+Verified message originals are stored under the private cache directory,
+partitioned by community UUID. No bytes are shared between communities. Cached
+message media can render in locked/offline recovery mode, but no new
+authorization or network request is made. Startup removes partial/symlink
+entries and reconciles stale SQLite metadata. The default disk quota is 512 MiB
+with access-time eviction; staging files are not quota-evicted while referenced
+by a draft. Prepared terminal images use a byte-weighted in-memory LRU and are
+rejected when one entry cannot fit the configured memory budget.
+
+Profile-avatar bytes use a separate owner-only root partitioned by community
+and identity, with SHA-256 profile/URL digest filenames. They are not shown or
+fetched while locked. Each scope is pruned to 256 files or 16 MiB; changed
+picture URLs form a separate, prunable entry. `media clear` and community/cache
+purge remove avatar bytes along with message-media bytes.
 
 Media cache files are plaintext, like the local SQLite message cache. Set
 `disk_cache_bytes = 0` for memory-only inline media. Use:
@@ -109,7 +125,9 @@ Cache removal cannot guarantee physical secure erasure on SSDs.
 
 | Resource | Limit |
 |---|---:|
-| Automatic image transfer | 25 MiB |
+| Automatic message image transfer | 25 MiB |
+| Profile-avatar transfer | 2 MiB |
+| Profile-avatar disk cache | 256 files / 16 MiB per community/identity |
 | Image | 50 MiB |
 | GIF | 10 MiB |
 | Generic file | 100 MiB |

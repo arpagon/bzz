@@ -38,6 +38,7 @@ impl Paths {
             &self.cache_dir,
             &self.keys_dir(),
             &self.media_cache_dir(),
+            &self.avatar_cache_dir(),
         ] {
             fs::create_dir_all(path).map_err(|error| Error::io(path, error))?;
             set_private_permissions(path)?;
@@ -67,6 +68,12 @@ impl Paths {
 
     pub fn media_cache_dir(&self) -> PathBuf {
         self.cache_dir.join("media")
+    }
+
+    /// Private local cache for profile-image bytes, intentionally separate from
+    /// authenticated community attachment media.
+    pub fn avatar_cache_dir(&self) -> PathBuf {
+        self.cache_dir.join("avatars")
     }
 }
 

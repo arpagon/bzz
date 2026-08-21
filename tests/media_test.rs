@@ -231,7 +231,12 @@ async fn startup_repair_drops_metadata_for_missing_cache_files() {
         .record_media_cache(community, &"9".repeat(64), "image/png", 42, None, None)
         .unwrap();
     let handle = StoreHandle::spawn(store).unwrap();
-    let runtime = MediaRuntime::new(config.media.clone(), &paths, handle);
+    let runtime = MediaRuntime::new(
+        config.media.clone(),
+        config.ui.profile_avatars,
+        &paths,
+        handle,
+    );
     assert_eq!(runtime.repair_cache_metadata().await.unwrap(), 1);
 }
 
@@ -271,8 +276,8 @@ async fn verified_offline_images_are_prepared_off_the_ui_thread() {
     let handle = StoreHandle::spawn(store).unwrap();
     let mut media_config = config.media.clone();
     media_config.protocol = MediaProtocol::Halfblocks;
-    let mut runtime = MediaRuntime::new(media_config, &paths, handle);
-    runtime.select_cached(community);
+    let mut runtime = MediaRuntime::new(media_config, config.ui.profile_avatars, &paths, handle);
+    runtime.select_cached(community, identity);
 
     let image = image::DynamicImage::new_rgb8(2, 2);
     let mut encoded = std::io::Cursor::new(Vec::new());
@@ -349,8 +354,8 @@ async fn verified_offline_video_posters_are_prepared_for_preview() {
     let handle = StoreHandle::spawn(store).unwrap();
     let mut media_config = config.media.clone();
     media_config.protocol = MediaProtocol::Halfblocks;
-    let mut runtime = MediaRuntime::new(media_config, &paths, handle);
-    runtime.select_cached(community);
+    let mut runtime = MediaRuntime::new(media_config, config.ui.profile_avatars, &paths, handle);
+    runtime.select_cached(community, identity);
 
     let image = image::DynamicImage::new_rgb8(3, 2);
     let mut encoded = std::io::Cursor::new(Vec::new());

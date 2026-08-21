@@ -192,11 +192,11 @@ enum CacheCommand {
 
 #[derive(Debug, Subcommand)]
 enum MediaCommand {
-    /// Print configured protocol, limits, and disk-cache use.
+    /// Print configured protocol, limits, and media/avatar cache use.
     Status,
-    /// Evict oldest verified blobs until the configured quota is met.
+    /// Evict oldest verified message blobs until the configured quota is met.
     Prune,
-    /// Remove cached and staged media without altering messages.
+    /// Remove cached/staged message media and profile-avatar bytes without altering messages.
     Clear {
         #[arg(long)]
         community: Option<Uuid>,
@@ -569,9 +569,14 @@ async fn community_command(
                     let store = Store::open(paths.database_file())?;
                     store.purge_community(id)?;
                 }
-                let media = paths.media_cache_dir().join(id.to_string());
-                if media.exists() {
-                    std::fs::remove_dir_all(&media).map_err(|error| Error::io(&media, error))?;
+                for cache in [
+                    paths.media_cache_dir().join(id.to_string()),
+                    paths.avatar_cache_dir().join(id.to_string()),
+                ] {
+                    if cache.exists() {
+                        std::fs::remove_dir_all(&cache)
+                            .map_err(|error| Error::io(&cache, error))?;
+                    }
                 }
             }
             Ok(())
@@ -612,18 +617,25 @@ fn cache_command(command: CacheCommand, paths: &Paths, config: &mut Config) -> R
                             .map_err(|error| Error::io(&candidate, error))?;
                     }
                 }
-                let media = paths.media_cache_dir();
-                if media.exists() {
-                    std::fs::remove_dir_all(&media).map_err(|error| Error::io(&media, error))?;
-                    std::fs::create_dir_all(&media).map_err(|error| Error::io(&media, error))?;
-                    bzz::paths::set_private_permissions(&media)?;
+                for cache in [paths.media_cache_dir(), paths.avatar_cache_dir()] {
+                    if cache.exists() {
+                        std::fs::remove_dir_all(&cache)
+                            .map_err(|error| Error::io(&cache, error))?;
+                    }
+                    std::fs::create_dir_all(&cache).map_err(|error| Error::io(&cache, error))?;
+                    bzz::paths::set_private_permissions(&cache)?;
                 }
             } else if let Some(id) = community {
                 let store = Store::open(paths.database_file())?;
                 store.purge_community(id)?;
-                let media = paths.media_cache_dir().join(id.to_string());
-                if media.exists() {
-                    std::fs::remove_dir_all(&media).map_err(|error| Error::io(&media, error))?;
+                for cache in [
+                    paths.media_cache_dir().join(id.to_string()),
+                    paths.avatar_cache_dir().join(id.to_string()),
+                ] {
+                    if cache.exists() {
+                        std::fs::remove_dir_all(&cache)
+                            .map_err(|error| Error::io(&cache, error))?;
+                    }
                 }
                 config.communities.retain(|entry| entry.id != id);
                 if config.default_community == Some(id) {
@@ -642,14 +654,17 @@ fn media_command(command: MediaCommand, paths: &Paths, config: &Config) -> Resul
     match command {
         MediaCommand::Status => {
             let used = directory_size(&paths.media_cache_dir())?;
+            let avatar_used = directory_size(&paths.avatar_cache_dir())?;
             println!(
-                "enabled:       {}\nprotocol:      {:?}\nautoload:      {:?}\ninline rows:   {}\ncache used:    {} bytes\ncache limit:   {} bytes\ndownload jobs: {}\ndecode jobs:   {}",
+                "enabled:         {}\nprotocol:        {:?}\nautoload:        {:?}\ninline rows:     {}\nmessage cache:   {} bytes / {} bytes\nprofile avatars: {:?}\navatar cache:    {} bytes / 16777216 bytes\ndownload jobs:   {}\ndecode jobs:     {}",
                 config.media.enabled,
                 config.media.protocol,
                 config.media.autoload,
                 config.media.max_inline_rows,
                 used,
                 config.media.disk_cache_bytes,
+                config.ui.profile_avatars,
+                avatar_used,
                 config.media.download_concurrency,
                 config.media.decode_concurrency,
             );
@@ -673,18 +688,23 @@ fn media_command(command: MediaCommand, paths: &Paths, config: &Config) -> Resul
             if !yes {
                 return Err(Error::Config("media cache clear requires --yes".into()));
             }
-            let path = if all {
-                paths.media_cache_dir()
+            let cache_paths = if all {
+                [paths.media_cache_dir(), paths.avatar_cache_dir()]
             } else if let Some(id) = community {
-                paths.media_cache_dir().join(id.to_string())
+                [
+                    paths.media_cache_dir().join(id.to_string()),
+                    paths.avatar_cache_dir().join(id.to_string()),
+                ]
             } else {
                 return Err(Error::Config("choose --all or --community <id>".into()));
             };
-            if path.exists() {
-                std::fs::remove_dir_all(&path).map_err(|error| Error::io(&path, error))?;
+            for path in cache_paths {
+                if path.exists() {
+                    std::fs::remove_dir_all(&path).map_err(|error| Error::io(&path, error))?;
+                }
+                std::fs::create_dir_all(&path).map_err(|error| Error::io(&path, error))?;
+                bzz::paths::set_private_permissions(&path)?;
             }
-            std::fs::create_dir_all(&path).map_err(|error| Error::io(&path, error))?;
-            bzz::paths::set_private_permissions(&path)?;
             if paths.database_file().exists() {
                 let store = Store::open(paths.database_file())?;
                 store.clear_media_cache_entries(if all { None } else { community })?;

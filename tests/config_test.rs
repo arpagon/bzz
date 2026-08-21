@@ -1,5 +1,5 @@
 use bzz::{
-    config::{ChannelSort, ClipboardMode, Config, MouseMode, validate_relay_url},
+    config::{ChannelSort, ClipboardMode, Config, MouseMode, ProfileAvatars, validate_relay_url},
     paths::Paths,
 };
 use tempfile::TempDir;
@@ -138,6 +138,7 @@ fn mouse_policy_parses_strictly() {
         assert_eq!(config.ui.message_width, 110);
         assert_eq!(config.ui.channel_sort, ChannelSort::Smart);
         assert_eq!(config.ui.clipboard, ClipboardMode::Osc52);
+        assert_eq!(config.ui.profile_avatars, ProfileAvatars::Trusted);
     }
     assert!(
         toml::from_str::<Config>(
@@ -146,11 +147,14 @@ fn mouse_policy_parses_strictly() {
         .is_err()
     );
 
-    let config =
-        toml::from_str::<Config>("[ui]\nchannel_sort='alphabetical'\nclipboard='disabled'\n")
-            .unwrap();
+    let config = toml::from_str::<Config>(
+        "[ui]\nchannel_sort='alphabetical'\nclipboard='disabled'\nprofile_avatars='off'\n",
+    )
+    .unwrap();
     assert_eq!(config.ui.channel_sort, ChannelSort::Alphabetical);
     assert_eq!(config.ui.clipboard, ClipboardMode::Disabled);
+    assert_eq!(config.ui.profile_avatars, ProfileAvatars::Off);
+    assert!(toml::from_str::<Config>("[ui]\nprofile_avatars='sometimes'\n").is_err());
 }
 
 #[test]

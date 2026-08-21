@@ -298,11 +298,20 @@ impl App {
             }
         };
         let (background_tx, background_rx) = mpsc::channel(128);
-        let mut media = MediaRuntime::new(config.media.clone(), &paths, store.clone());
+        let mut media = MediaRuntime::new(
+            config.media.clone(),
+            config.ui.profile_avatars,
+            &paths,
+            store.clone(),
+        );
         if let Some(active) = &runtime {
-            media.bind(active.community_id, active.media.clone());
+            media.bind(
+                active.community_id,
+                active.identity_id,
+                active.media.clone(),
+            );
         } else if let Some(community) = config.communities.get(selected_community) {
-            media.select_cached(community.id);
+            media.select_cached(community.id, community.identity_id);
         }
         let media_notice = media
             .repair_cache_metadata()
@@ -3879,7 +3888,11 @@ impl App {
                         old.signer.lock().await;
                     }
                 }
-                self.media.bind(runtime.community_id, runtime.media.clone());
+                self.media.bind(
+                    runtime.community_id,
+                    runtime.identity_id,
+                    runtime.media.clone(),
+                );
                 self.runtime = Some(runtime);
                 self.selected_community = index;
                 self.select_community_index(index);
@@ -3912,7 +3925,7 @@ impl App {
                         old.supervisor.shutdown().await;
                         old.signer.lock().await;
                     }
-                    self.media.select_cached(target_id);
+                    self.media.select_cached(target_id, target.identity_id);
                     self.selected_community = index;
                     self.select_community_index(index);
                     self.config.default_community = Some(target_id);

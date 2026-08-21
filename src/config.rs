@@ -137,6 +137,16 @@ pub enum ClipboardMode {
     Osc52,
 }
 
+/// Controls whether bzz fetches the public `picture` URL from a Nostr kind-0
+/// profile. Trusted fetches are still credential-free and HTTPS-only.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileAvatars {
+    Off,
+    #[default]
+    Trusted,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiConfig {
@@ -147,6 +157,7 @@ pub struct UiConfig {
     pub message_width: u16,
     pub channel_sort: ChannelSort,
     pub clipboard: ClipboardMode,
+    pub profile_avatars: ProfileAvatars,
     pub theme: String,
     pub mouse: MouseMode,
 }
@@ -159,6 +170,7 @@ impl Default for UiConfig {
             message_width: 110,
             channel_sort: ChannelSort::Smart,
             clipboard: ClipboardMode::Osc52,
+            profile_avatars: ProfileAvatars::Trusted,
             theme: crate::ui::theme::DEFAULT_THEME_ID.into(),
             mouse: MouseMode::Auto,
         }

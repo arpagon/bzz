@@ -11,17 +11,19 @@ use ratatui_image::{
     picker::{Picker, ProtocolType},
     sliced::SlicedProtocol,
 };
+use sha2::{Digest as _, Sha256};
 use tokio::sync::{Semaphore, mpsc};
 use uuid::Uuid;
 
 use crate::{
-    config::{MediaAutoload, MediaConfig, MediaProtocol},
+    config::{MediaAutoload, MediaConfig, MediaProtocol, ProfileAvatars},
     error::{Error, Result},
     paths::Paths,
     store::writer::StoreHandle,
 };
 
 use super::{
+    avatar::AvatarClient,
     client::MediaClient,
     decode::decode_image,
     model::{Attachment, MediaKind},
@@ -49,12 +51,17 @@ enum Completed {
 
 pub struct MediaRuntime {
     config: MediaConfig,
+    profile_avatars: ProfileAvatars,
     community_id: Option<Uuid>,
+    identity_id: Option<Uuid>,
     cache_root: PathBuf,
+    avatar_cache_root: PathBuf,
     picker: Picker,
     protocol_name: String,
     generation: u64,
     client: Option<MediaClient>,
+    avatar_client: AvatarClient,
+    avatar_network_enabled: bool,
     store: StoreHandle,
     states: HashMap<String, MediaState>,
     in_flight: HashSet<String>,
@@ -67,19 +74,31 @@ pub struct MediaRuntime {
 }
 
 impl MediaRuntime {
-    pub fn new(config: MediaConfig, paths: &Paths, store: StoreHandle) -> Self {
+    pub fn new(
+        config: MediaConfig,
+        profile_avatars: ProfileAvatars,
+        paths: &Paths,
+        store: StoreHandle,
+    ) -> Self {
         let (completed_tx, completed_rx) = mpsc::channel(64);
         let cache_root = paths.media_cache_dir();
+        let avatar_cache_root = paths.avatar_cache_dir();
         cleanup_partial_files(&cache_root);
+        cleanup_partial_files(&avatar_cache_root);
         Self {
             decode_slots: Arc::new(Semaphore::new(config.decode_concurrency)),
+            avatar_client: AvatarClient::new(config.download_concurrency),
             config,
+            profile_avatars,
             community_id: None,
+            identity_id: None,
             cache_root,
+            avatar_cache_root,
             picker: Picker::halfblocks(),
             protocol_name: "halfblocks".into(),
             generation: 0,
             client: None,
+            avatar_network_enabled: false,
             store,
             states: HashMap::new(),
             in_flight: HashSet::new(),
@@ -91,28 +110,34 @@ impl MediaRuntime {
         }
     }
 
-    pub fn bind(&mut self, community_id: Uuid, client: MediaClient) {
-        if self.community_id != Some(community_id) {
+    pub fn bind(&mut self, community_id: Uuid, identity_id: Uuid, client: MediaClient) {
+        if self.community_id != Some(community_id) || self.identity_id != Some(identity_id) {
             self.generation = self.generation.wrapping_add(1);
             self.clear_memory_state();
         }
         self.community_id = Some(community_id);
+        self.identity_id = Some(identity_id);
         self.client = Some(client);
+        self.avatar_network_enabled = true;
     }
 
-    pub fn select_cached(&mut self, community_id: Uuid) {
-        if self.community_id != Some(community_id) {
+    pub fn select_cached(&mut self, community_id: Uuid, identity_id: Uuid) {
+        if self.community_id != Some(community_id) || self.identity_id != Some(identity_id) {
             self.generation = self.generation.wrapping_add(1);
             self.clear_memory_state();
         }
         self.community_id = Some(community_id);
+        self.identity_id = Some(identity_id);
         self.client = None;
+        self.avatar_network_enabled = false;
     }
 
     pub fn unbind(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.community_id = None;
+        self.identity_id = None;
         self.client = None;
+        self.avatar_network_enabled = false;
         self.clear_memory_state();
     }
 
@@ -143,6 +168,115 @@ impl MediaRuntime {
 
     pub fn protocol_name(&self) -> &str {
         &self.protocol_name
+    }
+
+    /// Returns a ready local rendering of a remote profile photograph. The
+    /// caller still renders the author label and textual marker beside it.
+    pub fn avatar_state(&self, pubkey: &str, picture: &str, width: u16) -> Option<&MediaState> {
+        self.states.get(&avatar_key(pubkey, picture, width))
+    }
+
+    /// Queues one credential-free profile-image retrieval. It is a no-op in
+    /// locked/cache-only mode and on terminals that cannot safely display an
+    /// allocated raster row.
+    pub fn request_avatar(&mut self, pubkey: &str, picture: &str, width: u16) {
+        if !should_request_avatar(
+            self.profile_avatars,
+            self.avatar_network_enabled,
+            self.graphics_avatar_protocol(),
+            width,
+        ) {
+            return;
+        }
+        let (Some(community), Some(identity)) = (self.community_id, self.identity_id) else {
+            return;
+        };
+        let key = avatar_key(pubkey, picture, width);
+        if self.states.contains_key(&key) {
+            self.touch(&key);
+            return;
+        }
+        if self.in_flight.len() >= 64 || !self.in_flight.insert(key.clone()) {
+            return;
+        }
+        self.states.insert(key.clone(), MediaState::Loading);
+        let destination = self
+            .avatar_cache_root
+            .join(community.to_string())
+            .join(identity.to_string())
+            .join(format!(
+                "{}-{}.avatar",
+                profile_digest(pubkey),
+                url_digest(picture)
+            ));
+        let avatar_client = self.avatar_client.clone();
+        let picker = self.picker.clone();
+        let decode_slots = self.decode_slots.clone();
+        let tx = self.completed_tx.clone();
+        let generation = self.generation;
+        let memory_limit = self.config.memory_cache_bytes;
+        let picture = picture.to_owned();
+        tokio::spawn(async move {
+            let result: Result<(SlicedProtocol, u64)> = async {
+                let path = if destination.exists() {
+                    destination.clone()
+                } else {
+                    avatar_client.fetch(&picture, &destination).await?
+                };
+                let _permit = decode_slots
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| Error::Protocol("profile avatar decode queue stopped".into()))?;
+                let decode_path = path.clone();
+                let (protocol, weight) = tokio::task::spawn_blocking(move || {
+                    let image = decode_image(&decode_path)?;
+                    let weight = prepared_weight(&image);
+                    if memory_limit == 0 || weight > memory_limit {
+                        return Err(Error::Protocol(
+                            "prepared profile avatar exceeds the memory cache limit".into(),
+                        ));
+                    }
+                    let protocol = SlicedProtocol::new_with_resize(
+                        &picker,
+                        image,
+                        Size::new(width, 3),
+                        Resize::Fit(None),
+                    )
+                    .map_err(|error| Error::Protocol(error.to_string()))?;
+                    Ok((protocol, weight))
+                })
+                .await
+                .map_err(|_| Error::Protocol("profile avatar worker stopped".into()))??;
+                Ok((protocol, weight))
+            }
+            .await;
+            if result.is_err() {
+                let _ = tokio::fs::remove_file(&destination).await;
+            }
+            let completed = match result {
+                Ok((protocol, weight)) => Completed::Ready {
+                    generation,
+                    key,
+                    protocol,
+                    weight,
+                },
+                Err(error) => Completed::Failed {
+                    generation,
+                    key,
+                    message: safe_error(&error),
+                },
+            };
+            let _ = tx.send(completed).await;
+        });
+    }
+
+    fn graphics_avatar_protocol(&self) -> bool {
+        self.config.enabled
+            && self.config.protocol != MediaProtocol::Off
+            && matches!(
+                self.picker.protocol_type(),
+                ProtocolType::Kitty | ProtocolType::Sixel | ProtocolType::Iterm2
+            )
     }
 
     pub fn state(&self, attachment: &Attachment, width: u16) -> Option<&MediaState> {
@@ -552,19 +686,28 @@ impl MediaRuntime {
     }
 
     pub async fn clear_cache(&mut self, community: Option<Uuid>) -> Result<()> {
-        let path = community.map_or_else(
-            || self.cache_root.clone(),
-            |id| self.cache_root.join(id.to_string()),
-        );
-        if path.exists() {
-            tokio::fs::remove_dir_all(&path)
+        self.generation = self.generation.wrapping_add(1);
+        let paths = [
+            community.map_or_else(
+                || self.cache_root.clone(),
+                |id| self.cache_root.join(id.to_string()),
+            ),
+            community.map_or_else(
+                || self.avatar_cache_root.clone(),
+                |id| self.avatar_cache_root.join(id.to_string()),
+            ),
+        ];
+        for path in paths {
+            if path.exists() {
+                tokio::fs::remove_dir_all(&path)
+                    .await
+                    .map_err(|error| Error::io(&path, error))?;
+            }
+            tokio::fs::create_dir_all(&path)
                 .await
                 .map_err(|error| Error::io(&path, error))?;
+            crate::paths::set_private_permissions(&path)?;
         }
-        tokio::fs::create_dir_all(&path)
-            .await
-            .map_err(|error| Error::io(&path, error))?;
-        crate::paths::set_private_permissions(&path)?;
         self.clear_memory_state();
         Ok(())
     }
@@ -605,6 +748,31 @@ fn auto_protocol_from_environment() -> Option<ProtocolType> {
 
 fn cache_key(attachment: &Attachment, width: u16) -> String {
     format!("{}:{width}", attachment.sha256)
+}
+
+fn should_request_avatar(
+    mode: ProfileAvatars,
+    network_enabled: bool,
+    graphics_protocol: bool,
+    width: u16,
+) -> bool {
+    mode == ProfileAvatars::Trusted && network_enabled && graphics_protocol && width >= 2
+}
+
+fn avatar_key(pubkey: &str, picture: &str, width: u16) -> String {
+    format!(
+        "avatar:{}:{}:{width}",
+        profile_digest(pubkey),
+        url_digest(picture)
+    )
+}
+
+fn profile_digest(pubkey: &str) -> String {
+    hex::encode(Sha256::digest(pubkey.as_bytes()))
+}
+
+fn url_digest(url: &str) -> String {
+    hex::encode(Sha256::digest(url.as_bytes()))
 }
 
 fn poster_details(attachment: &Attachment) -> Option<(String, String)> {
@@ -787,6 +955,44 @@ fn safe_error(error: &Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn avatar_requests_require_enabled_network_and_graphics() {
+        assert!(should_request_avatar(
+            ProfileAvatars::Trusted,
+            true,
+            true,
+            4
+        ));
+        assert!(!should_request_avatar(ProfileAvatars::Off, true, true, 4));
+        assert!(!should_request_avatar(
+            ProfileAvatars::Trusted,
+            false,
+            true,
+            4
+        ));
+        assert!(!should_request_avatar(
+            ProfileAvatars::Trusted,
+            true,
+            false,
+            4
+        ));
+        assert!(!should_request_avatar(
+            ProfileAvatars::Trusted,
+            true,
+            true,
+            1
+        ));
+    }
+
+    #[test]
+    fn avatar_state_keys_are_url_free_and_profile_specific() {
+        let first = avatar_key("a", "https://cdn.example.test/a.png", 4);
+        assert!(!first.contains("example"));
+        assert_ne!(first, avatar_key("b", "https://cdn.example.test/a.png", 4));
+        assert_ne!(first, avatar_key("a", "https://cdn.example.test/b.png", 4));
+        assert_ne!(first, avatar_key("a", "https://cdn.example.test/a.png", 5));
+    }
 
     #[test]
     fn weighted_cache_evicts_the_oldest_non_visible_entry() {
