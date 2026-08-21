@@ -2362,6 +2362,9 @@ impl App {
             self.last_marked.remove(&channel.to_string());
             self.subscribe_channel(channel).await?;
             self.spawn_backfill(channel);
+            // Explicitly opening a channel starts at its live edge. Persist the
+            // local marker now rather than waiting for a later redraw/tick.
+            self.mark_current_read().await?;
         }
         Ok(())
     }
