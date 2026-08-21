@@ -68,6 +68,7 @@ pub const fn keymap_allows(scope: KeyScope, action: UiAction) -> bool {
                 | UiAction::DeletePreviousWord
                 | UiAction::DeleteToStart
                 | UiAction::DeleteToEnd
+                | UiAction::ClearComposer
                 | UiAction::MoveWordLeft
                 | UiAction::MoveWordRight
                 | UiAction::MoveLineStart
@@ -84,6 +85,7 @@ pub const fn keymap_allows(scope: KeyScope, action: UiAction) -> bool {
                 | UiAction::DeletePreviousWord
                 | UiAction::DeleteToStart
                 | UiAction::DeleteToEnd
+                | UiAction::ClearComposer
                 | UiAction::MoveWordLeft
                 | UiAction::MoveWordRight
                 | UiAction::MoveLineStart

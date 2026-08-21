@@ -47,6 +47,7 @@ pub enum ConfirmationKind {
     Quit,
     Delete,
     InboxRead,
+    ClearDraft,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

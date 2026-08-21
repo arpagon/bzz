@@ -67,6 +67,7 @@ pub enum UiAction {
     DeletePreviousWord,
     DeleteToStart,
     DeleteToEnd,
+    ClearComposer,
     MoveWordLeft,
     MoveWordRight,
     MoveLineStart,
@@ -126,6 +127,7 @@ impl UiAction {
             Self::DeletePreviousWord => "delete previous word",
             Self::DeleteToStart => "delete to line start",
             Self::DeleteToEnd => "delete to line end",
+            Self::ClearComposer => "clear draft",
             Self::MoveWordLeft => "previous word",
             Self::MoveWordRight => "next word",
             Self::MoveLineStart => "line start",
@@ -454,6 +456,7 @@ impl KeyMap {
         );
         add(KeyScope::Composer, &["ctrl-u"], UiAction::DeleteToStart);
         add(KeyScope::Composer, &["ctrl-k"], UiAction::DeleteToEnd);
+        add(KeyScope::Composer, &["ctrl-l"], UiAction::ClearComposer);
         add(KeyScope::Composer, &["ctrl-left"], UiAction::MoveWordLeft);
         add(KeyScope::Composer, &["ctrl-right"], UiAction::MoveWordRight);
         add(KeyScope::Composer, &["home"], UiAction::MoveLineStart);
@@ -697,6 +700,7 @@ fn composer_action(action: UiAction) -> bool {
             | UiAction::DeletePreviousWord
             | UiAction::DeleteToStart
             | UiAction::DeleteToEnd
+            | UiAction::ClearComposer
             | UiAction::MoveWordLeft
             | UiAction::MoveWordRight
             | UiAction::MoveLineStart
@@ -816,6 +820,16 @@ mod tests {
             keymap
                 .next_chords(KeyScope::Workspace, &[space])
                 .contains(&n)
+        );
+    }
+
+    #[test]
+    fn composer_has_a_confirmable_clear_draft_binding() {
+        let keymap = KeyMap::builtin();
+        let clear = KeyChord::new(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        assert_eq!(
+            keymap.lookup(KeyScope::Composer, &[clear]),
+            KeyLookup::Action(UiAction::ClearComposer)
         );
     }
 

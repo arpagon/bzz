@@ -1662,6 +1662,16 @@ impl App {
                     }
                     _ => {}
                 },
+                Some(ConfirmationKind::ClearDraft) => match key.code {
+                    KeyCode::Char('y' | 'Y') => {
+                        self.clear_composer_draft().await?;
+                        self.presentation.close_overlay();
+                    }
+                    KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                        self.presentation.close_overlay();
+                    }
+                    _ => {}
+                },
                 None => self.presentation.close_overlay(),
             },
             Some(Overlay::Finder) => self.text_overlay_key(key, true).await?,
@@ -1741,6 +1751,13 @@ impl App {
             UiAction::DeletePreviousWord => self.composer.delete_previous_word(),
             UiAction::DeleteToStart => self.composer.delete_to_line_start(),
             UiAction::DeleteToEnd => self.composer.delete_to_line_end(),
+            UiAction::ClearComposer => {
+                if !self.composer.body.is_empty() || !self.composer.attachments.is_empty() {
+                    self.presentation
+                        .open_confirmation(ConfirmationKind::ClearDraft);
+                }
+                return Ok(());
+            }
             UiAction::MoveWordLeft => self.composer.move_word_left(),
             UiAction::MoveWordRight => self.composer.move_word_right(),
             UiAction::MoveLineStart => self.composer.move_to_line_start(),
@@ -2496,14 +2513,8 @@ impl App {
             KeyAction::RemoveAttachment => {
                 if let Some(crate::media::DraftAttachment::Pending(pending)) =
                     self.composer.attachments.pop()
-                    && let Some(community) = self.active_community_id()
                 {
-                    self.uploading_media
-                        .remove(&format!("{community}:{}", pending.sha256));
-                    let path = self.media.staging_dir(community).join(pending.cache_name);
-                    tokio::spawn(async move {
-                        let _ = tokio::fs::remove_file(path).await;
-                    });
+                    self.discard_pending_attachment(pending);
                 }
             }
             KeyAction::RetryAttachments => {
@@ -2529,6 +2540,28 @@ impl App {
             _ => {}
         }
         self.refresh_mention_picker().await?;
+        self.persist_draft().await
+    }
+
+    fn discard_pending_attachment(&mut self, pending: crate::media::PendingAttachment) {
+        let Some(community) = self.active_community_id() else {
+            return;
+        };
+        self.uploading_media
+            .remove(&format!("{community}:{}", pending.sha256));
+        let path = self.media.staging_dir(community).join(pending.cache_name);
+        tokio::spawn(async move {
+            let _ = tokio::fs::remove_file(path).await;
+        });
+    }
+
+    async fn clear_composer_draft(&mut self) -> Result<()> {
+        for attachment in self.composer.clear() {
+            if let crate::media::DraftAttachment::Pending(pending) = attachment {
+                self.discard_pending_attachment(pending);
+            }
+        }
+        self.mention_picker = None;
         self.persist_draft().await
     }
 
@@ -4497,7 +4530,7 @@ impl App {
                 )
             };
             (
-                format!(" {target} · Enter send · Ctrl-a attach · Esc close "),
+                format!(" {target} · Enter send · Ctrl-l clear · Ctrl-a attach · Esc close "),
                 format!("{}{}", sanitize::text(&self.composer.body), attachments),
                 HighlightGroup::ActiveComposerBorder,
                 HighlightGroup::Composer,
@@ -4705,6 +4738,12 @@ impl App {
                         "Press y to mark {} conversation(s) read or n/Esc to cancel",
                         self.pending_inbox_read.len()
                     ),
+                ),
+                Some(ConfirmationKind::ClearDraft) => self.render_prompt(
+                    frame,
+                    area,
+                    " clear draft? ",
+                    "Press y to remove text and attachments or n/Esc to keep the draft",
                 ),
                 None => {}
             },

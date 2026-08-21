@@ -243,6 +243,14 @@ mod tests {
             ),
             InputDispatch::Owned(InputOwner::Composer)
         );
+        assert_eq!(
+            router.dispatch(
+                &keymap,
+                context,
+                key(KeyCode::Char('l'), KeyModifiers::CONTROL)
+            ),
+            InputDispatch::Action(UiAction::ClearComposer)
+        );
     }
 
     #[test]

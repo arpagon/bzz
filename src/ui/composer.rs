@@ -287,6 +287,15 @@ impl Composer {
         &self.mentions
     }
 
+    /// Clear all unsent content. The caller owns any returned attachments so it
+    /// can cancel pending work or otherwise clean up their external state.
+    pub fn clear(&mut self) -> Vec<crate::media::DraftAttachment> {
+        self.body.clear();
+        self.cursor = 0;
+        self.mentions.clear();
+        std::mem::take(&mut self.attachments)
+    }
+
     pub fn set_draft(
         &mut self,
         body: String,
@@ -549,6 +558,32 @@ mod tests {
         composer.move_to_line_start();
         composer.delete_to_line_start();
         assert_eq!(composer.body, "one \n");
+    }
+
+    #[test]
+    fn clear_removes_text_mentions_and_attachments() {
+        let mut composer = Composer::default();
+        composer.set_draft(
+            "@One".into(),
+            vec![crate::media::DraftAttachment::Pending(
+                crate::media::PendingAttachment {
+                    cache_name: "one".into(),
+                    mime: "text/plain".into(),
+                    filename: "one.txt".into(),
+                    sha256: "a".repeat(64),
+                    size: 1,
+                },
+            )],
+            vec![DraftMention {
+                byte_start: 0,
+                byte_end: 4,
+                pubkey: KEY.into(),
+            }],
+        );
+        assert_eq!(composer.clear().len(), 1);
+        assert_eq!(composer.body, "");
+        assert_eq!(composer.cursor, 0);
+        assert!(composer.mentions().is_empty());
     }
 
     #[test]
