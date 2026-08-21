@@ -153,8 +153,9 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
 [the v0.7.0 release notes](docs/release-v0.7.0.md), the
 [basic-first manual E2E plan](docs/e2e-manual.md),
-[remote-avatar validation evidence](docs/validation-v0.7.md), and the
-[Herdr-assisted E2E guide](docs/e2e-herdr.md).
+[remote-avatar validation evidence](docs/validation-v0.7.md),
+[published v0.7 artifact verification](docs/release-v0.7-verification.md), and
+the [Herdr-assisted E2E guide](docs/e2e-herdr.md).
 
 ## License
 
