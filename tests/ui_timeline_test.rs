@@ -95,6 +95,19 @@ fn wrapped_rows_are_measured_for_detached_scroll() {
 }
 
 #[test]
+fn fully_visible_detached_timeline_is_still_at_the_live_edge() {
+    let state = TimelineState {
+        selected_event: Some("a".into()),
+        at_live_bottom: false,
+        viewport_height: 10,
+        content_height: 2,
+        ..TimelineState::default()
+    };
+
+    assert!(state.visible_at_live_edge());
+}
+
+#[test]
 fn live_bottom_tracks_latest() {
     let mut state = TimelineState {
         selected_event: Some("a".into()),

@@ -5132,9 +5132,9 @@ fn should_mark_visible_read(
         && presentation.overlay.is_none()
         && presentation.composer_target.is_none()
         && if presentation.focus == FocusSurface::Context {
-            thread_timeline.at_live_bottom
+            thread_timeline.visible_at_live_edge()
         } else {
-            timeline.at_live_bottom
+            timeline.visible_at_live_edge()
         }
 }
 
@@ -5148,7 +5148,7 @@ fn timeline_read_mark(
     messages: &[Message],
 ) -> Option<(String, u32)> {
     let last = messages.last()?;
-    (timeline.at_live_bottom && last.channel_id == channel).then(|| {
+    (timeline.visible_at_live_edge() && last.channel_id == channel).then(|| {
         (
             channel.to_string(),
             u32::try_from(last.created_at).unwrap_or(u32::MAX),

@@ -112,6 +112,16 @@ impl TimelineState {
             .as_ref()
             .and_then(|id| messages.iter().position(|message| &message.event_id == id))
     }
+
+    /// Whether every measured row is currently visible at the newest edge.
+    /// A detached message selection intentionally clears `at_live_bottom`, but
+    /// when the entire timeline fits in the viewport there is no hidden newer
+    /// content and it is safe to acknowledge the visible channel as read.
+    pub const fn visible_at_live_edge(&self) -> bool {
+        self.at_live_bottom
+            || (self.viewport_height > 0 && self.content_height <= self.viewport_height)
+    }
+
     pub fn move_by(&mut self, messages: &[Message], delta: isize) {
         if messages.is_empty() {
             return;
