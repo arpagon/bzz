@@ -99,6 +99,24 @@ impl Store {
             .collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
+    /// Latest non-deleted channel activity, including replies hidden behind a
+    /// thread context. This is the channel-level read boundary; the timeline
+    /// query intentionally renders only top-level messages.
+    pub fn latest_channel_activity_at(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+    ) -> Result<Option<u64>> {
+        let value: Option<i64> = self.connection.query_row(
+            "SELECT max(created_at) FROM events
+             WHERE community_id=?1 AND channel_id=?2
+               AND kind IN (9,40002,40099) AND deleted_by_event_id IS NULL",
+            params![community_id.to_string(), channel_id.to_string()],
+            |row| row.get(0),
+        )?;
+        Ok(value.and_then(|at| u64::try_from(at).ok()))
+    }
+
     pub fn messages(
         &self,
         community_id: Uuid,

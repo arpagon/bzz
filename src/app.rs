@@ -2960,11 +2960,20 @@ impl App {
                     u32::try_from(message.created_at).unwrap_or(u32::MAX),
                 )
             }));
-        } else if let Some((context, at)) =
+        } else if let Some((context, displayed_at)) =
             timeline_read_mark(&self.timeline, channel, &self.messages)
         {
+            // A channel view renders top-level messages only, but its unread
+            // badge includes replies. Opening the live edge therefore
+            // acknowledges the latest local channel activity, not only the
+            // latest rendered root message.
+            let latest = self
+                .store
+                .call(move |store| store.latest_channel_activity_at(community, channel))
+                .await?
+                .unwrap_or(u64::from(displayed_at));
             visible_channel = true;
-            marks.push((context, at));
+            marks.push((context, u32::try_from(latest).unwrap_or(u32::MAX)));
         }
         let mut advanced = false;
         for (context, at) in marks {

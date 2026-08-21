@@ -198,6 +198,12 @@ fn thread_read_markers_clear_their_sidebar_unread_indicator() {
     .unwrap();
     store.apply_event(community, &root).unwrap();
     store.apply_event(community, &reply).unwrap();
+    assert_eq!(
+        store
+            .latest_channel_activity_at(community, channel)
+            .unwrap(),
+        Some(20)
+    );
     store
         .advance_read(community, &self_pubkey, &channel.to_string(), 10, true)
         .unwrap();
