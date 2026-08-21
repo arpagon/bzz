@@ -163,9 +163,10 @@ avatar path has two non-interchangeable branches:
   `/media/<64-lowercase-hex>.<jpg|jpeg|png|gif|webp>` at the active community
   origin. Before a request, bzz validates the full URL and binds the media hash;
   it then signs a short-lived kind `24242` Blossom `t=get` event. The media
-  client refuses redirects, and the header is constructed only after that
-  same-origin validation, so it cannot reach another origin. The downloaded
-  bytes must match both image MIME/magic and the address hash.
+  client disables proxies and refuses redirects, and the header is constructed
+  only after that same-origin validation, so it cannot reach another origin or
+  an ambient proxy. The downloaded bytes must match both image MIME/magic and
+  the address hash.
 
 The external branch is capped at 2 MiB; the authenticated relay branch is
 capped at 10 MiB. Both use the same owner-only avatar cache, isolated by

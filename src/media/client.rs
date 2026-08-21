@@ -71,7 +71,10 @@ impl MediaClient {
         signer: SignerHandle,
         concurrency: usize,
     ) -> Result<Self> {
+        // Every request made by this client may carry a hash-scoped NIP-98
+        // authorization. Never allow ambient proxy configuration to receive it.
         let client = Client::builder()
+            .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(600))

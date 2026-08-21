@@ -557,26 +557,11 @@ fn render_internal(
                 area: Rect::new(content.x, y, content.width, height),
             });
         }
-        if let (Some(avatar), Some(avatar_offset)) =
-            (block.avatar.as_ref(), block.avatar_top(content.width))
-        {
-            let avatar_y = global_y.saturating_add(u32::from(avatar_offset));
-            let avatar_height = u32::from(avatar.protocol.size().height);
-            if avatar_y.saturating_add(avatar_height) > scroll && avatar_y < scroll + viewport {
-                let relative_y = i32::try_from(avatar_y).unwrap_or(i32::MAX)
-                    - i32::try_from(scroll).unwrap_or(i32::MAX);
-                frame.render_widget(
-                    SlicedImage::new(
-                        avatar.protocol.as_ref(),
-                        SignedPosition::from((
-                            1,
-                            relative_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-                        )),
-                    ),
-                    content,
-                );
-            }
-        }
+        let avatar = block.avatar.as_ref().and_then(|avatar| {
+            block
+                .avatar_top(content.width)
+                .map(|offset| (avatar.protocol.clone(), offset))
+        });
         let mut row_y = global_y;
         for row in block.rows {
             let row_height = u32::from(MessageBlock::row_height(&row, content.width));
@@ -619,6 +604,27 @@ fn render_internal(
                 }
             }
             row_y += row_height;
+        }
+        // Render after the adjacent text rows: their indentation intentionally
+        // writes blanks into the avatar gutter, and the Kitty placeholders
+        // must be the last cells written there.
+        if let Some((avatar, avatar_offset)) = avatar {
+            let avatar_y = global_y.saturating_add(u32::from(avatar_offset));
+            let avatar_height = u32::from(avatar.size().height);
+            if avatar_y.saturating_add(avatar_height) > scroll && avatar_y < scroll + viewport {
+                let relative_y = i32::try_from(avatar_y).unwrap_or(i32::MAX)
+                    - i32::try_from(scroll).unwrap_or(i32::MAX);
+                frame.render_widget(
+                    SlicedImage::new(
+                        avatar.as_ref(),
+                        SignedPosition::from((
+                            1,
+                            relative_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                        )),
+                    ),
+                    content,
+                );
+            }
         }
         global_y += block_height;
     }

@@ -18,7 +18,9 @@ single-use local server and generated PNG bytes. It proves that bzz:
 
 The existing avatar URL, redirect, DNS-public-address, MIME/magic, decoding,
 cache-isolation, locked/cache-only, off, and non-graphics tests remain in the
-full suite.
+full suite. A pre-release client audit also verifies that `MediaClient` is
+built with `no_proxy()`, so a hash-scoped authorization cannot be sent through
+an ambient proxy.
 
 ## Operator smoke
 
@@ -27,6 +29,16 @@ identity successfully fetched a relay-hosted kind-0 profile image that requires
 read authorization. The response was `200`, was 3,748,425 bytes, and was
 removed after verification. No profile URL, authorization value, image bytes,
 or private cache data is recorded here.
+
+## Graphics-terminal review
+
+A direct Ghostty-on-Xvfb review of an active timeline (not tmux or Herdr)
+confirmed that photographs stay in the left gutter beside their author
+header/body; text indentation no longer overwrites Kitty placeholders. The
+review exercised upward scrolling, a channel switch and return, `:media reload`,
+and a smaller then restored terminal geometry. No stale gutter cells, overlap,
+or renewed visible-avatar flicker was observed. The private screenshots and
+transient session were removed after review.
 
 ## Required release checks
 

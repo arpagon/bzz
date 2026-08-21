@@ -23,9 +23,10 @@ pictures. Add a second handler only for a URL that, before any signing:
 
 That handler mints the existing short-lived, hash-scoped Blossom/Buzz media
 read event (`kind 24242`, `t=get`, `x=<sha256>`, expiry, and active relay
-authority) and sends it only to the already validated URL. It refuses redirects
-and verifies the streamed 10 MiB-or-less response against the path hash as well
-as its response MIME and image magic.
+authority) and sends it only to the already validated URL. The
+authorization-bearing media client disables proxies and refuses redirects, then
+verifies the streamed 10 MiB-or-less response against the path hash as well as
+its response MIME and image magic.
 
 The request occurs only while the matching identity is unlocked and an active
 community runtime exists. Locked/cache-only sessions, `profile_avatars =
