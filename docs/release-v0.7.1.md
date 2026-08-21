@@ -16,7 +16,9 @@ the authenticated relay-avatar 10 MiB limit and must match its content-addressed
 hash, MIME, and image magic.
 
 External profile URLs retain the v0.7.0 credential-free HTTPS path and 2 MiB
-limit. `off`,
+limit. Prepared-avatar memory accounting uses the resized terminal allocation,
+rather than the source photograph dimensions, preventing large source images
+from evicting visible small avatars and causing redraw flicker. `off`,
 locked/cache-only sessions, invalid URLs, non-graphics terminals, and failed
 loads retain the deterministic textual marker and make no avatar request.
 

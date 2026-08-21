@@ -238,7 +238,13 @@ impl MediaRuntime {
                 let decode_path = path.clone();
                 let (protocol, weight) = tokio::task::spawn_blocking(move || {
                     let image = decode_image(&decode_path)?;
-                    let weight = prepared_weight(&image);
+                    let allocation = Size::new(width, 3);
+                    // The protocol retains its resized terminal representation,
+                    // not the full decoded source photograph. Charging the
+                    // original dimensions makes a few ordinary avatars evict
+                    // one another during redraws, which requeues them and
+                    // produces visible flicker.
+                    let weight = prepared_weight(&picker, allocation);
                     if memory_limit == 0 || weight > memory_limit {
                         return Err(Error::Protocol(
                             "prepared profile avatar exceeds the memory cache limit".into(),
@@ -247,7 +253,7 @@ impl MediaRuntime {
                     let protocol = SlicedProtocol::new_with_resize(
                         &picker,
                         image,
-                        Size::new(width, 3),
+                        allocation,
                         Resize::Fit(None),
                     )
                     .map_err(|error| Error::Protocol(error.to_string()))?;
@@ -390,7 +396,8 @@ impl MediaRuntime {
                 let decode_path = verified.path.clone();
                 let (protocol, weight) = tokio::task::spawn_blocking(move || {
                     let image = decode_image(&decode_path)?;
-                    let weight = prepared_weight(&image);
+                    let allocation = Size::new(width, max_rows);
+                    let weight = prepared_weight(&picker, allocation);
                     if memory_limit == 0 || weight > memory_limit {
                         return Err(Error::Protocol(
                             "prepared video poster exceeds the memory cache limit".into(),
@@ -399,7 +406,7 @@ impl MediaRuntime {
                     let protocol = SlicedProtocol::new_with_resize(
                         &picker,
                         image,
-                        Size::new(width, max_rows),
+                        allocation,
                         Resize::Fit(None),
                     )
                     .map_err(|error| Error::Protocol(error.to_string()))?;
@@ -516,7 +523,8 @@ impl MediaRuntime {
                 let decode_path = path.clone();
                 let (protocol, weight) = tokio::task::spawn_blocking(move || {
                     let image = decode_image(&decode_path)?;
-                    let weight = prepared_weight(&image);
+                    let allocation = Size::new(width, max_rows);
+                    let weight = prepared_weight(&picker, allocation);
                     if memory_limit == 0 || weight > memory_limit {
                         return Err(Error::Protocol(
                             "prepared image exceeds the memory cache limit".into(),
@@ -525,7 +533,7 @@ impl MediaRuntime {
                     let protocol = SlicedProtocol::new_with_resize(
                         &picker,
                         image,
-                        Size::new(width, max_rows),
+                        allocation,
                         Resize::Fit(None),
                     )
                     .map_err(|error| Error::Protocol(error.to_string()))?;
@@ -789,11 +797,17 @@ fn poster_details(attachment: &Attachment) -> Option<(String, String)> {
     Some((url, hash))
 }
 
-fn prepared_weight(image: &image::DynamicImage) -> u64 {
-    u64::from(image.width())
-        .saturating_mul(u64::from(image.height()))
-        // Conservatively cover the decoded pixels plus protocol/base64/cell
-        // representation overhead retained by `SlicedProtocol`.
+/// Upper bound for the resized pixels and protocol data retained by a prepared
+/// terminal image. `SlicedProtocol::new_with_resize(..., Resize::Fit)` drops
+/// the decoded source before it enters the memory cache, so source dimensions
+/// must not be used here.
+fn prepared_weight(picker: &Picker, allocation: Size) -> u64 {
+    let font = picker.font_size();
+    u64::from(allocation.width)
+        .saturating_mul(u64::from(font.width))
+        .saturating_mul(u64::from(allocation.height))
+        .saturating_mul(u64::from(font.height))
+        // Cover RGBA pixels, encoded protocol data, and cell representation.
         .saturating_mul(8)
         .saturating_add(64 * 1024)
 }
@@ -1018,10 +1032,22 @@ mod tests {
             oldest_cached_key(&weights, &used, "visible").as_deref(),
             Some("old")
         );
-        assert_eq!(
-            prepared_weight(&image::DynamicImage::new_rgb8(4, 2)),
-            65_600
-        );
+    }
+
+    #[test]
+    fn prepared_cache_weight_tracks_terminal_allocation_not_source_dimensions() {
+        let picker = Picker::halfblocks();
+        let font = picker.font_size();
+        let avatar = prepared_weight(&picker, Size::new(4, 3));
+        let expected = u64::from(4_u16)
+            .saturating_mul(u64::from(font.width))
+            .saturating_mul(u64::from(3_u16))
+            .saturating_mul(u64::from(font.height))
+            .saturating_mul(8)
+            .saturating_add(64 * 1024);
+        assert_eq!(avatar, expected);
+        assert!(avatar < 100_000, "a 4×3 avatar stays inexpensive");
+        assert!(prepared_weight(&picker, Size::new(72, 12)) > avatar);
     }
 
     #[test]

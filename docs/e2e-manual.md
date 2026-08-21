@@ -213,9 +213,10 @@ active relay's canonical `/media/<sha256>.<image-extension>` path that requires
 a media-read authorization. In Kitty, Sixel, or iTerm2, open a channel
 containing each author's generated message and wait for the photograph. It must
 occupy measured timeline rows rather than painting over text; scroll rapidly,
-resize, switch channels/communities, run `:media reload`, and return. No stale
-image cells may remain and the textual marker must stay useful during loading
-or failure.
+resize, switch channels/communities, run `:media reload`, and return. With
+multiple high-resolution source photographs, visible allocated rows must remain
+stable (no alternating/flickering images). No stale image cells may remain and
+the textual marker must stay useful during loading or failure.
 
 For the relay-owned picture, capture only request metadata from disposable
 infrastructure: it must have a short-lived `t=get` authorization bound to the

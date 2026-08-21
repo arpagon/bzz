@@ -108,7 +108,10 @@ authorization or network request is made. Startup removes partial/symlink
 entries and reconciles stale SQLite metadata. The default disk quota is 512 MiB
 with access-time eviction; staging files are not quota-evicted while referenced
 by a draft. Prepared terminal images use a byte-weighted in-memory LRU and are
-rejected when one entry cannot fit the configured memory budget.
+rejected when one entry cannot fit the configured memory budget. Entries are
+charged for their post-resize terminal allocation (including protocol overhead),
+not the dimensions of a source photograph, so small avatars do not evict one
+another merely because their originals are high resolution.
 
 Profile-avatar bytes use a separate owner-only root partitioned by community
 and identity, with SHA-256 profile/URL digest filenames. They are not shown or
