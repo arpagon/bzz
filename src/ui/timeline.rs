@@ -171,31 +171,64 @@ impl TimelineState {
     }
 }
 
+const AVATAR_WIDTH: u16 = 4;
+/// One selection cell, a four-cell profile photo, and one breathing cell.
+/// Body text shares this alignment whether a photograph is ready or the
+/// textual author marker is the fallback.
+const MESSAGE_TEXT_GUTTER: &str = "      ";
+
 enum TimelineRow {
     Text(Line<'static>),
-    /// Profile photographs occupy their own measured row. They are never
-    /// painted over author text, so scrolling cannot leave terminal cells.
-    AvatarImage(Arc<SlicedProtocol>),
     Image(Arc<SlicedProtocol>),
+}
+
+struct AvatarPlacement {
+    protocol: Arc<SlicedProtocol>,
+    /// Index of the first text row that the photograph accompanies. Date
+    /// separators remain full width; the author header and body form the
+    /// adjacent text column.
+    before_row: usize,
 }
 
 struct MessageBlock {
     rows: Vec<TimelineRow>,
+    avatar: Option<AvatarPlacement>,
     selected: bool,
     copy_selected: bool,
 }
 
 impl MessageBlock {
+    fn row_height(row: &TimelineRow, width: u16) -> u16 {
+        match row {
+            TimelineRow::Text(line) => text_height(line, width),
+            TimelineRow::Image(protocol) => protocol.size().height,
+        }
+    }
+
+    fn avatar_top(&self, width: u16) -> Option<u16> {
+        let avatar = self.avatar.as_ref()?;
+        Some(
+            self.rows
+                .iter()
+                .take(avatar.before_row)
+                .map(|row| Self::row_height(row, width))
+                .fold(0_u16, u16::saturating_add),
+        )
+    }
+
     fn height(&self, width: u16) -> u16 {
-        self.rows
+        let text_height = self
+            .rows
             .iter()
-            .map(|row| match row {
-                TimelineRow::Text(line) => text_height(line, width),
-                TimelineRow::AvatarImage(protocol) | TimelineRow::Image(protocol) => {
-                    protocol.size().height
-                }
-            })
-            .fold(0_u16, u16::saturating_add)
+            .map(|row| Self::row_height(row, width))
+            .fold(0_u16, u16::saturating_add);
+        self.avatar.as_ref().map_or(text_height, |avatar| {
+            text_height.max(
+                self.avatar_top(width)
+                    .unwrap_or_default()
+                    .saturating_add(avatar.protocol.size().height),
+            )
+        })
     }
 }
 
@@ -427,8 +460,8 @@ fn render_internal(
         return;
     }
 
-    let image_width = content.width.saturating_sub(4).max(2);
-    const AVATAR_WIDTH: u16 = 4;
+    // Keep wrapped body text within the six-cell avatar/author gutter.
+    let image_width = content.width.saturating_sub(5).max(2);
     let selected_index = state.selected_index(messages);
     if let Some(runtime) = media.as_deref_mut() {
         let center = selected_index.unwrap_or_else(|| messages.len().saturating_sub(1));
@@ -524,14 +557,29 @@ fn render_internal(
                 area: Rect::new(content.x, y, content.width, height),
             });
         }
+        if let (Some(avatar), Some(avatar_offset)) =
+            (block.avatar.as_ref(), block.avatar_top(content.width))
+        {
+            let avatar_y = global_y.saturating_add(u32::from(avatar_offset));
+            let avatar_height = u32::from(avatar.protocol.size().height);
+            if avatar_y.saturating_add(avatar_height) > scroll && avatar_y < scroll + viewport {
+                let relative_y = i32::try_from(avatar_y).unwrap_or(i32::MAX)
+                    - i32::try_from(scroll).unwrap_or(i32::MAX);
+                frame.render_widget(
+                    SlicedImage::new(
+                        avatar.protocol.as_ref(),
+                        SignedPosition::from((
+                            1,
+                            relative_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                        )),
+                    ),
+                    content,
+                );
+            }
+        }
         let mut row_y = global_y;
         for row in block.rows {
-            let row_height = match &row {
-                TimelineRow::Text(line) => u32::from(text_height(line, content.width)),
-                TimelineRow::AvatarImage(protocol) | TimelineRow::Image(protocol) => {
-                    u32::from(protocol.size().height)
-                }
-            };
+            let row_height = u32::from(MessageBlock::row_height(&row, content.width));
             if row_y + row_height > scroll && row_y < scroll + viewport {
                 match row {
                     TimelineRow::Text(line) => {
@@ -558,15 +606,6 @@ fn render_internal(
                                 Rect::new(content.x, y, content.width, height),
                             );
                         }
-                    }
-                    TimelineRow::AvatarImage(protocol) => {
-                        let relative_y = i32::try_from(row_y).unwrap_or(i32::MAX)
-                            - i32::try_from(scroll).unwrap_or(i32::MAX);
-                        let position = SignedPosition::from((
-                            1,
-                            relative_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-                        ));
-                        frame.render_widget(SlicedImage::new(protocol.as_ref(), position), content);
                     }
                     TimelineRow::Image(protocol) => {
                         let relative_y = i32::try_from(row_y).unwrap_or(i32::MAX)
@@ -605,6 +644,22 @@ fn message_block(
         .unwrap_or_else(|| crate::domain::abbreviated_pubkey(&message.pubkey));
     let author = sanitize::single_line(&author);
     let grouped = previous.is_some_and(|previous| same_message_group(previous, message));
+    let avatar = (!grouped)
+        .then(|| {
+            profiles
+                .get(&message.pubkey)
+                .and_then(|profile| profile.picture.as_deref())
+                .and_then(|picture| {
+                    media.and_then(|runtime| {
+                        runtime.avatar_state(&message.pubkey, picture, avatar_width)
+                    })
+                })
+                .and_then(|state| match state {
+                    MediaState::Ready(protocol) => Some(protocol.clone()),
+                    MediaState::Loading | MediaState::Failed(_) => None,
+                })
+        })
+        .flatten();
     let mut rows = vec![];
     if previous.is_none_or(|previous| day_key(previous.created_at) != day_key(message.created_at)) {
         rows.push(TimelineRow::Text(Line::styled(
@@ -612,6 +667,9 @@ fn message_block(
             theme.style(HighlightGroup::MessageDateSeparator),
         )));
     }
+    // The optional photograph starts beside this header, never in a row between
+    // the author and their message. Date separators above remain full-width.
+    let avatar_before_row = rows.len();
     let mut header = vec![];
     if selected {
         header.push(Span::styled("▌", theme.style(HighlightGroup::SelectedRow)));
@@ -619,16 +677,21 @@ fn message_block(
         header.push(Span::raw(" "));
     }
     if grouped {
-        header.push(Span::raw("    "));
+        header.push(Span::raw("     "));
         header.push(Span::styled(
             format_time(message.created_at),
             theme.style(HighlightGroup::MessageTimestamp),
         ));
     } else {
-        header.push(Span::styled(
-            format!("{} ", avatar_marker(&message.pubkey, &author)),
-            theme.style(HighlightGroup::MessageAvatar),
-        ));
+        if avatar.is_some() {
+            // Reserve the exact text gutter occupied by the profile photo.
+            header.push(Span::raw("     "));
+        } else {
+            header.push(Span::styled(
+                format!("{} ", avatar_marker(&message.pubkey, &author)),
+                theme.style(HighlightGroup::MessageAvatar),
+            ));
+        }
         header.push(Span::styled(
             author,
             theme.style(HighlightGroup::MessageAuthor),
@@ -655,25 +718,9 @@ fn message_block(
         ));
     }
     rows.push(TimelineRow::Text(Line::from(header)));
-    if !grouped
-        && let Some(protocol) = profiles
-            .get(&message.pubkey)
-            .and_then(|profile| profile.picture.as_deref())
-            .and_then(|picture| {
-                media.and_then(|runtime| {
-                    runtime.avatar_state(&message.pubkey, picture, avatar_width)
-                })
-            })
-            .and_then(|state| match state {
-                MediaState::Ready(protocol) => Some(protocol.clone()),
-                MediaState::Loading | MediaState::Failed(_) => None,
-            })
-    {
-        rows.push(TimelineRow::AvatarImage(protocol));
-    }
     if message.deleted {
         rows.push(TimelineRow::Text(Line::styled(
-            "     message deleted",
+            format!("{MESSAGE_TEXT_GUTTER}message deleted"),
             theme.style(HighlightGroup::MessageDeleted),
         )));
     } else {
@@ -682,7 +729,7 @@ fn message_block(
                 .lines
         {
             let mut spans = vec![Span::styled(
-                "     ",
+                MESSAGE_TEXT_GUTTER,
                 theme.style(HighlightGroup::MessageBody),
             )];
             spans.extend(line.spans);
@@ -704,6 +751,10 @@ fn message_block(
     }
     MessageBlock {
         rows,
+        avatar: avatar.map(|protocol| AvatarPlacement {
+            protocol,
+            before_row: avatar_before_row,
+        }),
         selected,
         copy_selected,
     }
@@ -742,7 +793,10 @@ fn attachment_line(
         }
     };
     Line::from(vec![
-        Span::styled("     ▣ ", theme.style(HighlightGroup::MediaBorder)),
+        Span::styled(
+            format!("{MESSAGE_TEXT_GUTTER}▣ "),
+            theme.style(HighlightGroup::MediaBorder),
+        ),
         Span::styled(
             sanitize::single_line(attachment.label()),
             theme.style(HighlightGroup::MessageBody),
@@ -780,7 +834,7 @@ fn reaction_line(
     if aggregate.is_empty() {
         return None;
     }
-    let mut spans = vec![Span::raw("     ")];
+    let mut spans = vec![Span::raw(MESSAGE_TEXT_GUTTER)];
     for (index, (emoji, (count, own))) in aggregate.into_iter().enumerate() {
         if index > 0 {
             spans.push(Span::raw("  "));
@@ -862,9 +916,15 @@ fn format_time(timestamp: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{TimelineState, readable_area, same_message_group, text_height};
+    use std::sync::Arc;
+
+    use super::{
+        AvatarPlacement, MessageBlock, TimelineRow, TimelineState, readable_area,
+        same_message_group, text_height,
+    };
     use crate::domain::Message;
     use ratatui::layout::Rect;
+    use ratatui_image::sliced::SlicedProtocol;
     use uuid::Uuid;
 
     fn message(pubkey: &str, created_at: u64) -> Message {
@@ -910,6 +970,37 @@ mod tests {
             text_height(&ratatui::text::Line::raw("12345 12345 12345"), 10),
             3
         );
+    }
+
+    #[test]
+    fn avatar_shares_the_author_and_body_block_instead_of_inserting_a_row() {
+        let picker = ratatui_image::picker::Picker::halfblocks();
+        let protocol = Arc::new(
+            SlicedProtocol::new_with_resize(
+                &picker,
+                image::DynamicImage::new_rgb8(4, 3),
+                ratatui::layout::Size::new(4, 3),
+                ratatui_image::Resize::Fit(None),
+            )
+            .unwrap(),
+        );
+        let avatar_height = protocol.size().height;
+        let block = MessageBlock {
+            rows: vec![
+                TimelineRow::Text(ratatui::text::Line::raw("date")),
+                TimelineRow::Text(ratatui::text::Line::raw("      author")),
+                TimelineRow::Text(ratatui::text::Line::raw("      body")),
+            ],
+            avatar: Some(AvatarPlacement {
+                protocol,
+                before_row: 1,
+            }),
+            selected: false,
+            copy_selected: false,
+        };
+        assert_eq!(block.avatar_top(80), Some(1));
+        assert_eq!(block.height(80), (1 + avatar_height).max(3));
+        assert!(block.height(80) < 3 + avatar_height);
     }
 
     #[test]
