@@ -183,10 +183,17 @@ or run `:media reload` after changing terminal capability settings. Halfblocks
 and `protocol = "off"` intentionally keep the textual marker and make no
 avatar request.
 
-The profile URL must be public HTTPS on port 443 with a supported JPEG, PNG,
-GIF, or WebP response. Loopback/private hosts, IP literals, credentials,
-fragments, unsafe redirects, oversized responses, bad MIME/magic, and failed
-decodes remain markers only. Set `ui.profile_avatars = "off"` to prevent all
+An external profile URL must be public HTTPS on port 443 with a supported
+JPEG, PNG, GIF, or WebP response. Loopback/private hosts, IP literals,
+credentials, fragments, unsafe redirects, oversized responses, bad MIME/magic,
+and failed decodes remain markers only.
+
+A profile URL at the active community relay may instead be an authenticated
+canonical media image: `/media/<64-lowercase-hex>.<jpg|jpeg|png|gif|webp>` at
+that exact origin. bzz signs this narrow same-origin read only while unlocked;
+a `401` here usually means the identity no longer has community access. Other
+relay paths, external hosts, redirects, and non-image extensions never receive
+the authorization. Set `ui.profile_avatars = "off"` to prevent all
 profile-avatar requests. `bzz media clear --community <community-uuid> --yes`
 also removes that community's private avatar files.
 

@@ -1,6 +1,6 @@
 # ADR: v0.7 remote profile-avatar boundary
 
-**Status:** Accepted
+**Status:** Amended by [ADR v0.7.1 relay-hosted profile-avatar authorization](adr-v0.7.1-relay-profile-avatar-auth.md)
 
 ## Context
 
@@ -43,8 +43,10 @@ existing terminal-image rendering path. It is never painted as a direct text
 cell overlay. Textual markers remain visible during loading, failure, disabled
 mode, and in non-graphics terminals.
 
-The product contract is
+The original product contract is
 [`v0.7.0-remote-profile-avatars.md`](planning/2026-08-20/v0.7.0-remote-profile-avatars.md).
+The v0.7.1 amendment preserves this external public-URL boundary while adding
+a narrowly authenticated same-relay media branch.
 
 ## Consequences
 

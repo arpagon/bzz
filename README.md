@@ -4,9 +4,9 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.7.0 adds optional, credential-free public profile avatars while
-> retaining deterministic textual fallbacks and v0.6 conversation actions.
-> Protocol compatibility remains pinned to Buzz
+> Status: v0.7.1 candidate fixes relay-hosted authenticated profile avatars,
+> retains credential-free external avatars and deterministic textual fallbacks,
+> and preserves v0.6 conversation actions. Protocol compatibility remains pinned to Buzz
 > `ede26863345a518ec46edd6d7692e0281883491b`.
 
 ## Build
@@ -99,10 +99,12 @@ cover the main conversation, recovery, appearance, and security operations.
 
 Only descriptor-backed message media on the active Buzz community origin is
 fetched; arbitrary Markdown URLs stay inert. Independently, the default
-`ui.profile_avatars = "trusted"` may retrieve a bounded public kind-0 `picture`
-with no credentials, relay authorization, cookies, proxy, or identifying
-header; set it to `"off"` to keep profile URLs inert. Main blobs are fetched
-without redirects, authenticated with short-lived blob-scoped Blossom events,
+`ui.profile_avatars = "trusted"` may retrieve a bounded kind-0 `picture`.
+External pictures use a credential-free public-HTTPS client. A canonical image
+path on the active community relay instead receives a short-lived,
+content-addressed Blossom read authorization, never sent to another origin.
+Set it to `"off"` to keep profile URLs inert. Main blobs are fetched without
+redirects, authenticated with short-lived blob-scoped Blossom events,
 and size/MIME/SHA-256 verified before decode, display, save, or offline reuse.
 Generic files are never auto-downloaded or executed. Local image uploads are
 bounded, orientation-corrected, and stripped of private metadata before their
@@ -152,8 +154,10 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
 [the v0.7.0 release notes](docs/release-v0.7.0.md), the
+[v0.7.1 relay-avatar candidate](docs/release-v0.7.1.md), and the
 [basic-first manual E2E plan](docs/e2e-manual.md),
-[remote-avatar validation evidence](docs/validation-v0.7.md),
+[v0.7.0 avatar validation evidence](docs/validation-v0.7.md),
+[v0.7.1 relay-avatar validation](docs/validation-v0.7.1.md),
 [published v0.7 artifact verification](docs/release-v0.7-verification.md), and
 the [Herdr-assisted E2E guide](docs/e2e-herdr.md).
 

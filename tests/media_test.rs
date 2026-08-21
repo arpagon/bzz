@@ -158,6 +158,163 @@ async fn authenticated_media_download_is_hash_verified_and_origin_bound() {
 }
 
 #[tokio::test]
+async fn relay_hosted_profile_avatars_are_origin_hash_bound_and_authenticated() {
+    let image = image::DynamicImage::new_rgb8(3, 2);
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let body = encoded.into_inner();
+    let hash = hex::encode(Sha256::digest(&body));
+    let (base, captured) = serve_once(body.clone(), "image/png").await;
+    let client = MediaClient::new(
+        base.clone(),
+        base.authority().to_owned(),
+        SignerHandle::spawn(Keys::generate()),
+        1,
+    )
+    .unwrap();
+    let temporary = TempDir::new().unwrap();
+    let destination = temporary.path().join("avatar.png");
+    let url = base.join(&format!("media/{hash}.png")).unwrap();
+
+    assert!(client.is_relay_profile_avatar(url.as_str()));
+    assert!(!client.is_relay_profile_avatar(&format!("https://cdn.example.test/media/{hash}.png")));
+    assert!(
+        !client.is_relay_profile_avatar(base.join(&format!("media/{hash}.svg")).unwrap().as_str())
+    );
+    assert!(
+        !client.is_relay_profile_avatar(
+            base.join(&format!("media/{hash}.png?size=32"))
+                .unwrap()
+                .as_str()
+        )
+    );
+    assert!(
+        !client.is_relay_profile_avatar(
+            base.join(&format!("media/{}{}.png", "A", &hash[1..]))
+                .unwrap()
+                .as_str()
+        )
+    );
+    assert!(!client.is_relay_profile_avatar(&format!("/media/{hash}.png")));
+
+    client
+        .fetch_profile_avatar(url.as_str(), &destination)
+        .await
+        .unwrap();
+    assert_eq!(tokio::fs::read(&destination).await.unwrap(), body);
+    let request = captured.lock().unwrap().clone();
+    let encoded = request
+        .lines()
+        .find(|line| {
+            line.to_ascii_lowercase()
+                .starts_with("authorization: nostr ")
+        })
+        .and_then(|line| line.split_whitespace().nth(2))
+        .unwrap();
+    let event = Event::from_json(URL_SAFE_NO_PAD.decode(encoded).unwrap()).unwrap();
+    assert!(event.tags.iter().any(|tag| tag.as_slice() == ["t", "get"]));
+    assert!(
+        event
+            .tags
+            .iter()
+            .any(|tag| tag.as_slice() == ["x", hash.as_str()])
+    );
+}
+
+#[tokio::test]
+async fn media_runtime_uses_authenticated_branch_for_canonical_relay_avatar() {
+    let image = image::DynamicImage::new_rgb8(3, 2);
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let body = encoded.into_inner();
+    let hash = hex::encode(Sha256::digest(&body));
+    let (base, captured) = serve_once(body, "image/png").await;
+    let temporary = TempDir::new().unwrap();
+    let paths = Paths {
+        config_dir: temporary.path().join("config"),
+        data_dir: temporary.path().join("data"),
+        cache_dir: temporary.path().join("cache"),
+    };
+    paths.ensure().unwrap();
+    let mut media_config = Config::default().media;
+    media_config.protocol = MediaProtocol::Kitty;
+    let store = StoreHandle::spawn(Store::open(paths.database_file()).unwrap()).unwrap();
+    let mut runtime = MediaRuntime::new(
+        media_config,
+        Config::default().ui.profile_avatars,
+        &paths,
+        store,
+    );
+    let community = Uuid::new_v4();
+    let identity = Uuid::new_v4();
+    runtime.initialize_terminal();
+    runtime.bind(
+        community,
+        identity,
+        MediaClient::new(
+            base.clone(),
+            base.authority().to_owned(),
+            SignerHandle::spawn(Keys::generate()),
+            1,
+        )
+        .unwrap(),
+    );
+    let picture = base.join(&format!("media/{hash}.png")).unwrap().to_string();
+    runtime.request_avatar("profile", &picture, 4);
+
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        runtime.poll();
+        if matches!(
+            runtime.avatar_state("profile", &picture, 4),
+            Some(MediaState::Ready(_))
+        ) {
+            let request = captured.lock().unwrap().clone().to_ascii_lowercase();
+            assert!(request.contains("authorization: nostr "));
+            return;
+        }
+    }
+    panic!("relay avatar was not prepared by the media runtime");
+}
+
+#[tokio::test]
+async fn relay_hosted_profile_avatar_rejects_bytes_that_disagree_with_media_address() {
+    let image = image::DynamicImage::new_rgb8(3, 2);
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+    let body = encoded.into_inner();
+    let (base, _) = serve_once(body, "image/png").await;
+    let client = MediaClient::new(
+        base.clone(),
+        base.authority().to_owned(),
+        SignerHandle::spawn(Keys::generate()),
+        1,
+    )
+    .unwrap();
+    let temporary = TempDir::new().unwrap();
+    let destination = temporary.path().join("avatar.png");
+    let wrong_hash = "a".repeat(64);
+    let url = base.join(&format!("media/{wrong_hash}.png")).unwrap();
+
+    let error = client
+        .fetch_profile_avatar(url.as_str(), &destination)
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("profile avatar bytes do not match the relay media address")
+    );
+    assert!(!destination.exists());
+}
+
+#[tokio::test]
 async fn video_posters_are_hash_bound_and_magic_verified() {
     let image = image::DynamicImage::new_rgb8(3, 2);
     let mut encoded = std::io::Cursor::new(Vec::new());

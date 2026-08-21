@@ -137,8 +137,9 @@ pub enum ClipboardMode {
     Osc52,
 }
 
-/// Controls whether bzz fetches the public `picture` URL from a Nostr kind-0
-/// profile. Trusted fetches are still credential-free and HTTPS-only.
+/// Controls whether bzz fetches a Nostr kind-0 `picture`. Trusted fetching is
+/// credential-free for external URLs; a canonical image path on the active
+/// community relay receives narrowly scoped media-read authorization.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProfileAvatars {

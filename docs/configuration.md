@@ -31,7 +31,7 @@ thread_width = 44
 message_width = 110        # readable message measure; 48..200 cells
 channel_sort = "smart"      # smart|recent|alphabetical
 clipboard = "osc52"         # osc52|disabled; only writes after explicit y
-profile_avatars = "trusted"  # trusted|off; public kind-0 picture images
+profile_avatars = "trusted"  # trusted|off; kind-0 picture images
 theme = "bzz"
 mouse = "auto"              # auto|on|off
 
@@ -73,14 +73,17 @@ enables mouse capture only on an interactive, non-`dumb` terminal; set it to
 mouse-capture sequences. `ui.message_width` caps only the rendered text
 measure in a wider conversation pane; it never truncates, stores, or changes
 message content. The workspace uses labelled local community rows,
-deterministic textual author markers, optional public profile photographs, and
-a visible writing dock. `ui.profile_avatars = "trusted"` (the default) may
-fetch a valid HTTPS kind-0 `Profile.picture` through a separate,
-credential-free client only when the identity is unlocked and the terminal can
-render an allocated image row. It sends no signer, NIP-98, relay, cookie,
-proxy, or community-membership data; `"off"` keeps markers only. The dock
-activates with `i` or a click and uses the ordinary existing draft/outbox; it
-is visibly disabled when the active identity cannot publish.
+deterministic textual author markers, optional profile photographs, and a
+visible writing dock. `ui.profile_avatars = "trusted"` (the default) may fetch
+a kind-0 `Profile.picture` only when the identity is unlocked and the terminal
+can render an allocated image row. An external URL uses a separate,
+credential-free HTTPS client. A canonical image URL on the active community
+relay (`/media/<sha256>.<jpg|jpeg|png|gif|webp>`) uses a short-lived,
+hash-scoped Blossom read authorization; it is validated as exact same-origin
+before signing and cannot follow a redirect. No authorization is sent to an
+external URL. `"off"` keeps markers only. The dock activates with `i` or a
+click and uses the ordinary existing draft/outbox; it is visibly disabled when
+the active identity cannot publish.
 `ui.channel_sort` is a local sidebar order:
 `smart` places existing unread work before recent activity, `recent` uses local
 activity time, and `alphabetical` uses sanitized labels. `Space s` cycles it and

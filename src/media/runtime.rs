@@ -176,9 +176,11 @@ impl MediaRuntime {
         self.states.get(&avatar_key(pubkey, picture, width))
     }
 
-    /// Queues one credential-free profile-image retrieval. It is a no-op in
-    /// locked/cache-only mode and on terminals that cannot safely display an
-    /// allocated raster row.
+    /// Queues a bounded profile-image retrieval. Public third-party pictures
+    /// use the credential-free avatar client; canonical image paths belonging
+    /// to the active community relay use a narrowly scoped media-read token.
+    /// It is a no-op in locked/cache-only mode and on terminals that cannot
+    /// safely display an allocated raster row.
     pub fn request_avatar(&mut self, pubkey: &str, picture: &str, width: u16) {
         if !should_request_avatar(
             self.profile_avatars,
@@ -210,6 +212,7 @@ impl MediaRuntime {
                 url_digest(picture)
             ));
         let avatar_client = self.avatar_client.clone();
+        let relay_media = self.client.clone();
         let picker = self.picker.clone();
         let decode_slots = self.decode_slots.clone();
         let tx = self.completed_tx.clone();
@@ -220,6 +223,11 @@ impl MediaRuntime {
             let result: Result<(SlicedProtocol, u64)> = async {
                 let path = if destination.exists() {
                     destination.clone()
+                } else if let Some(media) = relay_media
+                    .as_ref()
+                    .filter(|media| media.is_relay_profile_avatar(&picture))
+                {
+                    media.fetch_profile_avatar(&picture, &destination).await?
                 } else {
                     avatar_client.fetch(&picture, &destination).await?
                 };

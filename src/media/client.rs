@@ -21,7 +21,8 @@ use crate::{
 };
 
 use super::{
-    imeta::validate_media_url,
+    avatar::{MAX_RELAY_AVATAR_BYTES, write_avatar_response},
+    imeta::{hash_from_path, validate_media_url},
     model::{Attachment, MediaKind},
 };
 
@@ -84,6 +85,36 @@ impl MediaClient {
             client,
             transfer_slots: Arc::new(Semaphore::new(concurrency)),
         })
+    }
+
+    /// Fetch a profile picture hosted by the active community relay. Unlike a
+    /// general profile URL, this accepts only a canonical, content-addressed
+    /// relay `/media/<sha256>.<image-extension>` URL before minting the same
+    /// short-lived read authorization as verified attachment retrieval.
+    ///
+    /// The signer is therefore never invoked for a third-party profile URL.
+    /// Redirects remain refused by the underlying client, and the response is
+    /// bounded, MIME/magic checked, and hash checked by the avatar writer.
+    pub async fn fetch_profile_avatar(&self, source: &str, destination: &Path) -> Result<PathBuf> {
+        if destination.exists() {
+            return Ok(destination.to_path_buf());
+        }
+        let (url, sha256) = self.relay_avatar_url(source)?;
+        let _permit = self
+            .transfer_slots
+            .acquire()
+            .await
+            .map_err(|_| Error::Network("profile avatar transfer queue stopped".into()))?;
+        let response = self.send_get(&url, &sha256).await?;
+        write_avatar_response(response, destination, Some(&sha256), MAX_RELAY_AVATAR_BYTES).await
+    }
+
+    /// Returns true only when `source` is a supported image address belonging
+    /// to this exact community relay origin. This is deliberately stricter
+    /// than a generic same-origin URL because callers use it to select the
+    /// authorization-bearing branch.
+    pub fn is_relay_profile_avatar(&self, source: &str) -> bool {
+        self.relay_avatar_url(source).is_ok()
     }
 
     pub async fn fetch(&self, attachment: &Attachment, destination: &Path) -> Result<PathBuf> {
@@ -478,6 +509,29 @@ impl MediaClient {
             spoiler: false,
             error: None,
         })
+    }
+
+    fn relay_avatar_url(&self, source: &str) -> Result<(String, String)> {
+        // Kind-0 `picture` is a public URL field. Do not turn a relative value
+        // into an authorized active-relay path on its behalf.
+        Url::parse(source)
+            .map_err(|_| Error::Protocol("profile avatar is not an active-relay image".into()))?;
+        let url = validate_media_url(source, &self.base, None, false)
+            .map_err(|_| Error::Protocol("profile avatar is not an active-relay image".into()))?;
+        let parsed = Url::parse(&url)
+            .map_err(|_| Error::Protocol("profile avatar is not an active-relay image".into()))?;
+        let extension = parsed
+            .path()
+            .rsplit_once('.')
+            .map(|(_, extension)| extension);
+        if !matches!(extension, Some("jpg" | "jpeg" | "png" | "gif" | "webp")) {
+            return Err(Error::Protocol(
+                "profile avatar is not an active-relay image".into(),
+            ));
+        }
+        let sha256 = hash_from_path(&url)
+            .ok_or_else(|| Error::Protocol("profile avatar is not an active-relay image".into()))?;
+        Ok((url, sha256))
     }
 
     async fn send_get(&self, url: &str, sha256: &str) -> Result<reqwest::Response> {

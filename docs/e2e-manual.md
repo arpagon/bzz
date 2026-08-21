@@ -205,24 +205,30 @@ and `?` help must remain usable and must not overlap. Repeat after temporarily
 locking/removing the disposable credential: the dock must remain visible,
 explain that it is read-only, and neither connect nor publish.
 
-### Remote profile avatars (v0.7 candidate)
+### Remote profile avatars (v0.7.1 candidate)
 
-Use a disposable kind-0 profile whose `picture` points to a publicly reachable,
-non-sensitive HTTPS JPEG, PNG, GIF, or WebP test asset. In Kitty, Sixel, or
-iTerm2, open a channel containing that author's generated message and wait for
-its author photograph. It must occupy measured timeline rows rather than
-painting over text; scroll rapidly, resize, switch channels/communities, run
-`:media reload`, and return. No stale image cells may remain and the textual
-marker must stay useful during loading or failure.
+Exercise both routes with disposable data: one kind-0 `picture` pointing to a
+public, non-sensitive HTTPS JPEG, PNG, GIF, or WebP test asset, and one at the
+active relay's canonical `/media/<sha256>.<image-extension>` path that requires
+a media-read authorization. In Kitty, Sixel, or iTerm2, open a channel
+containing each author's generated message and wait for the photograph. It must
+occupy measured timeline rows rather than painting over text; scroll rapidly,
+resize, switch channels/communities, run `:media reload`, and return. No stale
+image cells may remain and the textual marker must stay useful during loading
+or failure.
 
-Set `ui.profile_avatars = "off"`, restart, and verify only the textual marker
-appears and no request reaches the disposable image host. Repeat from
-cache-only/locked startup and a non-graphics terminal: no avatar request may be
-made. Try a profile URL with `http`, loopback, credentials, a fragment, a
-non-443 port, and a redirect to one of those shapes; each must retain the
-marker and make no request to the prohibited destination. Verify the cache
-under the candidate cache root is owner-only and changes neither profile data,
-Inbox/read state, subscriptions, drafts, nor relay traffic.
+For the relay-owned picture, capture only request metadata from disposable
+infrastructure: it must have a short-lived `t=get` authorization bound to the
+picture hash. Change the host, scheme, port, path, extension, hash, query, or
+fragment and assert that no authorization is sent. External pictures must
+receive no authorization. Set `ui.profile_avatars = "off"`, restart, and verify
+only the textual marker appears and no request reaches either test host. Repeat
+from cache-only/locked startup and a non-graphics terminal: no avatar request
+may be made. Try an external profile URL with `http`, loopback, credentials, a
+fragment, a non-443 port, and a redirect to one of those shapes; each must
+retain the marker and make no request to the prohibited destination. Verify the
+cache under the candidate cache root is owner-only and changes neither profile
+data, Inbox/read state, subscriptions, drafts, nor relay traffic.
 
 ### Appearance
 

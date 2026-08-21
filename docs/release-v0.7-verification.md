@@ -39,6 +39,15 @@ same release binary completed fresh-root native-keychain create/verify/remove
 and encrypted-file create/verify/backup/remove smokes. The encrypted key file
 was mode `0600`; all temporary roots and passphrase material were removed.
 
+## Post-publication correction
+
+v0.7.0's release artifact checks remain valid. Its avatar implementation,
+however, treated a same-relay kind-0 image as an anonymous external URL. On a
+relay that requires authenticated media reads, this returns `401` and leaves
+the marker. The v0.7.1 candidate corrects that interoperability gap with a
+strict same-origin, content-addressed authorization branch; see
+[`release-v0.7.1.md`](release-v0.7.1.md).
+
 ## Deferred visual gate
 
 The owner explicitly authorized v0.7.0 publication before a new disposable

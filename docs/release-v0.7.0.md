@@ -1,5 +1,10 @@
 # bzz v0.7.0 release notes
 
+> **Superseded for relay-hosted profile images:** v0.7.0 sent only anonymous
+> requests, so an authenticated active-relay `/media/` picture remains a text
+> marker. The v0.7.1 candidate adds a strict same-origin, hash-scoped read
+> branch; see [`release-v0.7.1.md`](release-v0.7.1.md).
+
 ## Remote profile avatars
 
 bzz can display a public Nostr kind-0 `picture` beside its existing textual

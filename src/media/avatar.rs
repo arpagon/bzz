@@ -7,6 +7,7 @@ use std::{
 
 use futures_util::StreamExt as _;
 use reqwest::{Client, StatusCode, header};
+use sha2::{Digest as _, Sha256};
 use tokio::{io::AsyncWriteExt as _, sync::Semaphore};
 use url::{Host, Url};
 use uuid::Uuid;
@@ -16,7 +17,12 @@ use crate::{
     paths::set_private_permissions,
 };
 
-const MAX_AVATAR_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_PUBLIC_AVATAR_BYTES: u64 = 2 * 1024 * 1024;
+/// Relay-hosted pictures are authenticated, content-addressed, and bounded
+/// below the 16 MiB per-scope cache ceiling. They need a larger allowance than
+/// arbitrary external pictures because existing community profiles commonly
+/// reference lossless source assets.
+pub(crate) const MAX_RELAY_AVATAR_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 3;
 const MAX_CACHE_ENTRIES: usize = 256;
 const MAX_CACHE_BYTES: u64 = 16 * 1024 * 1024;
@@ -79,7 +85,8 @@ impl AvatarClient {
             if !response.status().is_success() {
                 return Err(status_error(response.status()));
             }
-            return write_avatar_response(response, destination).await;
+            return write_avatar_response(response, destination, None, MAX_PUBLIC_AVATAR_BYTES)
+                .await;
         }
         Err(Error::Protocol("profile avatar redirect is invalid".into()))
     }
@@ -193,7 +200,16 @@ fn public_ipv6(ip: Ipv6Addr) -> bool {
         || (first == 0x2001 && segments[1] == 0x0db8)) // documentation
 }
 
-async fn write_avatar_response(response: reqwest::Response, destination: &Path) -> Result<PathBuf> {
+/// Persist an already-authorized avatar response under the same bounds as an
+/// external profile image. Relay-scoped callers supply the content address from
+/// their canonical `/media/<sha256>.<ext>` path; arbitrary external avatars do
+/// not have a trustworthy expected digest.
+pub(crate) async fn write_avatar_response(
+    response: reqwest::Response,
+    destination: &Path,
+    expected_sha256: Option<&str>,
+    max_bytes: u64,
+) -> Result<PathBuf> {
     let content_type = response
         .headers()
         .get(header::CONTENT_TYPE)
@@ -204,7 +220,7 @@ async fn write_avatar_response(response: reqwest::Response, destination: &Path) 
         .ok_or_else(|| Error::Protocol("profile avatar MIME is missing or unsupported".into()))?;
     if response
         .content_length()
-        .is_some_and(|length| length == 0 || length > MAX_AVATAR_BYTES)
+        .is_some_and(|length| length == 0 || length > max_bytes)
     {
         return Err(Error::Protocol(
             "profile avatar exceeds the byte limit".into(),
@@ -237,6 +253,7 @@ async fn write_avatar_response(response: reqwest::Response, destination: &Path) 
     set_private_permissions(&temporary)?;
 
     let mut written = 0_u64;
+    let mut digest = expected_sha256.map(|_| Sha256::new());
     let mut stream = response.bytes_stream();
     let result = async {
         while let Some(chunk) = stream.next().await {
@@ -245,10 +262,13 @@ async fn write_avatar_response(response: reqwest::Response, destination: &Path) 
             written = written
                 .checked_add(chunk.len() as u64)
                 .ok_or_else(|| Error::Protocol("profile avatar size overflow".into()))?;
-            if written > MAX_AVATAR_BYTES {
+            if written > max_bytes {
                 return Err(Error::Protocol(
                     "profile avatar exceeds the byte limit".into(),
                 ));
+            }
+            if let Some(digest) = &mut digest {
+                digest.update(&chunk);
             }
             output
                 .write_all(&chunk)
@@ -265,6 +285,13 @@ async fn write_avatar_response(response: reqwest::Response, destination: &Path) 
             .map_err(|error| Error::io(&temporary, error))?;
         if written == 0 {
             return Err(Error::Protocol("profile avatar response is empty".into()));
+        }
+        if let (Some(expected), Some(digest)) = (expected_sha256, digest)
+            && !hex::encode(digest.finalize()).eq_ignore_ascii_case(expected)
+        {
+            return Err(Error::Protocol(
+                "profile avatar bytes do not match the relay media address".into(),
+            ));
         }
         Ok(())
     }

@@ -35,9 +35,11 @@ Outbound attachment messages retain Buzz Desktop's interoperable body lines
 tags. `bzz` requires current Buzz descriptors to include `url`, `m`, `x`, and
 `size`; malformed or external legacy NIP-92 entries degrade to inert cards.
 Video playback and arbitrary external NIP-92 hosts are not in the implemented
-message-media protocol surface. Kind-0 `picture` URLs are an independent local
-presentation path; they neither extend the relay protocol surface nor reuse
-NIP-92/Blossom authorization.
+message-media protocol surface. External kind-0 `picture` URLs are an
+independent credential-free presentation path. A canonical picture at the
+active relay's `/media/{hash.ext}` path may use the existing hash-scoped
+Blossom read authorization only after exact origin/path validation; it neither
+extends NIP-92 nor authorizes any other profile URL.
 
 Buzz workspace DMs are ordinary relay-readable kind `9`/`40002` events inside
 private hidden NIP-29 channels. They are not NIP-17 gift wraps and are not

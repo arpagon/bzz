@@ -86,10 +86,12 @@ prints copied text, never invokes a shell clipboard helper, and can be disabled
 with `ui.clipboard = "disabled"`. Logical multi-message selection is event-ID
 based presentation state: it cannot advance reads, subscribe, fetch, sign, or
 publish. The textual author marker derives only from an already-visible public
-key. When `ui.profile_avatars = "trusted"`, the public kind-0 `picture` field
-is the single exception: it is fetched only by the bounded, credential-free
-profile-avatar client, and only while unlocked on a graphics-capable terminal.
-Set it to `"off"` to keep every profile URL inert.
+key. When `ui.profile_avatars = "trusted"`, the kind-0 `picture` field is the
+single exception: it is fetched only while unlocked on a graphics-capable
+terminal. External URLs use the bounded credential-free profile-avatar client.
+A canonical image path at the active community relay may use a separately
+bounded, same-origin Blossom media-read authorization. Set it to `"off"` to
+keep every profile URL inert.
 
 ## Local Codex drafts
 
@@ -150,18 +152,26 @@ search is local-only. See [`inbox-dms-search.md`](inbox-dms-search.md).
 
 Message media is fetched only from a complete `imeta` descriptor bound to the
 active community's exact relay HTTP(S) origin and canonical content-addressed
-path. Arbitrary Markdown URLs never trigger a request. A separate profile
-avatar path may fetch a kind-0 `picture` only when enabled: it permits HTTPS
-public domain hosts on port 443, rejects credentials/fragments/private and
-local destinations, validates and re-pins every redirect hop to public DNS
-answers, disables proxies and redirects in the HTTP client, and accepts only
-bounded JPEG/PNG/GIF/WebP MIME and matching magic bytes. It has no media
-client, cookies, user-agent, NIP-98, signer, relay authorization, or
-community header. Its private cache is isolated by community and identity,
-uses SHA-256 URL digests rather than URL filenames, and is capped at 256 files
-or 16 MiB per scope. Blossom read/upload authorization uses short-lived signed
-kind `24242` events; headers/events, source paths, full hashes, and content are
-not logged.
+path. Arbitrary Markdown URLs never trigger a request. The enabled profile
+avatar path has two non-interchangeable branches:
+
+- External kind-0 pictures require public HTTPS domain hosts on port 443. They
+  reject credentials, fragments, private/local destinations, and unsafe
+  redirects; every accepted hop is DNS-pinned. This client disables proxies and
+  sends no signer, cookie, user-agent, relay authorization, or community data.
+- A same-origin picture may receive authorization only if it exactly matches
+  `/media/<64-lowercase-hex>.<jpg|jpeg|png|gif|webp>` at the active community
+  origin. Before a request, bzz validates the full URL and binds the media hash;
+  it then signs a short-lived kind `24242` Blossom `t=get` event. The media
+  client refuses redirects, and the header is constructed only after that
+  same-origin validation, so it cannot reach another origin. The downloaded
+  bytes must match both image MIME/magic and the address hash.
+
+The external branch is capped at 2 MiB; the authenticated relay branch is
+capped at 10 MiB. Both use the same owner-only avatar cache, isolated by
+community and identity with SHA-256 profile/URL digest filenames, 256 files,
+and 16 MiB per scope. Headers/events, source paths, full hashes, and content
+are not logged.
 
 Downloads are streamed into owner-only create-new temporary files. Declared
 size, hard transfer limit, response MIME, sniffed image type, exact byte count,

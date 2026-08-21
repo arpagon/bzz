@@ -12,15 +12,22 @@ must use the active community's exact HTTP(S) origin and canonical
 Markdown images, URL credentials, query strings, and fragments are rejected.
 
 Profile photographs are a separate, opt-out presentation feature described in
-[configuration](configuration.md). They never use the authenticated message
-media client or its authorization path. The avatar client permits only
-credential-free HTTPS public-domain requests on port 443, disables ambient
-proxies and automatic redirects, checks every manual redirect target, and
-pins public DNS answers for each request. It accepts at most 2 MiB of JPEG,
-PNG, GIF, or WebP only when the response MIME agrees with the bytes. The
-existing image decoder then enforces its pixel/axis bounds. A ready avatar is a
-measured graphics row in Kitty, Sixel, or iTerm2; it remains a textual marker
-in all other cases.
+[configuration](configuration.md). An external kind-0 `picture` uses a
+credential-free HTTPS public-domain client: it disables ambient proxies and
+automatic redirects, checks every manual redirect target, and pins public DNS
+answers for each request.
+
+A `picture` that is instead an exact active-community
+`/media/<sha256>.<jpg|jpeg|png|gif|webp>` URL takes a distinct relay-media
+branch. bzz validates its scheme, origin, canonical path, lowercase hash, and
+image extension *before* minting one short-lived, hash-scoped Blossom read
+authorization. Redirects remain refused and the authorization cannot be sent
+to another origin. Locked/cache-only sessions never take this branch. The external branch accepts at most 2 MiB; the authenticated relay branch
+accepts at most 10 MiB. Both require JPEG, PNG, GIF, or WebP response MIME to
+agree with magic bytes; the relay branch additionally verifies its bytes
+against the address hash. The existing image decoder then enforces its
+pixel/axis bounds. A ready avatar is a measured graphics row in Kitty, Sixel,
+or iTerm2; it remains a textual marker in all other cases.
 
 Image bodies are bounded and SHA-256/size/MIME checked before decode. JPEG,
 PNG, GIF, and WebP render inline. Animated formats intentionally show their
@@ -126,7 +133,8 @@ Cache removal cannot guarantee physical secure erasure on SSDs.
 | Resource | Limit |
 |---|---:|
 | Automatic message image transfer | 25 MiB |
-| Profile-avatar transfer | 2 MiB |
+| External profile-avatar transfer | 2 MiB |
+| Active-relay profile-avatar transfer | 10 MiB |
 | Profile-avatar disk cache | 256 files / 16 MiB per community/identity |
 | Image | 50 MiB |
 | GIF | 10 MiB |
