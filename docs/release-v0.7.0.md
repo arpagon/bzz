@@ -1,9 +1,4 @@
-# bzz v0.7.0 release notes (candidate)
-
-> This document is a release candidate. Do not publish or tag v0.7.0 until the
-> graphics-terminal and real-relay validation gates in
-> [`v0.7.0-remote-profile-avatars.md`](planning/2026-08-20/v0.7.0-remote-profile-avatars.md)
-> pass.
+# bzz v0.7.0 release notes
 
 ## Remote profile avatars
 

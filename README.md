@@ -4,8 +4,8 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.7 development keeps v0.6's local conversation actions and adds
-> optional, credential-free public profile avatars with deterministic textual fallbacks.
+> Status: v0.7.0 adds optional, credential-free public profile avatars while
+> retaining deterministic textual fallbacks and v0.6 conversation actions.
 > Protocol compatibility remains pinned to Buzz
 > `ede26863345a518ec46edd6d7692e0281883491b`.
 
@@ -151,9 +151,9 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/security.md`](docs/security.md),
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
-[the v0.6.0 release notes](docs/release-v0.6.0.md), the
+[the v0.7.0 release notes](docs/release-v0.7.0.md), the
 [basic-first manual E2E plan](docs/e2e-manual.md),
-[workspace validation evidence](docs/validation-v0.6.md), and the
+[remote-avatar validation evidence](docs/validation-v0.7.md), and the
 [Herdr-assisted E2E guide](docs/e2e-herdr.md).
 
 ## License

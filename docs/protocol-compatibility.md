@@ -34,8 +34,10 @@ Outbound attachment messages retain Buzz Desktop's interoperable body lines
 (`![image](url)`, `![video](url)`, or `[filename](url)`) and ordered `imeta`
 tags. `bzz` requires current Buzz descriptors to include `url`, `m`, `x`, and
 `size`; malformed or external legacy NIP-92 entries degrade to inert cards.
-Video playback, arbitrary external NIP-92 hosts, and profile media are not in
-the implemented protocol surface.
+Video playback and arbitrary external NIP-92 hosts are not in the implemented
+message-media protocol surface. Kind-0 `picture` URLs are an independent local
+presentation path; they neither extend the relay protocol surface nor reuse
+NIP-92/Blossom authorization.
 
 Buzz workspace DMs are ordinary relay-readable kind `9`/`40002` events inside
 private hidden NIP-29 channels. They are not NIP-17 gift wraps and are not
