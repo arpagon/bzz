@@ -305,18 +305,20 @@ mod tests {
 
     #[test]
     fn complete_local_file_uri_lists_are_attachment_fallbacks() {
+        let directory = std::env::temp_dir();
+        let first = directory.join("a file.yaml");
+        let second = directory.join("b.txt");
+        let first_uri = url::Url::from_file_path(&first).unwrap();
+        let second_uri = url::Url::from_file_path(&second).unwrap();
         assert_eq!(
-            local_file_uris("copy\nfile:///tmp/a%20file.yaml\nfile:///tmp/b.txt\n"),
-            Some(vec![
-                std::path::PathBuf::from("/tmp/a file.yaml"),
-                std::path::PathBuf::from("/tmp/b.txt"),
-            ])
+            local_file_uris(&format!("copy\n{first_uri}\n{second_uri}\n")),
+            Some(vec![first.clone(), second])
         );
         assert!(local_file_uris("file://example.invalid/a.txt").is_none());
-        assert!(local_file_uris("notes\nfile:///tmp/a.txt").is_none());
+        assert!(local_file_uris(&format!("notes\n{first_uri}")).is_none());
         assert!(matches!(
-            contents_from_text("file:///tmp/a.txt"),
-            ClipboardContents::Files(paths) if paths == vec![std::path::PathBuf::from("/tmp/a.txt")]
+            contents_from_text(first_uri.as_str()),
+            ClipboardContents::Files(paths) if paths == vec![first]
         ));
     }
 
