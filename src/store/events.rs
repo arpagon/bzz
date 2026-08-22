@@ -243,12 +243,20 @@ impl Store {
     }
 
     fn mark_outbox_observed(&mut self, community_id: Uuid, event_id: &str) -> Result<()> {
-        self.set_outbox_state(
-            community_id,
-            event_id,
-            crate::store::models::OutboxState::Delivered,
-            None,
-        )
+        let transaction = self.connection.transaction()?;
+        // An observed echo is authoritative delivery, but not another publish
+        // attempt. Keep the existing attempt counter unchanged.
+        transaction.execute(
+            "UPDATE outbox SET state='delivered',updated_at=unixepoch(),last_error_code=NULL WHERE community_id=?1 AND event_id=?2",
+            params![community_id.to_string(), event_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM drafts WHERE community_id=?1 AND outbox_event_id=?2",
+            params![community_id.to_string(), event_id],
+        )?;
+        crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
+        transaction.commit()?;
+        Ok(())
     }
 }
 
