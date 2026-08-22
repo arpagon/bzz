@@ -1,6 +1,6 @@
 # Draft acknowledgement and stale-composer recovery
 
-**Status:** proposed
+**Status:** implemented locally; release validation pending
 **Owner:** bzz maintainers
 **Scope:** durable composer drafts and acknowledged message submission
 
@@ -153,6 +153,16 @@ check`, `cargo audit`, `cargo build --release --locked`, `bzz check`, and
 `git diff --check`; then require Linux, macOS (Intel/Apple Silicon), Windows,
 and test CI. Manually verify accepted, rejected, and disconnected sends in a
 disposable relay before release.
+
+## Implementation record
+
+Implemented in the draft-submission migration and outbox integration. The
+regression suite uses the fake relay for accepted and rejected submissions, plus
+store tests for unknown outcomes, late delivery, restart recovery, and thread
+isolation. Legacy rows are intentionally retained as editable because an old
+row cannot be safely associated with a historical event from its content alone.
+A user may clear any pre-upgrade stale row once with the existing confirmable
+`Ctrl-c`, `y` action; future sends use the acknowledgement-aware path.
 
 ## Acceptance criteria
 

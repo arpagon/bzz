@@ -1,6 +1,8 @@
 use nostr::Event;
 use uuid::Uuid;
 
+use crate::{domain::DraftMention, media::DraftAttachment};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OutboxItem {
     pub community_id: Uuid,
@@ -55,6 +57,26 @@ pub struct SyncCursor {
     pub high_created_at: u64,
     pub high_event_id: String,
     pub complete_through: u64,
+}
+
+/// The durable, editable contents for one composer target. Its revision changes
+/// when a new edit supersedes a message awaiting acknowledgement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DraftRecord {
+    pub body: String,
+    pub attachments: Vec<DraftAttachment>,
+    pub mentions: Vec<DraftMention>,
+    pub revision: String,
+}
+
+/// Opaque identity for one draft generation handed to the message outbox.
+/// It contains no message, attachment, or clipboard content.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DraftSubmission {
+    pub community_id: Uuid,
+    pub channel_id: Uuid,
+    pub thread_root_id: Option<String>,
+    pub revision: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

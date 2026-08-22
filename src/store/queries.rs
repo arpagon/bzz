@@ -13,7 +13,9 @@ use crate::{
     store::{
         Store,
         events::u64_to_i64,
-        models::{OutboxItem, OutboxState, ReadSlotRecord, SyncCursor},
+        models::{
+            DraftRecord, DraftSubmission, OutboxItem, OutboxState, ReadSlotRecord, SyncCursor,
+        },
     },
 };
 
@@ -301,38 +303,140 @@ impl Store {
     }
 
     pub fn insert_outbox(&mut self, community_id: Uuid, event: &Event) -> Result<()> {
+        self.insert_outbox_inner(community_id, event, None)
+    }
+
+    /// Stores the signed event and binds its opaque draft generation in one
+    /// SQLite transaction. The optimistic event projection remains unchanged.
+    pub fn insert_outbox_with_draft_submission(
+        &mut self,
+        community_id: Uuid,
+        event: &Event,
+        submission: &DraftSubmission,
+    ) -> Result<()> {
+        self.insert_outbox_inner(community_id, event, Some(submission))
+    }
+
+    fn insert_outbox_inner(
+        &mut self,
+        community_id: Uuid,
+        event: &Event,
+        submission: Option<&DraftSubmission>,
+    ) -> Result<()> {
         // Conversation rows may appear optimistically. Destructive/auxiliary
         // events remain only in the durable outbox until relay acceptance or
         // an observed echo makes them authoritative.
         if matches!(event.kind.as_u16(), 9 | 40_002) {
             self.apply_event(community_id, event)?;
         }
-        self.connection.execute(
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
             "INSERT INTO outbox(community_id,event_id,event_json,kind,channel_id,state,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'pending',unixepoch(),unixepoch())
              ON CONFLICT(community_id,event_id) DO NOTHING",
             params![community_id.to_string(),event.id.to_hex(),event.as_json(),i64::from(event.kind.as_u16()),crate::protocol::events::channel_id(event).map(|id|id.to_string())],
         )?;
-        self.mark_inbox_projection_dirty(community_id)
+        if let Some(submission) = submission {
+            transaction.execute(
+                "UPDATE drafts SET outbox_event_id=?5,updated_at=unixepoch()
+                 WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3
+                   AND revision=?4 AND state='sending' AND outbox_event_id IS NULL",
+                params![
+                    submission.community_id.to_string(),
+                    submission.channel_id.to_string(),
+                    submission.thread_root_id.as_deref().unwrap_or_default(),
+                    submission.revision,
+                    event.id.to_hex(),
+                ],
+            )?;
+        }
+        crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Associates a signed outbox event with a draft which was durably marked
+    /// as sending. A newer edit has a distinct revision and deliberately makes
+    /// this a no-op, so a late acknowledgement cannot affect it.
+    pub fn bind_draft_submission(
+        &self,
+        submission: &DraftSubmission,
+        event_id: &str,
+    ) -> Result<bool> {
+        let changed = self.connection.execute(
+            "UPDATE drafts SET outbox_event_id=?5,updated_at=unixepoch()
+             WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3
+               AND revision=?4 AND state='sending' AND outbox_event_id IS NULL",
+            params![
+                submission.community_id.to_string(),
+                submission.channel_id.to_string(),
+                submission.thread_root_id.as_deref().unwrap_or_default(),
+                submission.revision,
+                event_id,
+            ],
+        )?;
+        if changed != 0 {
+            self.mark_inbox_projection_dirty(submission.community_id)?;
+        }
+        Ok(changed != 0)
+    }
+
+    /// Restores only the exact unbound submission after signing or outbox
+    /// insertion failed. Never overwrite a subsequent edit.
+    pub fn restore_unbound_draft_submission(&self, submission: &DraftSubmission) -> Result<bool> {
+        let changed = self.connection.execute(
+            "UPDATE drafts SET state='editing',updated_at=unixepoch()
+             WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3
+               AND revision=?4 AND state='sending' AND outbox_event_id IS NULL",
+            params![
+                submission.community_id.to_string(),
+                submission.channel_id.to_string(),
+                submission.thread_root_id.as_deref().unwrap_or_default(),
+                submission.revision,
+            ],
+        )?;
+        if changed != 0 {
+            self.mark_inbox_projection_dirty(submission.community_id)?;
+        }
+        Ok(changed != 0)
     }
 
     pub fn set_outbox_state(
-        &self,
+        &mut self,
         community_id: Uuid,
         event_id: &str,
         state: OutboxState,
         error: Option<&str>,
     ) -> Result<()> {
-        self.connection.execute(
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
             "UPDATE outbox SET state=?3,last_error_code=?4,attempts=attempts+1,updated_at=unixepoch() WHERE community_id=?1 AND event_id=?2",
             params![community_id.to_string(),event_id,state.as_str(),error],
         )?;
+        match state {
+            OutboxState::Delivered => {
+                transaction.execute(
+                    "DELETE FROM drafts WHERE community_id=?1 AND outbox_event_id=?2",
+                    params![community_id.to_string(), event_id],
+                )?;
+            }
+            OutboxState::Rejected | OutboxState::Unknown => {
+                transaction.execute(
+                    "UPDATE drafts SET state='editing',updated_at=unixepoch()
+                     WHERE community_id=?1 AND outbox_event_id=?2",
+                    params![community_id.to_string(), event_id],
+                )?;
+            }
+            OutboxState::Pending => {}
+        }
         if state == OutboxState::Rejected {
-            self.connection.execute(
+            transaction.execute(
                 "DELETE FROM search_documents WHERE community_id=?1 AND event_id=?2",
                 params![community_id.to_string(), event_id],
             )?;
         }
-        self.mark_inbox_projection_dirty(community_id)
+        crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn pending_outbox(&self, community_id: Uuid) -> Result<Vec<OutboxItem>> {
@@ -458,7 +562,7 @@ impl Store {
         channel_id: Uuid,
         root: Option<&str>,
         body: &str,
-    ) -> Result<()> {
+    ) -> Result<String> {
         self.save_draft_with_media(community_id, channel_id, root, body, &[])
     }
 
@@ -469,7 +573,7 @@ impl Store {
         root: Option<&str>,
         body: &str,
         attachments: &[crate::media::DraftAttachment],
-    ) -> Result<()> {
+    ) -> Result<String> {
         self.save_draft_with_media_mentions(community_id, channel_id, root, body, attachments, &[])
     }
 
@@ -481,7 +585,7 @@ impl Store {
         body: &str,
         attachments: &[crate::media::DraftAttachment],
         mentions: &[DraftMention],
-    ) -> Result<()> {
+    ) -> Result<String> {
         if body.len() > 64 * 1024 || mentions.len() > crate::ui::composer::MENTION_CAP {
             return Err(Error::Config(
                 "draft mention metadata exceeds its safety cap".into(),
@@ -506,8 +610,54 @@ impl Store {
                 "draft mention metadata exceeds its safety cap".into(),
             ));
         }
-        self.connection.execute("INSERT INTO drafts(community_id,channel_id,thread_root_id,body,attachments_json,mentions_json,updated_at) VALUES(?1,?2,?3,?4,?5,?6,unixepoch()) ON CONFLICT DO UPDATE SET body=excluded.body,attachments_json=excluded.attachments_json,mentions_json=excluded.mentions_json,updated_at=excluded.updated_at",params![community_id.to_string(),channel_id.to_string(),root.unwrap_or_default(),body,attachments,mentions])?;
-        self.mark_inbox_projection_dirty(community_id)
+        let new_revision = Uuid::new_v4().to_string();
+        self.connection.execute(
+            "INSERT INTO drafts(community_id,channel_id,thread_root_id,body,attachments_json,mentions_json,revision,state,outbox_event_id,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,'editing',NULL,unixepoch())
+             ON CONFLICT(community_id,channel_id,thread_root_id) DO UPDATE SET
+               body=excluded.body,attachments_json=excluded.attachments_json,
+               mentions_json=excluded.mentions_json,
+               revision=CASE WHEN drafts.state='sending' OR drafts.outbox_event_id IS NOT NULL THEN excluded.revision ELSE drafts.revision END,
+               state='editing',
+               outbox_event_id=CASE WHEN drafts.state='sending' OR drafts.outbox_event_id IS NOT NULL THEN NULL ELSE drafts.outbox_event_id END,
+               updated_at=excluded.updated_at",
+            params![
+                community_id.to_string(),
+                channel_id.to_string(),
+                root.unwrap_or_default(),
+                body,
+                attachments,
+                mentions,
+                new_revision,
+            ],
+        )?;
+        let revision = self.connection.query_row(
+            "SELECT revision FROM drafts WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3",
+            params![community_id.to_string(), channel_id.to_string(), root.unwrap_or_default()],
+            |row| row.get(0),
+        )?;
+        self.mark_inbox_projection_dirty(community_id)?;
+        Ok(revision)
+    }
+
+    /// Marks one current draft generation as waiting for its relay
+    /// acknowledgement. The caller must not send if this returns false.
+    pub fn mark_draft_sending(&self, submission: &DraftSubmission) -> Result<bool> {
+        let changed = self.connection.execute(
+            "UPDATE drafts SET state='sending',updated_at=unixepoch()
+             WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3
+               AND revision=?4 AND state='editing' AND outbox_event_id IS NULL",
+            params![
+                submission.community_id.to_string(),
+                submission.channel_id.to_string(),
+                submission.thread_root_id.as_deref().unwrap_or_default(),
+                submission.revision,
+            ],
+        )?;
+        if changed != 0 {
+            self.mark_inbox_projection_dirty(submission.community_id)?;
+        }
+        Ok(changed != 0)
     }
 
     /// Replaces exactly one locally staged draft attachment by its opaque
@@ -524,7 +674,7 @@ impl Store {
         let current = self
             .connection
             .query_row(
-                "SELECT attachments_json FROM drafts WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3",
+                "SELECT attachments_json FROM drafts WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3 AND state='editing'",
                 params![community_id.to_string(), channel_id.to_string(), root.unwrap_or_default()],
                 |row| row.get::<_, String>(0),
             )
@@ -550,7 +700,7 @@ impl Store {
         let attachments = serde_json::to_string(&attachments)
             .map_err(|error| Error::Serialization(error.to_string()))?;
         self.connection.execute(
-            "UPDATE drafts SET attachments_json=?4,updated_at=unixepoch() WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3",
+            "UPDATE drafts SET attachments_json=?4,updated_at=unixepoch() WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3 AND state='editing'",
             params![community_id.to_string(), channel_id.to_string(), root.unwrap_or_default(), attachments],
         )?;
         self.mark_inbox_projection_dirty(community_id)?;
@@ -587,9 +737,43 @@ impl Store {
         Vec<crate::media::DraftAttachment>,
         Vec<DraftMention>,
     )> {
-        let value = self.connection.query_row("SELECT body,attachments_json,mentions_json FROM drafts WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3",params![community_id.to_string(),channel_id.to_string(),root.unwrap_or_default()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?))).optional()?;
-        let Some((body, attachments, mentions)) = value else {
-            return Ok((String::new(), Vec::new(), Vec::new()));
+        Ok(self
+            .draft_record(community_id, channel_id, root)?
+            .map(|record| (record.body, record.attachments, record.mentions))
+            .unwrap_or_default())
+    }
+
+    /// Returns the current editable generation only. A draft waiting for an
+    /// acknowledgement is intentionally hidden until that acknowledgement is
+    /// resolved, preventing `i` from replaying a message that is already sent.
+    pub fn draft_record(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+        root: Option<&str>,
+    ) -> Result<Option<DraftRecord>> {
+        let value = self
+            .connection
+            .query_row(
+                "SELECT body,attachments_json,mentions_json,revision FROM drafts
+             WHERE community_id=?1 AND channel_id=?2 AND thread_root_id=?3 AND state='editing'",
+                params![
+                    community_id.to_string(),
+                    channel_id.to_string(),
+                    root.unwrap_or_default()
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((body, attachments, mentions, revision)) = value else {
+            return Ok(None);
         };
         let attachments = serde_json::from_str(&attachments)
             .map_err(|error| Error::Serialization(error.to_string()))?;
@@ -599,7 +783,40 @@ impl Store {
             .filter(|mention| mention.valid_for(&body))
             .take(crate::ui::composer::MENTION_CAP)
             .collect();
-        Ok((body, attachments, mentions))
+        Ok(Some(DraftRecord {
+            body,
+            attachments,
+            mentions,
+            revision,
+        }))
+    }
+
+    /// Resolves interrupted sends on startup. A delivered event owns its draft;
+    /// every other unfinished state becomes editable without republishing it.
+    pub fn reconcile_draft_submissions(&mut self) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        let deleted = transaction.execute(
+            "DELETE FROM drafts
+             WHERE state='sending' AND outbox_event_id IS NOT NULL
+               AND EXISTS(SELECT 1 FROM outbox o WHERE o.community_id=drafts.community_id
+                 AND o.event_id=drafts.outbox_event_id AND o.state='delivered')",
+            [],
+        )?;
+        let restored = transaction.execute(
+            "UPDATE drafts SET state='editing',updated_at=unixepoch()
+             WHERE state='sending' AND (
+               outbox_event_id IS NULL OR NOT EXISTS(
+                 SELECT 1 FROM outbox o WHERE o.community_id=drafts.community_id
+                   AND o.event_id=drafts.outbox_event_id AND o.state='delivered'
+               )
+             )",
+            [],
+        )?;
+        if deleted != 0 || restored != 0 {
+            transaction.execute("UPDATE inbox_projection_meta SET dirty=1", [])?;
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn mention_candidates(

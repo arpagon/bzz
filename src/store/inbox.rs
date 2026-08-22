@@ -726,7 +726,8 @@ impl Store {
         let mut statement = self.connection.prepare(
             "SELECT d.channel_id,d.thread_root_id,d.body,d.attachments_json,d.updated_at,COALESCE(c.channel_type,'')
              FROM drafts d JOIN channels c ON c.community_id=d.community_id AND c.channel_id=d.channel_id
-             WHERE d.community_id=?1 AND (length(d.body)>0 OR d.attachments_json<>'[]')
+             WHERE d.community_id=?1 AND d.state='editing'
+               AND (length(d.body)>0 OR d.attachments_json<>'[]')
                AND c.is_member=1 AND NOT EXISTS(
                  SELECT 1 FROM dm_visibility v WHERE c.channel_type='dm'
                    AND v.community_id=d.community_id AND v.identity_pubkey=?2 AND v.channel_id=d.channel_id

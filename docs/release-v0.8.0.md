@@ -29,9 +29,21 @@ a removed item or overwrite a different draft. Existing drafts with older
 pending attachment metadata are repaired locally on open without a database
 schema migration.
 
+## Draft acknowledgement recovery
+
+A sent composer draft now remains hidden while bzz waits for the relay's
+acknowledgement. An accepted event removes only that exact durable draft;
+rejection, offline uncertainty, and an interrupted startup restore it for
+explicit review. A subsequent edit receives a new opaque revision, so a late
+acknowledgement cannot erase it. This applies independently to each community,
+channel, and thread.
+
 ## Upgrade notes
 
-No relay or SQLite schema migration is required. Existing pending attachment
-JSON is accepted with a locally generated opaque ID on the next composer open.
+This release adds local SQLite migration 0006 for opaque draft revisions,
+send state, and outbox association. Existing pending attachment JSON is
+accepted with a locally generated opaque ID on the next composer open.
+Pre-upgrade drafts are preserved rather than inferred from message content; if
+a legacy stale draft is displayed, use `Ctrl-c` then `y` once to remove it.
 A desktop whose native clipboard backend is unavailable continues to support
 terminal text paste and the `Ctrl-o` local-path fallback.

@@ -20,7 +20,7 @@ fn fresh_database_has_expected_pragmas_and_schema() {
     let foreign_keys: u32 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     assert_eq!(
         foreign_keys, 1,
         "foreign-key enforcement must remain enabled"
@@ -49,6 +49,22 @@ fn fresh_database_has_expected_pragmas_and_schema() {
         )
         .unwrap();
     assert_eq!(mention_column, 1);
+    let draft_revision_column: u32 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('drafts') WHERE name='revision'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let draft_state_column: u32 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('drafts') WHERE name='state'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(draft_revision_column, 1);
+    assert_eq!(draft_state_column, 1);
     let fts_table: u32 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='search_fts'",
@@ -127,6 +143,12 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
             rusqlite::params![community.to_string(), channel.to_string(), "a".repeat(64), source_event],
         )
         .unwrap();
+    connection
+        .execute(
+            "INSERT INTO drafts(community_id,channel_id,thread_root_id,body,attachments_json,updated_at) VALUES(?1,?2,'','legacy draft','[]',0)",
+            rusqlite::params![community.to_string(), channel.to_string()],
+        )
+        .unwrap();
     drop(connection);
 
     let store = Store::open(&path).unwrap();
@@ -136,7 +158,7 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
     let version: u32 = upgraded
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     let inbox_projection_table: u32 = upgraded
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='inbox_conversations'",
@@ -153,6 +175,16 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
         )
         .unwrap();
     assert_eq!(membership_head, source_event);
+    let (revision, state, outbox_event_id): (String, String, Option<String>) = upgraded
+        .query_row(
+            "SELECT revision,state,outbox_event_id FROM drafts WHERE community_id=?1 AND channel_id=?2",
+            rusqlite::params![community.to_string(), channel.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert!(!revision.is_empty());
+    assert_eq!(state, "editing");
+    assert!(outbox_event_id.is_none());
     assert!(
         std::fs::read_dir(temporary.path())
             .unwrap()

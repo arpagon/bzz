@@ -34,6 +34,19 @@ staging, and persisted attachment replacement by opaque draft ID. Existing
 media protocol, authenticated upload, cache, identity, locked-mode, Inbox, and
 terminal layout tests continue to pass.
 
+## Draft acknowledgement follow-up — 2026-08-22
+
+- Added migration 0006 for opaque draft revisions, sending state, and outbox
+  event association. `bzz check` applied it successfully to the local database;
+  schema version 6 is valid and no draft was left in `sending` state.
+- `cargo fmt --check`, strict Clippy, `cargo test --locked` (132 tests; the
+  pinned external relay journey remains intentionally ignored), `cargo deny
+  check`, `cargo audit`, `cargo build --release --locked`, `bzz --version`,
+  `bzz check`, `bzz media status`, and `git diff --check` passed locally.
+- The new deterministic fake-relay and store suite covers accepted/rejected
+  delivery, uncertain recovery, crash recovery, late acknowledgements, and
+  thread isolation without recording message content.
+
 ## Required pre-tag manual review
 
 Use disposable generated files/text/images only:

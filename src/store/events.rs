@@ -233,17 +233,22 @@ impl Store {
             "UPDATE outbox SET state='delivered',updated_at=unixepoch(),last_error_code=NULL WHERE community_id=?1 AND event_id=?2",
             params![community_id.to_string(),event.id.to_hex()],
         )?;
+        transaction.execute(
+            "DELETE FROM drafts WHERE community_id=?1 AND outbox_event_id=?2",
+            params![community_id.to_string(), event.id.to_hex()],
+        )?;
         crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
         transaction.commit()?;
         Ok(true)
     }
 
-    fn mark_outbox_observed(&self, community_id: Uuid, event_id: &str) -> Result<()> {
-        self.connection.execute(
-            "UPDATE outbox SET state='delivered',updated_at=unixepoch(),last_error_code=NULL WHERE community_id=?1 AND event_id=?2",
-            params![community_id.to_string(),event_id],
-        )?;
-        self.mark_inbox_projection_dirty(community_id)
+    fn mark_outbox_observed(&mut self, community_id: Uuid, event_id: &str) -> Result<()> {
+        self.set_outbox_state(
+            community_id,
+            event_id,
+            crate::store::models::OutboxState::Delivered,
+            None,
+        )
     }
 }
 

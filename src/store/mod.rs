@@ -35,6 +35,7 @@ impl Store {
         set_private_permissions(&path)?;
         let mut store = Self { connection, path };
         store.ensure_search_projections()?;
+        store.reconcile_draft_submissions()?;
         Ok(store)
     }
 
@@ -47,6 +48,7 @@ impl Store {
             path: PathBuf::from(":memory:"),
         };
         store.ensure_search_projections()?;
+        store.reconcile_draft_submissions()?;
         Ok(store)
     }
 

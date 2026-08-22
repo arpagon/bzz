@@ -7,7 +7,10 @@ use crate::{
     auth::signer::SignerHandle,
     error::{Error, Result},
     realtime::supervisor::SupervisorHandle,
-    store::{models::OutboxState, writer::StoreHandle},
+    store::{
+        models::{DraftSubmission, OutboxState},
+        writer::StoreHandle,
+    },
 };
 
 #[derive(Clone)]
@@ -60,6 +63,32 @@ impl MessageService {
         )
         .await
     }
+
+    /// Sends one ordinary composer generation. The opaque submission token is
+    /// associated with the outbox event, never with message content.
+    pub async fn send_draft_with_media_mentions(
+        &self,
+        channel: Uuid,
+        content: &str,
+        attachments: &[crate::media::Attachment],
+        mentions: &[String],
+        submission: DraftSubmission,
+    ) -> Result<Event> {
+        let builder = (|| {
+            let (content, tags) = message_media(content, attachments)?;
+            let mentions = mention_references(mentions)?;
+            buzz_sdk::build_message(channel, &content, None, &mentions, false, &tags)
+                .map_err(|error| Error::Protocol(error.to_string()))
+        })();
+        let builder = match builder {
+            Ok(builder) => builder,
+            Err(error) => {
+                self.restore_draft_submission(submission).await;
+                return Err(error);
+            }
+        };
+        self.send_builder_for_draft(builder, submission).await
+    }
     pub async fn reply(
         &self,
         channel: Uuid,
@@ -105,6 +134,38 @@ impl MessageService {
         )
         .await
     }
+
+    /// Reply equivalent of `send_draft_with_media_mentions`.
+    pub async fn reply_draft_with_media_mentions(
+        &self,
+        channel: Uuid,
+        thread: (&str, &str),
+        content: &str,
+        attachments: &[crate::media::Attachment],
+        mentions: &[String],
+        submission: DraftSubmission,
+    ) -> Result<Event> {
+        let builder = (|| {
+            let thread = buzz_sdk::ThreadRef {
+                root_event_id: EventId::from_hex(thread.0)
+                    .map_err(|error| Error::Protocol(error.to_string()))?,
+                parent_event_id: EventId::from_hex(thread.1)
+                    .map_err(|error| Error::Protocol(error.to_string()))?,
+            };
+            let (content, tags) = message_media(content, attachments)?;
+            let mentions = mention_references(mentions)?;
+            buzz_sdk::build_message(channel, &content, Some(&thread), &mentions, false, &tags)
+                .map_err(|error| Error::Protocol(error.to_string()))
+        })();
+        let builder = match builder {
+            Ok(builder) => builder,
+            Err(error) => {
+                self.restore_draft_submission(submission).await;
+                return Err(error);
+            }
+        };
+        self.send_builder_for_draft(builder, submission).await
+    }
     pub async fn react(&self, target: &str, emoji: &str) -> Result<Event> {
         let target =
             EventId::from_hex(target).map_err(|error| Error::Protocol(error.to_string()))?;
@@ -137,11 +198,48 @@ impl MessageService {
     }
     async fn send_builder(&self, builder: nostr::EventBuilder) -> Result<Event> {
         let event = self.signer.sign(builder).await?;
+        self.publish_signed(event, None).await
+    }
+
+    async fn send_builder_for_draft(
+        &self,
+        builder: nostr::EventBuilder,
+        submission: DraftSubmission,
+    ) -> Result<Event> {
+        let event = match self.signer.sign(builder).await {
+            Ok(event) => event,
+            Err(error) => {
+                self.restore_draft_submission(submission).await;
+                return Err(error);
+            }
+        };
+        self.publish_signed(event, Some(submission)).await
+    }
+
+    async fn publish_signed(
+        &self,
+        event: Event,
+        submission: Option<DraftSubmission>,
+    ) -> Result<Event> {
         let stored = event.clone();
         let community = self.community_id;
-        self.store
-            .call(move |store| store.insert_outbox(community, &stored))
-            .await?;
+        let binding = submission.clone();
+        let inserted = self
+            .store
+            .call(move |store| {
+                if let Some(submission) = binding.as_ref() {
+                    store.insert_outbox_with_draft_submission(community, &stored, submission)
+                } else {
+                    store.insert_outbox(community, &stored)
+                }
+            })
+            .await;
+        if let Err(error) = inserted {
+            if let Some(submission) = submission {
+                self.restore_draft_submission(submission).await;
+            }
+            return Err(error);
+        }
         let id = event.id.to_hex();
         match self.supervisor.publish(event.clone()).await {
             Ok(ack) if ack.accepted => {
@@ -187,6 +285,13 @@ impl MessageService {
             }
         }
         Ok(event)
+    }
+
+    async fn restore_draft_submission(&self, submission: DraftSubmission) {
+        let _ = self
+            .store
+            .call(move |store| store.restore_unbound_draft_submission(&submission))
+            .await;
     }
 }
 

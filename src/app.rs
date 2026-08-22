@@ -48,7 +48,7 @@ use crate::{
         channels::ChannelService, dms::DmService, inbox::InboxService, messages::MessageService,
         profiles::ProfileService, read_state::ReadStateService, search::SearchService,
     },
-    store::writer::StoreHandle,
+    store::{models::DraftSubmission, writer::StoreHandle},
     sync::{outbox, read_state},
     ui::{
         action::{
@@ -170,6 +170,7 @@ struct StagingAttachment {
 #[derive(Debug)]
 enum Background {
     Changed,
+    DraftAcknowledged,
     Failed(String),
     ClipboardImported {
         target: ComposerTarget,
@@ -242,6 +243,9 @@ pub struct App {
     timeline: TimelineState,
     thread_timeline: TimelineState,
     composer: Composer,
+    /// Revision for the editable draft currently hydrated into `composer`.
+    /// Never retain it once the composer is closed or submitted.
+    composer_draft_revision: Option<String>,
     mention_picker: Option<MentionPicker>,
     finder: String,
     reaction_index: usize,
@@ -376,6 +380,7 @@ impl App {
                 ..TimelineState::default()
             },
             composer: Composer::default(),
+            composer_draft_revision: None,
             mention_picker: None,
             finder: String::new(),
             reaction_index: 0,
@@ -477,8 +482,11 @@ impl App {
                     redraw.request();
                 },
                 background=self.background_rx.recv()=>if let Some(event)=background{match event{
-                    Background::Changed=>{
+                    Background::Changed | Background::DraftAcknowledged=>{
                         self.cache_dirty=true;
+                        if matches!(event, Background::DraftAcknowledged) {
+                            self.status_error = None;
+                        }
                         if self.presentation.route == Route::Inbox {
                             self.spawn_inbox_load(false);
                         }
@@ -2547,13 +2555,22 @@ impl App {
             return Ok(());
         }
         let draft_root = root.clone();
-        let (body, attachments, mentions) = self
+        let draft = self
             .store
-            .call(move |store| {
-                store.draft_with_media_mentions(community, channel, draft_root.as_deref())
-            })
+            .call(move |store| store.draft_record(community, channel, draft_root.as_deref()))
             .await?;
+        let (body, attachments, mentions, revision) = draft
+            .map(|draft| {
+                (
+                    draft.body,
+                    draft.attachments,
+                    draft.mentions,
+                    Some(draft.revision),
+                )
+            })
+            .unwrap_or_default();
         self.composer.set_draft(body, attachments, mentions);
+        self.composer_draft_revision = revision;
         let target = ComposerTarget {
             community_id: community,
             channel_id: channel,
@@ -2627,6 +2644,7 @@ impl App {
                 self.staging_media.clear();
                 self.staging_attachments.clear();
                 self.presentation.composer_target = None;
+                self.composer_draft_revision = None;
             }
             KeyAction::Character(character) => self.composer.insert(character),
             KeyAction::Backspace => self.composer.backspace(),
@@ -2639,9 +2657,41 @@ impl App {
                     self.status_error = Some("attachment processing is not ready to send".into());
                 } else if !self.composer.sendable() && !self.composer.attachments.is_empty() {
                     self.status_error = Some("wait for every attachment to become ready".into());
-                } else if let Some(message) = self.composer.take_message() {
-                    self.queue_message(message);
-                    self.presentation.composer_target = None
+                } else if self.composer.sendable() {
+                    // Persist the final edit before making its acknowledgement
+                    // boundary durable. A send without a revision is refused:
+                    // it could not be recovered after a failed acknowledgement.
+                    self.persist_draft().await?;
+                    let Some(target) = self.presentation.composer_target.clone() else {
+                        return Ok(());
+                    };
+                    let Some(revision) = self.composer_draft_revision.clone() else {
+                        self.status_error = Some("could not prepare the draft for sending".into());
+                        return Ok(());
+                    };
+                    let submission = DraftSubmission {
+                        community_id: target.community_id,
+                        channel_id: target.channel_id,
+                        thread_root_id: target.thread_root_id.clone(),
+                        revision,
+                    };
+                    let sending = submission.clone();
+                    let marked = self
+                        .store
+                        .call(move |store| store.mark_draft_sending(&sending))
+                        .await?;
+                    if !marked {
+                        self.status_error =
+                            Some("the draft changed before it could be sent".into());
+                        return Ok(());
+                    }
+                    if let Some(message) = self.composer.take_message() {
+                        self.status_error =
+                            Some("sending; waiting for relay acknowledgement".into());
+                        self.queue_message(message, submission);
+                        self.presentation.composer_target = None;
+                        self.composer_draft_revision = None;
+                    }
                 }
             }
             _ => {}
@@ -3144,7 +3194,7 @@ impl App {
         });
     }
 
-    async fn persist_draft(&self) -> Result<()> {
+    async fn persist_draft(&mut self) -> Result<()> {
         let Some(target) = self.presentation.composer_target.clone() else {
             return Ok(());
         };
@@ -3157,7 +3207,8 @@ impl App {
         let body = self.composer.body.clone();
         let attachments = self.composer.attachments.clone();
         let mentions = self.composer.mentions().to_vec();
-        self.store
+        let revision = self
+            .store
             .call(move |store| {
                 store.save_draft_with_media_mentions(
                     community,
@@ -3168,10 +3219,16 @@ impl App {
                     &mentions,
                 )
             })
-            .await
+            .await?;
+        self.composer_draft_revision = Some(revision);
+        Ok(())
     }
 
-    fn queue_message(&mut self, message: crate::ui::composer::PreparedMessage) {
+    fn queue_message(
+        &mut self,
+        message: crate::ui::composer::PreparedMessage,
+        submission: DraftSubmission,
+    ) {
         let Some(runtime) = &self.runtime else { return };
         let Some(target) = self.presentation.composer_target.clone() else {
             return;
@@ -3188,28 +3245,29 @@ impl App {
         tokio::spawn(async move {
             let result = if let (Some(root), Some(parent)) = (root, parent) {
                 service
-                    .reply_with_media_mentions(
+                    .reply_draft_with_media_mentions(
                         channel,
-                        &root,
-                        &parent,
+                        (&root, &parent),
                         &message.body,
                         &message.attachments,
                         &message.mentions,
+                        submission,
                     )
                     .await
             } else {
                 service
-                    .send_with_media_mentions(
+                    .send_draft_with_media_mentions(
                         channel,
                         &message.body,
                         &message.attachments,
                         &message.mentions,
+                        submission,
                     )
                     .await
             };
             let _ = tx
                 .send(match result {
-                    Ok(_) => Background::Changed,
+                    Ok(_) => Background::DraftAcknowledged,
                     Err(error) => Background::Failed(error.to_string()),
                 })
                 .await;
