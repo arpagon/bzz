@@ -629,6 +629,21 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_unknown_text_files_are_staged_as_generic_attachments() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let source = temporary.path().join("config.yaml");
+        let staging = temporary.path().join("staging");
+        std::fs::write(&source, b"safe: generated\n").unwrap();
+
+        let staged = stage_file(&source, &staging).unwrap();
+
+        assert_eq!(staged.filename, "config.yaml");
+        assert_eq!(staged.mime, "application/octet-stream");
+        assert_eq!(staged.size, 16);
+        assert!(staged.path.is_file());
+    }
+
+    #[test]
     fn gif_sanitizer_preserves_pixels_and_removes_comments() {
         let mut gif = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff".to_vec();
         gif.extend_from_slice(b"\x21\xfe\x03gps\x00");

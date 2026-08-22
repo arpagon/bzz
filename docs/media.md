@@ -51,8 +51,10 @@ executed, or passed to a shell.
 ## Sending media
 
 While composing, `Ctrl-v` performs one explicit native clipboard read. A copied
-native file list (up to eight files) becomes attachments; a copied bitmap becomes
-one bounded, metadata-free `pasted-image.png`; otherwise bounded plain text is
+native file list (up to eight files) becomes attachments. A complete local
+`file:` URI list used as a fallback by some Linux file managers is handled the
+same way, transiently; a copied bitmap becomes one bounded, metadata-free
+`pasted-image.png`; otherwise bounded plain text is
 inserted at the cursor. bzz never polls or watches the clipboard. It does not
 log, index, synchronize, or persist clipboard data, file paths/URIs, or native
 clipboard format names.

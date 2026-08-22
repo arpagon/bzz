@@ -4,7 +4,10 @@
 //! [`ClipboardReader`] only after a composer-owned paste action, then move the
 //! returned data directly into bounded staging or composer insertion.
 
-use std::{io, path::PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 use arboard::Clipboard;
 use image::{ExtendedColorType, ImageEncoder as _, codecs::png::PngEncoder};
@@ -97,14 +100,58 @@ impl ClipboardReader for NativeClipboard {
         }
 
         match clipboard.get().text() {
-            Ok(text) => match sanitize_pasted_text(&text) {
-                Ok(text) if text.is_empty() => ClipboardContents::Empty,
-                Ok(text) => ClipboardContents::Text(text),
-                Err(rejection) => ClipboardContents::Rejected(rejection),
-            },
+            Ok(text) => contents_from_text(&text),
             Err(_) => ClipboardContents::Empty,
         }
     }
+}
+
+/// Handles the plain-text representation only after native file-list and image
+/// reads were unavailable. Some Linux file managers offer a standards-compliant
+/// `file:` URI list as their text fallback, so recognize a complete URI list
+/// without exposing source paths in the UI. Other text remains composer text.
+fn contents_from_text(text: &str) -> ClipboardContents {
+    if let Some(paths) = local_file_uris(text) {
+        return if paths.len() > MAX_CLIPBOARD_FILES {
+            ClipboardContents::Rejected(ClipboardRejection::TooManyFiles)
+        } else {
+            ClipboardContents::Files(paths)
+        };
+    }
+    match sanitize_pasted_text(text) {
+        Ok(text) if text.is_empty() => ClipboardContents::Empty,
+        Ok(text) => ClipboardContents::Text(text),
+        Err(rejection) => ClipboardContents::Rejected(rejection),
+    }
+}
+
+/// Converts only an entire local `file:` URI list. The optional `copy`/`cut`
+/// verb is used by common Linux file-manager fallback text. The source text is
+/// consumed during this explicit import and is never written to a draft, log,
+/// or status message.
+fn local_file_uris(value: &str) -> Option<Vec<PathBuf>> {
+    let mut entries = value
+        .lines()
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .collect::<Vec<_>>();
+    if matches!(entries.first(), Some(&"copy" | &"cut")) {
+        entries.remove(0);
+    }
+    if entries.is_empty() {
+        return None;
+    }
+    entries
+        .into_iter()
+        .map(|entry| {
+            let uri = url::Url::parse(entry).ok()?;
+            if uri.scheme() != "file" || uri.host_str().is_some_and(|host| host != "localhost") {
+                return None;
+            }
+            let path = uri.to_file_path().ok()?;
+            Path::is_absolute(&path).then_some(path)
+        })
+        .collect()
 }
 
 /// Produces a source-free, metadata-free PNG for the ordinary attachment
@@ -237,7 +284,8 @@ mod tests {
 
     use super::{
         ClipboardContents, ClipboardImage, ClipboardReader, ClipboardRejection,
-        MAX_CLIPBOARD_TEXT_BYTES, encode_clipboard_png, sanitize_pasted_text,
+        MAX_CLIPBOARD_TEXT_BYTES, contents_from_text, encode_clipboard_png, local_file_uris,
+        sanitize_pasted_text,
     };
 
     #[derive(Clone)]
@@ -253,6 +301,23 @@ mod tests {
     fn fake_reader_is_deterministic_without_a_platform_clipboard() {
         let reader = FakeClipboard(ClipboardContents::Text("hello".into()));
         assert_eq!(reader.read_once(), ClipboardContents::Text("hello".into()));
+    }
+
+    #[test]
+    fn complete_local_file_uri_lists_are_attachment_fallbacks() {
+        assert_eq!(
+            local_file_uris("copy\nfile:///tmp/a%20file.yaml\nfile:///tmp/b.txt\n"),
+            Some(vec![
+                std::path::PathBuf::from("/tmp/a file.yaml"),
+                std::path::PathBuf::from("/tmp/b.txt"),
+            ])
+        );
+        assert!(local_file_uris("file://example.invalid/a.txt").is_none());
+        assert!(local_file_uris("notes\nfile:///tmp/a.txt").is_none());
+        assert!(matches!(
+            contents_from_text("file:///tmp/a.txt"),
+            ClipboardContents::Files(paths) if paths == vec![std::path::PathBuf::from("/tmp/a.txt")]
+        ));
     }
 
     #[test]

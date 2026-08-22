@@ -7,7 +7,7 @@ clipboard and release-artifact review remain required before tagging.
 
 - `cargo fmt --check`
 - `cargo clippy --locked --all-targets -- -D warnings`
-- `cargo test --locked` — 123 unit/integration tests passed; the pinned real
+- `cargo test --locked` — 125 unit/integration tests passed; the pinned real
   relay test remains intentionally ignored unless its isolated harness is
   configured.
 - `cargo deny check` — advisories, bans, licenses, and sources passed. Existing
