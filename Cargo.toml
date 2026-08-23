@@ -58,6 +58,12 @@ url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 zeroize = "1"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "=0.13.13", default-features = false, features = ["file_chooser", "tokio"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+rfd = { version = "=0.17.2", default-features = false }
+
 [dev-dependencies]
 criterion = "0.7"
 insta = "1"

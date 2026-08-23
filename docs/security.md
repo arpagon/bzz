@@ -90,6 +90,14 @@ indexes, syncs, or persists clipboard bytes, source paths, URIs, or native
 formats. File lists, bitmaps, and text have a fixed precedence and bounds;
 files and bitmaps must pass the ordinary private staging/sanitization pipeline
 before upload. `"off"` disables native reads without disabling OSC-52 writes.
+
+The separate `Ctrl-o` file chooser is also explicit-only. Linux talks directly
+to XDG Desktop Portal without a command fallback; Windows/macOS use native open
+dialogs. Up to eight transient local selections are exact-composer scoped and
+pass the same regular/non-symlink open-and-revalidate staging boundary. bzz
+never logs, displays, or persists their source paths. Cancel, unavailable,
+stale-target, and over-capacity outcomes upload nothing and never retry.
+`Alt-o` retains the manual path fallback under the same staging rules.
 Logical multi-message selection is event-ID
 based presentation state: it cannot advance reads, subscribe, fetch, sign, or
 publish. The textual author marker derives only from an already-visible public

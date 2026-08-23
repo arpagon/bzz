@@ -62,6 +62,17 @@ for desktop compatibility and degrades locally when unavailable. Its Windows
 bridge `clipboard-win` v5.4.1 uses the permissive Boost Software License 1.0;
 that standard license is explicitly approved in `deny.toml`.
 
+## Native file chooser
+
+`ashpd` v0.13.13 is a pinned Linux direct dependency under MIT. bzz enables
+only its Tokio and file-chooser features and uses it to call XDG Desktop Portal
+directly; no shell or zenity fallback is present. `rfd` v0.17.2 is a pinned MIT
+direct dependency only on Windows and macOS, where it uses the platforms'
+native open-dialog APIs with default Linux backends disabled. Their selected
+paths are handled only through bzz's independently authored transient picker
+boundary and secure staging lifecycle. Complete dependency license texts and
+versions are retained in the crates and release SBOM.
+
 ## ratatui-image
 
 `ratatui-image` v11.0.5 (`00920803a50e7b7763ceb69978be90c4391325ad`)

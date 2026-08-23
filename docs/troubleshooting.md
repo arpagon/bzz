@@ -212,9 +212,9 @@ bzz reads the native clipboard only after `Ctrl-v` in an open, writable
 composer. Verify `[media].clipboard_import` is `"explicit"`; `"off"` disables
 native reads independently of `ui.clipboard`, which governs OSC-52 writes.
 Remote, sandboxed, and some Wayland desktop sessions may not expose a supported
-clipboard backend. bzz deliberately does not invoke shell helpers or a file
-chooser in that case: use `Ctrl-o` to enter a local regular-file path, or use
-normal terminal bracketed paste for text.
+clipboard backend. Use `Ctrl-o` for the independent OS file chooser, `Alt-o`
+to enter a local regular-file path, or normal terminal bracketed paste for
+text. bzz never invokes a shell helper.
 
 A native file list is preferred over an image or text representation and is
 limited to eight entries. Copied images are limited to the same 25-megapixel,
@@ -223,6 +223,14 @@ queue for `processing`, `queued`, `ready`, or `failed`; use `Ctrl-r` for a
 failed staged upload, `Delete` to remove the newest item, and `Ctrl-c` then
 `y` to discard the whole draft. bzz never displays the source path or clipboard
 contents in a status error.
+
+## Ctrl-o does not open the OS file chooser
+
+On Linux, `Ctrl-o` requires an available XDG Desktop Portal file-chooser
+backend on the desktop session bus. Windows and macOS use their native open
+dialogs. bzz does not fall back to zenity or another command. If the content-free
+unavailable status appears, use `Alt-o` to enter a regular non-symlink local
+path. Cancelling a chooser changes no draft and triggers no retry or upload.
 
 ## Copying a message does not reach the clipboard
 

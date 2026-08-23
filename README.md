@@ -89,9 +89,10 @@ cycle filters, `Enter` for detail, `o` for canonical source context, `m`/`U`
 for explicit read/unread state, and `a` for confirmed visible bulk-read. Wide
 terminals retain list/detail together; on narrow terminals `Esc` returns from
 detail to the list. `@` opens cached channel-member completion. In the composer,
-`Ctrl-v` explicitly pastes copied files, an image, or text; `Delete` removes the
-newest attachment, `Ctrl-r` retries failed uploads, and `Ctrl-o` opens the
-local-path fallback. `:agent` opens an explicitly configured local
+`Ctrl-o` opens the OS file chooser, `Ctrl-v` explicitly pastes copied files, an
+image, or text, and `Alt-o` opens the local-path fallback. `Delete` removes the
+newest attachment and `Ctrl-r` retries failed uploads. `:agent` opens an
+explicitly configured local
 Codex draft assistant. Generate shell integration
 with `bzz completions <shell>`. Inside the TUI, `:inbox`, `:search`, `:dm`,
 `:agent`, `:reconnect`, `:resync`, `:theme reload`, `:purge-cache`, and `:lock`

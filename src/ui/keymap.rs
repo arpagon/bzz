@@ -70,6 +70,7 @@ pub enum UiAction {
     ClearComposer,
     PasteClipboard,
     AttachFile,
+    AttachPath,
     RemoveLastAttachment,
     RetryAttachments,
     MoveWordLeft,
@@ -133,7 +134,8 @@ impl UiAction {
             Self::DeleteToEnd => "delete to line end",
             Self::ClearComposer => "clear draft",
             Self::PasteClipboard => "paste text or attachments",
-            Self::AttachFile => "attach local file",
+            Self::AttachFile => "choose local file(s)",
+            Self::AttachPath => "attach by local path",
             Self::RemoveLastAttachment => "remove last attachment",
             Self::RetryAttachments => "retry failed attachments",
             Self::MoveWordLeft => "previous word",
@@ -467,6 +469,7 @@ impl KeyMap {
         add(KeyScope::Composer, &["ctrl-c"], UiAction::ClearComposer);
         add(KeyScope::Composer, &["ctrl-v"], UiAction::PasteClipboard);
         add(KeyScope::Composer, &["ctrl-o"], UiAction::AttachFile);
+        add(KeyScope::Composer, &["alt-o"], UiAction::AttachPath);
         add(
             KeyScope::Composer,
             &["delete"],
@@ -719,6 +722,7 @@ fn composer_action(action: UiAction) -> bool {
             | UiAction::ClearComposer
             | UiAction::PasteClipboard
             | UiAction::AttachFile
+            | UiAction::AttachPath
             | UiAction::RemoveLastAttachment
             | UiAction::RetryAttachments
             | UiAction::MoveWordLeft
@@ -858,6 +862,10 @@ mod tests {
             (
                 KeyChord::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
                 UiAction::AttachFile,
+            ),
+            (
+                KeyChord::new(KeyCode::Char('o'), KeyModifiers::ALT),
+                UiAction::AttachPath,
             ),
             (
                 KeyChord::new(KeyCode::Delete, KeyModifiers::NONE),

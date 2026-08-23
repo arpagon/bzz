@@ -59,15 +59,19 @@ inserted at the cursor. bzz never polls or watches the clipboard. It does not
 log, index, synchronize, or persist clipboard data, file paths/URIs, or native
 clipboard format names.
 
+`Ctrl-o` opens the OS file chooser for up to eight files. Linux uses XDG
+Desktop Portal directly; Windows and macOS use native open dialogs. bzz never
+invokes a shell or zenity fallback. `Alt-o` opens the explicit local-path
+fallback: enter a path and press `Enter`. Every selected/fallback path must
+identify a regular non-symlink file, and bzz never persists the source path.
+
 `Delete` removes the newest processing, queued, failed, or ready attachment.
-`Ctrl-r` retries failed staged uploads. `Ctrl-c` asks before clearing text and
-attachments. `Ctrl-o` opens the explicit local-path fallback: enter a path and
-press `Enter`. A fallback path must identify a regular non-symlink file, and
-bzz never persists that source path. Native clipboard access is controlled by
+`Ctrl-r` retries failed staged uploads and `Ctrl-c` asks before clearing text
+and attachments. Native clipboard access is controlled by
 `media.clipboard_import = "explicit" | "off"`; it is independent of
 `ui.clipboard`, which controls OSC-52 *writes*. Unsupported desktop clipboard
-backends fail closed with a local status; bzz does not invoke a shell helper or
-file chooser. Terminal bracketed text paste remains ordinary composer input.
+or file-chooser backends fail closed with a content-free local status. Terminal
+bracketed text paste remains ordinary composer input.
 
 Every accepted file or image is copied into an owner-only content-addressed
 staging directory before upload. While any row is processing, queued, uploading,
@@ -168,6 +172,7 @@ Cache removal cannot guarantee physical secure erasure on SSDs.
 | Decoded image | 25 megapixels, 16,384 pixels per axis |
 | Native clipboard text | 64 KiB |
 | Native clipboard files | 8 |
+| Native file-chooser files | 8 |
 | Clipboard PNG encoding | 50 MiB |
 | Inline height | 12 terminal rows |
 | Downloads/uploads | 4 concurrent |

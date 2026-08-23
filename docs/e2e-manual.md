@@ -334,6 +334,13 @@ it must appear at the composer cursor without creating an attachment or sending
 anything. A copied native file list must win over an accompanying text/image
 clipboard representation.
 
+Press `Ctrl-o`, select one and then multiple disposable files in the OS chooser,
+and verify each becomes a queue row without automatic send. Cancel once and
+verify the draft is unchanged. On Linux, repeat with XDG Desktop Portal
+available and then unavailable; unavailable must produce only a content-free
+status and must not launch zenity or another command. Use `Alt-o` to enter a
+generated local path and verify the fallback stages the same way.
+
 Use `Delete` to remove the newest queued/ready item and verify it cannot return
 when a late upload finishes. Force an isolated upload failure, verify a
 `[failed]` row, then use `Ctrl-r` to retry. Type a body plus an attachment,
@@ -341,8 +348,9 @@ press `Ctrl-c`, cancel with `n`, then repeat and confirm with `y`; after reopen,
 the persisted draft must be empty. Set `media.clipboard_import = "off"`,
 restart, and verify `Ctrl-v` does not read native clipboard data while ordinary
 terminal text paste still works. In a clipboard-unavailable desktop session,
-use `Ctrl-o`, enter the generated PNG path, and verify the same secure staging
-path works. No source path, URI, clipboard text, bitmap, or native format may
+use `Ctrl-o` to choose the generated PNG or `Alt-o` to enter its path, and
+verify the same secure staging path works. No source path, URI, clipboard text,
+bitmap, or native format may
 appear in SQLite, normal status, or retained evidence.
 
 Verify another isolated client shows an attachment card and an inline image or

@@ -34,6 +34,7 @@ use crate::{
             ClipboardContents, ClipboardReader, NativeClipboard, encode_clipboard_png,
             sanitize_pasted_text,
         },
+        file_picker::{FilePicker, FilePickerOutcome, NativeFilePicker},
         runtime::MediaRuntime,
     },
     paths::Paths,
@@ -169,6 +170,10 @@ struct StagingAttachment {
 
 #[derive(Debug)]
 enum AttachmentBackground {
+    FilesPicked {
+        target: ComposerTarget,
+        outcome: FilePickerOutcome,
+    },
     ClipboardImported {
         target: ComposerTarget,
         contents: Box<ClipboardContents>,
@@ -275,6 +280,7 @@ pub struct App {
     preview_index: usize,
     preview_revealed: bool,
     clipboard: Arc<dyn ClipboardReader>,
+    file_picker: Arc<dyn FilePicker>,
     staging_attachments: Vec<StagingAttachment>,
     staging_media: HashSet<String>,
     uploading_media: HashSet<String>,
@@ -417,6 +423,7 @@ impl App {
             preview_index: 0,
             preview_revealed: false,
             clipboard: Arc::new(NativeClipboard),
+            file_picker: Arc::new(NativeFilePicker),
             staging_attachments: Vec::new(),
             staging_media: HashSet::new(),
             uploading_media: HashSet::new(),
@@ -1808,6 +1815,10 @@ impl App {
             }
             UiAction::PasteClipboard => return self.import_clipboard().await,
             UiAction::AttachFile => {
+                self.open_file_picker();
+                return Ok(());
+            }
+            UiAction::AttachPath => {
                 self.attachment_input.clear();
                 self.presentation
                     .open_attachment_prompt(AttachmentPrompt::Upload);
@@ -2860,6 +2871,23 @@ impl App {
 
     async fn handle_attachment_background(&mut self, event: AttachmentBackground) -> Result<()> {
         match event {
+            AttachmentBackground::FilesPicked { target, outcome } => {
+                if self.presentation.composer_target.as_ref() == Some(&target) {
+                    match outcome {
+                        FilePickerOutcome::Files(paths) => self.start_selected_files(paths),
+                        FilePickerOutcome::Cancelled => self.status_error = None,
+                        FilePickerOutcome::Unavailable => {
+                            self.status_error = Some(
+                                "native file picker is unavailable; use Alt-o to enter a path"
+                                    .into(),
+                            );
+                        }
+                        FilePickerOutcome::Rejected(rejection) => {
+                            self.status_error = Some(rejection.status().into());
+                        }
+                    }
+                }
+            }
             AttachmentBackground::ClipboardImported { target, contents } => {
                 if self.presentation.composer_target.as_ref() == Some(&target) {
                     self.handle_clipboard_contents(target, *contents).await?;
@@ -2975,6 +3003,16 @@ impl App {
         Ok(())
     }
 
+    fn start_selected_files(&mut self, paths: Vec<std::path::PathBuf>) {
+        if paths.len() > self.attachment_capacity() {
+            self.status_error = Some("selected files exceed the attachment limit".into());
+            return;
+        }
+        for path in paths {
+            self.start_attachment_upload(path);
+        }
+    }
+
     fn attachment_capacity(&self) -> usize {
         8_usize.saturating_sub(
             self.composer
@@ -3083,6 +3121,25 @@ impl App {
         });
     }
 
+    fn open_file_picker(&mut self) {
+        let Some(target) = self.presentation.composer_target.clone() else {
+            return;
+        };
+        if self.attachment_capacity() == 0 {
+            self.status_error = Some("a message can contain at most 8 attachments".into());
+            return;
+        }
+        let picker = self.file_picker.clone();
+        let tx = self.attachment_tx.clone();
+        self.status_error = Some("opening native file picker…".into());
+        tokio::spawn(async move {
+            let outcome = picker.pick_files().await;
+            let _ = tx
+                .send(AttachmentBackground::FilesPicked { target, outcome })
+                .await;
+        });
+    }
+
     async fn import_clipboard(&mut self) -> Result<()> {
         if self.config.media.clipboard_import != ClipboardImportMode::Explicit {
             self.status_error = Some("clipboard import is disabled".into());
@@ -3114,15 +3171,7 @@ impl App {
         contents: ClipboardContents,
     ) -> Result<()> {
         match contents {
-            ClipboardContents::Files(paths) => {
-                if paths.len() > self.attachment_capacity() {
-                    self.status_error = Some("clipboard files exceed the attachment limit".into());
-                    return Ok(());
-                }
-                for path in paths {
-                    self.start_attachment_upload(path);
-                }
-            }
+            ClipboardContents::Files(paths) => self.start_selected_files(paths),
             ClipboardContents::Image(image) => self.start_clipboard_image_stage(image),
             ClipboardContents::Text(text) => {
                 self.composer.insert_text(&text);
@@ -4997,7 +5046,7 @@ impl App {
             };
             (
                 format!(
-                    " {target} · Enter send · Ctrl-v paste · Ctrl-o file · Del remove · Ctrl-c clear · Esc close "
+                    " {target} · Enter send · Ctrl-v paste · Ctrl-o choose · Alt-o path · Del remove · Ctrl-c clear · Esc close "
                 ),
                 format!("{}{}", sanitize::text(&self.composer.body), attachments),
                 HighlightGroup::ActiveComposerBorder,
@@ -5263,7 +5312,7 @@ impl App {
                 if self.presentation.attachment_prompt == Some(AttachmentPrompt::Save) {
                     " save attachment · no overwrite · Esc cancel "
                 } else {
-                    " attach file · Enter upload · Esc cancel "
+                    " attach by local path · Enter upload · Esc cancel "
                 },
                 &self.attachment_input,
             ),
@@ -5879,6 +5928,59 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct TestFilePicker(crate::media::file_picker::FilePickerOutcome);
+
+    #[async_trait::async_trait]
+    impl crate::media::file_picker::FilePicker for TestFilePicker {
+        async fn pick_files(&self) -> crate::media::file_picker::FilePickerOutcome {
+            self.0.clone()
+        }
+    }
+
+    async fn attachment_test_app(temporary: &TempDir) -> super::App {
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+        let identity = crate::config::IdentityConfig {
+            id: Uuid::new_v4(),
+            label: "attachment-test".into(),
+            pubkey: "a".repeat(64),
+            backend: crate::config::KeyBackend::Keychain,
+            key_ref: "identity:attachment-test".into(),
+        };
+        app.config.identities.push(identity.clone());
+        let community = app
+            .config
+            .add_community(
+                "attachment-test".into(),
+                "wss://attachment.example".into(),
+                identity.id,
+                false,
+            )
+            .unwrap();
+        let synced = app.config.clone();
+        app.store
+            .call(move |store| store.sync_config(&synced))
+            .await
+            .unwrap();
+        app.presentation.composer_target = Some(ComposerTarget {
+            community_id: community,
+            channel_id: Uuid::new_v4(),
+            thread_root_id: None,
+            parent_event_id: None,
+        });
+        app
+    }
+
     #[tokio::test]
     async fn a_terminal_input_error_yields_to_local_work() {
         let mut input =
@@ -6094,46 +6196,7 @@ mod tests {
     #[tokio::test]
     async fn clipboard_image_staging_completes_when_the_general_background_lane_is_full() {
         let temporary = TempDir::new().unwrap();
-        let paths = Paths {
-            config_dir: temporary.path().join("config"),
-            data_dir: temporary.path().join("data"),
-            cache_dir: temporary.path().join("cache"),
-        };
-        paths.ensure().unwrap();
-        let config = Config::default();
-        let mut store = Store::open(paths.database_file()).unwrap();
-        store.sync_config(&config).unwrap();
-        let handle = StoreHandle::spawn(store).unwrap();
-        let mut app = super::App::new(config, paths, handle).await.unwrap();
-        let identity = crate::config::IdentityConfig {
-            id: Uuid::new_v4(),
-            label: "attachment-test".into(),
-            pubkey: "a".repeat(64),
-            backend: crate::config::KeyBackend::Keychain,
-            key_ref: "identity:attachment-test".into(),
-        };
-        app.config.identities.push(identity.clone());
-        let community = app
-            .config
-            .add_community(
-                "attachment-test".into(),
-                "wss://attachment.example".into(),
-                identity.id,
-                false,
-            )
-            .unwrap();
-        let synced = app.config.clone();
-        app.store
-            .call(move |store| store.sync_config(&synced))
-            .await
-            .unwrap();
-        let target = ComposerTarget {
-            community_id: community,
-            channel_id: Uuid::new_v4(),
-            thread_root_id: None,
-            parent_event_id: None,
-        };
-        app.presentation.composer_target = Some(target);
+        let mut app = attachment_test_app(&temporary).await;
         for _ in 0..128 {
             app.background_tx
                 .try_send(super::Background::Changed)
@@ -6163,6 +6226,76 @@ mod tests {
             app.composer.attachments.as_slice(),
             [crate::media::DraftAttachment::Pending(pending)] if pending.mime == "image/png"
         ));
+    }
+
+    #[tokio::test]
+    async fn native_file_picker_stages_selected_file_with_a_full_general_lane() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let source = temporary.path().join("selected.txt");
+        std::fs::write(&source, b"bounded attachment").unwrap();
+        app.file_picker = Arc::new(TestFilePicker(
+            crate::media::file_picker::FilePickerOutcome::Files(vec![source]),
+        ));
+        for _ in 0..128 {
+            app.background_tx
+                .try_send(super::Background::Changed)
+                .unwrap();
+        }
+
+        app.open_file_picker();
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(2), app.attachment_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.handle_attachment_background(event).await.unwrap();
+        }
+
+        assert!(app.staging_attachments.is_empty());
+        assert!(matches!(
+            app.composer.attachments.as_slice(),
+            [crate::media::DraftAttachment::Pending(pending)] if pending.filename == "selected.txt"
+        ));
+    }
+
+    #[tokio::test]
+    async fn file_picker_cancel_unavailable_and_stale_results_are_inert() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let target = app.presentation.composer_target.clone().unwrap();
+        app.status_error = Some("opening native file picker…".into());
+        app.handle_attachment_background(super::AttachmentBackground::FilesPicked {
+            target: target.clone(),
+            outcome: crate::media::file_picker::FilePickerOutcome::Cancelled,
+        })
+        .await
+        .unwrap();
+        assert!(app.status_error.is_none());
+
+        app.handle_attachment_background(super::AttachmentBackground::FilesPicked {
+            target: target.clone(),
+            outcome: crate::media::file_picker::FilePickerOutcome::Unavailable,
+        })
+        .await
+        .unwrap();
+        assert!(
+            app.status_error
+                .as_deref()
+                .is_some_and(|status| status.contains("Alt-o"))
+        );
+
+        let source = temporary.path().join("stale.txt");
+        std::fs::write(&source, b"stale target").unwrap();
+        app.presentation.composer_target = None;
+        app.handle_attachment_background(super::AttachmentBackground::FilesPicked {
+            target,
+            outcome: crate::media::file_picker::FilePickerOutcome::Files(vec![source]),
+        })
+        .await
+        .unwrap();
+        assert!(app.composer.attachments.is_empty());
+        assert!(app.staging_attachments.is_empty());
     }
 
     #[tokio::test]

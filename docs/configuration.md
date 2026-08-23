@@ -151,7 +151,7 @@ actions include `select-next`, `select-previous`, `jump-top`, `jump-bottom`,
 `open-canonical-context` are Inbox-only. Composer-only editing names are
 `submit`, `insert-newline`, `complete`, `delete-previous-word`,
 `delete-to-start`, `delete-to-end`, `clear-composer`, `paste-clipboard`,
-`attach-file`, `remove-last-attachment`, `retry-attachments`,
+`attach-file`, `attach-path`, `remove-last-attachment`, `retry-attachments`,
 `move-word-left`, `move-word-right`, `move-line-start`, and `move-line-end`.
 Use `?` inside the relevant route as
 the authoritative effective binding list; it includes local disabled bindings
