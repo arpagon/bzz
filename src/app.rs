@@ -169,6 +169,10 @@ struct StagingAttachment {
 
 #[derive(Debug)]
 enum AttachmentBackground {
+    ClipboardImported {
+        target: ComposerTarget,
+        contents: Box<ClipboardContents>,
+    },
     Staged {
         target: ComposerTarget,
         community: Uuid,
@@ -198,10 +202,6 @@ enum Background {
     Changed,
     DraftAcknowledged,
     Failed(String),
-    ClipboardImported {
-        target: ComposerTarget,
-        contents: Box<ClipboardContents>,
-    },
     Saved,
     InboxLoaded {
         community: Uuid,
@@ -517,11 +517,6 @@ impl App {
                         self.inbox_loading=false;
                         self.inbox_detail_loading=false;
                     },
-                    Background::ClipboardImported { target, contents }=>{
-                        if self.presentation.composer_target.as_ref() == Some(&target) {
-                            self.handle_clipboard_contents(target, *contents).await?;
-                        }
-                    }
                     Background::Saved=>self.status_error=Some("attachment saved".into()),
                     Background::InboxLoaded { community, items }=>{
                         if self.active_community_id()==Some(community) {
@@ -2865,6 +2860,11 @@ impl App {
 
     async fn handle_attachment_background(&mut self, event: AttachmentBackground) -> Result<()> {
         match event {
+            AttachmentBackground::ClipboardImported { target, contents } => {
+                if self.presentation.composer_target.as_ref() == Some(&target) {
+                    self.handle_clipboard_contents(target, *contents).await?;
+                }
+            }
             AttachmentBackground::Staged {
                 target,
                 community,
@@ -3092,14 +3092,14 @@ impl App {
             return Ok(());
         };
         let reader = self.clipboard.clone();
-        let tx = self.background_tx.clone();
+        let tx = self.attachment_tx.clone();
         self.status_error = Some("reading clipboard…".into());
         tokio::spawn(async move {
             let contents = tokio::task::spawn_blocking(move || reader.read_once())
                 .await
                 .unwrap_or(ClipboardContents::Unavailable);
             let _ = tx
-                .send(Background::ClipboardImported {
+                .send(AttachmentBackground::ClipboardImported {
                     target,
                     contents: Box::new(contents),
                 })
@@ -5841,7 +5841,7 @@ fn list_row(area: Rect, row: usize, height: u16) -> Option<Rect> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, time::Duration};
+    use std::{collections::HashSet, sync::Arc, time::Duration};
 
     use super::{
         clear_visible_unread, identity_recovery_connection, next_supervisor_event,
@@ -5869,6 +5869,15 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
     use tempfile::TempDir;
     use uuid::Uuid;
+
+    #[derive(Clone)]
+    struct TestClipboard(crate::media::clipboard::ClipboardContents);
+
+    impl crate::media::clipboard::ClipboardReader for TestClipboard {
+        fn read_once(&self) -> crate::media::clipboard::ClipboardContents {
+            self.0.clone()
+        }
+    }
 
     #[tokio::test]
     async fn a_terminal_input_error_yields_to_local_work() {
@@ -6083,7 +6092,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attachment_staging_completes_when_the_general_background_lane_is_full() {
+    async fn clipboard_image_staging_completes_when_the_general_background_lane_is_full() {
         let temporary = TempDir::new().unwrap();
         let paths = Paths {
             config_dir: temporary.path().join("config"),
@@ -6130,20 +6139,29 @@ mod tests {
                 .try_send(super::Background::Changed)
                 .unwrap();
         }
-        let source = temporary.path().join("ordinary.txt");
-        std::fs::write(&source, b"bounded attachment").unwrap();
+        app.clipboard = Arc::new(TestClipboard(
+            crate::media::clipboard::ClipboardContents::Image(
+                crate::media::clipboard::ClipboardImage {
+                    width: 1,
+                    height: 1,
+                    rgba: vec![12, 34, 56, 255],
+                },
+            ),
+        ));
 
-        app.start_attachment_upload(source);
-        let event = tokio::time::timeout(Duration::from_secs(2), app.attachment_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        app.handle_attachment_background(event).await.unwrap();
+        app.import_clipboard().await.unwrap();
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(2), app.attachment_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.handle_attachment_background(event).await.unwrap();
+        }
 
         assert!(app.staging_attachments.is_empty());
         assert!(matches!(
             app.composer.attachments.as_slice(),
-            [crate::media::DraftAttachment::Pending(_)]
+            [crate::media::DraftAttachment::Pending(pending)] if pending.mime == "image/png"
         ));
     }
 
