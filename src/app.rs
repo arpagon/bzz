@@ -168,14 +168,7 @@ struct StagingAttachment {
 }
 
 #[derive(Debug)]
-enum Background {
-    Changed,
-    DraftAcknowledged,
-    Failed(String),
-    ClipboardImported {
-        target: ComposerTarget,
-        contents: Box<ClipboardContents>,
-    },
+enum AttachmentBackground {
     Staged {
         target: ComposerTarget,
         community: Uuid,
@@ -197,6 +190,17 @@ enum Background {
         community: Uuid,
         pending: crate::media::PendingAttachment,
         message: String,
+    },
+}
+
+#[derive(Debug)]
+enum Background {
+    Changed,
+    DraftAcknowledged,
+    Failed(String),
+    ClipboardImported {
+        target: ComposerTarget,
+        contents: Box<ClipboardContents>,
     },
     Saved,
     InboxLoaded {
@@ -302,12 +306,15 @@ pub struct App {
     last_inbox_refresh: Instant,
     background_tx: mpsc::Sender<Background>,
     background_rx: mpsc::Receiver<Background>,
+    attachment_tx: mpsc::Sender<AttachmentBackground>,
+    attachment_rx: mpsc::Receiver<AttachmentBackground>,
     render_generation: u64,
     last_hit_map: Option<HitMap>,
     last_primary_click: Option<(HitTarget, Instant)>,
 }
 
 const LEADER_TIMEOUT: Duration = Duration::from_millis(750);
+const TERMINAL_ERROR_YIELD: Duration = Duration::from_millis(50);
 const RELAY_LAG_YIELD: Duration = Duration::from_millis(5);
 
 impl App {
@@ -332,6 +339,9 @@ impl App {
             }
         };
         let (background_tx, background_rx) = mpsc::channel(128);
+        // Attachment completions have a dedicated bounded lane so relay/cache
+        // activity cannot leave a local file permanently shown as processing.
+        let (attachment_tx, attachment_rx) = mpsc::channel(32);
         let mut media = MediaRuntime::new(
             config.media.clone(),
             config.ui.profile_avatars,
@@ -438,6 +448,8 @@ impl App {
             last_inbox_refresh: Instant::now(),
             background_tx,
             background_rx,
+            attachment_tx,
+            attachment_rx,
             render_generation: 0,
             last_hit_map: None,
             last_primary_click: None,
@@ -468,15 +480,22 @@ impl App {
                     .map_err(|error| Error::io("terminal", error))?;
             }
             tokio::select! {
-                maybe=input.next()=>{
-                    if let Some(Ok(event))=maybe { match event {
-                        TerminalEvent::Key(key) if key.kind==KeyEventKind::Press => self.handle_key(key,&mut guard,&mut terminal).await?,
-                        TerminalEvent::Paste(text) => self.handle_terminal_paste(text).await?,
-                        TerminalEvent::Mouse(mouse) => self.handle_mouse(mouse,&mut guard,&mut terminal).await?,
-                        TerminalEvent::Resize(_, _) => {},
-                        _ => {}
-                    } }
+                biased;
+                attachment=self.attachment_rx.recv()=>if let Some(event)=attachment{
+                    self.handle_attachment_background(event).await?;
                     redraw.request();
+                },
+                maybe=next_terminal_event(&mut input)=>{
+                    if let Some(event)=maybe {
+                        match event {
+                            TerminalEvent::Key(key) if key.kind==KeyEventKind::Press => self.handle_key(key,&mut guard,&mut terminal).await?,
+                            TerminalEvent::Paste(text) => self.handle_terminal_paste(text).await?,
+                            TerminalEvent::Mouse(mouse) => self.handle_mouse(mouse,&mut guard,&mut terminal).await?,
+                            TerminalEvent::Resize(_, _) => {},
+                            _ => {}
+                        }
+                        redraw.request();
+                    }
                 },
                 network=next_network(&mut self.runtime)=>{
                     if let Some(event)=network { self.handle_network(event).await?; }
@@ -501,81 +520,6 @@ impl App {
                     Background::ClipboardImported { target, contents }=>{
                         if self.presentation.composer_target.as_ref() == Some(&target) {
                             self.handle_clipboard_contents(target, *contents).await?;
-                        }
-                    }
-                    Background::Staged { target, community, pending }=>{
-                        self.staging_attachments.retain(|item| item.id != pending.id);
-                        let accepted = self.staging_media.remove(&pending.id)
-                            && self.active_community_id() == Some(community)
-                            && self.presentation.composer_target.as_ref() == Some(&target)
-                            && self.composer.attachments.len() < 8;
-                        if accepted {
-                            self.composer.attachments.push(
-                                crate::media::DraftAttachment::Pending(pending.clone())
-                            );
-                            self.persist_draft().await?;
-                            self.start_pending_upload(target, pending);
-                        } else {
-                            self.remove_staged_attachment(community, pending);
-                        }
-                    }
-                    Background::StageFailed { target, attachment_id, message }=>{
-                        self.staging_media.remove(&attachment_id);
-                        self.staging_attachments.retain(|item| item.id != attachment_id);
-                        if self.presentation.composer_target.as_ref() == Some(&target) {
-                            self.status_error = Some(message);
-                        }
-                    }
-                    Background::Uploaded { target, community, attachment_id, attachment }=>{
-                        self.uploading_media.remove(&attachment_id);
-                        let active = self.active_community_id() == Some(community)
-                            && self.presentation.composer_target.as_ref() == Some(&target);
-                        let replacement = crate::media::DraftAttachment::Uploaded(*attachment);
-                        if active
-                            && let Some((index, item)) = self.composer.attachments.iter_mut().enumerate().find(|(_, item)| matches!(item, crate::media::DraftAttachment::Pending(value) if value.id == attachment_id))
-                        {
-                            let mut replacement = replacement;
-                            if let crate::media::DraftAttachment::Uploaded(value) = &mut replacement {
-                                value.index = index;
-                            }
-                            *item = replacement;
-                            self.status_error = None;
-                            self.persist_draft().await?;
-                        } else {
-                            let root = target.thread_root_id.clone();
-                            self.store.call(move |store| {
-                                store.replace_draft_attachment(
-                                    community,
-                                    target.channel_id,
-                                    root.as_deref(),
-                                    &attachment_id,
-                                    replacement,
-                                )
-                            }).await?;
-                        }
-                    }
-                    Background::UploadFailed { target, community, pending, message }=>{
-                        self.uploading_media.remove(&pending.id);
-                        let active = self.active_community_id() == Some(community)
-                            && self.presentation.composer_target.as_ref() == Some(&target);
-                        let replacement = crate::media::DraftAttachment::Failed(pending.clone());
-                        if active
-                            && let Some(item) = self.composer.attachments.iter_mut().find(|item| matches!(item, crate::media::DraftAttachment::Pending(value) if value.id == pending.id))
-                        {
-                            *item = replacement;
-                            self.status_error = Some(message);
-                            self.persist_draft().await?;
-                        } else {
-                            let root = target.thread_root_id.clone();
-                            self.store.call(move |store| {
-                                store.replace_draft_attachment(
-                                    community,
-                                    target.channel_id,
-                                    root.as_deref(),
-                                    &pending.id,
-                                    replacement,
-                                )
-                            }).await?;
                         }
                     }
                     Background::Saved=>self.status_error=Some("attachment saved".into()),
@@ -2919,6 +2863,118 @@ impl App {
         Ok(())
     }
 
+    async fn handle_attachment_background(&mut self, event: AttachmentBackground) -> Result<()> {
+        match event {
+            AttachmentBackground::Staged {
+                target,
+                community,
+                pending,
+            } => {
+                self.staging_attachments
+                    .retain(|item| item.id != pending.id);
+                let accepted = self.staging_media.remove(&pending.id)
+                    && self.active_community_id() == Some(community)
+                    && self.presentation.composer_target.as_ref() == Some(&target)
+                    && self.composer.attachments.len() < 8;
+                if accepted {
+                    self.composer
+                        .attachments
+                        .push(crate::media::DraftAttachment::Pending(pending.clone()));
+                    self.persist_draft().await?;
+                    self.start_pending_upload(target, pending);
+                } else {
+                    self.remove_staged_attachment(community, pending);
+                }
+            }
+            AttachmentBackground::StageFailed {
+                target,
+                attachment_id,
+                message,
+            } => {
+                self.staging_media.remove(&attachment_id);
+                self.staging_attachments
+                    .retain(|item| item.id != attachment_id);
+                if self.presentation.composer_target.as_ref() == Some(&target) {
+                    self.status_error = Some(message);
+                }
+            }
+            AttachmentBackground::Uploaded {
+                target,
+                community,
+                attachment_id,
+                attachment,
+            } => {
+                self.uploading_media.remove(&attachment_id);
+                let active = self.active_community_id() == Some(community)
+                    && self.presentation.composer_target.as_ref() == Some(&target);
+                let replacement = crate::media::DraftAttachment::Uploaded(*attachment);
+                if active
+                    && let Some((index, item)) = self
+                        .composer
+                        .attachments
+                        .iter_mut()
+                        .enumerate()
+                        .find(|(_, item)| matches!(item, crate::media::DraftAttachment::Pending(value) if value.id == attachment_id))
+                {
+                    let mut replacement = replacement;
+                    if let crate::media::DraftAttachment::Uploaded(value) = &mut replacement {
+                        value.index = index;
+                    }
+                    *item = replacement;
+                    self.status_error = None;
+                    self.persist_draft().await?;
+                } else {
+                    let root = target.thread_root_id.clone();
+                    self.store
+                        .call(move |store| {
+                            store.replace_draft_attachment(
+                                community,
+                                target.channel_id,
+                                root.as_deref(),
+                                &attachment_id,
+                                replacement,
+                            )
+                        })
+                        .await?;
+                }
+            }
+            AttachmentBackground::UploadFailed {
+                target,
+                community,
+                pending,
+                message,
+            } => {
+                self.uploading_media.remove(&pending.id);
+                let active = self.active_community_id() == Some(community)
+                    && self.presentation.composer_target.as_ref() == Some(&target);
+                let replacement = crate::media::DraftAttachment::Failed(pending.clone());
+                if active
+                    && let Some(item) = self.composer.attachments.iter_mut().find(
+                        |item| matches!(item, crate::media::DraftAttachment::Pending(value) if value.id == pending.id),
+                    )
+                {
+                    *item = replacement;
+                    self.status_error = Some(message);
+                    self.persist_draft().await?;
+                } else {
+                    let root = target.thread_root_id.clone();
+                    self.store
+                        .call(move |store| {
+                            store.replace_draft_attachment(
+                                community,
+                                target.channel_id,
+                                root.as_deref(),
+                                &pending.id,
+                                replacement,
+                            )
+                        })
+                        .await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn attachment_capacity(&self) -> usize {
         8_usize.saturating_sub(
             self.composer
@@ -2960,7 +3016,7 @@ impl App {
             return;
         };
         let staging = self.media.staging_dir(community);
-        let tx = self.background_tx.clone();
+        let tx = self.attachment_tx.clone();
         self.status_error = Some("processing attachment…".into());
         tokio::spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
@@ -2973,13 +3029,13 @@ impl App {
                 Ok(staged) => {
                     let mut pending = staged.pending();
                     pending.id = attachment_id;
-                    Background::Staged {
+                    AttachmentBackground::Staged {
                         target,
                         community,
                         pending,
                     }
                 }
-                Err(error) => Background::StageFailed {
+                Err(error) => AttachmentBackground::StageFailed {
                     target,
                     attachment_id,
                     message: public_media_error(&error),
@@ -2996,7 +3052,7 @@ impl App {
             return;
         };
         let staging = self.media.staging_dir(community);
-        let tx = self.background_tx.clone();
+        let tx = self.attachment_tx.clone();
         self.status_error = Some("processing pasted image…".into());
         tokio::spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
@@ -3011,13 +3067,13 @@ impl App {
                 Ok(staged) => {
                     let mut pending = staged.pending();
                     pending.id = attachment_id;
-                    Background::Staged {
+                    AttachmentBackground::Staged {
                         target,
                         community,
                         pending,
                     }
                 }
-                Err(error) => Background::StageFailed {
+                Err(error) => AttachmentBackground::StageFailed {
                     target,
                     attachment_id,
                     message: public_media_error(&error),
@@ -3114,7 +3170,7 @@ impl App {
         }
         let path = self.media.staging_dir(community).join(&pending.cache_name);
         let client = runtime.media.clone();
-        let tx = self.background_tx.clone();
+        let tx = self.attachment_tx.clone();
         self.status_error = Some("uploading attachment…".into());
         tokio::spawn(async move {
             let result = client
@@ -3124,13 +3180,13 @@ impl App {
                 let _ = tokio::fs::remove_file(&path).await;
             }
             let event = match result {
-                Ok(attachment) => Background::Uploaded {
+                Ok(attachment) => AttachmentBackground::Uploaded {
                     target,
                     community,
                     attachment_id: pending.id,
                     attachment: Box::new(attachment),
                 },
-                Err(error) => Background::UploadFailed {
+                Err(error) => AttachmentBackground::UploadFailed {
                     target,
                     community,
                     pending,
@@ -5642,6 +5698,23 @@ fn clear_visible_unread(
     manual.remove(&channel)
 }
 
+/// A terminal backend can fail repeatedly after its descriptor becomes
+/// unavailable. Throttle transient errors and park a permanently ended stream
+/// so neither case can turn the UI into a redraw loop.
+async fn next_terminal_event<S>(input: &mut S) -> Option<TerminalEvent>
+where
+    S: futures_util::Stream<Item = std::io::Result<TerminalEvent>> + Unpin,
+{
+    match input.next().await {
+        Some(Ok(event)) => Some(event),
+        Some(Err(_)) => {
+            tokio::time::sleep(TERMINAL_ERROR_YIELD).await;
+            None
+        }
+        None => std::future::pending().await,
+    }
+}
+
 /// Receives at most one relay event per turn. A flood can overrun the bounded
 /// broadcast receiver; yield control on that condition so local input and
 /// attachment staging cannot be starved while the relay is catching up.
@@ -5772,7 +5845,7 @@ mod tests {
 
     use super::{
         clear_visible_unread, identity_recovery_connection, next_supervisor_event,
-        should_mark_visible_read, timeline_read_mark,
+        next_terminal_event, should_mark_visible_read, timeline_read_mark,
     };
     use crate::{
         config::Config,
@@ -5792,10 +5865,29 @@ mod tests {
             timeline::TimelineState,
         },
     };
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{Event as TerminalEvent, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
     use tempfile::TempDir;
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn a_terminal_input_error_yields_to_local_work() {
+        let mut input =
+            futures_util::stream::iter([Err(std::io::Error::other("terminal unavailable"))]);
+
+        assert!(next_terminal_event(&mut input).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_ended_terminal_stream_does_not_spin_the_ui_loop() {
+        let mut input = futures_util::stream::empty::<std::io::Result<TerminalEvent>>();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), next_terminal_event(&mut input))
+                .await
+                .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn a_lagged_relay_receiver_yields_to_local_work() {
@@ -5988,6 +6080,71 @@ mod tests {
             timeline_read_mark(&timeline, channel, std::slice::from_ref(&message)),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn attachment_staging_completes_when_the_general_background_lane_is_full() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+        let identity = crate::config::IdentityConfig {
+            id: Uuid::new_v4(),
+            label: "attachment-test".into(),
+            pubkey: "a".repeat(64),
+            backend: crate::config::KeyBackend::Keychain,
+            key_ref: "identity:attachment-test".into(),
+        };
+        app.config.identities.push(identity.clone());
+        let community = app
+            .config
+            .add_community(
+                "attachment-test".into(),
+                "wss://attachment.example".into(),
+                identity.id,
+                false,
+            )
+            .unwrap();
+        let synced = app.config.clone();
+        app.store
+            .call(move |store| store.sync_config(&synced))
+            .await
+            .unwrap();
+        let target = ComposerTarget {
+            community_id: community,
+            channel_id: Uuid::new_v4(),
+            thread_root_id: None,
+            parent_event_id: None,
+        };
+        app.presentation.composer_target = Some(target);
+        for _ in 0..128 {
+            app.background_tx
+                .try_send(super::Background::Changed)
+                .unwrap();
+        }
+        let source = temporary.path().join("ordinary.txt");
+        std::fs::write(&source, b"bounded attachment").unwrap();
+
+        app.start_attachment_upload(source);
+        let event = tokio::time::timeout(Duration::from_secs(2), app.attachment_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        app.handle_attachment_background(event).await.unwrap();
+
+        assert!(app.staging_attachments.is_empty());
+        assert!(matches!(
+            app.composer.attachments.as_slice(),
+            [crate::media::DraftAttachment::Pending(_)]
+        ));
     }
 
     #[tokio::test]
