@@ -308,6 +308,7 @@ pub struct App {
 }
 
 const LEADER_TIMEOUT: Duration = Duration::from_millis(750);
+const RELAY_LAG_YIELD: Duration = Duration::from_millis(5);
 
 impl App {
     pub async fn new(config: Config, paths: Paths, store: StoreHandle) -> Result<Self> {
@@ -5641,15 +5642,27 @@ fn clear_visible_unread(
     manual.remove(&channel)
 }
 
+/// Receives at most one relay event per turn. A flood can overrun the bounded
+/// broadcast receiver; yield control on that condition so local input and
+/// attachment staging cannot be starved while the relay is catching up.
+async fn next_supervisor_event(
+    events: &mut broadcast::Receiver<SupervisorEvent>,
+) -> Option<SupervisorEvent> {
+    match events.recv().await {
+        Ok(event) => Some(event),
+        Err(broadcast::error::RecvError::Lagged(_)) => {
+            tokio::time::sleep(RELAY_LAG_YIELD).await;
+            None
+        }
+        // A live Runtime owns a sender, so a closed receiver is exceptional.
+        // Never turn it into a ready future: that would spin the UI loop.
+        Err(broadcast::error::RecvError::Closed) => std::future::pending().await,
+    }
+}
+
 async fn next_network(runtime: &mut Option<Runtime>) -> Option<SupervisorEvent> {
     match runtime {
-        Some(runtime) => loop {
-            match runtime.events.recv().await {
-                Ok(event) => return Some(event),
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => return None,
-            }
-        },
+        Some(runtime) => next_supervisor_event(&mut runtime.events).await,
         None => std::future::pending().await,
     }
 }
@@ -5755,11 +5768,11 @@ fn list_row(area: Rect, row: usize, height: u16) -> Option<Rect> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::{collections::HashSet, time::Duration};
 
     use super::{
-        clear_visible_unread, identity_recovery_connection, should_mark_visible_read,
-        timeline_read_mark,
+        clear_visible_unread, identity_recovery_connection, next_supervisor_event,
+        should_mark_visible_read, timeline_read_mark,
     };
     use crate::{
         config::Config,
@@ -5783,6 +5796,34 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
     use tempfile::TempDir;
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn a_lagged_relay_receiver_yields_to_local_work() {
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(1);
+        sender
+            .send(crate::realtime::supervisor::SupervisorEvent::Connecting)
+            .unwrap();
+        sender
+            .send(crate::realtime::supervisor::SupervisorEvent::Connecting)
+            .unwrap();
+
+        assert!(next_supervisor_event(&mut receiver).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_closed_relay_receiver_does_not_spin_the_ui_loop() {
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(1);
+        drop(sender);
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                next_supervisor_event(&mut receiver)
+            )
+            .await
+            .is_err()
+        );
+    }
 
     #[test]
     fn identity_failures_enter_distinct_cache_only_states() {
