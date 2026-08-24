@@ -2,7 +2,7 @@
 
 **Target release:** v0.9.0
 
-**Status:** Approved for implementation as the local-first foundation of v0.9.0.
+**Status:** Implemented as the local-first foundation of the v0.9.0 candidate.
 
 ## Goal
 

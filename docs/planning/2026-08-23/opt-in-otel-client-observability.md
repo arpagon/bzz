@@ -2,7 +2,7 @@
 
 **Target release:** v0.9.0
 
-**Status:** Approved as the second, default-off phase of v0.9.0; depends on the local diagnostics contract.
+**Status:** Implemented as the second, default-off phase of the v0.9.0 candidate.
 
 ## Goal
 
