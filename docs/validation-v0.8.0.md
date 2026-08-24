@@ -1,13 +1,13 @@
 # v0.8.0 clipboard-first attachment validation
 
-**Status:** Local and CI validation completed 2026-08-21. Native desktop
-clipboard and release-artifact review remain required before tagging.
+**Status:** Local, native-desktop, and pre-release CI validation completed.
+Release artifacts are verified after the `v0.8.0` workflow finishes.
 
 ## Completed gates
 
 - `cargo fmt --check`
-- `cargo clippy --locked --all-targets -- -D warnings`
-- `cargo test --locked` — 125 unit/integration tests passed; the pinned real
+- `cargo clippy --locked --all-targets --all-features -- -D warnings`
+- `cargo test --locked` — 240 unit/integration tests passed; the pinned real
   relay test remains intentionally ignored unless its isolated harness is
   configured.
 - `cargo deny check` — advisories, bans, licenses, and sources passed. Existing
@@ -29,12 +29,15 @@ clipboard and release-artifact review remain required before tagging.
 The deterministic suite covers the dependency-free fake clipboard and native
 file-picker boundaries, including picker cancel/unavailable/stale-target,
 full-general-queue completion, selection bounds, bounded text normalization,
-malformed/oversize bitmap
-rejection, PNG encoding, strict config parsing, typed composer bindings, UTF-8
+malformed/oversize bitmap rejection, PNG encoding, strict config parsing,
+typed composer bindings, single-click channel timeline activation, UTF-8
 paste/mention behavior, queue rendering on a non-graphics TestBackend, secure
 staging, and persisted attachment replacement by opaque draft ID. Existing
 media protocol, authenticated upload, cache, identity, locked-mode, Inbox, and
-terminal layout tests continue to pass.
+terminal layout tests continue to pass. Relay regressions additionally cover
+bounded in-memory event deduplication, idempotent outbox echoes, suppression of
+closed-subscription retry loops, input/attachment priority, and inert idle
+redraw ticks.
 
 ## Draft acknowledgement follow-up — 2026-08-22
 
@@ -49,17 +52,16 @@ terminal layout tests continue to pass.
   delivery, uncertain recovery, crash recovery, late acknowledgements, and
   thread isolation without recording message content.
 
-## Required pre-tag manual review
+## Native desktop and runtime review — 2026-08-23
 
-Use disposable generated files/text/images only:
-
-1. In Ghostty under a supported desktop clipboard, copy a file, an image, and
-   plain text in turn and verify `Ctrl-v` queue/text behavior and no automatic
-   send.
-2. Check the `Ctrl-o` native chooser (single, multiple, cancel, unavailable),
-   `Alt-o` path fallback, `Delete`, `Ctrl-r`, `Ctrl-c` confirmation,
-   `media.clipboard_import = "off"`, restart persistence, and a late upload
-   after removal/clear.
-3. Repeat the queue and fallback journey in a non-graphics terminal. On Linux,
-   verify direct XDG portal use and no zenity/shell fallback. Retain no
-   clipboard content, private paths, or production relay data in evidence.
+- A live explicit bitmap paste reached the attachment queue through the native
+  clipboard and prioritized staging path without sending automatically.
+- The Linux `Ctrl-o` XDG Desktop Portal chooser opened successfully and staged
+  a selected file through the same bounded lifecycle without exposing its path
+  or contents in evidence.
+- The final release binary remained responsive during channel switching. A
+  15-second steady-state sample measured about 1% process CPU, zero socket send
+  backlog, zero SQLite event growth, and zero WAL growth. This replaced the
+  diagnosed closed-subscription retry loop and repeated outbox-echo writes.
+- The release build reports `bzz 0.8.0`; `bzz check` validates configuration,
+  theme, media, and schema-v6 database state.

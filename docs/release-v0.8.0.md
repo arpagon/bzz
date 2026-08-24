@@ -1,6 +1,6 @@
 # bzz v0.8.0 — Clipboard-first attachments
 
-> **Status: Unreleased.**
+> **Status: Released 2026-08-23.**
 
 ## Explicit paste/import
 
@@ -31,6 +31,19 @@ clear, remove, composer close, target change, or late completion cannot restore
 a removed item or overwrite a different draft. Existing drafts with older
 pending attachment metadata are repaired locally on open without a database
 schema migration.
+
+## Responsive relay operation
+
+A single primary click on a joined channel or DM now selects it and opens its
+timeline immediately. Double-click is no longer required to replace the
+previous channel panel.
+
+Relay processing now prioritizes terminal input and attachment completion,
+coalesces redraws to a bounded frame rate, and treats repeated event echoes as
+idempotent. Closed channel subscriptions are suppressed for the current
+community session instead of entering an immediate close/resubscribe loop.
+Together these changes remove persistent SQLite write amplification and keep
+channel switching responsive under overlapping relay traffic.
 
 ## Draft acknowledgement recovery
 

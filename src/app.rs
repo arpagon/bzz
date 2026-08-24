@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -304,6 +304,9 @@ pub struct App {
     manual_unread: HashSet<Uuid>,
     computed_unread: HashSet<Uuid>,
     subscribed_channels: HashSet<Uuid>,
+    closed_channel_subscriptions: HashSet<String>,
+    handled_relay_events: HashMap<Uuid, HashSet<String>>,
+    handled_relay_event_order: VecDeque<(Uuid, String)>,
     last_marked: HashMap<String, u32>,
     read_dirty_since: Option<Instant>,
     last_cache_refresh: Instant,
@@ -322,6 +325,8 @@ pub struct App {
 const LEADER_TIMEOUT: Duration = Duration::from_millis(750);
 const TERMINAL_ERROR_YIELD: Duration = Duration::from_millis(50);
 const RELAY_LAG_YIELD: Duration = Duration::from_millis(5);
+const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const RELAY_EVENT_DEDUP_CAPACITY: usize = 16_384;
 
 impl App {
     pub async fn new(config: Config, paths: Paths, store: StoreHandle) -> Result<Self> {
@@ -447,6 +452,9 @@ impl App {
             manual_unread: HashSet::new(),
             computed_unread: HashSet::new(),
             subscribed_channels: HashSet::new(),
+            closed_channel_subscriptions: HashSet::new(),
+            handled_relay_events: HashMap::new(),
+            handled_relay_event_order: VecDeque::new(),
             last_marked: HashMap::new(),
             read_dirty_since: None,
             last_cache_refresh: Instant::now(),
@@ -479,15 +487,14 @@ impl App {
         self.start_sync().await?;
         let mut input = EventStream::new();
         let mut tick = tokio::time::interval(Duration::from_millis(100));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut frame_tick = tokio::time::interval(FRAME_INTERVAL);
+        frame_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut redraw = RedrawGate::default();
         while !self.should_quit {
-            if redraw.take() {
-                terminal
-                    .draw(|frame| self.render(frame))
-                    .map_err(|error| Error::io("terminal", error))?;
-            }
             tokio::select! {
                 biased;
+                _=&mut shutdown=>self.should_quit=true,
                 attachment=self.attachment_rx.recv()=>if let Some(event)=attachment{
                     self.handle_attachment_background(event).await?;
                     redraw.request();
@@ -504,9 +511,12 @@ impl App {
                         redraw.request();
                     }
                 },
-                network=next_network(&mut self.runtime)=>{
-                    if let Some(event)=network { self.handle_network(event).await?; }
-                    redraw.request();
+                _=frame_tick.tick()=>{
+                    if redraw.take() {
+                        terminal
+                            .draw(|frame| self.render(frame))
+                            .map_err(|error| Error::io("terminal", error))?;
+                    }
                 },
                 background=self.background_rx.recv()=>if let Some(event)=background{match event{
                     Background::Changed | Background::DraftAcknowledged=>{
@@ -598,7 +608,12 @@ impl App {
                     redraw.request();
                 },
                 _=tick.tick()=>redraw.request_if(self.on_tick().await?),
-                _=&mut shutdown=>self.should_quit=true,
+                network=next_network(&mut self.runtime)=>{
+                    if let Some(event)=network {
+                        let visible_changed = self.handle_network(event).await?;
+                        redraw.request_if(visible_changed);
+                    }
+                },
             }
         }
         for task in [
@@ -715,7 +730,11 @@ impl App {
     }
 
     async fn subscribe_channel(&mut self, channel: Uuid) -> Result<()> {
-        if self.subscribed_channels.contains(&channel) || self.subscribed_channels.len() >= 900 {
+        let subscription = format!("ch-{}", channel.simple());
+        if self.subscribed_channels.contains(&channel)
+            || self.closed_channel_subscriptions.contains(&subscription)
+            || self.subscribed_channels.len() >= 900
+        {
             return Ok(());
         }
         let Some(runtime) = &self.runtime else {
@@ -730,7 +749,7 @@ impl App {
         runtime
             .supervisor
             .subscribe(
-                format!("ch-{}", channel.simple()),
+                subscription,
                 subscriptions::channel(channel, cursor.high_created_at),
             )
             .await?;
@@ -1114,7 +1133,9 @@ impl App {
         Ok(())
     }
 
-    async fn handle_network(&mut self, event: SupervisorEvent) -> Result<()> {
+    async fn handle_network(&mut self, event: SupervisorEvent) -> Result<bool> {
+        let previous_connection = self.connection;
+        let previous_status = self.status_error.clone();
         match event {
             SupervisorEvent::Connecting => self.connection = ConnectionState::Connecting,
             SupervisorEvent::Backoff(_) => self.connection = ConnectionState::Offline,
@@ -1186,42 +1207,46 @@ impl App {
             }
             SupervisorEvent::Session(SessionEvent::Event { event, .. }) => {
                 let Some(runtime) = &self.runtime else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 let community = runtime.community_id;
+                let event_id = event.id.to_hex();
+                if self.relay_event_was_handled(community, &event_id) {
+                    return Ok(false);
+                }
                 if event.kind.as_u16() == 30_078 {
-                    let events = vec![event];
+                    // Serialize read-state reduction so an echo flood cannot
+                    // enqueue concurrent decrypt/write work ahead of input.
                     let signer = runtime.signer.clone();
                     let store = self.store.clone();
-                    let tx = self.background_tx.clone();
-                    tokio::spawn(async move {
-                        let result =
-                            read_state::merge_events(community, &events, &signer, &store).await;
-                        let _ = tx
-                            .send(match result {
-                                Ok(_) => Background::Changed,
-                                Err(error) => Background::Failed(error.to_string()),
-                            })
-                            .await;
-                    });
+                    match read_state::merge_events(community, &[event], &signer, &store).await {
+                        Ok(_) => {
+                            self.remember_relay_event(community, event_id);
+                            self.cache_dirty = true;
+                        }
+                        Err(error) => self.status_error = Some(error.to_string()),
+                    }
                 } else {
                     let kind = event.kind.as_u16();
                     let membership_refresh = matches!(kind, 44_100 | 44_101);
                     match self
                         .store
-                        .call(move |store| store.apply_event(community, &event).map(|_| ()))
+                        .call(move |store| store.apply_event(community, &event))
                         .await
                     {
-                        Ok(()) => {
-                            self.cache_dirty = true;
-                            if matches!(kind, 9 | 40_002 | 30_622 | 46_010..=46_012) {
-                                self.spawn_inbox_load(false);
+                        Ok(changed) => {
+                            self.remember_relay_event(community, event_id);
+                            if changed {
+                                self.cache_dirty = true;
+                                if matches!(kind, 9 | 40_002 | 30_622 | 46_010..=46_012) {
+                                    self.spawn_inbox_load(false);
+                                }
+                                if membership_refresh {
+                                    self.spawn_directory_refresh();
+                                }
                             }
                         }
                         Err(error) => self.status_error = Some(error.to_string()),
-                    }
-                    if membership_refresh {
-                        self.spawn_directory_refresh();
                     }
                 }
             }
@@ -1237,7 +1262,11 @@ impl App {
                 subscription,
                 message,
             }) => {
-                if subscription.starts_with("ch-") {
+                if subscription.starts_with("ch-")
+                    && self
+                        .closed_channel_subscriptions
+                        .insert(subscription.clone())
+                {
                     self.connection = ConnectionState::AccessDenied;
                     if let Some(channel) = self
                         .subscribed_channels
@@ -1248,7 +1277,7 @@ impl App {
                         self.subscribed_channels.remove(&channel);
                     }
                     if let Some(runtime) = &self.runtime {
-                        let _ = runtime.supervisor.close(subscription.clone()).await;
+                        let _ = runtime.supervisor.close(subscription).await;
                         self.spawn_directory_refresh();
                     }
                 }
@@ -1260,7 +1289,40 @@ impl App {
             }
             SupervisorEvent::Session(SessionEvent::Count { .. }) => {}
         }
-        Ok(())
+        Ok(self.connection != previous_connection || self.status_error != previous_status)
+    }
+
+    fn relay_event_was_handled(&self, community: Uuid, event_id: &str) -> bool {
+        self.handled_relay_events
+            .get(&community)
+            .is_some_and(|events| events.contains(event_id))
+    }
+
+    fn remember_relay_event(&mut self, community: Uuid, event_id: String) {
+        if !self
+            .handled_relay_events
+            .entry(community)
+            .or_default()
+            .insert(event_id.clone())
+        {
+            return;
+        }
+        self.handled_relay_event_order
+            .push_back((community, event_id));
+        while self.handled_relay_event_order.len() > RELAY_EVENT_DEDUP_CAPACITY {
+            if let Some((community, expired)) = self.handled_relay_event_order.pop_front() {
+                let remove_community =
+                    self.handled_relay_events
+                        .get_mut(&community)
+                        .is_some_and(|events| {
+                            events.remove(&expired);
+                            events.is_empty()
+                        });
+                if remove_community {
+                    self.handled_relay_events.remove(&community);
+                }
+            }
+        }
     }
 
     /// Performs bounded timer work and reports whether it changed visible
@@ -1489,15 +1551,7 @@ impl App {
                         .get(index)
                         .is_some_and(|channel| channel.is_member) =>
             {
-                self.select_channel_index(index);
-                self.showing_open_channel = false;
-                self.presentation
-                    .set_workspace_focus(FocusSurface::Channels);
-                if double_click {
-                    self.load_selected_channel().await?;
-                    self.presentation
-                        .set_workspace_focus(FocusSurface::Timeline);
-                }
+                self.activate_channel_click(index, double_click).await?;
             }
             HitTarget::Timeline
                 if self.presentation.overlay.is_none()
@@ -1656,6 +1710,23 @@ impl App {
                 self.accept_agent_draft().await?;
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// A channel row is an activation target, not only a movable selection.
+    /// Keep the sidebar focused after one click, while always replacing the
+    /// timeline with the selected channel. A second click may move focus into
+    /// the timeline, but is never required to open the channel.
+    async fn activate_channel_click(&mut self, index: usize, double_click: bool) -> Result<()> {
+        self.select_channel_index(index);
+        self.showing_open_channel = false;
+        self.presentation
+            .set_workspace_focus(FocusSurface::Channels);
+        self.load_selected_channel().await?;
+        if double_click {
+            self.presentation
+                .set_workspace_focus(FocusSurface::Timeline);
         }
         Ok(())
     }
@@ -4443,6 +4514,7 @@ impl App {
                 self.last_marked.clear();
                 self.profile_requested.clear();
                 self.subscribed_channels.clear();
+                self.closed_channel_subscriptions.clear();
                 self.inbox_items.clear();
                 self.inbox_messages.clear();
                 self.inbox_state = InboxState::default();
@@ -4475,6 +4547,7 @@ impl App {
                     self.last_marked.clear();
                     self.profile_requested.clear();
                     self.subscribed_channels.clear();
+                    self.closed_channel_subscriptions.clear();
                     self.inbox_items.clear();
                     self.inbox_messages.clear();
                     self.inbox_state = InboxState::default();
@@ -5915,6 +5988,7 @@ mod tests {
         },
     };
     use crossterm::event::{Event as TerminalEvent, KeyCode, KeyEvent, KeyModifiers};
+    use nostr::{EventBuilder, Keys, Kind, Tag};
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
     use tempfile::TempDir;
     use uuid::Uuid;
@@ -5979,6 +6053,51 @@ mod tests {
             parent_event_id: None,
         });
         app
+    }
+
+    #[tokio::test]
+    async fn relay_event_deduplication_is_bounded_and_community_scoped() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let community = app.active_community_id().unwrap();
+        let other = Uuid::new_v4();
+        let event_id = "a".repeat(64);
+
+        assert!(!app.relay_event_was_handled(community, &event_id));
+        app.remember_relay_event(community, event_id.clone());
+        assert!(app.relay_event_was_handled(community, &event_id));
+        assert!(!app.relay_event_was_handled(other, &event_id));
+
+        for index in 0..super::RELAY_EVENT_DEDUP_CAPACITY {
+            app.remember_relay_event(community, format!("{index:064x}"));
+        }
+        assert_eq!(
+            app.handled_relay_event_order.len(),
+            super::RELAY_EVENT_DEDUP_CAPACITY
+        );
+        assert!(!app.relay_event_was_handled(community, &event_id));
+    }
+
+    #[tokio::test]
+    async fn a_closed_channel_subscription_is_not_retried_in_a_hot_loop() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let channel = Uuid::new_v4();
+        let subscription = format!("ch-{}", channel.simple());
+        app.subscribed_channels.insert(channel);
+        let closed = crate::realtime::supervisor::SupervisorEvent::Session(
+            crate::realtime::session::SessionEvent::Closed {
+                subscription: subscription.clone(),
+                message: "generated close reason".into(),
+            },
+        );
+
+        assert!(app.handle_network(closed.clone()).await.unwrap());
+        assert!(!app.subscribed_channels.contains(&channel));
+        assert!(app.closed_channel_subscriptions.contains(&subscription));
+        app.subscribe_channel(channel).await.unwrap();
+        assert!(!app.subscribed_channels.contains(&channel));
+        assert!(!app.handle_network(closed).await.unwrap());
     }
 
     #[tokio::test]
@@ -6128,6 +6247,106 @@ mod tests {
             .unwrap();
         assert_eq!(contexts.get(&channel.to_string()), Some(&42));
         assert!(!app.computed_unread.contains(&channel));
+    }
+
+    #[tokio::test]
+    async fn a_single_channel_click_opens_its_timeline() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let own = Keys::generate();
+        let relay = Keys::generate();
+        let identity = crate::config::IdentityConfig {
+            id: Uuid::new_v4(),
+            label: "mouse-channel".into(),
+            pubkey: own.public_key().to_hex(),
+            backend: crate::config::KeyBackend::Keychain,
+            key_ref: "identity:mouse-channel".into(),
+        };
+        let mut config = Config::default();
+        config.identities.push(identity.clone());
+        let community = config
+            .add_community(
+                "mouse-channel".into(),
+                "wss://mouse-channel.example".into(),
+                identity.id,
+                false,
+            )
+            .unwrap();
+        config.default_community = Some(community);
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        store
+            .pin_relay_pubkey(community, &relay.public_key().to_hex())
+            .unwrap();
+        for (channel, name, content) in [(first, "alpha", "first"), (second, "beta", "second")] {
+            let metadata = EventBuilder::new(Kind::Custom(39_000), "")
+                .tags([
+                    Tag::parse(["d", &channel.to_string()]).unwrap(),
+                    Tag::parse(["name", name]).unwrap(),
+                    Tag::parse(["t", "stream"]).unwrap(),
+                    Tag::parse(["closed"]).unwrap(),
+                    Tag::parse(["public"]).unwrap(),
+                ])
+                .sign_with_keys(&relay)
+                .unwrap();
+            store.apply_event(community, &metadata).unwrap();
+            let membership = EventBuilder::new(Kind::Custom(39_002), "")
+                .tags([
+                    Tag::parse(["d", &channel.to_string()]).unwrap(),
+                    Tag::parse(["p", &own.public_key().to_hex()]).unwrap(),
+                ])
+                .sign_with_keys(&relay)
+                .unwrap();
+            store.apply_event(community, &membership).unwrap();
+            let message = EventBuilder::new(Kind::Custom(9), content)
+                .tags([Tag::parse(["h", &channel.to_string()]).unwrap()])
+                .sign_with_keys(&own)
+                .unwrap();
+            store.apply_event(community, &message).unwrap();
+        }
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+        let first_index = app
+            .channels
+            .iter()
+            .position(|channel| channel.id == first)
+            .unwrap();
+        app.select_channel_index(first_index);
+        app.load_selected_channel().await.unwrap();
+        assert!(
+            app.messages
+                .iter()
+                .all(|message| message.channel_id == first)
+        );
+
+        let second_index = app
+            .channels
+            .iter()
+            .position(|channel| channel.id == second)
+            .unwrap();
+        app.activate_channel_click(second_index, false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            app.current_channel().map(|channel| channel.id),
+            Some(second)
+        );
+        assert!(
+            !app.messages.is_empty()
+                && app
+                    .messages
+                    .iter()
+                    .all(|message| message.channel_id == second)
+        );
+        assert_eq!(app.presentation.focus, FocusSurface::Channels);
     }
 
     #[test]

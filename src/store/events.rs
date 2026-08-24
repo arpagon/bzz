@@ -47,8 +47,7 @@ impl Store {
                     "conflicting bytes for an existing event ID".into(),
                 ));
             }
-            self.mark_outbox_observed(community_id, &event.id.to_hex())?;
-            return Ok(false);
+            return self.mark_outbox_observed(community_id, &event.id.to_hex());
         }
         let channel = channel_id(event);
         let (root, parent) = thread_coordinates(event);
@@ -242,21 +241,28 @@ impl Store {
         Ok(true)
     }
 
-    fn mark_outbox_observed(&mut self, community_id: Uuid, event_id: &str) -> Result<()> {
+    fn mark_outbox_observed(&mut self, community_id: Uuid, event_id: &str) -> Result<bool> {
         let transaction = self.connection.transaction()?;
         // An observed echo is authoritative delivery, but not another publish
-        // attempt. Keep the existing attempt counter unchanged.
-        transaction.execute(
-            "UPDATE outbox SET state='delivered',updated_at=unixepoch(),last_error_code=NULL WHERE community_id=?1 AND event_id=?2",
+        // attempt. A relay may echo the same event through overlapping
+        // subscriptions, so already-delivered echoes must remain true no-ops:
+        // do not rewrite timestamps or dirty the Inbox projection.
+        let outbox_changed = transaction.execute(
+            "UPDATE outbox SET state='delivered',updated_at=unixepoch(),last_error_code=NULL
+             WHERE community_id=?1 AND event_id=?2
+               AND (state<>'delivered' OR last_error_code IS NOT NULL)",
             params![community_id.to_string(), event_id],
         )?;
-        transaction.execute(
+        let drafts_deleted = transaction.execute(
             "DELETE FROM drafts WHERE community_id=?1 AND outbox_event_id=?2",
             params![community_id.to_string(), event_id],
         )?;
-        crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
+        let changed = outbox_changed != 0 || drafts_deleted != 0;
+        if changed {
+            crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
+        }
         transaction.commit()?;
-        Ok(())
+        Ok(changed)
     }
 }
 

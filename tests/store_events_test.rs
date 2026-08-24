@@ -77,6 +77,20 @@ fn outbox_and_delete_are_reduced_deterministically() {
 }
 
 #[test]
+fn repeated_relay_echo_is_a_noop_after_exact_outbox_delivery() {
+    let (mut store, community, channel, keys) = fixture();
+    let event = buzz_sdk::build_message(channel, "pending", None, &[], false, &[])
+        .unwrap()
+        .sign_with_keys(&keys)
+        .unwrap();
+    store.insert_outbox(community, &event).unwrap();
+
+    assert!(store.apply_event(community, &event).unwrap());
+    assert!(!store.apply_event(community, &event).unwrap());
+    assert!(!store.messages(community, channel, 10).unwrap()[0].pending);
+}
+
+#[test]
 fn destructive_outbox_events_wait_for_relay_authority() {
     let (mut store, community, channel, owner) = fixture();
     let target = buzz_sdk::build_message(channel, "target", None, &[], false, &[])
