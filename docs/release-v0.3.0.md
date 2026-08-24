@@ -1,5 +1,8 @@
 # bzz v0.3.0
 
+> Historical release record: the one-shot local Codex draft assistant described
+> below was retired after v0.9.0 and is not part of current bzz.
+
 `v0.3.0` adds terminal mouse interaction, offline channel-member `@` mention
 completion, and an opt-in local Codex **draft** assistant. Protocol
 compatibility remains pinned to Buzz `ede26863345a518ec46edd6d7692e0281883491b`.

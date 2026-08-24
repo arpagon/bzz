@@ -172,23 +172,26 @@ fn clipboard_import_is_explicit_by_default_and_strict_when_configured() {
 }
 
 #[test]
-fn local_agents_are_unique_and_require_canonical_workdirs() {
+fn removed_local_agents_are_dropped_from_existing_configurations() {
     let temporary = TempDir::new().unwrap();
-    let workspace = temporary.path().join("workspace");
-    std::fs::create_dir(&workspace).unwrap();
-    let canonical = workspace.canonicalize().unwrap();
-    let mut config = Config::default();
-    let id = config
-        .add_local_agent("writer".into(), Some(workspace))
-        .unwrap();
-    assert_eq!(config.local_agents[0].id, id);
-    assert_eq!(
-        config.local_agents[0].workdir.as_deref(),
-        Some(canonical.as_path())
+    let paths = Paths {
+        config_dir: temporary.path().join("config"),
+        data_dir: temporary.path().join("data"),
+        cache_dir: temporary.path().join("cache"),
+    };
+    std::fs::create_dir_all(&paths.config_dir).unwrap();
+    std::fs::write(
+        paths.config_file(),
+        "[[local_agents]]\nid='retired'\nlabel='writer'\nbackend='codex'\n",
+    )
+    .unwrap();
+
+    assert_eq!(Config::load(&paths).unwrap(), Config::default());
+    assert!(
+        !std::fs::read_to_string(paths.config_file())
+            .unwrap()
+            .contains("local_agents")
     );
-    assert!(config.add_local_agent("WRITER".into(), None).is_err());
-    config.local_agents[0].workdir = Some(temporary.path().join("missing"));
-    assert!(config.validate().is_err());
 }
 
 #[test]

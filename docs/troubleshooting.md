@@ -291,22 +291,6 @@ default and enables capture only in an interactive non-`dumb` terminal, while
 `"on"` is an explicit override. Button 2/3, drag selection, horizontal scroll,
 and unknown mouse events intentionally do nothing.
 
-## Local Codex assistant is unavailable
-
-The assistant is optional and never affects normal Buzz operation. Check the
-local executable and its required read-only flags without starting a model run:
-
-```sh
-bzz agent doctor
-```
-
-Install/authenticate Codex separately, then add a non-secret profile with
-`bzz agent add --label <label>`. bzz accepts only a capability-compatible local
-binary; it does not download, log in to, or receive a Codex credential. A
-configured workdir must be a canonical existing directory and remains
-read-only. `:agent` requires an unlocked identity and a selected cached message;
-its result is a review draft, not a published Buzz message.
-
 ## Broken terminal after a crash
 
 bzz installs a restoration panic hook, including mouse-capture restoration. If

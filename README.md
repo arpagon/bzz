@@ -4,9 +4,9 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.9.0 adds private local connection/outbox diagnostics,
-> exact delivery-state presentation, and explicitly enrolled OTLP/HTTP log export
-> while retaining clipboard-first attachments and prior privacy boundaries.
+> Status: v0.10.0 removes the retired one-shot Codex reply drafter so future
+> managed-agent support can be designed against explicit identity, protocol, and
+> permission boundaries. bzz currently launches no local assistant process.
 > Protocol compatibility remains pinned to Buzz
 > `ede26863345a518ec46edd6d7692e0281883491b`.
 
@@ -45,10 +45,8 @@ use `bzz-dev` paths and a separate OS-keychain service.
 - inline JPEG/PNG/GIF/WebP first-frame rendering through Kitty, Sixel, iTerm2,
   or a Unicode half-block fallback;
 - image previews, explicit attachment saves, and sanitized image/file uploads;
-- configurable semantic terminal-mouse interaction with safe restoration;
-- offline channel-member `@` completion with exact Buzz `p` tags; and
-- opt-in local Codex drafts with explicit human review and normal-send-only
-  publishing.
+- configurable semantic terminal-mouse interaction with safe restoration; and
+- offline channel-member `@` completion with exact Buzz `p` tags.
 
 NIP-17 gift-wrap authoring/inbox, typing/presence, custom emoji, media playback,
 and message editing remain post-MVP. Workspace DMs are private
@@ -95,11 +93,9 @@ terminals retain list/detail together; on narrow terminals `Esc` returns from
 detail to the list. `@` opens cached channel-member completion. In the composer,
 `Ctrl-o` opens the OS file chooser, `Ctrl-v` explicitly pastes copied files, an
 image, or text, and `Alt-o` opens the local-path fallback. `Delete` removes the
-newest attachment and `Ctrl-r` retries failed uploads. `:agent` opens an
-explicitly configured local
-Codex draft assistant. Generate shell integration
-with `bzz completions <shell>`. Inside the TUI, `:inbox`, `:search`, `:dm`,
-`:agent`, `:reconnect`, `:resync`, `:theme reload`, `:purge-cache`, and `:lock`
+newest attachment and `Ctrl-r` retries failed uploads. Generate shell
+integration with `bzz completions <shell>`. Inside the TUI, `:inbox`, `:search`,
+`:dm`, `:reconnect`, `:resync`, `:theme reload`, `:purge-cache`, and `:lock`
 cover the main conversation, recovery, appearance, and security operations.
 
 ## Media safety
@@ -160,8 +156,10 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/security.md`](docs/security.md),
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
+[the v0.10.0 agent-foundation reset](docs/release-v0.10.0.md),
+[v0.10.0 validation](docs/validation-v0.10.0.md),
+[the Buzz managed-agent architecture research](docs/how-agents-works-in-buzz.md),
 [the v0.9.0 diagnostics and observability notes](docs/release-v0.9.0.md),
-[v0.9.0 validation](docs/validation-v0.9.0.md),
 [the v0.8.0 clipboard-attachment notes](docs/release-v0.8.0.md),
 [v0.8.0 validation](docs/validation-v0.8.0.md),
 [the v0.7.1 relay-avatar release](docs/release-v0.7.1.md), and the

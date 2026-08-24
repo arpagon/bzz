@@ -67,7 +67,7 @@ The v0.4 interaction layer is a clean-room bzz implementation: it contains no
 Concord code, assets, test fixtures, strings, or dependency. Key and mouse
 input resolves into bounded typed actions, then presentation reducers emit
 named effects. Those reducers, generated help, TestBackend functional harness,
-and hit maps have no signer, relay, HTTP client, media uploader, agent runner,
+and hit maps have no signer, relay, HTTP client, media uploader, process runner,
 shell, or secret-bearing configuration. `App` is the only adapter that may
 validate and execute an effect against the active community and identity.
 
@@ -107,27 +107,6 @@ terminal. External URLs use the bounded credential-free profile-avatar client.
 A canonical image path at the active community relay may use a separately
 bounded, same-origin Blossom media-read authorization. Set it to `"off"` to
 keep every profile URL inert.
-
-## Local Codex drafts
-
-A configured local assistant is not a Nostr identity: it has no signer, relay
-connection, membership, publishing path, media uploader, or remote trigger.
-The user explicitly invokes it for the selected cached message. Its process is
-started without a shell from an absolute local executable, receives context on
-stdin rather than arguments, clears inherited environment values (including
-`OPENAI_API_KEY`), uses fixed `codex exec` JSON/ephemeral/read-only flags, and
-runs in either an empty owner-only scratch directory or an explicitly selected
-canonical read-only workspace. Codex authentication and model-network egress
-remain external to bzz and the user's responsibility.
-
-At most one run is allowed. Prompts, process output, stderr, thread IDs, and
-unapproved drafts are neither logged nor written to configuration or SQLite.
-Stdout is bounded and only a completed `agent_message` JSONL item is accepted;
-terminal controls in its draft are replaced before review. Timeout, cancel,
-lock, community switch, and shutdown discard the result and terminate the
-child. A completed draft appears only for human review; accepting it inserts
-text into the ordinary composer, whose separate human send action is still the
-sole publishing path.
 
 ## Inbox, workspace DMs, and search
 

@@ -23,14 +23,18 @@ isolation and Inbox identity/DM fences, and confirm malformed stored mention
 metadata degrades to ordinary draft text before publishing. Downgrades restore
 the pre-migration backup rather than running reverse SQL.
 
-For v0.9, verify the release binary's diagnostics CLI against disposable
-sentinels, owner-only journal/report permissions, fixed rotation, exact delivery
-labels, and an unchanged read-only database. A clean and upgraded profile must
-make zero OTLP requests by default. Run fake receiver redirect/status/timeout/
-queue gates, then one scoped-token `telemetry.test` canary; record operator-side
-schema/identity evidence without secrets and revoke/forget the canary before
-release. Missing, revoked, offline, and rate-limited telemetry must leave local
-bzz usable.
+For v0.9 and later, verify the release binary's diagnostics CLI against
+disposable sentinels, owner-only journal/report permissions, fixed rotation,
+exact delivery labels, and an unchanged read-only database. A clean and upgraded
+profile must make zero OTLP requests by default. Run fake receiver redirect/
+status/timeout/queue gates; a scoped-token `telemetry.test` canary is required
+only when telemetry code or enrollment behavior changes. Missing, revoked,
+offline, and rate-limited telemetry must leave local bzz usable.
+
+For v0.10, verify that an older top-level `[[local_agents]]` configuration is
+removed atomically while every other unknown field remains rejected. Confirm
+that CLI help and current docs expose no retired Codex-drafter surface and do
+not claim managed-agent support.
 
 For v0.4 and later interaction changes, also run the deterministic functional
 TUI harness in ordinary CI and record a controlled release-binary Herdr

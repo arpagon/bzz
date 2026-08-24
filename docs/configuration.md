@@ -7,6 +7,10 @@ secret values. Without overrides, debug builds use a separate `bzz-dev`
 platform directory and `dev.arpagon.bzz.debug` credential service. Release
 builds use `bzz` and `dev.arpagon.bzz`.
 
+The retired v0.3-v0.9 `[[local_agents]]` section is discarded and removed the
+next time current bzz loads an older configuration. No other unknown setting is
+accepted by this compatibility migration.
+
 ```toml
 default_community = "00000000-0000-0000-0000-000000000000"
 
@@ -34,12 +38,6 @@ clipboard = "osc52"         # osc52|disabled; only writes after explicit y
 profile_avatars = "trusted"  # trusted|off; kind-0 picture images
 theme = "bzz"
 mouse = "auto"              # auto|on|off
-
-[[local_agents]]
-id = "00000000-0000-0000-0000-000000000002"
-label = "local-drafter"
-backend = "codex"
-workdir = "/home/example/read-only-workspace" # optional; canonical existing directory
 
 [media]
 enabled = true
@@ -164,16 +162,6 @@ actions include `select-next`, `select-previous`, `jump-top`, `jump-bottom`,
 Use `?` inside the relevant route as
 the authoritative effective binding list; it includes local disabled bindings
 and actions unavailable for the current selection.
-
-`[[local_agents]]` configures named, local-only Codex draft assistants. It
-contains no credentials, Nostr identity, relay URL, prompt, or output. A
-configured `workdir` must already exist, be a canonical directory, and is used
-read-only; without one, each run receives an empty owner-only scratch
-directory. Use `bzz agent add --label <label> [--workdir <directory>]`,
-`bzz agent list`, `bzz agent remove <id> --yes`, and `bzz agent doctor` to
-manage or check the local installation. Codex authentication remains external
-to bzz. A selected assistant only creates an unpersisted review draft; normal
-human composer send remains the sole publishing path.
 
 The strict `[diagnostics]` section controls the owner-private operational
 journal. `on` is the default. It retains at most three 2 MiB JSONL files under

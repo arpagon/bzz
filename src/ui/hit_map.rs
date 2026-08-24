@@ -23,8 +23,6 @@ pub enum HitTarget {
     InboxItem(String),
     SearchResult(String),
     DmCandidate(String),
-    LocalAgent(usize),
-    AgentDraftAccept,
     ActionMenu(crate::ui::keymap::UiAction),
 }
 
