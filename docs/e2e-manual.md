@@ -25,9 +25,9 @@ debug builds deliberately use separate paths and keychain services.
 
 Expected result:
 
-- candidate version `0.8.0`;
+- candidate version `0.9.0`;
 - config, data, and cache under `BZZ_E2E_ROOT`;
-- `configuration, theme, media, and database are valid`;
+- `configuration, theme, media, diagnostics, telemetry, and database are valid`;
 - no secrets in `.env` or command output.
 
 ## 1. Empty startup and terminal restoration
@@ -150,6 +150,46 @@ sending. Start a third run, cancel with `Esc`, then lock or switch community
 while it is running. No Nostr event, outbox row, attachment, or saved draft may
 be created by any of these actions. Remove the test profile afterward with
 `"$BZZ_BIN" agent remove <id> --yes`.
+
+## 4.2 Diagnostics and opt-in telemetry (v0.9.0)
+
+After one accepted disposable message, one rejected fake-relay publication, and
+one deliberately interrupted fake-relay acknowledgement, verify exact local
+states and content-free evidence:
+
+```bash
+"$BZZ_BIN" diagnostics status --json
+"$BZZ_BIN" diagnostics outbox --json
+"$BZZ_BIN" diagnostics report --output "$BZZ_E2E_ROOT/diagnostics-report.json"
+```
+
+Review all output and the report with sentinel generated message text, relay
+notices, a fake nsec, local path, channel/community labels, pubkeys, auth
+challenge, and attachment metadata. None may occur. The complete locally
+authored event ID may occur. Verify `[pending]`, `[delivery unknown]`, and
+`[rejected]` in the TUI, owner-only journal/report permissions, fixed three by
+2 MiB journal bounds, report overwrite refusal, and `diagnostics clear --yes`
+removing no SQLite, drafts, identities, configuration, or media.
+
+Telemetry is optional. Ordinary E2E and CI must leave it unconfigured and prove
+zero OTLP requests. For the controlled Emilia canary only, source the scoped
+per-installation `BZZ_OTEL_TOKEN` without printing it, then run:
+
+```bash
+"$BZZ_BIN" telemetry configure --endpoint "$BZZ_OTEL_ENDPOINT"
+"$BZZ_BIN" telemetry status --json
+"$BZZ_BIN" telemetry test
+"$BZZ_BIN" telemetry enable
+```
+
+The test sends exactly one `telemetry.test` OTLP protobuf log with no relay,
+event, community, identity, or message attributes. Then use a dedicated fake
+relay and disposable event to verify event-ID/time correlation at the operator,
+never user content. Exercise redirect, `400`, `401`, `403`, `413`, `429`, `5xx`,
+slow, unreachable, and malformed fake endpoints. Credentials must not follow a
+redirect; queue/retries/shutdown stay bounded and relay/UI/SQLite behavior is
+unchanged. Finish with `telemetry disable` and `telemetry forget --yes`; revoke
+the canary token externally.
 
 ## 5. Conversation
 
@@ -428,6 +468,7 @@ databases. Never use the production owner identity.
 | 2. Identity/backup | ☐ | |
 | 3. Community/auth | ☐ | |
 | 4. Message/restart | ☐ | |
+| 4.2 Diagnostics/telemetry | ☐ | |
 | 5. Conversation | ☐ | |
 | 6. Portable backup | ☐ | |
 | 7. Recovery | ☐ | |

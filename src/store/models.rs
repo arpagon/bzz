@@ -12,7 +12,8 @@ pub struct OutboxItem {
     pub last_error: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OutboxState {
     Pending,
     Unknown,
@@ -39,6 +40,18 @@ impl OutboxState {
             _ => None,
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct OutboxDiagnosticRow {
+    pub event_id: String,
+    pub kind: u16,
+    pub state: OutboxState,
+    pub attempts: u32,
+    pub created_at: u64,
+    pub updated_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_class: Option<crate::diagnostics::event::ErrorClass>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

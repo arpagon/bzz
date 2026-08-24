@@ -243,6 +243,19 @@ impl Store {
 
     fn mark_outbox_observed(&mut self, community_id: Uuid, event_id: &str) -> Result<bool> {
         let transaction = self.connection.transaction()?;
+        let previous = transaction
+            .query_row(
+                "SELECT state,kind,attempts FROM outbox WHERE community_id=?1 AND event_id=?2",
+                params![community_id.to_string(), event_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        u16::try_from(row.get::<_, i64>(1)?).unwrap_or(u16::MAX),
+                        u32::try_from(row.get::<_, i64>(2)?).unwrap_or(u32::MAX),
+                    ))
+                },
+            )
+            .optional()?;
         // An observed echo is authoritative delivery, but not another publish
         // attempt. A relay may echo the same event through overlapping
         // subscriptions, so already-delivered echoes must remain true no-ops:
@@ -262,6 +275,18 @@ impl Store {
             crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
         }
         transaction.commit()?;
+        if outbox_changed != 0
+            && let Some((old_state, kind, attempts)) = previous
+        {
+            self.diagnostics
+                .emit(crate::diagnostics::DiagnosticEvent::OutboxStateChanged {
+                    event_id: event_id.into(),
+                    kind,
+                    old_state,
+                    new_state: "delivered".into(),
+                    attempts,
+                });
+        }
         Ok(changed)
     }
 }

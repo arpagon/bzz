@@ -26,8 +26,7 @@ fn bench_timeline(c: &mut Criterion) {
             root_event_id: None,
             parent_event_id: None,
             deleted: false,
-            pending: false,
-            rejected: None,
+            delivery: bzz::domain::DeliveryState::Delivered,
         })
         .collect::<Vec<_>>();
     c.bench_function("timeline cursor move in 10k messages", |bench| {

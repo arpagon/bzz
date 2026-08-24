@@ -23,6 +23,7 @@ use crate::{
     agent::{AgentRun, CodexExecutable, RunFailure, start as start_agent},
     auth::{IdentityManager, read_passphrase, signer::SignerHandle},
     config::{ClipboardImportMode, ClipboardMode, Config, KeyBackend, validate_relay_url},
+    diagnostics::{DiagnosticEvent, DiagnosticHandle},
     domain::{
         Channel, ConnectionState, InboxCategory, InboxItem, Message, Profile, Reaction,
         SearchResultKind,
@@ -102,6 +103,7 @@ impl Runtime {
         paths: &Paths,
         store: StoreHandle,
         signer: Option<SignerHandle>,
+        diagnostics: DiagnosticHandle,
     ) -> Result<Self> {
         let community = config
             .communities
@@ -123,7 +125,11 @@ impl Runtime {
         };
         let endpoint =
             validate_relay_url(&community.relay_url, community.allow_insecure_localhost)?;
-        let supervisor = SupervisorHandle::spawn(endpoint.websocket, signer.clone());
+        let supervisor = SupervisorHandle::spawn_with_diagnostics(
+            endpoint.websocket,
+            signer.clone(),
+            diagnostics.clone(),
+        );
         let events = supervisor.subscribe_events();
         let http = HttpClient::new(endpoint.http_base.clone(), signer.clone())?;
         let media = MediaClient::new(
@@ -235,6 +241,7 @@ enum Background {
 
 pub struct App {
     config: Config,
+    diagnostics: DiagnosticHandle,
     paths: Paths,
     store: StoreHandle,
     runtime: Option<Runtime>,
@@ -330,6 +337,25 @@ const RELAY_EVENT_DEDUP_CAPACITY: usize = 16_384;
 
 impl App {
     pub async fn new(config: Config, paths: Paths, store: StoreHandle) -> Result<Self> {
+        Self::new_with_diagnostics(config, paths, store, DiagnosticHandle::disabled()).await
+    }
+
+    pub async fn new_with_diagnostics(
+        config: Config,
+        paths: Paths,
+        store: StoreHandle,
+        diagnostics: DiagnosticHandle,
+    ) -> Result<Self> {
+        diagnostics.emit(DiagnosticEvent::ClientStarted {
+            version: env!("CARGO_PKG_VERSION").into(),
+            os: crate::diagnostics::event::normalized_os().into(),
+            build_profile: if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            }
+            .into(),
+        });
         let selected_community = config
             .default_community
             .and_then(|id| config.communities.iter().position(|entry| entry.id == id))
@@ -339,7 +365,14 @@ impl App {
         let (runtime, connection, status_error) = if config.communities.is_empty() {
             (None, ConnectionState::Offline, None)
         } else {
-            match Runtime::build(&config, selected_community, &paths, store.clone(), None) {
+            match Runtime::build(
+                &config,
+                selected_community,
+                &paths,
+                store.clone(),
+                None,
+                diagnostics.clone(),
+            ) {
                 Ok(runtime) => (Some(runtime), ConnectionState::Connecting, None),
                 Err(error) => {
                     let Some(connection) = identity_recovery_connection(&error) else {
@@ -379,6 +412,7 @@ impl App {
             .collect::<Vec<_>>();
         let mut app = Self {
             config,
+            diagnostics,
             paths,
             store,
             runtime,
@@ -630,6 +664,10 @@ impl App {
         }
         self.shutdown().await;
         guard.restore();
+        self.diagnostics.emit(DiagnosticEvent::ClientStopped {
+            reason: "user".into(),
+        });
+        self.diagnostics.shutdown().await;
         Ok(())
     }
 
@@ -698,6 +736,7 @@ impl App {
             .map(|message| message.pubkey.clone())
             .collect::<HashSet<_>>();
         let tx = self.background_tx.clone();
+        let diagnostics = self.diagnostics.clone();
         tokio::spawn(async move {
             let result = async {
                 let info = http.nip11().await?;
@@ -712,7 +751,14 @@ impl App {
                 channels.refresh(&pubkey).await?;
                 let _ = inbox.refresh(&pubkey).await;
                 let _ = profiles.hydrate(authors).await;
-                let _ = outbox::flush(community, &http, &supervisor, &store).await;
+                let _ = outbox::flush_with_diagnostics(
+                    community,
+                    &http,
+                    &supervisor,
+                    &store,
+                    &diagnostics,
+                )
+                .await;
                 Ok::<_, Error>(())
             }
             .await;
@@ -1159,6 +1205,7 @@ impl App {
                     let inbox = runtime.inbox.clone();
                     let pubkey = runtime.signer.public_key().to_hex();
                     let tx = self.background_tx.clone();
+                    let diagnostics = self.diagnostics.clone();
                     tokio::spawn(async move {
                         let result = async {
                             let info = http.nip11().await?;
@@ -1174,7 +1221,14 @@ impl App {
                                 .await?;
                             directory.refresh(&pubkey).await?;
                             let _ = inbox.refresh(&pubkey).await;
-                            outbox::flush(community, &http, &supervisor, &store).await
+                            outbox::flush_with_diagnostics(
+                                community,
+                                &http,
+                                &supervisor,
+                                &store,
+                                &diagnostics,
+                            )
+                            .await
                         }
                         .await;
                         let _ = tx
@@ -4482,7 +4536,14 @@ impl App {
         if needs_prompt {
             guard.restore();
         }
-        let built = Runtime::build(&self.config, index, &self.paths, self.store.clone(), reuse);
+        let built = Runtime::build(
+            &self.config,
+            index,
+            &self.paths,
+            self.store.clone(),
+            reuse,
+            self.diagnostics.clone(),
+        );
         if needs_prompt {
             let (new_guard, new_terminal) = TerminalGuard::enter(self.config.ui.mouse.enabled())?;
             *guard = new_guard;
@@ -4695,11 +4756,12 @@ impl App {
         if let Some(runtime) = self.runtime.take() {
             let _ = tokio::time::timeout(
                 Duration::from_secs(3),
-                outbox::flush(
+                outbox::flush_with_diagnostics(
                     runtime.community_id,
                     &runtime.http,
                     &runtime.supervisor,
                     &self.store,
+                    &self.diagnostics,
                 ),
             )
             .await;
@@ -5840,6 +5902,7 @@ where
 /// Receives at most one relay event per turn. A flood can overrun the bounded
 /// broadcast receiver; yield control on that condition so local input and
 /// attachment staging cannot be starved while the relay is catching up.
+#[cfg(test)]
 async fn next_supervisor_event(
     events: &mut broadcast::Receiver<SupervisorEvent>,
 ) -> Option<SupervisorEvent> {
@@ -5857,7 +5920,20 @@ async fn next_supervisor_event(
 
 async fn next_network(runtime: &mut Option<Runtime>) -> Option<SupervisorEvent> {
     match runtime {
-        Some(runtime) => next_supervisor_event(&mut runtime.events).await,
+        Some(runtime) => match runtime.events.recv().await {
+            Ok(event) => Some(event),
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                runtime
+                    .supervisor
+                    .diagnostics()
+                    .emit(DiagnosticEvent::ReceiverLagged {
+                        skipped_event_count: skipped,
+                    });
+                tokio::time::sleep(RELAY_LAG_YIELD).await;
+                None
+            }
+            Err(broadcast::error::RecvError::Closed) => std::future::pending().await,
+        },
         None => std::future::pending().await,
     }
 }
@@ -6231,8 +6307,7 @@ mod tests {
             root_event_id: None,
             parent_event_id: None,
             deleted: false,
-            pending: false,
-            rejected: None,
+            delivery: crate::domain::DeliveryState::Delivered,
         }];
         app.timeline.at_live_bottom = true;
         app.computed_unread.insert(channel);
@@ -6389,8 +6464,7 @@ mod tests {
             root_event_id: None,
             parent_event_id: None,
             deleted: false,
-            pending: false,
-            rejected: None,
+            delivery: crate::domain::DeliveryState::Delivered,
         };
         let mut timeline = TimelineState {
             at_live_bottom: true,
@@ -6765,8 +6839,7 @@ mod tests {
             root_event_id: None,
             parent_event_id: None,
             deleted: false,
-            pending: false,
-            rejected: None,
+            delivery: crate::domain::DeliveryState::Delivered,
         }];
         app.timeline.reconcile(&app.messages);
 

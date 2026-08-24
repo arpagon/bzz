@@ -78,8 +78,7 @@ pub fn as_message(event: &Event) -> Option<Message> {
         root_event_id,
         parent_event_id,
         deleted: false,
-        pending: false,
-        rejected: None,
+        delivery: crate::domain::DeliveryState::Delivered,
     })
 }
 

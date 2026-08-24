@@ -202,6 +202,46 @@ new authenticated media I/O. `bzz media clear` removes logical cache files but,
 like SQLite purge, cannot promise forensic erasure on SSD/copy-on-write
 storage. See [`media.md`](media.md).
 
+## Diagnostics and optional telemetry
+
+Local diagnostics are a separate, typed privacy boundary rather than a generic
+`tracing` log. The bounded non-blocking writer accepts only reviewed connection,
+AUTH phase, heartbeat, reconnect/backoff, relay acknowledgement, receiver-lag,
+and committed outbox-transition fields. It cannot accept message/event content,
+tags, drafts, reactions, profiles, prompts/results, clipboard data, attachment
+metadata, media URLs, participant/community/channel identifiers, source paths,
+configuration, environment values, credentials, auth challenges/events, raw
+relay notices, response bodies, or Rust error strings. Internal errors are
+reduced to a closed class before persistence. Complete event IDs appear only
+for locally authored outbox operations so an owner can correlate relay receipt.
+
+The local journal is enabled by default, owner-only, profile-isolated, and hard
+bounded to three 2 MiB files. Its dedicated thread uses a bounded `try_send`
+queue: saturation, serialization failure, an unwritable disk, or shutdown can
+only lose diagnostics and cannot delay input, relay ACKs, SQLite, terminal
+restoration, or publication. Support reports are create-new JSON files, never
+automatically uploaded, and contain a redaction manifest. Metadata-only outbox
+inspection never selects or deserializes `event_json`.
+
+Remote telemetry is an independent, explicit enrollment. A fresh or upgraded
+installation creates no exporter and sends zero telemetry requests. When an
+owner configures an exact HTTPS `/v1/logs` endpoint and enables export, only a
+strict subset of the typed records is encoded as OTLP protobuf logs. The client
+disables proxies and redirects, sends no trace/span IDs, never tails or
+backfills journals, and owns no signer, relay, database, media, or UI state. Its
+queue (256 records/512 KiB), batch (64 records/128 KiB), retries, five-minute
+record age, request timeout, and one-second shutdown are hard bounded.
+Authentication failure stops export for the run without affecting local bzz.
+
+Persistent telemetry tokens use the dedicated release credential service
+`dev.arpagon.bzz.telemetry` (debug:
+`dev.arpagon.bzz.debug.telemetry`), separate from Nostr identities, and are
+bound to a SHA-256 digest of the canonical endpoint. Tokens are never command
+arguments, config/SQLite/journal/report values, output, or redirectable
+headers. `BZZ_OTEL_TOKEN` is supported only as a zeroized in-process ephemeral
+source. `telemetry forget --yes` removes enrollment without changing local
+identity, conversation, outbox, media, or diagnostics data.
+
 ## Theme files
 
 Themes are presentation-only local state and never cross the relay. The parser

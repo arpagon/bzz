@@ -39,6 +39,7 @@ impl Paths {
             &self.keys_dir(),
             &self.media_cache_dir(),
             &self.avatar_cache_dir(),
+            &self.diagnostics_dir(),
         ] {
             fs::create_dir_all(path).map_err(|error| Error::io(path, error))?;
             set_private_permissions(path)?;
@@ -64,6 +65,14 @@ impl Paths {
 
     pub fn keys_dir(&self) -> PathBuf {
         self.data_dir.join("keys")
+    }
+
+    pub fn diagnostics_dir(&self) -> PathBuf {
+        self.data_dir.join("diagnostics")
+    }
+
+    pub fn telemetry_health_file(&self) -> PathBuf {
+        self.diagnostics_dir().join("telemetry-health.json")
     }
 
     pub fn media_cache_dir(&self) -> PathBuf {

@@ -192,6 +192,36 @@ fn local_agents_are_unique_and_require_canonical_workdirs() {
 }
 
 #[test]
+fn diagnostics_are_local_on_by_default_and_strictly_configured() {
+    assert_eq!(
+        Config::default().diagnostics.local_journal,
+        bzz::config::LocalJournalMode::On
+    );
+    let config = toml::from_str::<Config>("[diagnostics]\nlocal_journal='off'\n").unwrap();
+    assert_eq!(
+        config.diagnostics.local_journal,
+        bzz::config::LocalJournalMode::Off
+    );
+    assert!(toml::from_str::<Config>("[diagnostics]\nlocal_journal='remote'\n").is_err());
+}
+
+#[test]
+fn telemetry_is_default_off_and_requires_complete_endpoint_binding() {
+    let config = Config::default();
+    assert!(!config.telemetry.enabled);
+    assert!(config.telemetry.endpoint.is_none());
+
+    let mut incomplete = Config::default();
+    incomplete.telemetry.enabled = true;
+    assert!(incomplete.validate().is_err());
+
+    let mut configured = Config::default();
+    bzz::telemetry::config::configure(&mut configured, "https://otel.example/v1/logs").unwrap();
+    assert!(!configured.telemetry.enabled);
+    assert!(configured.validate().is_ok());
+}
+
+#[test]
 fn empty_config_round_trips_with_private_paths() {
     let temporary = TempDir::new().unwrap();
     let paths = Paths {

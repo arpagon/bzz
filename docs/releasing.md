@@ -23,6 +23,16 @@ isolation and Inbox identity/DM fences, and confirm malformed stored mention
 metadata degrades to ordinary draft text before publishing. Downgrades restore
 the pre-migration backup rather than running reverse SQL.
 
-For v0.4, also run the deterministic functional TUI harness in ordinary CI and
-record a controlled release-binary Herdr acceptance run (or an explicit release
-exception). See [`release-v0.4.0.md`](release-v0.4.0.md).
+For v0.9, verify the release binary's diagnostics CLI against disposable
+sentinels, owner-only journal/report permissions, fixed rotation, exact delivery
+labels, and an unchanged read-only database. A clean and upgraded profile must
+make zero OTLP requests by default. Run fake receiver redirect/status/timeout/
+queue gates, then one scoped-token `telemetry.test` canary; record operator-side
+schema/identity evidence without secrets and revoke/forget the canary before
+release. Missing, revoked, offline, and rate-limited telemetry must leave local
+bzz usable.
+
+For v0.4 and later interaction changes, also run the deterministic functional
+TUI harness in ordinary CI and record a controlled release-binary Herdr
+acceptance run (or an explicit release exception). See
+[`release-v0.4.0.md`](release-v0.4.0.md).

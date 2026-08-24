@@ -4,10 +4,11 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.8.0 candidate adds explicit clipboard-first composer attachments
-> while retaining authenticated relay avatars, credential-free external avatars,
-> deterministic textual fallbacks, and prior conversation actions. Protocol
-> compatibility remains pinned to Buzz `ede26863345a518ec46edd6d7692e0281883491b`.
+> Status: v0.9.0 candidate adds private local connection/outbox diagnostics,
+> exact delivery-state presentation, and explicitly enrolled OTLP/HTTP log export
+> while retaining clipboard-first attachments and prior privacy boundaries.
+> Protocol compatibility remains pinned to Buzz
+> `ede26863345a518ec46edd6d7692e0281883491b`.
 
 ## Build
 
@@ -24,7 +25,10 @@ use `bzz-dev` paths and a separate OS-keychain service.
 
 - several configured communities with one active authenticated session;
 - cached/offline channel history, profiles, threads, unread markers, and drafts;
-- acknowledged sends with durable ambiguous-outcome recovery;
+- acknowledged sends with durable ambiguous-outcome recovery and distinct
+  pending/delivery-unknown/rejected presentation;
+- bounded owner-private connection/outbox diagnostics, metadata-only support
+  reports, and optional default-off OTLP/HTTP protobuf log export;
 - reaction toggles, own-message deletion, and encrypted cross-device read state;
 - Vim-style navigation, fuzzy channel finder, safe Markdown, and responsive narrow layouts;
 - labelled community/channel directories with local smart/recent/A–Z ordering,
@@ -156,6 +160,8 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/security.md`](docs/security.md),
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
+[the v0.9.0 diagnostics and observability notes](docs/release-v0.9.0.md),
+[v0.9.0 validation](docs/validation-v0.9.0.md),
 [the v0.8.0 clipboard-attachment notes](docs/release-v0.8.0.md),
 [v0.8.0 validation](docs/validation-v0.8.0.md),
 [the v0.7.1 relay-avatar release](docs/release-v0.7.1.md), and the

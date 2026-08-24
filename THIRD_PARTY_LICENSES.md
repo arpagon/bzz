@@ -73,6 +73,16 @@ paths are handled only through bzz's independently authored transient picker
 boundary and secure staging lifecycle. Complete dependency license texts and
 versions are retained in the crates and release SBOM.
 
+## OpenTelemetry protobuf messages
+
+`opentelemetry-proto` v0.32.0 and `prost` v0.14.3 are pinned direct
+dependencies under Apache-2.0 for generated OTLP log message types and protobuf
+encoding. bzz does not include the OpenTelemetry SDK exporter pipeline, metrics,
+or traces. The bounded HTTP exporter, consent/configuration, credential,
+allowlist, batching, retry, and privacy boundaries are independently authored.
+Complete dependency license texts and transitive versions are retained in the
+crates and release SBOM.
+
 ## ratatui-image
 
 `ratatui-image` v11.0.5 (`00920803a50e7b7763ceb69978be90c4391325ad`)

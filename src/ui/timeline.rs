@@ -722,18 +722,30 @@ fn message_block(
             " [deleted]",
             theme.style(HighlightGroup::MessageDeleted),
         ));
-    } else if message.pending {
-        header.push(Span::styled(
-            " [pending]",
-            theme.style(HighlightGroup::Pending),
-        ));
-    } else if message.rejected.is_some() {
-        header.push(Span::styled(
-            " [rejected]",
-            theme.style(HighlightGroup::Rejected),
-        ));
+    } else {
+        match message.delivery {
+            crate::domain::DeliveryState::Pending => header.push(Span::styled(
+                " [pending]",
+                theme.style(HighlightGroup::Pending),
+            )),
+            crate::domain::DeliveryState::Unknown => header.push(Span::styled(
+                " [delivery unknown]",
+                theme.style(HighlightGroup::Pending),
+            )),
+            crate::domain::DeliveryState::Rejected => header.push(Span::styled(
+                " [rejected]",
+                theme.style(HighlightGroup::Rejected),
+            )),
+            crate::domain::DeliveryState::Delivered => {}
+        }
     }
     rows.push(TimelineRow::Text(Line::from(header)));
+    if !message.deleted && message.delivery == crate::domain::DeliveryState::Unknown {
+        rows.push(TimelineRow::Text(Line::styled(
+            format!("{MESSAGE_TEXT_GUTTER}use :reconnect or bzz diagnostics outbox"),
+            theme.style(HighlightGroup::Pending),
+        )));
+    }
     if message.deleted {
         rows.push(TimelineRow::Text(Line::styled(
             format!("{MESSAGE_TEXT_GUTTER}message deleted"),
@@ -954,8 +966,7 @@ mod tests {
             root_event_id: None,
             parent_event_id: None,
             deleted: false,
-            pending: false,
-            rejected: None,
+            delivery: crate::domain::DeliveryState::Delivered,
         }
     }
 

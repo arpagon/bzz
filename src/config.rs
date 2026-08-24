@@ -28,6 +28,40 @@ pub struct Config {
     pub media: MediaConfig,
     #[serde(default)]
     pub local_agents: Vec<LocalAgentConfig>,
+    #[serde(default)]
+    pub diagnostics: DiagnosticsConfig,
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LocalJournalMode {
+    #[default]
+    On,
+    Off,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DiagnosticsConfig {
+    pub local_journal: LocalJournalMode,
+}
+
+/// Non-secret remote-export configuration. Bearer credentials are never stored
+/// here; persistent tokens live in a dedicated OS credential service.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TelemetryConfig {
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installation_id: Option<Uuid>,
+    #[serde(default)]
+    pub credential_persisted: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -417,6 +451,27 @@ impl Config {
                 "media worker concurrency is outside its safety range".into(),
             ));
         }
+        match (
+            self.telemetry.endpoint.as_deref(),
+            self.telemetry.endpoint_digest.as_deref(),
+            self.telemetry.installation_id,
+        ) {
+            (None, None, None)
+                if !self.telemetry.enabled && !self.telemetry.credential_persisted => {}
+            (Some(endpoint), Some(digest), Some(_)) => {
+                validate_telemetry_endpoint(endpoint)?;
+                if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err(Error::Config(
+                        "telemetry endpoint binding is invalid; configure telemetry again".into(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(Error::Config(
+                    "telemetry configuration is incomplete; configure or forget it".into(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -563,6 +618,36 @@ pub fn validate_relay_url(input: &str, allow_insecure_localhost: bool) -> Result
         http_base: http,
         authority,
     })
+}
+
+pub fn validate_telemetry_endpoint(input: &str) -> Result<Url> {
+    let url = Url::parse(input)
+        .map_err(|_| Error::Config("telemetry endpoint must be a canonical HTTPS URL".into()))?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err(Error::Config(
+            "telemetry endpoint must use HTTPS and include a host".into(),
+        ));
+    }
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(Error::Config(
+            "telemetry endpoint credentials, query, and fragment are forbidden".into(),
+        ));
+    }
+    if url.path() != "/v1/logs" {
+        return Err(Error::Config(
+            "telemetry endpoint path must be exactly /v1/logs".into(),
+        ));
+    }
+    if url.as_str() != input {
+        return Err(Error::Config(
+            "telemetry endpoint must use its canonical URL form".into(),
+        ));
+    }
+    Ok(url)
 }
 
 fn validate_agent_label(value: &str) -> Result<()> {

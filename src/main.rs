@@ -50,6 +50,16 @@ enum Command {
         #[command(subcommand)]
         command: MediaCommand,
     },
+    /// Inspect private, content-free local operational evidence.
+    Diagnostics {
+        #[command(subcommand)]
+        command: DiagnosticsCommand,
+    },
+    /// Configure explicit, default-off OTLP log export.
+    Telemetry {
+        #[command(subcommand)]
+        command: TelemetryCommand,
+    },
     /// Inspect and select color themes.
     Theme {
         #[command(subcommand)]
@@ -208,6 +218,57 @@ enum MediaCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum DiagnosticsCommand {
+    /// Summarize connection evidence and exact outbox state counts.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// List metadata-only locally authored outbox records.
+    Outbox {
+        #[arg(long)]
+        community: Option<Uuid>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write a bounded, reviewable JSON report to a new owner-only file.
+    Report {
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Delete only local rotating diagnostic journal files.
+    Clear {
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TelemetryCommand {
+    /// Bind an exact HTTPS /v1/logs endpoint and enroll a credential.
+    Configure {
+        #[arg(long)]
+        endpoint: String,
+    },
+    /// Explicitly enable export for future bzz runs.
+    Enable,
+    /// Disable future export while retaining configuration and credential.
+    Disable,
+    /// Show configuration and local exporter health without network access.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send one content-free telemetry.test record.
+    Test,
+    /// Disable export and remove telemetry configuration and credential.
+    Forget {
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum AgentCommand {
     /// Add a local Codex assistant without storing credentials.
     Add {
@@ -292,6 +353,10 @@ async fn run() -> Result<()> {
         }
         Some(Command::Cache { command }) => cache_command(command, &paths, &mut config),
         Some(Command::Media { command }) => media_command(command, &paths, &config),
+        Some(Command::Diagnostics { command }) => diagnostics_command(command, &paths),
+        Some(Command::Telemetry { command }) => {
+            telemetry_command(command, &paths, &mut config).await
+        }
         Some(Command::Theme { command }) => theme_command(command, &paths, &mut config),
         Some(Command::Agent { command }) => agent_command(command, &paths, &mut config).await,
         Some(Command::Check) => {
@@ -303,7 +368,7 @@ async fn run() -> Result<()> {
             }
             let mut store = Store::open(paths.database_file())?;
             store.sync_config(&config)?;
-            println!("configuration, theme, media, and database are valid");
+            println!("configuration, theme, media, diagnostics, telemetry, and database are valid");
             Ok(())
         }
         Some(Command::Paths) => {
@@ -311,6 +376,7 @@ async fn run() -> Result<()> {
             println!("keymap: {}", paths.keymap_file().display());
             println!("theme:  {}", paths.theme_file().display());
             println!("data:   {}", paths.database_file().display());
+            println!("diagnostics: {}", paths.diagnostics_dir().display());
             println!("cache:  {}", paths.cache_dir.display());
             Ok(())
         }
@@ -321,10 +387,20 @@ async fn run() -> Result<()> {
             // early load already guarantees malformed input cannot leave a
             // user in a partially initialized terminal.
             bzz::ui::keymap::KeyMap::load(&paths)?;
+            let telemetry = bzz::telemetry::start_if_enabled(&config, &paths)?;
+            let diagnostics = bzz::diagnostics::DiagnosticHandle::start(
+                &paths,
+                config.diagnostics.local_journal,
+                telemetry,
+            )?;
             let mut store = Store::open(paths.database_file())?;
             store.sync_config(&config)?;
+            store.set_diagnostics(diagnostics.clone());
             let handle = StoreHandle::spawn(store)?;
-            App::new(config, paths, handle).await?.run().await
+            App::new_with_diagnostics(config, paths, handle, diagnostics)
+                .await?
+                .run()
+                .await
         }
     }
 }
@@ -710,6 +786,248 @@ fn media_command(command: MediaCommand, paths: &Paths, config: &Config) -> Resul
                 let store = Store::open(paths.database_file())?;
                 store.clear_media_cache_entries(if all { None } else { community })?;
             }
+            Ok(())
+        }
+    }
+}
+
+async fn telemetry_command(
+    command: TelemetryCommand,
+    paths: &Paths,
+    config: &mut Config,
+) -> Result<()> {
+    use bzz::telemetry::{config as telemetry_config, credential, exporter};
+
+    match command {
+        TelemetryCommand::Configure { endpoint } => {
+            let previous_credential = config
+                .telemetry
+                .credential_persisted
+                .then_some(config.telemetry.installation_id)
+                .flatten();
+            let installation = telemetry_config::configure(config, &endpoint)?;
+            let endpoint = telemetry_config::endpoint(config)?;
+            println!(
+                "destination: {}\ncollection: typed connection and authored-outbox operational events only\nexcluded: message, identity, community, media, clipboard, path, config, and credential data\nretention: controlled by the endpoint operator; Emilia currently retains logs for 30 days\nexport remains disabled until `bzz telemetry enable`",
+                telemetry_config::endpoint_origin(&endpoint),
+            );
+            if std::env::var_os("BZZ_OTEL_TOKEN").is_some() {
+                if let Some(previous) = previous_credential {
+                    credential::delete(previous)?;
+                }
+                config.save(paths)?;
+                println!("credential: process environment only (not persisted)");
+                Ok(())
+            } else {
+                let token = Zeroizing::new(
+                    rpassword::prompt_password("Telemetry bearer token: ")
+                        .map_err(|error| Error::io("controlling terminal", error))?,
+                );
+                credential::store(installation, &token)?;
+                config.telemetry.credential_persisted = true;
+                if let Err(error) = config.save(paths) {
+                    let _ = credential::delete(installation);
+                    return Err(error);
+                }
+                println!("credential: stored in the OS credential service");
+                Ok(())
+            }
+        }
+        TelemetryCommand::Enable => {
+            let _ = telemetry_config::endpoint(config)?;
+            let installation = config
+                .telemetry
+                .installation_id
+                .ok_or_else(|| Error::Config("telemetry is not configured".into()))?;
+            let available = if std::env::var_os("BZZ_OTEL_TOKEN").is_some() {
+                true
+            } else {
+                config.telemetry.credential_persisted
+                    && credential::available(installation).is_available()
+            };
+            if !available {
+                return Err(Error::Locked(
+                    "telemetry credential is unavailable; configure telemetry first".into(),
+                ));
+            }
+            config.telemetry.enabled = true;
+            config.save(paths)?;
+            println!("telemetry enabled for future bzz runs");
+            Ok(())
+        }
+        TelemetryCommand::Disable => {
+            config.telemetry.enabled = false;
+            config.save(paths)?;
+            println!("telemetry disabled");
+            Ok(())
+        }
+        TelemetryCommand::Status { json } => {
+            let configured = config.telemetry.endpoint.is_some();
+            let endpoint = telemetry_config::endpoint(config)
+                .ok()
+                .map(|value| telemetry_config::endpoint_origin(&value));
+            let credential = config.telemetry.installation_id.map(|installation| {
+                if std::env::var_os("BZZ_OTEL_TOKEN").is_some() {
+                    credential::CredentialAvailability::Environment
+                } else if config.telemetry.credential_persisted {
+                    credential::available(installation)
+                } else {
+                    credential::CredentialAvailability::Missing
+                }
+            });
+            let health = exporter::read_health(&paths.telemetry_health_file());
+            if json {
+                let output = serde_json::json!({
+                    "enabled": config.telemetry.enabled,
+                    "configured": configured,
+                    "endpoint_origin": endpoint,
+                    "credential": credential.map(|value| value.label()),
+                    "last_success_unix_ms": health.last_success_unix_ms,
+                    "last_error_class": health.last_error_class.map(|value| value.as_str()),
+                    "queued": health.queued,
+                    "dropped": health.dropped,
+                    "stopped_for_run": health.stopped_for_run,
+                    "limits": {
+                        "queue_records": exporter::QUEUE_RECORDS,
+                        "queue_bytes": exporter::QUEUE_BYTES,
+                        "batch_records": exporter::BATCH_RECORDS,
+                        "batch_bytes": exporter::BATCH_BYTES,
+                    }
+                });
+                let mut bytes = serde_json::to_vec_pretty(&output)
+                    .map_err(|error| Error::Serialization(error.to_string()))?;
+                bytes.push(b'\n');
+                write_stdout(&bytes)
+            } else {
+                println!(
+                    "enabled:     {}\nconfigured:  {}\nendpoint:    {}\ncredential:  {}\nlast success: {}\nlast error:   {}\nqueued:       {}\ndropped:      {}\nlimits:       {} records / {} bytes; batch {} records / {} bytes",
+                    config.telemetry.enabled,
+                    configured,
+                    endpoint.as_deref().unwrap_or("none"),
+                    credential.map_or("not configured", |value| value.label()),
+                    health
+                        .last_success_unix_ms
+                        .map_or_else(|| "none".into(), |value| value.to_string()),
+                    health
+                        .last_error_class
+                        .map_or("none", |value| value.as_str()),
+                    health.queued,
+                    health.dropped,
+                    exporter::QUEUE_RECORDS,
+                    exporter::QUEUE_BYTES,
+                    exporter::BATCH_RECORDS,
+                    exporter::BATCH_BYTES,
+                );
+                Ok(())
+            }
+        }
+        TelemetryCommand::Test => {
+            let endpoint = telemetry_config::endpoint(config)?;
+            let installation = config
+                .telemetry
+                .installation_id
+                .ok_or_else(|| Error::Config("telemetry is not configured".into()))?;
+            let token = credential::load(installation)?;
+            exporter::test_export(endpoint, token).await?;
+            println!("telemetry test accepted");
+            Ok(())
+        }
+        TelemetryCommand::Forget { yes } => {
+            if !yes {
+                return Err(Error::Config("telemetry forget requires --yes".into()));
+            }
+            if config.telemetry.credential_persisted
+                && let Some(installation) = config.telemetry.installation_id
+            {
+                credential::delete(installation)?;
+            }
+            telemetry_config::forget(config);
+            config.save(paths)?;
+            let health = paths.telemetry_health_file();
+            match std::fs::remove_file(&health) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(Error::io(health, error)),
+            }
+            println!("telemetry configuration and credential removed");
+            Ok(())
+        }
+    }
+}
+
+fn diagnostics_command(command: DiagnosticsCommand, paths: &Paths) -> Result<()> {
+    use bzz::diagnostics::report;
+
+    match command {
+        DiagnosticsCommand::Status { json } => {
+            let records = report::load_records(paths);
+            let outbox = report::load_outbox(paths, None)?;
+            let status = report::status(paths, &records, &outbox);
+            if json {
+                let mut bytes = serde_json::to_vec_pretty(&status)
+                    .map_err(|error| Error::Serialization(error.to_string()))?;
+                bytes.push(b'\n');
+                write_stdout(&bytes)
+            } else {
+                println!(
+                    "journal:       {} ({} records)\nconnection:    {}\nbackoff:       {} (last {}ms)\nlatest event:  {}\nlast AUTH:     {}\nlast disconnect: {}\nreceiver lag:  {}\ndropped events:{}\noutbox:        pending={} unknown={} rejected={} delivered={}",
+                    status.journal_health,
+                    status.journal_records,
+                    status.latest_connection_phase.as_deref().unwrap_or("none"),
+                    status.reconnect_backoff_count,
+                    status
+                        .last_backoff_ms
+                        .map_or_else(|| "none".into(), |value| value.to_string()),
+                    status.latest_event.as_deref().unwrap_or("none"),
+                    status
+                        .latest_authenticated_at_unix_ms
+                        .map_or_else(|| "none".into(), |value| value.to_string()),
+                    status.latest_disconnect_class.as_deref().unwrap_or("none"),
+                    status.receiver_lagged_count,
+                    status.diagnostics_dropped_count,
+                    status.outbox_counts.get("pending").copied().unwrap_or(0),
+                    status.outbox_counts.get("unknown").copied().unwrap_or(0),
+                    status.outbox_counts.get("rejected").copied().unwrap_or(0),
+                    status.outbox_counts.get("delivered").copied().unwrap_or(0),
+                );
+                Ok(())
+            }
+        }
+        DiagnosticsCommand::Outbox { community, json } => {
+            let rows = report::load_outbox(paths, community)?;
+            let view = report::outbox_view(&rows);
+            if json {
+                let mut bytes = serde_json::to_vec_pretty(&view)
+                    .map_err(|error| Error::Serialization(error.to_string()))?;
+                bytes.push(b'\n');
+                write_stdout(&bytes)
+            } else {
+                for row in view {
+                    let event_id = row.event_id.get(..12).unwrap_or(&row.event_id);
+                    println!(
+                        "{event_id} kind={} state={} attempts={} age={}s updated={}s error={}",
+                        row.kind,
+                        row.state.as_str(),
+                        row.attempts,
+                        row.age_seconds,
+                        row.updated_age_seconds,
+                        row.error_class.map_or("none", |value| value.as_str()),
+                    );
+                }
+                Ok(())
+            }
+        }
+        DiagnosticsCommand::Report { output } => {
+            report::create_report(paths, &output)?;
+            println!("diagnostics report created; review it before sharing");
+            Ok(())
+        }
+        DiagnosticsCommand::Clear { yes } => {
+            if !yes {
+                return Err(Error::Config("diagnostics clear requires --yes".into()));
+            }
+            let removed = report::clear(paths)?;
+            println!("removed {removed} diagnostic journal file(s)");
             Ok(())
         }
     }

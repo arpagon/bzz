@@ -39,8 +39,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
         root_event_id: None,
         parent_event_id: None,
         deleted: false,
-        pending: true,
-        rejected: None,
+        delivery: bzz::domain::DeliveryState::Pending,
     }];
     let profiles = HashMap::from([(
         self_pubkey.clone(),

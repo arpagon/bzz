@@ -111,6 +111,31 @@ pub struct MentionCandidate {
     pub label: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryState {
+    /// No outbox marker remains: relay acceptance or observation is authoritative.
+    #[default]
+    Delivered,
+    /// Signed and durably queued, without a completed publication outcome.
+    Pending,
+    /// Publication may have succeeded; reconciliation is required before retry.
+    Unknown,
+    /// The relay gave a definitive negative acknowledgement.
+    Rejected,
+}
+
+impl DeliveryState {
+    pub fn from_outbox(value: Option<&str>) -> Self {
+        match value {
+            Some("pending") => Self::Pending,
+            Some("unknown") => Self::Unknown,
+            Some("rejected") => Self::Rejected,
+            Some("delivered") | None | Some(_) => Self::Delivered,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Message {
     pub event_id: String,
@@ -123,8 +148,8 @@ pub struct Message {
     pub root_event_id: Option<String>,
     pub parent_event_id: Option<String>,
     pub deleted: bool,
-    pub pending: bool,
-    pub rejected: Option<String>,
+    #[serde(default)]
+    pub delivery: DeliveryState,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

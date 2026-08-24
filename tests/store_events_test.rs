@@ -63,17 +63,58 @@ fn outbox_and_delete_are_reduced_deterministically() {
         .sign_with_keys(&keys)
         .unwrap();
     store.insert_outbox(community, &event).unwrap();
-    assert!(store.messages(community, channel, 10).unwrap()[0].pending);
+    assert_eq!(
+        store.messages(community, channel, 10).unwrap()[0].delivery,
+        bzz::domain::DeliveryState::Pending
+    );
     store
         .set_outbox_state(community, &event.id.to_hex(), OutboxState::Delivered, None)
         .unwrap();
-    assert!(!store.messages(community, channel, 10).unwrap()[0].pending);
+    assert_eq!(
+        store.messages(community, channel, 10).unwrap()[0].delivery,
+        bzz::domain::DeliveryState::Delivered
+    );
     let deletion = buzz_sdk::build_delete_compat(channel, event.id)
         .unwrap()
         .sign_with_keys(&keys)
         .unwrap();
     store.apply_event(community, &deletion).unwrap();
     assert!(store.messages(community, channel, 10).unwrap()[0].deleted);
+}
+
+#[test]
+fn exact_unknown_and_rejected_states_are_not_collapsed_into_pending() {
+    let (mut store, community, channel, keys) = fixture();
+    let event = buzz_sdk::build_message(channel, "delivery", None, &[], false, &[])
+        .unwrap()
+        .sign_with_keys(&keys)
+        .unwrap();
+    let event_id = event.id.to_hex();
+    store.insert_outbox(community, &event).unwrap();
+    store
+        .set_outbox_state(
+            community,
+            &event_id,
+            OutboxState::Unknown,
+            Some("ack timeout"),
+        )
+        .unwrap();
+    assert_eq!(
+        store.messages(community, channel, 10).unwrap()[0].delivery,
+        bzz::domain::DeliveryState::Unknown
+    );
+    store
+        .set_outbox_state(
+            community,
+            &event_id,
+            OutboxState::Rejected,
+            Some("access denied"),
+        )
+        .unwrap();
+    assert_eq!(
+        store.messages(community, channel, 10).unwrap()[0].delivery,
+        bzz::domain::DeliveryState::Rejected
+    );
 }
 
 #[test]
@@ -87,7 +128,10 @@ fn repeated_relay_echo_is_a_noop_after_exact_outbox_delivery() {
 
     assert!(store.apply_event(community, &event).unwrap());
     assert!(!store.apply_event(community, &event).unwrap());
-    assert!(!store.messages(community, channel, 10).unwrap()[0].pending);
+    assert_eq!(
+        store.messages(community, channel, 10).unwrap()[0].delivery,
+        bzz::domain::DeliveryState::Delivered
+    );
 }
 
 #[test]

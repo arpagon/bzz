@@ -21,6 +21,7 @@ use crate::{
 pub struct Store {
     pub(crate) connection: Connection,
     path: PathBuf,
+    diagnostics: crate::diagnostics::DiagnosticHandle,
 }
 
 impl Store {
@@ -33,10 +34,32 @@ impl Store {
         migrate::configure(&connection)?;
         migrate::migrate(&mut connection, &path)?;
         set_private_permissions(&path)?;
-        let mut store = Self { connection, path };
+        let mut store = Self {
+            connection,
+            path,
+            diagnostics: crate::diagnostics::DiagnosticHandle::disabled(),
+        };
         store.ensure_search_projections()?;
         store.reconcile_draft_submissions()?;
         Ok(store)
+    }
+
+    /// Opens the existing database without migrations, projection repair, or
+    /// write capability. Operator diagnostics use this path so inspection
+    /// cannot mutate conversation or outbox state.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let connection = Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.pragma_update(None, "query_only", true)?;
+        connection.busy_timeout(std::time::Duration::from_secs(2))?;
+        Ok(Self {
+            connection,
+            path,
+            diagnostics: crate::diagnostics::DiagnosticHandle::disabled(),
+        })
     }
 
     pub fn open_memory() -> Result<Self> {
@@ -46,6 +69,7 @@ impl Store {
         let mut store = Self {
             connection,
             path: PathBuf::from(":memory:"),
+            diagnostics: crate::diagnostics::DiagnosticHandle::disabled(),
         };
         store.ensure_search_projections()?;
         store.reconcile_draft_submissions()?;
@@ -54,6 +78,10 @@ impl Store {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn set_diagnostics(&mut self, diagnostics: crate::diagnostics::DiagnosticHandle) {
+        self.diagnostics = diagnostics;
     }
 
     pub fn sync_config(&mut self, config: &Config) -> Result<()> {

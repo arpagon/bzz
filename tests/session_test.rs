@@ -3,6 +3,9 @@ mod support;
 use bzz::{
     Error,
     auth::signer::SignerHandle,
+    config::LocalJournalMode,
+    diagnostics::{DiagnosticEvent, DiagnosticHandle, report},
+    paths::Paths,
     realtime::{
         session::{self, SessionEvent},
         subscriptions,
@@ -39,6 +42,52 @@ async fn session_authenticates_subscribes_and_correlates_ack() {
     session.shutdown().await;
     signer.lock().await;
     relay.stop();
+}
+
+#[tokio::test]
+async fn session_diagnostics_explain_auth_and_ack_without_message_content() {
+    let temporary = tempfile::TempDir::new().unwrap();
+    let paths = Paths {
+        config_dir: temporary.path().join("config"),
+        data_dir: temporary.path().join("data"),
+        cache_dir: temporary.path().join("cache"),
+    };
+    paths.ensure().unwrap();
+    let diagnostics = DiagnosticHandle::start(&paths, LocalJournalMode::On, None).unwrap();
+    let relay = FakeRelay::start().await;
+    let signer = SignerHandle::spawn(Keys::generate());
+    let (session, mut events) =
+        session::connect_with_diagnostics(relay.url.clone(), signer.clone(), diagnostics.clone())
+            .await
+            .unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(SessionEvent::Authenticated)
+    ));
+    let sentinel = "SENTINEL-MESSAGE-CONTENT";
+    let event = buzz_sdk::build_message(uuid::Uuid::new_v4(), sentinel, None, &[], false, &[])
+        .unwrap()
+        .sign_with_keys(&Keys::generate())
+        .unwrap();
+    session.publish(event.clone()).await.unwrap();
+    session.shutdown().await;
+    diagnostics.shutdown().await;
+    signer.lock().await;
+    relay.stop();
+
+    let records = report::load_records(&paths);
+    assert!(
+        records
+            .iter()
+            .any(|record| matches!(record.event, DiagnosticEvent::Authenticated { .. }))
+    );
+    assert!(records.iter().any(|record| matches!(
+        &record.event,
+        DiagnosticEvent::PublishAcknowledged { event_id, accepted: true, .. }
+            if event_id == &event.id.to_hex()
+    )));
+    let encoded = serde_json::to_string(&records).unwrap();
+    assert!(!encoded.contains(sentinel));
 }
 
 #[test]

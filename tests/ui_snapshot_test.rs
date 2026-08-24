@@ -56,8 +56,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
         root_event_id: None,
         parent_event_id: None,
         deleted: false,
-        pending: true,
-        rejected: None,
+        delivery: bzz::domain::DeliveryState::Pending,
     }];
     let reactions = HashMap::from([(
         "a".repeat(64),
@@ -140,6 +139,64 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
 }
 
 #[test]
+fn timeline_distinguishes_pending_unknown_and_rejected_delivery() {
+    let channel = Uuid::new_v4();
+    let states = [
+        bzz::domain::DeliveryState::Pending,
+        bzz::domain::DeliveryState::Unknown,
+        bzz::domain::DeliveryState::Rejected,
+    ];
+    let messages = states
+        .into_iter()
+        .enumerate()
+        .map(|(index, delivery)| Message {
+            event_id: format!("delivery-{index}"),
+            channel_id: channel,
+            pubkey: format!("{:064x}", index + 1),
+            created_at: 1_700_000_000 + u64::try_from(index).unwrap_or_default() * 600,
+            content: format!("state {index}"),
+            attachments: vec![],
+            root_event_id: None,
+            parent_event_id: None,
+            deleted: false,
+            delivery,
+        })
+        .collect::<Vec<_>>();
+    let mut state = TimelineState {
+        at_live_bottom: true,
+        ..TimelineState::default()
+    };
+    let mut terminal = Terminal::new(TestBackend::new(100, 18)).unwrap();
+    terminal
+        .draw(|frame| {
+            timeline::render_limited(
+                frame,
+                frame.area(),
+                &messages,
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut state,
+                "delivery",
+                &Theme::default(),
+                true,
+                None,
+                100,
+            );
+        })
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("[pending]"));
+    assert!(text.contains("[delivery unknown]"));
+    assert!(text.contains("[rejected]"));
+}
+
+#[test]
 fn nearby_same_author_messages_share_a_compact_header_and_keep_date_context() {
     let channel = Uuid::new_v4();
     let messages = ["first", "second"]
@@ -155,8 +212,7 @@ fn nearby_same_author_messages_share_a_compact_header_and_keep_date_context() {
             root_event_id: None,
             parent_event_id: None,
             deleted: false,
-            pending: false,
-            rejected: None,
+            delivery: bzz::domain::DeliveryState::Delivered,
         })
         .collect::<Vec<_>>();
     let mut state = TimelineState {
@@ -224,8 +280,7 @@ fn attachment_cards_remain_visible_without_a_graphics_protocol() {
         root_event_id: None,
         parent_event_id: None,
         deleted: false,
-        pending: false,
-        rejected: None,
+        delivery: bzz::domain::DeliveryState::Delivered,
     };
     let backend = TestBackend::new(80, 12);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -335,8 +390,7 @@ fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
         root_event_id: None,
         parent_event_id: None,
         deleted: false,
-        pending: false,
-        rejected: None,
+        delivery: bzz::domain::DeliveryState::Delivered,
     }];
     let mut inbox_state = InboxState::default();
     inbox_state.reconcile(&items);

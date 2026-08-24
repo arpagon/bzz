@@ -62,6 +62,44 @@ The status line distinguishes offline, authenticating, backfilling, and
 access-revoked states. Use `:reconnect`, then `:resync` if an old-timestamp
 event is missing.
 
+## Message remains pending or delivery is uncertain
+
+The timeline now distinguishes `[pending]`, `[delivery unknown]`, and
+`[rejected]`. Pending means no completed first publish outcome exists. Delivery
+unknown means the transport outcome was ambiguous and bzz must reconcile by
+event ID before any deliberate retry. Rejected is a definitive relay negative
+acknowledgement; raw relay text is not rendered inline.
+
+Inspect content-free local evidence without unlocking an identity or connecting:
+
+```sh
+bzz diagnostics status
+bzz diagnostics outbox
+bzz diagnostics outbox --json
+```
+
+Use `:reconnect` for an unknown item so existing outbox reconciliation first
+queries the relay by event ID. Do not repeatedly republish it. To prepare owner-
+reviewable support evidence, run `bzz diagnostics report --output <new-file>`,
+read the JSON before sharing, and later remove only journals with `bzz
+diagnostics clear --yes`.
+
+## Telemetry is configured but not exporting
+
+`bzz telemetry status` is local and makes no network request. Confirm it says
+enabled, shows the expected sanitized endpoint origin, and reports an available
+credential. `401`/`403` stops export for that run; reconfigure a scoped
+per-installation token or ask the operator to revoke/replace it. `429`, `5xx`,
+TLS, connect, and timeout failures are bounded and never change relay state.
+There is no durable remote spool or automatic upload of old journal files.
+
+Use `bzz telemetry test` to send one content-free test record. It contains no
+relay, event, outbox, community, or identity attributes. `configure`, `enable`,
+and `status` do not probe the endpoint. To stop future requests while retaining
+the endpoint and token, use `disable`; to remove enrollment entirely, use
+`forget --yes`. A missing or locked telemetry credential never blocks local
+history, diagnostics, the TUI, or relay operation.
+
 ## Invalid keymap
 
 `bzz check` validates `keymap.toml` before the TUI enters raw mode. A malformed,

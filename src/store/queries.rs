@@ -14,7 +14,8 @@ use crate::{
         Store,
         events::u64_to_i64,
         models::{
-            DraftRecord, DraftSubmission, OutboxItem, OutboxState, ReadSlotRecord, SyncCursor,
+            DraftRecord, DraftSubmission, OutboxDiagnosticRow, OutboxItem, OutboxState,
+            ReadSlotRecord, SyncCursor,
         },
     },
 };
@@ -126,7 +127,7 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<Message>> {
         self.message_query(
-            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,o.last_error_code,e.tags_json,c.http_base_url
+            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url
              FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
              WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099) AND e.root_event_id IS NULL
              ORDER BY e.created_at DESC,e.event_id DESC LIMIT ?3",
@@ -182,7 +183,7 @@ impl Store {
         } else {
             "e.root_event_id IS NULL"
         };
-        let columns = "e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,o.last_error_code,e.tags_json,c.http_base_url";
+        let columns = "e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url";
         let older_sql = format!(
             "SELECT {columns} FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
              WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099) AND {scope}
@@ -226,7 +227,7 @@ impl Store {
 
     pub fn thread(&self, community_id: Uuid, root: &str, limit: usize) -> Result<Vec<Message>> {
         self.message_query(
-            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,o.last_error_code,e.tags_json,c.http_base_url
+            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url
              FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
              WHERE e.community_id=?1 AND e.kind IN (9,40002,40099) AND (e.event_id=?2 OR e.root_event_id=?2)
              ORDER BY e.created_at,e.event_id LIMIT ?3",
@@ -240,8 +241,8 @@ impl Store {
             .query_map(parameters, |row| {
                 let state: Option<String> = row.get(8)?;
                 let content: String = row.get(4)?;
-                let tags_json: String = row.get(10)?;
-                let http_base: String = row.get(11)?;
+                let tags_json: String = row.get(9)?;
+                let http_base: String = row.get(10)?;
                 let attachments = url::Url::parse(&http_base)
                     .ok()
                     .map(|base| crate::media::imeta::parse_tags(&tags_json, &content, &base))
@@ -264,12 +265,7 @@ impl Store {
                     root_event_id: row.get(5)?,
                     parent_event_id: row.get(6)?,
                     deleted: row.get::<_, Option<String>>(7)?.is_some(),
-                    pending: matches!(state.as_deref(), Some("pending" | "unknown")),
-                    rejected: if state.as_deref() == Some("rejected") {
-                        row.get(9)?
-                    } else {
-                        None
-                    },
+                    delivery: crate::domain::DeliveryState::from_outbox(state.as_deref()),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -330,7 +326,7 @@ impl Store {
             self.apply_event(community_id, event)?;
         }
         let transaction = self.connection.transaction()?;
-        transaction.execute(
+        let inserted = transaction.execute(
             "INSERT INTO outbox(community_id,event_id,event_json,kind,channel_id,state,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'pending',unixepoch(),unixepoch())
              ON CONFLICT(community_id,event_id) DO NOTHING",
             params![community_id.to_string(),event.id.to_hex(),event.as_json(),i64::from(event.kind.as_u16()),crate::protocol::events::channel_id(event).map(|id|id.to_string())],
@@ -351,6 +347,13 @@ impl Store {
         }
         crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
         transaction.commit()?;
+        if inserted != 0 {
+            self.diagnostics
+                .emit(crate::diagnostics::DiagnosticEvent::OutboxQueued {
+                    event_id: event.id.to_hex(),
+                    kind: event.kind.as_u16(),
+                });
+        }
         Ok(())
     }
 
@@ -408,7 +411,20 @@ impl Store {
         error: Option<&str>,
     ) -> Result<()> {
         let transaction = self.connection.transaction()?;
-        transaction.execute(
+        let previous = transaction
+            .query_row(
+                "SELECT state,kind,attempts FROM outbox WHERE community_id=?1 AND event_id=?2",
+                params![community_id.to_string(), event_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        u16::try_from(row.get::<_, i64>(1)?).unwrap_or(u16::MAX),
+                        u32::try_from(row.get::<_, i64>(2)?).unwrap_or(u32::MAX),
+                    ))
+                },
+            )
+            .optional()?;
+        let changed = transaction.execute(
             "UPDATE outbox SET state=?3,last_error_code=?4,attempts=attempts+1,updated_at=unixepoch() WHERE community_id=?1 AND event_id=?2",
             params![community_id.to_string(),event_id,state.as_str(),error],
         )?;
@@ -436,6 +452,18 @@ impl Store {
         }
         crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
         transaction.commit()?;
+        if changed != 0
+            && let Some((old_state, kind, attempts)) = previous
+        {
+            self.diagnostics
+                .emit(crate::diagnostics::DiagnosticEvent::OutboxStateChanged {
+                    event_id: event_id.into(),
+                    kind,
+                    old_state,
+                    new_state: state.as_str().into(),
+                    attempts: attempts.saturating_add(1),
+                });
+        }
         Ok(())
     }
 
@@ -463,6 +491,36 @@ impl Store {
             });
         }
         Ok(result)
+    }
+
+    /// Metadata-only operator projection. This query deliberately does not
+    /// select or deserialize `event_json`, message content, tags, or paths.
+    pub fn outbox_diagnostics(
+        &self,
+        community_id: Option<Uuid>,
+    ) -> Result<Vec<OutboxDiagnosticRow>> {
+        let sql = "SELECT event_id,kind,state,attempts,created_at,updated_at,last_error_code
+                   FROM outbox WHERE (?1 IS NULL OR community_id=?1)
+                   ORDER BY created_at,event_id";
+        let community = community_id.map(|id| id.to_string());
+        let mut statement = self.connection.prepare(sql)?;
+        let rows = statement.query_map([community], |row| {
+            let state: String = row.get(2)?;
+            let legacy_error: Option<String> = row.get(6)?;
+            Ok(OutboxDiagnosticRow {
+                event_id: row.get(0)?,
+                kind: u16::try_from(row.get::<_, i64>(1)?).unwrap_or(u16::MAX),
+                state: OutboxState::parse(&state).ok_or(rusqlite::Error::InvalidQuery)?,
+                attempts: u32::try_from(row.get::<_, i64>(3)?).unwrap_or(u32::MAX),
+                created_at: u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+                updated_at: u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                error_class: crate::diagnostics::event::ErrorClass::from_legacy(
+                    legacy_error.as_deref(),
+                ),
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     pub fn advance_read(
