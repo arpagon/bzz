@@ -1,6 +1,6 @@
 # bzz v0.10.0 — Agent-foundation reset
 
-> **Status: Release candidate.**
+> **Status: Released 2026-08-24.**
 
 v0.10.0 removes bzz's one-shot local Codex reply drafter. That feature was a
 human-reviewed composition helper rather than a Buzz managed agent, but its
@@ -50,4 +50,5 @@ unchanged.
 
 See [`how-agents-works-in-buzz.md`](how-agents-works-in-buzz.md),
 [`configuration.md`](configuration.md), [`security.md`](security.md), and
-[`validation-v0.10.0.md`](validation-v0.10.0.md).
+[`validation-v0.10.0.md`](validation-v0.10.0.md), and
+[`release-v0.10.0-verification.md`](release-v0.10.0-verification.md).

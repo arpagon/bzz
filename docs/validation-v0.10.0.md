@@ -23,8 +23,10 @@ Local release-candidate execution:
 - [x] isolated release-binary `bzz check` with a legacy `[[local_agents]]`
   section, followed by verification that the section was removed
 - [x] release CLI help contains no `agent`, `assistant`, or `codex` command
-- [ ] Linux, Windows, Intel macOS, and Apple Silicon macOS CI
-- [ ] pinned Buzz integration workflow
+- [x] Linux, Windows, Intel macOS, and Apple Silicon macOS CI — run
+  [`32781986061`](https://github.com/arpagon/bzz/actions/runs/32781986061)
+- [x] pinned Buzz integration workflow — run
+  [`32781985957`](https://github.com/arpagon/bzz/actions/runs/32781985957)
 
 ## Removal evidence
 
@@ -47,15 +49,20 @@ TUI functional and snapshot tests remain required and pass locally.
 
 ## Published-artifact gates
 
-- [ ] release workflow succeeds and publishes all expected platform artifacts
-- [ ] every `sha256.sum` entry verifies
-- [ ] provenance attestations verify for platform archives, source archive, and
-  CycloneDX SBOM
-- [ ] SBOM identifies `bzz` v0.10.0 and is structurally valid
-- [ ] downloaded Linux binary reports v0.10.0 and passes isolated `bzz check`
-- [ ] downloaded CLI help contains no retired assistant surface
-- [ ] native-keychain create/verify/remove smoke passes
-- [ ] encrypted-file create/verify/remove smoke passes with owner-only storage
+- [x] release workflow
+  [`32782721985`](https://github.com/arpagon/bzz/actions/runs/32782721985)
+  published all 18 expected assets
+- [x] every `sha256.sum` and individual checksum entry verifies
+- [x] SLSA provenance v1 attestations verify for all five platform archives,
+  source archive, and CycloneDX SBOM
+- [x] CycloneDX 1.3 SBOM identifies application `bzz` v0.10.0 and contains 411
+  component entries
+- [x] downloaded Linux binary reports v0.10.0, passes isolated `bzz check`, and
+  migrates the retired config section
+- [x] downloaded CLI help contains no retired assistant surface
+- [x] native-keychain create/verify/remove smoke passes
+- [x] encrypted-file create/verify/remove smoke passes with owner-only `0600`
+  storage
 
 No production message, identity, attachment, clipboard value, source path, or
 channel content is used as release evidence.
