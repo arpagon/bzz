@@ -20,8 +20,8 @@ Local release-candidate execution:
 - [x] `cargo build --release --locked`
 - [x] release `bzz 0.9.0`, `bzz check`, diagnostics CLI/report/mode smoke, and
   media status in isolated profile directories
-- [x] Linux, Windows, Intel macOS, and Apple Silicon macOS CI — run
-  [`32689026408`](https://github.com/arpagon/bzz/actions/runs/32689026408)
+- [x] Linux, Windows, Intel macOS, and Apple Silicon macOS CI — tagged-head run
+  [`32753141731`](https://github.com/arpagon/bzz/actions/runs/32753141731)
 - [x] pinned Buzz integration workflow — run
   [`32689026337`](https://github.com/arpagon/bzz/actions/runs/32689026337)
 
