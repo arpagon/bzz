@@ -1,5 +1,7 @@
 # bzz v0.9.0 — Private diagnostics and opt-in observability
 
+> **Status: Released 2026-08-24.**
+
 v0.9.0 makes connection and delivery failures explainable without turning bzz
 into a content logger. It also adds an optional, explicitly enrolled OTLP logs
 path for controlled operator correlation.
@@ -44,6 +46,15 @@ New strict `[diagnostics]` and `[telemetry]` configuration sections are backward
 compatible. No database migration is required. v0.9.0 adds pinned
 `opentelemetry-proto`/`prost` message dependencies only; it does not add the
 OpenTelemetry SDK exporter pipeline.
+
+## Validation note
+
+The scoped debug and release `telemetry.test` canaries were accepted by the
+Emilia gateway. Because the bzz host has only a write-scoped ingestion token,
+it cannot independently query gateway-stamped rows or relay Kubernetes logs.
+The owner authorized release with those two operator-only correlation checks
+explicitly deferred. This does not weaken the client-side schema/leak tests or
+change the default-off remote-export policy.
 
 See [`configuration.md`](configuration.md), [`security.md`](security.md),
 [`troubleshooting.md`](troubleshooting.md), and

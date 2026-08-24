@@ -61,5 +61,15 @@ Implemented automated coverage includes:
 - [x] missing/tampered endpoint or credential startup degrades to local-only;
   redirect/status/offline/queue behavior is covered by bounded fake receivers
 
+## Release decision
+
+The bzz host has only the intended write-scoped ingestion credential, so it
+cannot independently query gateway-stamped rows or relay Kubernetes logs. On
+2026-08-24 the owner authorized release with the two unchecked operator-only
+correlation items explicitly deferred. Accepted debug/release canaries,
+client-side protobuf/privacy coverage, and default-off enrollment remain hard
+gates; this exception does not treat an accepted HTTP response as operator-side
+evidence.
+
 No real message, identity, attachment, clipboard value, source path, or
 production channel is used as validation evidence.

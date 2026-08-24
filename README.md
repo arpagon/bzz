@@ -4,7 +4,7 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.9.0 candidate adds private local connection/outbox diagnostics,
+> Status: v0.9.0 adds private local connection/outbox diagnostics,
 > exact delivery-state presentation, and explicitly enrolled OTLP/HTTP log export
 > while retaining clipboard-first attachments and prior privacy boundaries.
 > Protocol compatibility remains pinned to Buzz
