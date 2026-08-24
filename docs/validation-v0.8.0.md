@@ -1,7 +1,7 @@
 # v0.8.0 clipboard-first attachment validation
 
-**Status:** Local, native-desktop, and pre-release CI validation completed.
-Release artifacts are verified after the `v0.8.0` workflow finishes.
+**Status:** Released and verified 2026-08-24. Published-artifact evidence is
+recorded in [`release-v0.8.0-verification.md`](release-v0.8.0-verification.md).
 
 ## Completed gates
 
