@@ -305,7 +305,7 @@ header.hero {
 /* ---- screenshot ---- */
 
 .shot {
-  margin: 1rem 0 0;
+  margin: 1rem auto 0;
 }
 
 .shot .term {
@@ -338,17 +338,18 @@ header.hero {
   font-size: 0.75rem;
 }
 
-.shot img {
+.shot img,
+.shot video {
   display: block;
   width: 100%;
   height: auto;
 }
 
-.shot .placeholder {
-  padding: 3.5rem 1rem;
+.shot .cap {
   text-align: center;
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 0.78rem;
+  margin-top: 0.8rem;
 }
 
 /* ---- sections ---- */
