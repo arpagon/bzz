@@ -1,6 +1,6 @@
 # v0.11.0 validation record
 
-**Status:** In progress
+**Status:** Release candidate
 
 **Candidate:** `0.11.0`
 
@@ -108,7 +108,9 @@
 - [x] verified directory, policy eligibility, backfill, and local thread
   projection confirmed
 - [x] no model, ACP adapter, tool, memory, observer, or production key used
-- [ ] CI pinned Buzz integration run recorded
+- [x] CI pinned Buzz integration run
+  [`32814185775`](https://github.com/arpagon/bzz/actions/runs/32814185775)
+  passed at `889d482`
 
 The local wrapper passed after removing an unrelated local `LD_LIBRARY_PATH`
 that shadowed the system curl library. The successful run used only
@@ -132,7 +134,9 @@ cleaned the disposable Docker project.
 
 ## Cross-platform and publication
 
-- [ ] Linux, Windows, Intel macOS, and Apple Silicon macOS CI
+- [x] Linux, Windows, Intel macOS, and Apple Silicon macOS CI — run
+  [`32814185676`](https://github.com/arpagon/bzz/actions/runs/32814185676)
+  passed at `889d482`
 - [ ] release workflow and expected assets
 - [ ] aggregate and individual checksums
 - [ ] SLSA provenance for platform archives, source, and SBOM
