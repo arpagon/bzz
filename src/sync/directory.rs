@@ -131,29 +131,53 @@ async fn refresh_agents(
     if candidates.is_empty() {
         return Ok(AgentRefreshReport::default());
     }
+    let bot_candidates = store
+        .call(move |store| store.remote_agent_bot_pubkeys(community_id))
+        .await?;
+    let bot_set = bot_candidates.into_iter().collect::<BTreeSet<_>>();
 
     let candidate_set = candidates.iter().cloned().collect::<BTreeSet<_>>();
-    let mut profiles = Vec::new();
     let mut public_events = Vec::new();
+    let mut declared_set = BTreeSet::new();
+    // DM membership deliberately uses the operational `member` role. Query
+    // declarations first so ordinary human participants do not cause a
+    // profile fetch or a durable incomplete-agent projection. Exact bot
+    // candidates also receive profiles for older no-declaration compatibility.
     for chunk in candidates.chunks(AUTHOR_CHUNK) {
+        let mut declarations = http
+            .query(&[QueryFilter {
+                kinds: vec![10_100],
+                authors: chunk.to_vec(),
+                limit: Some(chunk.len() as u32),
+                ..QueryFilter::default()
+            }])
+            .await?;
+        declarations.retain(|event| {
+            event.kind.as_u16() == 10_100 && candidate_set.contains(&event.pubkey.to_hex())
+        });
+        declared_set.extend(declarations.iter().map(|event| event.pubkey.to_hex()));
+        public_events.extend(declarations);
+    }
+    let profile_candidates = candidates
+        .iter()
+        .filter(|candidate| declared_set.contains(*candidate) || bot_set.contains(*candidate))
+        .cloned()
+        .collect::<Vec<_>>();
+    let profile_set = profile_candidates.iter().cloned().collect::<BTreeSet<_>>();
+    let mut profiles = Vec::new();
+    for chunk in profile_candidates.chunks(AUTHOR_CHUNK) {
         let mut events = http
             .query(&[QueryFilter {
-                kinds: vec![0, 10_100],
+                kinds: vec![0],
                 authors: chunk.to_vec(),
-                limit: Some((chunk.len() * 2) as u32),
+                limit: Some(chunk.len() as u32),
                 ..QueryFilter::default()
             }])
             .await?;
         events.retain(|event| {
-            matches!(event.kind.as_u16(), 0 | 10_100)
-                && candidate_set.contains(&event.pubkey.to_hex())
+            event.kind.as_u16() == 0 && profile_set.contains(&event.pubkey.to_hex())
         });
-        profiles.extend(
-            events
-                .iter()
-                .filter(|event| event.kind.as_u16() == 0)
-                .cloned(),
-        );
+        profiles.extend(events.iter().cloned());
         public_events.extend(events);
     }
 
@@ -166,7 +190,7 @@ async fn refresh_agents(
         })
         .collect::<std::collections::BTreeMap<_, _>>();
 
-    for chunk in candidates.chunks(AUTHOR_CHUNK) {
+    for chunk in profile_candidates.chunks(AUTHOR_CHUNK) {
         let owners = chunk
             .iter()
             .filter_map(|candidate| verified_owners.get(candidate).cloned())
@@ -188,7 +212,7 @@ async fn refresh_agents(
         policies.retain(|event| {
             event.kind.as_u16() == 30_177
                 && crate::protocol::events::first_tag(event, "d")
-                    .is_some_and(|value| candidate_set.contains(&value))
+                    .is_some_and(|value| profile_set.contains(&value))
         });
         public_events.extend(policies);
     }

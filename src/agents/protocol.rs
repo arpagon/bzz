@@ -45,21 +45,28 @@ struct ManagedPolicy {
 /// layer; this function is pure and community-independent.
 pub fn verify_public_agent(
     profile: &Event,
-    declaration: &Event,
+    declaration: Option<&Event>,
     policy: Option<&Event>,
 ) -> Result<VerifiedPublicAgent, VerificationFailure> {
-    if profile.kind.as_u16() != 0 || declaration.kind.as_u16() != 10_100 {
+    if profile.kind.as_u16() != 0 {
         return Err(VerificationFailure::WrongKind);
     }
     verify_event(profile)?;
-    verify_event(declaration)?;
-    if profile.pubkey != declaration.pubkey {
-        return Err(VerificationFailure::InvalidDeclaration);
-    }
     let agent_pubkey = profile.pubkey.to_hex();
     let owner_pubkey = verified_owner_pubkey(profile)?;
     let profile_metadata = parse_profile(profile)?;
-    let declaration_metadata = parse_declaration(declaration)?;
+    let declaration_metadata = if let Some(declaration) = declaration {
+        if declaration.kind.as_u16() != 10_100 {
+            return Err(VerificationFailure::WrongKind);
+        }
+        verify_event(declaration)?;
+        if profile.pubkey != declaration.pubkey {
+            return Err(VerificationFailure::InvalidDeclaration);
+        }
+        parse_declaration(declaration)?
+    } else {
+        AgentDeclaration::default()
+    };
     let capabilities = normalize_capabilities(declaration_metadata.capabilities)?;
 
     let (policy_name, respond_to, respond_to_allowlist, policy_event_id) =
@@ -108,7 +115,7 @@ pub fn verify_public_agent(
         respond_to,
         respond_to_allowlist,
         profile_event_id: profile.id.to_hex(),
-        declaration_event_id: declaration.id.to_hex(),
+        declaration_event_id: declaration.map(|event| event.id.to_hex()),
         policy_event_id,
         verified_at: nostr::Timestamp::now().as_secs(),
     })
@@ -269,7 +276,7 @@ mod tests {
         let viewer = Keys::generate().public_key().to_hex();
         let (profile, declaration, policy, owner, agent) =
             records(Some("allowlist"), std::slice::from_ref(&viewer));
-        let verified = verify_public_agent(&profile, &declaration, policy.as_ref()).unwrap();
+        let verified = verify_public_agent(&profile, Some(&declaration), policy.as_ref()).unwrap();
         assert_eq!(verified.pubkey, agent.public_key().to_hex());
         assert_eq!(verified.owner_pubkey, owner.public_key().to_hex());
         assert_eq!(verified.name, "Policy Agent");
@@ -284,12 +291,23 @@ mod tests {
     #[test]
     fn accepts_verified_agent_without_public_policy_as_unknown() {
         let (profile, declaration, _, _, _) = records(None, &[]);
-        let verified = verify_public_agent(&profile, &declaration, None).unwrap();
+        let verified = verify_public_agent(&profile, Some(&declaration), None).unwrap();
         assert_eq!(verified.respond_to, None);
         assert_eq!(
             verified.eligibility(&"b".repeat(64), false),
             super::super::Eligibility::PolicyUnknown
         );
+    }
+
+    #[test]
+    fn exact_bot_membership_can_use_nip_oa_without_a_declaration() {
+        let (profile, _, _, owner, agent) = records(None, &[]);
+        let verified = verify_public_agent(&profile, None, None).unwrap();
+        assert_eq!(verified.pubkey, agent.public_key().to_hex());
+        assert_eq!(verified.owner_pubkey, owner.public_key().to_hex());
+        assert!(verified.declaration_event_id.is_none());
+        assert!(verified.capabilities.is_empty());
+        assert_eq!(verified.presence, Presence::Unknown);
     }
 
     #[test]
@@ -301,7 +319,7 @@ mod tests {
             .sign_with_keys(&attacker)
             .unwrap();
         assert_eq!(
-            verify_public_agent(&profile, &declaration, Some(&forged)),
+            verify_public_agent(&profile, Some(&declaration), Some(&forged)),
             Err(VerificationFailure::WrongPolicyOwner)
         );
     }
@@ -314,7 +332,7 @@ mod tests {
             .sign_with_keys(&owner)
             .unwrap();
         assert_eq!(
-            verify_public_agent(&profile, &declaration, Some(&forged)),
+            verify_public_agent(&profile, Some(&declaration), Some(&forged)),
             Err(VerificationFailure::WrongPolicyCoordinate)
         );
     }
@@ -338,7 +356,7 @@ mod tests {
             .unwrap();
         assert_ne!(owner.public_key(), second_owner.public_key());
         assert_eq!(
-            verify_public_agent(&conflicting, &declaration, None),
+            verify_public_agent(&conflicting, Some(&declaration), None),
             Err(VerificationFailure::ConflictingOwner)
         );
     }
@@ -350,13 +368,15 @@ mod tests {
         assert_eq!(
             verify_public_agent(
                 &profile,
-                &EventBuilder::new(
-                    Kind::Custom(10_100),
-                    serde_json::json!({"capabilities": vec!["x"; MAX_CAPABILITIES + 1]})
-                        .to_string(),
-                )
-                .sign_with_keys(&agent)
-                .unwrap(),
+                Some(
+                    &EventBuilder::new(
+                        Kind::Custom(10_100),
+                        serde_json::json!({"capabilities": vec!["x"; MAX_CAPABILITIES + 1]})
+                            .to_string(),
+                    )
+                    .sign_with_keys(&agent)
+                    .unwrap()
+                ),
                 policy.as_ref(),
             ),
             Err(VerificationFailure::InvalidDeclaration)
@@ -364,7 +384,7 @@ mod tests {
         // An allowlist attached to `anyone` is ambiguous and cannot be used.
         let (profile, declaration, policy, _, _) = records(Some("anyone"), &["b".repeat(64)]);
         assert_eq!(
-            verify_public_agent(&profile, &declaration, policy.as_ref()),
+            verify_public_agent(&profile, Some(&declaration), policy.as_ref()),
             Err(VerificationFailure::InvalidPolicy)
         );
     }
@@ -373,7 +393,7 @@ mod tests {
     fn dm_hardening_is_applied_to_verified_policy() {
         let viewer = Keys::generate().public_key().to_hex();
         let (profile, declaration, policy, _, _) = records(Some("anyone"), &[]);
-        let verified = verify_public_agent(&profile, &declaration, policy.as_ref()).unwrap();
+        let verified = verify_public_agent(&profile, Some(&declaration), policy.as_ref()).unwrap();
         assert_eq!(
             verified.eligibility(&viewer, true),
             super::super::Eligibility::Ineligible

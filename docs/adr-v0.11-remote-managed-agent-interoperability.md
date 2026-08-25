@@ -45,7 +45,8 @@ carrying the exact `bot` role. It then verifies signed public records:
 A candidate receives an agent identity in bzz only when:
 
 1. all consumed events have valid Nostr signatures;
-2. profile and declaration authors equal the candidate pubkey;
+2. profile and every present/required declaration author equal the candidate
+   pubkey;
 3. exactly one effective NIP-OA owner is verified;
 4. an optional policy is signed by that owner;
 5. the policy coordinate equals the candidate pubkey; and
@@ -61,6 +62,26 @@ hardening. Eligibility means only that the public policy appears to permit an
 invocation; it does not prove that the remote runtime is online, ready, safe, or
 willing to respond.
 
+### v0.11.1 DM compatibility amendment
+
+Field verification established that Buzz normalizes DM participants to
+operational role `member`, including managed-agent identities. Requiring a
+`bot` role in the destination DM would therefore make the public protocol path
+unusable and would make the same signed identity appear human only in DMs.
+
+For non-DM channels, decision item 6 remains exact: current relay-signed `bot`
+membership is mandatory. That relay role already establishes the agent class,
+so kind `10100` is optional compatibility metadata for older bot identities;
+valid NIP-OA ownership remains mandatory. For a positively identified DM only,
+item 6 is satisfied by exact current participation in a relay-signed bounded
+2–9-person membership plus either exact bot authority elsewhere in the same
+community or valid kind `10100`, valid NIP-OA ownership, and exact equality
+between the verified owner and active human identity. A present public policy
+must validate; when absent, only the exact NIP-OA owner is eligible. Unknown
+channel types do not receive this exception. Names, avatars, replies,
+visible mentions, and `p` tags remain non-authoritative. No manual trust state
+or relay change is introduced.
+
 ## Publication boundary
 
 The existing human publication boundary remains unchanged.
@@ -68,8 +89,10 @@ The existing human publication boundary remains unchanged.
 Selecting an agent inserts ordinary visible composer text plus a structured
 `DraftMention` holding the exact 64-character agent pubkey. The user reviews and
 explicitly sends the message. Before signing, bzz refreshes public directory
-state and revalidates current bot membership, NIP-OA ownership, owner policy,
-community, channel, and active identity. Failure preserves the exact draft.
+state and revalidates current destination authority (exact bot membership for a
+channel, or exact owner-controlled participation for a DM), NIP-OA ownership,
+owner policy, community, channel, and active identity. Failure preserves the
+exact draft.
 
 The accepted event uses the existing acknowledged outbox. Only the human key
 signs locally. Remote replies are separately signed remote events.
@@ -89,9 +112,11 @@ configuration. Cache purge can reconstruct the directory from relay records.
 Historical signed messages are not rewritten when current agent verification is
 revoked.
 
-Only exact current bot membership can make a projection visible. Missing,
-invalid, removed, and stale states fail closed. Duplicate relay events and
-unchanged reconciliation are durable no-ops.
+Only exact current bot membership, or the bounded v0.11.1 owner-controlled DM
+exception above, can make a projection visible. Missing, invalid, removed, and
+stale states fail closed. Migration 0008 and immutable duplicate current
+snapshots repair historical role projection drift; unchanged reconciliation is
+a durable no-op.
 
 ## Privacy and observability
 
@@ -115,7 +140,7 @@ bzz does not subscribe to, decrypt, index, archive, or display:
 ### Positive
 
 - Agent spoofing requires defeating signatures, NIP-OA, owner coordination, and
-  relay-authored bot membership rather than copying a name or profile.
+  relay-authored destination membership rather than copying a name or profile.
 - A remote event cannot select or execute a local command.
 - bzz gains no agent private key or process authority.
 - Human acknowledged sends, draft recovery, locked mode, and identity isolation

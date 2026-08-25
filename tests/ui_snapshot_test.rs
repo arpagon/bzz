@@ -1,10 +1,12 @@
 use bzz::{
+    agents::{Eligibility, Presence, RespondTo},
     config::ChannelSort,
     domain::{
         Channel, ChannelKind, InboxCategory, InboxItem, Message, Profile, Reaction, SearchResult,
-        SearchResultKind, Visibility,
+        SearchResultKind, SystemEvent, SystemEventKind, Visibility,
     },
     media::{Attachment, MediaKind},
+    store::agents::RemoteAgentView,
     ui::{
         dm_picker::{self, DmPickerState},
         inbox::{self, InboxState},
@@ -57,6 +59,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
         parent_event_id: None,
         deleted: false,
         delivery: bzz::domain::DeliveryState::Pending,
+        system: None,
     }];
     let reactions = HashMap::from([(
         "a".repeat(64),
@@ -100,6 +103,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                 frame,
                 left,
                 &channels,
+                &HashMap::new(),
                 &ViewportState {
                     selected_id: Some(channel.to_string()),
                     ..ViewportState::default()
@@ -113,6 +117,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                 frame,
                 right,
                 &messages,
+                &HashMap::new(),
                 &HashMap::new(),
                 &reactions,
                 &mut timeline_state,
@@ -139,6 +144,127 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
 }
 
 #[test]
+fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
+    let channel = Uuid::new_v4();
+    let owner = "a".repeat(64);
+    let agent = "b".repeat(64);
+    let relay = "c".repeat(64);
+    let profiles = HashMap::from([
+        (
+            owner.clone(),
+            Profile {
+                pubkey: owner.clone(),
+                display_name: Some("Sebastian".into()),
+                name: None,
+                picture: None,
+                nip05: None,
+                about: None,
+                event_id: "d".repeat(64),
+                created_at: 1,
+            },
+        ),
+        (
+            agent.clone(),
+            Profile {
+                pubkey: agent.clone(),
+                display_name: Some("Fizz".into()),
+                name: None,
+                picture: None,
+                nip05: None,
+                about: None,
+                event_id: "e".repeat(64),
+                created_at: 1,
+            },
+        ),
+    ]);
+    let agents = HashMap::from([(
+        agent.clone(),
+        RemoteAgentView {
+            schema_version: 1,
+            community_id: Uuid::nil(),
+            pubkey: agent.clone(),
+            owner_pubkey: owner.clone(),
+            name: "Fizz".into(),
+            capabilities: vec!["messages".into()],
+            presence: Presence::Unknown,
+            respond_to: Some(RespondTo::OwnerOnly),
+            respond_to_allowlist: Vec::new(),
+            eligibility: Eligibility::Eligible,
+            stale: false,
+            channel_ids: vec![channel],
+            last_verified_at: 1,
+        },
+    )]);
+    let messages = vec![
+        Message {
+            event_id: "f".repeat(64),
+            channel_id: channel,
+            pubkey: relay,
+            created_at: 1,
+            content: String::new(),
+            attachments: Vec::new(),
+            root_event_id: None,
+            parent_event_id: None,
+            deleted: false,
+            delivery: bzz::domain::DeliveryState::Delivered,
+            system: Some(SystemEvent {
+                kind: SystemEventKind::DmCreated,
+                actor: Some(owner.clone()),
+                target: None,
+                participants: vec![owner.clone(), agent.clone()],
+            }),
+        },
+        Message {
+            event_id: "1".repeat(64),
+            channel_id: channel,
+            pubkey: agent.clone(),
+            created_at: 2,
+            content: "Ready.".into(),
+            attachments: Vec::new(),
+            root_event_id: None,
+            parent_event_id: None,
+            deleted: false,
+            delivery: bzz::domain::DeliveryState::Delivered,
+            system: None,
+        },
+    ];
+    let mut state = TimelineState {
+        at_live_bottom: true,
+        ..TimelineState::default()
+    };
+    let mut terminal = Terminal::new(TestBackend::new(100, 14)).unwrap();
+    terminal
+        .draw(|frame| {
+            timeline::render(
+                frame,
+                frame.area(),
+                &messages,
+                &profiles,
+                &agents,
+                &HashMap::new(),
+                &mut state,
+                "◆ Fizz · managed by you",
+                &Theme::default(),
+                true,
+                Some(&owner),
+            );
+        })
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("Direct message started with Fizz"));
+    assert!(text.contains("◆ Fizz · managed by you"));
+    assert!(text.contains("Ready."));
+    assert!(!text.contains("dm_created"));
+    assert!(!text.contains("participants"));
+}
+
+#[test]
 fn timeline_distinguishes_pending_unknown_and_rejected_delivery() {
     let channel = Uuid::new_v4();
     let states = [
@@ -160,6 +286,7 @@ fn timeline_distinguishes_pending_unknown_and_rejected_delivery() {
             parent_event_id: None,
             deleted: false,
             delivery,
+            system: None,
         })
         .collect::<Vec<_>>();
     let mut state = TimelineState {
@@ -173,6 +300,7 @@ fn timeline_distinguishes_pending_unknown_and_rejected_delivery() {
                 frame,
                 frame.area(),
                 &messages,
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 &mut state,
@@ -213,6 +341,7 @@ fn nearby_same_author_messages_share_a_compact_header_and_keep_date_context() {
             parent_event_id: None,
             deleted: false,
             delivery: bzz::domain::DeliveryState::Delivered,
+            system: None,
         })
         .collect::<Vec<_>>();
     let mut state = TimelineState {
@@ -226,6 +355,7 @@ fn nearby_same_author_messages_share_a_compact_header_and_keep_date_context() {
                 frame,
                 frame.area(),
                 &messages,
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 &mut state,
@@ -281,6 +411,7 @@ fn attachment_cards_remain_visible_without_a_graphics_protocol() {
         parent_event_id: None,
         deleted: false,
         delivery: bzz::domain::DeliveryState::Delivered,
+        system: None,
     };
     let backend = TestBackend::new(80, 12);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -291,6 +422,7 @@ fn attachment_cards_remain_visible_without_a_graphics_protocol() {
                 frame,
                 frame.area(),
                 &[message],
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 &mut timeline_state,
@@ -391,6 +523,7 @@ fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
         parent_event_id: None,
         deleted: false,
         delivery: bzz::domain::DeliveryState::Delivered,
+        system: None,
     }];
     let mut inbox_state = InboxState::default();
     inbox_state.reconcile(&items);
@@ -407,6 +540,8 @@ fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
                     items: &items,
                     messages: &messages,
                     profiles: &profiles,
+                    agents: &HashMap::new(),
+                    self_pubkey: None,
                     focus: bzz::ui::state::FocusSurface::InboxList,
                     theme: &theme,
                     loading: false,

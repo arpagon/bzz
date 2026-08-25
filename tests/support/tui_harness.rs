@@ -73,6 +73,8 @@ impl InboxHarness {
             items: &self.items,
             messages: &self.messages,
             profiles: &HashMap::<String, Profile>::new(),
+            agents: &HashMap::new(),
+            self_pubkey: None,
             focus: self.presentation.focus,
             theme: &self.theme,
             loading: false,

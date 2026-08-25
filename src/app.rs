@@ -257,6 +257,7 @@ pub struct App {
     showing_open_channel: bool,
     messages: Vec<Message>,
     profiles: HashMap<String, Profile>,
+    agents: HashMap<String, crate::store::agents::RemoteAgentView>,
     reactions: HashMap<String, Vec<Reaction>>,
     profile_requested: HashSet<String>,
     thread_messages: Vec<Message>,
@@ -321,7 +322,6 @@ pub struct App {
     last_marked: HashMap<String, u32>,
     read_dirty_since: Option<Instant>,
     last_cache_refresh: Instant,
-    last_directory_refresh: Instant,
     directory_task: Option<tokio::task::JoinHandle<()>>,
     last_inbox_refresh: Instant,
     background_tx: mpsc::Sender<Background>,
@@ -427,6 +427,7 @@ impl App {
             showing_open_channel: false,
             messages: Vec::new(),
             profiles: HashMap::new(),
+            agents: HashMap::new(),
             reactions: HashMap::new(),
             profile_requested: HashSet::new(),
             thread_messages: Vec::new(),
@@ -495,7 +496,6 @@ impl App {
             last_marked: HashMap::new(),
             read_dirty_since: None,
             last_cache_refresh: Instant::now(),
-            last_directory_refresh: Instant::now(),
             directory_task: None,
             last_inbox_refresh: Instant::now(),
             background_tx,
@@ -644,6 +644,9 @@ impl App {
                     }
                     Background::AgentsLoaded { community, agents, notice }=>{
                         if self.active_community_id()==Some(community) {
+                            self.agents = agents.iter().cloned()
+                                .map(|agent| (agent.pubkey.clone(), agent))
+                                .collect();
                             self.agent_directory.agents=agents;
                             self.agent_directory.loading=false;
                             self.agent_directory.reconcile();
@@ -1065,6 +1068,7 @@ impl App {
             self.channels.clear();
             self.messages.clear();
             self.thread_messages.clear();
+            self.agents.clear();
             self.reactions.clear();
             self.cache_dirty = false;
             self.last_cache_refresh = Instant::now();
@@ -1142,11 +1146,22 @@ impl App {
             .store
             .call(move |store| store.profiles(community))
             .await?;
+        let self_pubkey = self.self_pubkey().unwrap_or_default().to_owned();
+        self.agents = if self_pubkey.is_empty() {
+            HashMap::new()
+        } else {
+            let identity = self_pubkey.clone();
+            self.store
+                .call(move |store| store.list_remote_agents(community, &identity))
+                .await?
+                .into_iter()
+                .map(|agent| (agent.pubkey.clone(), agent))
+                .collect()
+        };
         let dm_participants = self
             .store
             .call(move |store| store.dm_participants_map(community))
             .await?;
-        let self_pubkey = self.self_pubkey().unwrap_or_default().to_owned();
         for channel in self
             .channels
             .iter_mut()
@@ -1160,11 +1175,30 @@ impl App {
             let pubkey = self.self_pubkey().unwrap_or_default().to_owned();
             self.dm_picker.reconcile(&self.profiles, &pubkey);
         }
-        let unknown_authors = self
+        let mut profile_subjects = self
             .messages
             .iter()
             .chain(self.thread_messages.iter())
+            .filter(|message| message.system.is_none())
             .map(|message| message.pubkey.clone())
+            .chain(
+                self.agents
+                    .values()
+                    .flat_map(|agent| [agent.pubkey.clone(), agent.owner_pubkey.clone()]),
+            )
+            .collect::<HashSet<_>>();
+        for system in self
+            .messages
+            .iter()
+            .chain(self.thread_messages.iter())
+            .filter_map(|message| message.system.as_ref())
+        {
+            profile_subjects.extend(system.actor.iter().cloned());
+            profile_subjects.extend(system.target.iter().cloned());
+            profile_subjects.extend(system.participants.iter().cloned());
+        }
+        let unknown_authors = profile_subjects
+            .into_iter()
             .filter(|pubkey| {
                 !self.profiles.contains_key(pubkey) && !self.profile_requested.contains(pubkey)
             })
@@ -1307,7 +1341,7 @@ impl App {
                     }
                 } else {
                     let kind = event.kind.as_u16();
-                    let membership_refresh = matches!(kind, 44_100 | 44_101);
+                    let membership_refresh = matches!(kind, 39_002 | 44_100 | 44_101);
                     match self
                         .store
                         .call(move |store| store.apply_event(community, &event))
@@ -1453,10 +1487,6 @@ impl App {
             let unread_before = (self.computed_unread.len(), self.manual_unread.len());
             self.mark_current_read().await?;
             changed |= unread_before != (self.computed_unread.len(), self.manual_unread.len());
-        }
-        if self.last_directory_refresh.elapsed() >= Duration::from_secs(300) {
-            self.last_directory_refresh = Instant::now();
-            self.spawn_directory_refresh();
         }
         if self
             .read_dirty_since
@@ -2839,7 +2869,6 @@ impl App {
                                     .unwrap_or(u32::MAX),
                                 outcome: "eligible".into(),
                             });
-                        self.last_directory_refresh = Instant::now();
                         self.cache_dirty = true;
                     }
                     // Persist the final edit before making its acknowledgement
@@ -3818,6 +3847,9 @@ impl App {
         if let Some(task) = self.agent_directory_task.take() {
             task.abort();
         }
+        let active_is_dm = self
+            .current_channel()
+            .is_some_and(|channel| channel.kind.is_dm());
         let refresh_unavailable = refresh_remote && self.runtime.is_none();
         let service = refresh_remote
             .then(|| {
@@ -3855,15 +3887,29 @@ impl App {
                     format!("remote refresh unavailable; showing verified cache ({error})")
                 })
             };
+            let listing_identity = identity_pubkey.clone();
             let result = store
-                .call(move |store| store.list_remote_agents(community, &identity_pubkey))
+                .call(move |store| store.list_remote_agents(community, &listing_identity))
                 .await;
             let event = match result {
-                Ok(agents) => Background::AgentsLoaded {
-                    community,
-                    agents,
-                    notice,
-                },
+                Ok(mut agents) => {
+                    for agent in &mut agents {
+                        if !agent.stale {
+                            agent.eligibility = crate::agents::policy::evaluate(
+                                agent.respond_to,
+                                &agent.respond_to_allowlist,
+                                &agent.owner_pubkey,
+                                &identity_pubkey,
+                                active_is_dm,
+                            );
+                        }
+                    }
+                    Background::AgentsLoaded {
+                        community,
+                        agents,
+                        notice,
+                    }
+                }
                 Err(error) => Background::Failed(error.to_string()),
             };
             let _ = tx.send(event).await;
@@ -3896,8 +3942,27 @@ impl App {
             return Ok(());
         };
         if !agent.channel_ids.contains(&channel) {
+            self.status_error = Some(
+                if self
+                    .current_channel()
+                    .is_some_and(|channel| channel.kind.is_dm())
+                {
+                    "the verified remote agent is not a current participant in this DM".into()
+                } else {
+                    "the verified remote agent is not a bot member of this channel".into()
+                },
+            );
+            return Ok(());
+        }
+        if self
+            .current_channel()
+            .is_some_and(|channel| channel.kind.is_dm())
+            && self
+                .self_pubkey()
+                .is_none_or(|pubkey| !agent.owner_pubkey.eq_ignore_ascii_case(pubkey))
+        {
             self.status_error =
-                Some("the verified remote agent is not a bot member of this channel".into());
+                Some("only the verified owner may invoke a remote agent in a DM".into());
             return Ok(());
         }
         if agent.eligibility != crate::agents::Eligibility::Eligible {
@@ -4712,7 +4777,6 @@ impl App {
                 self.clear_agent_directory_state();
                 self.presentation.close_overlay();
                 self.connection = ConnectionState::Connecting;
-                self.last_directory_refresh = Instant::now();
                 self.last_inbox_refresh = Instant::now();
                 self.hydrate_cache().await?;
                 self.start_sync().await?;
@@ -5007,6 +5071,7 @@ impl App {
                 frame,
                 sidebar,
                 &self.channels,
+                &self.agents,
                 &self.channel_viewport,
                 &self.unread_channels(),
                 self.config.ui.channel_sort,
@@ -5014,9 +5079,40 @@ impl App {
                 self.presentation.focus == FocusSurface::Channels,
             );
         }
-        let title = self
-            .current_channel()
-            .map_or_else(|| "timeline".to_owned(), |channel| channel.name.clone());
+        let title = self.current_channel().map_or_else(
+            || "timeline".to_owned(),
+            |channel| {
+                let agent = (channel.kind.is_dm() && channel.member_count == 2)
+                    .then(|| {
+                        self.agents
+                            .values()
+                            .filter(|agent| !agent.stale && agent.channel_ids.contains(&channel.id))
+                            .min_by(|left, right| left.pubkey.cmp(&right.pubkey))
+                    })
+                    .flatten();
+                agent.map_or_else(
+                    || channel.name.clone(),
+                    |agent| {
+                        let owner = if self
+                            .self_pubkey()
+                            .is_some_and(|pubkey| agent.owner_pubkey.eq_ignore_ascii_case(pubkey))
+                        {
+                            "managed by you".to_owned()
+                        } else {
+                            let label = self
+                                .profiles
+                                .get(&agent.owner_pubkey)
+                                .map(Profile::label)
+                                .unwrap_or_else(|| {
+                                    crate::domain::abbreviated_pubkey(&agent.owner_pubkey)
+                                });
+                            format!("owned by {}", sanitize::single_line(&label))
+                        };
+                        format!("◆ {} · {owner}", sanitize::single_line(&channel.name))
+                    },
+                )
+            },
+        );
         let self_pubkey = self.self_pubkey().map(str::to_owned);
         hit_map.push(panes.timeline, HitTarget::Timeline);
         let mut timeline_hits = Vec::new();
@@ -5026,6 +5122,7 @@ impl App {
                 panes.timeline,
                 &self.messages,
                 &self.profiles,
+                &self.agents,
                 &self.reactions,
                 &mut self.timeline,
                 &title,
@@ -5042,6 +5139,7 @@ impl App {
                 panes.timeline,
                 &self.messages,
                 &self.profiles,
+                &self.agents,
                 &self.reactions,
                 &mut self.timeline,
                 &title,
@@ -5067,6 +5165,7 @@ impl App {
                     thread,
                     &self.thread_messages,
                     &self.profiles,
+                    &self.agents,
                     &self.reactions,
                     &mut self.thread_timeline,
                     &thread_title,
@@ -5083,6 +5182,7 @@ impl App {
                     thread,
                     &self.thread_messages,
                     &self.profiles,
+                    &self.agents,
                     &self.reactions,
                     &mut self.thread_timeline,
                     &thread_title,
@@ -5108,6 +5208,7 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(area);
+        let inbox_self_pubkey = self.self_pubkey().map(str::to_owned);
         let route_layout = crate::ui::inbox::render(
             frame,
             vertical[0],
@@ -5116,6 +5217,8 @@ impl App {
                 items: &self.inbox_items,
                 messages: &self.inbox_messages,
                 profiles: &self.profiles,
+                agents: &self.agents,
+                self_pubkey: inbox_self_pubkey.as_deref(),
                 focus: self.presentation.focus,
                 theme: &self.theme,
                 loading: self.inbox_loading || self.inbox_detail_loading,
@@ -5598,6 +5701,8 @@ impl App {
                     frame,
                     popup,
                     &self.agent_directory,
+                    &self.profiles,
+                    self.self_pubkey(),
                     &self.theme,
                     hit_map,
                 );
@@ -6449,6 +6554,7 @@ mod tests {
             parent_event_id: None,
             deleted: false,
             delivery: crate::domain::DeliveryState::Delivered,
+            system: None,
         }];
         app.timeline.at_live_bottom = true;
         app.computed_unread.insert(channel);
@@ -6606,6 +6712,7 @@ mod tests {
             parent_event_id: None,
             deleted: false,
             delivery: crate::domain::DeliveryState::Delivered,
+            system: None,
         };
         let mut timeline = TimelineState {
             at_live_bottom: true,
@@ -6981,6 +7088,7 @@ mod tests {
             parent_event_id: None,
             deleted: false,
             delivery: crate::domain::DeliveryState::Delivered,
+            system: None,
         }];
         app.timeline.reconcile(&app.messages);
 

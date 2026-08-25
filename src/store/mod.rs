@@ -33,7 +33,7 @@ impl Store {
         }
         let mut connection = Connection::open(&path)?;
         migrate::configure(&connection)?;
-        migrate::migrate(&mut connection, &path)?;
+        let migrated = migrate::migrate(&mut connection, &path)?;
         set_private_permissions(&path)?;
         let mut store = Self {
             connection,
@@ -42,6 +42,9 @@ impl Store {
         };
         store.ensure_search_projections()?;
         store.reconcile_draft_submissions()?;
+        if migrated {
+            store.reconcile_all_remote_agents()?;
+        }
         Ok(store)
     }
 
@@ -66,7 +69,7 @@ impl Store {
     pub fn open_memory() -> Result<Self> {
         let mut connection = Connection::open_in_memory()?;
         migrate::configure(&connection)?;
-        migrate::migrate(&mut connection, Path::new(":memory:"))?;
+        let migrated = migrate::migrate(&mut connection, Path::new(":memory:"))?;
         let mut store = Self {
             connection,
             path: PathBuf::from(":memory:"),
@@ -74,6 +77,9 @@ impl Store {
         };
         store.ensure_search_projections()?;
         store.reconcile_draft_submissions()?;
+        if migrated {
+            store.reconcile_all_remote_agents()?;
+        }
         Ok(store)
     }
 

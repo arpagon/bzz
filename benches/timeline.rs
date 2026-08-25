@@ -27,6 +27,7 @@ fn bench_timeline(c: &mut Criterion) {
             parent_event_id: None,
             deleted: false,
             delivery: bzz::domain::DeliveryState::Delivered,
+            system: None,
         })
         .collect::<Vec<_>>();
     c.bench_function("timeline cursor move in 10k messages", |bench| {
@@ -86,6 +87,7 @@ fn bench_timeline(c: &mut Criterion) {
                             frame,
                             frame.area(),
                             &render_messages,
+                            &HashMap::new(),
                             &HashMap::new(),
                             &HashMap::new(),
                             &mut state,

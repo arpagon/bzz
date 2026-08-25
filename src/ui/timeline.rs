@@ -12,13 +12,14 @@ use ratatui::{
 use ratatui_image::sliced::{SignedPosition, SlicedImage, SlicedProtocol};
 
 use crate::{
-    domain::{Message, Profile, Reaction},
+    domain::{Message, Profile, Reaction, SystemEvent, SystemEventKind},
     media::{
         MediaKind,
         model::human_size,
         runtime::{MediaRuntime, MediaState},
     },
     render::{markdown, sanitize},
+    store::agents::RemoteAgentView,
     ui::theme::{BorderSurface, HighlightGroup, Theme},
 };
 
@@ -279,6 +280,7 @@ pub fn render(
     area: Rect,
     messages: &[Message],
     profiles: &HashMap<String, Profile>,
+    agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
     state: &mut TimelineState,
     title: &str,
@@ -291,6 +293,7 @@ pub fn render(
         area,
         messages,
         profiles,
+        agents,
         reactions,
         state,
         title,
@@ -311,6 +314,7 @@ pub fn render_limited(
     area: Rect,
     messages: &[Message],
     profiles: &HashMap<String, Profile>,
+    agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
     state: &mut TimelineState,
     title: &str,
@@ -324,6 +328,7 @@ pub fn render_limited(
         area,
         messages,
         profiles,
+        agents,
         reactions,
         state,
         title,
@@ -342,6 +347,7 @@ pub fn render_with_media(
     area: Rect,
     messages: &[Message],
     profiles: &HashMap<String, Profile>,
+    agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
     state: &mut TimelineState,
     title: &str,
@@ -355,6 +361,7 @@ pub fn render_with_media(
         area,
         messages,
         profiles,
+        agents,
         reactions,
         state,
         title,
@@ -373,6 +380,7 @@ pub fn render_with_media_and_hits(
     area: Rect,
     messages: &[Message],
     profiles: &HashMap<String, Profile>,
+    agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
     state: &mut TimelineState,
     title: &str,
@@ -387,6 +395,7 @@ pub fn render_with_media_and_hits(
         area,
         messages,
         profiles,
+        agents,
         reactions,
         state,
         title,
@@ -406,6 +415,7 @@ pub fn render_with_media_and_hits_limited(
     area: Rect,
     messages: &[Message],
     profiles: &HashMap<String, Profile>,
+    agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
     state: &mut TimelineState,
     title: &str,
@@ -421,6 +431,7 @@ pub fn render_with_media_and_hits_limited(
         area,
         messages,
         profiles,
+        agents,
         reactions,
         state,
         title,
@@ -439,6 +450,7 @@ fn render_internal(
     area: Rect,
     messages: &[Message],
     profiles: &HashMap<String, Profile>,
+    agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
     state: &mut TimelineState,
     title: &str,
@@ -481,9 +493,10 @@ fn render_internal(
             for attachment in &message.attachments {
                 runtime.request_inline(attachment, image_width, false);
             }
-            if let Some(picture) = profiles
-                .get(&message.pubkey)
-                .and_then(|profile| profile.picture.as_deref())
+            if message.system.is_none()
+                && let Some(picture) = profiles
+                    .get(&message.pubkey)
+                    .and_then(|profile| profile.picture.as_deref())
             {
                 runtime.request_avatar(&message.pubkey, picture, AVATAR_WIDTH);
             }
@@ -499,6 +512,7 @@ fn render_internal(
                 message,
                 messages.get(index.saturating_sub(1)).filter(|_| index > 0),
                 profiles,
+                agents,
                 reactions,
                 theme,
                 self_pubkey,
@@ -645,6 +659,7 @@ fn message_block(
     message: &Message,
     previous: Option<&Message>,
     profiles: &HashMap<String, Profile>,
+    agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
     theme: &Theme,
     self_pubkey: Option<&str>,
@@ -654,11 +669,36 @@ fn message_block(
     image_width: u16,
     avatar_width: u16,
 ) -> MessageBlock {
+    if let Some(system) = &message.system {
+        return system_message_block(
+            message,
+            previous,
+            system,
+            profiles,
+            theme,
+            self_pubkey,
+            selected,
+            copy_selected,
+        );
+    }
     let author = profiles
         .get(&message.pubkey)
         .map(Profile::label)
         .unwrap_or_else(|| crate::domain::abbreviated_pubkey(&message.pubkey));
     let author = sanitize::single_line(&author);
+    let agent = agents.get(&message.pubkey);
+    let agent_marker = agent.map(|agent| if agent.stale { "◇ " } else { "◆ " });
+    let owner_presentation = agent.filter(|agent| !agent.stale).map(|agent| {
+        if self_pubkey.is_some_and(|pubkey| agent.owner_pubkey.eq_ignore_ascii_case(pubkey)) {
+            " · managed by you".to_owned()
+        } else {
+            let owner = profiles
+                .get(&agent.owner_pubkey)
+                .map(Profile::label)
+                .unwrap_or_else(|| crate::domain::abbreviated_pubkey(&agent.owner_pubkey));
+            format!(" · owned by {}", sanitize::single_line(&owner))
+        }
+    });
     let grouped = previous.is_some_and(|previous| same_message_group(previous, message));
     let avatar = (!grouped)
         .then(|| {
@@ -708,10 +748,22 @@ fn message_block(
                 theme.style(HighlightGroup::MessageAvatar),
             ));
         }
+        if let Some(marker) = agent_marker {
+            header.push(Span::styled(
+                marker,
+                theme.style(HighlightGroup::SelectionMarker),
+            ));
+        }
         header.push(Span::styled(
             author,
             theme.style(HighlightGroup::MessageAuthor),
         ));
+        if let Some(owner) = owner_presentation {
+            header.push(Span::styled(
+                owner,
+                theme.style(HighlightGroup::MessageTimestamp),
+            ));
+        }
         header.push(Span::styled(
             format!("  {}", format_time(message.created_at)),
             theme.style(HighlightGroup::MessageTimestamp),
@@ -785,6 +837,119 @@ fn message_block(
         }),
         selected,
         copy_selected,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn system_message_block(
+    message: &Message,
+    previous: Option<&Message>,
+    system: &SystemEvent,
+    profiles: &HashMap<String, Profile>,
+    theme: &Theme,
+    self_pubkey: Option<&str>,
+    selected: bool,
+    copy_selected: bool,
+) -> MessageBlock {
+    let mut rows = Vec::new();
+    if previous.is_none_or(|previous| day_key(previous.created_at) != day_key(message.created_at)) {
+        rows.push(TimelineRow::Text(Line::styled(
+            format!("──── {} ────", format_day(message.created_at)),
+            theme.style(HighlightGroup::MessageDateSeparator),
+        )));
+    }
+    let marker = if selected { "▌" } else { " " };
+    let summary = if message.deleted {
+        "System event removed".to_owned()
+    } else {
+        system_summary(system, profiles, self_pubkey)
+    };
+    rows.push(TimelineRow::Text(Line::from(vec![
+        Span::styled(marker, theme.style(HighlightGroup::SelectedRow)),
+        Span::styled(
+            format!("  · {summary} · "),
+            theme.style(HighlightGroup::MessageTimestamp),
+        ),
+        Span::styled(
+            format_time(message.created_at),
+            theme.style(HighlightGroup::MessageTimestamp),
+        ),
+    ])));
+    MessageBlock {
+        rows,
+        avatar: None,
+        selected,
+        copy_selected,
+    }
+}
+
+pub(crate) fn system_summary(
+    system: &SystemEvent,
+    profiles: &HashMap<String, Profile>,
+    self_pubkey: Option<&str>,
+) -> String {
+    let label = |pubkey: &str| {
+        sanitize::single_line(
+            &profiles
+                .get(pubkey)
+                .map(Profile::label)
+                .unwrap_or_else(|| crate::domain::abbreviated_pubkey(pubkey)),
+        )
+    };
+    let actor = system.actor.as_deref().map(&label);
+    let target = system.target.as_deref().map(&label);
+    match system.kind {
+        SystemEventKind::DmCreated => {
+            let mut participants = system
+                .participants
+                .iter()
+                .filter(|pubkey| {
+                    self_pubkey.is_none_or(|self_pubkey| !pubkey.eq_ignore_ascii_case(self_pubkey))
+                })
+                .map(|pubkey| label(pubkey))
+                .collect::<Vec<_>>();
+            if participants.is_empty() {
+                participants = system
+                    .participants
+                    .iter()
+                    .map(|pubkey| label(pubkey))
+                    .collect();
+            }
+            format!("Direct message started with {}", participants.join(", "))
+        }
+        SystemEventKind::ChannelCreated => actor.map_or_else(
+            || "Channel created".to_owned(),
+            |actor| format!("Channel created by {actor}"),
+        ),
+        SystemEventKind::MemberJoined => match (target, actor) {
+            (Some(target), Some(actor)) if target != actor => {
+                format!("{target} joined · added by {actor}")
+            }
+            (Some(target), _) => format!("{target} joined"),
+            _ => "A member joined".to_owned(),
+        },
+        SystemEventKind::MemberLeft => target.or(actor).map_or_else(
+            || "A member left".to_owned(),
+            |target| format!("{target} left"),
+        ),
+        SystemEventKind::MemberRemoved => match (target, actor) {
+            (Some(target), Some(actor)) => format!("{target} was removed by {actor}"),
+            (Some(target), None) => format!("{target} was removed"),
+            _ => "A member was removed".to_owned(),
+        },
+        SystemEventKind::ChannelArchived => actor.map_or_else(
+            || "Channel archived".to_owned(),
+            |actor| format!("Channel archived by {actor}"),
+        ),
+        SystemEventKind::ChannelUnarchived => actor.map_or_else(
+            || "Channel restored".to_owned(),
+            |actor| format!("Channel restored by {actor}"),
+        ),
+        SystemEventKind::MessageDeleted => actor.map_or_else(
+            || "A message was deleted".to_owned(),
+            |actor| format!("A message was deleted by {actor}"),
+        ),
+        SystemEventKind::Unsupported => "Unsupported system event".to_owned(),
     }
 }
 
@@ -902,7 +1067,9 @@ pub fn avatar_marker(pubkey: &str, author: &str) -> String {
 }
 
 fn same_message_group(previous: &Message, current: &Message) -> bool {
-    previous.pubkey == current.pubkey
+    previous.system.is_none()
+        && current.system.is_none()
+        && previous.pubkey == current.pubkey
         && !previous.deleted
         && !current.deleted
         && day_key(previous.created_at) == day_key(current.created_at)
@@ -967,6 +1134,7 @@ mod tests {
             parent_event_id: None,
             deleted: false,
             delivery: crate::domain::DeliveryState::Delivered,
+            system: None,
         }
     }
 

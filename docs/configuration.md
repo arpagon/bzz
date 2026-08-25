@@ -82,10 +82,21 @@ TUI `:agents` inspect bounded public relay projections only. Refresh requires
 the configured human identity so NIP-98 queries and relay membership remain
 community-authorized. List/show can read an already-verified local cache.
 
-Migration 0007 adds a reconstructable SQLite directory projection and preserves
-the exact `bot` role from relay-signed kind 39002 membership. It does not add an
-agent key to `[[identities]]` or revive retired `[[local_agents]]` values. The
-same agent pubkey is independently verified in every configured community.
+Migration 0007 adds a reconstructable SQLite directory projection. Migration
+0008 repairs historical membership rows from their current, already-verified,
+relay-signed kind 39002 source event so the exact four-field `bot` role converges
+without clearing the database. Duplicate current snapshots can repair the same
+projection drift and are true no-ops afterward.
+
+Outside DMs, exact current `bot` membership remains mandatory. Buzz represents
+DM participants with operational role `member`, so a bounded current DM
+participant can be recognized only after kind 0 NIP-OA ownership plus either
+exact bot authority elsewhere in the community or a signed kind 10100
+declaration validate; only the exact verified owner may invoke it in a DM.
+Any present public owner policy must validate. When no policy is published,
+non-owners remain policy-unknown. This adds no manual trust setting. It does not add
+an agent key to `[[identities]]` or revive retired `[[local_agents]]` values.
+The same agent pubkey is independently verified in every configured community.
 There is no local-hosting switch in this release.
 
 `ui.theme` selects the global built-in theme. An optional community `theme`

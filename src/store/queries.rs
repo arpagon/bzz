@@ -92,7 +92,7 @@ impl Store {
 
     pub fn channel_content_ids(&self, community_id: Uuid, channel_id: Uuid) -> Result<Vec<String>> {
         let mut statement = self.connection.prepare(
-            "SELECT event_id FROM events WHERE community_id=?1 AND channel_id=?2 AND kind IN (9,40002,40099) ORDER BY created_at,event_id",
+            "SELECT event_id FROM events WHERE community_id=?1 AND channel_id=?2 AND kind IN (9,40002) ORDER BY created_at,event_id",
         )?;
         Ok(statement
             .query_map(
@@ -113,7 +113,7 @@ impl Store {
         let value: Option<i64> = self.connection.query_row(
             "SELECT max(created_at) FROM events
              WHERE community_id=?1 AND channel_id=?2
-               AND kind IN (9,40002,40099) AND deleted_by_event_id IS NULL",
+               AND kind IN (9,40002) AND deleted_by_event_id IS NULL",
             params![community_id.to_string(), channel_id.to_string()],
             |row| row.get(0),
         )?;
@@ -127,9 +127,10 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<Message>> {
         self.message_query(
-            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url
+            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind
              FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
-             WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099) AND e.root_event_id IS NULL
+             WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099)
+               AND (e.kind<>40099 OR e.pubkey=c.relay_pubkey) AND e.root_event_id IS NULL
              ORDER BY e.created_at DESC,e.event_id DESC LIMIT ?3",
             params![community_id.to_string(),channel_id.to_string(),i64::try_from(limit).unwrap_or(i64::MAX)],
         ).map(|mut values| { values.reverse(); values })
@@ -168,7 +169,9 @@ impl Store {
         let target = self
             .connection
             .query_row(
-                "SELECT created_at FROM events WHERE community_id=?1 AND channel_id=?2 AND event_id=?3 AND kind IN (9,40002,40099)",
+                "SELECT e.created_at FROM events e JOIN communities c ON c.id=e.community_id
+                 WHERE e.community_id=?1 AND e.channel_id=?2 AND e.event_id=?3
+                   AND e.kind IN (9,40002,40099) AND (e.kind<>40099 OR e.pubkey=c.relay_pubkey)",
                 params![community_id.to_string(), channel_id.to_string(), event_id],
                 |row| row.get::<_, i64>(0),
             )
@@ -183,16 +186,18 @@ impl Store {
         } else {
             "e.root_event_id IS NULL"
         };
-        let columns = "e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url";
+        let columns = "e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind";
         let older_sql = format!(
             "SELECT {columns} FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
-             WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099) AND {scope}
+             WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099)
+               AND (e.kind<>40099 OR e.pubkey=c.relay_pubkey) AND {scope}
                AND (e.created_at<?3 OR (e.created_at=?3 AND e.event_id<=?4))
              ORDER BY e.created_at DESC,e.event_id DESC LIMIT ?6"
         );
         let newer_sql = format!(
             "SELECT {columns} FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
-             WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099) AND {scope}
+             WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099)
+               AND (e.kind<>40099 OR e.pubkey=c.relay_pubkey) AND {scope}
                AND (e.created_at>?3 OR (e.created_at=?3 AND e.event_id>?4))
              ORDER BY e.created_at,e.event_id LIMIT ?6"
         );
@@ -227,9 +232,11 @@ impl Store {
 
     pub fn thread(&self, community_id: Uuid, root: &str, limit: usize) -> Result<Vec<Message>> {
         self.message_query(
-            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url
+            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind
              FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
-             WHERE e.community_id=?1 AND e.kind IN (9,40002,40099) AND (e.event_id=?2 OR e.root_event_id=?2)
+             WHERE e.community_id=?1 AND e.kind IN (9,40002,40099)
+               AND (e.kind<>40099 OR e.pubkey=c.relay_pubkey)
+               AND (e.event_id=?2 OR e.root_event_id=?2)
              ORDER BY e.created_at,e.event_id LIMIT ?3",
             params![community_id.to_string(),root,i64::try_from(limit).unwrap_or(i64::MAX)],
         )
@@ -243,12 +250,21 @@ impl Store {
                 let content: String = row.get(4)?;
                 let tags_json: String = row.get(9)?;
                 let http_base: String = row.get(10)?;
-                let attachments = url::Url::parse(&http_base)
-                    .ok()
-                    .map(|base| crate::media::imeta::parse_tags(&tags_json, &content, &base))
-                    .unwrap_or_default();
-                let visible_content =
-                    crate::media::imeta::strip_attachment_lines(&content, &attachments);
+                let kind = u16::try_from(row.get::<_, i64>(11)?).unwrap_or(u16::MAX);
+                let system = (kind == 40_099).then(|| crate::protocol::system::parse(&content));
+                let attachments = if system.is_some() {
+                    Vec::new()
+                } else {
+                    url::Url::parse(&http_base)
+                        .ok()
+                        .map(|base| crate::media::imeta::parse_tags(&tags_json, &content, &base))
+                        .unwrap_or_default()
+                };
+                let visible_content = if system.is_some() {
+                    String::new()
+                } else {
+                    crate::media::imeta::strip_attachment_lines(&content, &attachments)
+                };
                 Ok(Message {
                     event_id: row.get(0)?,
                     channel_id: Uuid::parse_str(&row.get::<_, String>(1)?).map_err(|error| {
@@ -266,6 +282,7 @@ impl Store {
                     parent_event_id: row.get(6)?,
                     deleted: row.get::<_, Option<String>>(7)?.is_some(),
                     delivery: crate::domain::DeliveryState::from_outbox(state.as_deref()),
+                    system,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -902,9 +919,12 @@ impl Store {
             "SELECT m.pubkey,COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),NULLIF(a.name,''),''),
                     a.owner_pubkey,a.respond_to,a.respond_to_allowlist_json
              FROM memberships m
+             JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
              LEFT JOIN profiles p ON p.community_id=m.community_id AND p.pubkey=m.pubkey
              LEFT JOIN remote_agents a ON a.community_id=m.community_id AND a.agent_pubkey=m.pubkey
-                  AND a.verification_state='verified' AND m.role='bot'
+                  AND a.verification_state='verified'
+                  AND (m.role='bot' OR (c.channel_type='dm' AND c.is_member=1
+                       AND c.member_count BETWEEN 2 AND 9))
              WHERE m.community_id=?1 AND m.channel_id=?2 AND lower(m.pubkey)<>lower(?3)
                AND (lower(COALESCE(p.display_name,p.name,a.name,m.pubkey)) LIKE ?4 ESCAPE '\\')
              ORDER BY a.owner_pubkey IS NULL DESC,
@@ -1004,7 +1024,7 @@ impl Store {
                AND message_read.identity_pubkey=?2
                AND message_read.context_id='msg:' || e.event_id
              WHERE e.community_id=?1 AND e.channel_id IS NOT NULL
-               AND e.kind IN (9,40002,40099) AND e.pubkey<>?2
+               AND e.kind IN (9,40002) AND e.pubkey<>?2
                AND e.deleted_by_event_id IS NULL
                AND e.created_at>max(COALESCE(channel_read.read_at,0),COALESCE(thread_read.read_at,0),COALESCE(message_read.read_at,0))",
         )?;

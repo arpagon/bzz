@@ -40,6 +40,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
         parent_event_id: None,
         deleted: false,
         delivery: bzz::domain::DeliveryState::Pending,
+        system: None,
     }];
     let profiles = HashMap::from([(
         self_pubkey.clone(),
@@ -87,6 +88,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
                         frame,
                         left,
                         &channels,
+                        &HashMap::new(),
                         &ViewportState {
                             selected_id: Some(channel_id.to_string()),
                             ..ViewportState::default()
@@ -101,6 +103,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
                         right,
                         &messages,
                         &profiles,
+                        &HashMap::new(),
                         &reactions,
                         &mut state,
                         "theme-test",

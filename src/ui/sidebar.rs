@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::HashMap};
 
 use ratatui::{
     Frame,
@@ -11,6 +11,7 @@ use crate::{
     config::ChannelSort,
     domain::Channel,
     render::sanitize,
+    store::agents::RemoteAgentView,
     ui::{
         state::ViewportState,
         theme::{BorderSurface, HighlightGroup, Theme},
@@ -65,6 +66,7 @@ pub fn render(
     frame: &mut Frame<'_>,
     area: Rect,
     channels: &[Channel],
+    agents: &HashMap<String, RemoteAgentView>,
     viewport: &ViewportState,
     unread: &std::collections::HashSet<uuid::Uuid>,
     sort: ChannelSort,
@@ -77,7 +79,14 @@ pub fn render(
         let is_unread = unread.contains(&channel.id);
         let badge = if is_unread { "●" } else { " " };
         let privacy = if channel.kind.is_dm() {
-            "@"
+            if agents
+                .values()
+                .any(|agent| !agent.stale && agent.channel_ids.contains(&channel.id))
+            {
+                "◆ @"
+            } else {
+                "@"
+            }
         } else if matches!(channel.visibility, crate::domain::Visibility::Private) {
             "🔒"
         } else {

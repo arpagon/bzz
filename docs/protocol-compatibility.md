@@ -1,6 +1,6 @@
 # Protocol compatibility
 
-The v0.11 development baseline targets `block/buzz` revision
+The v0.11.1 compatibility baseline remains `block/buzz` revision
 `9f55bf67456be10ff7c8238bf0d9e12e582848f6` and uses revision-pinned
 `buzz-core`/`buzz-sdk` dependencies. Existing v0.10.0 artifacts remain pinned to
 `ede26863345a518ec46edd6d7692e0281883491b`.
@@ -26,7 +26,9 @@ Implemented MVP protocol surface:
   projection;
 - relay-authored kind `39002` bot membership, agent-authored kind `0` NIP-OA
   ownership profiles and kind `10100` declarations, and owner-authored kind
-  `30177` public policy for verified remote managed-agent discovery; and
+  `30177` public policy for verified remote managed-agent discovery;
+- relay-authored kind `40099` control events through a bounded semantic parser,
+  never raw authored-message rendering; and
 - exact structured kind `9` `p`-tag invocation through the existing
   acknowledgement-aware human outbox.
 
@@ -53,7 +55,13 @@ end-to-end encrypted. Participant sets are immutable and canonical: 41010
 opens/reuses a 2–9-person channel, 41011 opens/reuses a different expanded
 set, and 41012 updates only the current viewer's hidden state. `bzz` does not
 depend on legacy kind 41001 because the pinned relay does not emit it;
-discovery comes from relay-signed 39000/39002 plus 44100/44101.
+discovery comes from relay-signed 39000/39002 plus 44100/44101. Buzz assigns
+DM participants operational role `member`; bzz therefore permits an exact
+current participant to enter bounded agent verification only when NIP-OA ownership plus
+either exact bot authority elsewhere in the community or signed kind 10100
+validate. DM-only members require the declaration. DM invocation remains
+verified-owner-only; an absent public policy never enables a non-owner. Every
+non-DM destination continues to require exact relay-signed `bot` role.
 
 Inbox is a composed local projection rather than a new relay object. It groups
 p-tagged mentions, relevant NIP-10 replies, workspace DM activity, local

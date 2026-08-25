@@ -43,21 +43,30 @@ impl Store {
         let agent_pubkey = PublicKey::from_hex(agent_pubkey)
             .map_err(|_| Error::Protocol("agent candidate has an invalid pubkey".into()))?
             .to_hex();
-        let is_bot_member: bool = self.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM memberships WHERE community_id=?1 AND pubkey=?2 AND role='bot')",
+        let (is_bot, is_declared_dm_participant): (bool, bool) = self.connection.query_row(
+            "SELECT
+               EXISTS(SELECT 1 FROM memberships
+                 WHERE community_id=?1 AND pubkey=?2 AND role='bot'),
+               EXISTS(SELECT 1 FROM memberships m
+                 JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
+                 WHERE m.community_id=?1 AND m.pubkey=?2 AND c.channel_type='dm'
+                   AND c.is_member=1 AND c.member_count BETWEEN 2 AND 9
+                   AND EXISTS(SELECT 1 FROM events d WHERE d.community_id=m.community_id
+                     AND d.kind=10100 AND d.pubkey=m.pubkey
+                     AND d.deleted_by_event_id IS NULL))",
             params![community_id.to_string(), agent_pubkey],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        if !is_bot_member {
+        if !is_bot && !is_declared_dm_participant {
             return Ok(self.connection.execute(
-                "UPDATE remote_agents SET verification_state='removed',failure_reason='not-a-bot-member',updated_at=unixepoch() WHERE community_id=?1 AND agent_pubkey=?2 AND verification_state!='removed'",
+                "UPDATE remote_agents SET verification_state='removed',failure_reason='not-a-current-candidate',updated_at=unixepoch() WHERE community_id=?1 AND agent_pubkey=?2 AND verification_state!='removed'",
                 params![community_id.to_string(), agent_pubkey],
             )? > 0);
         }
 
         let profile = self.latest_agent_event(community_id, 0, &agent_pubkey)?;
         let declaration = self.latest_agent_event(community_id, 10_100, &agent_pubkey)?;
-        let (Some(profile), Some(declaration)) = (profile, declaration) else {
+        let Some(profile) = profile else {
             return self.upsert_agent_failure(
                 community_id,
                 &agent_pubkey,
@@ -65,9 +74,19 @@ impl Store {
                 "required-public-record-missing",
             );
         };
+        if !is_bot && declaration.is_none() {
+            return self.upsert_agent_failure(
+                community_id,
+                &agent_pubkey,
+                "incomplete",
+                "required-public-record-missing",
+            );
+        }
 
-        // Verify ownership before using the owner as a query coordinate.
-        let without_policy = match verify_public_agent(&profile, &declaration, None) {
+        // Exact relay bot membership establishes the agent class even when an
+        // older Buzz-managed identity has no kind 10100. NIP-OA still proves
+        // ownership; a DM-only operational member must have the declaration.
+        let without_policy = match verify_public_agent(&profile, declaration.as_ref(), None) {
             Ok(agent) => agent,
             Err(failure) => {
                 return self.upsert_agent_failure(
@@ -80,7 +99,7 @@ impl Store {
         };
         let policy =
             self.latest_agent_policy(community_id, &without_policy.owner_pubkey, &agent_pubkey)?;
-        match verify_public_agent(&profile, &declaration, policy.as_ref()) {
+        match verify_public_agent(&profile, declaration.as_ref(), policy.as_ref()) {
             Ok(agent) => self.upsert_verified_agent(community_id, &agent),
             Err(failure) => {
                 self.upsert_agent_failure(community_id, &agent_pubkey, "invalid", failure.as_str())
@@ -88,7 +107,39 @@ impl Store {
         }
     }
 
+    pub(crate) fn reconcile_all_remote_agents(&mut self) -> Result<usize> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id FROM communities ORDER BY id LIMIT 1000")?;
+        let communities = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(statement);
+        let mut changed = 0;
+        for community in communities {
+            let community_id = Uuid::parse_str(&community)
+                .map_err(|_| Error::Database(rusqlite::Error::InvalidQuery))?;
+            changed += self.reconcile_remote_agents(community_id)?;
+        }
+        Ok(changed)
+    }
+
     pub fn remote_agent_candidate_pubkeys(&self, community_id: Uuid) -> Result<Vec<String>> {
+        let mut statement = self.connection.prepare(
+            "SELECT DISTINCT m.pubkey FROM memberships m
+             JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
+             WHERE m.community_id=?1
+               AND (m.role='bot' OR (c.channel_type='dm' AND c.is_member=1
+                    AND c.member_count BETWEEN 2 AND 9))
+             ORDER BY m.pubkey LIMIT 5000",
+        )?;
+        statement
+            .query_map([community_id.to_string()], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn remote_agent_bot_pubkeys(&self, community_id: Uuid) -> Result<Vec<String>> {
         let mut statement = self.connection.prepare(
             "SELECT DISTINCT pubkey FROM memberships
              WHERE community_id=?1 AND role='bot' ORDER BY pubkey LIMIT 5000",
@@ -104,7 +155,14 @@ impl Store {
     /// hostile global profile stream from creating unbounded candidates.
     pub fn reconcile_remote_agents(&mut self, community_id: Uuid) -> Result<usize> {
         let mut statement = self.connection.prepare(
-            "SELECT pubkey FROM memberships WHERE community_id=?1 AND role='bot'
+            "SELECT m.pubkey FROM memberships m
+             JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
+             WHERE m.community_id=?1
+               AND (m.role='bot' OR (c.channel_type='dm' AND c.is_member=1
+                    AND c.member_count BETWEEN 2 AND 9 AND EXISTS(
+                      SELECT 1 FROM events d WHERE d.community_id=m.community_id
+                        AND d.kind=10100 AND d.pubkey=m.pubkey
+                        AND d.deleted_by_event_id IS NULL)))
              UNION SELECT agent_pubkey FROM remote_agents WHERE community_id=?1
              ORDER BY 1 LIMIT 5000",
         )?;
@@ -131,8 +189,11 @@ impl Store {
                     respond_to_allowlist_json,last_verified_at
              FROM remote_agents a
              WHERE community_id=?1 AND verification_state='verified'
-               AND EXISTS(SELECT 1 FROM memberships m WHERE m.community_id=a.community_id
-                          AND m.pubkey=a.agent_pubkey AND m.role='bot')
+               AND EXISTS(SELECT 1 FROM memberships m
+                 JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
+                 WHERE m.community_id=a.community_id AND m.pubkey=a.agent_pubkey
+                   AND (m.role='bot' OR (c.channel_type='dm' AND c.is_member=1
+                        AND c.member_count BETWEEN 2 AND 9)))
              ORDER BY name COLLATE NOCASE,agent_pubkey LIMIT 5000",
         )?;
         let rows = statement.query_map([community_id.to_string()], |row| {
@@ -236,25 +297,37 @@ impl Store {
         active_pubkey: &str,
         mentions: &[String],
     ) -> Result<()> {
+        let channel_type = self
+            .connection
+            .query_row(
+                "SELECT channel_type FROM channels WHERE community_id=?1 AND channel_id=?2",
+                params![community_id.to_string(), channel_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let is_dm = channel_type.as_deref() == Some("dm");
         for mention in mentions {
             let mention = PublicKey::from_hex(mention)
                 .map_err(|_| Error::Protocol("message mention has an invalid pubkey".into()))?
                 .to_hex();
-            let (is_agent_candidate, is_bot): (bool, bool) = self.connection.query_row(
+            let (is_agent_candidate, is_bot, is_participant): (bool, bool, bool) = self.connection.query_row(
                 "SELECT
                     EXISTS(SELECT 1 FROM remote_agents WHERE community_id=?1 AND agent_pubkey=?3)
                       OR EXISTS(SELECT 1 FROM memberships WHERE community_id=?1 AND channel_id=?2 AND pubkey=?3 AND role='bot'),
-                    EXISTS(SELECT 1 FROM memberships WHERE community_id=?1 AND channel_id=?2 AND pubkey=?3 AND role='bot')",
+                    EXISTS(SELECT 1 FROM memberships WHERE community_id=?1 AND channel_id=?2 AND pubkey=?3 AND role='bot'),
+                    EXISTS(SELECT 1 FROM memberships WHERE community_id=?1 AND channel_id=?2 AND pubkey=?3)",
                 params![community_id.to_string(),channel_id.to_string(),mention],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
             if !is_agent_candidate {
                 continue;
             }
-            if !is_bot {
-                return Err(Error::Access(
-                    "remote agent mention is no longer a bot member of this channel".into(),
-                ));
+            if (!is_dm && !is_bot) || (is_dm && !is_participant) {
+                return Err(Error::Access(if is_dm {
+                    "remote agent mention is no longer a current DM participant".into()
+                } else {
+                    "remote agent mention is no longer a bot member of this channel".into()
+                }));
             }
             let agent = self
                 .remote_agent(community_id, &mention, active_pubkey, Some(channel_id))?
@@ -263,6 +336,11 @@ impl Store {
                         "remote agent mention is not currently verified for this channel".into(),
                     )
                 })?;
+            if is_dm && !agent.owner_pubkey.eq_ignore_ascii_case(active_pubkey) {
+                return Err(Error::Access(
+                    "only the verified owner may invoke a remote agent in a DM".into(),
+                ));
+            }
             match agent.eligibility {
                 Eligibility::Eligible => {}
                 Eligibility::Ineligible => return Err(Error::Access(
@@ -369,8 +447,12 @@ impl Store {
 
     fn remote_agent_channels(&self, community_id: Uuid, agent_pubkey: &str) -> Result<Vec<Uuid>> {
         let mut statement = self.connection.prepare(
-            "SELECT channel_id FROM memberships WHERE community_id=?1 AND pubkey=?2 AND role='bot'
-             ORDER BY channel_id LIMIT 5000",
+            "SELECT m.channel_id FROM memberships m
+             JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
+             WHERE m.community_id=?1 AND m.pubkey=?2
+               AND (m.role='bot' OR (c.channel_type='dm' AND c.is_member=1
+                    AND c.member_count BETWEEN 2 AND 9))
+             ORDER BY m.channel_id LIMIT 5000",
         )?;
         statement
             .query_map(params![community_id.to_string(), agent_pubkey], |row| {
@@ -640,6 +722,43 @@ mod tests {
     }
 
     #[test]
+    fn relay_bot_with_nip_oa_is_owner_invocable_without_optional_public_records() {
+        let (mut store, community_id, viewer, owner, agent, channel_id) = setup();
+        let (profile, _, _) = public_events(&owner, &agent, "anyone");
+        store.apply_event(community_id, &profile).unwrap();
+        store.reconcile_remote_agents(community_id).unwrap();
+
+        let owner_view = store
+            .list_remote_agents(community_id, &owner.public_key().to_hex())
+            .unwrap();
+        assert_eq!(owner_view.len(), 1);
+        assert_eq!(owner_view[0].eligibility, Eligibility::Eligible);
+        assert!(owner_view[0].capabilities.is_empty());
+        store
+            .validate_agent_mentions(
+                community_id,
+                channel_id,
+                &owner.public_key().to_hex(),
+                &[agent.public_key().to_hex()],
+            )
+            .unwrap();
+
+        let viewer_view = store
+            .list_remote_agents(community_id, &viewer.public_key().to_hex())
+            .unwrap();
+        assert_eq!(viewer_view[0].eligibility, Eligibility::PolicyUnknown);
+        assert!(matches!(
+            store.validate_agent_mentions(
+                community_id,
+                channel_id,
+                &viewer.public_key().to_hex(),
+                &[agent.public_key().to_hex()],
+            ),
+            Err(Error::Access(_))
+        ));
+    }
+
+    #[test]
     fn dm_and_unknown_policy_mentions_fail_closed() {
         let (mut store, community_id, viewer, owner, agent, channel_id) = setup();
         let (profile, declaration, _) = public_events(&owner, &agent, "anyone");
@@ -674,6 +793,100 @@ mod tests {
             &[agent.public_key().to_hex()],
         );
         assert!(matches!(dm, Err(Error::Access(_))));
+    }
+
+    #[test]
+    fn owner_controlled_dm_member_verifies_without_relaxing_channel_bot_authority() {
+        let (mut store, community_id, viewer, owner, agent, channel_id) = setup();
+        let (profile, declaration, policy) = public_events(&owner, &agent, "anyone");
+        for event in [&profile, &declaration, &policy] {
+            store.apply_event(community_id, event).unwrap();
+        }
+        store
+            .connection
+            .execute(
+                "UPDATE channels SET channel_type='dm',is_member=1,member_count=2
+                 WHERE community_id=?1 AND channel_id=?2",
+                params![community_id.to_string(), channel_id.to_string()],
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE memberships SET role='member'
+                 WHERE community_id=?1 AND channel_id=?2 AND pubkey=?3",
+                params![
+                    community_id.to_string(),
+                    channel_id.to_string(),
+                    agent.public_key().to_hex()
+                ],
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO memberships(community_id,channel_id,pubkey,role,source_event_id)
+                 VALUES(?1,?2,?3,'member',?4)",
+                params![
+                    community_id.to_string(),
+                    channel_id.to_string(),
+                    owner.public_key().to_hex(),
+                    "d".repeat(64)
+                ],
+            )
+            .unwrap();
+        store.reconcile_remote_agents(community_id).unwrap();
+        let candidates = store.remote_agent_candidate_pubkeys(community_id).unwrap();
+        assert!(candidates.contains(&agent.public_key().to_hex()));
+        store
+            .validate_agent_mentions(
+                community_id,
+                channel_id,
+                &owner.public_key().to_hex(),
+                &[agent.public_key().to_hex()],
+            )
+            .unwrap();
+        assert!(matches!(
+            store.validate_agent_mentions(
+                community_id,
+                channel_id,
+                &viewer.public_key().to_hex(),
+                &[agent.public_key().to_hex()],
+            ),
+            Err(Error::Access(_))
+        ));
+        let mentions = store
+            .mention_candidates(
+                community_id,
+                channel_id,
+                &owner.public_key().to_hex(),
+                "Worker",
+            )
+            .unwrap();
+        assert_eq!(mentions.len(), 1);
+        assert!(mentions[0].is_agent);
+        assert_eq!(mentions[0].agent_eligibility, Some(Eligibility::Eligible));
+
+        // The same operational `member` role has no authority once the
+        // destination is not positively known as a DM.
+        store
+            .connection
+            .execute(
+                "UPDATE channels SET channel_type='stream'
+                 WHERE community_id=?1 AND channel_id=?2",
+                params![community_id.to_string(), channel_id.to_string()],
+            )
+            .unwrap();
+        store.reconcile_remote_agents(community_id).unwrap();
+        assert!(matches!(
+            store.validate_agent_mentions(
+                community_id,
+                channel_id,
+                &owner.public_key().to_hex(),
+                &[agent.public_key().to_hex()],
+            ),
+            Err(Error::Access(_))
+        ));
     }
 
     #[test]

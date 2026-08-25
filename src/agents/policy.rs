@@ -11,12 +11,15 @@ pub fn evaluate(
     active_pubkey: &str,
     is_dm: bool,
 ) -> Eligibility {
-    let Some(respond_to) = respond_to else {
-        return Eligibility::PolicyUnknown;
-    };
+    // NIP-OA proves that the owner authorized this agent identity. A missing
+    // public audience policy is still unknown for everyone else, but must not
+    // prevent that exact owner from invoking their own agent.
     if active_pubkey.eq_ignore_ascii_case(owner_pubkey) {
         return Eligibility::Eligible;
     }
+    let Some(respond_to) = respond_to else {
+        return Eligibility::PolicyUnknown;
+    };
     if is_dm {
         return Eligibility::Ineligible;
     }
@@ -52,14 +55,15 @@ mod tests {
     }
 
     #[test]
-    fn owner_is_eligible_in_every_exposed_mode_and_dm() {
+    fn owner_is_eligible_with_or_without_an_exposed_mode_and_in_dm() {
         for policy in [
-            RespondTo::OwnerOnly,
-            RespondTo::Allowlist,
-            RespondTo::Anyone,
+            None,
+            Some(RespondTo::OwnerOnly),
+            Some(RespondTo::Allowlist),
+            Some(RespondTo::Anyone),
         ] {
             assert_eq!(
-                evaluate(Some(policy), &[], OWNER, OWNER, true),
+                evaluate(policy, &[], OWNER, OWNER, true),
                 Eligibility::Eligible
             );
         }

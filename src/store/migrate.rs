@@ -19,6 +19,10 @@ const MIGRATIONS: &[(u32, &str)] = &[
         include_str!("../../migrations/0006_draft_submission_state.sql"),
     ),
     (7, include_str!("../../migrations/0007_agent_directory.sql")),
+    (
+        8,
+        include_str!("../../migrations/0008_reproject_membership_roles.sql"),
+    ),
 ];
 
 pub fn configure(connection: &Connection) -> Result<()> {
@@ -28,7 +32,7 @@ pub fn configure(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn migrate(connection: &mut Connection, database_path: &Path) -> Result<()> {
+pub fn migrate(connection: &mut Connection, database_path: &Path) -> Result<bool> {
     let current: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if current > MIGRATIONS.last().map_or(0, |(version, _)| *version) {
         return Err(Error::Database(rusqlite::Error::InvalidQuery));
@@ -52,7 +56,8 @@ pub fn migrate(connection: &mut Connection, database_path: &Path) -> Result<()> 
         transaction.pragma_update(None, "user_version", version)?;
         transaction.commit()?;
     }
-    verify_applied_checksums(connection)
+    verify_applied_checksums(connection)?;
+    Ok(current < MIGRATIONS.last().map_or(0, |(version, _)| *version))
 }
 
 fn verify_applied_checksums(connection: &Connection) -> Result<()> {

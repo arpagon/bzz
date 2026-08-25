@@ -81,7 +81,7 @@ pub struct VerifiedPublicAgent {
     pub respond_to: Option<RespondTo>,
     pub respond_to_allowlist: Vec<String>,
     pub profile_event_id: String,
-    pub declaration_event_id: String,
+    pub declaration_event_id: Option<String>,
     pub policy_event_id: Option<String>,
     pub verified_at: u64,
 }

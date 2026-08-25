@@ -16,10 +16,11 @@ use ratatui::{
 use crate::{
     domain::{InboxCategory, InboxItem, Message, Profile},
     render::sanitize,
+    store::agents::RemoteAgentView,
     ui::{
         state::{FocusSurface, ViewportState},
         theme::{BorderSurface, HighlightGroup, Theme},
-        timeline::avatar_marker,
+        timeline::{avatar_marker, system_summary},
     },
 };
 
@@ -248,6 +249,8 @@ pub struct InboxView<'a> {
     pub items: &'a [InboxItem],
     pub messages: &'a [Message],
     pub profiles: &'a HashMap<String, Profile>,
+    pub agents: &'a HashMap<String, RemoteAgentView>,
+    pub self_pubkey: Option<&'a str>,
     pub focus: FocusSurface,
     pub theme: &'a Theme,
     pub loading: bool,
@@ -296,7 +299,9 @@ pub fn render(
             usize::from(list.height.saturating_div(2).max(1)),
             &state.visible_ids(items),
         );
-        let list_items = visible.iter().map(|item| list_item(item, profiles, theme));
+        let list_items = visible
+            .iter()
+            .map(|item| list_item(item, profiles, view.agents, theme));
         let selected = state
             .list_viewport
             .selected_id
@@ -335,6 +340,7 @@ pub fn render(
 fn list_item(
     item: &InboxItem,
     profiles: &HashMap<String, Profile>,
+    agents: &HashMap<String, RemoteAgentView>,
     theme: &Theme,
 ) -> ListItem<'static> {
     let unread = if item.unread() { "●" } else { " " };
@@ -354,6 +360,12 @@ fn list_item(
         })
         .unwrap_or_else(|| "draft".into());
     let sender = sanitize::single_line(&sender);
+    let sender = item
+        .sender_pubkey
+        .as_ref()
+        .and_then(|pubkey| agents.get(pubkey))
+        .filter(|agent| !agent.stale)
+        .map_or(sender.clone(), |_| format!("◆ {sender}"));
     let avatar = item
         .sender_pubkey
         .as_deref()
@@ -392,7 +404,14 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, state: &mut InboxState, view
         return;
     };
     state.reconcile_detail(view.messages, item.first_unread_event_id.as_deref());
-    let lines = detail_lines(item, view.messages, view.profiles, view.theme);
+    let lines = detail_lines(
+        item,
+        view.messages,
+        view.profiles,
+        view.agents,
+        view.self_pubkey,
+        view.theme,
+    );
     state.set_detail_viewport_height(
         usize::from(area.height.saturating_sub(2).max(1)),
         view.messages,
@@ -426,6 +445,8 @@ fn detail_lines(
     item: &InboxItem,
     messages: &[Message],
     profiles: &HashMap<String, Profile>,
+    agents: &HashMap<String, RemoteAgentView>,
+    self_pubkey: Option<&str>,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
@@ -462,17 +483,40 @@ fn detail_lines(
                 theme.style(HighlightGroup::ChannelUnread),
             ));
         }
+        lines.push(Line::default());
+        if let Some(system) = &message.system {
+            lines.push(Line::styled(
+                format!(
+                    "· {} · {}",
+                    system_summary(system, profiles, self_pubkey),
+                    relative_time(message.created_at)
+                ),
+                theme.style(HighlightGroup::MessageTimestamp),
+            ));
+            continue;
+        }
         let author = profiles.get(&message.pubkey).map_or_else(
             || crate::domain::abbreviated_pubkey(&message.pubkey),
             Profile::label,
         );
         let author = sanitize::single_line(&author);
-        lines.push(Line::default());
+        let agent = agents.get(&message.pubkey).filter(|agent| !agent.stale);
+        let agent_marker = if agent.is_some() { "◆ " } else { "" };
+        let owner = agent.map_or_else(String::new, |agent| {
+            if self_pubkey.is_some_and(|pubkey| agent.owner_pubkey.eq_ignore_ascii_case(pubkey)) {
+                " · managed by you".to_owned()
+            } else {
+                let label = profiles
+                    .get(&agent.owner_pubkey)
+                    .map(Profile::label)
+                    .unwrap_or_else(|| crate::domain::abbreviated_pubkey(&agent.owner_pubkey));
+                format!(" · owned by {}", sanitize::single_line(&label))
+            }
+        });
         lines.push(Line::styled(
             format!(
-                "{} {} · {}",
+                "{} {agent_marker}{author}{owner} · {}",
                 avatar_marker(&message.pubkey, &author),
-                author,
                 relative_time(message.created_at)
             ),
             theme.style(HighlightGroup::MessageAuthor),

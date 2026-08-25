@@ -68,17 +68,24 @@ pub fn as_message(event: &Event) -> Option<Message> {
     }
     let channel_id = channel_id(event)?;
     let (root_event_id, parent_event_id) = thread_coordinates(event);
+    let system =
+        (event.kind.as_u16() == 40_099).then(|| crate::protocol::system::parse(&event.content));
     Some(Message {
         event_id: event.id.to_hex(),
         channel_id,
         pubkey: event.pubkey.to_hex(),
         created_at: event.created_at.as_secs(),
-        content: event.content.clone(),
+        content: if system.is_some() {
+            String::new()
+        } else {
+            event.content.clone()
+        },
         attachments: Vec::new(),
         root_event_id,
         parent_event_id,
         deleted: false,
         delivery: crate::domain::DeliveryState::Delivered,
+        system,
     })
 }
 

@@ -14,9 +14,9 @@
    Smoke-test both the OS credential backend and encrypted fallback before
    publishing package-manager manifests.
 
-Cache schema changes are called out in release notes. Schema v7 adds the
-rebuildable community-scoped remote-agent projection and exact bot-role index;
-schema v5 added the Inbox conversations projection while schema v4 added
+Cache schema changes are called out in release notes. Schema v8 repairs exact
+bot roles from current trusted membership heads; schema v7 adds the rebuildable
+community-scoped remote-agent projection and exact bot-role index; schema v5 added the Inbox conversations projection while schema v4 added
 bounded local `drafts.mentions_json` metadata. Release
 validation must open upgraded v2/v3/v4 fixtures on Linux, macOS, and Windows,
 pass FTS and Inbox-projection integrity/rebuild checks, verify owner-only 30622
@@ -38,9 +38,12 @@ that CLI help and current docs expose no retired Codex-drafter surface and do
 not claim managed-agent support.
 
 For v0.11, verify exact relay-signed bot membership, NIP-OA owner binding,
-agent-authored profile/declaration, owner-authored policy, DM hardening,
-community isolation, staleness/removal, and exact send-time `p`-tag
-revalidation. The pinned relay fixture must use a deterministic remote identity
+agent-authored profile/declaration when present or required, owner-authored
+policy when present, DM hardening, community isolation, staleness/removal, and
+exact send-time `p`-tag revalidation. For v0.11.1, also verify schema-8
+historical role convergence, no-declaration bot compatibility, DM-only
+declaration requirements, verified-owner-only fallback for absent policy, and
+pinned-relay semantic kind-40099 rendering. The pinned relay fixture must use a deterministic remote identity
 without an LLM or ACP process. Release CLI/TUI language must say remote and
 expose no create/start/stop/exec/log/runtime-hosting surface. Agent diagnostics
 must remain local-only and content-free.

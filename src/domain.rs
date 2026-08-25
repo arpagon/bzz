@@ -138,6 +138,28 @@ impl DeliveryState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemEventKind {
+    DmCreated,
+    ChannelCreated,
+    MemberJoined,
+    MemberLeft,
+    MemberRemoved,
+    ChannelArchived,
+    ChannelUnarchived,
+    MessageDeleted,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SystemEvent {
+    pub kind: SystemEventKind,
+    pub actor: Option<String>,
+    pub target: Option<String>,
+    pub participants: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Message {
     pub event_id: String,
@@ -152,6 +174,8 @@ pub struct Message {
     pub deleted: bool,
     #[serde(default)]
     pub delivery: DeliveryState,
+    #[serde(default)]
+    pub system: Option<SystemEvent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

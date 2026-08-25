@@ -2,6 +2,7 @@ use bzz::{
     config::{Config, IdentityConfig, KeyBackend},
     store::Store,
 };
+use nostr::{EventBuilder, Keys, Kind, Tag};
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -20,7 +21,7 @@ fn fresh_database_has_expected_pragmas_and_schema() {
     let foreign_keys: u32 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     assert_eq!(
         foreign_keys, 1,
         "foreign-key enforcement must remain enabled"
@@ -174,7 +175,7 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
     let version: u32 = upgraded
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     let inbox_projection_table: u32 = upgraded
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='inbox_conversations'",
@@ -207,6 +208,121 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
             .filter_map(Result::ok)
             .any(|entry| entry.file_name().to_string_lossy().ends_with(".bak"))
     );
+}
+
+#[test]
+fn schema_eight_repairs_historical_bot_roles_and_duplicate_projection_drift() {
+    let temporary = TempDir::new().unwrap();
+    let path = temporary.path().join("bzz.db");
+    let owner = Keys::generate();
+    let relay = Keys::generate();
+    let agent = Keys::generate();
+    let identity_id = Uuid::new_v4();
+    let community_id = Uuid::new_v4();
+    let channel_id = Uuid::new_v4();
+    let config = Config {
+        identities: vec![IdentityConfig {
+            id: identity_id,
+            label: "owner".into(),
+            pubkey: owner.public_key().to_hex(),
+            backend: KeyBackend::EncryptedFile,
+            key_ref: "migration-agent".into(),
+        }],
+        communities: vec![bzz::config::CommunityConfig {
+            id: community_id,
+            label: "migration".into(),
+            relay_url: "wss://migration-agent.example".into(),
+            identity_id,
+            allow_insecure_localhost: false,
+            theme: None,
+        }],
+        ..Config::default()
+    };
+    let mut store = Store::open(&path).unwrap();
+    store.sync_config(&config).unwrap();
+    store
+        .pin_relay_pubkey(community_id, &relay.public_key().to_hex())
+        .unwrap();
+    let metadata = EventBuilder::new(Kind::Custom(39_000), "")
+        .tags([
+            Tag::parse(["d", &channel_id.to_string()]).unwrap(),
+            Tag::parse(["name", "agents"]).unwrap(),
+        ])
+        .sign_with_keys(&relay)
+        .unwrap();
+    store.apply_event(community_id, &metadata).unwrap();
+    let membership = EventBuilder::new(Kind::Custom(39_002), "")
+        .tags([
+            Tag::parse(["d", &channel_id.to_string()]).unwrap(),
+            Tag::parse(["p", &owner.public_key().to_hex()]).unwrap(),
+            Tag::parse(["p", &agent.public_key().to_hex(), "", "bot"]).unwrap(),
+        ])
+        .sign_with_keys(&relay)
+        .unwrap();
+    assert!(store.apply_event(community_id, &membership).unwrap());
+    drop(store);
+
+    // Simulate a v0.11.0 database whose already-cached source event was
+    // projected before role-aware ingestion existed.
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE memberships SET role='member' WHERE community_id=?1 AND channel_id=?2 AND pubkey=?3",
+            rusqlite::params![
+                community_id.to_string(),
+                channel_id.to_string(),
+                agent.public_key().to_hex()
+            ],
+        )
+        .unwrap();
+    connection
+        .execute("DELETE FROM schema_migrations WHERE version=8", [])
+        .unwrap();
+    connection.pragma_update(None, "user_version", 7).unwrap();
+    drop(connection);
+
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(
+        store.remote_agent_candidate_pubkeys(community_id).unwrap(),
+        vec![agent.public_key().to_hex()]
+    );
+    let event_bytes_before: String = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT raw_json FROM events WHERE community_id=?1 AND event_id=?2",
+            rusqlite::params![community_id.to_string(), membership.id.to_hex()],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    // A later local projection drift is repaired by the immutable duplicate
+    // event, then repeated echoes become true no-ops.
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE memberships SET role='member' WHERE community_id=?1 AND channel_id=?2 AND pubkey=?3",
+            rusqlite::params![
+                community_id.to_string(),
+                channel_id.to_string(),
+                agent.public_key().to_hex()
+            ],
+        )
+        .unwrap();
+    assert!(store.apply_event(community_id, &membership).unwrap());
+    assert!(!store.apply_event(community_id, &membership).unwrap());
+    assert_eq!(
+        store.remote_agent_candidate_pubkeys(community_id).unwrap(),
+        vec![agent.public_key().to_hex()]
+    );
+    let event_bytes_after: String = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT raw_json FROM events WHERE community_id=?1 AND event_id=?2",
+            rusqlite::params![community_id.to_string(), membership.id.to_hex()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(event_bytes_before, event_bytes_after);
 }
 
 #[test]

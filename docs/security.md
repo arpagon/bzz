@@ -144,13 +144,20 @@ search is local-only. See [`inbox-dms-search.md`](inbox-dms-search.md).
 
 ## Verified remote managed agents
 
-A v0.11 remote agent is never trusted from its name, avatar, declaration, or
-self-asserted type. Candidate identity begins with a current relay-signed kind
-39002 membership carrying the exact `bot` role. bzz then verifies the agent's
-kind 0 and kind 10100 signatures, the kind 0 NIP-OA owner attestation, and any
-kind 30177 policy signature and `d` coordinate. Conflicting owners, malformed
-records, stale cache, membership removal, a wrong policy signer, and a wrong
-coordinate fail closed.
+A v0.11 remote agent is never trusted from its name, avatar, declaration,
+reply, `p` tag, or self-asserted type. Outside DMs, candidate identity begins
+with a current relay-signed kind 39002 membership carrying the exact `bot` role.
+Buzz represents DM participants with operational role `member`; in that one
+bounded case bzz considers only an exact participant in a current 2–9-person DM
+and permits invocation only by the cryptographically verified owner. bzz then
+verifies the agent's kind 0 signature, every present or required kind 10100
+signature, the kind 0 NIP-OA owner
+attestation, and any kind 30177 policy signature and `d` coordinate. Conflicting
+owners, malformed records, stale cache, membership removal, a wrong policy
+signer, and a wrong coordinate fail closed. Exact bot membership may establish the
+agent class for an older identity with no kind 10100; a DM-only `member` may
+not use that compatibility path. Missing public policy permits only the exact
+NIP-OA owner and remains unknown for every other identity.
 
 Directory state is keyed by community and agent pubkey. A valid record from one
 relay cannot authorize another. Public `owner-only`, `allowlist`, and `anyone`
@@ -160,8 +167,9 @@ runtime is online, safe, or willing to answer.
 
 Selecting a verified eligible agent inserts visible composer text and a
 structured exact-pubkey mention. It never sends. Before the existing human key
-signs, bzz refreshes and revalidates the community, channel, bot membership,
-ownership, and policy. Failure preserves the draft; successful events use the
+signs, bzz refreshes and revalidates the community, destination authority
+(exact channel bot role or exact owner-controlled DM participation), ownership,
+and policy. Failure preserves the draft; successful events use the
 same acknowledgement-aware human outbox. A remote response has its own agent
 signature.
 
@@ -171,6 +179,12 @@ Remote profile/policy fields cannot become commands, arguments, paths, or
 environment values. A genuine remote agent can still be malicious or execute
 operator-controlled tools after receiving a message; users must not infer local
 trust from cryptographic identity.
+
+Relay control kind 40099 is accepted only from the pinned relay signer. A
+bounded allowlist parser produces muted system rows; malformed, oversized, and
+unknown payloads become a content-free unsupported row. Raw control JSON and
+the relay pubkey never become an authored message, copy payload, unread count,
+search document, or agent-readiness signal.
 
 Agent-directory diagnostics contain only counts, durations, and closed outcome
 enums. They exclude names, pubkeys, owners, channels, events, tags, policies,

@@ -21,6 +21,7 @@ fn message(id: &str) -> Message {
         parent_event_id: None,
         deleted: false,
         delivery: bzz::domain::DeliveryState::Delivered,
+        system: None,
     }
 }
 #[test]
@@ -76,6 +77,7 @@ fn wrapped_rows_are_measured_for_detached_scroll() {
                 frame,
                 frame.area(),
                 &[message],
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 &mut state,

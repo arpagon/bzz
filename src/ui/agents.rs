@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -7,6 +9,7 @@ use ratatui::{
 
 use crate::{
     agents::Eligibility,
+    domain::Profile,
     render::sanitize,
     store::agents::RemoteAgentView,
     ui::{
@@ -59,6 +62,8 @@ pub fn render(
     frame: &mut Frame<'_>,
     area: Rect,
     state: &AgentDirectoryState,
+    profiles: &HashMap<String, Profile>,
+    self_pubkey: Option<&str>,
     theme: &Theme,
     hit_map: &mut HitMap,
 ) {
@@ -100,14 +105,28 @@ pub fn render(
             .constraints([Constraint::Percentage(43), Constraint::Percentage(57)])
             .split(inner);
         render_list(frame, panes[0], state, theme, hit_map);
-        render_detail(frame, panes[1], state.selected(), theme);
+        render_detail(
+            frame,
+            panes[1],
+            state.selected(),
+            profiles,
+            self_pubkey,
+            theme,
+        );
     } else {
         let panes = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
             .split(inner);
         render_list(frame, panes[0], state, theme, hit_map);
-        render_detail(frame, panes[1], state.selected(), theme);
+        render_detail(
+            frame,
+            panes[1],
+            state.selected(),
+            profiles,
+            self_pubkey,
+            theme,
+        );
     }
 }
 
@@ -173,9 +192,21 @@ fn render_detail(
     frame: &mut Frame<'_>,
     area: Rect,
     selected: Option<&RemoteAgentView>,
+    profiles: &HashMap<String, Profile>,
+    self_pubkey: Option<&str>,
     theme: &Theme,
 ) {
     let Some(agent) = selected else { return };
+    let owner_presentation =
+        if self_pubkey.is_some_and(|pubkey| agent.owner_pubkey.eq_ignore_ascii_case(pubkey)) {
+            "managed by you".to_owned()
+        } else {
+            let label = profiles
+                .get(&agent.owner_pubkey)
+                .map(Profile::label)
+                .unwrap_or_else(|| crate::domain::abbreviated_pubkey(&agent.owner_pubkey));
+            format!("owned by {}", sanitize::single_line(&label))
+        };
     let policy = agent
         .respond_to
         .map_or("unknown", crate::agents::RespondTo::as_str);
@@ -197,12 +228,15 @@ fn render_detail(
     };
     let detail = vec![
         Line::from(Span::styled(
-            sanitize::single_line(&agent.name),
+            format!("◆ {}", sanitize::single_line(&agent.name)),
             theme.style(HighlightGroup::ModalTitle),
         )),
         Line::from(""),
         Line::from(format!("agent: {}", agent.pubkey)),
-        Line::from(format!("owner: {}", agent.owner_pubkey)),
+        Line::from(format!(
+            "owner: {} ({owner_presentation})",
+            agent.owner_pubkey
+        )),
         Line::from(format!("policy: {policy}")),
         Line::from(format!(
             "allowlist entries: {}",

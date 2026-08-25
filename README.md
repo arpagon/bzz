@@ -4,11 +4,12 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.11.0 is developing verified remote managed-agent interoperability:
-> community-scoped NIP-OA ownership, bot membership, public policy, an Agents
-> directory, and exact human-authored mentions. bzz does not host or control an
-> agent runtime and launches no local assistant process. Protocol compatibility
-> is pinned to Buzz `9f55bf67456be10ff7c8238bf0d9e12e582848f6`.
+> Status: v0.11.1 repairs verified remote-agent projection and conversation
+> presentation: historical exact bot roles converge on upgrade, owner-controlled
+> DM participants verify from signed public records, and relay system events are
+> semantic rather than raw JSON. bzz does not host or control an agent runtime
+> and launches no local assistant process. Protocol compatibility remains pinned
+> to Buzz `9f55bf67456be10ff7c8238bf0d9e12e582848f6`.
 
 ## Build
 
@@ -48,7 +49,10 @@ use `bzz-dev` paths and a separate OS-keychain service.
 - configurable semantic terminal-mouse interaction with safe restoration; and
 - offline channel-member `@` completion with exact Buzz `p` tags; and
 - verified remote managed-agent discovery, owner/policy inspection, distinct
-  completion, and send-time revalidation without local runtime control.
+  timeline/DM/completion presentation, owner-controlled DM compatibility, and
+  send-time revalidation without local runtime control; and
+- typed relay-authored system rows that never expose raw control JSON as a
+  user-authored message.
 
 NIP-17 gift-wrap authoring/inbox, typing/presence, custom emoji, media playback,
 and message editing remain post-MVP. Workspace DMs are private
@@ -158,6 +162,9 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/security.md`](docs/security.md),
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
+[the v0.11.1 release](docs/release-v0.11.1.md),
+[v0.11.1 validation](docs/validation-v0.11.1.md),
+[the approved v0.11.1 correction plan](docs/planning/2026-08-25/v0.11.1.md),
 [the v0.11.0 release](docs/release-v0.11.0.md),
 [v0.11.0 validation](docs/validation-v0.11.0.md),
 [published v0.11.0 artifact verification](docs/release-v0.11.0-verification.md),
