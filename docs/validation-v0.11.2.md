@@ -1,6 +1,6 @@
 # bzz v0.11.2 validation
 
-**Status:** In progress 2026-08-25
+**Status:** Implementation validated 2026-08-25; publication pending
 
 ## Scope
 
@@ -73,13 +73,18 @@ Sanitized local raster evidence:
 
 ## Cross-platform and release gates
 
-- [ ] Linux CI.
-- [ ] Windows x86_64 CI.
-- [ ] Intel macOS CI.
-- [ ] Apple Silicon macOS CI.
-- [ ] Pinned Buzz relay integration.
+- [x] Linux CI.
+- [x] Windows x86_64 CI.
+- [x] Intel macOS CI.
+- [x] Apple Silicon macOS CI.
+- [x] Pinned Buzz relay integration.
 - [ ] Tagged archives, checksums, SBOMs, and provenance attestations.
 - [ ] Native keychain and encrypted-file release-artifact smoke tests.
+
+Implementation CI passed in
+[`32909727394`](https://github.com/arpagon/bzz/actions/runs/32909727394).
+Pinned Buzz integration passed in
+[`32909727407`](https://github.com/arpagon/bzz/actions/runs/32909727407).
 
 ## Notes
 
