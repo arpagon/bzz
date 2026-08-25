@@ -1,8 +1,14 @@
 # v0.11.1 validation record
 
-**Status:** Release candidate 2026-08-25
+**Status:** Implementation validated 2026-08-25; publication pending
 
 **Candidate:** `0.11.1`
+
+**Validated implementation:** `e4c2d0a67c5380ddf053e55464f2859bdf110e3d`
+
+**CI:** [32883151235](https://github.com/arpagon/bzz/actions/runs/32883151235)
+
+**Pinned Buzz:** [32883152277](https://github.com/arpagon/bzz/actions/runs/32883152277)
 
 **Buzz baseline:** `9f55bf67456be10ff7c8238bf0d9e12e582848f6`
 
@@ -125,12 +131,12 @@
 
 ## Cross-platform and publication
 
-- [ ] Linux, Windows, Intel macOS, and Apple Silicon macOS CI
+- [x] Linux, Windows, Intel macOS, and Apple Silicon macOS CI
 - [ ] tagged-head CI
 - [ ] release workflow publishes expected assets
 - [ ] aggregate and individual SHA-256 checksums
 - [ ] SLSA provenance subjects
 - [ ] CycloneDX application version/components
 - [ ] downloaded Linux version/check/schema-8/agents/no-hosting smoke
-- [ ] native-keychain and encrypted-file credential regression
+- [x] native-keychain and encrypted-file credential regression
 - [ ] published artifact verification record
