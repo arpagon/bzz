@@ -86,12 +86,16 @@
 ## Resource behavior
 
 - [x] unconditional five-minute full directory refresh removed
-- [x] startup/reconnect, exact membership events/notifications, explicit refresh,
-  and send-time revalidation remain triggers
+- [x] startup/reconnect, exact membership events/notifications, pinned-relay
+  semantic `member_joined`/`member_left`/`member_removed` rows, explicit
+  refresh, and send-time revalidation remain triggers; semantic rows confer no
+  authority and only initiate the bounded kind-39002 query
 - [x] no-op duplicate membership does not redraw or write
 - [x] agent refresh is single-flight/coalesced through existing task ownership
 - [x] candidate, author chunk, page, membership, DM participant, and projection
   bounds remain explicit
+- [x] semantic roster trigger regressions cover new-channel agent additions,
+  malformed payloads, and unrelated system rows
 - [x] existing idle tick and redraw-gate regressions pass
 - [x] controlled quiet-relay release-binary idle observation ran for 15 minutes
   after a 60-second settle: database stayed `22491136` bytes, WAL stayed

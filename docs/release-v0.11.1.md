@@ -40,8 +40,10 @@ Desktop private integration is required.
 - Excludes system records from authored copy text, unread counts, human-message
   activity, search, Inbox projection, and readiness claims.
 - Removes the unconditional five-minute directory refresh. Startup/reconnect,
-  relevant membership events, explicit refresh, and exact send-time
-  revalidation remain authoritative and coalesced.
+  exact membership events, pinned-relay semantic member changes, explicit
+  refresh, and exact send-time revalidation remain authoritative and coalesced.
+  Semantic rows trigger a bounded query only; kind 39002 remains the sole role
+  authority.
 
 ## Trust boundary
 

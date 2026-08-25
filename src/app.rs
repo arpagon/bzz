@@ -25,7 +25,7 @@ use crate::{
     diagnostics::{DiagnosticEvent, DiagnosticHandle},
     domain::{
         Channel, ConnectionState, InboxCategory, InboxItem, Message, Profile, Reaction,
-        SearchResultKind,
+        SearchResultKind, SystemEventKind,
     },
     error::{Error, Result},
     media::{
@@ -38,7 +38,7 @@ use crate::{
         runtime::MediaRuntime,
     },
     paths::Paths,
-    protocol::http::HttpClient,
+    protocol::{http::HttpClient, system},
     realtime::{
         session::SessionEvent,
         subscriptions,
@@ -338,6 +338,17 @@ const TERMINAL_ERROR_YIELD: Duration = Duration::from_millis(50);
 const RELAY_LAG_YIELD: Duration = Duration::from_millis(5);
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const RELAY_EVENT_DEDUP_CAPACITY: usize = 16_384;
+
+fn triggers_directory_refresh(kind: u16, content: &str) -> bool {
+    matches!(kind, 39_002 | 44_100 | 44_101)
+        || (kind == 40_099
+            && matches!(
+                system::parse(content).kind,
+                SystemEventKind::MemberJoined
+                    | SystemEventKind::MemberLeft
+                    | SystemEventKind::MemberRemoved
+            ))
+}
 
 impl App {
     pub async fn new(config: Config, paths: Paths, store: StoreHandle) -> Result<Self> {
@@ -1341,7 +1352,12 @@ impl App {
                     }
                 } else {
                     let kind = event.kind.as_u16();
-                    let membership_refresh = matches!(kind, 39_002 | 44_100 | 44_101);
+                    // Buzz announces agent roster edits as pinned-relay
+                    // semantic rows before clients necessarily observe the
+                    // replacement kind 39002. Treat these rows only as a
+                    // bounded refresh trigger; the signed membership snapshot
+                    // remains the sole source of role authority.
+                    let membership_refresh = triggers_directory_refresh(kind, &event.content);
                     match self
                         .store
                         .call(move |store| store.apply_event(community, &event))
@@ -6206,6 +6222,7 @@ mod tests {
     use super::{
         clear_visible_unread, identity_recovery_connection, next_supervisor_event,
         next_terminal_event, should_mark_visible_read, timeline_read_mark,
+        triggers_directory_refresh,
     };
     use crate::{
         config::Config,
@@ -6291,6 +6308,30 @@ mod tests {
             parent_event_id: None,
         });
         app
+    }
+
+    #[test]
+    fn semantic_roster_rows_trigger_authoritative_directory_refresh() {
+        const OWNER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const AGENT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        for event_type in ["member_joined", "member_left", "member_removed"] {
+            let content = serde_json::json!({
+                "type": event_type,
+                "actor": OWNER,
+                "target": AGENT,
+            })
+            .to_string();
+            assert!(triggers_directory_refresh(40_099, &content));
+        }
+        assert!(triggers_directory_refresh(39_002, ""));
+        assert!(triggers_directory_refresh(44_100, ""));
+        assert!(triggers_directory_refresh(44_101, ""));
+        assert!(!triggers_directory_refresh(
+            40_099,
+            r#"{"type":"channel_created"}"#
+        ));
+        assert!(!triggers_directory_refresh(40_099, "malformed"));
+        assert!(!triggers_directory_refresh(9, "member_joined"));
     }
 
     #[tokio::test]
