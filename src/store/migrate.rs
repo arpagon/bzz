@@ -97,6 +97,7 @@ fn backup(connection: &Connection, database_path: &Path) -> Result<()> {
     let backup = Backup::new(connection, &mut destination)?;
     backup.run_to_completion(16, std::time::Duration::from_millis(10), None)?;
     drop(backup);
+    drop(destination);
     crate::paths::set_private_permissions(&backup_path)?;
     prune_backups(database_path)?;
     Ok(())
