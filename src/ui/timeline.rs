@@ -12,7 +12,7 @@ use ratatui::{
 use ratatui_image::sliced::{SignedPosition, SlicedImage, SlicedProtocol};
 
 use crate::{
-    domain::{Message, Profile, Reaction, SystemEvent, SystemEventKind},
+    domain::{Message, Profile, Reaction, SystemEvent, SystemEventKind, ThreadSummary},
     media::{
         MediaKind,
         model::human_size,
@@ -279,6 +279,7 @@ pub fn render(
     frame: &mut Frame<'_>,
     area: Rect,
     messages: &[Message],
+    thread_summaries: &HashMap<String, ThreadSummary>,
     profiles: &HashMap<String, Profile>,
     agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
@@ -292,6 +293,7 @@ pub fn render(
         frame,
         area,
         messages,
+        thread_summaries,
         profiles,
         agents,
         reactions,
@@ -313,6 +315,7 @@ pub fn render_limited(
     frame: &mut Frame<'_>,
     area: Rect,
     messages: &[Message],
+    thread_summaries: &HashMap<String, ThreadSummary>,
     profiles: &HashMap<String, Profile>,
     agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
@@ -327,6 +330,7 @@ pub fn render_limited(
         frame,
         area,
         messages,
+        thread_summaries,
         profiles,
         agents,
         reactions,
@@ -346,6 +350,7 @@ pub fn render_with_media(
     frame: &mut Frame<'_>,
     area: Rect,
     messages: &[Message],
+    thread_summaries: &HashMap<String, ThreadSummary>,
     profiles: &HashMap<String, Profile>,
     agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
@@ -360,6 +365,7 @@ pub fn render_with_media(
         frame,
         area,
         messages,
+        thread_summaries,
         profiles,
         agents,
         reactions,
@@ -379,6 +385,7 @@ pub fn render_with_media_and_hits(
     frame: &mut Frame<'_>,
     area: Rect,
     messages: &[Message],
+    thread_summaries: &HashMap<String, ThreadSummary>,
     profiles: &HashMap<String, Profile>,
     agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
@@ -394,6 +401,7 @@ pub fn render_with_media_and_hits(
         frame,
         area,
         messages,
+        thread_summaries,
         profiles,
         agents,
         reactions,
@@ -414,6 +422,7 @@ pub fn render_with_media_and_hits_limited(
     frame: &mut Frame<'_>,
     area: Rect,
     messages: &[Message],
+    thread_summaries: &HashMap<String, ThreadSummary>,
     profiles: &HashMap<String, Profile>,
     agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
@@ -430,6 +439,7 @@ pub fn render_with_media_and_hits_limited(
         frame,
         area,
         messages,
+        thread_summaries,
         profiles,
         agents,
         reactions,
@@ -449,6 +459,7 @@ fn render_internal(
     frame: &mut Frame<'_>,
     area: Rect,
     messages: &[Message],
+    thread_summaries: &HashMap<String, ThreadSummary>,
     profiles: &HashMap<String, Profile>,
     agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
@@ -511,6 +522,7 @@ fn render_internal(
             message_block(
                 message,
                 messages.get(index.saturating_sub(1)).filter(|_| index > 0),
+                thread_summaries.get(&message.event_id),
                 profiles,
                 agents,
                 reactions,
@@ -658,6 +670,7 @@ fn render_internal(
 fn message_block(
     message: &Message,
     previous: Option<&Message>,
+    thread_summary: Option<&ThreadSummary>,
     profiles: &HashMap<String, Profile>,
     agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
@@ -824,6 +837,15 @@ fn message_block(
             {
                 rows.push(TimelineRow::Image(protocol.clone()));
             }
+        }
+        if let Some(summary) = thread_summary
+            && summary.descendant_count > 0
+        {
+            rows.push(TimelineRow::Text(thread_summary_line(
+                summary,
+                nostr::Timestamp::now().as_secs(),
+                theme,
+            )));
         }
         if let Some(line) = reaction_line(message, reactions, self_pubkey, theme) {
             rows.push(TimelineRow::Text(line));
@@ -1005,6 +1027,48 @@ fn attachment_line(
     ])
 }
 
+fn thread_summary_line(summary: &ThreadSummary, now: u64, theme: &Theme) -> Line<'static> {
+    let count = summary.descendant_count;
+    let label = if count == 1 { "reply" } else { "replies" };
+    let mut spans = vec![
+        Span::raw(MESSAGE_TEXT_GUTTER),
+        Span::styled("↳ ", theme.style(HighlightGroup::SelectionMarker)),
+        Span::styled(
+            format!("{count} {label}"),
+            theme.style(HighlightGroup::MessageBody),
+        ),
+    ];
+    if let Some(last_reply_at) = summary.last_reply_at {
+        spans.push(Span::styled(
+            format!(
+                " · last reply {}",
+                format_relative_reply_time(last_reply_at, now)
+            ),
+            theme.style(HighlightGroup::MessageTimestamp),
+        ));
+    }
+    Line::from(spans)
+}
+
+pub(crate) fn format_relative_reply_time(timestamp: u64, now: u64) -> String {
+    let elapsed = now.saturating_sub(timestamp);
+    if elapsed < 60 {
+        "just now".into()
+    } else if elapsed < 60 * 60 {
+        relative_unit(elapsed / 60, "minute")
+    } else if elapsed < 24 * 60 * 60 {
+        relative_unit(elapsed / (60 * 60), "hour")
+    } else if elapsed < 7 * 24 * 60 * 60 {
+        relative_unit(elapsed / (24 * 60 * 60), "day")
+    } else {
+        format!("on {}", format_day(timestamp))
+    }
+}
+
+fn relative_unit(value: u64, unit: &str) -> String {
+    format!("{value} {unit}{} ago", if value == 1 { "" } else { "s" })
+}
+
 fn reaction_line(
     message: &Message,
     reactions: &HashMap<String, Vec<Reaction>>,
@@ -1114,8 +1178,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        AvatarPlacement, MessageBlock, TimelineRow, TimelineState, readable_area,
-        same_message_group, text_height,
+        AvatarPlacement, MessageBlock, TimelineRow, TimelineState, format_relative_reply_time,
+        readable_area, same_message_group, text_height,
     };
     use crate::domain::Message;
     use ratatui::layout::Rect;
@@ -1196,6 +1260,17 @@ mod tests {
         assert_eq!(block.avatar_top(80), Some(1));
         assert_eq!(block.height(80), (1 + avatar_height).max(3));
         assert!(block.height(80) < 3 + avatar_height);
+    }
+
+    #[test]
+    fn reply_activity_uses_expanded_relative_units_and_clamps_future_time() {
+        let now = 1_700_000_000;
+        assert_eq!(format_relative_reply_time(now + 1, now), "just now");
+        assert_eq!(format_relative_reply_time(now - 60, now), "1 minute ago");
+        assert_eq!(format_relative_reply_time(now - 120, now), "2 minutes ago");
+        assert_eq!(format_relative_reply_time(now - 3_600, now), "1 hour ago");
+        assert_eq!(format_relative_reply_time(now - 86_400, now), "1 day ago");
+        assert!(format_relative_reply_time(now - 7 * 86_400, now).starts_with("on "));
     }
 
     #[test]

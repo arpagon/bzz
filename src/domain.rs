@@ -178,6 +178,12 @@ pub struct Message {
     pub system: Option<SystemEvent>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ThreadSummary {
+    pub descendant_count: u32,
+    pub last_reply_at: Option<u64>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Reaction {
     pub event_id: String,

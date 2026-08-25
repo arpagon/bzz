@@ -25,7 +25,7 @@ use crate::{
     diagnostics::{DiagnosticEvent, DiagnosticHandle},
     domain::{
         Channel, ConnectionState, InboxCategory, InboxItem, Message, Profile, Reaction,
-        SearchResultKind, SystemEventKind,
+        SearchResultKind, SystemEventKind, ThreadSummary,
     },
     error::{Error, Result},
     media::{
@@ -38,7 +38,7 @@ use crate::{
         runtime::MediaRuntime,
     },
     paths::Paths,
-    protocol::{http::HttpClient, system},
+    protocol::{http::HttpClient, system, thread_summary::LiveThreadSummary},
     realtime::{
         session::SessionEvent,
         subscriptions,
@@ -256,6 +256,9 @@ pub struct App {
     selected_channel: usize,
     showing_open_channel: bool,
     messages: Vec<Message>,
+    local_thread_summaries: HashMap<String, ThreadSummary>,
+    live_thread_summaries: HashMap<String, LiveThreadSummary>,
+    thread_summaries: HashMap<String, ThreadSummary>,
     profiles: HashMap<String, Profile>,
     agents: HashMap<String, crate::store::agents::RemoteAgentView>,
     reactions: HashMap<String, Vec<Reaction>>,
@@ -437,6 +440,9 @@ impl App {
             selected_channel: 0,
             showing_open_channel: false,
             messages: Vec::new(),
+            local_thread_summaries: HashMap::new(),
+            live_thread_summaries: HashMap::new(),
+            thread_summaries: HashMap::new(),
             profiles: HashMap::new(),
             agents: HashMap::new(),
             reactions: HashMap::new(),
@@ -1078,6 +1084,9 @@ impl App {
         let Some(community) = self.active_community_id() else {
             self.channels.clear();
             self.messages.clear();
+            self.local_thread_summaries.clear();
+            self.live_thread_summaries.clear();
+            self.thread_summaries.clear();
             self.thread_messages.clear();
             self.agents.clear();
             self.reactions.clear();
@@ -1114,6 +1123,21 @@ impl App {
                 })
                 .await?;
             self.timeline.reconcile(&self.messages);
+            let root_event_ids = self
+                .messages
+                .iter()
+                .filter(|message| message.system.is_none())
+                .map(|message| message.event_id.clone())
+                .collect::<Vec<_>>();
+            let visible_roots = root_event_ids.iter().cloned().collect::<HashSet<_>>();
+            self.local_thread_summaries = self
+                .store
+                .call(move |store| store.thread_summaries(community, channel, &root_event_ids))
+                .await?;
+            self.live_thread_summaries.retain(|root, summary| {
+                summary.channel_id == channel && visible_roots.contains(root)
+            });
+            self.rebuild_thread_summaries();
             if let Some(root) = self.thread_root.clone() {
                 let thread_anchor = self.thread_timeline.selected_event.clone();
                 self.thread_messages = self
@@ -1132,6 +1156,9 @@ impl App {
             }
         } else {
             self.messages.clear();
+            self.local_thread_summaries.clear();
+            self.live_thread_summaries.clear();
+            self.thread_summaries.clear();
             self.thread_messages.clear();
         }
         let reaction_targets = self
@@ -1249,6 +1276,46 @@ impl App {
         Ok(())
     }
 
+    fn rebuild_thread_summaries(&mut self) {
+        self.thread_summaries = self.local_thread_summaries.clone();
+        for (root, live) in &self.live_thread_summaries {
+            let combined = self.thread_summaries.entry(root.clone()).or_default();
+            combined.descendant_count =
+                combined.descendant_count.max(live.summary.descendant_count);
+            combined.last_reply_at = match (combined.last_reply_at, live.summary.last_reply_at) {
+                (Some(local), Some(remote)) => Some(local.max(remote)),
+                (local, remote) => local.or(remote),
+            };
+        }
+        self.thread_summaries
+            .retain(|_, summary| summary.descendant_count > 0);
+    }
+
+    fn apply_live_thread_summary(&mut self, summary: LiveThreadSummary) -> bool {
+        if self.current_channel().map(|channel| channel.id) != Some(summary.channel_id)
+            || !self
+                .messages
+                .iter()
+                .any(|message| message.event_id == summary.root_event_id)
+        {
+            return false;
+        }
+        if self
+            .live_thread_summaries
+            .get(&summary.root_event_id)
+            .is_some_and(|current| {
+                (current.source_created_at, current.source_event_id.as_str())
+                    >= (summary.source_created_at, summary.source_event_id.as_str())
+            })
+        {
+            return false;
+        }
+        self.live_thread_summaries
+            .insert(summary.root_event_id.clone(), summary);
+        self.rebuild_thread_summaries();
+        true
+    }
+
     async fn handle_network(&mut self, event: SupervisorEvent) -> Result<bool> {
         let previous_connection = self.connection;
         let previous_status = self.status_error.clone();
@@ -1338,7 +1405,16 @@ impl App {
                 if self.relay_event_was_handled(community, &event_id) {
                     return Ok(false);
                 }
-                if event.kind.as_u16() == 30_078 {
+                if event.kind.as_u16() == 39_005 {
+                    let parsed = self
+                        .store
+                        .call(move |store| store.live_thread_summary(community, &event))
+                        .await?;
+                    self.remember_relay_event(community, event_id);
+                    if let Some(summary) = parsed {
+                        return Ok(self.apply_live_thread_summary(summary));
+                    }
+                } else if event.kind.as_u16() == 30_078 {
                     // Serialize read-state reduction so an echo flood cannot
                     // enqueue concurrent decrypt/write work ahead of input.
                     let signer = runtime.signer.clone();
@@ -1358,6 +1434,12 @@ impl App {
                     // bounded refresh trigger; the signed membership snapshot
                     // remains the sole source of role authority.
                     let membership_refresh = triggers_directory_refresh(kind, &event.content);
+                    let thread_mutation = if matches!(kind, 9 | 40_002) {
+                        crate::protocol::events::thread_coordinates(&event).0
+                    } else {
+                        None
+                    };
+                    let clears_live_thread_summaries = matches!(kind, 5 | 9005);
                     match self
                         .store
                         .call(move |store| store.apply_event(community, &event))
@@ -1366,6 +1448,13 @@ impl App {
                         Ok(changed) => {
                             self.remember_relay_event(community, event_id);
                             if changed {
+                                if let Some(root) = thread_mutation {
+                                    self.live_thread_summaries.remove(&root);
+                                    self.rebuild_thread_summaries();
+                                } else if clears_live_thread_summaries {
+                                    self.live_thread_summaries.clear();
+                                    self.rebuild_thread_summaries();
+                                }
                                 self.cache_dirty = true;
                                 if matches!(kind, 9 | 40_002 | 30_622 | 46_010..=46_012) {
                                     self.spawn_inbox_load(false);
@@ -5137,6 +5226,7 @@ impl App {
                 frame,
                 panes.timeline,
                 &self.messages,
+                &self.thread_summaries,
                 &self.profiles,
                 &self.agents,
                 &self.reactions,
@@ -5154,6 +5244,7 @@ impl App {
                 frame,
                 panes.timeline,
                 &self.messages,
+                &self.thread_summaries,
                 &self.profiles,
                 &self.agents,
                 &self.reactions,
@@ -5170,16 +5261,28 @@ impl App {
         }
         if let Some(thread) = panes.thread {
             hit_map.push(thread, HitTarget::Thread);
-            let thread_title = format!(
-                " context · {} messages · q close ",
-                self.thread_messages.len()
-            );
+            let reply_count = self
+                .thread_root
+                .as_ref()
+                .and_then(|root| self.thread_summaries.get(root))
+                .map_or_else(
+                    || self.thread_messages.len().saturating_sub(1),
+                    |summary| summary.descendant_count as usize,
+                );
+            let reply_label = match reply_count {
+                0 => "no replies".to_owned(),
+                1 => "1 reply".to_owned(),
+                count => format!("{count} replies"),
+            };
+            let thread_title = format!(" context · {reply_label} · q close ");
+            let no_thread_summaries = HashMap::new();
             let mut thread_hits = Vec::new();
             if self.presentation.overlay.is_none() && self.presentation.composer_target.is_none() {
                 timeline::render_with_media_and_hits_limited(
                     frame,
                     thread,
                     &self.thread_messages,
+                    &no_thread_summaries,
                     &self.profiles,
                     &self.agents,
                     &self.reactions,
@@ -5197,6 +5300,7 @@ impl App {
                     frame,
                     thread,
                     &self.thread_messages,
+                    &no_thread_summaries,
                     &self.profiles,
                     &self.agents,
                     &self.reactions,
@@ -6228,7 +6332,7 @@ mod tests {
         config::Config,
         domain::{
             Channel, ChannelKind, ConnectionState, InboxCategory, InboxItem, MentionCandidate,
-            Message, Visibility,
+            Message, ThreadSummary, Visibility,
         },
         error::Error,
         paths::Paths,
@@ -6332,6 +6436,68 @@ mod tests {
         ));
         assert!(!triggers_directory_refresh(40_099, "malformed"));
         assert!(!triggers_directory_refresh(9, "member_joined"));
+    }
+
+    #[tokio::test]
+    async fn live_thread_summaries_are_visible_root_scoped_and_deterministic() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let channel = Uuid::new_v4();
+        let root = "b".repeat(64);
+        app.channels = vec![Channel {
+            id: channel,
+            name: "threads".into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 1,
+            last_event_at: None,
+        }];
+        app.selected_channel = 0;
+        app.messages = vec![Message {
+            event_id: root.clone(),
+            channel_id: channel,
+            pubkey: "c".repeat(64),
+            created_at: 1,
+            content: "root".into(),
+            attachments: Vec::new(),
+            root_event_id: None,
+            parent_event_id: None,
+            deleted: false,
+            delivery: crate::domain::DeliveryState::Delivered,
+            system: None,
+        }];
+        app.local_thread_summaries.insert(
+            root.clone(),
+            ThreadSummary {
+                descendant_count: 1,
+                last_reply_at: Some(10),
+            },
+        );
+        app.rebuild_thread_summaries();
+        let live = crate::protocol::thread_summary::LiveThreadSummary {
+            root_event_id: root.clone(),
+            channel_id: channel,
+            summary: ThreadSummary {
+                descendant_count: 3,
+                last_reply_at: Some(30),
+            },
+            source_created_at: 40,
+            source_event_id: "d".repeat(64),
+        };
+        assert!(app.apply_live_thread_summary(live.clone()));
+        assert_eq!(app.thread_summaries[&root].descendant_count, 3);
+        let mut older = live.clone();
+        older.source_created_at = 39;
+        older.summary.descendant_count = 9;
+        assert!(!app.apply_live_thread_summary(older));
+        assert_eq!(app.thread_summaries[&root].descendant_count, 3);
+        let mut wrong_channel = live;
+        wrong_channel.channel_id = Uuid::new_v4();
+        wrong_channel.source_created_at = 41;
+        assert!(!app.apply_live_thread_summary(wrong_channel));
     }
 
     #[tokio::test]

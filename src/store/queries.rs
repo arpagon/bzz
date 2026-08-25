@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use nostr::{Event, JsonUtil as _};
 use rusqlite::{OptionalExtension as _, params};
@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         Channel, ChannelKind, DraftMention, MentionCandidate, Message, Profile, Reaction,
-        Visibility,
+        ThreadSummary, Visibility,
     },
     error::{Error, Result},
     store::{
@@ -134,6 +134,72 @@ impl Store {
              ORDER BY e.created_at DESC,e.event_id DESC LIMIT ?3",
             params![community_id.to_string(),channel_id.to_string(),i64::try_from(limit).unwrap_or(i64::MAX)],
         ).map(|mut values| { values.reverse(); values })
+    }
+
+    pub fn thread_summaries(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+        root_event_ids: &[String],
+    ) -> Result<HashMap<String, ThreadSummary>> {
+        if root_event_ids.len() > 500 {
+            return Err(Error::Config(
+                "thread summary query exceeds the 500-root cap".into(),
+            ));
+        }
+        if root_event_ids.iter().any(|event_id| {
+            event_id.len() != 64 || !event_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) {
+            return Err(Error::Protocol(
+                "thread summary query has an invalid root event ID".into(),
+            ));
+        }
+        if root_event_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let values = (0..root_event_ids.len())
+            .map(|index| format!("(?{})", index + 3))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "WITH roots(root_event_id) AS (VALUES {values})
+             SELECT reply.root_event_id,count(*),max(reply.created_at)
+             FROM events reply
+             JOIN roots ON roots.root_event_id=reply.root_event_id
+             LEFT JOIN outbox o ON o.community_id=reply.community_id AND o.event_id=reply.event_id
+             WHERE reply.community_id=?1 AND reply.channel_id=?2
+               AND reply.kind IN (9,40002) AND reply.deleted_by_event_id IS NULL
+               AND (o.state IS NULL OR o.state='delivered')
+             GROUP BY reply.root_event_id"
+        );
+        let mut parameters = Vec::<rusqlite::types::Value>::with_capacity(2 + root_event_ids.len());
+        parameters.push(community_id.to_string().into());
+        parameters.push(channel_id.to_string().into());
+        parameters.extend(root_event_ids.iter().cloned().map(Into::into));
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(parameters), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+            ))
+        })?;
+        let mut summaries = HashMap::with_capacity(root_event_ids.len());
+        for row in rows {
+            let (root, count, last_reply_at) = row?;
+            let descendant_count = u32::try_from(count).map_err(|_| {
+                Error::Protocol("thread descendant count exceeds the supported range".into())
+            })?;
+            let last_reply_at = last_reply_at.and_then(|value| u64::try_from(value).ok());
+            summaries.insert(
+                root,
+                ThreadSummary {
+                    descendant_count,
+                    last_reply_at,
+                },
+            );
+        }
+        Ok(summaries)
     }
 
     pub fn messages_around(

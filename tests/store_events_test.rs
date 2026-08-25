@@ -57,6 +57,40 @@ fn event_delivery_is_idempotent_and_community_isolated() {
 }
 
 #[test]
+fn relay_thread_summaries_are_validated_but_never_stored_as_messages() {
+    let (mut store, community, channel, relay) = fixture();
+    store
+        .pin_relay_pubkey(community, &relay.public_key().to_hex())
+        .unwrap();
+    let root = "ab".repeat(32);
+    let summary = EventBuilder::new(
+        Kind::Custom(39_005),
+        serde_json::json!({
+            "reply_count":1,
+            "descendant_count":1,
+            "last_reply_at":20,
+            "participants":[relay.public_key().to_hex()]
+        })
+        .to_string(),
+    )
+    .tags([
+        Tag::parse(["e", &root]).unwrap(),
+        Tag::parse(["d", &root]).unwrap(),
+        Tag::parse(["h", &channel.to_string()]).unwrap(),
+    ])
+    .sign_with_keys(&relay)
+    .unwrap();
+    assert!(
+        store
+            .live_thread_summary(community, &summary)
+            .unwrap()
+            .is_some()
+    );
+    assert!(store.apply_event(community, &summary).is_err());
+    assert!(store.messages(community, channel, 100).unwrap().is_empty());
+}
+
+#[test]
 fn relay_membership_preserves_only_the_exact_bot_role_for_agent_discovery() {
     let (mut store, community, channel, relay) = fixture();
     store
@@ -439,6 +473,78 @@ fn thread_read_markers_clear_their_sidebar_unread_indicator() {
             .unread_channels(community, &self_pubkey)
             .unwrap()
             .contains(&channel)
+    );
+}
+
+#[test]
+fn thread_summaries_count_delivered_non_deleted_descendants() {
+    let (mut store, community, channel, author) = fixture();
+    let root = buzz_sdk::build_message(channel, "root", None, &[], false, &[])
+        .unwrap()
+        .custom_created_at(Timestamp::from(10))
+        .sign_with_keys(&author)
+        .unwrap();
+    let direct = buzz_sdk::build_message(
+        channel,
+        "direct",
+        Some(&buzz_sdk::ThreadRef {
+            root_event_id: root.id,
+            parent_event_id: root.id,
+        }),
+        &[],
+        false,
+        &[],
+    )
+    .unwrap()
+    .custom_created_at(Timestamp::from(20))
+    .sign_with_keys(&author)
+    .unwrap();
+    let nested = buzz_sdk::build_message(
+        channel,
+        "nested",
+        Some(&buzz_sdk::ThreadRef {
+            root_event_id: root.id,
+            parent_event_id: direct.id,
+        }),
+        &[],
+        false,
+        &[],
+    )
+    .unwrap()
+    .custom_created_at(Timestamp::from(30))
+    .sign_with_keys(&author)
+    .unwrap();
+    store.apply_event(community, &root).unwrap();
+    store.apply_event(community, &direct).unwrap();
+    store.insert_outbox(community, &nested).unwrap();
+
+    let roots = vec![root.id.to_hex()];
+    let summary = store.thread_summaries(community, channel, &roots).unwrap();
+    assert_eq!(summary[&root.id.to_hex()].descendant_count, 1);
+    assert_eq!(summary[&root.id.to_hex()].last_reply_at, Some(20));
+
+    store
+        .set_outbox_state(community, &nested.id.to_hex(), OutboxState::Delivered, None)
+        .unwrap();
+    let summary = store.thread_summaries(community, channel, &roots).unwrap();
+    assert_eq!(summary[&root.id.to_hex()].descendant_count, 2);
+    assert_eq!(summary[&root.id.to_hex()].last_reply_at, Some(30));
+
+    let deletion = EventBuilder::new(Kind::EventDeletion, "")
+        .tags([Tag::event(nested.id)])
+        .custom_created_at(Timestamp::from(40))
+        .sign_with_keys(&author)
+        .unwrap();
+    store.apply_event(community, &deletion).unwrap();
+    let summary = store.thread_summaries(community, channel, &roots).unwrap();
+    assert_eq!(summary[&root.id.to_hex()].descendant_count, 1);
+    assert_eq!(summary[&root.id.to_hex()].last_reply_at, Some(20));
+
+    assert!(
+        store
+            .thread_summaries(community, Uuid::new_v4(), &roots)
+            .unwrap()
+            .is_empty()
     );
 }
 

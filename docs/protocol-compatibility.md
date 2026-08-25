@@ -1,6 +1,6 @@
 # Protocol compatibility
 
-The v0.11.1 compatibility baseline remains `block/buzz` revision
+The v0.11.2 compatibility baseline remains `block/buzz` revision
 `9f55bf67456be10ff7c8238bf0d9e12e582848f6` and uses revision-pinned
 `buzz-core`/`buzz-sdk` dependencies. Existing v0.10.0 artifacts remain pinned to
 `ede26863345a518ec46edd6d7692e0281883491b`.
@@ -28,9 +28,19 @@ Implemented MVP protocol surface:
   ownership profiles and kind `10100` declarations, and owner-authored kind
   `30177` public policy for verified remote managed-agent discovery;
 - relay-authored kind `40099` control events through a bounded semantic parser,
-  never raw authored-message rendering; and
+  never raw authored-message rendering;
+- transient relay-authored kind `39005` thread summaries for the selected
+  channel, verified against the pinned relay and never stored as messages; and
 - exact structured kind `9` `p`-tag invocation through the existing
   acknowledgement-aware human outbox.
+
+Thread badges are reconstructed on restart from the existing verified local
+reply archive for at most the 500 retained timeline roots. A selected-channel
+kind `39005` may refine live count/activity presentation only after exact
+signature, pinned-signer, channel, root-coordinate, and bounded-payload
+validation. It never enters SQLite, Inbox, search, unread/read state,
+diagnostics, or telemetry; kind `39006` and the full Buzz channel-window model
+remain unsupported.
 
 bzz combines a small global stream (needed for reaction/removal events that
 carry `e` but no `h`) with a bounded set of channel subscriptions, then repairs

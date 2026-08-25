@@ -3,7 +3,7 @@ use bzz::{
     config::ChannelSort,
     domain::{
         Channel, ChannelKind, InboxCategory, InboxItem, Message, Profile, Reaction, SearchResult,
-        SearchResultKind, SystemEvent, SystemEventKind, Visibility,
+        SearchResultKind, SystemEvent, SystemEventKind, ThreadSummary, Visibility,
     },
     media::{Attachment, MediaKind},
     store::agents::RemoteAgentView,
@@ -119,6 +119,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                 &messages,
                 &HashMap::new(),
                 &HashMap::new(),
+                &HashMap::new(),
                 &reactions,
                 &mut timeline_state,
                 "general",
@@ -141,6 +142,64 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
     assert!(text.contains("+ 1"));
     assert!(!text.contains('\x1b'));
     assert!(!text.contains('\x07'));
+}
+
+#[test]
+fn timeline_roots_show_compact_thread_activity() {
+    let channel = Uuid::new_v4();
+    let root_id = "a".repeat(64);
+    let now = nostr::Timestamp::now().as_secs();
+    let message = Message {
+        event_id: root_id.clone(),
+        channel_id: channel,
+        pubkey: "b".repeat(64),
+        created_at: now.saturating_sub(600),
+        content: "Start a conversation".into(),
+        attachments: vec![],
+        root_event_id: None,
+        parent_event_id: None,
+        deleted: false,
+        delivery: bzz::domain::DeliveryState::Delivered,
+        system: None,
+    };
+    let summaries = HashMap::from([(
+        root_id,
+        ThreadSummary {
+            descendant_count: 13,
+            last_reply_at: Some(now.saturating_sub(360)),
+        },
+    )]);
+    let mut state = TimelineState {
+        at_live_bottom: true,
+        ..TimelineState::default()
+    };
+    let mut terminal = Terminal::new(TestBackend::new(90, 12)).unwrap();
+    terminal
+        .draw(|frame| {
+            timeline::render(
+                frame,
+                frame.area(),
+                &[message],
+                &summaries,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut state,
+                "threads",
+                &Theme::default(),
+                true,
+                None,
+            );
+        })
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("↳ 13 replies · last reply 6 minutes ago"));
 }
 
 #[test]
@@ -239,6 +298,7 @@ fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
                 frame,
                 frame.area(),
                 &messages,
+                &HashMap::new(),
                 &profiles,
                 &agents,
                 &HashMap::new(),
@@ -303,6 +363,7 @@ fn timeline_distinguishes_pending_unknown_and_rejected_delivery() {
                 &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
+                &HashMap::new(),
                 &mut state,
                 "delivery",
                 &Theme::default(),
@@ -355,6 +416,7 @@ fn nearby_same_author_messages_share_a_compact_header_and_keep_date_context() {
                 frame,
                 frame.area(),
                 &messages,
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
@@ -422,6 +484,7 @@ fn attachment_cards_remain_visible_without_a_graphics_protocol() {
                 frame,
                 frame.area(),
                 &[message],
+                &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),

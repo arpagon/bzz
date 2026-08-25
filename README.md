@@ -4,12 +4,12 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.11.1 repairs verified remote-agent projection and conversation
-> presentation: historical exact bot roles converge on upgrade, owner-controlled
-> DM participants verify from signed public records, and relay system events are
-> semantic rather than raw JSON. bzz does not host or control an agent runtime
-> and launches no local assistant process. Protocol compatibility remains pinned
-> to Buzz `9f55bf67456be10ff7c8238bf0d9e12e582848f6`.
+> Status: v0.11.2 makes threads discoverable from the closed timeline with a
+> compact reply count and last-activity summary while retaining v0.11.1's
+> verified remote-agent and semantic system-event corrections. bzz does not host
+> or control an agent runtime and launches no local assistant process. Protocol
+> compatibility remains pinned to Buzz
+> `9f55bf67456be10ff7c8238bf0d9e12e582848f6`.
 
 ## Build
 
@@ -80,8 +80,10 @@ missing credential without changing its identity or communities with
 Default navigation uses `1`–`4` to focus workspace surfaces, `Tab`/`h`/`l`
 to traverse them, `j`/`k` or `Ctrl-n`/`Ctrl-p` to change selection, and
 `gg`/`G` for edges. The workspace shows labelled communities, channels, the
-conversation, and an on-demand context pane. Each message has a compact
-textual avatar marker; supported graphics terminals may additionally show a
+conversation, and an on-demand context pane. A top-level message with replies
+shows `↳ N replies · last reply …` before context opens; `Enter` opens that
+exact thread. Each message has a compact textual avatar marker; supported
+graphics terminals may additionally show a
 bounded public profile photograph according to `ui.profile_avatars`. `Space` is the
 leader: `Space Space` opens the channel/DM switcher, `Space n` opens Inbox,
 `Space s` cycles local channel ordering, `Space a` opens contextual actions,
@@ -162,6 +164,9 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/security.md`](docs/security.md),
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
+[the v0.11.2 release](docs/release-v0.11.2.md),
+[v0.11.2 validation](docs/validation-v0.11.2.md),
+[the approved v0.11.2 thread-summary plan](docs/planning/2026-08-25/v0.11.2.md),
 [the v0.11.1 release](docs/release-v0.11.1.md),
 [v0.11.1 validation](docs/validation-v0.11.1.md),
 [the approved v0.11.1 correction plan](docs/planning/2026-08-25/v0.11.1.md),

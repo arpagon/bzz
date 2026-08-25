@@ -53,6 +53,6 @@ pub fn global_stream(since: u64) -> Vec<Value> {
 
 pub fn channel(channel_id: Uuid, since: u64) -> Vec<Value> {
     vec![
-        json!({"kinds":[5,7,9,9005,39000,39002,40002,40003,40099],"#h":[channel_id.to_string()],"since":since.saturating_sub(300),"limit":1000}),
+        json!({"kinds":[5,7,9,9005,39000,39002,39005,40002,40003,40099],"#h":[channel_id.to_string()],"since":since.saturating_sub(300),"limit":1000}),
     ]
 }

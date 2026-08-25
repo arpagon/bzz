@@ -90,6 +90,7 @@ fn bench_timeline(c: &mut Criterion) {
                             &HashMap::new(),
                             &HashMap::new(),
                             &HashMap::new(),
+                            &HashMap::new(),
                             &mut state,
                             "benchmark",
                             &theme,

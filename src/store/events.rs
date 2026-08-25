@@ -15,8 +15,28 @@ use crate::{
 };
 
 impl Store {
+    pub fn live_thread_summary(
+        &self,
+        community_id: Uuid,
+        event: &Event,
+    ) -> Result<Option<crate::protocol::thread_summary::LiveThreadSummary>> {
+        let relay_pubkey = self.connection.query_row(
+            "SELECT relay_pubkey FROM communities WHERE id=?1",
+            [community_id.to_string()],
+            |row| row.get::<_, Option<String>>(0),
+        )?;
+        Ok(relay_pubkey
+            .as_deref()
+            .and_then(|relay| crate::protocol::thread_summary::parse(event, relay)))
+    }
+
     pub fn apply_event(&mut self, community_id: Uuid, event: &Event) -> Result<bool> {
         verify(event)?;
+        if event.kind.as_u16() == 39_005 {
+            return Err(Error::Protocol(
+                "transient thread summaries cannot enter the durable event store".into(),
+            ));
+        }
         if matches!(
             event.kind.as_u16(),
             30_622 | 39_000..=39_003 | 40_099 | 44_100 | 44_101

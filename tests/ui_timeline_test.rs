@@ -80,6 +80,7 @@ fn wrapped_rows_are_measured_for_detached_scroll() {
                 &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
+                &HashMap::new(),
                 &mut state,
                 "timeline",
                 &Theme::default(),

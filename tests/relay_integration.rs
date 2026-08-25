@@ -259,7 +259,7 @@ async fn real_relay_mvp_protocol_journey() {
     session
         .subscribe(
             "general",
-            vec![serde_json::json!({"kinds":[5,7,9],"#h":[channel.to_string()],"limit":10})],
+            vec![serde_json::json!({"kinds":[5,7,9,39005],"#h":[channel.to_string()],"limit":10})],
         )
         .await
         .unwrap();
@@ -679,6 +679,23 @@ async fn real_relay_mvp_protocol_journey() {
         .await
         .unwrap();
     assert!(session.publish(direct.clone()).await.unwrap().accepted);
+    let relay_pubkey = bzz::protocol::http::relay_signing_pubkey(&info).unwrap();
+    let live_summary = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(SessionEvent::Event { event, .. }) = events.recv().await
+                && event.kind == Kind::Custom(39_005)
+                && let Some(summary) = bzz::protocol::thread_summary::parse(&event, relay_pubkey)
+                && summary.root_event_id == root.id.to_hex()
+            {
+                break summary;
+            }
+        }
+    })
+    .await
+    .expect("relay emitted a live thread summary");
+    assert_eq!(live_summary.channel_id, channel);
+    assert!(live_summary.summary.descendant_count >= 1);
+    assert!(live_summary.summary.last_reply_at.is_some());
     let nested = signer
         .sign(
             buzz_sdk::build_message(
@@ -944,6 +961,18 @@ async fn real_relay_mvp_protocol_journey() {
         .expect("thread image was cached");
     assert_eq!(cached_thread_image.attachments.len(), 1);
     assert_eq!(cached_thread_image.attachments[0].mime, "image/png");
+    let local_summary = local_store
+        .call({
+            let root_id = root_id.clone();
+            move |store| store.thread_summaries(local_community, channel, &[root_id])
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        local_summary[&root.id.to_hex()].descendant_count,
+        2,
+        "image and nested replies remain after deleting the direct reply"
+    );
     let cached_reactions = local_store
         .call(move |store| store.reactions(local_community, &root_id))
         .await

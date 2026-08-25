@@ -102,6 +102,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
                         frame,
                         right,
                         &messages,
+                        &HashMap::new(),
                         &profiles,
                         &HashMap::new(),
                         &reactions,

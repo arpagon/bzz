@@ -213,8 +213,11 @@ the canary token externally.
 
 - Draft: press `i`, type text, press `Esc`, then press `i` again; the text
   reappears.
-- Thread: select a message, press `Enter` or use `Space a` → **open context**,
-  reply, and close with `Esc`.
+- Thread: create one direct and one nested reply. With context closed, the root
+  must show `↳ 2 replies · last reply …`; messages without replies consume no
+  summary row. Select the root, press `Enter` or use `Space a` → **open
+  context**, verify the title says `2 replies` rather than `3 messages`, reply,
+  and close with `Esc`.
 - Reaction: press `Space a`, choose **react**, then select a reaction and press
   `Enter`; repeat to remove the same reaction.
 - Own deletion: select your message, press `Space a`, choose **delete own
@@ -242,8 +245,12 @@ the canary token externally.
   tables, inline code, and a fenced code block. Verify visible structure,
   predictable wrapping, inert links, and no terminal control output.
 
-Verify that threads, reactions, and deletions are not duplicated and that you
-can never delete another user's message.
+Delete the newest reply and verify the root count and relative last-reply time
+move back to the remaining descendant; delete the final reply and verify the
+summary row disappears. Confirm that thread summaries are absent from copied
+message text, search, Inbox, and read-state behavior. Verify that threads,
+reactions, and deletions are not duplicated and that you can never delete
+another user's message.
 
 ### Workspace shell and writing dock
 
