@@ -2,7 +2,7 @@
 
 This document describes the Inbox, Buzz workspace DM, and unified search
 surfaces added after `v0.1.0`. Protocol behavior remains pinned to Buzz
-`ede26863345a518ec46edd6d7692e0281883491b`.
+`9f55bf67456be10ff7c8238bf0d9e12e582848f6`.
 
 ## Keys and commands
 

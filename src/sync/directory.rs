@@ -14,6 +14,10 @@ pub struct DirectoryReport {
     pub membership_events: usize,
     pub metadata_events: usize,
     pub visibility_events: usize,
+    pub agent_candidates: usize,
+    pub agent_public_events: usize,
+    pub verified_agents: usize,
+    pub agent_projection_changes: usize,
     pub channel_ids: BTreeSet<Uuid>,
 }
 
@@ -82,6 +86,7 @@ pub async fn refresh(
             .filter_map(|value| Uuid::parse_str(&value).ok()),
     );
     apply(community_id, metadata.clone(), store).await?;
+    let agent_report = refresh_agents(community_id, self_pubkey, http, store).await?;
     let mut visibility = http
         .query(&[QueryFilter {
             kinds: vec![30_622],
@@ -97,7 +102,114 @@ pub async fn refresh(
         membership_events: joined.len(),
         metadata_events: metadata.len(),
         visibility_events: visibility.len(),
+        agent_candidates: agent_report.candidates,
+        agent_public_events: agent_report.public_events,
+        verified_agents: agent_report.verified,
+        agent_projection_changes: agent_report.projection_changes,
         channel_ids: ids,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct AgentRefreshReport {
+    candidates: usize,
+    public_events: usize,
+    verified: usize,
+    projection_changes: usize,
+}
+
+async fn refresh_agents(
+    community_id: Uuid,
+    self_pubkey: &str,
+    http: &HttpClient,
+    store: &StoreHandle,
+) -> Result<AgentRefreshReport> {
+    const AUTHOR_CHUNK: usize = 100;
+    let candidates = store
+        .call(move |store| store.remote_agent_candidate_pubkeys(community_id))
+        .await?;
+    if candidates.is_empty() {
+        return Ok(AgentRefreshReport::default());
+    }
+
+    let candidate_set = candidates.iter().cloned().collect::<BTreeSet<_>>();
+    let mut profiles = Vec::new();
+    let mut public_events = Vec::new();
+    for chunk in candidates.chunks(AUTHOR_CHUNK) {
+        let mut events = http
+            .query(&[QueryFilter {
+                kinds: vec![0, 10_100],
+                authors: chunk.to_vec(),
+                limit: Some((chunk.len() * 2) as u32),
+                ..QueryFilter::default()
+            }])
+            .await?;
+        events.retain(|event| {
+            matches!(event.kind.as_u16(), 0 | 10_100)
+                && candidate_set.contains(&event.pubkey.to_hex())
+        });
+        profiles.extend(
+            events
+                .iter()
+                .filter(|event| event.kind.as_u16() == 0)
+                .cloned(),
+        );
+        public_events.extend(events);
+    }
+
+    let verified_owners = profiles
+        .iter()
+        .filter_map(|profile| {
+            crate::agents::protocol::verified_owner_pubkey(profile)
+                .ok()
+                .map(|owner| (profile.pubkey.to_hex(), owner))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    for chunk in candidates.chunks(AUTHOR_CHUNK) {
+        let owners = chunk
+            .iter()
+            .filter_map(|candidate| verified_owners.get(candidate).cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if owners.is_empty() {
+            continue;
+        }
+        let mut policies = http
+            .query(&[QueryFilter {
+                kinds: vec![30_177],
+                authors: owners,
+                limit: Some(chunk.len() as u32),
+                ..QueryFilter::default()
+            }
+            .tag("d", chunk.to_vec())])
+            .await?;
+        policies.retain(|event| {
+            event.kind.as_u16() == 30_177
+                && crate::protocol::events::first_tag(event, "d")
+                    .is_some_and(|value| candidate_set.contains(&value))
+        });
+        public_events.extend(policies);
+    }
+
+    let public_event_count = public_events.len();
+    apply(community_id, public_events, store).await?;
+    let (projection_changes, verified) = store
+        .call({
+            let self_pubkey = self_pubkey.to_owned();
+            move |store| {
+                let changed = store.reconcile_remote_agents(community_id)?;
+                let verified = store.list_remote_agents(community_id, &self_pubkey)?.len();
+                Ok((changed, verified))
+            }
+        })
+        .await?;
+    Ok(AgentRefreshReport {
+        candidates: candidates.len(),
+        public_events: public_event_count,
+        verified,
+        projection_changes,
     })
 }
 

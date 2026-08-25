@@ -10,6 +10,7 @@ pub enum Command {
     Dm,
     DmHide,
     DmAdd,
+    Agents,
     AddCommunity,
     RemoveCommunity,
     PurgeCache,
@@ -28,6 +29,7 @@ pub fn parse(input: &str) -> Command {
         "dm" => Command::Dm,
         "dm hide" => Command::DmHide,
         "dm add" => Command::DmAdd,
+        "agents" => Command::Agents,
         "community add" => Command::AddCommunity,
         "community remove" => Command::RemoveCommunity,
         "purge-cache" => Command::PurgeCache,
@@ -43,6 +45,7 @@ mod tests {
     fn theme_reload_is_an_explicit_command() {
         assert_eq!(parse(":theme reload"), Command::ThemeReload);
         assert_eq!(parse(":media reload"), Command::MediaReload);
+        assert_eq!(parse(":agents"), Command::Agents);
         assert!(matches!(parse(":theme watch"), Command::Unknown(_)));
     }
 }

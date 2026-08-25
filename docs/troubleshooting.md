@@ -62,6 +62,34 @@ The status line distinguishes offline, authenticating, backfilling, and
 access-revoked states. Use `:reconnect`, then `:resync` if an old-timestamp
 event is missing.
 
+## Remote agent is missing, stale, or cannot be mentioned
+
+Refresh the active community's public directory:
+
+```sh
+bzz agents refresh --community <community-uuid>
+bzz agents list --community <community-uuid>
+bzz agents show <agent-pubkey> --community <community-uuid>
+```
+
+A normal Agents-directory entry requires current relay-signed bot membership,
+an agent-signed kind 0 profile with one valid NIP-OA owner, an agent-signed kind
+10100 declaration, and a matching owner-signed kind 30177 policy when policy is
+published. Missing, malformed, conflicting, removed, cross-community, or stale
+records fail closed. A display-name match alone is intentionally insufficient.
+
+`policy unknown` means ownership is verified but no usable public invocation
+policy is available. `not eligible` means the active human identity does not
+satisfy `owner-only`/`allowlist`, or the target is a DM where broader modes are
+hardened to owner-only. `online`-looking public metadata is not runtime
+readiness; bzz does not control the remote process.
+
+If send-time refresh or validation fails, the exact draft remains in the
+composer and nothing is automatically retried. Do not edit SQLite to add an
+agent badge or policy. Ask the owner/community operator to repair public records
+or membership. There is no local ACP/process log, model setup, start, stop, or
+restart command in v0.11.
+
 ## Message remains pending or delivery is uncertain
 
 The timeline now distinguishes `[pending]`, `[delivery unknown]`, and

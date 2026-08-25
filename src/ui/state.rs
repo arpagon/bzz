@@ -38,6 +38,7 @@ pub enum Overlay {
     MediaPreview,
     Attachment,
     DmPicker,
+    Agents,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

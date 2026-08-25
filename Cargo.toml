@@ -1,6 +1,6 @@
 [package]
 name = "bzz"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 rust-version = "1.95"
 description = "A human-first terminal client for Buzz communities"
@@ -19,8 +19,8 @@ argon2 = "0.5"
 arboard = { version = "=3.6.1", default-features = false, features = ["image-data", "wayland-data-control"] }
 async-trait = "0.1"
 base64 = "0.22"
-buzz-core = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "ede26863345a518ec46edd6d7692e0281883491b" }
-buzz-sdk = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "ede26863345a518ec46edd6d7692e0281883491b" }
+buzz-core = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "9f55bf67456be10ff7c8238bf0d9e12e582848f6" }
+buzz-sdk = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "9f55bf67456be10ff7c8238bf0d9e12e582848f6" }
 chacha20poly1305 = "0.10"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"

@@ -18,6 +18,7 @@ const MIGRATIONS: &[(u32, &str)] = &[
         6,
         include_str!("../../migrations/0006_draft_submission_state.sql"),
     ),
+    (7, include_str!("../../migrations/0007_agent_directory.sql")),
 ];
 
 pub fn configure(connection: &Connection) -> Result<()> {

@@ -211,6 +211,15 @@ pub enum DiagnosticEvent {
     },
     #[serde(rename = "diagnostics.events_dropped")]
     EventsDropped { count: u64, queue_capacity: u32 },
+    #[serde(rename = "agents.directory_refreshed")]
+    AgentDirectoryRefreshed {
+        candidates: u32,
+        verified: u32,
+        projection_changes: u32,
+        duration_ms: u64,
+    },
+    #[serde(rename = "agents.mention_validated")]
+    AgentMentionValidated { count: u32, outcome: String },
     #[serde(rename = "telemetry.test")]
     TelemetryTest,
     #[serde(rename = "telemetry.export_health")]
@@ -245,6 +254,8 @@ impl DiagnosticEvent {
             Self::ReconcileRepublished { .. } => "outbox.reconcile_republished",
             Self::ReconcileFinished { .. } => "outbox.reconcile_finished",
             Self::EventsDropped { .. } => "diagnostics.events_dropped",
+            Self::AgentDirectoryRefreshed { .. } => "agents.directory_refreshed",
+            Self::AgentMentionValidated { .. } => "agents.mention_validated",
             Self::TelemetryTest => "telemetry.test",
             Self::TelemetryExportHealth { .. } => "telemetry.export_health",
         }
@@ -317,6 +328,12 @@ impl DiagnosticRecord {
                 event_id,
                 prior_state,
             } => is_hex_id(event_id, 64, 64) && safe_outbox_state(prior_state),
+            DiagnosticEvent::AgentMentionValidated { outcome, .. } => {
+                matches!(
+                    outcome.as_str(),
+                    "eligible" | "ineligible" | "policy_unknown" | "refresh_failed"
+                )
+            }
             DiagnosticEvent::TransportConnected { .. }
             | DiagnosticEvent::AuthStarted
             | DiagnosticEvent::Authenticated { .. }
@@ -327,6 +344,7 @@ impl DiagnosticRecord {
             | DiagnosticEvent::ReconcileStarted { .. }
             | DiagnosticEvent::ReconcileFinished { .. }
             | DiagnosticEvent::EventsDropped { .. }
+            | DiagnosticEvent::AgentDirectoryRefreshed { .. }
             | DiagnosticEvent::TelemetryTest
             | DiagnosticEvent::TelemetryExportHealth { .. } => true,
         }

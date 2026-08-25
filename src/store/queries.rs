@@ -889,15 +889,29 @@ impl Store {
             return Ok(Vec::new());
         }
         let pattern = format!("%{}%", escape_like(&query.to_ascii_lowercase()));
+        let is_dm = self
+            .connection
+            .query_row(
+                "SELECT channel_type FROM channels WHERE community_id=?1 AND channel_id=?2",
+                params![community_id.to_string(), channel_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .is_none_or(|kind| kind == "dm");
         let mut statement = self.connection.prepare(
-            "SELECT m.pubkey,COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),'')
-             FROM memberships m LEFT JOIN profiles p ON p.community_id=m.community_id AND p.pubkey=m.pubkey
+            "SELECT m.pubkey,COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),NULLIF(a.name,''),''),
+                    a.owner_pubkey,a.respond_to,a.respond_to_allowlist_json
+             FROM memberships m
+             LEFT JOIN profiles p ON p.community_id=m.community_id AND p.pubkey=m.pubkey
+             LEFT JOIN remote_agents a ON a.community_id=m.community_id AND a.agent_pubkey=m.pubkey
+                  AND a.verification_state='verified' AND m.role='bot'
              WHERE m.community_id=?1 AND m.channel_id=?2 AND lower(m.pubkey)<>lower(?3)
-               AND (lower(COALESCE(p.display_name,p.name,m.pubkey)) LIKE ?4 ESCAPE '\\')
-             ORDER BY lower(COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),m.pubkey)),m.pubkey
+               AND (lower(COALESCE(p.display_name,p.name,a.name,m.pubkey)) LIKE ?4 ESCAPE '\\')
+             ORDER BY a.owner_pubkey IS NULL DESC,
+                      lower(COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),a.name,m.pubkey)),m.pubkey
              LIMIT 32",
         )?;
-        statement
+        let rows = statement
             .query_map(
                 params![
                     community_id.to_string(),
@@ -906,20 +920,52 @@ impl Store {
                     pattern
                 ],
                 |row| {
-                    let pubkey: String = row.get(0)?;
-                    let label: String = row.get(1)?;
-                    Ok(MentionCandidate {
-                        label: if label.is_empty() {
-                            crate::domain::abbreviated_pubkey(&pubkey)
-                        } else {
-                            label
-                        },
-                        pubkey,
-                    })
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
                 },
             )?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(pubkey, label, owner, respond_to, allowlist)| {
+                let agent_eligibility = owner
+                    .as_deref()
+                    .map(|owner| -> Result<crate::agents::Eligibility> {
+                        let respond_to = respond_to
+                            .as_deref()
+                            .map(super::agents::parse_respond_to)
+                            .transpose()?;
+                        let allowlist = allowlist
+                            .as_deref()
+                            .map(serde_json::from_str::<Vec<String>>)
+                            .transpose()
+                            .map_err(|error| Error::Serialization(error.to_string()))?
+                            .unwrap_or_default();
+                        Ok(crate::agents::policy::evaluate(
+                            respond_to,
+                            &allowlist,
+                            owner,
+                            self_pubkey,
+                            is_dm,
+                        ))
+                    })
+                    .transpose()?;
+                Ok(MentionCandidate {
+                    label: if label.is_empty() {
+                        crate::domain::abbreviated_pubkey(&pubkey)
+                    } else {
+                        label
+                    },
+                    pubkey,
+                    is_agent: owner.is_some(),
+                    agent_eligibility,
+                })
+            })
+            .collect()
     }
 
     pub fn record_media_cache(

@@ -210,7 +210,9 @@ impl RemoteRecord {
                 SeverityNumber::Warn
             }
             DiagnosticEvent::TelemetryExportHealth { .. }
-            | DiagnosticEvent::ClientStopped { .. } => return None,
+            | DiagnosticEvent::ClientStopped { .. }
+            | DiagnosticEvent::AgentDirectoryRefreshed { .. }
+            | DiagnosticEvent::AgentMentionValidated { .. } => return None,
         };
 
         match &record.event {
@@ -430,6 +432,26 @@ mod tests {
             },
         );
         assert!(RemoteRecord::from_diagnostic(&record).is_none());
+    }
+
+    #[test]
+    fn remote_agent_diagnostics_remain_local_only() {
+        for event in [
+            DiagnosticEvent::AgentDirectoryRefreshed {
+                candidates: 3,
+                verified: 2,
+                projection_changes: 1,
+                duration_ms: 8,
+            },
+            DiagnosticEvent::AgentMentionValidated {
+                count: 1,
+                outcome: "eligible".into(),
+            },
+        ] {
+            let record = DiagnosticRecord::new("a".repeat(32), event);
+            assert!(record.is_safe());
+            assert!(RemoteRecord::from_diagnostic(&record).is_none());
+        }
     }
 
     #[test]

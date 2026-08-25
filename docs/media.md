@@ -2,7 +2,7 @@
 
 `bzz` implements Buzz message attachments through NIP-92 `imeta` tags and the
 Buzz Blossom endpoints pinned at revision
-`ede26863345a518ec46edd6d7692e0281883491b`.
+`9f55bf67456be10ff7c8238bf0d9e12e582848f6`.
 
 ## Receiving media
 

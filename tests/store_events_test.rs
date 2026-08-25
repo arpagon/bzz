@@ -5,7 +5,7 @@ use bzz::{
         models::{OutboxState, SyncCursor},
     },
 };
-use nostr::{EventBuilder, Keys, Tag, Timestamp};
+use nostr::{EventBuilder, Keys, Kind, Tag, Timestamp};
 use proptest::prelude::*;
 use uuid::Uuid;
 
@@ -53,6 +53,55 @@ fn event_delivery_is_idempotent_and_community_isolated() {
     store.sync_config(&config).unwrap();
     store.apply_event(other, &event).unwrap();
     assert_eq!(store.messages(other, channel, 100).unwrap().len(), 1);
+}
+
+#[test]
+fn relay_membership_preserves_only_the_exact_bot_role_for_agent_discovery() {
+    let (mut store, community, channel, relay) = fixture();
+    store
+        .pin_relay_pubkey(community, &relay.public_key().to_hex())
+        .unwrap();
+    let agent = Keys::generate().public_key().to_hex();
+    let human = Keys::generate().public_key().to_hex();
+    let metadata = EventBuilder::new(Kind::Custom(39_000), "")
+        .tags([
+            Tag::parse(["d", &channel.to_string()]).unwrap(),
+            Tag::parse(["name", "agents"]).unwrap(),
+        ])
+        .sign_with_keys(&relay)
+        .unwrap();
+    store.apply_event(community, &metadata).unwrap();
+    let membership = EventBuilder::new(Kind::Custom(39_002), "")
+        .tags([
+            Tag::parse(["d", &channel.to_string()]).unwrap(),
+            Tag::parse(["p", &agent, "", "bot"]).unwrap(),
+            Tag::parse(["p", &human, "", "admin"]).unwrap(),
+        ])
+        .sign_with_keys(&relay)
+        .unwrap();
+    store.apply_event(community, &membership).unwrap();
+
+    assert_eq!(
+        store.remote_agent_candidate_pubkeys(community).unwrap(),
+        vec![agent.clone()]
+    );
+    let candidates = store
+        .mention_candidates(community, channel, &"a".repeat(64), "")
+        .unwrap();
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.iter().all(|candidate| !candidate.is_agent));
+    assert!(
+        store
+            .agent_mentions_need_validation(community, channel, &[agent])
+            .unwrap()
+            == 1
+    );
+    assert!(
+        store
+            .agent_mentions_need_validation(community, channel, &[human])
+            .unwrap()
+            == 0
+    );
 }
 
 #[test]

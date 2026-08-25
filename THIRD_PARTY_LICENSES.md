@@ -7,7 +7,7 @@ CycloneDX SBOM is attached to releases.
 ## Buzz
 
 `buzz-core` and `buzz-sdk` are used from
-`block/buzz@ede26863345a518ec46edd6d7692e0281883491b` under Apache-2.0.
+`block/buzz@9f55bf67456be10ff7c8238bf0d9e12e582848f6` under Apache-2.0.
 Copyright belongs to the Buzz contributors. See `LICENSE-APACHE` for the
 Apache License 2.0 text.
 

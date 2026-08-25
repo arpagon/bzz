@@ -1,5 +1,6 @@
 pub mod action;
 pub mod actions;
+pub mod agents;
 pub mod command;
 pub mod composer;
 pub mod confirm;

@@ -14,7 +14,7 @@ use bzz::{
 };
 use nostr::{EventBuilder, Keys, Kind, Timestamp};
 
-const PIN: &str = "ede26863345a518ec46edd6d7692e0281883491b";
+const PIN: &str = "9f55bf67456be10ff7c8238bf0d9e12e582848f6";
 
 #[tokio::test]
 #[ignore = "requires scripts/test-relay.sh"]
@@ -40,6 +40,7 @@ async fn real_relay_mvp_protocol_journey() {
     let _ = seed_member(&source, &pubkey_outsider);
     tokio::time::sleep(Duration::from_secs(2)).await;
 
+    let owner_keys = keys.clone();
     let signer = SignerHandle::spawn(keys);
     let relay = url::Url::parse("ws://localhost:3030/").unwrap();
     let (session, mut events) = session::connect(relay, signer.clone()).await.unwrap();
@@ -277,6 +278,149 @@ async fn real_relay_mvp_protocol_journey() {
             == Some(channel.to_string().as_str())
     }));
 
+    // Deterministic remote managed-agent interoperability fixture. It uses a
+    // dedicated Nostr identity and signed public records, but no model, ACP
+    // process, tool, memory, or observer stream.
+    let agent_keys = Keys::generate();
+    let agent_pubkey = agent_keys.public_key().to_hex();
+    let _ = seed_member(&source, &agent_pubkey);
+    let agent_signer = SignerHandle::spawn(agent_keys.clone());
+    let (agent_session, _) = session::connect(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        agent_signer.clone(),
+    )
+    .await
+    .unwrap();
+    let add_agent = signer
+        .sign(
+            buzz_sdk::build_add_member(channel, &agent_pubkey, Some(buzz_sdk::MemberRole::Bot))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let add_agent_ack = session.publish(add_agent).await.unwrap();
+    assert!(add_agent_ack.accepted, "{}", add_agent_ack.message);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let auth =
+        buzz_sdk::nip_oa::compute_auth_tag(&owner_keys, &agent_keys.public_key(), "").unwrap();
+    let auth: Vec<String> = serde_json::from_str(&auth).unwrap();
+    let agent_profile = EventBuilder::new(
+        Kind::Metadata,
+        serde_json::json!({"display_name":"bzz deterministic remote agent"}).to_string(),
+    )
+    .tags([nostr::Tag::parse(auth).unwrap()])
+    .sign_with_keys(&agent_keys)
+    .unwrap();
+    assert!(
+        agent_session
+            .publish(agent_profile.clone())
+            .await
+            .unwrap()
+            .accepted
+    );
+    let agent_declaration = EventBuilder::new(
+        Kind::Custom(10_100),
+        serde_json::json!({
+            "display_name":"bzz deterministic remote agent",
+            "capabilities":["messages"],
+            "status":"online"
+        })
+        .to_string(),
+    )
+    .sign_with_keys(&agent_keys)
+    .unwrap();
+    assert!(
+        agent_session
+            .publish(agent_declaration.clone())
+            .await
+            .unwrap()
+            .accepted
+    );
+    let agent_policy = signer
+        .sign(
+            EventBuilder::new(
+                Kind::Custom(30_177),
+                serde_json::json!({
+                    "name":"bzz deterministic remote agent",
+                    "parallelism":1,
+                    "respond_to":"owner-only"
+                })
+                .to_string(),
+            )
+            .tags([nostr::Tag::parse(["d", &agent_pubkey]).unwrap()]),
+        )
+        .await
+        .unwrap();
+    assert!(
+        session
+            .publish(agent_policy.clone())
+            .await
+            .unwrap()
+            .accepted
+    );
+
+    let agent_mention = signer
+        .sign(
+            buzz_sdk::build_message(
+                channel,
+                "@bzz-agent deterministic invocation",
+                None,
+                &[agent_pubkey.as_str()],
+                false,
+                &[],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        session
+            .publish(agent_mention.clone())
+            .await
+            .unwrap()
+            .accepted
+    );
+    assert_eq!(
+        bzz::protocol::events::tag_values(&agent_mention, "p"),
+        vec![agent_pubkey.clone()]
+    );
+    let agent_reaction = agent_signer
+        .sign(buzz_sdk::build_reaction(agent_mention.id, "👀").unwrap())
+        .await
+        .unwrap();
+    assert!(
+        agent_session
+            .publish(agent_reaction)
+            .await
+            .unwrap()
+            .accepted
+    );
+    let agent_reply = agent_signer
+        .sign(
+            buzz_sdk::build_message(
+                channel,
+                "deterministic remote-agent reply",
+                Some(&buzz_sdk::ThreadRef {
+                    root_event_id: agent_mention.id,
+                    parent_event_id: agent_mention.id,
+                }),
+                &[pubkey.as_str()],
+                false,
+                &[],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        agent_session
+            .publish(agent_reply.clone())
+            .await
+            .unwrap()
+            .accepted
+    );
+
     let media_client = MediaClient::new(
         url::Url::parse("http://localhost:3030/").unwrap(),
         "localhost:3030".into(),
@@ -392,6 +536,46 @@ async fn real_relay_mvp_protocol_journey() {
     assert!(directory_report.channel_ids.contains(&channel));
     assert!(directory_report.channel_ids.contains(&dm_channel));
     assert!(directory_report.channel_ids.contains(&group_dm));
+    assert!(directory_report.agent_candidates >= 1);
+    assert!(directory_report.verified_agents >= 1);
+    let verified_agent = local_store
+        .call({
+            let pubkey = pubkey.clone();
+            let agent_pubkey = agent_pubkey.clone();
+            move |store| store.remote_agent(local_community, &agent_pubkey, &pubkey, Some(channel))
+        })
+        .await
+        .unwrap()
+        .expect("deterministic remote agent must be verified in its channel");
+    assert_eq!(verified_agent.owner_pubkey, pubkey);
+    assert_eq!(
+        verified_agent.eligibility,
+        bzz::agents::Eligibility::Eligible
+    );
+    local_store
+        .call({
+            let pubkey = verified_agent.owner_pubkey.clone();
+            let agent_pubkey = verified_agent.pubkey.clone();
+            move |store| {
+                store.validate_agent_mentions(local_community, channel, &pubkey, &[agent_pubkey])
+            }
+        })
+        .await
+        .unwrap();
+    let agent_backfill = backfill::channel(local_community, channel, &http, &local_store, 100)
+        .await
+        .unwrap();
+    assert!(agent_backfill.content_events >= 2);
+    let agent_reply_cached = local_store
+        .call(move |store| {
+            Ok(store
+                .thread(local_community, &agent_mention.id.to_hex(), 500)?
+                .iter()
+                .any(|message| message.event_id == agent_reply.id.to_hex()))
+        })
+        .await
+        .unwrap();
+    assert!(agent_reply_cached);
     let cached_channels = local_store
         .call(move |store| store.channels(local_community))
         .await
@@ -782,6 +966,8 @@ async fn real_relay_mvp_protocol_journey() {
         Some("bzz integration")
     );
 
+    agent_session.shutdown().await;
+    agent_signer.lock().await;
     session.shutdown().await;
     let (reconnected, _) = session::connect(
         url::Url::parse("ws://localhost:3030/").unwrap(),

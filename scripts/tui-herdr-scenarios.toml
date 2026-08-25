@@ -64,6 +64,25 @@ keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario]]
+id = "operator-remote-agents"
+kind = "operator"
+description = "Disposable public-only agent fixture: verified directory wide/narrow layout, owner/policy/freshness detail, keyboard/mouse selection, refresh, exact composer insertion, community/lock invalidation, and terminal restoration."
+ready = "verified remote agents"
+exit = ""
+
+[[scenario.step]]
+keys = ["j"]
+visible = "eligible"
+
+[[scenario.step]]
+keys = ["m"]
+visible = "review and send explicitly"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "NORMAL"
+
+[[scenario]]
 id = "operator-inbox-triage"
 kind = "operator"
 description = "Disposable non-admin Inbox fixture: narrow/wide detail, explicit and bulk read, in-place reply, canonical return, draft recovery, and locked/offline cache evidence."

@@ -54,10 +54,21 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, picker: &MentionPicker, theme: 
         items.push(ListItem::new("No cached members match this mention."));
     } else {
         items.extend(picker.candidates.iter().map(|candidate| {
+            let kind = if candidate.is_agent {
+                format!(
+                    "  ◆ remote agent · {}",
+                    candidate
+                        .agent_eligibility
+                        .map_or("policy-unknown", crate::agents::Eligibility::as_str)
+                )
+            } else {
+                String::new()
+            };
             ListItem::new(Line::from(format!(
-                "@{}  {}",
+                "@{}  {}{}",
                 sanitize::single_line(&candidate.label),
-                crate::domain::abbreviated_pubkey(&candidate.pubkey)
+                crate::domain::abbreviated_pubkey(&candidate.pubkey),
+                kind,
             )))
         }));
     }

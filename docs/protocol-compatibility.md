@@ -1,8 +1,9 @@
 # Protocol compatibility
 
-This release targets `block/buzz` revision
-`ede26863345a518ec46edd6d7692e0281883491b` and uses revision-pinned
-`buzz-core`/`buzz-sdk` dependencies.
+The v0.11 development baseline targets `block/buzz` revision
+`9f55bf67456be10ff7c8238bf0d9e12e582848f6` and uses revision-pinned
+`buzz-core`/`buzz-sdk` dependencies. Existing v0.10.0 artifacts remain pinned to
+`ede26863345a518ec46edd6d7692e0281883491b`.
 
 Implemented MVP protocol surface:
 
@@ -22,7 +23,12 @@ Implemented MVP protocol surface:
 - one-shot NIP-50 profile/message prefix search with explicit `page`,
   `search_mode`, author, channel, and UTC-time filters;
 - p-gated mention and read-only workflow status (`46010`–`46012`) Inbox
-  projection.
+  projection;
+- relay-authored kind `39002` bot membership, agent-authored kind `0` NIP-OA
+  ownership profiles and kind `10100` declarations, and owner-authored kind
+  `30177` public policy for verified remote managed-agent discovery; and
+- exact structured kind `9` `p`-tag invocation through the existing
+  acknowledgement-aware human outbox.
 
 bzz combines a small global stream (needed for reaction/removal events that
 carry `e` but no `h`) with a bounded set of channel subscriptions, then repairs
@@ -59,3 +65,10 @@ NIP-17 kind 1059 remains unsupported by the UI and is never indexed by local
 FTS5. Remote NIP-50 results are signature-verified and checked against active
 community/channel/viewer access after delivery. See
 [`inbox-dms-search.md`](inbox-dms-search.md).
+
+Managed-agent support in this baseline is relay-only interoperability. bzz does
+not consume kind `30174` memory, kind `24200` observer/control frames, kind
+`30179` private managed state, or kind `44200` usage metrics. It does not own an
+agent key, spawn ACP or model processes, publish autonomously, or claim control
+of a remote runtime. See
+[`adr-v0.11-remote-managed-agent-interoperability.md`](adr-v0.11-remote-managed-agent-interoperability.md).

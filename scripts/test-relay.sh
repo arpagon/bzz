@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 : "${BZZ_BUZZ_SOURCE:?set BZZ_BUZZ_SOURCE to the pinned block/buzz checkout}"
-PIN=ede26863345a518ec46edd6d7692e0281883491b
+PIN=9f55bf67456be10ff7c8238bf0d9e12e582848f6
 HEAD=$(git -C "$BZZ_BUZZ_SOURCE" rev-parse HEAD)
 if [[ "$HEAD" != "$PIN" && "${BZZ_ALLOW_UNPINNED_RELAY:-}" != 1 ]]; then
   echo "expected Buzz $PIN, found $HEAD" >&2; exit 1

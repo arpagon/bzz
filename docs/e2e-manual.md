@@ -25,7 +25,7 @@ debug builds deliberately use separate paths and keychain services.
 
 Expected result:
 
-- candidate version `0.10.0`;
+- candidate version `0.11.0`;
 - config, data, and cache under `BZZ_E2E_ROOT`;
 - `configuration, theme, media, diagnostics, telemetry, and database are valid`;
 - no secrets in `.env` or command output.
@@ -134,7 +134,42 @@ published event carries exactly one lowercase `p` tag for the selected member.
 Repeat offline: candidates must come from cache and no profile/member lookup may
 be sent.
 
-## 4.2 Diagnostics and opt-in telemetry (v0.9.0)
+## 4.2 Verified remote managed agents (v0.11.0)
+
+Use only deterministic disposable owner/agent identities and a dedicated E2E
+channel. Publish an agent-signed kind 0 profile with a valid NIP-OA owner tag,
+an agent-signed kind 10100 declaration, and an owner-signed kind 30177 policy;
+add the agent pubkey to the channel with the relay's exact `bot` role. Do not run
+an LLM, ACP adapter, tool, memory writer, or observer process.
+
+```bash
+"$BZZ_BIN" agents refresh --community "$BZZ_COMMUNITY_ID"
+"$BZZ_BIN" agents list --community "$BZZ_COMMUNITY_ID"
+"$BZZ_BIN" agents show <AGENT_PUBKEY> --community "$BZZ_COMMUNITY_ID" --json
+```
+
+Verify the CLI says the runtime is remote/not controlled by bzz, identifies the
+verified owner and public policy, and emits versioned JSON without secrets or
+raw events. In the TUI, run `:agents`; exercise wide/narrow resize, keyboard,
+mouse, refresh, and close. The agent must have a textual `◆` marker and policy
+state that does not rely on color. Switch community and run `:lock`; stale
+directory actions must disappear.
+
+Select **mention** only while the agent is a bot member of the exact active
+channel. Confirm that it inserts visible text and one structured lowercase
+`p` tag but does not send. Review and explicitly submit a generated message;
+then have the deterministic remote fixture publish a signed `👀` reaction and
+threaded reply. Verify existing Timeline, thread, unread, and Inbox behavior.
+
+Repeat with an invalid signature, wrong NIP-OA owner, conflicting valid owner
+tags, wrong policy signer, wrong policy `d` coordinate, missing declaration,
+`owner-only` under a different human, DM `anyone`, stale cache, duplicate relay
+delivery, and membership removal. None may remain invocable; every failed send
+preparation must preserve the exact draft. Local agent keys, observer data,
+profiles, policies, capabilities, messages, and pubkeys must not appear in the
+content-free diagnostics journal or OTel payloads.
+
+## 4.3 Diagnostics and opt-in telemetry (v0.9.0)
 
 After one accepted disposable message, one rejected fake-relay publication, and
 one deliberately interrupted fake-relay acknowledgement, verify exact local

@@ -142,6 +142,42 @@ are not logged. Inputs, pages, response bytes, results, context hydration,
 actor queues, participant sets, and Inbox windows are bounded. Locked/offline
 search is local-only. See [`inbox-dms-search.md`](inbox-dms-search.md).
 
+## Verified remote managed agents
+
+A v0.11 remote agent is never trusted from its name, avatar, declaration, or
+self-asserted type. Candidate identity begins with a current relay-signed kind
+39002 membership carrying the exact `bot` role. bzz then verifies the agent's
+kind 0 and kind 10100 signatures, the kind 0 NIP-OA owner attestation, and any
+kind 30177 policy signature and `d` coordinate. Conflicting owners, malformed
+records, stale cache, membership removal, a wrong policy signer, and a wrong
+coordinate fail closed.
+
+Directory state is keyed by community and agent pubkey. A valid record from one
+relay cannot authorize another. Public `owner-only`, `allowlist`, and `anyone`
+policy is evaluated for the active human identity; DMs and unknown channel
+kinds remain owner-only. “Eligible” is advisory: it does not prove that a remote
+runtime is online, safe, or willing to answer.
+
+Selecting a verified eligible agent inserts visible composer text and a
+structured exact-pubkey mention. It never sends. Before the existing human key
+signs, bzz refreshes and revalidates the community, channel, bot membership,
+ownership, and policy. Failure preserves the draft; successful events use the
+same acknowledgement-aware human outbox. A remote response has its own agent
+signature.
+
+bzz stores no agent private key and has no ACP, model, tool, memory, observer,
+provider, environment, process, autonomous outbox, or runtime-control surface.
+Remote profile/policy fields cannot become commands, arguments, paths, or
+environment values. A genuine remote agent can still be malicious or execute
+operator-controlled tools after receiving a message; users must not infer local
+trust from cryptographic identity.
+
+Agent-directory diagnostics contain only counts, durations, and closed outcome
+enums. They exclude names, pubkeys, owners, channels, events, tags, policies,
+capabilities, and content, and remain local-only rather than entering the OTel
+allowlist. See
+[`adr-v0.11-remote-managed-agent-interoperability.md`](adr-v0.11-remote-managed-agent-interoperability.md).
+
 ## Media
 
 Message media is fetched only from a complete `imeta` descriptor bound to the

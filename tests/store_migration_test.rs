@@ -20,7 +20,7 @@ fn fresh_database_has_expected_pragmas_and_schema() {
     let foreign_keys: u32 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
     assert_eq!(
         foreign_keys, 1,
         "foreign-key enforcement must remain enabled"
@@ -41,6 +41,22 @@ fn fresh_database_has_expected_pragmas_and_schema() {
         )
         .unwrap();
     assert_eq!(attachment_column, 1);
+    let remote_agents_table: u32 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='remote_agents'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(remote_agents_table, 1);
+    let agent_membership_index: u32 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='memberships_agent_role'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(agent_membership_index, 1);
     let mention_column: u32 = connection
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('drafts') WHERE name='mentions_json'",
@@ -158,7 +174,7 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
     let version: u32 = upgraded
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 6);
+    assert_eq!(version, 7);
     let inbox_projection_table: u32 = upgraded
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='inbox_conversations'",

@@ -4,11 +4,11 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.10.0 removes the retired one-shot Codex reply drafter so future
-> managed-agent support can be designed against explicit identity, protocol, and
-> permission boundaries. bzz currently launches no local assistant process.
-> Protocol compatibility remains pinned to Buzz
-> `ede26863345a518ec46edd6d7692e0281883491b`.
+> Status: v0.11.0 is developing verified remote managed-agent interoperability:
+> community-scoped NIP-OA ownership, bot membership, public policy, an Agents
+> directory, and exact human-authored mentions. bzz does not host or control an
+> agent runtime and launches no local assistant process. Protocol compatibility
+> is pinned to Buzz `9f55bf67456be10ff7c8238bf0d9e12e582848f6`.
 
 ## Build
 
@@ -46,7 +46,9 @@ use `bzz-dev` paths and a separate OS-keychain service.
   or a Unicode half-block fallback;
 - image previews, explicit attachment saves, and sanitized image/file uploads;
 - configurable semantic terminal-mouse interaction with safe restoration; and
-- offline channel-member `@` completion with exact Buzz `p` tags.
+- offline channel-member `@` completion with exact Buzz `p` tags; and
+- verified remote managed-agent discovery, owner/policy inspection, distinct
+  completion, and send-time revalidation without local runtime control.
 
 NIP-17 gift-wrap authoring/inbox, typing/presence, custom emoji, media playback,
 and message editing remain post-MVP. Workspace DMs are private
@@ -95,7 +97,7 @@ detail to the list. `@` opens cached channel-member completion. In the composer,
 image, or text, and `Alt-o` opens the local-path fallback. `Delete` removes the
 newest attachment and `Ctrl-r` retries failed uploads. Generate shell
 integration with `bzz completions <shell>`. Inside the TUI, `:inbox`, `:search`,
-`:dm`, `:reconnect`, `:resync`, `:theme reload`, `:purge-cache`, and `:lock`
+`:dm`, `:agents`, `:reconnect`, `:resync`, `:theme reload`, `:purge-cache`, and `:lock`
 cover the main conversation, recovery, appearance, and security operations.
 
 ## Media safety
@@ -156,6 +158,10 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/security.md`](docs/security.md),
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
+[the v0.11.0 release candidate](docs/release-v0.11.0.md),
+[v0.11.0 validation](docs/validation-v0.11.0.md),
+[the approved v0.11.0 interoperability plan](docs/planning/2026-08-24/v0.11.0.md),
+[the v0.11 remote-agent ADR](docs/adr-v0.11-remote-managed-agent-interoperability.md),
 [the v0.10.0 agent-foundation reset](docs/release-v0.10.0.md),
 [v0.10.0 validation](docs/validation-v0.10.0.md),
 [published v0.10.0 artifact verification](docs/release-v0.10.0-verification.md),

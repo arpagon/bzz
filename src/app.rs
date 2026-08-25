@@ -57,6 +57,7 @@ use crate::{
             reduce_inbox, reduce_workspace,
         },
         actions::{ActionContext, ActionMenu, derive as derive_actions},
+        agents::AgentDirectoryState,
         composer::Composer,
         dm_picker::DmPickerState,
         hit_map::{HitMap, HitTarget},
@@ -236,6 +237,11 @@ enum Background {
         channel: Uuid,
         confirmed: bool,
     },
+    AgentsLoaded {
+        community: Uuid,
+        agents: Vec<crate::store::agents::RemoteAgentView>,
+        notice: Option<String>,
+    },
 }
 
 pub struct App {
@@ -280,6 +286,8 @@ pub struct App {
     dm_picker: DmPickerState,
     dm_dirty_since: Option<Instant>,
     dm_search_task: Option<tokio::task::JoinHandle<()>>,
+    agent_directory: AgentDirectoryState,
+    agent_directory_task: Option<tokio::task::JoinHandle<()>>,
     preview_index: usize,
     preview_revealed: bool,
     clipboard: Arc<dyn ClipboardReader>,
@@ -452,6 +460,8 @@ impl App {
             dm_picker: DmPickerState::default(),
             dm_dirty_since: None,
             dm_search_task: None,
+            agent_directory: AgentDirectoryState::default(),
+            agent_directory_task: None,
             preview_index: 0,
             preview_revealed: false,
             clipboard: Arc::new(NativeClipboard),
@@ -560,6 +570,7 @@ impl App {
                         self.dm_picker.submitting=false;
                         self.inbox_loading=false;
                         self.inbox_detail_loading=false;
+                        self.agent_directory.loading=false;
                     },
                     Background::Saved=>self.status_error=Some("attachment saved".into()),
                     Background::InboxLoaded { community, items }=>{
@@ -631,6 +642,14 @@ impl App {
                             }
                         }
                     }
+                    Background::AgentsLoaded { community, agents, notice }=>{
+                        if self.active_community_id()==Some(community) {
+                            self.agent_directory.agents=agents;
+                            self.agent_directory.loading=false;
+                            self.agent_directory.reconcile();
+                            self.status_error=notice;
+                        }
+                    }
                     }
                     redraw.request();
                 },
@@ -648,6 +667,7 @@ impl App {
             self.inbox_detail_task.take(),
             self.search_task.take(),
             self.dm_search_task.take(),
+            self.agent_directory_task.take(),
             self.directory_task.take(),
         ]
         .into_iter()
@@ -836,11 +856,23 @@ impl App {
         let service = runtime.channels.clone();
         let pubkey = runtime.signer.public_key().to_hex();
         let tx = self.background_tx.clone();
+        let diagnostics = self.diagnostics.clone();
         self.directory_task = Some(tokio::spawn(async move {
+            let started = Instant::now();
             let result = service.refresh(&pubkey).await;
             let _ = tx
                 .send(match result {
-                    Ok(_) => Background::Changed,
+                    Ok(report) => {
+                        diagnostics.emit(DiagnosticEvent::AgentDirectoryRefreshed {
+                            candidates: u32::try_from(report.agent_candidates).unwrap_or(u32::MAX),
+                            verified: u32::try_from(report.verified_agents).unwrap_or(u32::MAX),
+                            projection_changes: u32::try_from(report.agent_projection_changes)
+                                .unwrap_or(u32::MAX),
+                            duration_ms: u64::try_from(started.elapsed().as_millis())
+                                .unwrap_or(u64::MAX),
+                        });
+                        Background::Changed
+                    }
                     Err(error) => Background::Failed(error.to_string()),
                 })
                 .await;
@@ -1459,31 +1491,48 @@ impl App {
         // changes its menu selection; it never leaks to or activates the
         // workspace beneath it.
         if self.presentation.overlay.is_some() {
-            if self.presentation.overlay == Some(Overlay::Actions)
-                && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-                && let Some(HitTarget::ActionMenu(action)) = self
+            if self.presentation.overlay == Some(Overlay::Actions) {
+                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                    && let Some(HitTarget::ActionMenu(action)) = self
+                        .last_hit_map
+                        .as_ref()
+                        .and_then(|map| map.hit(mouse.column, mouse.row))
+                        .cloned()
+                {
+                    let double_click = self.record_primary_click(&HitTarget::ActionMenu(action));
+                    if let Some(menu) = &mut self.action_menu {
+                        menu.select_action(action);
+                    }
+                    if double_click {
+                        let entry = self.action_menu.as_ref().and_then(ActionMenu::selected);
+                        self.presentation.overlay = None;
+                        self.action_menu = None;
+                        if let Some(entry) = entry {
+                            if entry.enabled {
+                                self.dispatch_route_action(entry.action, guard, terminal)
+                                    .await?;
+                            } else if let Some(reason) = entry.reason {
+                                self.status_error = Some(format!("{}: {reason}", entry.label));
+                            }
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                && let Some(target) = self
                     .last_hit_map
                     .as_ref()
                     .and_then(|map| map.hit(mouse.column, mouse.row))
                     .cloned()
             {
-                let double_click = self.record_primary_click(&HitTarget::ActionMenu(action));
-                if let Some(menu) = &mut self.action_menu {
-                    menu.select_action(action);
+                if self.select_remote_agent_mouse_target(&target) {
+                    return Ok(());
                 }
-                if double_click {
-                    let entry = self.action_menu.as_ref().and_then(ActionMenu::selected);
-                    self.presentation.overlay = None;
-                    self.action_menu = None;
-                    if let Some(entry) = entry {
-                        if entry.enabled {
-                            self.dispatch_route_action(entry.action, guard, terminal)
-                                .await?;
-                        } else if let Some(reason) = entry.reason {
-                            self.status_error = Some(format!("{}: {reason}", entry.label));
-                        }
-                    }
-                }
+                // Other overlay hit targets are guarded again inside the
+                // activation adapter. Background pane targets remain inert.
+                self.activate_mouse_target(target, mouse, guard, terminal)
+                    .await?;
             }
             return Ok(());
         }
@@ -1733,6 +1782,23 @@ impl App {
         Ok(())
     }
 
+    fn select_remote_agent_mouse_target(&mut self, target: &HitTarget) -> bool {
+        let HitTarget::RemoteAgent(pubkey) = target else {
+            return false;
+        };
+        if self.presentation.overlay != Some(Overlay::Agents)
+            || !self
+                .agent_directory
+                .agents
+                .iter()
+                .any(|agent| agent.pubkey == *pubkey)
+        {
+            return false;
+        }
+        self.agent_directory.selected_pubkey = Some(pubkey.clone());
+        true
+    }
+
     /// A channel row is an activation target, not only a movable selection.
     /// Keep the sidebar focused after one click, while always replacing the
     /// timeline with the selected channel. A second click may move focus into
@@ -1845,6 +1911,7 @@ impl App {
             }
             Some(Overlay::Search) => self.search_key(key).await?,
             Some(Overlay::DmPicker) => self.dm_picker_key(key),
+            Some(Overlay::Agents) => self.agent_directory_key(key).await?,
             None if self.presentation.composer_target.is_some() => {
                 self.handle_composer_key(key).await?
             }
@@ -2690,6 +2757,91 @@ impl App {
                 } else if !self.composer.sendable() && !self.composer.attachments.is_empty() {
                     self.status_error = Some("wait for every attachment to become ready".into());
                 } else if self.composer.sendable() {
+                    let Some(prepared_target) = self.presentation.composer_target.clone() else {
+                        return Ok(());
+                    };
+                    let prepared_mentions = self
+                        .composer
+                        .mentions()
+                        .iter()
+                        .map(|mention| mention.pubkey.clone())
+                        .collect::<Vec<_>>();
+                    let agent_mentions_to_validate = self
+                        .store
+                        .call({
+                            let mentions = prepared_mentions.clone();
+                            let target = prepared_target.clone();
+                            move |store| {
+                                store.agent_mentions_need_validation(
+                                    target.community_id,
+                                    target.channel_id,
+                                    &mentions,
+                                )
+                            }
+                        })
+                        .await?;
+                    if agent_mentions_to_validate != 0 {
+                        let Some(runtime) = &self.runtime else {
+                            self.status_error = Some(
+                                "remote agent validation requires an unlocked online community"
+                                    .into(),
+                            );
+                            return Ok(());
+                        };
+                        if runtime.community_id != prepared_target.community_id {
+                            self.status_error =
+                                Some("the agent mention belongs to another community".into());
+                            return Ok(());
+                        }
+                        let identity_pubkey = runtime.signer.public_key().to_hex();
+                        if let Err(error) = runtime.channels.refresh(&identity_pubkey).await {
+                            self.diagnostics
+                                .emit(DiagnosticEvent::AgentMentionValidated {
+                                    count: u32::try_from(agent_mentions_to_validate)
+                                        .unwrap_or(u32::MAX),
+                                    outcome: "refresh_failed".into(),
+                                });
+                            self.status_error = Some(format!(
+                                "remote agent revalidation failed; draft preserved ({error})"
+                            ));
+                            return Ok(());
+                        }
+                        let validation = self
+                            .store
+                            .call({
+                                let mentions = prepared_mentions.clone();
+                                let target = prepared_target.clone();
+                                move |store| {
+                                    store.validate_agent_mentions(
+                                        target.community_id,
+                                        target.channel_id,
+                                        &identity_pubkey,
+                                        &mentions,
+                                    )
+                                }
+                            })
+                            .await;
+                        if let Err(error) = validation {
+                            self.diagnostics
+                                .emit(DiagnosticEvent::AgentMentionValidated {
+                                    count: u32::try_from(agent_mentions_to_validate)
+                                        .unwrap_or(u32::MAX),
+                                    outcome: "ineligible".into(),
+                                });
+                            self.status_error = Some(format!(
+                                "remote agent mention not sent; draft preserved ({error})"
+                            ));
+                            return Ok(());
+                        }
+                        self.diagnostics
+                            .emit(DiagnosticEvent::AgentMentionValidated {
+                                count: u32::try_from(agent_mentions_to_validate)
+                                    .unwrap_or(u32::MAX),
+                                outcome: "eligible".into(),
+                            });
+                        self.last_directory_refresh = Instant::now();
+                        self.cache_dirty = true;
+                    }
                     // Persist the final edit before making its acknowledgement
                     // boundary durable. A send without a revision is refused:
                     // it could not be recovered after a failed acknowledgement.
@@ -3642,6 +3794,144 @@ impl App {
         self.presentation.open_overlay(Overlay::DmPicker);
     }
 
+    fn clear_agent_directory_state(&mut self) {
+        if let Some(task) = self.agent_directory_task.take() {
+            task.abort();
+        }
+        self.agent_directory = AgentDirectoryState::default();
+        if self.presentation.overlay == Some(Overlay::Agents) {
+            self.presentation.close_overlay();
+        }
+    }
+
+    fn open_agents(&mut self, refresh_remote: bool) {
+        let Some(community) = self.active_community_id() else {
+            self.status_error = Some("configure a community before opening agents".into());
+            return;
+        };
+        let Some(identity_pubkey) = self.self_pubkey().map(str::to_owned) else {
+            self.status_error = Some("an active identity is required to inspect agents".into());
+            return;
+        };
+        self.presentation.open_overlay(Overlay::Agents);
+        self.agent_directory.loading = true;
+        if let Some(task) = self.agent_directory_task.take() {
+            task.abort();
+        }
+        let refresh_unavailable = refresh_remote && self.runtime.is_none();
+        let service = refresh_remote
+            .then(|| {
+                self.runtime
+                    .as_ref()
+                    .map(|runtime| runtime.channels.clone())
+            })
+            .flatten();
+        let store = self.store.clone();
+        let tx = self.background_tx.clone();
+        let diagnostics = self.diagnostics.clone();
+        self.agent_directory_task = Some(tokio::spawn(async move {
+            let refresh_started = Instant::now();
+            let refresh = if let Some(service) = service {
+                service.refresh(&identity_pubkey).await.map(|report| {
+                    diagnostics.emit(DiagnosticEvent::AgentDirectoryRefreshed {
+                        candidates: u32::try_from(report.agent_candidates).unwrap_or(u32::MAX),
+                        verified: u32::try_from(report.verified_agents).unwrap_or(u32::MAX),
+                        projection_changes: u32::try_from(report.agent_projection_changes)
+                            .unwrap_or(u32::MAX),
+                        duration_ms: u64::try_from(refresh_started.elapsed().as_millis())
+                            .unwrap_or(u64::MAX),
+                    });
+                })
+            } else {
+                Ok(())
+            };
+            let notice = if refresh_unavailable {
+                Some(
+                    "cached read-only mode: remote agent refresh requires an unlocked identity"
+                        .into(),
+                )
+            } else {
+                refresh.err().map(|error| {
+                    format!("remote refresh unavailable; showing verified cache ({error})")
+                })
+            };
+            let result = store
+                .call(move |store| store.list_remote_agents(community, &identity_pubkey))
+                .await;
+            let event = match result {
+                Ok(agents) => Background::AgentsLoaded {
+                    community,
+                    agents,
+                    notice,
+                },
+                Err(error) => Background::Failed(error.to_string()),
+            };
+            let _ = tx.send(event).await;
+        }));
+    }
+
+    async fn agent_directory_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                if let Some(task) = self.agent_directory_task.take() {
+                    task.abort();
+                }
+                self.presentation.close_overlay();
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.agent_directory.move_by(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.agent_directory.move_by(1),
+            KeyCode::Char('r') => self.open_agents(true),
+            KeyCode::Char('m') | KeyCode::Enter => self.mention_selected_agent().await?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn mention_selected_agent(&mut self) -> Result<()> {
+        let Some(agent) = self.agent_directory.selected().cloned() else {
+            return Ok(());
+        };
+        let Some(channel) = self.current_channel().map(|channel| channel.id) else {
+            self.status_error = Some("select a channel before mentioning an agent".into());
+            return Ok(());
+        };
+        if !agent.channel_ids.contains(&channel) {
+            self.status_error =
+                Some("the verified remote agent is not a bot member of this channel".into());
+            return Ok(());
+        }
+        if agent.eligibility != crate::agents::Eligibility::Eligible {
+            self.status_error =
+                Some("the selected remote agent is not currently eligible for invocation".into());
+            return Ok(());
+        }
+        self.presentation.close_overlay();
+        self.enter_composer().await?;
+        if self.presentation.composer_target.is_none() {
+            return Ok(());
+        }
+        if self
+            .composer
+            .body
+            .chars()
+            .next_back()
+            .is_some_and(|character| !character.is_whitespace())
+        {
+            self.composer.insert(' ');
+        }
+        let start = self.composer.cursor;
+        if self
+            .composer
+            .accept_mention(start..start, &agent.name, &agent.pubkey)
+        {
+            self.composer.insert(' ');
+            self.persist_draft().await?;
+            self.status_error =
+                Some("remote agent mention inserted; review and send explicitly".into());
+        }
+        Ok(())
+    }
+
     fn hide_current_dm(&mut self) {
         let Some(runtime) = &self.runtime else {
             self.status_error = Some(
@@ -4142,8 +4432,11 @@ impl App {
                     }
                     self.presentation.close_overlay();
                 } else {
-                    self.execute_command().await?;
+                    // Close only the command prompt before executing. Commands
+                    // such as :search, :dm, and :agents may deliberately open
+                    // their own overlay, which must survive this dispatch.
                     self.presentation.close_overlay();
+                    self.execute_command().await?;
                 }
             }
             _ => {}
@@ -4284,6 +4577,8 @@ impl App {
                     runtime.supervisor.shutdown().await;
                     runtime.signer.lock().await;
                 }
+                self.clear_agent_directory_state();
+                self.presentation.close_overlay();
                 self.connection = ConnectionState::Locked;
                 self.status_error =
                     Some("identity locked for this process; restart bzz to unlock it again".into())
@@ -4316,6 +4611,7 @@ impl App {
             crate::ui::command::Command::Inbox => self.open_inbox(),
             crate::ui::command::Command::Search => self.open_search(),
             crate::ui::command::Command::Dm => self.open_dm_picker(None),
+            crate::ui::command::Command::Agents => self.open_agents(false),
             crate::ui::command::Command::DmHide => self.hide_current_dm(),
             crate::ui::command::Command::DmAdd => {
                 let channel = self
@@ -4413,6 +4709,8 @@ impl App {
                 self.search_state = SearchState::default();
                 self.dm_picker = DmPickerState::default();
                 self.dm_dirty_since = None;
+                self.clear_agent_directory_state();
+                self.presentation.close_overlay();
                 self.connection = ConnectionState::Connecting;
                 self.last_directory_refresh = Instant::now();
                 self.last_inbox_refresh = Instant::now();
@@ -4446,6 +4744,8 @@ impl App {
                     self.search_state = SearchState::default();
                     self.dm_picker = DmPickerState::default();
                     self.dm_dirty_since = None;
+                    self.clear_agent_directory_state();
+                    self.presentation.close_overlay();
                     self.connection = connection;
                     self.status_error = Some(error.to_string());
                     self.hydrate_cache().await?;
@@ -5104,6 +5404,7 @@ impl App {
             },
             Some(Overlay::Search) => "SEARCH",
             Some(Overlay::DmPicker) => "DM",
+            Some(Overlay::Agents) => "AGENTS",
             Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) | None
                 if self.presentation.composer_target.is_some() =>
             {
@@ -5290,6 +5591,16 @@ impl App {
                     }
                 }
                 crate::ui::search::render(frame, popup, &self.search_state, &self.theme);
+            }
+            Some(Overlay::Agents) => {
+                let popup = centered(area, 96, area.height.saturating_sub(2).min(34));
+                crate::ui::agents::render(
+                    frame,
+                    popup,
+                    &self.agent_directory,
+                    &self.theme,
+                    hit_map,
+                );
             }
             Some(Overlay::DmPicker) => {
                 let popup = centered(area, 86, area.height.saturating_sub(4).min(28));
@@ -5875,6 +6186,90 @@ mod tests {
             parent_event_id: None,
         });
         app
+    }
+
+    #[tokio::test]
+    async fn community_or_lock_reset_clears_stale_agent_directory_handles() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.agent_directory.selected_pubkey = Some("b".repeat(64));
+        app.presentation.open_overlay(Overlay::Agents);
+        app.clear_agent_directory_state();
+        assert_eq!(
+            app.agent_directory,
+            crate::ui::agents::AgentDirectoryState::default()
+        );
+        assert_eq!(app.presentation.overlay, None);
+    }
+
+    #[tokio::test]
+    async fn command_execution_preserves_the_overlay_opened_by_the_command() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.command = "agents".into();
+        app.presentation.open_overlay(Overlay::Command);
+        app.text_overlay_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), false)
+            .await
+            .unwrap();
+        assert_eq!(app.presentation.overlay, Some(Overlay::Agents));
+        if let Some(task) = app.agent_directory_task.take() {
+            task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn verified_remote_agent_overlay_renders_wide_and_narrow_with_hit_targets() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let community = app.active_community_id().unwrap();
+        let pubkey = "b".repeat(64);
+        app.agent_directory = crate::ui::agents::AgentDirectoryState {
+            agents: vec![crate::store::agents::RemoteAgentView {
+                schema_version: 1,
+                community_id: community,
+                pubkey: pubkey.clone(),
+                owner_pubkey: "c".repeat(64),
+                name: "Verified Worker".into(),
+                capabilities: vec!["messages".into()],
+                presence: crate::agents::Presence::Online,
+                respond_to: Some(crate::agents::RespondTo::Anyone),
+                respond_to_allowlist: Vec::new(),
+                eligibility: crate::agents::Eligibility::Eligible,
+                stale: false,
+                channel_ids: vec![Uuid::new_v4()],
+                last_verified_at: 1,
+            }],
+            selected_pubkey: Some(pubkey.clone()),
+            loading: false,
+        };
+        app.presentation.open_overlay(Overlay::Agents);
+        app.agent_directory.selected_pubkey = None;
+        assert!(app.select_remote_agent_mouse_target(&HitTarget::RemoteAgent(pubkey.clone())));
+        assert_eq!(
+            app.agent_directory.selected_pubkey.as_deref(),
+            Some(pubkey.as_str())
+        );
+        assert!(!app.select_remote_agent_mouse_target(&HitTarget::Timeline));
+
+        for (width, height) in [(120, 40), (72, 24)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let map = app.last_hit_map.as_ref().unwrap();
+            assert!(
+                map.area_of(&HitTarget::RemoteAgent(pubkey.clone()))
+                    .is_some(),
+                "agent row must remain clickable at {width}x{height}"
+            );
+            let screen = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(screen.contains("Verified Worker"));
+            assert!(screen.contains("remote agents"));
+        }
     }
 
     #[tokio::test]
@@ -6635,6 +7030,8 @@ mod tests {
             vec![MentionCandidate {
                 pubkey: "b".repeat(64),
                 label: "member".into(),
+                is_agent: false,
+                agent_eligibility: None,
             }],
         ));
         terminal.draw(|frame| app.render(frame)).unwrap();

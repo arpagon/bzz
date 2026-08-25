@@ -139,6 +139,7 @@ Useful conventions:
 | Channel / DM switcher | `space space` |
 | Search | `/` |
 | Inbox | `space n` |
+| Agents directory | type `:agents`, then `enter` |
 | Contextual actions | `space a` |
 | Theme options | `space o` |
 | Context | `4` or `enter` on a selected message |
@@ -253,6 +254,25 @@ herdr pane read "$BZZ_PANE" --source visible --format text \
 
 Visible output is supporting evidence; SQLite and the relay ACK remain the
 sources of truth for deduplication and acceptance.
+
+## 5.1 Remote-agent directory acceptance
+
+Prepare the deterministic public-agent fixture described in manual E2E section
+4.2 before launching bzz; never place an agent private key or model credential
+in Herdr commands. Open the overlay with explicit key events:
+
+```bash
+herdr pane send-keys "$BZZ_PANE" shift+:
+herdr_type_ascii "$BZZ_PANE" agents
+herdr pane send-keys "$BZZ_PANE" enter
+```
+
+Capture sanitized wide and narrow visible states. Exercise `j`/`k`, mouse row
+selection, `r`, `m`, resize, `esc`, community switch, and `:lock`. `m` must only
+insert an exact mention into the visible human composer; it must not publish.
+Verify the `◆ remote agent` marker, owner/policy/freshness explanation, and
+remote-runtime disclaimer without retaining pubkeys or channel content in
+screenshots.
 
 ## 6. Conversation and recovery
 

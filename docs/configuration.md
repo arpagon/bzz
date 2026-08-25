@@ -69,9 +69,24 @@ Only `wss://` root URLs are accepted by default. `ws://` requires both a
 loopback host and explicit acknowledgement. Credentials, queries, fragments,
 and non-root paths are rejected. Each relay authority is an isolated Buzz
 community; bzz never sends a client-selected tenant identifier. Inbox, DM
-visibility, and local FTS rows inherit that community/identity partition and
-have no separate configuration. Online Inbox/search use only the active
-community connection; locked mode is cache-only.
+visibility, local FTS rows, and the verified remote-agent directory inherit that
+community/identity partition and have no separate configuration. Online
+Inbox/search/agent refresh use only the active community connection; locked mode
+is cache-only.
+
+## Remote managed agents
+
+v0.11 has no `[agents]`, executable, prompt, provider, credential, environment,
+start-on-launch, or process configuration. `bzz agents list|show|refresh` and
+TUI `:agents` inspect bounded public relay projections only. Refresh requires
+the configured human identity so NIP-98 queries and relay membership remain
+community-authorized. List/show can read an already-verified local cache.
+
+Migration 0007 adds a reconstructable SQLite directory projection and preserves
+the exact `bot` role from relay-signed kind 39002 membership. It does not add an
+agent key to `[[identities]]` or revive retired `[[local_agents]]` values. The
+same agent pubkey is independently verified in every configured community.
+There is no local-hosting switch in this release.
 
 `ui.theme` selects the global built-in theme. An optional community `theme`
 field takes precedence only while that community is active. `ui.mouse = "auto"`

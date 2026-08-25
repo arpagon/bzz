@@ -14,9 +14,10 @@
    Smoke-test both the OS credential backend and encrypted fallback before
    publishing package-manager manifests.
 
-Cache schema changes are called out in release notes. Schema v5 adds the
-rebuildable, community/identity-scoped Inbox conversations projection while
-schema v4 added bounded local `drafts.mentions_json` metadata. Release
+Cache schema changes are called out in release notes. Schema v7 adds the
+rebuildable community-scoped remote-agent projection and exact bot-role index;
+schema v5 added the Inbox conversations projection while schema v4 added
+bounded local `drafts.mentions_json` metadata. Release
 validation must open upgraded v2/v3/v4 fixtures on Linux, macOS, and Windows,
 pass FTS and Inbox-projection integrity/rebuild checks, verify owner-only 30622
 isolation and Inbox identity/DM fences, and confirm malformed stored mention
@@ -35,6 +36,14 @@ For v0.10, verify that an older top-level `[[local_agents]]` configuration is
 removed atomically while every other unknown field remains rejected. Confirm
 that CLI help and current docs expose no retired Codex-drafter surface and do
 not claim managed-agent support.
+
+For v0.11, verify exact relay-signed bot membership, NIP-OA owner binding,
+agent-authored profile/declaration, owner-authored policy, DM hardening,
+community isolation, staleness/removal, and exact send-time `p`-tag
+revalidation. The pinned relay fixture must use a deterministic remote identity
+without an LLM or ACP process. Release CLI/TUI language must say remote and
+expose no create/start/stop/exec/log/runtime-hosting surface. Agent diagnostics
+must remain local-only and content-free.
 
 For v0.4 and later interaction changes, also run the deterministic functional
 TUI harness in ordinary CI and record a controlled release-binary Herdr

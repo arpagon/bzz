@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod dm;
 pub mod events;
 pub mod inbox;

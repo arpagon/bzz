@@ -39,6 +39,11 @@ enum Command {
         #[command(subcommand)]
         command: CommunityCommand,
     },
+    /// Inspect verified remote managed agents; bzz does not control their runtimes.
+    Agents {
+        #[command(subcommand)]
+        command: AgentsCommand,
+    },
     /// Manage cached conversation data.
     Cache {
         #[command(subcommand)]
@@ -179,6 +184,30 @@ enum CommunityCommand {
     },
     Default {
         id: Uuid,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AgentsCommand {
+    /// List verified remote agents in one configured community.
+    List {
+        #[arg(long)]
+        community: Option<Uuid>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one verified remote agent and its public policy.
+    Show {
+        agent_pubkey: String,
+        #[arg(long)]
+        community: Option<Uuid>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Refresh public agent records through the authenticated relay API.
+    Refresh {
+        #[arg(long)]
+        community: Option<Uuid>,
     },
 }
 
@@ -324,6 +353,7 @@ async fn run() -> Result<()> {
         Some(Command::Community { command }) => {
             community_command(command, &paths, &mut config).await
         }
+        Some(Command::Agents { command }) => agents_command(command, &paths, &config).await,
         Some(Command::Cache { command }) => cache_command(command, &paths, &mut config),
         Some(Command::Media { command }) => media_command(command, &paths, &config),
         Some(Command::Diagnostics { command }) => diagnostics_command(command, &paths),
@@ -641,6 +671,173 @@ async fn community_command(
             config.save(paths)
         }
     }
+}
+
+async fn agents_command(command: AgentsCommand, paths: &Paths, config: &Config) -> Result<()> {
+    match command {
+        AgentsCommand::List { community, json } => {
+            let community = selected_community(config, community)?;
+            let identity = find_identity(config, community.identity_id)?;
+            let mut store = Store::open(paths.database_file())?;
+            store.sync_config(config)?;
+            let agents = store.list_remote_agents(community.id, &identity.pubkey)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "schema_version": 1,
+                        "community_id": community.id,
+                        "runtime_control": "remote",
+                        "agents": agents,
+                    }))
+                    .map_err(|error| Error::Serialization(error.to_string()))?
+                );
+            } else if agents.is_empty() {
+                println!(
+                    "no verified remote agents cached for {}; run `bzz agents refresh --community {}`",
+                    community.label, community.id
+                );
+            } else {
+                println!("verified remote agents — bzz does not control their runtimes");
+                for agent in agents {
+                    println!(
+                        "{}\t{}\towner={}\t{}\t{}\tpolicy={}\tchannels={}",
+                        agent.pubkey,
+                        agent.name,
+                        bzz::domain::abbreviated_pubkey(&agent.owner_pubkey),
+                        agent.eligibility.as_str(),
+                        agent.presence.as_str(),
+                        agent
+                            .respond_to
+                            .map_or("unknown", bzz::agents::RespondTo::as_str),
+                        agent.channel_ids.len(),
+                    );
+                }
+            }
+            Ok(())
+        }
+        AgentsCommand::Show {
+            agent_pubkey,
+            community,
+            json,
+        } => {
+            let agent_pubkey = nostr::PublicKey::from_hex(&agent_pubkey)
+                .map_err(|_| Error::Config("agent pubkey must be 64-character hex".into()))?
+                .to_hex();
+            let mut store = Store::open(paths.database_file())?;
+            store.sync_config(config)?;
+            let mut matches = Vec::new();
+            if let Some(community_id) = community {
+                let community = selected_community(config, Some(community_id))?;
+                let identity = find_identity(config, community.identity_id)?;
+                if let Some(agent) =
+                    store.remote_agent(community.id, &agent_pubkey, &identity.pubkey, None)?
+                {
+                    matches.push((community.label.clone(), agent));
+                }
+            } else {
+                for community in &config.communities {
+                    let identity = find_identity(config, community.identity_id)?;
+                    if let Some(agent) =
+                        store.remote_agent(community.id, &agent_pubkey, &identity.pubkey, None)?
+                    {
+                        matches.push((community.label.clone(), agent));
+                    }
+                }
+                if matches.len() > 1 {
+                    return Err(Error::Config(
+                        "agent exists in more than one community; pass --community <uuid>".into(),
+                    ));
+                }
+            }
+            let Some((community_label, agent)) = matches.into_iter().next() else {
+                return Err(Error::Config(
+                    "verified remote agent is not cached in the selected community".into(),
+                ));
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "schema_version": 1,
+                        "runtime_control": "remote",
+                        "agent": agent,
+                    }))
+                    .map_err(|error| Error::Serialization(error.to_string()))?
+                );
+            } else {
+                println!("remote managed agent — runtime is not controlled by bzz");
+                println!("community:   {community_label}");
+                println!("name:        {}", agent.name);
+                println!("pubkey:      {}", agent.pubkey);
+                println!("owner:       {}", agent.owner_pubkey);
+                println!("eligibility: {}", agent.eligibility.as_str());
+                println!(
+                    "policy:      {}",
+                    agent
+                        .respond_to
+                        .map_or("unknown", bzz::agents::RespondTo::as_str)
+                );
+                println!("presence:    {}", agent.presence.as_str());
+                println!("allowlist:   {} entries", agent.respond_to_allowlist.len());
+                println!("channels:    {}", agent.channel_ids.len());
+                println!("capabilities: {}", agent.capabilities.join(", "));
+                println!("verified at: {}", agent.last_verified_at);
+            }
+            Ok(())
+        }
+        AgentsCommand::Refresh { community } => {
+            let community = selected_community(config, community)?.clone();
+            let identity = find_identity(config, community.identity_id)?.clone();
+            let passphrase = identity_passphrase(&identity, "Identity passphrase: ", false)?;
+            let keys = IdentityManager::new(paths).unlock(&identity, passphrase.as_ref())?;
+            let signer = bzz::auth::signer::SignerHandle::spawn(keys);
+            let endpoint = bzz::config::validate_relay_url(
+                &community.relay_url,
+                community.allow_insecure_localhost,
+            )?;
+            let http = bzz::protocol::http::HttpClient::new(endpoint.http_base, signer)?;
+            let mut store = Store::open(paths.database_file())?;
+            store.sync_config(config)?;
+            let nip11 = http.nip11().await?;
+            let relay_pubkey =
+                bzz::protocol::http::relay_signing_pubkey(&nip11).ok_or_else(|| {
+                    Error::Protocol("NIP-11 document has no relay signing key".into())
+                })?;
+            store.pin_relay_pubkey(community.id, relay_pubkey)?;
+            let handle = StoreHandle::spawn(store)?;
+            let report =
+                bzz::sync::directory::refresh(community.id, &identity.pubkey, &http, &handle)
+                    .await?;
+            println!(
+                "remote agent directory refreshed: candidates={} verified={} public_events={} projection_changes={} (bzz controls no remote runtime)",
+                report.agent_candidates,
+                report.verified_agents,
+                report.agent_public_events,
+                report.agent_projection_changes,
+            );
+            Ok(())
+        }
+    }
+}
+
+fn selected_community(
+    config: &Config,
+    requested: Option<Uuid>,
+) -> Result<&bzz::config::CommunityConfig> {
+    let id = requested
+        .or(config.default_community)
+        .or_else(|| (config.communities.len() == 1).then(|| config.communities[0].id))
+        .ok_or_else(|| {
+            Error::Config(
+                "select a community with --community <uuid> or configure a default".into(),
+            )
+        })?;
+    config
+        .communities
+        .iter()
+        .find(|community| community.id == id)
+        .ok_or_else(|| Error::Config(format!("community {id} does not exist")))
 }
 
 fn cache_command(command: CacheCommand, paths: &Paths, config: &mut Config) -> Result<()> {

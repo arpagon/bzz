@@ -109,6 +109,8 @@ impl DraftMention {
 pub struct MentionCandidate {
     pub pubkey: String,
     pub label: String,
+    pub is_agent: bool,
+    pub agent_eligibility: Option<crate::agents::Eligibility>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

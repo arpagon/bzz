@@ -122,12 +122,33 @@ impl Store {
                 ));
             }
             let channel = &d_tags[0];
-            let pubkeys = crate::protocol::events::tag_values(event, "p");
-            if pubkeys.len() > 10_000
-                || pubkeys.iter().any(|pubkey| {
+            let members = event
+                .tags
+                .iter()
+                .filter_map(|tag| {
+                    let values = tag.as_slice();
+                    if values.first().map(String::as_str) != Some("p") {
+                        return None;
+                    }
+                    let pubkey = values.get(1)?.clone();
+                    let role = if values.get(3).map(String::as_str) == Some("bot") {
+                        "bot"
+                    } else {
+                        "member"
+                    };
+                    Some((pubkey, role))
+                })
+                .collect::<Vec<_>>();
+            if members.len() > 10_000
+                || members.iter().any(|(pubkey, _)| {
                     pubkey.len() != 64 || !pubkey.bytes().all(|byte| byte.is_ascii_hexdigit())
                 })
-                || pubkeys.iter().collect::<BTreeSet<_>>().len() != pubkeys.len()
+                || members
+                    .iter()
+                    .map(|(pubkey, _)| pubkey)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != members.len()
             {
                 return Err(Error::Protocol(
                     "membership snapshot has an invalid or oversized participant set".into(),
@@ -140,7 +161,7 @@ impl Store {
                     |row| row.get(0),
                 )
                 .optional()?;
-            if channel_type.as_deref() == Some("dm") && !(2..=9).contains(&pubkeys.len()) {
+            if channel_type.as_deref() == Some("dm") && !(2..=9).contains(&members.len()) {
                 return Err(Error::Protocol(
                     "DM membership snapshot must contain 2-9 participants".into(),
                 ));
@@ -173,10 +194,10 @@ impl Store {
                     "DELETE FROM memberships WHERE community_id=?1 AND channel_id=?2",
                     params![community_id.to_string(), channel],
                 )?;
-                for pubkey in pubkeys {
+                for (pubkey, role) in members {
                     transaction.execute(
-                        "INSERT INTO memberships(community_id,channel_id,pubkey,source_event_id) VALUES(?1,?2,?3,?4)",
-                        params![community_id.to_string(),channel,pubkey,source_event_id],
+                        "INSERT INTO memberships(community_id,channel_id,pubkey,role,source_event_id) VALUES(?1,?2,?3,?4,?5)",
+                        params![community_id.to_string(),channel,pubkey,role,source_event_id],
                     )?;
                 }
                 transaction.execute(
@@ -238,6 +259,12 @@ impl Store {
         )?;
         crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
         transaction.commit()?;
+        if event.kind.as_u16() == 39_002 {
+            // Membership is the bounded candidate authority. Public agent
+            // records are reconciled in one coalesced pass after directory
+            // hydration instead of writing once per profile/policy event.
+            self.reconcile_remote_agents(community_id)?;
+        }
         Ok(true)
     }
 
