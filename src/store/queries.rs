@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use nostr::{Event, JsonUtil as _};
 use rusqlite::{OptionalExtension as _, params};
@@ -147,8 +147,16 @@ impl Store {
                 "thread summary query exceeds the 500-root cap".into(),
             ));
         }
+        if root_event_ids.iter().collect::<HashSet<_>>().len() != root_event_ids.len() {
+            return Err(Error::Config(
+                "thread summary query contains duplicate roots".into(),
+            ));
+        }
         if root_event_ids.iter().any(|event_id| {
-            event_id.len() != 64 || !event_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+            event_id.len() != 64
+                || !event_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
         }) {
             return Err(Error::Protocol(
                 "thread summary query has an invalid root event ID".into(),

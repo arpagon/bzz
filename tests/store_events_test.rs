@@ -546,6 +546,11 @@ fn thread_summaries_count_delivered_non_deleted_descendants() {
             .unwrap()
             .is_empty()
     );
+    assert!(
+        store
+            .thread_summaries(community, channel, &[root.id.to_hex(), root.id.to_hex()])
+            .is_err()
+    );
 }
 
 #[test]

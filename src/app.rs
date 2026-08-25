@@ -1293,10 +1293,11 @@ impl App {
 
     fn apply_live_thread_summary(&mut self, summary: LiveThreadSummary) -> bool {
         if self.current_channel().map(|channel| channel.id) != Some(summary.channel_id)
-            || !self
-                .messages
-                .iter()
-                .any(|message| message.event_id == summary.root_event_id)
+            || !self.messages.iter().any(|message| {
+                message.event_id == summary.root_event_id
+                    && message.root_event_id.is_none()
+                    && message.system.is_none()
+            })
         {
             return false;
         }
