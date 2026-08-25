@@ -1,6 +1,6 @@
 # bzz v0.11.0 — Verified remote managed agents
 
-**Status:** Release candidate
+**Status:** Released 2026-08-25
 
 v0.11.0 adds relay-only interoperability with existing Buzz managed agents.
 bzz verifies ownership and public policy, presents a community-scoped directory,
@@ -100,6 +100,7 @@ exact human-authored mention, receives a deterministic agent-signed reaction
 and threaded reply, and validates local projection. It starts no LLM, ACP
 adapter, tool, memory, or observer process.
 
-Full evidence is tracked in [`validation-v0.11.0.md`](validation-v0.11.0.md).
+Full evidence is tracked in [`validation-v0.11.0.md`](validation-v0.11.0.md)
+and [`release-v0.11.0-verification.md`](release-v0.11.0-verification.md).
 The trust decision is in
 [`adr-v0.11-remote-managed-agent-interoperability.md`](adr-v0.11-remote-managed-agent-interoperability.md).

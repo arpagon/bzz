@@ -1,6 +1,6 @@
 # v0.11.0 validation record
 
-**Status:** Release candidate
+**Status:** Released 2026-08-25
 
 **Candidate:** `0.11.0`
 
@@ -134,13 +134,17 @@ cleaned the disposable Docker project.
 
 ## Cross-platform and publication
 
-- [x] Linux, Windows, Intel macOS, and Apple Silicon macOS CI — run
-  [`32814185676`](https://github.com/arpagon/bzz/actions/runs/32814185676)
-  passed at `889d482`
-- [ ] release workflow and expected assets
-- [ ] aggregate and individual checksums
-- [ ] SLSA provenance for platform archives, source, and SBOM
-- [ ] CycloneDX application/version/component validation
-- [ ] downloaded Linux version/check/agents smoke
-- [ ] native-keychain and encrypted-file credential regression
-- [ ] published-artifact verification record
+- [x] Linux, Windows, Intel macOS, and Apple Silicon macOS CI — implementation
+  run [`32814185676`](https://github.com/arpagon/bzz/actions/runs/32814185676)
+  and tagged-head run
+  [`32814760395`](https://github.com/arpagon/bzz/actions/runs/32814760395)
+- [x] release workflow
+  [`32815397127`](https://github.com/arpagon/bzz/actions/runs/32815397127)
+  published all 18 expected assets
+- [x] aggregate and every individual checksum
+- [x] SLSA provenance v1 for five platform archives, source, and SBOM
+- [x] CycloneDX 1.3 application `bzz` v0.11.0 with 411 components
+- [x] downloaded Linux version/check/schema-v7/agents/no-hosting smoke
+- [x] native-keychain and encrypted-file credential regression
+- [x] published-artifact verification in
+  [`release-v0.11.0-verification.md`](release-v0.11.0-verification.md)
