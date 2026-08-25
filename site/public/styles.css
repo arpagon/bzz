@@ -1,0 +1,605 @@
+/* bzz — getbzz.dev
+   Theme tokens mirror src/ui/theme/builtin.rs palettes.
+   Default: "bzz" brand identity (honey amber on near-black). */
+
+:root,
+[data-theme="bzz"] {
+  --bg: #0e0c08;
+  --surface: #1a1712;
+  --surface-dark: #14110d;
+  --text: #ece5d8;
+  --muted: #8a8272;
+  --border: #2e2a20;
+  --primary: #5ec8d8;
+  --accent: #ffb000;
+  --warning: #ffb000;
+  --error: #e05561;
+  --selection: #262630;
+}
+
+[data-theme="dracula"] {
+  --bg: #282a36;
+  --surface: #343746;
+  --surface-dark: #21222c;
+  --text: #f8f8f2;
+  --muted: #6272a4;
+  --border: #44475a;
+  --primary: #bd93f9;
+  --accent: #50fa7b;
+  --warning: #ffb86c;
+  --error: #ff5555;
+  --selection: #44475a;
+}
+
+[data-theme="nord"] {
+  --bg: #2e3440;
+  --surface: #3b4252;
+  --surface-dark: #242933;
+  --text: #eceff4;
+  --muted: #7b88a1;
+  --border: #4c566a;
+  --primary: #88c0d0;
+  --accent: #a3be8c;
+  --warning: #ebcb8b;
+  --error: #bf616a;
+  --selection: #434c5e;
+}
+
+[data-theme="gruvbox-dark"] {
+  --bg: #282828;
+  --surface: #3c3836;
+  --surface-dark: #1d2021;
+  --text: #ebdbb2;
+  --muted: #928374;
+  --border: #504945;
+  --primary: #83a598;
+  --accent: #fabd2f;
+  --warning: #fabd2f;
+  --error: #fb4934;
+  --selection: #3c3836;
+}
+
+[data-theme="catppuccin-mocha"] {
+  --bg: #1e1e2e;
+  --surface: #313244;
+  --surface-dark: #181825;
+  --text: #cdd6f4;
+  --muted: #6c7086;
+  --border: #45475a;
+  --primary: #89b4fa;
+  --accent: #f9e2af;
+  --warning: #f9e2af;
+  --error: #f38ba8;
+  --selection: #45475a;
+}
+
+[data-theme="tokyo-night"] {
+  --bg: #1a1b26;
+  --surface: #24283b;
+  --surface-dark: #16161e;
+  --text: #c0caf5;
+  --muted: #565f89;
+  --border: #3b4261;
+  --primary: #7aa2f7;
+  --accent: #e0af68;
+  --warning: #e0af68;
+  --error: #f7768e;
+  --selection: #2e3452;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "SF Mono", SFMono-Regular, ui-monospace, "JetBrains Mono",
+    Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 16px;
+  line-height: 1.6;
+  transition: background 0.25s ease, color 0.25s ease;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+.wrap {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 1.25rem;
+}
+
+/* ---- nav ---- */
+
+nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+nav .brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--text);
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+nav .brand:hover {
+  text-decoration: none;
+}
+
+nav .brand img,
+nav .brand svg {
+  width: 28px;
+  height: 28px;
+}
+
+nav .links {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  font-size: 0.9rem;
+}
+
+nav .links a {
+  color: var(--muted);
+}
+
+nav .links a:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+/* ---- theme switcher ---- */
+
+.themes {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.themes button {
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  padding: 0;
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
+  transition: transform 0.15s ease;
+}
+
+.themes button:hover {
+  transform: scale(1.25);
+}
+
+.themes button[aria-pressed="true"] {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.themes-label {
+  color: var(--muted);
+  font-size: 0.75rem;
+  margin-right: 0.25rem;
+}
+
+/* ---- hero ---- */
+
+header.hero {
+  text-align: center;
+  padding: 5rem 0 3.5rem;
+}
+
+.hero .mark {
+  width: 88px;
+  height: 88px;
+  margin: 0 auto 1.5rem;
+}
+
+.hero h1 {
+  font-size: clamp(2.5rem, 7vw, 4rem);
+  letter-spacing: -0.02em;
+  color: var(--accent);
+}
+
+.hero p.tag {
+  color: var(--muted);
+  font-size: 1.15rem;
+  margin-top: 0.5rem;
+}
+
+.hero p.tag b {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.install-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 2rem;
+  background: var(--surface-dark);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.8rem 1.1rem;
+  font-size: 0.95rem;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.install-line .prompt {
+  color: var(--accent);
+  user-select: none;
+}
+
+.install-line code {
+  white-space: nowrap;
+}
+
+.install-line button {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.55rem;
+  flex-shrink: 0;
+}
+
+.install-line button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.hero .cta {
+  margin-top: 1.5rem;
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  font-size: 0.9rem;
+}
+
+.hero .cta a {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 1.2rem;
+  color: var(--text);
+}
+
+.hero .cta a.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+  font-weight: 700;
+}
+
+.hero .cta a:hover {
+  text-decoration: none;
+  border-color: var(--accent);
+}
+
+/* ---- screenshot ---- */
+
+.shot {
+  margin: 1rem 0 0;
+}
+
+.shot .term {
+  background: var(--surface-dark);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgb(0 0 0 / 0.45);
+}
+
+.shot .term-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.shot .term-bar span {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--border);
+}
+
+.shot .term-bar .title {
+  flex: 1;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.shot .placeholder {
+  padding: 3.5rem 1rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* ---- sections ---- */
+
+section {
+  padding: 4.5rem 0 0;
+}
+
+.kicker {
+  color: var(--accent);
+  font-size: 0.8rem;
+  text-transform: lowercase;
+  letter-spacing: 0.12em;
+}
+
+.kicker::before {
+  content: "⬡ ";
+}
+
+section > .wrap > h2,
+section h2.head {
+  font-size: clamp(1.5rem, 4vw, 2.1rem);
+  letter-spacing: -0.01em;
+  margin: 0.4rem 0 2rem;
+}
+
+/* ---- stats ---- */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-top: 3rem;
+}
+
+.stats div {
+  background: var(--surface-dark);
+  padding: 1.4rem 1rem;
+  text-align: center;
+}
+
+.stats b {
+  display: block;
+  font-size: 1.5rem;
+  color: var(--accent);
+}
+
+.stats span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+/* ---- features ---- */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1rem;
+}
+
+.card {
+  background: var(--surface-dark);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.4rem;
+  transition: border-color 0.2s ease;
+}
+
+.card:hover {
+  border-color: var(--accent);
+}
+
+.card .k {
+  color: var(--accent);
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+}
+
+.card h3 {
+  font-size: 1.02rem;
+  margin: 0.35rem 0 0.5rem;
+}
+
+.card p {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.card code {
+  background: var(--selection);
+  border-radius: 4px;
+  padding: 0.05rem 0.35rem;
+  font-size: 0.82em;
+}
+
+/* ---- keys ---- */
+
+.keys {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1.5rem 2.5rem;
+}
+
+.keys h3 {
+  font-size: 0.9rem;
+  color: var(--accent);
+  margin-bottom: 0.8rem;
+}
+
+.keys dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.45rem 1rem;
+  font-size: 0.85rem;
+}
+
+.keys dt kbd {
+  background: var(--selection);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 0.08rem 0.42rem;
+  font: inherit;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.keys dd {
+  color: var(--muted);
+}
+
+/* ---- install tabs ---- */
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0;
+}
+
+.tabs button {
+  background: var(--surface-dark);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.5rem 1rem;
+}
+
+.tabs button[aria-selected="true"] {
+  background: var(--selection);
+  color: var(--accent);
+}
+
+.panel {
+  background: var(--surface-dark);
+  border: 1px solid var(--border);
+  border-radius: 0 10px 10px 10px;
+  padding: 1.2rem;
+}
+
+.panel[hidden] {
+  display: none;
+}
+
+.panel pre {
+  overflow-x: auto;
+  font-size: 0.85rem;
+  line-height: 1.7;
+}
+
+.panel .note {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-top: 0.8rem;
+}
+
+/* ---- security ---- */
+
+.sec-list {
+  list-style: none;
+  display: grid;
+  gap: 0.7rem;
+  max-width: 760px;
+}
+
+.sec-list li {
+  padding-left: 1.6rem;
+  position: relative;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.sec-list li::before {
+  content: "⬡";
+  position: absolute;
+  left: 0;
+  color: var(--accent);
+}
+
+.sec-list li b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ---- footer ---- */
+
+footer {
+  margin-top: 5rem;
+  border-top: 1px solid var(--border);
+  padding: 2.5rem 0 3rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+footer .disclaimer {
+  max-width: 640px;
+  margin: 0.8rem auto 0;
+  font-size: 0.75rem;
+}
+
+@media (max-width: 640px) {
+  nav .links {
+    gap: 0.8rem;
+  }
+
+  .themes-label {
+    display: none;
+  }
+
+  header.hero {
+    padding: 3.5rem 0 2.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  body,
+  .card,
+  .themes button {
+    transition: none;
+  }
+}

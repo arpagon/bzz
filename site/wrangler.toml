@@ -1,0 +1,6 @@
+# getbzz.dev — Cloudflare Pages project.
+# Deploy: npx wrangler pages deploy public --project-name getbzz-dev --branch main
+name = "getbzz-dev"
+account_id = "c2a86d15709455f1a4c6be8b3ef3300e"
+pages_build_output_dir = "public"
+compatibility_date = "2026-08-01"

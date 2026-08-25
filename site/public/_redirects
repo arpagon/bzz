@@ -1,0 +1,3 @@
+/install.sh https://github.com/arpagon/bzz/releases/latest/download/bzz-installer.sh 302
+/install.ps1 https://github.com/arpagon/bzz/releases/latest/download/bzz-installer.ps1 302
+https://www.getbzz.dev/* https://getbzz.dev/:splat 301

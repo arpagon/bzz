@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en" data-theme="bzz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bzz — a human-first terminal client for Buzz</title>
+<meta name="description" content="bzz is a human-first terminal client for Buzz: fast keyboard navigation, local offline history, native Nostr authentication, and host-isolated communities. One Rust binary, 60 themes.">
+<link rel="canonical" href="https://getbzz.dev/">
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/styles.css">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://getbzz.dev/">
+<meta property="og:title" content="bzz — a human-first terminal client for Buzz">
+<meta property="og:description" content="Fast keyboard navigation, offline history, native Nostr auth, host-isolated communities. One Rust binary, 60 themes.">
+<meta property="og:image" content="https://getbzz.dev/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="bzz — a human-first terminal client for Buzz">
+<meta name="twitter:description" content="Fast keyboard navigation, offline history, native Nostr auth, host-isolated communities. One Rust binary, 60 themes.">
+<meta name="twitter:image" content="https://getbzz.dev/assets/og.png">
+</head>
+<body>
+
+<div class="wrap">
+<nav>
+  <a class="brand" href="/">
+    <svg viewBox="0 0 64 64" fill="none" width="28" height="28" aria-hidden="true">
+      <path d="M32 4 L56 18 V46 L32 60 L8 46 V18 Z" stroke="var(--accent)" stroke-width="4.5" stroke-linejoin="round"/>
+      <rect x="19" y="23" width="26" height="5" rx="2.5" fill="var(--accent)"/>
+      <rect x="19" y="33" width="17" height="5" rx="2.5" fill="var(--accent)"/>
+      <rect x="19" y="43" width="10" height="5" rx="2.5" fill="var(--accent)"/>
+      <rect x="33" y="43" width="6" height="5" rx="1" fill="var(--accent)"/>
+    </svg>
+    bzz
+  </a>
+  <div class="links">
+    <a href="#features">features</a>
+    <a href="#keys">keys</a>
+    <a href="#install">install</a>
+    <a href="https://github.com/arpagon/bzz">github</a>
+    <div class="themes" role="group" aria-label="Site theme, mirrors bzz built-in themes">
+      <span class="themes-label">theme</span>
+      <button data-set-theme="bzz" style="background:#ffb000" aria-pressed="true" title="bzz"></button>
+      <button data-set-theme="dracula" style="background:#bd93f9" aria-pressed="false" title="Dracula"></button>
+      <button data-set-theme="nord" style="background:#88c0d0" aria-pressed="false" title="Nord"></button>
+      <button data-set-theme="gruvbox-dark" style="background:#fabd2f" aria-pressed="false" title="Gruvbox Dark"></button>
+      <button data-set-theme="catppuccin-mocha" style="background:#89b4fa" aria-pressed="false" title="Catppuccin Mocha"></button>
+      <button data-set-theme="tokyo-night" style="background:#7aa2f7" aria-pressed="false" title="Tokyo Night"></button>
+    </div>
+  </div>
+</nav>
+</div>
+
+<header class="hero">
+<div class="wrap">
+  <svg class="mark" viewBox="0 0 64 64" fill="none" role="img" aria-label="bzz logo: a honeycomb cell holding terminal text lines">
+    <path d="M32 4 L56 18 V46 L32 60 L8 46 V18 Z" stroke="var(--accent)" stroke-width="4.5" stroke-linejoin="round"/>
+    <rect x="19" y="23" width="26" height="5" rx="2.5" fill="var(--accent)"/>
+    <rect x="19" y="33" width="17" height="5" rx="2.5" fill="var(--accent)"/>
+    <rect x="19" y="43" width="10" height="5" rx="2.5" fill="var(--accent)"/>
+    <rect x="33" y="43" width="6" height="5" rx="1" fill="var(--accent)"/>
+  </svg>
+  <h1>bzz</h1>
+  <p class="tag">a <b>human-first</b> terminal client for <a href="https://github.com/block/buzz">Buzz</a></p>
+  <div class="install-line">
+    <span class="prompt">$</span>
+    <code id="install-cmd">curl -fsSL https://getbzz.dev/install.sh | sh</code>
+    <button type="button" data-copy="#install-cmd">copy</button>
+  </div>
+  <div class="cta">
+    <a class="primary" href="#install">Install</a>
+    <a href="https://github.com/arpagon/bzz/releases/latest">Releases</a>
+    <a href="https://github.com/arpagon/bzz#readme">Docs</a>
+  </div>
+</div>
+</header>
+
+<div class="wrap shot">
+  <div class="term">
+    <div class="term-bar">
+      <span></span><span></span><span></span>
+      <div class="title">bzz — #general · my-team</div>
+    </div>
+    <!-- Real capture via bzz-visual-capture goes here as /assets/screenshot.png -->
+    <div class="placeholder">screenshot: real TUI capture pending (bzz-visual-capture)</div>
+  </div>
+
+  <div class="stats">
+    <div><b>1</b><span>static Rust binary</span></div>
+    <div><b>60</b><span>built-in themes</span></div>
+    <div><b>offline</b><span>SQLite-backed history</span></div>
+    <div><b>100%</b><span>keyboard-driven</span></div>
+  </div>
+</div>
+
+<section id="why">
+<div class="wrap">
+  <span class="kicker">why bzz</span>
+  <h2>Your keys, your history, your terminal.</h2>
+  <div class="grid">
+    <div class="card">
+      <span class="k">/// identity</span>
+      <h3>Native Nostr identity, in your OS keychain</h3>
+      <p>No third-party account. Secret keys live in the operating-system
+      credential store and never pass through argv or plain environment
+      variables. Backups are password-encrypted NIP-49 <code>ncryptsec</code> files.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// communities</span>
+      <h3>Host-isolated communities</h3>
+      <p>Each Buzz community stays isolated by host. Configure several,
+      authenticate one active session, and switch without mixing state.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// offline</span>
+      <h3>Offline-first everything</h3>
+      <p>Channel history, profiles, threads, unread markers, and drafts are
+      cached locally. Read and draft on a plane; sync when you reconnect.</p>
+    </div>
+  </div>
+</div>
+</section>
+
+<section id="features">
+<div class="wrap">
+  <span class="kicker">what you get</span>
+  <h2>All of Buzz, at terminal speed.</h2>
+  <div class="grid">
+    <div class="card">
+      <span class="k">/// sends</span>
+      <h3>Acknowledged sends, honest failures</h3>
+      <p>Durable ambiguous-outcome recovery with distinct pending,
+      delivery-unknown, and rejected presentation. You always know what the
+      relay actually accepted.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// inbox</span>
+      <h3>An Inbox that respects your attention</h3>
+      <p>Mentions, relevant threads, workspace DMs, needs-action events,
+      unread rows, and drafts — filterable, with explicit read/unread state.
+      Nothing is silently marked read.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// search</span>
+      <h3>Unified local + relay search</h3>
+      <p>Offline SQLite FTS5 plus authenticated NIP-50 prefix search across
+      channels, DMs, people, and messages, with <code>from:</code>, <code>in:</code>,
+      and date operators.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// dms</span>
+      <h3>Workspace DMs, honestly labeled</h3>
+      <p>Buzz Desktop-compatible one-to-one and group DMs with owner-only
+      hide state — and explicit labeling that they are not end-to-end
+      encrypted.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// media</span>
+      <h3>Inline images, verified first</h3>
+      <p>JPEG/PNG/GIF/WebP render through Kitty, Sixel, iTerm2, or a Unicode
+      half-block fallback. Every blob is size, MIME, and SHA-256 verified
+      before decode or display.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// attachments</span>
+      <h3>Safe uploads, sanitized by default</h3>
+      <p>Paste files or images with <code>Ctrl-V</code>, pick with the OS chooser.
+      Local images are bounded, orientation-corrected, and stripped of
+      private metadata before upload.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// navigation</span>
+      <h3>Vim-style, leader-key driven</h3>
+      <p><code>j</code>/<code>k</code> to move, <code>Space Space</code> for the fuzzy
+      switcher, <code>i</code> to write, <code>?</code> for the generated keymap help.
+      Mouse optional, semantic, and safely restored.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// themes</span>
+      <h3>60 built-in themes</h3>
+      <p>Plus semantic <code>theme.toml</code> customization. This page's theme
+      switcher uses the same palettes — try it in the nav.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// reactions</span>
+      <h3>Reactions, deletion, read state</h3>
+      <p>Reaction toggles, own-message deletion, and encrypted cross-device
+      read state, all from the keyboard.</p>
+    </div>
+  </div>
+</div>
+</section>
+
+<section id="security">
+<div class="wrap">
+  <span class="kicker">security</span>
+  <h2>Security is a feature, not a footnote.</h2>
+  <ul class="sec-list">
+    <li><b>Keychain-first secrets.</b> OS credential store by default;
+    encrypted-file backend prompts on the controlling terminal only.</li>
+    <li><b>NIP-49 encrypted backups.</b> Created atomically with owner-only
+    permissions; restore without changing identity or communities.</li>
+    <li><b>Scoped media fetching.</b> Only descriptor-backed media on the
+    active community origin is fetched; arbitrary Markdown URLs stay inert.</li>
+    <li><b>Short-lived Blossom auth.</b> Content-addressed read authorizations,
+    never sent to another origin; no redirects on main blob fetches.</li>
+    <li><b>No silent execution.</b> Generic files are never auto-downloaded or
+    executed. Copy to clipboard is explicit, via OSC 52.</li>
+    <li><b>Verifiable releases.</b> SHA-256 checksums, CycloneDX SBOMs, and
+    GitHub build-provenance attestations on every tagged release.</li>
+  </ul>
+</div>
+</section>
+
+<section id="keys">
+<div class="wrap">
+  <span class="kicker">keybindings</span>
+  <h2>Everything is a keystroke away.</h2>
+  <div class="keys">
+    <div>
+      <h3>Movement</h3>
+      <dl>
+        <dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>move down / up</dd>
+        <dt><kbd>1</kbd>–<kbd>4</kbd></dt><dd>focus workspace surfaces</dd>
+        <dt><kbd>Tab</kbd> <kbd>h</kbd> <kbd>l</kbd></dt><dd>traverse surfaces</dd>
+        <dt><kbd>gg</kbd> <kbd>G</kbd></dt><dd>jump to edges</dd>
+      </dl>
+    </div>
+    <div>
+      <h3>Leader</h3>
+      <dl>
+        <dt><kbd>Space Space</kbd></dt><dd>fuzzy channel/DM switcher</dd>
+        <dt><kbd>Space n</kbd></dt><dd>open Inbox</dd>
+        <dt><kbd>Space a</kbd></dt><dd>contextual actions</dd>
+        <dt><kbd>Space o</kbd></dt><dd>theme options</dd>
+        <dt><kbd>?</kbd></dt><dd>effective-keymap help</dd>
+      </dl>
+    </div>
+    <div>
+      <h3>Messages</h3>
+      <dl>
+        <dt><kbd>r</kbd></dt><dd>reactions</dd>
+        <dt><kbd>y</kbd></dt><dd>copy sanitized text (OSC 52)</dd>
+        <dt><kbd>v</kbd></dt><dd>multi-message copy range</dd>
+        <dt><kbd>@</kbd></dt><dd>member completion</dd>
+      </dl>
+    </div>
+    <div>
+      <h3>Composer</h3>
+      <dl>
+        <dt><kbd>i</kbd></dt><dd>open the writing dock</dd>
+        <dt><kbd>Ctrl-o</kbd></dt><dd>OS file chooser</dd>
+        <dt><kbd>Ctrl-v</kbd></dt><dd>paste file / image / text</dd>
+        <dt><kbd>Ctrl-r</kbd></dt><dd>retry failed uploads</dd>
+      </dl>
+    </div>
+  </div>
+</div>
+</section>
+
+<section id="install">
+<div class="wrap">
+  <span class="kicker">install</span>
+  <h2>One binary. Pick your platform.</h2>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="quick">Quick</button>
+    <button role="tab" aria-selected="false" data-tab="macos">macOS</button>
+    <button role="tab" aria-selected="false" data-tab="linux">Linux</button>
+    <button role="tab" aria-selected="false" data-tab="windows">Windows</button>
+    <button role="tab" aria-selected="false" data-tab="brew">Homebrew</button>
+    <button role="tab" aria-selected="false" data-tab="cargo">Cargo</button>
+  </div>
+
+  <div class="panel" data-panel="quick">
+<pre><code>curl -fsSL https://getbzz.dev/install.sh | sh</code></pre>
+    <p class="note">Detects OS and architecture. Read it first if you prefer:
+    <a href="/install.sh">install.sh</a> (redirects to the latest signed GitHub
+    release installer).</p>
+  </div>
+
+  <div class="panel" data-panel="macos" hidden>
+<pre><code># Apple Silicon
+curl -fsSL https://github.com/arpagon/bzz/releases/latest/download/bzz-aarch64-apple-darwin.tar.xz | tar xJ
+# Intel
+curl -fsSL https://github.com/arpagon/bzz/releases/latest/download/bzz-x86_64-apple-darwin.tar.xz | tar xJ
+
+sudo mv bzz /usr/local/bin/</code></pre>
+  </div>
+
+  <div class="panel" data-panel="linux" hidden>
+<pre><code># x86_64
+curl -fsSL https://github.com/arpagon/bzz/releases/latest/download/bzz-x86_64-unknown-linux-gnu.tar.xz | tar xJ
+# arm64
+curl -fsSL https://github.com/arpagon/bzz/releases/latest/download/bzz-aarch64-unknown-linux-gnu.tar.xz | tar xJ
+
+sudo mv bzz /usr/local/bin/</code></pre>
+  </div>
+
+  <div class="panel" data-panel="windows" hidden>
+<pre><code>powershell -ExecutionPolicy Bypass -c "irm https://github.com/arpagon/bzz/releases/latest/download/bzz-installer.ps1 | iex"</code></pre>
+    <p class="note">Or download <code>bzz-x86_64-pc-windows-msvc.zip</code> from the
+    <a href="https://github.com/arpagon/bzz/releases/latest">latest release</a>
+    and add <code>bzz.exe</code> to your PATH.</p>
+  </div>
+
+  <div class="panel" data-panel="brew" hidden>
+<pre><code>brew install arpagon/tap/bzz</code></pre>
+    <p class="note">The formula (<code>bzz.rb</code>) is published with every release.</p>
+  </div>
+
+  <div class="panel" data-panel="cargo" hidden>
+<pre><code>cargo install --git https://github.com/arpagon/bzz --locked</code></pre>
+    <p class="note">Builds locally with the pinned toolchain
+    (<code>rust-toolchain.toml</code>).</p>
+  </div>
+
+  <div class="grid" style="margin-top:2rem">
+    <div class="card">
+      <span class="k">/// verify</span>
+      <h3>Verify what you run</h3>
+      <p>Every release ships <code>sha256.sum</code>, a CycloneDX SBOM
+      (<code>bzz.cdx.xml</code>), and GitHub build-provenance attestations.
+      Verification steps live in
+      <a href="https://github.com/arpagon/bzz/blob/main/docs/releasing.md">docs/releasing.md</a>.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// first run</span>
+      <h3>Then get connected</h3>
+<pre><code>bzz identity new --label personal
+bzz community add my-team \
+  wss://buzz.example &lt;identity-uuid&gt;
+bzz</code></pre>
+    </div>
+  </div>
+</div>
+</section>
+
+<footer>
+<div class="wrap">
+  <p>MIT OR Apache-2.0 ·
+    <a href="https://github.com/arpagon/bzz">github.com/arpagon/bzz</a></p>
+  <p class="disclaimer">bzz is an independent open-source project compatible
+  with the Buzz protocol (<a href="https://github.com/block/buzz">block/buzz</a>).
+  It is not affiliated with, endorsed by, or sponsored by Block, Inc.
+  Workspace DMs are private relay channels, not end-to-end encrypted messages.</p>
+</div>
+</footer>
+
+<script src="/app.js" defer></script>
+</body>
+</html>
