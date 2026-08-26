@@ -4,10 +4,10 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.11.2 makes threads discoverable from the closed timeline with a
-> compact reply count and last-activity summary while retaining v0.11.1's
-> verified remote-agent and semantic system-event corrections. bzz does not host
-> or control an agent runtime and launches no local assistant process. Protocol
+> Status: v0.11.3 adds fresh, signed, ephemeral `◆ Fizz is typing…`
+> feedback for currently verified remote agents while retaining v0.11.2's
+> discoverable thread summaries. bzz does not publish human typing, host or
+> control an agent runtime, or launch a local assistant process. Protocol
 > compatibility remains pinned to Buzz
 > `9f55bf67456be10ff7c8238bf0d9e12e582848f6`.
 
@@ -49,13 +49,14 @@ use `bzz-dev` paths and a separate OS-keychain service.
 - configurable semantic terminal-mouse interaction with safe restoration; and
 - offline channel-member `@` completion with exact Buzz `p` tags; and
 - verified remote managed-agent discovery, owner/policy inspection, distinct
-  timeline/DM/completion presentation, owner-controlled DM compatibility, and
-  send-time revalidation without local runtime control; and
+  timeline/DM/completion presentation, owner-controlled DM compatibility,
+  send-time revalidation, and transient signed typing feedback without local
+  runtime control; and
 - typed relay-authored system rows that never expose raw control JSON as a
   user-authored message.
 
-NIP-17 gift-wrap authoring/inbox, typing/presence, custom emoji, media playback,
-and message editing remain post-MVP. Workspace DMs are private
+NIP-17 gift-wrap authoring/inbox, general human typing/presence, custom emoji,
+media playback, and message editing remain post-MVP. Workspace DMs are private
 relay channels, not end-to-end encrypted messages.
 
 ## First run
@@ -164,6 +165,9 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/security.md`](docs/security.md),
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
+[the v0.11.3 release](docs/release-v0.11.3.md),
+[v0.11.3 validation](docs/validation-v0.11.3.md),
+[the approved v0.11.3 typing plan](docs/planning/2026-08-25/v0.11.3.md),
 [the v0.11.2 release](docs/release-v0.11.2.md),
 [v0.11.2 validation](docs/validation-v0.11.2.md),
 [the approved v0.11.2 thread-summary plan](docs/planning/2026-08-25/v0.11.2.md),

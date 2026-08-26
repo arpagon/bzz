@@ -32,10 +32,18 @@ impl Store {
 
     pub fn apply_event(&mut self, community_id: Uuid, event: &Event) -> Result<bool> {
         verify(event)?;
-        if event.kind.as_u16() == 39_005 {
-            return Err(Error::Protocol(
-                "transient thread summaries cannot enter the durable event store".into(),
-            ));
+        match event.kind.as_u16() {
+            20_002 => {
+                return Err(Error::Protocol(
+                    "ephemeral typing indicators cannot enter the durable event store".into(),
+                ));
+            }
+            39_005 => {
+                return Err(Error::Protocol(
+                    "transient thread summaries cannot enter the durable event store".into(),
+                ));
+            }
+            _ => {}
         }
         if matches!(
             event.kind.as_u16(),

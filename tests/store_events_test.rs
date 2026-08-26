@@ -91,6 +91,18 @@ fn relay_thread_summaries_are_validated_but_never_stored_as_messages() {
 }
 
 #[test]
+fn agent_typing_is_ephemeral_and_never_enters_the_event_store() {
+    let (mut store, community, channel, agent) = fixture();
+    let typing = EventBuilder::new(Kind::Custom(20_002), "")
+        .tag(Tag::parse(["h", &channel.to_string()]).unwrap())
+        .sign_with_keys(&agent)
+        .unwrap();
+    let error = store.apply_event(community, &typing).unwrap_err();
+    assert!(error.to_string().contains("ephemeral typing indicators"));
+    assert!(store.messages(community, channel, 100).unwrap().is_empty());
+}
+
+#[test]
 fn relay_membership_preserves_only_the_exact_bot_role_for_agent_discovery() {
     let (mut store, community, channel, relay) = fixture();
     store

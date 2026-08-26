@@ -25,4 +25,5 @@ pub mod theme;
 pub mod theme_picker;
 pub mod thread;
 pub mod timeline;
+pub mod typing;
 pub mod unread;

@@ -20,6 +20,7 @@ use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::{
+    agents::typing::{AgentTypingState, TypingScope},
     auth::{IdentityManager, read_passphrase, signer::SignerHandle},
     config::{ClipboardImportMode, ClipboardMode, Config, KeyBackend, validate_relay_url},
     diagnostics::{DiagnosticEvent, DiagnosticHandle},
@@ -261,6 +262,9 @@ pub struct App {
     thread_summaries: HashMap<String, ThreadSummary>,
     profiles: HashMap<String, Profile>,
     agents: HashMap<String, crate::store::agents::RemoteAgentView>,
+    agent_typing: AgentTypingState,
+    typing_subscription_channel: Option<Uuid>,
+    closed_typing_channel: Option<Uuid>,
     reactions: HashMap<String, Vec<Reaction>>,
     profile_requested: HashSet<String>,
     thread_messages: Vec<Message>,
@@ -341,6 +345,7 @@ const TERMINAL_ERROR_YIELD: Duration = Duration::from_millis(50);
 const RELAY_LAG_YIELD: Duration = Duration::from_millis(5);
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const RELAY_EVENT_DEDUP_CAPACITY: usize = 16_384;
+const AGENT_TYPING_SUBSCRIPTION: &str = "agent-typing-selected";
 
 fn triggers_directory_refresh(kind: u16, content: &str) -> bool {
     matches!(kind, 39_002 | 44_100 | 44_101)
@@ -445,6 +450,9 @@ impl App {
             thread_summaries: HashMap::new(),
             profiles: HashMap::new(),
             agents: HashMap::new(),
+            agent_typing: AgentTypingState::default(),
+            typing_subscription_channel: None,
+            closed_typing_channel: None,
             reactions: HashMap::new(),
             profile_requested: HashSet::new(),
             thread_messages: Vec::new(),
@@ -805,7 +813,7 @@ impl App {
         if let Some(channel) = self.current_channel().map(|channel| channel.id) {
             self.spawn_backfill(channel);
         }
-        Ok(())
+        self.reconcile_agent_typing_subscription().await
     }
 
     async fn subscribe_channel(&mut self, channel: Uuid) -> Result<()> {
@@ -846,6 +854,45 @@ impl App {
             .collect::<Vec<_>>();
         for channel in channels {
             self.subscribe_channel(channel).await?;
+        }
+        self.reconcile_agent_typing_subscription().await
+    }
+
+    async fn reconcile_agent_typing_subscription(&mut self) -> Result<()> {
+        let desired = self
+            .runtime
+            .as_ref()
+            .and_then(|_| self.current_channel().map(|channel| channel.id));
+        if self.typing_subscription_channel != desired {
+            if self.typing_subscription_channel.take().is_some()
+                && let Some(runtime) = &self.runtime
+            {
+                runtime.supervisor.close(AGENT_TYPING_SUBSCRIPTION).await?;
+            }
+            self.agent_typing.clear();
+            if self.closed_typing_channel != desired {
+                self.closed_typing_channel = None;
+                if self.status_error.as_deref() == Some("agent typing unavailable for this channel")
+                {
+                    self.status_error = None;
+                }
+            }
+        }
+        let Some(channel) = desired else {
+            return Ok(());
+        };
+        if self.typing_subscription_channel.is_none()
+            && self.closed_typing_channel != Some(channel)
+            && let Some(runtime) = &self.runtime
+        {
+            runtime
+                .supervisor
+                .subscribe(
+                    AGENT_TYPING_SUBSCRIPTION,
+                    subscriptions::agent_typing(channel, nostr::Timestamp::now().as_secs()),
+                )
+                .await?;
+            self.typing_subscription_channel = Some(channel);
         }
         Ok(())
     }
@@ -1089,6 +1136,7 @@ impl App {
             self.thread_summaries.clear();
             self.thread_messages.clear();
             self.agents.clear();
+            self.agent_typing.clear();
             self.reactions.clear();
             self.cache_dirty = false;
             self.last_cache_refresh = Instant::now();
@@ -1196,6 +1244,26 @@ impl App {
                 .map(|agent| (agent.pubkey.clone(), agent))
                 .collect()
         };
+        let authorized_typing_agents = self
+            .current_channel()
+            .map(|channel| {
+                self.agents
+                    .values()
+                    .filter(|agent| {
+                        !agent.stale
+                            && agent.channel_ids.contains(&channel.id)
+                            && (!channel.kind.is_dm()
+                                || self.self_pubkey().is_some_and(|pubkey| {
+                                    agent.owner_pubkey.eq_ignore_ascii_case(pubkey)
+                                }))
+                    })
+                    .map(|agent| agent.pubkey.clone())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        if self.cache_dirty {
+            self.agent_typing.retain_agents(&authorized_typing_agents);
+        }
         let dm_participants = self
             .store
             .call(move |store| store.dm_participants_map(community))
@@ -1276,6 +1344,66 @@ impl App {
         Ok(())
     }
 
+    fn visible_typing_scope(&self) -> TypingScope {
+        self.thread_root
+            .as_ref()
+            .map_or(TypingScope::Channel, |root| {
+                TypingScope::Thread(root.clone())
+            })
+    }
+
+    fn agent_typing_authorized(&self, pubkey: &str, channel_id: Uuid) -> bool {
+        let Some(channel) = self
+            .current_channel()
+            .filter(|channel| channel.id == channel_id)
+        else {
+            return false;
+        };
+        self.agents.get(pubkey).is_some_and(|agent| {
+            !agent.stale
+                && agent.channel_ids.contains(&channel_id)
+                && (!channel.kind.is_dm()
+                    || self
+                        .self_pubkey()
+                        .is_some_and(|active| agent.owner_pubkey.eq_ignore_ascii_case(active)))
+        })
+    }
+
+    fn apply_agent_typing_event(&mut self, event: &nostr::Event, now: u64) -> bool {
+        let Some(channel) = self.current_channel().map(|channel| channel.id) else {
+            return false;
+        };
+        let Some(signal) = crate::agents::typing::parse(event, channel, now) else {
+            return false;
+        };
+        if signal.scope != self.visible_typing_scope()
+            || !self.agent_typing_authorized(&signal.agent_pubkey, channel)
+        {
+            return false;
+        }
+        self.agent_typing.apply(signal, now)
+    }
+
+    fn visible_agent_typing_line(&self, width: u16) -> Option<String> {
+        let scope = self.visible_typing_scope();
+        let now = nostr::Timestamp::now().as_secs();
+        let labels = self
+            .agent_typing
+            .active_pubkeys(&scope, now)
+            .into_iter()
+            .filter_map(|pubkey| {
+                let agent = self.agents.get(pubkey)?;
+                let label = self
+                    .profiles
+                    .get(pubkey)
+                    .map(Profile::label)
+                    .unwrap_or_else(|| agent.name.clone());
+                Some(sanitize::single_line(&label))
+            })
+            .collect::<Vec<_>>();
+        crate::ui::typing::format_typing_line(&labels, width)
+    }
+
     fn rebuild_thread_summaries(&mut self) {
         self.thread_summaries = self.local_thread_summaries.clone();
         for (root, live) in &self.live_thread_summaries {
@@ -1320,9 +1448,16 @@ impl App {
     async fn handle_network(&mut self, event: SupervisorEvent) -> Result<bool> {
         let previous_connection = self.connection;
         let previous_status = self.status_error.clone();
+        let mut transient_changed = false;
         match event {
-            SupervisorEvent::Connecting => self.connection = ConnectionState::Connecting,
-            SupervisorEvent::Backoff(_) => self.connection = ConnectionState::Offline,
+            SupervisorEvent::Connecting => {
+                self.connection = ConnectionState::Connecting;
+                transient_changed |= self.agent_typing.clear();
+            }
+            SupervisorEvent::Backoff(_) => {
+                self.connection = ConnectionState::Offline;
+                transient_changed |= self.agent_typing.clear();
+            }
             SupervisorEvent::Terminal(message) => {
                 self.connection = if message.contains("clock-skew") {
                     ConnectionState::ClockSkew
@@ -1330,10 +1465,14 @@ impl App {
                     ConnectionState::AccessDenied
                 };
                 self.status_error = Some(message);
+                transient_changed |= self.agent_typing.clear();
             }
             SupervisorEvent::Session(SessionEvent::Authenticated) => {
                 self.connection = ConnectionState::Online;
                 self.status_error = None;
+                self.closed_typing_channel = None;
+                self.typing_subscription_channel = None;
+                transient_changed |= self.agent_typing.clear();
                 if let Some(runtime) = &self.runtime {
                     let community = runtime.community_id;
                     let http = runtime.http.clone();
@@ -1397,7 +1536,10 @@ impl App {
                     });
                 }
             }
-            SupervisorEvent::Session(SessionEvent::Event { event, .. }) => {
+            SupervisorEvent::Session(SessionEvent::Event {
+                subscription,
+                event,
+            }) => {
                 let Some(runtime) = &self.runtime else {
                     return Ok(false);
                 };
@@ -1406,7 +1548,12 @@ impl App {
                 if self.relay_event_was_handled(community, &event_id) {
                     return Ok(false);
                 }
-                if event.kind.as_u16() == 39_005 {
+                if event.kind.as_u16() == crate::agents::typing::KIND_TYPING_INDICATOR {
+                    let changed = subscription == AGENT_TYPING_SUBSCRIPTION
+                        && self.apply_agent_typing_event(&event, nostr::Timestamp::now().as_secs());
+                    self.remember_relay_event(community, event_id);
+                    return Ok(changed);
+                } else if event.kind.as_u16() == 39_005 {
                     let parsed = self
                         .store
                         .call(move |store| store.live_thread_summary(community, &event))
@@ -1441,6 +1588,18 @@ impl App {
                         None
                     };
                     let clears_live_thread_summaries = matches!(kind, 5 | 9005);
+                    let typing_message =
+                        self.current_channel()
+                            .map(|channel| channel.id)
+                            .and_then(|channel| {
+                                let author = event.pubkey.to_hex();
+                                if self.agent_typing_authorized(&author, channel) {
+                                    crate::agents::typing::message_scope(&event, channel)
+                                        .map(|scope| (author, scope, event.created_at.as_secs()))
+                                } else {
+                                    None
+                                }
+                            });
                     match self
                         .store
                         .call(move |store| store.apply_event(community, &event))
@@ -1448,6 +1607,14 @@ impl App {
                     {
                         Ok(changed) => {
                             self.remember_relay_event(community, event_id);
+                            if let Some((author, scope, created_at)) = typing_message {
+                                transient_changed |= self.agent_typing.observe_message(
+                                    &author,
+                                    scope,
+                                    created_at,
+                                    nostr::Timestamp::now().as_secs(),
+                                );
+                            }
                             if changed {
                                 if let Some(root) = thread_mutation {
                                     self.live_thread_summaries.remove(&root);
@@ -1481,34 +1648,46 @@ impl App {
                 subscription,
                 message,
             }) => {
-                if subscription.starts_with("ch-")
-                    && self
-                        .closed_channel_subscriptions
-                        .insert(subscription.clone())
-                {
-                    self.connection = ConnectionState::AccessDenied;
-                    if let Some(channel) = self
-                        .subscribed_channels
-                        .iter()
-                        .find(|channel| format!("ch-{}", channel.simple()) == subscription)
-                        .copied()
-                    {
-                        self.subscribed_channels.remove(&channel);
-                    }
+                if subscription == AGENT_TYPING_SUBSCRIPTION {
+                    self.closed_typing_channel = self.typing_subscription_channel.take();
+                    transient_changed |= self.agent_typing.clear();
                     if let Some(runtime) = &self.runtime {
-                        let _ = runtime.supervisor.close(subscription).await;
-                        self.spawn_directory_refresh();
+                        let _ = runtime.supervisor.close(AGENT_TYPING_SUBSCRIPTION).await;
                     }
+                    self.status_error = Some("agent typing unavailable for this channel".into());
+                } else {
+                    if subscription.starts_with("ch-")
+                        && self
+                            .closed_channel_subscriptions
+                            .insert(subscription.clone())
+                    {
+                        self.connection = ConnectionState::AccessDenied;
+                        if let Some(channel) = self
+                            .subscribed_channels
+                            .iter()
+                            .find(|channel| format!("ch-{}", channel.simple()) == subscription)
+                            .copied()
+                        {
+                            self.subscribed_channels.remove(&channel);
+                        }
+                        if let Some(runtime) = &self.runtime {
+                            let _ = runtime.supervisor.close(subscription).await;
+                            self.spawn_directory_refresh();
+                        }
+                    }
+                    self.status_error = Some(message);
                 }
-                self.status_error = Some(message);
             }
             SupervisorEvent::Session(SessionEvent::Disconnected(message)) => {
                 self.connection = ConnectionState::Offline;
                 self.status_error = Some(message);
+                transient_changed |= self.agent_typing.clear();
             }
             SupervisorEvent::Session(SessionEvent::Count { .. }) => {}
         }
-        Ok(self.connection != previous_connection || self.status_error != previous_status)
+        Ok(transient_changed
+            || self.connection != previous_connection
+            || self.status_error != previous_status)
     }
 
     fn relay_event_was_handled(&self, community: Uuid, event_id: &str) -> bool {
@@ -1549,6 +1728,7 @@ impl App {
     /// full terminal frame every 100 ms.
     async fn on_tick(&mut self) -> Result<bool> {
         let mut changed = self.media.poll();
+        changed |= self.agent_typing.expire(nostr::Timestamp::now().as_secs());
         if self
             .leader_started_at
             .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
@@ -1594,6 +1774,7 @@ impl App {
             self.mark_current_read().await?;
             changed |= unread_before != (self.computed_unread.len(), self.manual_unread.len());
         }
+        self.reconcile_agent_typing_subscription().await?;
         if self
             .read_dirty_since
             .is_some_and(|since| since.elapsed() >= Duration::from_secs(5))
@@ -2719,6 +2900,7 @@ impl App {
     }
     async fn load_selected_channel(&mut self) -> Result<()> {
         self.thread_root = None;
+        self.agent_typing.clear();
         self.timeline = TimelineState {
             at_live_bottom: true,
             ..TimelineState::default()
@@ -2735,9 +2917,10 @@ impl App {
             // local marker now rather than waiting for a later redraw/tick.
             self.mark_current_read().await?;
         }
-        Ok(())
+        self.reconcile_agent_typing_subscription().await
     }
     async fn toggle_thread(&mut self) -> Result<()> {
+        self.agent_typing.clear();
         if self.thread_root.is_some() {
             self.thread_root = None;
             self.presentation
@@ -4749,6 +4932,9 @@ impl App {
                     runtime.signer.lock().await;
                 }
                 self.clear_agent_directory_state();
+                self.agent_typing.clear();
+                self.typing_subscription_channel = None;
+                self.closed_typing_channel = None;
                 self.presentation.close_overlay();
                 self.connection = ConnectionState::Locked;
                 self.status_error =
@@ -4874,6 +5060,9 @@ impl App {
                 self.profile_requested.clear();
                 self.subscribed_channels.clear();
                 self.closed_channel_subscriptions.clear();
+                self.agent_typing.clear();
+                self.typing_subscription_channel = None;
+                self.closed_typing_channel = None;
                 self.inbox_items.clear();
                 self.inbox_messages.clear();
                 self.inbox_state = InboxState::default();
@@ -4908,6 +5097,9 @@ impl App {
                     self.profile_requested.clear();
                     self.subscribed_channels.clear();
                     self.closed_channel_subscriptions.clear();
+                    self.agent_typing.clear();
+                    self.typing_subscription_channel = None;
+                    self.closed_typing_channel = None;
                     self.inbox_items.clear();
                     self.inbox_messages.clear();
                     self.inbox_state = InboxState::default();
@@ -5053,6 +5245,9 @@ impl App {
     }
 
     async fn shutdown(&mut self) {
+        self.agent_typing.clear();
+        self.typing_subscription_channel = None;
+        self.closed_typing_channel = None;
         if let Some(runtime) = self.runtime.take() {
             let _ = tokio::time::timeout(
                 Duration::from_secs(3),
@@ -5471,8 +5666,10 @@ impl App {
             .unwrap_or(u16::MAX)
             .saturating_add(u16::from(attachment_count > 3));
         let body_rows = u16::try_from(self.composer.display_rows(80)).unwrap_or(u16::MAX);
+        let typing_rows = u16::from(self.visible_agent_typing_line(80).is_some());
         body_rows
             .saturating_add(attachment_rows)
+            .saturating_add(typing_rows)
             .saturating_add(2)
             .clamp(5, 12)
     }
@@ -5488,6 +5685,8 @@ impl App {
         } else {
             format!("message #{channel}")
         };
+        let typing = self.visible_agent_typing_line(area.width.saturating_sub(2));
+        let typing_visible = typing.is_some();
         let (title, content, border, content_group) = if active {
             let mut attachment_lines = self
                 .composer
@@ -5533,11 +5732,13 @@ impl App {
             } else {
                 format!("\n{}", attachment_lines.join("\n"))
             };
+            let draft = format!("{}{}", sanitize::text(&self.composer.body), attachments);
+            let content = typing.map_or(draft.clone(), |typing| format!("{typing}\n{draft}"));
             (
                 format!(
                     " {target} · Enter send · Ctrl-v paste · Ctrl-o choose · Alt-o path · Del remove · Ctrl-c clear · Esc close "
                 ),
-                format!("{}{}", sanitize::text(&self.composer.body), attachments),
+                content,
                 HighlightGroup::ActiveComposerBorder,
                 HighlightGroup::Composer,
             )
@@ -5558,7 +5759,7 @@ impl App {
         } else {
             (
                 format!(" {target} "),
-                "Press i or click here to write.".into(),
+                typing.unwrap_or_else(|| "Press i or click here to write.".into()),
                 HighlightGroup::ComposerBorder,
                 HighlightGroup::ComposerHint,
             )
@@ -5569,7 +5770,19 @@ impl App {
             .title_style(self.theme.style(HighlightGroup::ComposerTitle))
             .title(title);
         let inner = block.inner(area);
-        hit_map.push(inner, HitTarget::Composer);
+        let composer_hit = if typing_visible {
+            Rect::new(
+                inner.x,
+                inner.y.saturating_add(1),
+                inner.width,
+                inner.height.saturating_sub(1),
+            )
+        } else {
+            inner
+        };
+        if !composer_hit.is_empty() {
+            hit_map.push(composer_hit, HitTarget::Composer);
+        }
         frame.render_widget(
             Paragraph::new(content)
                 .style(self.theme.style(content_group))
@@ -5588,6 +5801,7 @@ impl App {
                     .min(inner.right().saturating_sub(1)),
                 inner
                     .y
+                    .saturating_add(u16::from(typing_visible))
                     .saturating_add(u16::try_from(row).unwrap_or(u16::MAX))
                     .min(inner.bottom().saturating_sub(1)),
             ));
@@ -6499,6 +6713,152 @@ mod tests {
         wrong_channel.channel_id = Uuid::new_v4();
         wrong_channel.source_created_at = 41;
         assert!(!app.apply_live_thread_summary(wrong_channel));
+    }
+
+    #[tokio::test]
+    async fn verified_agent_typing_is_fresh_authorized_and_exactly_scoped() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let community = app.active_community_id().unwrap();
+        let channel = Uuid::new_v4();
+        app.channels = vec![Channel {
+            id: channel,
+            name: "agents".into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 2,
+            last_event_at: None,
+        }];
+        app.selected_channel = 0;
+        let keys = Keys::generate();
+        let pubkey = keys.public_key().to_hex();
+        app.agents.insert(
+            pubkey.clone(),
+            crate::store::agents::RemoteAgentView {
+                schema_version: 1,
+                community_id: community,
+                pubkey: pubkey.clone(),
+                owner_pubkey: "a".repeat(64),
+                name: "Fizz".into(),
+                capabilities: vec!["messages".into()],
+                presence: crate::agents::Presence::Unknown,
+                respond_to: Some(crate::agents::RespondTo::OwnerOnly),
+                respond_to_allowlist: Vec::new(),
+                eligibility: crate::agents::Eligibility::Eligible,
+                stale: false,
+                channel_ids: vec![channel],
+                last_verified_at: nostr::Timestamp::now().as_secs(),
+            },
+        );
+        let now = nostr::Timestamp::now().as_secs();
+        let channel_typing = EventBuilder::new(Kind::Custom(20_002), "")
+            .tag(Tag::parse(["h", &channel.to_string()]).unwrap())
+            .custom_created_at(nostr::Timestamp::from_secs(now))
+            .sign_with_keys(&keys)
+            .unwrap();
+        assert!(app.apply_agent_typing_event(&channel_typing, now));
+        assert_eq!(
+            app.visible_agent_typing_line(80).as_deref(),
+            Some("◆ Fizz is typing…")
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("Fizz is typing"));
+        let panes = crate::ui::layout::panes_with_composer(
+            Rect::new(0, 0, 100, 30),
+            app.community_rail,
+            app.sidebar,
+            false,
+            app.config.ui.sidebar_width,
+            app.config.ui.thread_width,
+            app.composer_dock_height(),
+        );
+        let dock = panes.composer.unwrap();
+        assert_ne!(
+            app.last_hit_map
+                .as_ref()
+                .and_then(|map| map.hit(dock.x.saturating_add(2), dock.y.saturating_add(1))),
+            Some(&HitTarget::Composer)
+        );
+        assert!(!app.apply_agent_typing_event(&channel_typing, now));
+
+        app.agent_typing.clear();
+        let root = "b".repeat(64);
+        app.thread_root = Some(root.clone());
+        let thread_typing = EventBuilder::new(Kind::Custom(20_002), "")
+            .tags([
+                Tag::parse(["h", &channel.to_string()]).unwrap(),
+                Tag::parse(["e", &root, "", "reply"]).unwrap(),
+            ])
+            .custom_created_at(nostr::Timestamp::from_secs(now))
+            .sign_with_keys(&keys)
+            .unwrap();
+        assert!(app.apply_agent_typing_event(&thread_typing, now));
+        assert_eq!(
+            app.visible_agent_typing_line(80).as_deref(),
+            Some("◆ Fizz is typing…")
+        );
+
+        let wrong_root = "c".repeat(64);
+        let wrong_thread = EventBuilder::new(Kind::Custom(20_002), "")
+            .tags([
+                Tag::parse(["h", &channel.to_string()]).unwrap(),
+                Tag::parse(["e", &wrong_root, "", "reply"]).unwrap(),
+            ])
+            .custom_created_at(nostr::Timestamp::from_secs(now))
+            .sign_with_keys(&keys)
+            .unwrap();
+        assert!(!app.apply_agent_typing_event(&wrong_thread, now));
+
+        app.thread_root = None;
+        app.agent_typing.clear();
+        let stranger = EventBuilder::new(Kind::Custom(20_002), "")
+            .tag(Tag::parse(["h", &channel.to_string()]).unwrap())
+            .custom_created_at(nostr::Timestamp::from_secs(now))
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        assert!(!app.apply_agent_typing_event(&stranger, now));
+        assert!(app.agent_typing.is_empty());
+
+        app.channels[0].kind = ChannelKind::Dm;
+        app.agents.get_mut(&pubkey).unwrap().owner_pubkey = "c".repeat(64);
+        assert!(!app.apply_agent_typing_event(&channel_typing, now));
+        app.agents.get_mut(&pubkey).unwrap().owner_pubkey = "a".repeat(64);
+        assert!(app.apply_agent_typing_event(&channel_typing, now));
+    }
+
+    #[tokio::test]
+    async fn closed_typing_subscription_is_quarantined_without_exposing_relay_text() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let channel = Uuid::new_v4();
+        app.typing_subscription_channel = Some(channel);
+        assert!(
+            app.handle_network(crate::realtime::supervisor::SupervisorEvent::Session(
+                crate::realtime::session::SessionEvent::Closed {
+                    subscription: super::AGENT_TYPING_SUBSCRIPTION.into(),
+                    message: "hostile relay details".into(),
+                },
+            ))
+            .await
+            .unwrap()
+        );
+        assert_eq!(app.typing_subscription_channel, None);
+        assert_eq!(app.closed_typing_channel, Some(channel));
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("agent typing unavailable for this channel")
+        );
     }
 
     #[tokio::test]

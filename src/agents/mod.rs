@@ -6,6 +6,7 @@
 
 pub mod policy;
 pub mod protocol;
+pub mod typing;
 
 use serde::{Deserialize, Serialize};
 

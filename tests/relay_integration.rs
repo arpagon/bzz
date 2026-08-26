@@ -385,6 +385,70 @@ async fn real_relay_mvp_protocol_journey() {
         bzz::protocol::events::tag_values(&agent_mention, "p"),
         vec![agent_pubkey.clone()]
     );
+    session
+        .subscribe(
+            "agent-typing-live",
+            bzz::realtime::subscriptions::agent_typing(channel, Timestamp::now().as_secs()),
+        )
+        .await
+        .unwrap();
+    while !matches!(events.recv().await,Some(SessionEvent::Eose(id)) if id=="agent-typing-live") {}
+    let agent_typing = EventBuilder::new(Kind::Custom(20_002), "")
+        .tags([
+            nostr::Tag::parse(["h", &channel.to_string()]).unwrap(),
+            nostr::Tag::parse(["e", &agent_mention.id.to_hex(), "", "reply"]).unwrap(),
+        ])
+        .sign_with_keys(&agent_keys)
+        .unwrap();
+    assert!(
+        agent_session
+            .publish(agent_typing.clone())
+            .await
+            .unwrap()
+            .accepted
+    );
+    let observed_typing = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(SessionEvent::Event {
+                subscription,
+                event,
+            }) = events.recv().await
+                && subscription == "agent-typing-live"
+                && event.id == agent_typing.id
+            {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("live agent typing event");
+    assert_eq!(observed_typing.pubkey.to_hex(), agent_pubkey);
+    session.close("agent-typing-live").await.unwrap();
+    session
+        .subscribe(
+            "agent-typing-history",
+            vec![serde_json::json!({
+                "kinds":[20_002],
+                "#h":[channel.to_string()],
+                "since":0,
+                "limit":10
+            })],
+        )
+        .await
+        .unwrap();
+    loop {
+        match events.recv().await {
+            Some(SessionEvent::Event { subscription, .. })
+                if subscription == "agent-typing-history" =>
+            {
+                panic!("ephemeral agent typing was returned as history")
+            }
+            Some(SessionEvent::Eose(id)) if id == "agent-typing-history" => break,
+            _ => {}
+        }
+    }
+    session.close("agent-typing-history").await.unwrap();
+
     let agent_reaction = agent_signer
         .sign(buzz_sdk::build_reaction(agent_mention.id, "👀").unwrap())
         .await

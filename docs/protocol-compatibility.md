@@ -1,6 +1,6 @@
 # Protocol compatibility
 
-The v0.11.2 compatibility baseline remains `block/buzz` revision
+The v0.11.3 compatibility baseline remains `block/buzz` revision
 `9f55bf67456be10ff7c8238bf0d9e12e582848f6` and uses revision-pinned
 `buzz-core`/`buzz-sdk` dependencies. Existing v0.10.0 artifacts remain pinned to
 `ede26863345a518ec46edd6d7692e0281883491b`.
@@ -30,7 +30,9 @@ Implemented MVP protocol surface:
 - relay-authored kind `40099` control events through a bounded semantic parser,
   never raw authored-message rendering;
 - transient relay-authored kind `39005` thread summaries for the selected
-  channel, verified against the pinned relay and never stored as messages; and
+  channel, verified against the pinned relay and never stored as messages;
+- signed ephemeral kind `20002` typing indicators admitted only from a current
+  verified remote agent in the exact selected channel/open thread; and
 - exact structured kind `9` `p`-tag invocation through the existing
   acknowledgement-aware human outbox.
 
@@ -83,6 +85,13 @@ NIP-17 kind 1059 remains unsupported by the UI and is never indexed by local
 FTS5. Remote NIP-50 results are signature-verified and checked against active
 community/channel/viewer access after delivery. See
 [`inbox-dms-search.md`](inbox-dms-search.md).
+
+Kind `20002` is a live-only presentation signal. bzz uses a dedicated exact
+`#h` selected-channel subscription with an eight-second TTL, clears matching
+state on a signed agent reply, and stores no event, history, Inbox, search,
+unread/read-state, diagnostic, or telemetry record. bzz does not publish human
+typing, and the row does not prove readiness, health, progress, or a guaranteed
+reply.
 
 Managed-agent support in this baseline is relay-only interoperability. bzz does
 not consume kind `30174` memory, kind `24200` observer/control frames, kind

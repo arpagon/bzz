@@ -99,6 +99,12 @@ an agent key to `[[identities]]` or revive retired `[[local_agents]]` values.
 The same agent pubkey is independently verified in every configured community.
 There is no local-hosting switch in this release.
 
+Verified-agent typing has no configuration switch. v0.11.3 receives only fresh,
+signed, ephemeral kind `20002` signals for the selected destination, retains
+them in memory for at most eight seconds, and never publishes the human user's
+typing. It does not enable presence, readiness, observer telemetry, or runtime
+control.
+
 `ui.theme` selects the global built-in theme. An optional community `theme`
 field takes precedence only while that community is active. `ui.mouse = "auto"`
 enables mouse capture only on an interactive, non-`dumb` terminal; set it to
