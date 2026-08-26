@@ -97,6 +97,44 @@ impl ErrorClass {
             }
         })
     }
+
+    /// Reduces a NIP-01 `CLOSED` reason to a fixed class and immediately
+    /// discards the source text. Relay-provided text must never enter local
+    /// diagnostics, support reports, or telemetry.
+    pub fn from_subscription_closed(message: &str) -> Self {
+        let lower = message.trim().to_ascii_lowercase();
+        let prefix = lower
+            .split_once(':')
+            .map_or(lower.as_str(), |(prefix, _)| prefix.trim());
+        match prefix {
+            "rate-limited" => Self::RateLimited,
+            "blocked" | "restricted" => Self::AccessDenied,
+            "auth-required" => Self::AuthRejected,
+            "duplicate" | "invalid" | "pow" => Self::Protocol,
+            "error" => Self::Unknown,
+            _ if lower.contains("rate-limit") || lower.contains("429") => Self::RateLimited,
+            _ if lower.contains("auth-required") || lower.contains("authentication required") => {
+                Self::AuthRejected
+            }
+            _ if lower.contains("blocked")
+                || lower.contains("restricted")
+                || lower.contains("forbidden")
+                || lower.contains("denied")
+                || lower.contains("not a member") =>
+            {
+                Self::AccessDenied
+            }
+            _ if lower.contains("invalid")
+                || lower.contains("unsupported")
+                || lower.contains("malformed")
+                || lower.contains("protocol") =>
+            {
+                Self::Protocol
+            }
+            _ if lower.contains("closed") => Self::Closed,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 fn contains_clock_marker(message: &str) -> bool {
@@ -220,6 +258,8 @@ pub enum DiagnosticEvent {
     },
     #[serde(rename = "agents.mention_validated")]
     AgentMentionValidated { count: u32, outcome: String },
+    #[serde(rename = "agents.typing_subscription_closed")]
+    AgentTypingSubscriptionClosed { error_class: ErrorClass },
     #[serde(rename = "telemetry.test")]
     TelemetryTest,
     #[serde(rename = "telemetry.export_health")]
@@ -256,6 +296,7 @@ impl DiagnosticEvent {
             Self::EventsDropped { .. } => "diagnostics.events_dropped",
             Self::AgentDirectoryRefreshed { .. } => "agents.directory_refreshed",
             Self::AgentMentionValidated { .. } => "agents.mention_validated",
+            Self::AgentTypingSubscriptionClosed { .. } => "agents.typing_subscription_closed",
             Self::TelemetryTest => "telemetry.test",
             Self::TelemetryExportHealth { .. } => "telemetry.export_health",
         }
@@ -345,6 +386,7 @@ impl DiagnosticRecord {
             | DiagnosticEvent::ReconcileFinished { .. }
             | DiagnosticEvent::EventsDropped { .. }
             | DiagnosticEvent::AgentDirectoryRefreshed { .. }
+            | DiagnosticEvent::AgentTypingSubscriptionClosed { .. }
             | DiagnosticEvent::TelemetryTest
             | DiagnosticEvent::TelemetryExportHealth { .. } => true,
         }
@@ -411,6 +453,39 @@ mod tests {
         assert!(!encoded.contains(secret));
         assert!(!encoded.contains("nsec1secret"));
         assert!(!encoded.contains("/private/path"));
+    }
+
+    #[test]
+    fn subscription_close_reasons_are_classified_without_retaining_source_text() {
+        let cases = [
+            ("rate-limited: slow down", ErrorClass::RateLimited),
+            ("blocked: secret", ErrorClass::AccessDenied),
+            ("restricted: secret", ErrorClass::AccessDenied),
+            ("auth-required: secret", ErrorClass::AuthRejected),
+            ("invalid: unsupported filter", ErrorClass::Protocol),
+            ("unsupported subscription", ErrorClass::Protocol),
+            ("closed by server", ErrorClass::Closed),
+            ("hostile relay details nsec1secret", ErrorClass::Unknown),
+        ];
+        for (source, expected) in cases {
+            let record = DiagnosticRecord::new(
+                "a".repeat(32),
+                DiagnosticEvent::AgentTypingSubscriptionClosed {
+                    error_class: ErrorClass::from_subscription_closed(source),
+                },
+            );
+            assert_eq!(
+                record.event,
+                DiagnosticEvent::AgentTypingSubscriptionClosed {
+                    error_class: expected
+                }
+            );
+            let encoded = serde_json::to_string(&record).unwrap();
+            assert!(!encoded.contains(source));
+            assert!(!encoded.contains("secret"));
+            assert!(!encoded.contains("nsec1secret"));
+            assert!(record.is_safe());
+        }
     }
 
     #[test]

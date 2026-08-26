@@ -212,7 +212,8 @@ impl RemoteRecord {
             DiagnosticEvent::TelemetryExportHealth { .. }
             | DiagnosticEvent::ClientStopped { .. }
             | DiagnosticEvent::AgentDirectoryRefreshed { .. }
-            | DiagnosticEvent::AgentMentionValidated { .. } => return None,
+            | DiagnosticEvent::AgentMentionValidated { .. }
+            | DiagnosticEvent::AgentTypingSubscriptionClosed { .. } => return None,
         };
 
         match &record.event {
@@ -446,6 +447,9 @@ mod tests {
             DiagnosticEvent::AgentMentionValidated {
                 count: 1,
                 outcome: "eligible".into(),
+            },
+            DiagnosticEvent::AgentTypingSubscriptionClosed {
+                error_class: ErrorClass::Protocol,
             },
         ] {
             let record = DiagnosticRecord::new("a".repeat(32), event);

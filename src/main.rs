@@ -1139,19 +1139,24 @@ fn diagnostics_command(command: DiagnosticsCommand, paths: &Paths) -> Result<()>
                 write_stdout(&bytes)
             } else {
                 println!(
-                    "journal:       {} ({} records)\nconnection:    {}\nbackoff:       {} (last {}ms)\nlatest event:  {}\nlast AUTH:     {}\nlast disconnect: {}\nreceiver lag:  {}\ndropped events:{}\noutbox:        pending={} unknown={} rejected={} delivered={}",
+                    "journal:       {} ({} records)\nconnection:    {}\nbackoff:       {} (last {})\nlatest event:  {}\nlast AUTH:     {}\nlast disconnect: {}\ntyping subscription closes: {} (last {})\nreceiver lag:  {}\ndropped events:{}\noutbox:        pending={} unknown={} rejected={} delivered={}",
                     status.journal_health,
                     status.journal_records,
                     status.latest_connection_phase.as_deref().unwrap_or("none"),
                     status.reconnect_backoff_count,
                     status
                         .last_backoff_ms
-                        .map_or_else(|| "none".into(), |value| value.to_string()),
+                        .map_or_else(|| "none".into(), |value| format!("{value}ms")),
                     status.latest_event.as_deref().unwrap_or("none"),
                     status
                         .latest_authenticated_at_unix_ms
                         .map_or_else(|| "none".into(), |value| value.to_string()),
                     status.latest_disconnect_class.as_deref().unwrap_or("none"),
+                    status.agent_typing_subscription_closed_count,
+                    status
+                        .latest_agent_typing_subscription_close_class
+                        .as_deref()
+                        .unwrap_or("none"),
                     status.receiver_lagged_count,
                     status.diagnostics_dropped_count,
                     status.outbox_counts.get("pending").copied().unwrap_or(0),

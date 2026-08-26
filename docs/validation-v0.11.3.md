@@ -12,6 +12,9 @@
 - [x] Compact width-aware `◆ <agent> is typing…` composer-boundary presentation.
 - [x] Dedicated selected-channel subscription with bounded overlap.
 - [x] Explicit durable-store rejection.
+- [x] Content-free local classification of a relay-closed typing subscription,
+  with raw text and all relay/scope/identity/event fields discarded and no OTel
+  export.
 - [x] No human typing publication, migration, configuration, observer
   decryption, runtime control, Inbox/search/unread/read-state integration,
   diagnostics content, or OTel export.
@@ -42,9 +45,12 @@
 - [x] Renderer smoke proves the typing row is visible and has no direct hit
   target.
 - [x] Store-level kind `20002` rejection and no message persistence.
+- [x] Typing-subscription `CLOSED` classification, status aggregation, local
+  journal emission, hostile-text redaction, scope-identifier exclusion, and
+  explicit OTel exclusion tests.
 - [x] `cargo fmt --all -- --check` and `git diff --check`.
 - [x] Strict all-feature/all-target Clippy.
-- [x] `cargo test --locked --all-features --all-targets`: 198 library tests,
+- [x] `cargo test --locked --all-features --all-targets`: 200 library tests,
   every integration suite, and benchmark smoke targets passed.
 - [x] Pinned Buzz real-relay live typing and no-history journey.
 - [x] `cargo deny check`; only accepted duplicate-version warnings remain.

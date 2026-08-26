@@ -236,7 +236,8 @@ storage. See [`media.md`](media.md).
 Local diagnostics are a separate, typed privacy boundary rather than a generic
 `tracing` log. The bounded non-blocking writer accepts only reviewed connection,
 AUTH phase, heartbeat, reconnect/backoff, relay acknowledgement, receiver-lag,
-and committed outbox-transition fields. It cannot accept message/event content,
+committed outbox-transition fields, and fixed managed-agent typing-subscription
+closure classes. It cannot accept message/event content,
 tags, drafts, reactions, profiles, prompts/results, clipboard data, attachment
 metadata, media URLs, participant/community/channel identifiers, source paths,
 configuration, environment values, credentials, auth challenges/events, raw

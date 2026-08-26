@@ -78,6 +78,22 @@ an agent-signed kind 0 profile with one valid NIP-OA owner, an agent-signed kind
 published. Missing, malformed, conflicting, removed, cross-community, or stale
 records fail closed. A display-name match alone is intentionally insufficient.
 
+If the status bar says `agent typing unavailable for this channel`, the main
+session may still be online while the relay has closed only the dedicated kind
+`20002` subscription. Reproduce the closure once, then inspect its content-free
+local classification:
+
+```sh
+bzz diagnostics status
+bzz diagnostics status --json
+```
+
+`typing subscription closes` reports a bounded count and the latest normalized
+class such as `access_denied`, `auth_rejected`, `rate_limited`, `protocol`, or
+`unknown`. The journal never retains the relay's raw `CLOSED` text, relay URL,
+community/channel/thread identifiers, agent or owner keys, event IDs, names, or
+message content. This evidence remains local and is not exported through OTel.
+
 `policy unknown` means ownership is verified but no usable public invocation
 policy is available. `not eligible` means the active human identity does not
 satisfy `owner-only`/`allowlist`, or the target is a DM where broader modes are

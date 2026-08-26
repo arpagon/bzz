@@ -198,9 +198,11 @@ and actions unavailable for the current selection.
 The strict `[diagnostics]` section controls the owner-private operational
 journal. `on` is the default. It retains at most three 2 MiB JSONL files under
 the profile-specific data directory and records only typed connection,
-acknowledgement, outbox-state, duration, count, and locally authored event-ID
-metadata. `off` prevents journal files from being written; the metadata-only
-`bzz diagnostics outbox` command remains available. Use `bzz diagnostics
+acknowledgement, outbox-state, duration, count, locally authored event-ID
+metadata, and content-free managed-agent typing-subscription closure classes.
+The latter never include raw relay text or scope/identity identifiers and are
+excluded from OTel. `off` prevents journal files from being written; the
+metadata-only `bzz diagnostics outbox` command remains available. Use `bzz diagnostics
 status [--json]`, `outbox [--community <uuid>] [--json]`, `report --output
 <new-file>`, and `clear --yes` to inspect, create a reviewable owner-only
 report, or erase only the journals.

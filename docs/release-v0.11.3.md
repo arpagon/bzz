@@ -32,6 +32,10 @@ matching signed reply arrives.
   the durable store.
 - Clears transient state on scope/community changes, disconnect, lock, and
   shutdown.
+- Classifies a relay-closed typing subscription in the private local journal so
+  `bzz diagnostics status` can distinguish access, authentication, rate-limit,
+  protocol, closed, and unknown failures without retaining relay text or scope
+  identifiers; this event is never exported through OTel.
 - Publishes no human typing and changes no composer, draft, outbox, ACK, mention,
   attachment, Inbox, unread, search, copy, or thread-summary authority.
 
@@ -45,10 +49,13 @@ A typing event proves only that the verified agent identity signed a recent
 signal for the exact conversation scope. It does not prove that a model is
 ready, healthy, progressing, or guaranteed to reply.
 
-Typing content, raw tags, identities, coordinates, and timestamps are excluded
-from SQLite, Inbox, search, unread/read state, copy, diagnostics, support
-reports, and OTel. Only a bounded normalized in-memory projection exists for the
-visible scope.
+Typing content, raw tags, identities, coordinates, and event timestamps are
+excluded from SQLite, Inbox, search, unread/read state, copy, diagnostics,
+support reports, and OTel. Only a bounded normalized in-memory projection exists
+for the visible scope. If the relay closes the dedicated subscription, the local
+journal may retain only a bounded count and fixed error class; raw `CLOSED` text
+and all relay, scope, identity, event, and content fields are discarded before
+persistence and the record is excluded from OTel.
 
 ## Explicit non-goals
 

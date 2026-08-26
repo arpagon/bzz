@@ -23,7 +23,7 @@ use crate::{
     agents::typing::{AgentTypingState, TypingScope},
     auth::{IdentityManager, read_passphrase, signer::SignerHandle},
     config::{ClipboardImportMode, ClipboardMode, Config, KeyBackend, validate_relay_url},
-    diagnostics::{DiagnosticEvent, DiagnosticHandle},
+    diagnostics::{DiagnosticEvent, DiagnosticHandle, ErrorClass},
     domain::{
         Channel, ConnectionState, InboxCategory, InboxItem, Message, Profile, Reaction,
         SearchResultKind, SystemEventKind, ThreadSummary,
@@ -1654,6 +1654,10 @@ impl App {
                     if let Some(runtime) = &self.runtime {
                         let _ = runtime.supervisor.close(AGENT_TYPING_SUBSCRIPTION).await;
                     }
+                    self.diagnostics
+                        .emit(DiagnosticEvent::AgentTypingSubscriptionClosed {
+                            error_class: ErrorClass::from_subscription_closed(&message),
+                        });
                     self.status_error = Some("agent typing unavailable for this channel".into());
                 } else {
                     if subscription.starts_with("ch-")
@@ -6838,16 +6842,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn closed_typing_subscription_is_quarantined_without_exposing_relay_text() {
+    async fn closed_typing_subscription_is_quarantined_and_classified_locally() {
         let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
         let mut app = attachment_test_app(&temporary).await;
+        let diagnostics = crate::diagnostics::DiagnosticHandle::start(
+            &paths,
+            crate::config::LocalJournalMode::On,
+            None,
+        )
+        .unwrap();
+        app.diagnostics = diagnostics.clone();
         let channel = Uuid::new_v4();
         app.typing_subscription_channel = Some(channel);
+        let relay_text = "restricted: SENTINEL nsec1secret /private/path";
         assert!(
             app.handle_network(crate::realtime::supervisor::SupervisorEvent::Session(
                 crate::realtime::session::SessionEvent::Closed {
                     subscription: super::AGENT_TYPING_SUBSCRIPTION.into(),
-                    message: "hostile relay details".into(),
+                    message: relay_text.into(),
                 },
             ))
             .await
@@ -6859,6 +6876,29 @@ mod tests {
             app.status_error.as_deref(),
             Some("agent typing unavailable for this channel")
         );
+        diagnostics.shutdown().await;
+        let records = crate::diagnostics::report::load_records(&paths);
+        let closure = records
+            .iter()
+            .find(|record| {
+                matches!(
+                    record.event,
+                    crate::diagnostics::DiagnosticEvent::AgentTypingSubscriptionClosed { .. }
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            closure.event,
+            crate::diagnostics::DiagnosticEvent::AgentTypingSubscriptionClosed {
+                error_class: crate::diagnostics::ErrorClass::AccessDenied
+            }
+        );
+        let encoded = serde_json::to_string(&records).unwrap();
+        assert!(!encoded.contains(relay_text));
+        assert!(!encoded.contains("SENTINEL"));
+        assert!(!encoded.contains("nsec1secret"));
+        assert!(!encoded.contains("private/path"));
+        assert!(!encoded.contains(&channel.to_string()));
     }
 
     #[tokio::test]

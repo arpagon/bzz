@@ -33,6 +33,8 @@ pub struct DiagnosticStatus {
     pub latest_event_at_unix_ms: Option<u64>,
     pub latest_authenticated_at_unix_ms: Option<u64>,
     pub latest_disconnect_class: Option<String>,
+    pub agent_typing_subscription_closed_count: u64,
+    pub latest_agent_typing_subscription_close_class: Option<String>,
     pub receiver_lagged_count: u64,
     pub diagnostics_dropped_count: u64,
     pub outbox_counts: BTreeMap<String, usize>,
@@ -138,6 +140,8 @@ pub fn status(
     let mut connection_phase = None;
     let mut backoff_count = 0_u64;
     let mut last_backoff_ms = None;
+    let mut typing_subscription_closed = 0_u64;
+    let mut latest_typing_subscription_close = None;
     let mut lagged = 0_u64;
     let mut dropped = 0_u64;
     for record in records {
@@ -158,6 +162,10 @@ pub fn status(
                 backoff_count = backoff_count.saturating_add(1);
                 last_backoff_ms = Some(*delay_ms);
                 connection_phase = Some("backoff".into());
+            }
+            DiagnosticEvent::AgentTypingSubscriptionClosed { error_class } => {
+                typing_subscription_closed = typing_subscription_closed.saturating_add(1);
+                latest_typing_subscription_close = Some(error_class.as_str().to_owned());
             }
             DiagnosticEvent::ReceiverLagged {
                 skipped_event_count,
@@ -180,6 +188,8 @@ pub fn status(
         latest_event_at_unix_ms: records.last().map(|record| record.timestamp_unix_ms),
         latest_authenticated_at_unix_ms: authenticated,
         latest_disconnect_class: disconnect,
+        agent_typing_subscription_closed_count: typing_subscription_closed,
+        latest_agent_typing_subscription_close_class: latest_typing_subscription_close,
         receiver_lagged_count: lagged,
         diagnostics_dropped_count: dropped,
         outbox_counts: counts,
@@ -322,6 +332,40 @@ mod tests {
         let report = fs::read_to_string(output).unwrap();
         assert!(!report.contains("SENTINEL"));
         assert!(!report.contains("nsec1secret"));
+    }
+
+    #[test]
+    fn status_summarizes_typing_subscription_closures_without_scope_identifiers() {
+        let temp = TempDir::new().unwrap();
+        let paths = paths(&temp);
+        paths.ensure().unwrap();
+        let records = vec![
+            DiagnosticRecord::new(
+                "a".repeat(32),
+                DiagnosticEvent::AgentTypingSubscriptionClosed {
+                    error_class: crate::diagnostics::ErrorClass::AccessDenied,
+                },
+            ),
+            DiagnosticRecord::new(
+                "a".repeat(32),
+                DiagnosticEvent::AgentTypingSubscriptionClosed {
+                    error_class: crate::diagnostics::ErrorClass::Protocol,
+                },
+            ),
+        ];
+        let status = status(&paths, &records, &[]);
+        assert_eq!(status.agent_typing_subscription_closed_count, 2);
+        assert_eq!(
+            status
+                .latest_agent_typing_subscription_close_class
+                .as_deref(),
+            Some("protocol")
+        );
+        let encoded = serde_json::to_string(&status).unwrap();
+        assert!(!encoded.contains("channel"));
+        assert!(!encoded.contains("community"));
+        assert!(!encoded.contains("relay"));
+        assert!(!encoded.contains("pubkey"));
     }
 
     #[test]
