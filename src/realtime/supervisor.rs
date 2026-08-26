@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
 
@@ -120,6 +120,7 @@ async fn run(
     diagnostics: DiagnosticHandle,
 ) {
     let mut desired: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    let mut locally_closing = BTreeSet::new();
     let mut delay = Duration::from_millis(250);
     let mut attempt = 0_u32;
     let relay_origin = relay_origin(&relay);
@@ -138,6 +139,7 @@ async fn run(
             Ok(value) => {
                 delay = Duration::from_millis(250);
                 attempt = 0;
+                locally_closing.clear();
                 value
             }
             Err(error @ Error::Access(_)) | Err(error @ Error::Auth(_)) => {
@@ -196,12 +198,26 @@ async fn run(
                         diagnostics.emit(DiagnosticEvent::ReconnectRequested { source:"supervisor".into() });
                         let _=events.send(SupervisorEvent::Session(event));break;
                     }
+                    Some(event@SessionEvent::Closed{..})=>{
+                        if let SessionEvent::Closed { subscription, .. } = &event {
+                            if locally_closing.remove(subscription) {
+                                continue;
+                            }
+                            desired.remove(subscription);
+                        }
+                        let _=events.send(SupervisorEvent::Session(event));
+                    }
                     Some(event)=>{let _=events.send(SupervisorEvent::Session(event));}
                     None=>break,
                 },
                 command=commands.recv()=>match command {
                     Some(Command::Subscribe(id,filters))=>{desired.insert(id.clone(),filters.clone());if handle.subscribe(id,filters).await.is_err(){break;}}
-                    Some(Command::Close(id))=>{desired.remove(&id);let _=handle.close(id).await;}
+                    Some(Command::Close(id))=>{
+                        if desired.remove(&id).is_some() {
+                            locally_closing.insert(id.clone());
+                            let _=handle.close(id).await;
+                        }
+                    }
                     Some(Command::Publish(event,response))=>{let current=handle.clone();tokio::spawn(async move{let _=response.send(current.publish(event).await);});}
                     Some(Command::Reconnect)=>{handle.shutdown().await;break;}
                     Some(Command::Shutdown)=>{

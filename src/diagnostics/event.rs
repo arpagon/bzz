@@ -111,7 +111,6 @@ impl ErrorClass {
             "blocked" | "restricted" => Self::AccessDenied,
             "auth-required" => Self::AuthRejected,
             "duplicate" | "invalid" | "pow" => Self::Protocol,
-            "error" => Self::Unknown,
             _ if lower.contains("rate-limit") || lower.contains("429") => Self::RateLimited,
             _ if lower.contains("auth-required") || lower.contains("authentication required") => {
                 Self::AuthRejected
@@ -127,7 +126,9 @@ impl ErrorClass {
             _ if lower.contains("invalid")
                 || lower.contains("unsupported")
                 || lower.contains("malformed")
-                || lower.contains("protocol") =>
+                || lower.contains("protocol")
+                || lower.contains("unknown subscription")
+                || lower.contains("subscription not found") =>
             {
                 Self::Protocol
             }
@@ -463,7 +464,8 @@ mod tests {
             ("restricted: secret", ErrorClass::AccessDenied),
             ("auth-required: secret", ErrorClass::AuthRejected),
             ("invalid: unsupported filter", ErrorClass::Protocol),
-            ("unsupported subscription", ErrorClass::Protocol),
+            ("error: unsupported subscription", ErrorClass::Protocol),
+            ("error: unknown subscription", ErrorClass::Protocol),
             ("closed by server", ErrorClass::Closed),
             ("hostile relay details nsec1secret", ErrorClass::Unknown),
         ];

@@ -138,6 +138,86 @@ fn authentication_failures_are_actionably_classified() {
 }
 
 #[tokio::test]
+async fn client_close_acknowledgement_is_not_forwarded_as_relay_failure() {
+    let (relay, close_frames) = FakeRelay::start_acknowledging_closes().await;
+    let signer = SignerHandle::spawn(Keys::generate());
+    let supervisor = SupervisorHandle::spawn(relay.url.clone(), signer.clone());
+    let mut events = supervisor.subscribe_events();
+    supervisor
+        .subscribe("leaving", vec![json!({"kinds":[20_002]})])
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if matches!(
+                events.recv().await,
+                Ok(bzz::realtime::supervisor::SupervisorEvent::Session(
+                    SessionEvent::Eose(id)
+                )) if id == "leaving"
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    supervisor.close("leaving").await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while close_frames.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(250), events.recv())
+            .await
+            .is_err()
+    );
+
+    supervisor.shutdown().await;
+    signer.lock().await;
+    relay.stop();
+}
+
+#[tokio::test]
+async fn relay_closed_subscription_is_forgotten_without_close_feedback() {
+    let (relay, close_frames) = FakeRelay::start_closing_subscriptions().await;
+    let signer = SignerHandle::spawn(Keys::generate());
+    let supervisor = SupervisorHandle::spawn(relay.url.clone(), signer.clone());
+    let mut events = supervisor.subscribe_events();
+    supervisor
+        .subscribe("rejected", vec![json!({"kinds":[20_002]})])
+        .await
+        .unwrap();
+    let observed = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if matches!(
+                events.recv().await,
+                Ok(bzz::realtime::supervisor::SupervisorEvent::Session(
+                    SessionEvent::Closed { subscription, .. }
+                )) if subscription == "rejected"
+            ) {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(observed.is_ok());
+
+    // App-level quarantine may defensively request closure after the relay has
+    // already declared the subscription closed. That request must remain local.
+    supervisor.close("rejected").await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    assert_eq!(close_frames.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    supervisor.shutdown().await;
+    signer.lock().await;
+    relay.stop();
+}
+
+#[tokio::test]
 async fn supervisor_replays_desired_subscription() {
     let relay = FakeRelay::start().await;
     let signer = SignerHandle::spawn(Keys::generate());

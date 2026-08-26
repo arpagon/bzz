@@ -36,6 +36,9 @@ matching signed reply arrives.
   `bzz diagnostics status` can distinguish access, authentication, rate-limit,
   protocol, closed, and unknown failures without retaining relay text or scope
   identifiers; this event is never exported through OTel.
+- Treats relay `CLOSED` as terminal without echoing another `CLOSE`, and replaces
+  the selected-channel filter with NIP-01 `REQ` semantics so a stale close
+  acknowledgement cannot quarantine the next channel.
 - Publishes no human typing and changes no composer, draft, outbox, ACK, mention,
   attachment, Inbox, unread, search, copy, or thread-summary authority.
 

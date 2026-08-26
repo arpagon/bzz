@@ -347,6 +347,25 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const RELAY_EVENT_DEDUP_CAPACITY: usize = 16_384;
 const AGENT_TYPING_SUBSCRIPTION: &str = "agent-typing-selected";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TypingSubscriptionTransition {
+    Unchanged,
+    Leave,
+    Subscribe(Uuid),
+}
+
+fn typing_subscription_transition(
+    current: Option<Uuid>,
+    desired: Option<Uuid>,
+) -> TypingSubscriptionTransition {
+    match (current, desired) {
+        (current, desired) if current == desired => TypingSubscriptionTransition::Unchanged,
+        (Some(_), None) => TypingSubscriptionTransition::Leave,
+        (_, Some(channel)) => TypingSubscriptionTransition::Subscribe(channel),
+        (None, None) => TypingSubscriptionTransition::Unchanged,
+    }
+}
+
 fn triggers_directory_refresh(kind: u16, content: &str) -> bool {
     matches!(kind, 39_002 | 44_100 | 44_101)
         || (kind == 40_099
@@ -863,28 +882,35 @@ impl App {
             .runtime
             .as_ref()
             .and_then(|_| self.current_channel().map(|channel| channel.id));
-        if self.typing_subscription_channel != desired {
-            if self.typing_subscription_channel.take().is_some()
-                && let Some(runtime) = &self.runtime
-            {
-                runtime.supervisor.close(AGENT_TYPING_SUBSCRIPTION).await?;
-            }
-            self.agent_typing.clear();
-            if self.closed_typing_channel != desired {
-                self.closed_typing_channel = None;
-                if self.status_error.as_deref() == Some("agent typing unavailable for this channel")
-                {
-                    self.status_error = None;
-                }
+        let transition = typing_subscription_transition(self.typing_subscription_channel, desired);
+        if transition == TypingSubscriptionTransition::Unchanged {
+            return Ok(());
+        }
+
+        self.typing_subscription_channel = None;
+        self.agent_typing.clear();
+        if self.closed_typing_channel != desired {
+            self.closed_typing_channel = None;
+            if self.status_error.as_deref() == Some("agent typing unavailable for this channel") {
+                self.status_error = None;
             }
         }
-        let Some(channel) = desired else {
+
+        if transition == TypingSubscriptionTransition::Leave {
+            if let Some(runtime) = &self.runtime {
+                runtime.supervisor.close(AGENT_TYPING_SUBSCRIPTION).await?;
+            }
+            return Ok(());
+        }
+        let TypingSubscriptionTransition::Subscribe(channel) = transition else {
             return Ok(());
         };
-        if self.typing_subscription_channel.is_none()
-            && self.closed_typing_channel != Some(channel)
-            && let Some(runtime) = &self.runtime
-        {
+        if self.closed_typing_channel == Some(channel) {
+            return Ok(());
+        }
+        if let Some(runtime) = &self.runtime {
+            // NIP-01 REQ replacement avoids a stale CLOSED acknowledgement for
+            // the previous channel being attributed to this static ID.
             runtime
                 .supervisor
                 .subscribe(
@@ -1651,9 +1677,6 @@ impl App {
                 if subscription == AGENT_TYPING_SUBSCRIPTION {
                     self.closed_typing_channel = self.typing_subscription_channel.take();
                     transient_changed |= self.agent_typing.clear();
-                    if let Some(runtime) = &self.runtime {
-                        let _ = runtime.supervisor.close(AGENT_TYPING_SUBSCRIPTION).await;
-                    }
                     self.diagnostics
                         .emit(DiagnosticEvent::AgentTypingSubscriptionClosed {
                             error_class: ErrorClass::from_subscription_closed(&message),
@@ -1674,8 +1697,7 @@ impl App {
                         {
                             self.subscribed_channels.remove(&channel);
                         }
-                        if let Some(runtime) = &self.runtime {
-                            let _ = runtime.supervisor.close(subscription).await;
+                        if self.runtime.is_some() {
                             self.spawn_directory_refresh();
                         }
                     }
@@ -6543,9 +6565,9 @@ mod tests {
     use std::{collections::HashSet, sync::Arc, time::Duration};
 
     use super::{
-        clear_visible_unread, identity_recovery_connection, next_supervisor_event,
-        next_terminal_event, should_mark_visible_read, timeline_read_mark,
-        triggers_directory_refresh,
+        TypingSubscriptionTransition, clear_visible_unread, identity_recovery_connection,
+        next_supervisor_event, next_terminal_event, should_mark_visible_read, timeline_read_mark,
+        triggers_directory_refresh, typing_subscription_transition,
     };
     use crate::{
         config::Config,
@@ -6631,6 +6653,28 @@ mod tests {
             parent_event_id: None,
         });
         app
+    }
+
+    #[test]
+    fn typing_subscription_switch_replaces_req_without_close() {
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        assert_eq!(
+            typing_subscription_transition(None, Some(first)),
+            TypingSubscriptionTransition::Subscribe(first)
+        );
+        assert_eq!(
+            typing_subscription_transition(Some(first), Some(second)),
+            TypingSubscriptionTransition::Subscribe(second)
+        );
+        assert_eq!(
+            typing_subscription_transition(Some(first), None),
+            TypingSubscriptionTransition::Leave
+        );
+        assert_eq!(
+            typing_subscription_transition(Some(first), Some(first)),
+            TypingSubscriptionTransition::Unchanged
+        );
     }
 
     #[test]

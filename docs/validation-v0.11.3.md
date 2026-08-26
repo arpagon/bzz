@@ -32,6 +32,24 @@
 - Pinned relay conformance tests establish ephemeral non-history behavior and
   community-scoped live fan-out.
 
+## Production closure diagnosis
+
+A read-only production correlation on 2026-08-26 confirmed that the exact kind
+`20002` filter is accepted and reaches `EOSE`; Buzz and Traefik remained healthy
+and the authenticated WebSocket stayed online. The observed storm was a client
+lifecycle feedback loop: Buzz acknowledges a NIP-01 `CLOSE` with an empty-reason
+`CLOSED`, and bzz answered that terminal acknowledgement with another `CLOSE`
+about ten times per second. The supervisor now forgets relay-closed desired
+subscriptions before notifying the app, sends `CLOSE` only when a desired entry
+was actually removed, and consumes the matching local close acknowledgement
+instead of reporting it as a relay failure. Selected-channel changes replace the
+static typing subscription with a new `REQ`, avoiding stale `CLOSED` attribution
+to the next channel. Regression coverage models a relay that acknowledges every
+close.
+
+No Buzz, Kubernetes, Traefik, ClickHouse, authentication, filter, or rate-limit
+change is required for this incident.
+
 ## Automated correctness
 
 - [x] Fresh channel/direct-thread/nested-thread parser tests.
@@ -50,7 +68,7 @@
   explicit OTel exclusion tests.
 - [x] `cargo fmt --all -- --check` and `git diff --check`.
 - [x] Strict all-feature/all-target Clippy.
-- [x] `cargo test --locked --all-features --all-targets`: 200 library tests,
+- [x] `cargo test --locked --all-features --all-targets`: 201 library tests,
   every integration suite, and benchmark smoke targets passed.
 - [x] Pinned Buzz real-relay live typing and no-history journey.
 - [x] `cargo deny check`; only accepted duplicate-version warnings remain.

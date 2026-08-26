@@ -92,7 +92,11 @@ bzz diagnostics status --json
 class such as `access_denied`, `auth_rejected`, `rate_limited`, `protocol`, or
 `unknown`. The journal never retains the relay's raw `CLOSED` text, relay URL,
 community/channel/thread identifiers, agent or owner keys, event IDs, names, or
-message content. This evidence remains local and is not exported through OTel.
+message content. This evidence remains local and is not exported through OTel. A count that
+increases continuously at several closures per second indicates the pre-fix
+`CLOSE`/`CLOSED` acknowledgement loop rather than repeated WebSocket failures;
+stop that client and upgrade before reproducing once. Current bzz treats
+`CLOSED` as terminal and does not echo another `CLOSE`.
 
 `policy unknown` means ownership is verified but no usable public invocation
 policy is available. `not eligible` means the active human identity does not
