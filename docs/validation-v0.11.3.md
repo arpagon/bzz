@@ -81,13 +81,19 @@ were removed after review.
 
 ## Cross-platform and release gates
 
-- [ ] Linux CI.
-- [ ] Windows x86_64 CI.
-- [ ] Intel macOS CI.
-- [ ] Apple Silicon macOS CI.
-- [ ] Pinned Buzz relay integration CI.
+- [x] Linux CI.
+- [x] Windows x86_64 CI.
+- [x] Intel macOS CI.
+- [x] Apple Silicon macOS CI.
+- [x] Pinned Buzz relay integration CI.
 - [ ] Tagged archives, checksums, SBOMs, and provenance attestations.
 - [ ] Native keychain and encrypted-file release-artifact smoke tests.
+
+Implementation CI passed in
+[`32930904850`](https://github.com/arpagon/bzz/actions/runs/32930904850),
+including Linux, Windows, Intel macOS, Apple Silicon, tests, deny, audit, and
+native target smoke. Pinned Buzz integration passed in
+[`32930904820`](https://github.com/arpagon/bzz/actions/runs/32930904820).
 
 ## Environment note
 
