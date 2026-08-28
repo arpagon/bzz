@@ -188,9 +188,47 @@ struct PublicationQueues {
     maintenance: VecDeque<PendingPublication>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AdmissionLane {
+    InteractivePublication,
+    Subscription,
+    DeferredPublication,
+    Idle,
+}
+
+fn admission_lane(
+    publication_inflight: bool,
+    has_interactive: bool,
+    next_subscription: Option<SubscriptionPriority>,
+    has_deferred: bool,
+) -> AdmissionLane {
+    if !publication_inflight && has_interactive {
+        AdmissionLane::InteractivePublication
+    } else if matches!(
+        next_subscription,
+        Some(SubscriptionPriority::Foreground | SubscriptionPriority::Baseline)
+    ) {
+        AdmissionLane::Subscription
+    } else if !publication_inflight && has_deferred {
+        AdmissionLane::DeferredPublication
+    } else if next_subscription.is_some() {
+        AdmissionLane::Subscription
+    } else {
+        AdmissionLane::Idle
+    }
+}
+
 impl PublicationQueues {
     fn len(&self) -> usize {
         self.interactive.len() + self.recovery.len() + self.maintenance.len()
+    }
+
+    fn has_interactive(&self) -> bool {
+        !self.interactive.is_empty()
+    }
+
+    fn has_deferred(&self) -> bool {
+        !self.recovery.is_empty() || !self.maintenance.is_empty()
     }
 
     fn push(&mut self, priority: PublishPriority, publication: PendingPublication) {
@@ -201,11 +239,18 @@ impl PublicationQueues {
         }
     }
 
-    fn pop(&mut self) -> Option<PendingPublication> {
-        self.interactive
+    fn pop_interactive(&mut self) -> Option<PendingPublication> {
+        self.interactive.pop_front()
+    }
+
+    fn pop_deferred(&mut self) -> Option<PendingPublication> {
+        self.recovery
             .pop_front()
-            .or_else(|| self.recovery.pop_front())
             .or_else(|| self.maintenance.pop_front())
+    }
+
+    fn pop(&mut self) -> Option<PendingPublication> {
+        self.pop_interactive().or_else(|| self.pop_deferred())
     }
 
     fn reject_expired(&mut self, now: Instant) {
@@ -635,9 +680,23 @@ async fn run(
                     if rate_limit_deadline.is_some() {
                         continue;
                     }
-                    if !publish_inflight.load(Ordering::SeqCst)
-                        && let Some(publication)=publications.pop()
-                    {
+                    let next_subscription=next_subscription(&desired,now);
+                    let next_priority=next_subscription
+                        .as_ref()
+                        .and_then(|id|desired.get(id))
+                        .map(|entry|entry.priority);
+                    let lane=admission_lane(
+                        publish_inflight.load(Ordering::SeqCst),
+                        publications.has_interactive(),
+                        next_priority,
+                        publications.has_deferred(),
+                    );
+                    let publication=match lane {
+                        AdmissionLane::InteractivePublication=>publications.pop_interactive(),
+                        AdmissionLane::DeferredPublication=>publications.pop_deferred(),
+                        AdmissionLane::Subscription|AdmissionLane::Idle=>None,
+                    };
+                    if let Some(publication)=publication {
                         publish_inflight.store(true,Ordering::SeqCst);
                         let current=handle.clone();
                         let inflight=publish_inflight.clone();
@@ -652,7 +711,7 @@ async fn run(
                         });
                         continue;
                     }
-                    if let Some(id)=next_subscription(&desired,now) {
+                    if let Some(id)=next_subscription {
                         let filters=desired.get(&id).map(|entry|entry.filters.clone()).unwrap_or_default();
                         match handle.subscribe(id.clone(),filters).await {
                             Ok(())=>{
@@ -753,6 +812,26 @@ mod tests {
             Ok(Err(ref error)) if admission::is_local_admission_error(error)
         ));
         assert_eq!(queues.len(), 0);
+    }
+
+    #[test]
+    fn lane_priority_keeps_selected_and_baseline_ahead_of_maintenance() {
+        assert_eq!(
+            admission_lane(false, true, Some(SubscriptionPriority::Foreground), true,),
+            AdmissionLane::InteractivePublication
+        );
+        assert_eq!(
+            admission_lane(false, false, Some(SubscriptionPriority::Foreground), true,),
+            AdmissionLane::Subscription
+        );
+        assert_eq!(
+            admission_lane(false, false, Some(SubscriptionPriority::Baseline), true,),
+            AdmissionLane::Subscription
+        );
+        assert_eq!(
+            admission_lane(false, false, Some(SubscriptionPriority::Background), true,),
+            AdmissionLane::DeferredPublication
+        );
     }
 
     #[test]

@@ -51,7 +51,7 @@
 - [x] `git diff --check`.
 - [x] Strict locked all-feature/all-target Clippy.
 - [x] All-feature/all-target compile check.
-- [x] Library tests: 216 passed.
+- [x] Library tests: 217 passed.
 - [x] Session/fake-relay tests: 11 passed.
 - [x] Complete integration, snapshot, TUI, storage, and platform-neutral test
   suite.
