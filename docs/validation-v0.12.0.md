@@ -1,6 +1,6 @@
 # bzz v0.12.0 validation
 
-**Status:** Implementation locally validated 2026-08-28; publication pending
+**Status:** Implementation locally and CI validated 2026-08-28; publication pending
 
 ## Scope
 
@@ -92,13 +92,20 @@ message. The temporary fixture source was removed after capture.
 
 ## Cross-platform and release gates
 
-- [ ] Linux CI.
-- [ ] Windows x86_64 CI.
-- [ ] Intel macOS CI.
-- [ ] Apple Silicon macOS CI.
-- [ ] Pinned Buzz relay integration CI.
+- [x] Linux CI.
+- [x] Windows x86_64 CI, including native keychain smoke.
+- [x] Intel macOS CI, including native keychain smoke.
+- [x] Apple Silicon macOS CI, including native keychain smoke.
+- [x] Pinned Buzz relay integration CI.
 - [ ] Tagged archives, checksums, SBOMs, and provenance attestations.
-- [ ] Native keychain and encrypted-file release-artifact smoke tests.
+- [ ] Native keychain and encrypted-file smoke tests against downloaded tagged
+  release artifacts.
+
+Exact implementation commit `4d147301e3e0006bddc2d7835c3d55393519f7ed`
+passed cross-platform CI in
+[`33186774988`](https://github.com/arpagon/bzz/actions/runs/33186774988)
+and the pinned Buzz real-relay integration in
+[`33186774968`](https://github.com/arpagon/bzz/actions/runs/33186774968).
 
 ## Non-regression boundary
 
