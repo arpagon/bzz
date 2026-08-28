@@ -107,16 +107,18 @@ impl FakeRelay {
     }
 
     #[allow(dead_code)]
-    pub async fn start_legacy_rate_limit_notice() -> (Self, Arc<AtomicUsize>) {
+    pub async fn start_legacy_rate_limit_notice() -> (Self, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         let event_frames = Arc::new(AtomicUsize::new(0));
+        let request_frames = Arc::new(AtomicUsize::new(0));
         let relay = Self::start_configured(FakeRelayConfig {
             event_message: "rate-limited: quota exceeded; retry in 1s".into(),
             legacy_notice_on_event: true,
+            request_frames: request_frames.clone(),
             event_frames: event_frames.clone(),
             ..FakeRelayConfig::default()
         })
         .await;
-        (relay, event_frames)
+        (relay, event_frames, request_frames)
     }
 
     #[allow(dead_code)]

@@ -41,7 +41,8 @@
 - [x] A correlated `OK false rate-limited` is returned once and is never
   republished automatically.
 - [x] A legacy uncorrelated rate-limit NOTICE resolves the single pending EVENT
-  as uncertain, activates the gate, and sends no duplicate.
+  as uncertain, activates the gate, reconciles desired subscriptions, and sends
+  no duplicate EVENT.
 - [x] Client `CLOSE` acknowledgement remains consumed without feedback.
 - [x] Terminal relay closure remains forgotten without a defensive wire CLOSE.
 

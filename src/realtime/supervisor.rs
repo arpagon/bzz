@@ -588,10 +588,13 @@ async fn run(
                             );
                             rate_limit_visible = true;
                             let gate=rate_limit_deadline.unwrap_or_else(Instant::now);
+                            // A legacy NOTICE carries no frame identifier. Reconcile
+                            // every desired subscription after the gate so an
+                            // uncorrelated rejected REQ cannot remain a silent hole.
+                            // The normal admission clock keeps replacement bounded.
                             for (id,entry) in &mut desired {
-                                if entry.needs_send {
-                                    entry.retry_at=Some(gate+admission::retry_jitter(id));
-                                }
+                                entry.needs_send=true;
+                                entry.retry_at=Some(gate+admission::retry_jitter(id));
                             }
                         } else {
                             let _=events.send(SupervisorEvent::Session(SessionEvent::Notice(message)));

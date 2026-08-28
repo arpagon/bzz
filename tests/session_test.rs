@@ -329,10 +329,29 @@ async fn explicit_rate_limited_publication_is_not_republished() {
 
 #[tokio::test]
 async fn legacy_uncorrelated_notice_is_uncertain_and_not_republished() {
-    let (relay, event_frames) = FakeRelay::start_legacy_rate_limit_notice().await;
+    let (relay, event_frames, request_frames) = FakeRelay::start_legacy_rate_limit_notice().await;
     let signer = SignerHandle::spawn(Keys::generate());
     let supervisor = SupervisorHandle::spawn(relay.url.clone(), signer.clone());
     let mut events = supervisor.subscribe_events();
+    supervisor
+        .subscribe("notice-recovery", vec![json!({"kinds":[9]})])
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if matches!(
+                events.recv().await,
+                Ok(bzz::realtime::supervisor::SupervisorEvent::Session(
+                    SessionEvent::Eose(id)
+                )) if id == "notice-recovery"
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+
     let event = buzz_sdk::build_message(uuid::Uuid::new_v4(), "generated", None, &[], false, &[])
         .unwrap()
         .sign_with_keys(&Keys::generate())
@@ -355,8 +374,23 @@ async fn legacy_uncorrelated_notice_is_uncertain_and_not_republished() {
     })
     .await;
     assert!(limited.is_ok());
-    tokio::time::sleep(std::time::Duration::from_millis(1_250)).await;
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if matches!(
+                events.recv().await,
+                Ok(bzz::realtime::supervisor::SupervisorEvent::Session(
+                    SessionEvent::Eose(id)
+                )) if id == "notice-recovery"
+            ) && request_frames.load(std::sync::atomic::Ordering::SeqCst) == 2
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(event_frames.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(request_frames.load(std::sync::atomic::Ordering::SeqCst), 2);
 
     supervisor.shutdown().await;
     signer.lock().await;
