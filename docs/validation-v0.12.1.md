@@ -1,7 +1,7 @@
 # bzz v0.12.1 validation
 
-**Status:** Local implementation and pinned-relay validation complete
-2026-08-28; CI, production acceptance, and publication pending
+**Status:** Local, cross-platform CI, and pinned-relay validation complete
+2026-08-28; production acceptance and publication pending
 
 ## Scope
 
@@ -69,17 +69,23 @@ configuration, dependency, or repository file was changed for that host setup.
 
 ## Cross-platform and release gates
 
-- [ ] Linux CI.
-- [ ] Windows x86_64 CI, including native keychain smoke.
-- [ ] Intel macOS CI, including native keychain smoke.
-- [ ] Apple Silicon macOS CI, including native keychain smoke.
+- [x] Linux CI.
+- [x] Windows x86_64 CI, including native keychain smoke.
+- [x] Intel macOS CI, including native keychain smoke.
+- [x] Apple Silicon macOS CI, including native keychain smoke.
 - [x] Local pinned Buzz relay integration at
   `9f55bf67456be10ff7c8238bf0d9e12e582848f6`.
-- [ ] Pinned Buzz relay integration CI at the same revision.
+- [x] Pinned Buzz relay integration CI at the same revision.
 - [ ] Controlled production startup/reconnect acceptance.
 - [ ] Tagged archives, checksums, SBOMs, and provenance attestations.
 - [ ] Native keychain and encrypted-file smoke tests against downloaded tagged
   artifacts.
+
+Exact implementation head
+`fa84ef97f35e333164878becc074abc95898017c` passed cross-platform CI in
+[`33200422205`](https://github.com/arpagon/bzz/actions/runs/33200422205) and the
+pinned Buzz real-relay integration in
+[`33200422319`](https://github.com/arpagon/bzz/actions/runs/33200422319).
 
 ## Production acceptance checklist
 
