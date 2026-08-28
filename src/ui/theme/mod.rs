@@ -83,6 +83,7 @@ define_groups! {
     MessageAvatar => "MessageAvatar",
     MessageTimestamp => "MessageTimestamp",
     MessageDateSeparator => "MessageDateSeparator",
+    MessageSelected => "MessageSelected",
     MessageBody => "MessageBody",
     MessageDeleted => "MessageDeleted",
     Reaction => "Reaction",
@@ -102,6 +103,9 @@ define_groups! {
     StatusMode => "StatusMode",
     StatusModeInsert => "StatusModeInsert",
     StatusModeCommand => "StatusModeCommand",
+    StatusAgent => "StatusAgent",
+    StatusConnection => "StatusConnection",
+    StatusMedia => "StatusMedia",
     MarkdownLink => "MarkdownLink",
     MarkdownCode => "MarkdownCode",
     MarkdownMarker => "MarkdownMarker",
@@ -495,6 +499,11 @@ fn default_definitions() -> [HighlightDefinition; HighlightGroup::COUNT] {
         Some(H::Muted),
         Style::default().add_modifier(Modifier::DIM),
     );
+    set(
+        H::MessageSelected,
+        Some(H::SelectionBorder),
+        Style::default().add_modifier(Modifier::BOLD),
+    );
     set(H::MessageBody, Some(H::Normal), Style::default());
     set(
         H::MessageDeleted,
@@ -541,6 +550,24 @@ fn default_definitions() -> [HighlightDefinition; HighlightGroup::COUNT] {
         H::StatusModeCommand,
         None,
         Style::default().bg(Color::DarkGray).fg(Color::White),
+    );
+    set(
+        H::StatusAgent,
+        None,
+        Style::default()
+            .bg(Color::Yellow)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+    );
+    set(
+        H::StatusConnection,
+        None,
+        Style::default().bg(Color::Cyan).fg(Color::Black),
+    );
+    set(
+        H::StatusMedia,
+        None,
+        Style::default().bg(Color::Black).fg(Color::White),
     );
     set(
         H::MarkdownLink,
@@ -633,6 +660,19 @@ fn apply_palette(
         palette.background,
         palette.warning,
     );
+    set_colors(
+        definitions,
+        H::StatusAgent,
+        palette.background,
+        palette.accent,
+    );
+    set_colors(
+        definitions,
+        H::StatusConnection,
+        palette.background,
+        palette.primary,
+    );
+    set_colors(definitions, H::StatusMedia, palette.text, palette.surface);
 }
 
 fn value_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
@@ -906,7 +946,7 @@ fn relative_luminance((red, green, blue): (u8, u8, u8)) -> f64 {
 
 fn export_palette(palette: &Palette) -> String {
     let mut output = format!(
-        "# Exported from the built-in {} theme.\n\n[highlight.Normal]\nforeground = {:?}\nbackground = {:?}\n\n[highlight.FocusBorder]\nforeground = {:?}\n\n[highlight.Selection]\nforeground = {:?}\nbackground = {:?}\nbold = true\n\n[highlight.SelectionBorder]\nforeground = {:?}\nbold = true\n\n[highlight.Muted]\nforeground = {:?}\n\n[highlight.Border]\nforeground = {:?}\n\n[highlight.Error]\nforeground = {:?}\n\n[highlight.Warning]\nforeground = {:?}\n\n[highlight.Success]\nforeground = {:?}\n\n[highlight.Info]\nforeground = {:?}\n\n[highlight.StatusBar]\nforeground = {:?}\nbackground = {:?}\n\n[ui.border]\ndefault = \"plain\"\n",
+        "# Exported from the built-in {} theme.\n\n[highlight.Normal]\nforeground = {:?}\nbackground = {:?}\n\n[highlight.FocusBorder]\nforeground = {:?}\n\n[highlight.Selection]\nforeground = {:?}\nbackground = {:?}\nbold = true\n\n[highlight.SelectionBorder]\nforeground = {:?}\nbold = true\n\n[highlight.Muted]\nforeground = {:?}\n\n[highlight.Border]\nforeground = {:?}\n\n[highlight.Error]\nforeground = {:?}\n\n[highlight.Warning]\nforeground = {:?}\n\n[highlight.Success]\nforeground = {:?}\n\n[highlight.Info]\nforeground = {:?}\n\n[highlight.StatusBar]\nforeground = {:?}\nbackground = {:?}\n\n[highlight.StatusAgent]\nforeground = {:?}\nbackground = {:?}\nbold = true\n\n[highlight.StatusConnection]\nforeground = {:?}\nbackground = {:?}\n\n[highlight.StatusMedia]\nforeground = {:?}\nbackground = {:?}\n\n[ui.border]\ndefault = \"plain\"\n",
         palette.name,
         palette.text,
         palette.background,
@@ -922,11 +962,18 @@ fn export_palette(palette: &Palette) -> String {
         palette.primary,
         palette.text,
         palette.surface_dark,
+        palette.background,
+        palette.accent,
+        palette.background,
+        palette.primary,
+        palette.text,
+        palette.surface,
     );
     output.push_str(
         "\n# Conversation-shell semantic links\n\
          [highlight.MessageAvatar]\nlink = \"MessageAuthor\"\n\
          [highlight.MessageDateSeparator]\nlink = \"Muted\"\ndim = true\n\
+         [highlight.MessageSelected]\nlink = \"SelectionBorder\"\nbold = true\n\
          [highlight.ComposerHint]\nlink = \"Muted\"\nitalic = true\n\
          [highlight.ComposerDisabled]\nlink = \"Warning\"\n",
     );
@@ -997,6 +1044,51 @@ mod tests {
         assert_eq!(
             theme.style(HighlightGroup::StatusBar),
             theme.style(HighlightGroup::StatusMode)
+        );
+        assert_ne!(
+            theme.style(HighlightGroup::StatusAgent).bg,
+            theme.style(HighlightGroup::StatusBar).bg
+        );
+        assert_eq!(
+            theme.style(HighlightGroup::MessageSelected).bg,
+            theme.style(HighlightGroup::SelectionBorder).bg
+        );
+    }
+
+    #[test]
+    fn new_status_and_message_groups_are_optional_and_overridable() {
+        let (options, mut warnings) = parse(
+            r##"
+[highlight.StatusAgent]
+foreground = "#010203"
+background = "#A0B0C0"
+
+[highlight.MessageSelected]
+link = "Info"
+bold = true
+"##,
+        )
+        .unwrap();
+        let palette = super::builtin::lookup("nord").unwrap();
+        let theme = Theme::from_palette(palette, &options, &mut warnings);
+        assert!(warnings.is_empty());
+        assert_eq!(
+            theme.style(HighlightGroup::StatusAgent).fg,
+            Some(Color::Rgb(0x01, 0x02, 0x03))
+        );
+        assert_eq!(
+            theme.style(HighlightGroup::StatusAgent).bg,
+            Some(Color::Rgb(0xA0, 0xB0, 0xC0))
+        );
+        assert_eq!(
+            theme.style(HighlightGroup::MessageSelected).fg,
+            theme.style(HighlightGroup::Info).fg
+        );
+        assert!(
+            theme
+                .style(HighlightGroup::MessageSelected)
+                .add_modifier
+                .contains(Modifier::BOLD)
         );
     }
 
@@ -1086,6 +1178,10 @@ foreground = "yellow"
         let before = fs::read(&output).unwrap();
         let text = String::from_utf8(before.clone()).unwrap();
         assert!(text.contains("[highlight.MessageAvatar]"));
+        assert!(text.contains("[highlight.MessageSelected]"));
+        assert!(text.contains("[highlight.StatusAgent]"));
+        assert!(text.contains("[highlight.StatusConnection]"));
+        assert!(text.contains("[highlight.StatusMedia]"));
         assert!(text.contains("[highlight.ComposerDisabled]"));
         assert!(parse(&text).is_ok());
         assert!(export_to("nord", &output).is_err());

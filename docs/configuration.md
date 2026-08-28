@@ -99,11 +99,13 @@ an agent key to `[[identities]]` or revive retired `[[local_agents]]` values.
 The same agent pubkey is independently verified in every configured community.
 There is no local-hosting switch in this release.
 
-Verified-agent typing has no configuration switch. v0.11.3 receives only fresh,
+Verified-agent typing has no configuration switch. bzz receives only fresh,
 signed, ephemeral kind `20002` signals for the selected destination, retains
-them in memory for at most eight seconds, and never publishes the human user's
-typing. It does not enable presence, readiness, observer telemetry, or runtime
-control.
+them in memory for at most eight seconds, and presents them in v0.12.0 as a
+compact animated status segment such as `◆ Fizz ⠹`. It never publishes the
+human user's typing. The spinner is recent typing presentation only; it does
+not enable or claim presence, readiness, progress, observer telemetry, or
+runtime control.
 
 `ui.theme` selects the global built-in theme. An optional community `theme`
 field takes precedence only while that community is active. `ui.mouse = "auto"`
@@ -112,8 +114,9 @@ enables mouse capture only on an interactive, non-`dumb` terminal; set it to
 mouse-capture sequences. `ui.message_width` caps only the rendered text
 measure in a wider conversation pane; it never truncates, stores, or changes
 message content. The workspace uses labelled local community rows,
-deterministic textual author markers, optional profile photographs, and a
-visible writing dock. `ui.profile_avatars = "trusted"` (the default) may fetch
+deterministic textual author markers, a compact selected-message gutter,
+optional profile photographs, a segmented status bar, and a visible writing
+dock. `ui.profile_avatars = "trusted"` (the default) may fetch
 a kind-0 `Profile.picture` only when the identity is unlocked and the terminal
 can render an allocated image row. An external URL uses a separate,
 credential-free HTTPS client. A canonical image URL on the active community

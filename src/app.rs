@@ -263,6 +263,8 @@ pub struct App {
     profiles: HashMap<String, Profile>,
     agents: HashMap<String, crate::store::agents::RemoteAgentView>,
     agent_typing: AgentTypingState,
+    typing_spinner_frame: usize,
+    typing_spinner_advanced_at: Instant,
     typing_subscription_channel: Option<Uuid>,
     closed_typing_channel: Option<Uuid>,
     reactions: HashMap<String, Vec<Reaction>>,
@@ -344,6 +346,7 @@ const LEADER_TIMEOUT: Duration = Duration::from_millis(750);
 const TERMINAL_ERROR_YIELD: Duration = Duration::from_millis(50);
 const RELAY_LAG_YIELD: Duration = Duration::from_millis(5);
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const AGENT_SPINNER_INTERVAL: Duration = Duration::from_millis(200);
 const RELAY_EVENT_DEDUP_CAPACITY: usize = 16_384;
 const AGENT_TYPING_SUBSCRIPTION: &str = "agent-typing-selected";
 
@@ -470,6 +473,8 @@ impl App {
             profiles: HashMap::new(),
             agents: HashMap::new(),
             agent_typing: AgentTypingState::default(),
+            typing_spinner_frame: 0,
+            typing_spinner_advanced_at: Instant::now(),
             typing_subscription_channel: None,
             closed_typing_channel: None,
             reactions: HashMap::new(),
@@ -1407,7 +1412,13 @@ impl App {
         {
             return false;
         }
-        self.agent_typing.apply(signal, now)
+        let was_empty = self.agent_typing.is_empty();
+        let changed = self.agent_typing.apply(signal, now);
+        if changed && was_empty {
+            self.typing_spinner_frame = 0;
+            self.typing_spinner_advanced_at = Instant::now();
+        }
+        changed
     }
 
     fn visible_agent_typing_line(&self, width: u16) -> Option<String> {
@@ -1427,7 +1438,7 @@ impl App {
                 Some(sanitize::single_line(&label))
             })
             .collect::<Vec<_>>();
-        crate::ui::typing::format_typing_line(&labels, width)
+        crate::ui::typing::format_typing_indicator(&labels, self.typing_spinner_frame, width)
     }
 
     fn rebuild_thread_summaries(&mut self) {
@@ -1755,6 +1766,16 @@ impl App {
     async fn on_tick(&mut self) -> Result<bool> {
         let mut changed = self.media.poll();
         changed |= self.agent_typing.expire(nostr::Timestamp::now().as_secs());
+        let typing_visible = self.visible_agent_typing_line(5).is_some();
+        if typing_visible && self.typing_spinner_advanced_at.elapsed() >= AGENT_SPINNER_INTERVAL {
+            self.typing_spinner_frame =
+                (self.typing_spinner_frame + 1) % crate::ui::typing::SPINNER_FRAME_COUNT;
+            self.typing_spinner_advanced_at = Instant::now();
+            changed = true;
+        } else if !typing_visible && self.typing_spinner_frame != 0 {
+            self.typing_spinner_frame = 0;
+            self.typing_spinner_advanced_at = Instant::now();
+        }
         if self
             .leader_started_at
             .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
@@ -5692,12 +5713,10 @@ impl App {
             .unwrap_or(u16::MAX)
             .saturating_add(u16::from(attachment_count > 3));
         let body_rows = u16::try_from(self.composer.display_rows(80)).unwrap_or(u16::MAX);
-        let typing_rows = u16::from(self.visible_agent_typing_line(80).is_some());
         body_rows
             .saturating_add(attachment_rows)
-            .saturating_add(typing_rows)
             .saturating_add(2)
-            .clamp(5, 12)
+            .clamp(4, 11)
     }
 
     fn render_composer_dock(&mut self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
@@ -5711,8 +5730,6 @@ impl App {
         } else {
             format!("message #{channel}")
         };
-        let typing = self.visible_agent_typing_line(area.width.saturating_sub(2));
-        let typing_visible = typing.is_some();
         let (title, content, border, content_group) = if active {
             let mut attachment_lines = self
                 .composer
@@ -5758,8 +5775,7 @@ impl App {
             } else {
                 format!("\n{}", attachment_lines.join("\n"))
             };
-            let draft = format!("{}{}", sanitize::text(&self.composer.body), attachments);
-            let content = typing.map_or(draft.clone(), |typing| format!("{typing}\n{draft}"));
+            let content = format!("{}{}", sanitize::text(&self.composer.body), attachments);
             (
                 format!(
                     " {target} · Enter send · Ctrl-v paste · Ctrl-o choose · Alt-o path · Del remove · Ctrl-c clear · Esc close "
@@ -5785,7 +5801,7 @@ impl App {
         } else {
             (
                 format!(" {target} "),
-                typing.unwrap_or_else(|| "Press i or click here to write.".into()),
+                "Press i or click here to write.".into(),
                 HighlightGroup::ComposerBorder,
                 HighlightGroup::ComposerHint,
             )
@@ -5796,18 +5812,8 @@ impl App {
             .title_style(self.theme.style(HighlightGroup::ComposerTitle))
             .title(title);
         let inner = block.inner(area);
-        let composer_hit = if typing_visible {
-            Rect::new(
-                inner.x,
-                inner.y.saturating_add(1),
-                inner.width,
-                inner.height.saturating_sub(1),
-            )
-        } else {
-            inner
-        };
-        if !composer_hit.is_empty() {
-            hit_map.push(composer_hit, HitTarget::Composer);
+        if !inner.is_empty() {
+            hit_map.push(inner, HitTarget::Composer);
         }
         frame.render_widget(
             Paragraph::new(content)
@@ -5827,7 +5833,6 @@ impl App {
                     .min(inner.right().saturating_sub(1)),
                 inner
                     .y
-                    .saturating_add(u16::from(typing_visible))
                     .saturating_add(u16::try_from(row).unwrap_or(u16::MAX))
                     .min(inner.bottom().saturating_sub(1)),
             ));
@@ -5886,25 +5891,24 @@ impl App {
             _ if self.presentation.composer_target.is_some() => HighlightGroup::StatusModeInsert,
             _ => HighlightGroup::StatusMode,
         };
-        let connection = crate::ui::status::connection_label(self.connection);
-        let error = self
+        let notice = self
             .status_error
             .as_deref()
             .map(sanitize::single_line)
             .unwrap_or_default();
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(format!(" {mode} "), self.theme.style(mode_group)),
-                Span::styled(
-                    format!(
-                        " · {connection} · img {} · {error} · ? help · q quit",
-                        self.media.protocol_name()
-                    ),
-                    self.theme.style(HighlightGroup::StatusBar),
-                ),
-            ]))
-            .style(self.theme.style(HighlightGroup::StatusBar)),
+        let activity = self.visible_agent_typing_line(area.width);
+        crate::ui::status::render(
+            frame,
             area,
+            &self.theme,
+            crate::ui::status::StatusBarView {
+                mode,
+                mode_group,
+                activity: activity.as_deref(),
+                notice: &notice,
+                connection: crate::ui::status::connection_label(self.connection),
+                media: self.media.protocol_name(),
+            },
         );
     }
     fn render_overlay(&mut self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
@@ -6562,7 +6566,11 @@ fn list_row(area: Rect, row: usize, height: u16) -> Option<Rect> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, sync::Arc, time::Duration};
+    use std::{
+        collections::HashSet,
+        sync::Arc,
+        time::{Duration, Instant},
+    };
 
     use super::{
         TypingSubscriptionTransition, clear_visible_unread, identity_recovery_connection,
@@ -6810,7 +6818,7 @@ mod tests {
         assert!(app.apply_agent_typing_event(&channel_typing, now));
         assert_eq!(
             app.visible_agent_typing_line(80).as_deref(),
-            Some("◆ Fizz is typing…")
+            Some("◆ Fizz ⠋")
         );
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|frame| app.render(frame)).unwrap();
@@ -6821,9 +6829,47 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(screen.contains("Fizz is typing"));
+        assert!(screen.contains("◆ Fizz ⠋"));
+        let status = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .skip(29 * 100)
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(status.contains("◆ Fizz ⠋"));
+        assert!(status.contains(&format!(
+            " {} ",
+            crate::ui::status::connection_label(app.connection)
+        )));
+        assert!(status.contains(&format!(" {} ", app.media.protocol_name().to_uppercase())));
+
+        let mut narrow = Terminal::new(TestBackend::new(50, 12)).unwrap();
+        narrow.draw(|frame| app.render(frame)).unwrap();
+        let narrow_status = narrow
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .skip(11 * 50)
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            narrow_status.contains("◆ Fizz ⠋"),
+            "narrow status: {narrow_status:?}"
+        );
+        assert!(!narrow_status.contains("help"));
+
+        app.typing_spinner_advanced_at = Instant::now() - super::AGENT_SPINNER_INTERVAL;
+        assert!(app.on_tick().await.unwrap());
+        assert_eq!(
+            app.visible_agent_typing_line(80).as_deref(),
+            Some("◆ Fizz ⠙")
+        );
+
         let panes = crate::ui::layout::panes_with_composer(
-            Rect::new(0, 0, 100, 30),
+            Rect::new(0, 0, 50, 12),
             app.community_rail,
             app.sidebar,
             false,
@@ -6832,7 +6878,7 @@ mod tests {
             app.composer_dock_height(),
         );
         let dock = panes.composer.unwrap();
-        assert_ne!(
+        assert_eq!(
             app.last_hit_map
                 .as_ref()
                 .and_then(|map| map.hit(dock.x.saturating_add(2), dock.y.saturating_add(1))),
@@ -6854,7 +6900,7 @@ mod tests {
         assert!(app.apply_agent_typing_event(&thread_typing, now));
         assert_eq!(
             app.visible_agent_typing_line(80).as_deref(),
-            Some("◆ Fizz is typing…")
+            Some("◆ Fizz ⠋")
         );
 
         let wrong_root = "c".repeat(64);
@@ -6883,6 +6929,12 @@ mod tests {
         assert!(!app.apply_agent_typing_event(&channel_typing, now));
         app.agents.get_mut(&pubkey).unwrap().owner_pubkey = "a".repeat(64);
         assert!(app.apply_agent_typing_event(&channel_typing, now));
+
+        app.agent_typing.clear();
+        app.typing_spinner_frame = 3;
+        app.typing_spinner_advanced_at = Instant::now() - super::AGENT_SPINNER_INTERVAL;
+        assert!(!app.on_tick().await.unwrap());
+        assert_eq!(app.typing_spinner_frame, 0);
     }
 
     #[tokio::test]

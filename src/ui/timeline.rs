@@ -186,10 +186,11 @@ const AVATAR_WIDTH: u16 = 4;
 /// One selection cell, a four-cell profile photo, and one breathing cell.
 /// Body text shares this alignment whether a photograph is ready or the
 /// textual author marker is the fallback.
-const MESSAGE_TEXT_GUTTER: &str = "      ";
+const MESSAGE_TEXT_INDENT: u16 = 6;
 
 enum TimelineRow {
     Text(Line<'static>),
+    Indented { line: Line<'static>, indent: u16 },
     Image(Arc<SlicedProtocol>),
 }
 
@@ -204,6 +205,9 @@ struct AvatarPlacement {
 struct MessageBlock {
     rows: Vec<TimelineRow>,
     avatar: Option<AvatarPlacement>,
+    /// Rows before the actual message (currently only a date separator) do not
+    /// participate in the compact selection gutter.
+    selection_before_row: usize,
     selected: bool,
     copy_selected: bool,
 }
@@ -212,6 +216,9 @@ impl MessageBlock {
     fn row_height(row: &TimelineRow, width: u16) -> u16 {
         match row {
             TimelineRow::Text(line) => text_height(line, width),
+            TimelineRow::Indented { line, indent } => {
+                text_height(line, width.saturating_sub(*indent).max(1))
+            }
             TimelineRow::Image(protocol) => protocol.size().height,
         }
     }
@@ -240,6 +247,14 @@ impl MessageBlock {
                     .saturating_add(avatar.protocol.size().height),
             )
         })
+    }
+
+    fn selection_top(&self, width: u16) -> u16 {
+        self.rows
+            .iter()
+            .take(self.selection_before_row)
+            .map(|row| Self::row_height(row, width))
+            .fold(0_u16, u16::saturating_add)
     }
 }
 
@@ -514,7 +529,10 @@ fn render_internal(
         }
     }
 
-    let copy_bounds = state.copy_bounds(messages);
+    let copy_bounds = state
+        .copy_anchor
+        .as_ref()
+        .and_then(|_| state.copy_bounds(messages));
     let blocks = messages
         .iter()
         .enumerate()
@@ -598,12 +616,13 @@ fn render_internal(
                 .avatar_top(content.width)
                 .map(|offset| (avatar.protocol.clone(), offset))
         });
+        let marker_offset = block.selection_top(content.width);
         let mut row_y = global_y;
         for row in block.rows {
             let row_height = u32::from(MessageBlock::row_height(&row, content.width));
             if row_y + row_height > scroll && row_y < scroll + viewport {
                 match row {
-                    TimelineRow::Text(line) => {
+                    TimelineRow::Text(line) | TimelineRow::Indented { line, indent: 0 } => {
                         let visible_top = row_y.max(scroll);
                         let visible_bottom = row_y
                             .saturating_add(row_height)
@@ -617,14 +636,32 @@ fn render_internal(
                         if y < content.bottom() && height > 0 {
                             frame.render_widget(
                                 Paragraph::new(line)
-                                    .style(theme.style(if block.selected || block.copy_selected {
-                                        HighlightGroup::SelectedRow
-                                    } else {
-                                        HighlightGroup::Normal
-                                    }))
+                                    .style(theme.style(HighlightGroup::Normal))
                                     .wrap(Wrap { trim: false })
                                     .scroll((u16::try_from(skipped).unwrap_or(u16::MAX), 0)),
                                 Rect::new(content.x, y, content.width, height),
+                            );
+                        }
+                    }
+                    TimelineRow::Indented { line, indent } => {
+                        let visible_top = row_y.max(scroll);
+                        let visible_bottom = row_y
+                            .saturating_add(row_height)
+                            .min(scroll.saturating_add(viewport));
+                        let skipped = visible_top.saturating_sub(row_y);
+                        let y = content.y.saturating_add(
+                            u16::try_from(visible_top.saturating_sub(scroll)).unwrap_or(u16::MAX),
+                        );
+                        let height = u16::try_from(visible_bottom.saturating_sub(visible_top))
+                            .unwrap_or(u16::MAX);
+                        let width = content.width.saturating_sub(indent);
+                        if y < content.bottom() && height > 0 && width > 0 {
+                            frame.render_widget(
+                                Paragraph::new(line)
+                                    .style(theme.style(HighlightGroup::Normal))
+                                    .wrap(Wrap { trim: false })
+                                    .scroll((u16::try_from(skipped).unwrap_or(u16::MAX), 0)),
+                                Rect::new(content.x.saturating_add(indent), y, width, height),
                             );
                         }
                     }
@@ -659,6 +696,27 @@ fn render_internal(
                         )),
                     ),
                     content,
+                );
+            }
+        }
+        if block.selected || block.copy_selected {
+            let marker_top = global_y.saturating_add(u32::from(marker_offset));
+            let marker_bottom = global_y.saturating_add(block_height);
+            let visible_top = marker_top.max(scroll);
+            let visible_bottom = marker_bottom.min(scroll.saturating_add(viewport));
+            if visible_bottom > visible_top {
+                let y = content.y.saturating_add(
+                    u16::try_from(visible_top.saturating_sub(scroll)).unwrap_or(u16::MAX),
+                );
+                let height =
+                    u16::try_from(visible_bottom.saturating_sub(visible_top)).unwrap_or(u16::MAX);
+                let marker = if block.selected { "▌" } else { "│" };
+                let markers = std::iter::repeat_n(marker, usize::from(height))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                frame.render_widget(
+                    Paragraph::new(markers).style(theme.style(HighlightGroup::MessageSelected)),
+                    Rect::new(content.x, y, 1, height),
                 );
             }
         }
@@ -736,24 +794,28 @@ fn message_block(
             theme.style(HighlightGroup::MessageDateSeparator),
         )));
     }
-    // The optional photograph starts beside this header, never in a row between
-    // the author and their message. Date separators above remain full-width.
+    // Date separators remain full width. The compact selection gutter and the
+    // optional avatar begin beside the actual message header.
+    let selection_before_row = rows.len();
     let avatar_before_row = rows.len();
-    let mut header = vec![];
-    if selected {
-        header.push(Span::styled("▌", theme.style(HighlightGroup::SelectedRow)));
+    let mut body_lines = if message.deleted {
+        Vec::new().into_iter()
     } else {
-        header.push(Span::raw(" "));
-    }
+        markdown::render_with_width(&message.content, theme, image_width.saturating_sub(1))
+            .lines
+            .into_iter()
+    };
+    let grouped_body = grouped.then(|| body_lines.next()).flatten();
+    let mut header = vec![];
     if grouped {
-        header.push(Span::raw("     "));
         header.push(Span::styled(
             format_time(message.created_at),
             theme.style(HighlightGroup::MessageTimestamp),
         ));
     } else {
+        // The first cell is reserved for the message-scoped selection gutter.
+        header.push(Span::raw(" "));
         if avatar.is_some() {
-            // Reserve the exact text gutter occupied by the profile photo.
             header.push(Span::raw("     "));
         } else {
             header.push(Span::styled(
@@ -804,33 +866,49 @@ fn message_block(
             crate::domain::DeliveryState::Delivered => {}
         }
     }
-    rows.push(TimelineRow::Text(Line::from(header)));
+    if let Some(line) = grouped_body {
+        header.push(Span::raw("  "));
+        header.extend(line.spans);
+    }
+    let header = Line::from(header);
+    if grouped {
+        rows.push(TimelineRow::Indented {
+            line: header,
+            indent: MESSAGE_TEXT_INDENT,
+        });
+    } else {
+        rows.push(TimelineRow::Text(header));
+    }
     if !message.deleted && message.delivery == crate::domain::DeliveryState::Unknown {
-        rows.push(TimelineRow::Text(Line::styled(
-            format!("{MESSAGE_TEXT_GUTTER}use :reconnect or bzz diagnostics outbox"),
-            theme.style(HighlightGroup::Pending),
-        )));
+        rows.push(TimelineRow::Indented {
+            line: Line::styled(
+                "use :reconnect or bzz diagnostics outbox",
+                theme.style(HighlightGroup::Pending),
+            ),
+            indent: MESSAGE_TEXT_INDENT,
+        });
     }
     if message.deleted {
-        rows.push(TimelineRow::Text(Line::styled(
-            format!("{MESSAGE_TEXT_GUTTER}message deleted"),
-            theme.style(HighlightGroup::MessageDeleted),
-        )));
+        rows.push(TimelineRow::Indented {
+            line: Line::styled(
+                "message deleted",
+                theme.style(HighlightGroup::MessageDeleted),
+            ),
+            indent: MESSAGE_TEXT_INDENT,
+        });
     } else {
-        for line in
-            markdown::render_with_width(&message.content, theme, image_width.saturating_sub(1))
-                .lines
-        {
-            let mut spans = vec![Span::styled(
-                MESSAGE_TEXT_GUTTER,
-                theme.style(HighlightGroup::MessageBody),
-            )];
-            spans.extend(line.spans);
-            rows.push(TimelineRow::Text(Line::from(spans)));
+        for line in body_lines {
+            rows.push(TimelineRow::Indented {
+                line,
+                indent: MESSAGE_TEXT_INDENT,
+            });
         }
         for attachment in &message.attachments {
             let state = media.and_then(|runtime| runtime.state(attachment, image_width));
-            rows.push(TimelineRow::Text(attachment_line(attachment, state, theme)));
+            rows.push(TimelineRow::Indented {
+                line: attachment_line(attachment, state, theme),
+                indent: MESSAGE_TEXT_INDENT,
+            });
             if let Some(MediaState::Ready(protocol)) = state
                 && attachment.kind == MediaKind::Image
                 && !attachment.spoiler
@@ -841,14 +919,16 @@ fn message_block(
         if let Some(summary) = thread_summary
             && summary.descendant_count > 0
         {
-            rows.push(TimelineRow::Text(thread_summary_line(
-                summary,
-                nostr::Timestamp::now().as_secs(),
-                theme,
-            )));
+            rows.push(TimelineRow::Indented {
+                line: thread_summary_line(summary, nostr::Timestamp::now().as_secs(), theme),
+                indent: MESSAGE_TEXT_INDENT,
+            });
         }
         if let Some(line) = reaction_line(message, reactions, self_pubkey, theme) {
-            rows.push(TimelineRow::Text(line));
+            rows.push(TimelineRow::Indented {
+                line,
+                indent: MESSAGE_TEXT_INDENT,
+            });
         }
     }
     MessageBlock {
@@ -857,6 +937,7 @@ fn message_block(
             protocol,
             before_row: avatar_before_row,
         }),
+        selection_before_row,
         selected,
         copy_selected,
     }
@@ -880,14 +961,14 @@ fn system_message_block(
             theme.style(HighlightGroup::MessageDateSeparator),
         )));
     }
-    let marker = if selected { "▌" } else { " " };
+    let selection_before_row = rows.len();
     let summary = if message.deleted {
         "System event removed".to_owned()
     } else {
         system_summary(system, profiles, self_pubkey)
     };
     rows.push(TimelineRow::Text(Line::from(vec![
-        Span::styled(marker, theme.style(HighlightGroup::SelectedRow)),
+        Span::raw(" "),
         Span::styled(
             format!("  · {summary} · "),
             theme.style(HighlightGroup::MessageTimestamp),
@@ -900,6 +981,7 @@ fn system_message_block(
     MessageBlock {
         rows,
         avatar: None,
+        selection_before_row,
         selected,
         copy_selected,
     }
@@ -1008,10 +1090,7 @@ fn attachment_line(
         }
     };
     Line::from(vec![
-        Span::styled(
-            format!("{MESSAGE_TEXT_GUTTER}▣ "),
-            theme.style(HighlightGroup::MediaBorder),
-        ),
+        Span::styled("▣ ", theme.style(HighlightGroup::MediaBorder)),
         Span::styled(
             sanitize::single_line(attachment.label()),
             theme.style(HighlightGroup::MessageBody),
@@ -1031,7 +1110,6 @@ fn thread_summary_line(summary: &ThreadSummary, now: u64, theme: &Theme) -> Line
     let count = summary.descendant_count;
     let label = if count == 1 { "reply" } else { "replies" };
     let mut spans = vec![
-        Span::raw(MESSAGE_TEXT_GUTTER),
         Span::styled("↳ ", theme.style(HighlightGroup::SelectionMarker)),
         Span::styled(
             format!("{count} {label}"),
@@ -1091,7 +1169,7 @@ fn reaction_line(
     if aggregate.is_empty() {
         return None;
     }
-    let mut spans = vec![Span::raw(MESSAGE_TEXT_GUTTER)];
+    let mut spans = vec![];
     for (index, (emoji, (count, own))) in aggregate.into_iter().enumerate() {
         if index > 0 {
             spans.push(Span::raw("  "));
@@ -1175,13 +1253,13 @@ fn format_time(timestamp: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{collections::HashMap, sync::Arc};
 
     use super::{
-        AvatarPlacement, MessageBlock, TimelineRow, TimelineState, format_relative_reply_time,
-        readable_area, same_message_group, text_height,
+        AvatarPlacement, MESSAGE_TEXT_INDENT, MessageBlock, TimelineRow, TimelineState,
+        format_relative_reply_time, message_block, readable_area, same_message_group, text_height,
     };
-    use crate::domain::Message;
+    use crate::{domain::Message, ui::theme::Theme};
     use ratatui::layout::Rect;
     use ratatui_image::sliced::SlicedProtocol;
     use uuid::Uuid;
@@ -1254,12 +1332,83 @@ mod tests {
                 protocol,
                 before_row: 1,
             }),
+            selection_before_row: 1,
             selected: false,
             copy_selected: false,
         };
         assert_eq!(block.avatar_top(80), Some(1));
         assert_eq!(block.height(80), (1 + avatar_height).max(3));
         assert!(block.height(80) < 3 + avatar_height);
+    }
+
+    #[test]
+    fn grouped_message_keeps_timestamp_and_body_in_one_indented_row() {
+        let mut first = message("a", 1_700_000_000);
+        first.content = "first".into();
+        let mut second = message("a", 1_700_000_100);
+        second.content = "follow-up text".into();
+        let block = message_block(
+            &second,
+            Some(&first),
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &Theme::default(),
+            None,
+            true,
+            false,
+            None,
+            40,
+            4,
+        );
+        assert_eq!(block.rows.len(), 1);
+        let TimelineRow::Indented { line, indent } = &block.rows[0] else {
+            panic!("grouped message should use one hanging-indent row");
+        };
+        assert_eq!(*indent, MESSAGE_TEXT_INDENT);
+        let text = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("follow-up text"));
+        assert_eq!(block.selection_top(40), 0);
+    }
+
+    #[test]
+    fn body_rows_wrap_inside_the_message_gutter() {
+        let mut value = message("a", 1_700_000_000);
+        value.content = "one two three four five six seven eight nine ten".into();
+        let block = message_block(
+            &value,
+            None,
+            None,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &Theme::default(),
+            None,
+            true,
+            false,
+            None,
+            18,
+            4,
+        );
+        let body = block
+            .rows
+            .iter()
+            .find_map(|row| match row {
+                TimelineRow::Indented { line, indent } if line.width() > 0 => Some((line, *indent)),
+                _ => None,
+            })
+            .expect("indented message body");
+        assert_eq!(body.1, MESSAGE_TEXT_INDENT);
+        assert!(text_height(body.0, 18 - MESSAGE_TEXT_INDENT) > 1);
+        assert_eq!(
+            block.selection_top(18),
+            MessageBlock::row_height(&block.rows[0], 18)
+        );
     }
 
     #[test]

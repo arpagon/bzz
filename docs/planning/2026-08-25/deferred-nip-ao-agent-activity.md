@@ -1,6 +1,11 @@
-# bzz v0.12.0 — Owner-private live agent activity
+# Deferred research — Owner-private live agent activity
 
 **Status:** Deferred 2026-08-25 in favor of the bounded v0.11.3 typing-feedback plan
+
+**Historical naming note:** References to v0.12.0 below preserve the original
+proposal language only. They do not assign this research to a release. The
+approved v0.12.0 scope is the themed agent status bar and message-selection
+presentation plan dated 2026-08-28.
 
 **Decision note:** Android and Buzz Desktop already provide the immediate useful
 feedback through signed ephemeral kind `20002` typing indicators. Decrypting

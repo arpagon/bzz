@@ -97,6 +97,15 @@ background = "#262630"
 link = "Muted"
 italic = true
 
+[highlight.MessageSelected]
+link = "SelectionBorder"
+bold = true
+
+[highlight.StatusAgent]
+foreground = "black"
+background = "yellow"
+bold = true
+
 [ui.border]
 default = "plain"
 composer = "rounded"
@@ -168,19 +177,21 @@ Panels and navigation:
 Conversation and composer:
 
 - `MessageAuthor`, `MessageAvatar`, `MessageTimestamp`,
-  `MessageDateSeparator`, `MessageBody`, `MessageDeleted`;
+  `MessageDateSeparator`, `MessageSelected`, `MessageBody`, `MessageDeleted`;
 - `Reaction`, `SelfReaction`;
 - `Composer`, `ComposerHint`, `ComposerDisabled`, `ComposerTitle`,
   `ComposerBorder`, `ActiveComposerBorder`.
 
 Status and Markdown:
 
-- `StatusBar`, `StatusMode`, `StatusModeInsert`, `StatusModeCommand`;
+- `StatusBar`, `StatusMode`, `StatusModeInsert`, `StatusModeCommand`,
+  `StatusAgent`, `StatusConnection`, `StatusMedia`;
 - `MarkdownLink`, `MarkdownCode`, `MarkdownMarker`.
 
 Component groups link to semantic parents. For example,
 `MessageAuthor -> Info`, `MessageAvatar -> MessageAuthor`,
-`MessageDateSeparator -> Muted`, `ComposerHint -> Muted`,
+`MessageDateSeparator -> Muted`, `MessageSelected -> SelectionBorder`,
+`ComposerHint -> Muted`,
 `ComposerDisabled -> Warning`, `Pending -> Warning`,
 `FocusedPaneBorder -> FocusBorder`, and `MessageDeleted -> Muted`. Changing a
 parent updates children that remain linked; overriding a child changes only

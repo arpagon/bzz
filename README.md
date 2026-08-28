@@ -4,11 +4,11 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.11.3 adds fresh, signed, ephemeral `◆ Fizz is typing…`
-> feedback for currently verified remote agents while retaining v0.11.2's
-> discoverable thread summaries. bzz does not publish human typing, host or
-> control an agent runtime, or launch a local assistant process. Protocol
-> compatibility remains pinned to Buzz
+> Status: v0.12.0 moves fresh, signed remote-agent typing into a compact,
+> animated, theme-aware status segment such as `◆ Fizz ⠹`, and replaces the
+> detached selected-message stripe with a coherent message gutter. bzz does not
+> publish human typing, host or control an agent runtime, or launch a local
+> assistant process. Protocol compatibility remains pinned to Buzz
 > `9f55bf67456be10ff7c8238bf0d9e12e582848f6`.
 
 ## Build
@@ -31,7 +31,8 @@ use `bzz-dev` paths and a separate OS-keychain service.
 - bounded owner-private connection/outbox diagnostics, metadata-only support
   reports, and optional default-off OTLP/HTTP protobuf log export;
 - reaction toggles, own-message deletion, and encrypted cross-device read state;
-- Vim-style navigation, fuzzy channel finder, safe Markdown, and responsive narrow layouts;
+- Vim-style navigation, fuzzy channel finder, safe Markdown, a coherent
+  message-selection gutter, and responsive narrow layouts;
 - labelled community/channel directories with local smart/recent/A–Z ordering,
   bounded readable measure, deterministic local author markers, practical safe
   Markdown, date/group rhythm, and a visible writing dock;
@@ -50,8 +51,8 @@ use `bzz-dev` paths and a separate OS-keychain service.
 - offline channel-member `@` completion with exact Buzz `p` tags; and
 - verified remote managed-agent discovery, owner/policy inspection, distinct
   timeline/DM/completion presentation, owner-controlled DM compatibility,
-  send-time revalidation, and transient signed typing feedback without local
-  runtime control; and
+  send-time revalidation, and transient signed typing feedback in a compact
+  animated status segment without local runtime control; and
 - typed relay-authored system rows that never expose raw control JSON as a
   user-authored message.
 
@@ -165,6 +166,9 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/security.md`](docs/security.md),
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
+[the v0.12.0 release](docs/release-v0.12.0.md),
+[v0.12.0 validation](docs/validation-v0.12.0.md),
+[the approved v0.12.0 presentation plan](docs/planning/2026-08-28/v0.12.0.md),
 [the v0.11.3 release](docs/release-v0.11.3.md),
 [v0.11.3 validation](docs/validation-v0.11.3.md),
 [the approved v0.11.3 typing plan](docs/planning/2026-08-25/v0.11.3.md),
