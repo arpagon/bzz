@@ -20,6 +20,19 @@ The site theme switcher uses real bzz built-in palettes (bzz, Dracula, Nord,
 Gruvbox Dark, Catppuccin Mocha, Tokyo Night). When palettes change in
 `src/ui/theme/builtin.rs`, update the token blocks at the top of `styles.css`.
 
+## Demo media
+
+`public/assets/demo.webm`, `demo.mp4`, and `poster.png` are a pixel capture of
+`bzz 0.11.0` in Ghostty 1.3.1 at 1280×720 and 15 fps. The 45-second journey
+uses an isolated, generated offline fixture and covers a workspace DM, fuzzy
+navigation, Markdown, verified Kitty media, threads, reactions, Inbox, local
+search, remote-agent mention completion, the writing dock, and live previews of
+Tokyo Night, Kanagawa Dragon, Nord, and Catppuccin Mocha.
+
+Recapture through the `bzz-visual-capture` skill. Review every retained frame
+for private data, stale graphics, overlap, clipping, and loading states before
+replacing these assets.
+
 ## Develop
 
 ```sh
@@ -38,7 +51,5 @@ DNS CNAMEs point at `getbzz-dev.pages.dev` (proxied).
 
 ## Pending (per plan)
 
-- M3: real TUI capture via `bzz-visual-capture` replacing the screenshot
-  placeholder; optional short WebM.
 - M4: measured performance stats (do not publish invented numbers),
   Lighthouse >= 95 pass.
