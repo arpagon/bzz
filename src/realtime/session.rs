@@ -15,6 +15,7 @@ use crate::{
     diagnostics::{DiagnosticEvent, DiagnosticHandle, ErrorClass},
     error::{Error, Result},
     protocol::envelope::{self, RelayMessage},
+    realtime::admission,
 };
 
 const COMMAND_CAPACITY: usize = 256;
@@ -63,7 +64,11 @@ enum Command {
     },
     Publish {
         event: Event,
+        admitted: oneshot::Sender<Result<()>>,
         response: oneshot::Sender<Result<Ack>>,
+    },
+    ForgetPending {
+        event_id: String,
     },
     Shutdown,
 }
@@ -99,17 +104,25 @@ impl SessionHandle {
 
     pub async fn publish(&self, event: Event) -> Result<Ack> {
         let event_id = event.id.to_hex();
+        let (admitted_tx, admitted_rx) = oneshot::channel();
         let (sender, receiver) = oneshot::channel();
         self.sender
             .send(Command::Publish {
                 event,
+                admitted: admitted_tx,
                 response: sender,
             })
             .await
             .map_err(|_| Error::Network("session is offline".into()))?;
+        admitted_rx
+            .await
+            .map_err(|_| Error::Network("session stopped before wire send".into()))??;
         match tokio::time::timeout(Duration::from_secs(25), receiver).await {
             Ok(result) => result.map_err(|_| Error::Network("session stopped".into()))?,
             Err(_) => {
+                let _ = self.sender.try_send(Command::ForgetPending {
+                    event_id: event_id.clone(),
+                });
                 self.diagnostics.emit(DiagnosticEvent::PublishUncertain {
                     event_id,
                     error_class: ErrorClass::AckTimeout,
@@ -227,7 +240,6 @@ pub async fn connect_with_diagnostics(
         let outcome: Result<()> = async {
             loop {
                 tokio::select! {
-                biased;
                 command=command_rx.recv()=>match command {
                     Some(Command::Subscribe{id,filters,response})=>{
                         let wire=envelope::request(&id,&filters);
@@ -244,13 +256,24 @@ pub async fn connect_with_diagnostics(
                     Some(Command::Close{id})=>{
                         sink.send(Message::Text(envelope::close(&id).into())).await.map_err(|error|Error::Network(error.to_string()))?;
                     }
-                    Some(Command::Publish{event,response})=>{
+                    Some(Command::Publish{event,admitted,response})=>{
                         let id=event.id.to_hex();
-                        if pending.contains_key(&id) { let _=response.send(Err(Error::Protocol("event is already awaiting acknowledgement".into()))); continue; }
+                        if pending.contains_key(&id) {
+                            let _=admitted.send(Err(Error::Protocol("event is already awaiting acknowledgement".into())));
+                            continue;
+                        }
                         let kind=event.kind.as_u16();
-                        sink.send(Message::Text(envelope::publish(&event).into())).await.map_err(|error|Error::Network(error.to_string()))?;
+                        if let Err(error)=sink.send(Message::Text(envelope::publish(&event).into())).await {
+                            let message=error.to_string();
+                            let _=admitted.send(Err(Error::Network(message.clone())));
+                            break Err(Error::Network(message));
+                        }
                         diagnostics.emit(DiagnosticEvent::PublishSent { event_id:id.clone(),kind,attempt:1 });
                         pending.insert(id,PendingAck { response,started:Instant::now() });
+                        let _=admitted.send(Ok(()));
+                    }
+                    Some(Command::ForgetPending{event_id})=>{
+                        pending.remove(&event_id);
                     }
                     Some(Command::Shutdown)|None=>{
                         let _=sink.send(Message::Close(None)).await;
@@ -268,11 +291,13 @@ pub async fn connect_with_diagnostics(
                                 let _=pending_ack.response.send(Ok(Ack{event_id,accepted,message}));
                             },
                             Ok(RelayMessage::Notice(message))=>{
-                                if message.starts_with("rate-limited:") && pending.len()==1
+                                if let Some(retry_after)=admission::rate_limit_retry_after(&message)
+                                    && pending.len()==1
                                     && let Some((event_id,pending_ack))=pending.drain().next()
                                 {
                                     diagnostics.emit(DiagnosticEvent::PublishUncertain { event_id,error_class:ErrorClass::RateLimited,duration_ms:elapsed_millis(pending_ack.started) });
-                                    let _=pending_ack.response.send(Err(Error::Network(message.clone())));
+                                    let fixed=admission::fixed_rate_limit_message(retry_after);
+                                    let _=pending_ack.response.send(Err(Error::Network(fixed)));
                                 }
                                 let _=event_tx.send(SessionEvent::Notice(message)).await;
                             }

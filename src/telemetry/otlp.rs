@@ -210,6 +210,8 @@ impl RemoteRecord {
                 SeverityNumber::Warn
             }
             DiagnosticEvent::TelemetryExportHealth { .. }
+            | DiagnosticEvent::RateLimitActivated { .. }
+            | DiagnosticEvent::RateLimitCleared
             | DiagnosticEvent::ClientStopped { .. }
             | DiagnosticEvent::AgentDirectoryRefreshed { .. }
             | DiagnosticEvent::AgentMentionValidated { .. }

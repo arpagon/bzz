@@ -80,12 +80,22 @@ impl DiagnosticHandle {
     /// Non-blocking by contract. Saturation drops diagnostic evidence, never
     /// application work, and exposes only a count in the next journal record.
     pub fn emit(&self, event: DiagnosticEvent) {
+        self.emit_inner(event, true);
+    }
+
+    /// Records owner-private local evidence without forwarding it to optional
+    /// telemetry. Admission events remain local pending a separate review.
+    pub fn emit_local(&self, event: DiagnosticEvent) {
+        self.emit_inner(event, false);
+    }
+
+    fn emit_inner(&self, event: DiagnosticEvent, export: bool) {
         let record = DiagnosticRecord::new(self.session_id.to_string(), event);
         if !record.is_safe() {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        if let Some(telemetry) = &self.telemetry {
+        if export && let Some(telemetry) = &self.telemetry {
             telemetry.try_emit(&record);
         }
         if let Some(sender) = &self.journal {

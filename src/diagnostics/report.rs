@@ -36,6 +36,8 @@ pub struct DiagnosticStatus {
     pub agent_typing_subscription_closed_count: u64,
     pub latest_agent_typing_subscription_close_class: Option<String>,
     pub receiver_lagged_count: u64,
+    pub rate_limit_activation_count: u64,
+    pub rate_limit_recovery_count: u64,
     pub diagnostics_dropped_count: u64,
     pub outbox_counts: BTreeMap<String, usize>,
 }
@@ -143,6 +145,8 @@ pub fn status(
     let mut typing_subscription_closed = 0_u64;
     let mut latest_typing_subscription_close = None;
     let mut lagged = 0_u64;
+    let mut rate_limit_activations = 0_u64;
+    let mut rate_limit_recoveries = 0_u64;
     let mut dropped = 0_u64;
     for record in records {
         match &record.event {
@@ -170,6 +174,12 @@ pub fn status(
             DiagnosticEvent::ReceiverLagged {
                 skipped_event_count,
             } => lagged = lagged.saturating_add(*skipped_event_count),
+            DiagnosticEvent::RateLimitActivated { .. } => {
+                rate_limit_activations = rate_limit_activations.saturating_add(1);
+            }
+            DiagnosticEvent::RateLimitCleared => {
+                rate_limit_recoveries = rate_limit_recoveries.saturating_add(1);
+            }
             DiagnosticEvent::EventsDropped { count, .. } => {
                 dropped = dropped.saturating_add(*count);
             }
@@ -191,6 +201,8 @@ pub fn status(
         agent_typing_subscription_closed_count: typing_subscription_closed,
         latest_agent_typing_subscription_close_class: latest_typing_subscription_close,
         receiver_lagged_count: lagged,
+        rate_limit_activation_count: rate_limit_activations,
+        rate_limit_recovery_count: rate_limit_recoveries,
         diagnostics_dropped_count: dropped,
         outbox_counts: counts,
     }
@@ -366,6 +378,26 @@ mod tests {
         assert!(!encoded.contains("community"));
         assert!(!encoded.contains("relay"));
         assert!(!encoded.contains("pubkey"));
+    }
+
+    #[test]
+    fn status_counts_private_rate_limit_activation_and_recovery() {
+        let temp = TempDir::new().unwrap();
+        let paths = paths(&temp);
+        paths.ensure().unwrap();
+        let records = vec![
+            DiagnosticRecord::new(
+                "a".repeat(32),
+                DiagnosticEvent::RateLimitActivated {
+                    source: crate::diagnostics::RateLimitSource::Notice,
+                    retry_bucket: crate::diagnostics::RetryDurationBucket::OneSecond,
+                },
+            ),
+            DiagnosticRecord::new("a".repeat(32), DiagnosticEvent::RateLimitCleared),
+        ];
+        let status = status(&paths, &records, &[]);
+        assert_eq!(status.rate_limit_activation_count, 1);
+        assert_eq!(status.rate_limit_recovery_count, 1);
     }
 
     #[test]

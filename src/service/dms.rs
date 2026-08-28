@@ -180,18 +180,24 @@ impl DmService {
                         )
                     })
                     .await?;
-                Err(Error::Access(message))
+                Err(
+                    if crate::realtime::admission::rate_limit_retry_after(&message).is_some() {
+                        Error::Network(message)
+                    } else {
+                        Error::Access(message)
+                    },
+                )
             }
             Err(error) => {
+                let state = if crate::realtime::admission::is_local_admission_error(&error) {
+                    OutboxState::Rejected
+                } else {
+                    OutboxState::Unknown
+                };
                 let public = error.to_string();
                 self.store
                     .call(move |store| {
-                        store.set_outbox_state(
-                            community,
-                            &event_id,
-                            OutboxState::Unknown,
-                            Some(&public),
-                        )
+                        store.set_outbox_state(community, &event_id, state, Some(&public))
                     })
                     .await?;
                 Err(error)

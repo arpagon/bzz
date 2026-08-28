@@ -4,11 +4,11 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.12.0 moves fresh, signed remote-agent typing into a compact,
-> animated, theme-aware status segment such as `◆ Fizz ⠹`, and replaces the
-> detached selected-message stripe with a coherent message gutter. bzz does not
-> publish human typing, host or control an agent runtime, or launch a local
-> assistant process. Protocol compatibility remains pinned to Buzz
+> Status: v0.12.1 adds quota-aware WebSocket admission and recoverable
+> rate-limited subscriptions while preserving the compact v0.12 status and
+> message selection. bzz does not silently republish rejected events, publish
+> human typing, host or control an agent runtime, or launch a local assistant
+> process. Protocol compatibility remains pinned to Buzz
 > `9f55bf67456be10ff7c8238bf0d9e12e582848f6`.
 
 ## Build
@@ -26,7 +26,8 @@ use `bzz-dev` paths and a separate OS-keychain service.
 
 - several configured communities with one active authenticated session;
 - cached/offline channel history, profiles, threads, unread markers, and drafts;
-- acknowledged sends with durable ambiguous-outcome recovery and distinct
+- acknowledged sends with durable ambiguous-outcome recovery, quota-aware
+  outbound admission, recoverable subscriptions, and distinct
   pending/delivery-unknown/rejected presentation;
 - bounded owner-private connection/outbox diagnostics, metadata-only support
   reports, and optional default-off OTLP/HTTP protobuf log export;
@@ -166,6 +167,9 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/security.md`](docs/security.md),
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
+[the v0.12.1 release](docs/release-v0.12.1.md),
+[v0.12.1 validation](docs/validation-v0.12.1.md),
+[the approved v0.12.1 admission plan](docs/planning/2026-08-28/v0.12.1.md),
 [the v0.12.0 release](docs/release-v0.12.0.md),
 [v0.12.0 validation](docs/validation-v0.12.0.md),
 [the approved v0.12.0 presentation plan](docs/planning/2026-08-28/v0.12.0.md),

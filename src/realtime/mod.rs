@@ -1,3 +1,4 @@
+pub mod admission;
 pub mod pending;
 pub mod session;
 pub mod subscriptions;

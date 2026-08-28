@@ -26,6 +26,34 @@ pub enum ErrorClass {
     Unknown,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitSource {
+    Closed,
+    PublishAck,
+    Notice,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryDurationBucket {
+    OneSecond,
+    FiveSeconds,
+    ThirtySeconds,
+    Longer,
+}
+
+impl RetryDurationBucket {
+    pub const fn from_seconds(seconds: u64) -> Self {
+        match seconds {
+            0 | 1 => Self::OneSecond,
+            2..=5 => Self::FiveSeconds,
+            6..=30 => Self::ThirtySeconds,
+            _ => Self::Longer,
+        }
+    }
+}
+
 impl ErrorClass {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -200,6 +228,13 @@ pub enum DiagnosticEvent {
     ReconnectRequested { source: String },
     #[serde(rename = "session.receiver_lagged")]
     ReceiverLagged { skipped_event_count: u64 },
+    #[serde(rename = "session.rate_limit_activated")]
+    RateLimitActivated {
+        source: RateLimitSource,
+        retry_bucket: RetryDurationBucket,
+    },
+    #[serde(rename = "session.rate_limit_cleared")]
+    RateLimitCleared,
     #[serde(rename = "outbox.queued")]
     OutboxQueued { event_id: String, kind: u16 },
     #[serde(rename = "publish.sent")]
@@ -285,6 +320,8 @@ impl DiagnosticEvent {
             Self::BackoffScheduled { .. } => "session.backoff_scheduled",
             Self::ReconnectRequested { .. } => "session.reconnect_requested",
             Self::ReceiverLagged { .. } => "session.receiver_lagged",
+            Self::RateLimitActivated { .. } => "session.rate_limit_activated",
+            Self::RateLimitCleared => "session.rate_limit_cleared",
             Self::OutboxQueued { .. } => "outbox.queued",
             Self::PublishSent { .. } => "publish.sent",
             Self::PublishAcknowledged { .. } => "publish.acknowledged",
@@ -383,6 +420,8 @@ impl DiagnosticRecord {
             | DiagnosticEvent::HeartbeatTimeout { .. }
             | DiagnosticEvent::BackoffScheduled { .. }
             | DiagnosticEvent::ReceiverLagged { .. }
+            | DiagnosticEvent::RateLimitActivated { .. }
+            | DiagnosticEvent::RateLimitCleared
             | DiagnosticEvent::ReconcileStarted { .. }
             | DiagnosticEvent::ReconcileFinished { .. }
             | DiagnosticEvent::EventsDropped { .. }
@@ -487,6 +526,31 @@ mod tests {
             assert!(!encoded.contains("secret"));
             assert!(!encoded.contains("nsec1secret"));
             assert!(record.is_safe());
+        }
+    }
+
+    #[test]
+    fn admission_evidence_is_typed_and_contains_no_scope_or_reason() {
+        let record = DiagnosticRecord::new(
+            "a".repeat(32),
+            DiagnosticEvent::RateLimitActivated {
+                source: RateLimitSource::Closed,
+                retry_bucket: RetryDurationBucket::FiveSeconds,
+            },
+        );
+        assert!(record.is_safe());
+        let encoded = serde_json::to_string(&record).unwrap();
+        assert!(encoded.contains("session.rate_limit_activated"));
+        for prohibited in [
+            "SENTINEL",
+            "subscription",
+            "channel",
+            "community",
+            "pubkey",
+            "relay_url",
+            "retry in",
+        ] {
+            assert!(!encoded.contains(prohibited));
         }
     }
 

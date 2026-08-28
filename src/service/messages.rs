@@ -266,19 +266,27 @@ impl MessageService {
                         )
                     })
                     .await?;
-                return Err(Error::Access(message));
+                return Err(
+                    if crate::realtime::admission::rate_limit_retry_after(&message).is_some() {
+                        Error::Network(message)
+                    } else {
+                        Error::Access(message)
+                    },
+                );
             }
             Err(error) => {
+                let state = if crate::realtime::admission::is_local_admission_error(&error) {
+                    // Admission failed before the EVENT reached the wire, so
+                    // delivery is definitively absent rather than uncertain.
+                    OutboxState::Rejected
+                } else {
+                    OutboxState::Unknown
+                };
                 let message = error.to_string();
                 let event_id = id;
                 self.store
                     .call(move |store| {
-                        store.set_outbox_state(
-                            community,
-                            &event_id,
-                            OutboxState::Unknown,
-                            Some(&message),
-                        )
+                        store.set_outbox_state(community, &event_id, state, Some(&message))
                     })
                     .await?;
                 return Err(error);

@@ -97,7 +97,7 @@ impl ReadStateService {
                 })
                 .await?;
             let id = event.id.to_hex();
-            let result = self.supervisor.publish(event.clone()).await;
+            let result = self.supervisor.publish_maintenance(event.clone()).await;
             let (state, error) = match result {
                 Ok(ack) if ack.accepted => (OutboxState::Delivered, None),
                 Ok(ack) => (OutboxState::Rejected, Some(ack.message)),

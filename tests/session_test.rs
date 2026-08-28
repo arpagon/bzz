@@ -218,6 +218,152 @@ async fn relay_closed_subscription_is_forgotten_without_close_feedback() {
 }
 
 #[tokio::test]
+async fn supervisor_paces_subscription_startup() {
+    let (relay, request_times) = FakeRelay::start_recording_requests().await;
+    let signer = SignerHandle::spawn(Keys::generate());
+    let supervisor = SupervisorHandle::spawn(relay.url.clone(), signer.clone());
+    let mut events = supervisor.subscribe_events();
+    for index in 0..12 {
+        supervisor
+            .subscribe(format!("paced-{index:02}"), vec![json!({"kinds":[9]})])
+            .await
+            .unwrap();
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        let mut eose = 0;
+        while eose < 12 {
+            if matches!(
+                events.recv().await,
+                Ok(bzz::realtime::supervisor::SupervisorEvent::Session(
+                    SessionEvent::Eose(_)
+                ))
+            ) {
+                eose += 1;
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    let times = request_times.lock().unwrap().clone();
+    assert_eq!(times.len(), 12);
+    for pair in times.windows(2) {
+        assert!(
+            pair[1].duration_since(pair[0]) >= std::time::Duration::from_millis(90),
+            "REQ frames were not paced: {times:?}"
+        );
+    }
+    assert!(times[8].duration_since(times[0]) >= std::time::Duration::from_millis(900));
+
+    supervisor.shutdown().await;
+    signer.lock().await;
+    relay.stop();
+}
+
+#[tokio::test]
+async fn rate_limited_subscription_remains_desired_and_recovers() {
+    let (relay, request_frames) = FakeRelay::start_rate_limiting_first_request().await;
+    let signer = SignerHandle::spawn(Keys::generate());
+    let supervisor = SupervisorHandle::spawn(relay.url.clone(), signer.clone());
+    let mut events = supervisor.subscribe_events();
+    supervisor
+        .subscribe("recovering", vec![json!({"kinds":[9]})])
+        .await
+        .unwrap();
+
+    let mut limited = false;
+    let mut recovered = false;
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        while !recovered {
+            match events.recv().await.unwrap() {
+                bzz::realtime::supervisor::SupervisorEvent::RateLimited { retry_after } => {
+                    assert_eq!(retry_after, std::time::Duration::from_secs(1));
+                    limited = true;
+                }
+                bzz::realtime::supervisor::SupervisorEvent::Session(SessionEvent::Eose(id))
+                    if id == "recovering" =>
+                {
+                    recovered = true;
+                }
+                bzz::realtime::supervisor::SupervisorEvent::Session(SessionEvent::Closed {
+                    subscription,
+                    ..
+                }) if subscription == "recovering" => {
+                    panic!("temporary quota closure became terminal")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(limited);
+    assert_eq!(request_frames.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+    supervisor.shutdown().await;
+    signer.lock().await;
+    relay.stop();
+}
+
+#[tokio::test]
+async fn explicit_rate_limited_publication_is_not_republished() {
+    let (relay, event_frames) =
+        FakeRelay::start_counting_event_ack(false, "rate-limited: quota exceeded; retry in 1s")
+            .await;
+    let signer = SignerHandle::spawn(Keys::generate());
+    let supervisor = SupervisorHandle::spawn(relay.url.clone(), signer.clone());
+    let event = buzz_sdk::build_message(uuid::Uuid::new_v4(), "generated", None, &[], false, &[])
+        .unwrap()
+        .sign_with_keys(&Keys::generate())
+        .unwrap();
+    let ack = supervisor.publish(event).await.unwrap();
+    assert!(!ack.accepted);
+    assert_eq!(ack.message, "rate-limited: retry in 1s");
+    tokio::time::sleep(std::time::Duration::from_millis(1_250)).await;
+    assert_eq!(event_frames.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    supervisor.shutdown().await;
+    signer.lock().await;
+    relay.stop();
+}
+
+#[tokio::test]
+async fn legacy_uncorrelated_notice_is_uncertain_and_not_republished() {
+    let (relay, event_frames) = FakeRelay::start_legacy_rate_limit_notice().await;
+    let signer = SignerHandle::spawn(Keys::generate());
+    let supervisor = SupervisorHandle::spawn(relay.url.clone(), signer.clone());
+    let mut events = supervisor.subscribe_events();
+    let event = buzz_sdk::build_message(uuid::Uuid::new_v4(), "generated", None, &[], false, &[])
+        .unwrap()
+        .sign_with_keys(&Keys::generate())
+        .unwrap();
+    let error = supervisor.publish(event).await.unwrap_err();
+    assert!(matches!(
+        error,
+        Error::Network(message) if message == "rate-limited: retry in 1s"
+    ));
+    let limited = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if matches!(
+                events.recv().await,
+                Ok(bzz::realtime::supervisor::SupervisorEvent::RateLimited { retry_after })
+                    if retry_after == std::time::Duration::from_secs(1)
+            ) {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(limited.is_ok());
+    tokio::time::sleep(std::time::Duration::from_millis(1_250)).await;
+    assert_eq!(event_frames.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    supervisor.shutdown().await;
+    signer.lock().await;
+    relay.stop();
+}
+
+#[tokio::test]
 async fn supervisor_replays_desired_subscription() {
     let relay = FakeRelay::start().await;
     let signer = SignerHandle::spawn(Keys::generate());

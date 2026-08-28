@@ -74,7 +74,7 @@ pub async fn flush_with_diagnostics(
         }
         let retry_event = item.event.clone();
         let publish_started = Instant::now();
-        match supervisor.publish(item.event).await {
+        match supervisor.publish_recovery(item.event).await {
             Ok(ack) if ack.accepted => {
                 diagnostics.emit(DiagnosticEvent::ReconcileRepublished {
                     event_id: ack.event_id.clone(),

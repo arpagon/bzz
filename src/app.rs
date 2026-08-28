@@ -41,6 +41,7 @@ use crate::{
     paths::Paths,
     protocol::{http::HttpClient, system, thread_summary::LiveThreadSummary},
     realtime::{
+        admission::SubscriptionPriority,
         session::SessionEvent,
         subscriptions,
         supervisor::{SupervisorEvent, SupervisorHandle},
@@ -320,6 +321,8 @@ pub struct App {
     community_cursor: usize,
     connection: ConnectionState,
     status_error: Option<String>,
+    rate_limit_until: Option<Instant>,
+    rate_limit_display_seconds: Option<u64>,
     should_quit: bool,
     cache_dirty: bool,
     manual_unread: HashSet<Uuid>,
@@ -534,6 +537,8 @@ impl App {
             community_cursor: selected_community,
             connection,
             status_error: (!notices.is_empty()).then(|| notices.join("; ")),
+            rate_limit_until: None,
+            rate_limit_display_seconds: None,
             should_quit: false,
             cache_dirty: true,
             manual_unread: HashSet::new(),
@@ -755,26 +760,35 @@ impl App {
         let http = runtime.http.clone();
         let supervisor = runtime.supervisor.clone();
         let community = runtime.community_id;
+        let selected = self.current_channel().map(|channel| channel.id);
+        if let Some(channel) = selected {
+            self.subscribe_channel_with_priority(channel, SubscriptionPriority::Foreground)
+                .await?;
+            self.reconcile_agent_typing_subscription().await?;
+        }
         supervisor
-            .subscribe(
+            .subscribe_with_priority(
                 "membership",
                 subscriptions::membership(&pubkey, nostr::Timestamp::now().as_secs()),
+                SubscriptionPriority::Baseline,
             )
             .await?;
         supervisor
-            .subscribe(
+            .subscribe_with_priority(
                 "global-stream",
                 subscriptions::global_stream(nostr::Timestamp::now().as_secs()),
+                SubscriptionPriority::Baseline,
             )
             .await?;
         supervisor
-            .subscribe(
+            .subscribe_with_priority(
                 "personal",
                 subscriptions::personal(&pubkey, nostr::Timestamp::now().as_secs()),
+                SubscriptionPriority::Baseline,
             )
             .await?;
         supervisor
-            .subscribe(
+            .subscribe_with_priority(
                 "read-state",
                 subscriptions::read_state(
                     &pubkey,
@@ -782,12 +796,13 @@ impl App {
                         .as_secs()
                         .saturating_sub(read_state::HORIZON_SECONDS),
                 ),
+                SubscriptionPriority::Baseline,
             )
             .await?;
         let initial_channels = self
             .channels
             .iter()
-            .filter(|channel| channel.is_member)
+            .filter(|channel| channel.is_member && Some(channel.id) != selected)
             .take(900)
             .map(|channel| channel.id)
             .collect::<Vec<_>>();
@@ -841,6 +856,15 @@ impl App {
     }
 
     async fn subscribe_channel(&mut self, channel: Uuid) -> Result<()> {
+        self.subscribe_channel_with_priority(channel, SubscriptionPriority::Background)
+            .await
+    }
+
+    async fn subscribe_channel_with_priority(
+        &mut self,
+        channel: Uuid,
+        priority: SubscriptionPriority,
+    ) -> Result<()> {
         let subscription = format!("ch-{}", channel.simple());
         if self.subscribed_channels.contains(&channel)
             || self.closed_channel_subscriptions.contains(&subscription)
@@ -859,9 +883,10 @@ impl App {
             .await?;
         runtime
             .supervisor
-            .subscribe(
+            .subscribe_with_priority(
                 subscription,
                 subscriptions::channel(channel, cursor.high_created_at),
+                priority,
             )
             .await?;
         self.subscribed_channels.insert(channel);
@@ -918,9 +943,10 @@ impl App {
             // the previous channel being attributed to this static ID.
             runtime
                 .supervisor
-                .subscribe(
+                .subscribe_with_priority(
                     AGENT_TYPING_SUBSCRIPTION,
                     subscriptions::agent_typing(channel, nostr::Timestamp::now().as_secs()),
+                    SubscriptionPriority::Foreground,
                 )
                 .await?;
             self.typing_subscription_channel = Some(channel);
@@ -1485,15 +1511,29 @@ impl App {
     async fn handle_network(&mut self, event: SupervisorEvent) -> Result<bool> {
         let previous_connection = self.connection;
         let previous_status = self.status_error.clone();
+        let previous_rate_limit = self.rate_limit_display_seconds;
         let mut transient_changed = false;
         match event {
             SupervisorEvent::Connecting => {
                 self.connection = ConnectionState::Connecting;
+                self.rate_limit_until = None;
+                self.rate_limit_display_seconds = None;
                 transient_changed |= self.agent_typing.clear();
             }
             SupervisorEvent::Backoff(_) => {
                 self.connection = ConnectionState::Offline;
+                self.rate_limit_until = None;
+                self.rate_limit_display_seconds = None;
                 transient_changed |= self.agent_typing.clear();
+            }
+            SupervisorEvent::RateLimited { retry_after } => {
+                let retry_after = retry_after.max(Duration::from_secs(1));
+                self.rate_limit_until = Some(Instant::now() + retry_after);
+                self.rate_limit_display_seconds = Some(retry_after.as_secs().max(1));
+            }
+            SupervisorEvent::RateLimitCleared => {
+                self.rate_limit_until = None;
+                self.rate_limit_display_seconds = None;
             }
             SupervisorEvent::Terminal(message) => {
                 self.connection = if message.contains("clock-skew") {
@@ -1718,13 +1758,16 @@ impl App {
             SupervisorEvent::Session(SessionEvent::Disconnected(message)) => {
                 self.connection = ConnectionState::Offline;
                 self.status_error = Some(message);
+                self.rate_limit_until = None;
+                self.rate_limit_display_seconds = None;
                 transient_changed |= self.agent_typing.clear();
             }
             SupervisorEvent::Session(SessionEvent::Count { .. }) => {}
         }
         Ok(transient_changed
             || self.connection != previous_connection
-            || self.status_error != previous_status)
+            || self.status_error != previous_status
+            || self.rate_limit_display_seconds != previous_rate_limit)
     }
 
     fn relay_event_was_handled(&self, community: Uuid, event_id: &str) -> bool {
@@ -1765,6 +1808,23 @@ impl App {
     /// full terminal frame every 100 ms.
     async fn on_tick(&mut self) -> Result<bool> {
         let mut changed = self.media.poll();
+        if let Some(deadline) = self.rate_limit_until {
+            let now = Instant::now();
+            if deadline <= now {
+                self.rate_limit_until = None;
+                self.rate_limit_display_seconds = None;
+                changed = true;
+            } else {
+                let remaining = deadline.duration_since(now);
+                let seconds = u64::try_from(remaining.as_millis().div_ceil(1_000))
+                    .unwrap_or(u64::MAX)
+                    .max(1);
+                if self.rate_limit_display_seconds != Some(seconds) {
+                    self.rate_limit_display_seconds = Some(seconds);
+                    changed = true;
+                }
+            }
+        }
         changed |= self.agent_typing.expire(nostr::Timestamp::now().as_secs());
         let typing_visible = self.visible_agent_typing_line(5).is_some();
         if typing_visible && self.typing_spinner_advanced_at.elapsed() >= AGENT_SPINNER_INTERVAL {
@@ -5891,11 +5951,16 @@ impl App {
             _ if self.presentation.composer_target.is_some() => HighlightGroup::StatusModeInsert,
             _ => HighlightGroup::StatusMode,
         };
-        let notice = self
-            .status_error
-            .as_deref()
-            .map(sanitize::single_line)
-            .unwrap_or_default();
+        let rate_limit_notice = self
+            .rate_limit_display_seconds
+            .filter(|_| self.connection == ConnectionState::Online)
+            .map(|seconds| format!("relay busy · retrying in {seconds}s"));
+        let notice = rate_limit_notice.unwrap_or_else(|| {
+            self.status_error
+                .as_deref()
+                .map(sanitize::single_line)
+                .unwrap_or_default()
+        });
         let activity = self.visible_agent_typing_line(area.width);
         crate::ui::status::render(
             frame,
@@ -6995,6 +7060,43 @@ mod tests {
         assert!(!encoded.contains("nsec1secret"));
         assert!(!encoded.contains("private/path"));
         assert!(!encoded.contains(&channel.to_string()));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_notice_is_transient_and_does_not_change_online_state() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.connection = ConnectionState::Online;
+        app.status_error = Some("older generated notice".into());
+        assert!(
+            app.handle_network(crate::realtime::supervisor::SupervisorEvent::RateLimited {
+                retry_after: Duration::from_secs(2),
+            })
+            .await
+            .unwrap()
+        );
+        assert_eq!(app.connection, ConnectionState::Online);
+        assert_eq!(app.rate_limit_display_seconds, Some(2));
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        terminal
+            .draw(|frame| app.render_status(frame, frame.area()))
+            .unwrap();
+        let row = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(row.contains("relay busy"));
+        assert!(row.contains("online"));
+        assert!(!row.contains("older generated notice"));
+
+        app.rate_limit_until = Some(Instant::now() - Duration::from_millis(1));
+        assert!(app.on_tick().await.unwrap());
+        assert_eq!(app.rate_limit_display_seconds, None);
+        assert_eq!(app.status_error.as_deref(), Some("older generated notice"));
     }
 
     #[tokio::test]

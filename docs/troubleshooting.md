@@ -62,6 +62,31 @@ The status line distinguishes offline, authenticating, backfilling, and
 access-revoked states. Use `:reconnect`, then `:resync` if an old-timestamp
 event is missing.
 
+## Footer says relay busy or rate-limited
+
+`relay busy · retrying in Ns` means the authenticated WebSocket is temporarily
+admission-limited; it is not editor mode, offline state, runtime readiness, or
+access denial. bzz keeps the socket online, pauses billable REQ/EVENT admission,
+and retries rate-limited subscriptions after the bounded relay hint. The notice
+clears when that gate expires.
+
+New interactive sends outrank background channel replay, but bzz never silently
+republishes an EVENT after an explicit rejection. A rejected or uncertain send
+keeps its exact draft. Inspect local content-free counts with:
+
+```sh
+bzz diagnostics status
+bzz diagnostics status --json
+bzz diagnostics outbox
+```
+
+The admission counters contain no relay reason, URL, subscription/filter,
+community/channel/event ID, identity, tag, or content and are excluded from
+OTel. If quota responses continue after the countdown, another client using the
+same identity may be consuming the shared relay budget. Close or isolate that
+client for one controlled reproduction; increasing the server quota is only a
+mitigation, not a client pacing fix.
+
 ## Remote agent is missing, stale, or cannot be mentioned
 
 Refresh the active community's public directory:
@@ -89,14 +114,18 @@ bzz diagnostics status --json
 ```
 
 `typing subscription closes` reports a bounded count and the latest normalized
-class such as `access_denied`, `auth_rejected`, `rate_limited`, `protocol`, or
-`unknown`. The journal never retains the relay's raw `CLOSED` text, relay URL,
+terminal class such as `access_denied`, `auth_rejected`, `protocol`, or
+`unknown`. A rate-limited typing closure is now recovered through the general
+admission gate and is not recorded as terminal typing failure. The journal
+never retains the relay's raw `CLOSED` text, relay URL,
 community/channel/thread identifiers, agent or owner keys, event IDs, names, or
-message content. This evidence remains local and is not exported through OTel. A count that
-increases continuously at several closures per second indicates the pre-fix
-`CLOSE`/`CLOSED` acknowledgement loop rather than repeated WebSocket failures;
-stop that client and upgrade before reproducing once. Current bzz treats
-`CLOSED` as terminal and does not echo another `CLOSE`.
+message content. This evidence remains local and is not exported through OTel.
+A count that increases continuously at several closures per second indicates
+the pre-fix `CLOSE`/`CLOSED` acknowledgement loop rather than repeated
+WebSocket failures; stop that client and upgrade before reproducing once.
+Current bzz consumes locally initiated close acknowledgements, retries only
+classified transient/rate-limited subscriptions, and never echoes a
+relay-originated `CLOSED` with another `CLOSE`.
 
 `policy unknown` means ownership is verified but no usable public invocation
 policy is available. `not eligible` means the active human identity does not
