@@ -3,6 +3,7 @@
 pub mod agents;
 pub mod app;
 pub mod auth;
+pub mod clock;
 pub mod config;
 pub mod diagnostics;
 pub mod domain;

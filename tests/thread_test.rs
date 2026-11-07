@@ -17,6 +17,7 @@ fn upstream_builder_emits_direct_and_nested_markers() {
         &[],
         false,
         &[],
+        &[],
     )
     .unwrap()
     .sign_with_keys(&keys)
@@ -36,6 +37,7 @@ fn upstream_builder_emits_direct_and_nested_markers() {
         }),
         &[],
         false,
+        &[],
         &[],
     )
     .unwrap()

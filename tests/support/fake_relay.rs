@@ -1,10 +1,9 @@
-use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Instant,
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
+
+use tokio::time::Instant;
 
 use futures_util::{SinkExt as _, StreamExt as _};
 use nostr::{Event, JsonUtil as _};

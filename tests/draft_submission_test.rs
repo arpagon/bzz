@@ -44,7 +44,7 @@ fn configured_store(path: &std::path::Path) -> (Store, Uuid, Uuid) {
 }
 
 fn outbox_event(channel: Uuid) -> nostr::Event {
-    buzz_sdk::build_message(channel, "event", None, &[], false, &[])
+    buzz_sdk::build_message(channel, "event", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&Keys::generate())
         .unwrap()

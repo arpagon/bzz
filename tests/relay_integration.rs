@@ -14,7 +14,7 @@ use bzz::{
 };
 use nostr::{EventBuilder, Keys, Kind, Timestamp};
 
-const PIN: &str = "9f55bf67456be10ff7c8238bf0d9e12e582848f6";
+const PIN: &str = "f3b127e3af5c14d2314faa2b63556c3f51ec6743";
 
 #[tokio::test]
 #[ignore = "requires scripts/test-relay.sh"]
@@ -55,10 +55,11 @@ async fn real_relay_mvp_protocol_journey() {
     .unwrap();
     let info = http.nip11().await.unwrap();
     assert!(info.is_object());
-    assert_eq!(
-        bzz::protocol::http::relay_signing_pubkey(&info),
-        Some("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
-    );
+    // The pinned harness generates a fresh relay key per run; NIP-11 is the
+    // trusted origin-bound source, exactly as production pinning uses it.
+    let harness_relay_pubkey = bzz::protocol::http::relay_signing_pubkey(&info)
+        .expect("pinned relay advertises its signing key")
+        .to_owned();
 
     let signer_b = SignerHandle::spawn(keys_b);
     let (session_b, _) = session::connect(
@@ -87,7 +88,7 @@ async fn real_relay_mvp_protocol_journey() {
     assert!(dm_ack.accepted, "{}", dm_ack.message);
     let dm_channel = command_channel_id(&dm_ack.message);
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let dm_token = format!("bzz-dm-search-{}", uuid::Uuid::new_v4().simple());
+    let dm_token = format!("bzzdmsearch{}", uuid::Uuid::new_v4().simple());
     let dm_message = signer
         .sign(
             buzz_sdk::build_message(
@@ -96,6 +97,7 @@ async fn real_relay_mvp_protocol_journey() {
                 None,
                 &[pubkey_b.as_str()],
                 false,
+                &[],
                 &[],
             )
             .unwrap(),
@@ -114,6 +116,7 @@ async fn real_relay_mvp_protocol_journey() {
                 }),
                 &[pubkey.as_str()],
                 false,
+                &[],
                 &[],
             )
             .unwrap(),
@@ -369,6 +372,7 @@ async fn real_relay_mvp_protocol_journey() {
                 &[agent_pubkey.as_str()],
                 false,
                 &[],
+                &[],
             )
             .unwrap(),
         )
@@ -472,6 +476,7 @@ async fn real_relay_mvp_protocol_journey() {
                 &[pubkey.as_str()],
                 false,
                 &[],
+                &[],
             )
             .unwrap(),
         )
@@ -514,6 +519,7 @@ async fn real_relay_mvp_protocol_journey() {
                 &[],
                 false,
                 &[attachment.imeta_tag()],
+                &[],
             )
             .unwrap(),
         )
@@ -552,6 +558,7 @@ async fn real_relay_mvp_protocol_journey() {
                 &[],
                 false,
                 &[image_attachment.imeta_tag()],
+                &[],
             )
             .unwrap(),
         )
@@ -588,10 +595,7 @@ async fn real_relay_mvp_protocol_journey() {
     let mut local_store = Store::open_memory().unwrap();
     local_store.sync_config(&local_config).unwrap();
     local_store
-        .pin_relay_pubkey(
-            local_community,
-            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
-        )
+        .pin_relay_pubkey(local_community, &harness_relay_pubkey)
         .unwrap();
     let local_store = StoreHandle::spawn(local_store).unwrap();
     let directory_report = directory::refresh(local_community, &pubkey, &http, &local_store)
@@ -697,7 +701,7 @@ async fn real_relay_mvp_protocol_journey() {
         .unwrap();
     assert!(session.publish(profile.clone()).await.unwrap().accepted);
     let root = signer
-        .sign(buzz_sdk::build_message(channel, "bzz root", None, &[], false, &[]).unwrap())
+        .sign(buzz_sdk::build_message(channel, "bzz root", None, &[], false, &[], &[]).unwrap())
         .await
         .unwrap();
     assert!(session.publish(root.clone()).await.unwrap().accepted);
@@ -713,6 +717,7 @@ async fn real_relay_mvp_protocol_journey() {
                 &[],
                 false,
                 &[image_attachment.imeta_tag()],
+                &[],
             )
             .unwrap(),
         )
@@ -736,6 +741,7 @@ async fn real_relay_mvp_protocol_journey() {
                 }),
                 &[],
                 false,
+                &[],
                 &[],
             )
             .unwrap(),
@@ -771,6 +777,7 @@ async fn real_relay_mvp_protocol_journey() {
                 }),
                 &[],
                 false,
+                &[],
                 &[],
             )
             .unwrap(),
@@ -942,9 +949,17 @@ async fn real_relay_mvp_protocol_journey() {
     for index in 0..505_u16 {
         let event = signer
             .sign(
-                buzz_sdk::build_message(channel, &format!("dense {index}"), None, &[], false, &[])
-                    .unwrap()
-                    .custom_created_at(same_second),
+                buzz_sdk::build_message(
+                    channel,
+                    &format!("dense {index}"),
+                    None,
+                    &[],
+                    false,
+                    &[],
+                    &[],
+                )
+                .unwrap()
+                .custom_created_at(same_second),
             )
             .await
             .unwrap();

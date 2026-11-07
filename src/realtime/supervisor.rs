@@ -773,6 +773,114 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn rate_limit_gate_extends_never_shortens_and_honors_virtual_time() {
+        let (events, mut received) = broadcast::channel(8);
+        let diagnostics = DiagnosticHandle::disabled();
+        let mut deadline = None;
+        let start = Instant::now();
+        activate_rate_limit(
+            &mut deadline,
+            Duration::from_secs(10),
+            RateLimitSource::Closed,
+            &events,
+            &diagnostics,
+        );
+        assert_eq!(deadline, Some(start + Duration::from_secs(10)));
+        tokio::time::advance(Duration::from_secs(2)).await;
+        // A shorter hint at t=2 (deadline t=5) must not shorten the t=10 gate.
+        activate_rate_limit(
+            &mut deadline,
+            Duration::from_secs(3),
+            RateLimitSource::Notice,
+            &events,
+            &diagnostics,
+        );
+        assert_eq!(deadline, Some(start + Duration::from_secs(10)));
+        // A longer hint extends it.
+        activate_rate_limit(
+            &mut deadline,
+            Duration::from_secs(30),
+            RateLimitSource::PublishAck,
+            &events,
+            &diagnostics,
+        );
+        assert_eq!(deadline, Some(start + Duration::from_secs(32)));
+        // Hints are clamped to [1 s, MAX_RETRY_AFTER].
+        let mut zero = None;
+        activate_rate_limit(
+            &mut zero,
+            Duration::ZERO,
+            RateLimitSource::Closed,
+            &events,
+            &diagnostics,
+        );
+        assert_eq!(zero, Some(Instant::now() + Duration::from_secs(1)));
+        let mut huge = None;
+        activate_rate_limit(
+            &mut huge,
+            Duration::from_secs(86_400),
+            RateLimitSource::Closed,
+            &events,
+            &diagnostics,
+        );
+        assert_eq!(huge, Some(Instant::now() + admission::MAX_RETRY_AFTER));
+        let mut announced = Vec::new();
+        while let Ok(SupervisorEvent::RateLimited { retry_after }) = received.try_recv() {
+            announced.push(retry_after.as_secs());
+        }
+        assert_eq!(announced, vec![10, 30, 1, 300]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retrying_subscription_waits_for_its_virtual_deadline() {
+        let mut desired = BTreeMap::new();
+        remember_subscription(
+            &mut desired,
+            "retrying".into(),
+            vec![json!({})],
+            SubscriptionPriority::Foreground,
+        );
+        let retry_at =
+            Instant::now() + Duration::from_secs(5) + admission::retry_jitter("retrying");
+        desired.get_mut("retrying").unwrap().retry_at = Some(retry_at);
+        assert_eq!(next_subscription(&desired, Instant::now()), None);
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert_eq!(next_subscription(&desired, Instant::now()), None);
+        tokio::time::advance(admission::retry_jitter("retrying")).await;
+        assert_eq!(
+            next_subscription(&desired, Instant::now()).as_deref(),
+            Some("retrying")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn queued_publication_expires_exactly_at_queue_timeout() {
+        let (response, mut result) = oneshot::channel();
+        let event = nostr::EventBuilder::text_note("generated")
+            .sign_with_keys(&nostr::Keys::generate())
+            .unwrap();
+        let mut queues = PublicationQueues::default();
+        queues.push(
+            PublishPriority::Interactive,
+            PendingPublication {
+                event,
+                queued_at: Instant::now(),
+                response,
+            },
+        );
+        tokio::time::advance(admission::PUBLICATION_QUEUE_TIMEOUT - Duration::from_millis(1)).await;
+        queues.reject_expired(Instant::now());
+        assert_eq!(queues.len(), 1);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        queues.reject_expired(Instant::now());
+        assert_eq!(queues.len(), 0);
+        assert!(matches!(
+            result.try_recv(),
+            Ok(Err(ref error)) if admission::is_local_admission_error(error)
+        ));
+    }
+
     #[test]
     fn same_id_replacement_keeps_only_latest_filters() {
         let mut desired = BTreeMap::new();

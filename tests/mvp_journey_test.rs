@@ -36,7 +36,7 @@ async fn cached_send_ack_duplicate_and_restart_form_one_message() {
         .unwrap();
     let channel = Uuid::new_v4();
     let keys = Keys::generate();
-    let event = buzz_sdk::build_message(channel, "hello", None, &[], false, &[])
+    let event = buzz_sdk::build_message(channel, "hello", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&keys)
         .unwrap();
@@ -94,11 +94,11 @@ fn two_community_cache_and_read_state_are_isolated() {
     store.sync_config(&config).unwrap();
     let channel = Uuid::new_v4();
     let keys = Keys::generate();
-    let event_a = buzz_sdk::build_message(channel, "community a", None, &[], false, &[])
+    let event_a = buzz_sdk::build_message(channel, "community a", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&keys)
         .unwrap();
-    let event_b = buzz_sdk::build_message(channel, "community b", None, &[], false, &[])
+    let event_b = buzz_sdk::build_message(channel, "community b", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&keys)
         .unwrap();

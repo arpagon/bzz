@@ -58,7 +58,7 @@ impl MessageService {
         let (content, tags) = message_media(content, attachments)?;
         let mentions = mention_references(mentions)?;
         self.send_builder(
-            buzz_sdk::build_message(channel, &content, None, &mentions, false, &tags)
+            buzz_sdk::build_message(channel, &content, None, &mentions, false, &tags, &[])
                 .map_err(|error| Error::Protocol(error.to_string()))?,
         )
         .await
@@ -77,7 +77,7 @@ impl MessageService {
         let builder = (|| {
             let (content, tags) = message_media(content, attachments)?;
             let mentions = mention_references(mentions)?;
-            buzz_sdk::build_message(channel, &content, None, &mentions, false, &tags)
+            buzz_sdk::build_message(channel, &content, None, &mentions, false, &tags, &[])
                 .map_err(|error| Error::Protocol(error.to_string()))
         })();
         let builder = match builder {
@@ -129,8 +129,16 @@ impl MessageService {
         let (content, tags) = message_media(content, attachments)?;
         let mentions = mention_references(mentions)?;
         self.send_builder(
-            buzz_sdk::build_message(channel, &content, Some(&thread), &mentions, false, &tags)
-                .map_err(|error| Error::Protocol(error.to_string()))?,
+            buzz_sdk::build_message(
+                channel,
+                &content,
+                Some(&thread),
+                &mentions,
+                false,
+                &tags,
+                &[],
+            )
+            .map_err(|error| Error::Protocol(error.to_string()))?,
         )
         .await
     }
@@ -154,8 +162,16 @@ impl MessageService {
             };
             let (content, tags) = message_media(content, attachments)?;
             let mentions = mention_references(mentions)?;
-            buzz_sdk::build_message(channel, &content, Some(&thread), &mentions, false, &tags)
-                .map_err(|error| Error::Protocol(error.to_string()))
+            buzz_sdk::build_message(
+                channel,
+                &content,
+                Some(&thread),
+                &mentions,
+                false,
+                &tags,
+                &[],
+            )
+            .map_err(|error| Error::Protocol(error.to_string()))
         })();
         let builder = match builder {
             Ok(builder) => builder,

@@ -229,7 +229,12 @@ pub fn validate_media_url(
         .filter(|tail| !tail.contains('/'))
         .ok_or_else(|| "attachment URL does not use a canonical media path".to_owned())?;
     if thumbnail {
-        let Some(hash) = tail.strip_suffix(".thumb.jpg") else {
+        // Buzz emits JPEG thumbnails, and WebP since block/buzz#9003 so that
+        // transparency survives. Both are relay-generated aliases of the parent.
+        let Some(hash) = tail
+            .strip_suffix(".thumb.jpg")
+            .or_else(|| tail.strip_suffix(".thumb.webp"))
+        else {
             return Err("attachment thumbnail path is invalid".into());
         };
         if !is_hash(hash) {
@@ -379,6 +384,35 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn thumbnails_accept_jpeg_and_webp_aliases_only() {
+        let base = Url::parse("https://buzz.example/").unwrap();
+        for ok in ["thumb.jpg", "thumb.webp"] {
+            assert!(
+                validate_media_url(
+                    &format!("https://buzz.example/media/{HASH}.{ok}"),
+                    &base,
+                    None,
+                    true
+                )
+                .is_ok(),
+                "{ok} must be accepted"
+            );
+        }
+        for bad in ["thumb.png", "thumb.jpg.extra", "png", "thumb.webp.jpg"] {
+            assert!(
+                validate_media_url(
+                    &format!("https://buzz.example/media/{HASH}.{bad}"),
+                    &base,
+                    None,
+                    true
+                )
+                .is_err(),
+                "{bad} must be rejected"
+            );
+        }
     }
 
     proptest::proptest! {

@@ -31,7 +31,7 @@ fn fixture() -> (Store, Uuid, Uuid, Keys) {
 #[test]
 fn event_delivery_is_idempotent_and_community_isolated() {
     let (mut store, community, channel, keys) = fixture();
-    let event = buzz_sdk::build_message(channel, "hello", None, &[], false, &[])
+    let event = buzz_sdk::build_message(channel, "hello", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&keys)
         .unwrap();
@@ -255,7 +255,7 @@ fn relay_system_events_are_semantic_content_free_and_not_unread_activity() {
 #[test]
 fn outbox_and_delete_are_reduced_deterministically() {
     let (mut store, community, channel, keys) = fixture();
-    let event = buzz_sdk::build_message(channel, "pending", None, &[], false, &[])
+    let event = buzz_sdk::build_message(channel, "pending", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&keys)
         .unwrap();
@@ -282,7 +282,7 @@ fn outbox_and_delete_are_reduced_deterministically() {
 #[test]
 fn exact_unknown_and_rejected_states_are_not_collapsed_into_pending() {
     let (mut store, community, channel, keys) = fixture();
-    let event = buzz_sdk::build_message(channel, "delivery", None, &[], false, &[])
+    let event = buzz_sdk::build_message(channel, "delivery", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&keys)
         .unwrap();
@@ -317,7 +317,7 @@ fn exact_unknown_and_rejected_states_are_not_collapsed_into_pending() {
 #[test]
 fn repeated_relay_echo_is_a_noop_after_exact_outbox_delivery() {
     let (mut store, community, channel, keys) = fixture();
-    let event = buzz_sdk::build_message(channel, "pending", None, &[], false, &[])
+    let event = buzz_sdk::build_message(channel, "pending", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&keys)
         .unwrap();
@@ -334,7 +334,7 @@ fn repeated_relay_echo_is_a_noop_after_exact_outbox_delivery() {
 #[test]
 fn destructive_outbox_events_wait_for_relay_authority() {
     let (mut store, community, channel, owner) = fixture();
-    let target = buzz_sdk::build_message(channel, "target", None, &[], false, &[])
+    let target = buzz_sdk::build_message(channel, "target", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&owner)
         .unwrap();
@@ -361,7 +361,7 @@ fn destructive_outbox_events_wait_for_relay_authority() {
 #[test]
 fn deletion_reduction_is_authorized_and_order_independent() {
     let (mut store, community, channel, owner) = fixture();
-    let target = buzz_sdk::build_message(channel, "target", None, &[], false, &[])
+    let target = buzz_sdk::build_message(channel, "target", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&owner)
         .unwrap();
@@ -374,7 +374,7 @@ fn deletion_reduction_is_authorized_and_order_independent() {
     store.apply_event(community, &target).unwrap();
     assert!(!store.messages(community, channel, 10).unwrap()[0].deleted);
 
-    let late_target = buzz_sdk::build_message(channel, "late", None, &[], false, &[])
+    let late_target = buzz_sdk::build_message(channel, "late", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&owner)
         .unwrap();
@@ -431,7 +431,7 @@ fn relay_projection_requires_the_pinned_nip11_key() {
 fn thread_read_markers_clear_their_sidebar_unread_indicator() {
     let (mut store, community, channel, other) = fixture();
     let self_pubkey = "a".repeat(64);
-    let root = buzz_sdk::build_message(channel, "root", None, &[], false, &[])
+    let root = buzz_sdk::build_message(channel, "root", None, &[], false, &[], &[])
         .unwrap()
         .custom_created_at(Timestamp::from(10))
         .sign_with_keys(&other)
@@ -445,6 +445,7 @@ fn thread_read_markers_clear_their_sidebar_unread_indicator() {
         }),
         &[],
         false,
+        &[],
         &[],
     )
     .unwrap()
@@ -491,7 +492,7 @@ fn thread_read_markers_clear_their_sidebar_unread_indicator() {
 #[test]
 fn thread_summaries_count_delivered_non_deleted_descendants() {
     let (mut store, community, channel, author) = fixture();
-    let root = buzz_sdk::build_message(channel, "root", None, &[], false, &[])
+    let root = buzz_sdk::build_message(channel, "root", None, &[], false, &[], &[])
         .unwrap()
         .custom_created_at(Timestamp::from(10))
         .sign_with_keys(&author)
@@ -505,6 +506,7 @@ fn thread_summaries_count_delivered_non_deleted_descendants() {
         }),
         &[],
         false,
+        &[],
         &[],
     )
     .unwrap()
@@ -520,6 +522,7 @@ fn thread_summaries_count_delivered_non_deleted_descendants() {
         }),
         &[],
         false,
+        &[],
         &[],
     )
     .unwrap()

@@ -32,7 +32,7 @@ async fn session_authenticates_subscribes_and_correlates_ack() {
         .await
         .unwrap();
     assert!(matches!(events.recv().await,Some(SessionEvent::Eose(id)) if id=="test"));
-    let event = buzz_sdk::build_message(uuid::Uuid::new_v4(), "hello", None, &[], false, &[])
+    let event = buzz_sdk::build_message(uuid::Uuid::new_v4(), "hello", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&Keys::generate())
         .unwrap();
@@ -65,7 +65,7 @@ async fn session_diagnostics_explain_auth_and_ack_without_message_content() {
         Some(SessionEvent::Authenticated)
     ));
     let sentinel = "SENTINEL-MESSAGE-CONTENT";
-    let event = buzz_sdk::build_message(uuid::Uuid::new_v4(), sentinel, None, &[], false, &[])
+    let event = buzz_sdk::build_message(uuid::Uuid::new_v4(), sentinel, None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&Keys::generate())
         .unwrap();
@@ -312,10 +312,18 @@ async fn explicit_rate_limited_publication_is_not_republished() {
             .await;
     let signer = SignerHandle::spawn(Keys::generate());
     let supervisor = SupervisorHandle::spawn(relay.url.clone(), signer.clone());
-    let event = buzz_sdk::build_message(uuid::Uuid::new_v4(), "generated", None, &[], false, &[])
-        .unwrap()
-        .sign_with_keys(&Keys::generate())
-        .unwrap();
+    let event = buzz_sdk::build_message(
+        uuid::Uuid::new_v4(),
+        "generated",
+        None,
+        &[],
+        false,
+        &[],
+        &[],
+    )
+    .unwrap()
+    .sign_with_keys(&Keys::generate())
+    .unwrap();
     let ack = supervisor.publish(event).await.unwrap();
     assert!(!ack.accepted);
     assert_eq!(ack.message, "rate-limited: retry in 1s");
@@ -352,10 +360,18 @@ async fn legacy_uncorrelated_notice_is_uncertain_and_not_republished() {
     .await
     .unwrap();
 
-    let event = buzz_sdk::build_message(uuid::Uuid::new_v4(), "generated", None, &[], false, &[])
-        .unwrap()
-        .sign_with_keys(&Keys::generate())
-        .unwrap();
+    let event = buzz_sdk::build_message(
+        uuid::Uuid::new_v4(),
+        "generated",
+        None,
+        &[],
+        false,
+        &[],
+        &[],
+    )
+    .unwrap()
+    .sign_with_keys(&Keys::generate())
+    .unwrap();
     let error = supervisor.publish(event).await.unwrap_err();
     assert!(matches!(
         error,

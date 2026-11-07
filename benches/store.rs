@@ -76,6 +76,7 @@ fn bench_store(c: &mut Criterion) {
                 &[],
                 false,
                 &[],
+                &[],
             )
             .unwrap()
             .sign_with_keys(&keys)
