@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
