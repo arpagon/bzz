@@ -10,6 +10,11 @@ homepage = "https://github.com/arpagon/bzz"
 keywords = ["nostr", "tui", "buzz", "chat"]
 categories = ["command-line-utilities"]
 
+[features]
+default = ["huddles-audio"]
+# Live huddle audio: microphone capture, playback and Opus (ADR v0.13 huddle audio).
+huddles-audio = ["dep:buzz-audio-client", "dep:cpal"]
+
 [[bin]]
 name = "bzz"
 path = "src/main.rs"
@@ -21,6 +26,8 @@ async-trait = "0.1"
 base64 = "0.22"
 buzz-core = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "f3b127e3af5c14d2314faa2b63556c3f51ec6743" }
 buzz-sdk = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "f3b127e3af5c14d2314faa2b63556c3f51ec6743" }
+buzz-audio-client = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "f3b127e3af5c14d2314faa2b63556c3f51ec6743", default-features = false, features = ["webpki-roots"], optional = true }
+cpal = { version = "0.16", optional = true }
 chacha20poly1305 = "0.10"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
