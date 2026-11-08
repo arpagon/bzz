@@ -97,6 +97,90 @@ impl HttpClient {
         serde_json::from_slice(&bytes).map_err(|error| Error::Protocol(error.to_string()))
     }
 
+    /// The base URL this client is bound to.
+    pub fn base(&self) -> &Url {
+        &self.base
+    }
+
+    /// One NIP-98-authenticated POST with no retry, returning the HTTP status,
+    /// the bounded body and the ID of the NIP-98 event that authorized it.
+    /// Request-bound projections (NIP-CL 39008, NIP-RS snapshots) bind their
+    /// response to that ID, so each attempt must sign a fresh event.
+    pub async fn post_once_bound(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        maximum: usize,
+    ) -> Result<(u16, Vec<u8>, String)> {
+        let url = self
+            .base
+            .join(path)
+            .map_err(|error| Error::Config(error.to_string()))?;
+        let auth = self
+            .signer
+            .nip98_header("POST", url.as_str(), Some(&body))
+            .await?;
+        let request_id = nip98_event_id(&auth)?;
+        let response = self
+            .client
+            .post(url)
+            .header("Authorization", auth)
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| Error::Network(error.to_string()))?;
+        let status = response.status().as_u16();
+        let bytes = read_bounded_response(response, maximum).await?;
+        Ok((status, bytes, request_id))
+    }
+
+    /// Fetch and verify this viewer's NIP-CL compact membership snapshot.
+    /// `Ok(None)` means the relay does not advertise the capability.
+    pub async fn membership_snapshot(
+        &self,
+        info: &Value,
+        pinned_relay_pubkey: &str,
+        viewer: &str,
+    ) -> Result<Option<crate::protocol::membership_snapshot::VerifiedSnapshot>> {
+        use crate::protocol::membership_snapshot as snapshot;
+        let Some(descriptor) = snapshot::descriptor(info) else {
+            return Ok(None);
+        };
+        if descriptor.relay_pubkey != pinned_relay_pubkey {
+            return Err(Error::Protocol(
+                "membership snapshot descriptor names an unpinned relay key".into(),
+            ));
+        }
+        let url = self
+            .base
+            .join("query")
+            .map_err(|error| Error::Config(error.to_string()))?;
+        let host = snapshot::canonical_host(&url)
+            .ok_or_else(|| Error::Config("relay URL has no host".into()))?;
+        let body = snapshot::request_body(viewer, &snapshot::ALL_TYPES);
+        let (status, bytes, request_id) = self
+            .post_once_bound("query", body, descriptor.max_response_bytes)
+            .await?;
+        if status != 200 {
+            return Err(Error::Network(format!(
+                "membership snapshot returned HTTP {status}"
+            )));
+        }
+        snapshot::verify(
+            &bytes,
+            &snapshot::Expected {
+                relay_pubkey: pinned_relay_pubkey,
+                community_id: descriptor.community_id,
+                host: &host,
+                viewer,
+                request_id: &request_id,
+                types: &snapshot::ALL_TYPES,
+            },
+        )
+        .map(Some)
+    }
+
     async fn post(&self, path: &str, body: Vec<u8>) -> Result<Vec<u8>> {
         let url = self
             .base
@@ -179,4 +263,19 @@ async fn read_bounded_response(response: reqwest::Response, maximum: usize) -> R
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
+}
+
+/// The event ID inside an `Authorization: Nostr <base64>` NIP-98 header.
+fn nip98_event_id(header: &str) -> Result<String> {
+    use base64::Engine as _;
+    use nostr::JsonUtil as _;
+    let encoded = header
+        .strip_prefix("Nostr ")
+        .ok_or_else(|| Error::Protocol("NIP-98 header has no Nostr scheme".into()))?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| Error::Protocol("NIP-98 header is not base64".into()))?;
+    let event = nostr::Event::from_json(decoded)
+        .map_err(|_| Error::Protocol("NIP-98 header is not an event".into()))?;
+    Ok(event.id.to_hex())
 }

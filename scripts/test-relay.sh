@@ -13,6 +13,7 @@ cleanup() {
   fi
   tmux set-environment -gu BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN 2>/dev/null || true
   tmux set-environment -gu BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC 2>/dev/null || true
+  tmux set-environment -gu BUZZ_MEMBERSHIP_SNAPSHOT_ENABLED 2>/dev/null || true
   docker compose -p buzz-harness -f "$BZZ_BUZZ_SOURCE/docker-compose.harness.yml" down -v || true
 }
 trap cleanup EXIT INT TERM
@@ -20,6 +21,8 @@ trap cleanup EXIT INT TERM
 # production human quota inside this isolated, disposable harness.
 export BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN=5000
 export BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC=5000
+# v0.13 exercises optional relay capabilities that are off by default.
+export BUZZ_MEMBERSHIP_SNAPSHOT_ENABLED=true
 # The Buzz harness generates a fresh relay key per run. Tests read it from
 # NIP-11, the same origin-bound source production pinning uses.
 # A tmux server exits immediately when it has no sessions. Keep one disposable
@@ -30,6 +33,7 @@ export BZZ_TMUX_KEEPALIVE
 tmux new-session -d -s "$BZZ_TMUX_KEEPALIVE" "sleep 3600"
 tmux set-environment -g BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN "$BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN"
 tmux set-environment -g BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC "$BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC"
+tmux set-environment -g BUZZ_MEMBERSHIP_SNAPSHOT_ENABLED "$BUZZ_MEMBERSHIP_SNAPSHOT_ENABLED"
 (cd "$BZZ_BUZZ_SOURCE" && ./scripts/start-isolated-test-relay.sh --profile dev)
 for _ in $(seq 1 60); do curl -fsS http://localhost:3030/ >/dev/null && break; sleep 1; done
 BZZ_E2E_RELAY_URL=ws://localhost:3030 cargo test --test relay_integration -- --ignored --test-threads=1

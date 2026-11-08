@@ -21,6 +21,58 @@ use crate::{
 };
 
 impl Store {
+    /// Make a verified NIP-CL snapshot the authority for the viewer's own
+    /// memberships and roles. It covers every v1 type, so omission removes.
+    pub fn apply_membership_snapshot(
+        &mut self,
+        community_id: Uuid,
+        snapshot: &crate::protocol::membership_snapshot::VerifiedSnapshot,
+    ) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        let community = community_id.to_string();
+        transaction.execute(
+            "DELETE FROM viewer_memberships WHERE community_id=?1",
+            [&community],
+        )?;
+        transaction.execute(
+            "UPDATE channels SET is_member=0 WHERE community_id=?1",
+            [&community],
+        )?;
+        for membership in &snapshot.memberships {
+            let channel = membership.channel_id.to_string();
+            transaction.execute(
+                "INSERT INTO channels(community_id,channel_id,name,channel_type,visibility)
+                 VALUES(?1,?2,?2,?3,?4) ON CONFLICT DO NOTHING",
+                params![
+                    community,
+                    channel,
+                    membership.channel_type,
+                    if membership.open { "public" } else { "private" }
+                ],
+            )?;
+            transaction.execute(
+                "UPDATE channels SET is_member=1 WHERE community_id=?1 AND channel_id=?2",
+                params![community, channel],
+            )?;
+            transaction.execute(
+                "INSERT INTO viewer_memberships(community_id,channel_id,role,snapshot_id) VALUES(?1,?2,?3,?4)",
+                params![community, channel, membership.role.as_str(), snapshot.snapshot_id],
+            )?;
+        }
+        crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Fall back to roster authority (no capability, or verification failed).
+    pub fn clear_membership_snapshot(&mut self, community_id: Uuid) -> Result<()> {
+        self.connection.execute(
+            "DELETE FROM viewer_memberships WHERE community_id=?1",
+            [community_id.to_string()],
+        )?;
+        Ok(())
+    }
+
     pub fn reconcile_self_memberships(
         &mut self,
         community_id: Uuid,
@@ -50,9 +102,12 @@ impl Store {
                       WHERE v.community_id=c.community_id AND v.channel_id=c.channel_id AND v.identity_pubkey=i.pubkey
                     ) ELSE c.is_hidden END,
                     c.member_count,c.last_event_at,c.facts_json,
-                    (SELECT m.role FROM memberships m JOIN communities co ON co.id=m.community_id
-                       JOIN identities i ON i.id=co.identity_id
-                     WHERE m.community_id=c.community_id AND m.channel_id=c.channel_id AND m.pubkey=i.pubkey)
+                    COALESCE(
+                      (SELECT v.role FROM viewer_memberships v
+                       WHERE v.community_id=c.community_id AND v.channel_id=c.channel_id),
+                      (SELECT m.role FROM memberships m JOIN communities co ON co.id=m.community_id
+                         JOIN identities i ON i.id=co.identity_id
+                       WHERE m.community_id=c.community_id AND m.channel_id=c.channel_id AND m.pubkey=i.pubkey))
              FROM channels c
              WHERE c.community_id=?1 AND (
                (c.channel_type<>'dm' AND c.is_hidden=0) OR
@@ -1179,6 +1234,14 @@ impl Store {
             serde_json::from_str(&value).map_err(|error| Error::Serialization(error.to_string()))
         })
         .transpose()
+    }
+
+    pub fn pinned_relay_pubkey(&self, community_id: Uuid) -> Result<Option<String>> {
+        Ok(self.connection.query_row(
+            "SELECT relay_pubkey FROM communities WHERE id=?1",
+            [community_id.to_string()],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn pin_relay_pubkey(&self, community_id: Uuid, pubkey: &str) -> Result<()> {

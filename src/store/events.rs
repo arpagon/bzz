@@ -476,10 +476,14 @@ fn replace_membership_projection(
     transaction.execute(
         "UPDATE channels SET
            member_count=(SELECT count(*) FROM memberships WHERE community_id=?1 AND channel_id=?2),
-           is_member=EXISTS(SELECT 1 FROM memberships m
-             JOIN communities c ON c.id=m.community_id
-             JOIN identities i ON i.id=c.identity_id
-             WHERE m.community_id=?1 AND m.channel_id=?2 AND m.pubkey=i.pubkey)
+           is_member=CASE
+             WHEN EXISTS(SELECT 1 FROM viewer_memberships WHERE community_id=?1)
+               THEN EXISTS(SELECT 1 FROM viewer_memberships WHERE community_id=?1 AND channel_id=?2)
+             ELSE EXISTS(SELECT 1 FROM memberships m
+               JOIN communities c ON c.id=m.community_id
+               JOIN identities i ON i.id=c.identity_id
+               WHERE m.community_id=?1 AND m.channel_id=?2 AND m.pubkey=i.pubkey)
+           END
          WHERE community_id=?1 AND channel_id=?2",
         params![community_id.to_string(), snapshot.channel],
     )?;

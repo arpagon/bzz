@@ -263,3 +263,70 @@ fn newer_metadata_replaces_facts_and_older_is_ignored() {
     assert!(projected.facts.labels.is_empty());
     assert!(!projected.facts.unlisted);
 }
+
+#[test]
+fn verified_snapshot_owns_viewer_membership_and_rosters_cannot_override_it() {
+    use bzz::protocol::membership_snapshot::{Membership, VerifiedSnapshot};
+    let (mut store, community, relay) = fixture();
+    let channel = Uuid::new_v4();
+    store
+        .apply_event(
+            community,
+            &metadata(&relay, channel, &[&["public"], &["t", "stream"]], 1_000),
+        )
+        .unwrap();
+    let snapshot = VerifiedSnapshot {
+        snapshot_id: "f".repeat(64),
+        types: vec![
+            "dm".into(),
+            "forum".into(),
+            "stream".into(),
+            "system".into(),
+            "workflow".into(),
+        ],
+        memberships: vec![Membership {
+            channel_id: channel,
+            role: MemberRole::Owner,
+            channel_type: "stream".into(),
+            open: true,
+            archived: false,
+        }],
+    };
+    store
+        .apply_membership_snapshot(community, &snapshot)
+        .unwrap();
+    let owned = channel_of(&store, community, channel);
+    assert!(owned.is_member);
+    assert_eq!(owned.facts.viewer_role, Some(MemberRole::Owner));
+
+    // A stale or partial roster that omits (or downgrades) the viewer.
+    let stale = signed(
+        &relay,
+        39_002,
+        &[&["d", &channel.to_string()], &["p", &"c".repeat(64)]],
+        2_000,
+    );
+    store.apply_event(community, &stale).unwrap();
+    let still = channel_of(&store, community, channel);
+    assert!(still.is_member, "roster removed a snapshot membership");
+    assert_eq!(still.facts.viewer_role, Some(MemberRole::Owner));
+
+    // Snapshot omission removes; clearing restores roster authority.
+    let empty = VerifiedSnapshot {
+        memberships: vec![],
+        ..snapshot
+    };
+    store.apply_membership_snapshot(community, &empty).unwrap();
+    assert!(!channel_of(&store, community, channel).is_member);
+    store.clear_membership_snapshot(community).unwrap();
+    let roster = signed(
+        &relay,
+        39_002,
+        &[&["d", &channel.to_string()], &["p", ME, "", "guest"]],
+        3_000,
+    );
+    store.apply_event(community, &roster).unwrap();
+    let fallback = channel_of(&store, community, channel);
+    assert!(fallback.is_member);
+    assert_eq!(fallback.facts.viewer_role, Some(MemberRole::Guest));
+}

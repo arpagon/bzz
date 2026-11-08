@@ -1290,9 +1290,13 @@ async fn real_relay_channel_types_roles_and_membership() {
         store.sync_config(&config).unwrap();
         store.pin_relay_pubkey(community, relay_pubkey).unwrap();
         let store = StoreHandle::spawn(store).unwrap();
-        directory::refresh(community, pubkey, http, &store)
+        let report = directory::refresh(community, pubkey, http, &store)
             .await
             .unwrap();
+        assert!(
+            report.membership_snapshot,
+            "pinned relay advertises membership_snapshot; bzz must verify and use it"
+        );
         (store, community)
     }
     async fn channel(

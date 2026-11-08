@@ -19,6 +19,8 @@ pub struct DirectoryReport {
     pub verified_agents: usize,
     pub agent_projection_changes: usize,
     pub channel_ids: BTreeSet<Uuid>,
+    /// The viewer's memberships came from a verified NIP-CL 39008 snapshot.
+    pub membership_snapshot: bool,
 }
 
 pub async fn refresh(
@@ -63,9 +65,26 @@ pub async fn refresh(
         .filter_map(|value| Uuid::parse_str(&value).ok())
         .collect::<BTreeSet<_>>();
     apply(community_id, joined.clone(), store).await?;
+    // Prefer the signed compact snapshot as the viewer's membership authority.
+    // Rosters above still serve other-member features (agents, counts).
+    let snapshot = viewer_snapshot(community_id, self_pubkey, http, store).await;
+    if let Some(snapshot) = &snapshot {
+        ids = snapshot
+            .memberships
+            .iter()
+            .map(|entry| entry.channel_id)
+            .collect();
+    }
     let joined_ids = ids.clone();
+    let authoritative = snapshot.clone();
     store
-        .call(move |store| store.reconcile_self_memberships(community_id, &joined_ids))
+        .call(move |store| match &authoritative {
+            Some(snapshot) => store.apply_membership_snapshot(community_id, snapshot),
+            None => {
+                store.clear_membership_snapshot(community_id)?;
+                store.reconcile_self_memberships(community_id, &joined_ids)
+            }
+        })
         .await?;
 
     let mut metadata = query_all(
@@ -122,7 +141,28 @@ pub async fn refresh(
         verified_agents: agent_report.verified,
         agent_projection_changes: agent_report.projection_changes,
         channel_ids: ids,
+        membership_snapshot: snapshot.is_some(),
     })
+}
+
+/// A verified snapshot, or `None` for "use rosters" (capability absent,
+/// relay key not pinned yet, transport error or any verification failure).
+async fn viewer_snapshot(
+    community_id: Uuid,
+    self_pubkey: &str,
+    http: &HttpClient,
+    store: &StoreHandle,
+) -> Option<crate::protocol::membership_snapshot::VerifiedSnapshot> {
+    let pinned = store
+        .call(move |store| store.pinned_relay_pubkey(community_id))
+        .await
+        .ok()
+        .flatten()?;
+    let info = http.nip11().await.ok()?;
+    http.membership_snapshot(&info, &pinned, self_pubkey)
+        .await
+        .ok()
+        .flatten()
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
