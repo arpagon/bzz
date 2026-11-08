@@ -99,6 +99,9 @@ pub enum Denial {
     Refused(RefusalReason),
     /// 429, any 5xx, or a network failure: keep the session, back off.
     Retry { after: Option<Duration> },
+    /// 401 `invalid_grant` on the agent assertion route: discard the agent
+    /// grant; only a new owner authorization enrolls the agent again.
+    GrantEnded,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,6 +112,12 @@ pub enum RefusalReason {
     BindingMismatch,
     RequestTooLarge,
     InvalidResponse,
+    /// 400 `invalid_grant`: the owner authorization or enrollment was refused.
+    InvalidGrant,
+    /// 403 `agent_unsupported`: the adapter issues no agent grants.
+    AgentUnsupported,
+    /// 404 `agent_not_found`: the owner never enrolled this agent.
+    AgentNotFound,
     Undefined,
 }
 
@@ -123,6 +132,9 @@ impl RefusalReason {
             }
             Self::RequestTooLarge => "federated sign-in: request too large",
             Self::InvalidResponse => "federated sign-in: the adapter sent an invalid response",
+            Self::InvalidGrant => "federated agent: the adapter refused the owner authorization",
+            Self::AgentUnsupported => "federated agent: the adapter does not support agents",
+            Self::AgentNotFound => "federated agent: the adapter does not know this agent",
             Self::Undefined => "federated sign-in: the adapter refused the request",
         }
     }
@@ -138,6 +150,9 @@ impl std::fmt::Display for Denial {
             Self::Retry { .. } => {
                 formatter.write_str("federated sign-in: adapter unavailable; retrying")
             }
+            Self::GrantEnded => formatter.write_str(
+                "federated agent: the agent grant ended; the owner must enroll it again",
+            ),
         }
     }
 }
@@ -158,6 +173,10 @@ pub fn classify(status: u16, body: &[u8], retry_after: Option<Duration>) -> Deni
         });
     match (status, code.as_deref()) {
         (401, Some("session_required" | "session_expired")) => Denial::SessionEnded,
+        (401, Some("invalid_grant")) => Denial::GrantEnded,
+        (400, Some("invalid_grant")) => Denial::Refused(RefusalReason::InvalidGrant),
+        (403, Some("agent_unsupported")) => Denial::Refused(RefusalReason::AgentUnsupported),
+        (404, Some("agent_not_found")) => Denial::Refused(RefusalReason::AgentNotFound),
         (400, Some("invalid_request")) => Denial::Refused(RefusalReason::InvalidRequest),
         (403, Some("authorization_denied")) => Denial::Refused(RefusalReason::AuthorizationDenied),
         (403, Some("invalid_proof")) => Denial::Refused(RefusalReason::InvalidProof),
@@ -424,6 +443,251 @@ impl AdapterClient {
             jws: SecretString::from(parsed.assertion),
             expires_at: parsed.expires_at,
         })
+    }
+}
+
+/// An NIP-FA agent grant for one hosted agent key. Never logged.
+#[derive(Clone)]
+pub struct AgentGrant {
+    pub token: SecretString,
+    pub owner: String,
+    pub issuer: String,
+}
+
+impl std::fmt::Debug for AgentGrant {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentGrant")
+            .field("owner", &self.owner)
+            .field("issuer", &self.issuer)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Deserialize)]
+struct GrantResponse {
+    access_token: String,
+    issued_token_type: String,
+    token_type: String,
+    nostr_owner_pubkey: String,
+    nip_fi_issuer: String,
+}
+
+const AGENT_GRANT_TYPE: &str = "urn:nostr:params:oauth:token-type:nip-fi-agent-grant";
+
+fn form(pairs: &[(&str, &str)]) -> Vec<u8> {
+    url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(pairs)
+        .finish()
+        .into_bytes()
+}
+
+/// The unverified payload of a compact JWS (the relay verifies signatures;
+/// the client only checks the claims it is required to).
+fn jws_claims(jws: &str) -> Option<Value> {
+    use base64::Engine as _;
+    let payload = jws.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+impl AdapterClient {
+    /// `POST /v1/nip-fi/agent-grant`: RFC 8693 exchange of the owner's
+    /// session and the NIP-OA tag for an agent grant, proven by the agent key.
+    pub async fn agent_grant(
+        &self,
+        session: &Session,
+        agent: &SignerHandle,
+        owner_attestation: &str,
+        owner: &str,
+    ) -> AdapterResult<AgentGrant> {
+        let agent_pubkey = agent.public_key().to_hex();
+        let body = form(&[
+            (
+                "grant_type",
+                "urn:ietf:params:oauth:grant-type:token-exchange",
+            ),
+            ("subject_token", session.token.expose_secret()),
+            (
+                "subject_token_type",
+                "urn:nostr:params:oauth:token-type:nip-fa-session",
+            ),
+            ("requested_token_type", AGENT_GRANT_TYPE),
+            ("agent_pubkey", &agent_pubkey),
+            ("owner_attestation", owner_attestation),
+        ]);
+        let url = self.endpoint("v1/nip-fi/agent-grant")?;
+        let proof = agent
+            .nip98_header("POST", url.as_str(), Some(&body))
+            .await
+            .map_err(|error| AdapterError::Other(error.to_string()))?;
+        let response = self
+            .client
+            .post(url)
+            .header("Nostr-Authorization", proof)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| AdapterError::Denied(network(&error)))?;
+        let parsed: GrantResponse = success_json(response).await?;
+        if parsed.issued_token_type != AGENT_GRANT_TYPE
+            || parsed.token_type != "N_A"
+            || parsed.nostr_owner_pubkey != owner
+            || parsed.access_token.is_empty()
+            || parsed.nip_fi_issuer.is_empty()
+        {
+            return Err(AdapterError::Denied(Denial::Refused(
+                RefusalReason::InvalidResponse,
+            )));
+        }
+        Ok(AgentGrant {
+            token: SecretString::from(parsed.access_token),
+            owner: parsed.nostr_owner_pubkey,
+            issuer: parsed.nip_fi_issuer,
+        })
+    }
+
+    /// `POST /v1/nip-fi/agent-assertion` with the grant, proven by the agent.
+    pub async fn agent_assertion(
+        &self,
+        grant: &AgentGrant,
+        relay: &Url,
+        agent: &SignerHandle,
+    ) -> AdapterResult<Assertion> {
+        let pubkey = agent.public_key().to_hex();
+        let canonical =
+            canonical_relay_url(relay).map_err(|error| AdapterError::Other(error.to_string()))?;
+        let body = serde_json::to_vec(&json!({"relay_url": canonical, "nostr_pubkey": pubkey}))
+            .map_err(|error| AdapterError::Other(error.to_string()))?;
+        let url = self.endpoint("v1/nip-fi/agent-assertion")?;
+        let proof = agent
+            .nip98_header("POST", url.as_str(), Some(&body))
+            .await
+            .map_err(|error| AdapterError::Other(error.to_string()))?;
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(grant.token.expose_secret())
+            .header("Nostr-Authorization", proof)
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| AdapterError::Denied(network(&error)))?;
+        let parsed: AssertionResponse = success_json(response).await?;
+        let claims = jws_claims(&parsed.assertion).unwrap_or(Value::Null);
+        if parsed.nostr_pubkey != pubkey
+            || parsed.assertion.is_empty()
+            || claims["nostr_owner_pubkey"].as_str() != Some(grant.owner.as_str())
+            || claims["iss"].as_str() != Some(grant.issuer.as_str())
+        {
+            return Err(AdapterError::Denied(Denial::Refused(
+                RefusalReason::InvalidResponse,
+            )));
+        }
+        Ok(Assertion {
+            jws: SecretString::from(parsed.assertion),
+            expires_at: parsed.expires_at,
+        })
+    }
+
+    /// `POST /v1/nip-fi/agent-revoke` with the owner's session (idempotent).
+    pub async fn agent_revoke(&self, session: &Session, agent_pubkey: &str) -> AdapterResult<()> {
+        let response = self
+            .client
+            .post(self.endpoint("v1/nip-fi/agent-revoke")?)
+            .bearer_auth(session.token.expose_secret())
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(form(&[("agent_pubkey", agent_pubkey)]))
+            .send()
+            .await
+            .map_err(|error| AdapterError::Denied(network(&error)))?;
+        let parsed: Value = success_json(response).await?;
+        if parsed["revoked"] == Value::Bool(true) {
+            Ok(())
+        } else {
+            Err(AdapterError::Denied(Denial::Refused(
+                RefusalReason::InvalidResponse,
+            )))
+        }
+    }
+}
+
+/// NIP-FA evidence for a hosted agent: its grant plus an assertion cache.
+/// On 401 `invalid_grant` the grant is discarded for good.
+pub struct AgentEvidence {
+    adapter: AdapterClient,
+    grant: Mutex<Option<AgentGrant>>,
+    signer: SignerHandle,
+    clock: crate::clock::SharedClock,
+    cache: Mutex<HashMap<String, Assertion>>,
+}
+
+impl AgentEvidence {
+    pub fn new(
+        adapter: AdapterClient,
+        grant: AgentGrant,
+        signer: SignerHandle,
+        clock: crate::clock::SharedClock,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            adapter,
+            grant: Mutex::new(Some(grant)),
+            signer,
+            clock,
+            cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    pub fn has_grant(&self) -> bool {
+        self.grant.lock().expect("grant lock").is_some()
+    }
+}
+
+#[async_trait::async_trait]
+impl EvidenceSource for AgentEvidence {
+    async fn evidence(&self, relay: &Url) -> Result<Option<String>> {
+        let key = canonical_relay_url(relay)?;
+        if let Some(cached) = self.cache.lock().expect("cache lock").get(&key)
+            && !cached.needs_remint(self.clock.as_ref())
+        {
+            return Ok(Some(cached.header_value()));
+        }
+        let grant = self
+            .grant
+            .lock()
+            .expect("grant lock")
+            .clone()
+            .ok_or_else(|| Error::Auth(Denial::GrantEnded.to_string()))?;
+        match self
+            .adapter
+            .agent_assertion(&grant, relay, &self.signer)
+            .await
+        {
+            Ok(assertion) => {
+                let header = assertion.header_value();
+                self.cache
+                    .lock()
+                    .expect("cache lock")
+                    .insert(key, assertion);
+                Ok(Some(header))
+            }
+            Err(AdapterError::Denied(Denial::GrantEnded)) => {
+                *self.grant.lock().expect("grant lock") = None;
+                self.cache.lock().expect("cache lock").clear();
+                Err(AdapterError::Denied(Denial::GrantEnded).into())
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn invalidate(&self, relay: &Url) {
+        if let Ok(key) = canonical_relay_url(relay) {
+            self.cache.lock().expect("cache lock").remove(&key);
+        }
     }
 }
 
@@ -859,6 +1123,72 @@ impl RelayDenial {
             Self::KeyRefused => "the relay refused this key for federated identity",
         }
     }
+}
+
+/// Loads the owner's stored adapter session, if any.
+async fn owner_session(
+    client: &AdapterClient,
+    data_dir: &std::path::Path,
+    owner_identity: uuid::Uuid,
+    owner: &SignerHandle,
+) -> Option<Session> {
+    SessionStore::new(data_dir)
+        .load(
+            owner_identity,
+            &client.origin(),
+            owner,
+            &crate::clock::SystemClock,
+        )
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Enrolls a hosted agent under the owner's adapter session and returns its
+/// evidence source. `Ok(None)` when the owner has no session (`:signin`).
+pub async fn agent_evidence(
+    adapter: &Url,
+    data_dir: &std::path::Path,
+    owner_identity: uuid::Uuid,
+    owner: &SignerHandle,
+    agent: &SignerHandle,
+    owner_attestation: &str,
+) -> Result<Option<Arc<AgentEvidence>>> {
+    let client = AdapterClient::new(adapter.clone())?;
+    let Some(session) = owner_session(&client, data_dir, owner_identity, owner).await else {
+        return Ok(None);
+    };
+    let grant = client
+        .agent_grant(
+            &session,
+            agent,
+            owner_attestation,
+            &owner.public_key().to_hex(),
+        )
+        .await?;
+    Ok(Some(AgentEvidence::new(
+        client,
+        grant,
+        agent.clone(),
+        crate::clock::system(),
+    )))
+}
+
+/// Revokes a hosted agent's grants on agent deletion (idempotent).
+pub async fn revoke_agent(
+    adapter: &Url,
+    data_dir: &std::path::Path,
+    owner_identity: uuid::Uuid,
+    owner: &SignerHandle,
+    agent_pubkey: &str,
+) -> Result<()> {
+    let client = AdapterClient::new(adapter.clone())?;
+    let Some(session) = owner_session(&client, data_dir, owner_identity, owner).await else {
+        return Err(Error::Auth(
+            "sign in to the identity adapter (:signin) to revoke the agent".into(),
+        ));
+    };
+    Ok(client.agent_revoke(&session, agent_pubkey).await?)
 }
 
 #[cfg(test)]

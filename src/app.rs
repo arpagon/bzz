@@ -3566,9 +3566,39 @@ impl App {
                 let signer =
                     crate::broker::custody::unlock(&keys_dir, &runtime.signer, agent).await?;
                 let auth_tag = crate::broker::relay::auth_tag(&agent.auth_tag)?;
-                let http = HttpClient::new(endpoint.http_base.clone(), signer.clone())?;
-                let supervisor =
-                    SupervisorHandle::spawn(endpoint.websocket.clone(), signer.clone());
+                // NIP-FI communities: the agent proves itself with its own
+                // owner-authorized grant, never with the owner's session.
+                let evidence = crate::auth::federated::EvidenceSlot::default();
+                if runtime.evidence.is_set()
+                    && let Some(adapter) = &runtime.identity_adapter
+                {
+                    match crate::auth::federated::agent_evidence(
+                        adapter,
+                        &runtime.data_dir,
+                        runtime.identity_id,
+                        &runtime.signer,
+                        &signer,
+                        &agent.auth_tag,
+                    )
+                    .await?
+                    {
+                        Some(source) => evidence.set(source),
+                        None => {
+                            return Err(Error::Auth(
+                                "sign in (:signin) to enroll agents with the identity adapter"
+                                    .into(),
+                            ));
+                        }
+                    }
+                }
+                let http = HttpClient::new(endpoint.http_base.clone(), signer.clone())?
+                    .with_evidence(evidence.clone());
+                let supervisor = SupervisorHandle::spawn_with_evidence(
+                    endpoint.websocket.clone(),
+                    signer.clone(),
+                    self.diagnostics.clone(),
+                    evidence,
+                );
                 Ok::<_, Error>(crate::broker::relay::AgentRuntime {
                     signer,
                     http,

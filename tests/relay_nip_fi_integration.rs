@@ -351,3 +351,74 @@ async fn fi_startup_installs_evidence_only_from_a_stored_session() {
     assert!(!unset.is_set());
     signer.lock().await;
 }
+
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh --nip-fi"]
+async fn fi_relay_admits_a_hosted_agent_only_with_its_owner_grant() {
+    use bzz::auth::federated::{AgentEvidence, EvidenceSource as _};
+    let owner_keys = Keys::generate();
+    seed_member(&owner_keys.public_key().to_hex());
+    let owner = SignerHandle::spawn(owner_keys.clone());
+    let adapter = AdapterClient::new(url::Url::parse(ADAPTER).unwrap()).unwrap();
+    let pending = adapter.begin_login().await.unwrap();
+    let login = pending.url.clone();
+    let browser = tokio::spawn(async move { FakeAdapter::browse(&login).await });
+    let session = adapter
+        .complete_login(pending, Duration::from_secs(10))
+        .await
+        .unwrap();
+    browser.await.unwrap();
+    let relay = url::Url::parse(RELAY_WS).unwrap();
+    adapter.assertion(&session, &relay, &owner).await.unwrap();
+
+    // The agent key is not itself a relay member: only its owner is.
+    let agent_keys = Keys::generate();
+    let agent = SignerHandle::spawn(agent_keys.clone());
+    let denied = session::connect(relay.clone(), agent.clone())
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        matches!(&denied, Error::Auth(message) if message == RelayDenial::EvidenceRequired.notice()),
+        "{denied:?}"
+    );
+    let tag = owner
+        .owner_auth_tag(agent_keys.public_key(), "")
+        .await
+        .unwrap();
+    let grant = adapter
+        .agent_grant(&session, &agent, &tag, &owner_keys.public_key().to_hex())
+        .await
+        .unwrap();
+    let evidence = AgentEvidence::new(
+        AdapterClient::new(url::Url::parse(ADAPTER).unwrap()).unwrap(),
+        grant,
+        agent.clone(),
+        clock::system(),
+    );
+    let header = evidence.evidence(&relay).await.unwrap();
+    let (handle, mut events) = session::connect_with_evidence(
+        relay.clone(),
+        agent.clone(),
+        DiagnosticHandle::disabled(),
+        header,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(events.recv().await, Some(SessionEvent::Authenticated)),
+        "the owner-authorized agent assertion admits the agent"
+    );
+    handle.shutdown().await;
+
+    // Deleting the agent revokes it: no further assertion is minted.
+    adapter
+        .agent_revoke(&session, &agent_keys.public_key().to_hex())
+        .await
+        .unwrap();
+    evidence.invalidate(&relay);
+    assert!(evidence.evidence(&relay).await.is_err());
+    assert!(!evidence.has_grant());
+    owner.lock().await;
+    agent.lock().await;
+}

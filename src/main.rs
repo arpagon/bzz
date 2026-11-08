@@ -862,6 +862,35 @@ async fn broker_command(command: BrokerCommand, paths: &Paths, config: &mut Conf
             if !yes && !confirm(&format!("Delete agent {label} and its key?"))? {
                 return Err(Error::Config("agent deletion cancelled".into()));
             }
+            // NIP-FI communities: revoke the agent's grants with the adapter.
+            let agent = config.hosted_agents[index].clone();
+            if let Some(adapter) = config
+                .communities
+                .iter()
+                .find(|community| community.id == agent.community)
+                .and_then(|community| community.identity_adapter.clone())
+            {
+                let adapter = url::Url::parse(&adapter)
+                    .map_err(|_| Error::Config("identity_adapter is not a URL".into()))?;
+                let identity = find_identity(config, agent.owner_identity)?.clone();
+                let passphrase =
+                    identity_passphrase(&identity, "Owner identity passphrase: ", false)?;
+                let owner = IdentityManager::new(paths).signer(&identity, passphrase.as_ref())?;
+                let revoked = bzz::auth::federated::revoke_agent(
+                    &adapter,
+                    &paths.data_dir,
+                    identity.id,
+                    &owner,
+                    &agent.pubkey,
+                )
+                .await;
+                owner.lock().await;
+                if let Err(error) = revoked {
+                    return Err(Error::Auth(format!(
+                        "agent {label} kept: revoking it with the identity adapter failed: {error}"
+                    )));
+                }
+            }
             let agent = config.hosted_agents.remove(index);
             config.save(paths)?;
             custody::delete(&paths.keys_dir(), &agent)?;

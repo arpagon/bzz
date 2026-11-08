@@ -121,7 +121,10 @@ async fn assertion_is_bound_to_key_and_canonical_relay_then_cached_and_reminted(
     // Cached while fresh, re-minted inside the margin.
     assert_eq!(evidence.evidence(&relay).await.unwrap().unwrap(), first);
     assert_eq!(adapter.issued().len(), 1);
-    clock.advance(120 - bzz::auth::federated::REMINT_MARGIN_SECONDS);
+    // The adapter stamps `exp` from the real clock; allow a few seconds of
+    // real time between creating the manual clock and minting (still well
+    // before expiry), so a loaded machine does not miss the boundary.
+    clock.advance(120 - bzz::auth::federated::REMINT_MARGIN_SECONDS + 5);
     evidence.evidence(&relay).await.unwrap();
     assert_eq!(adapter.issued().len(), 2, "re-mint before expiry");
     signer.lock().await;
@@ -232,4 +235,99 @@ async fn session_store_round_trips_encrypted_and_scoped_to_origin() {
     );
     signer.lock().await;
     other_signer.lock().await;
+}
+
+#[tokio::test]
+async fn agent_grant_mints_owner_bound_agent_assertions_and_revocation_discards_it() {
+    use bzz::auth::federated::{AgentEvidence, EvidenceSource as _};
+    let adapter = FakeAdapter::start(Config::default()).await;
+    let session = sign_in(&adapter).await;
+    let owner_keys = Keys::generate();
+    let owner = SignerHandle::spawn(owner_keys.clone());
+    let client = AdapterClient::new(adapter.base()).unwrap();
+    // The owner's own assertion binds the session to the owner key.
+    let relay = url::Url::parse("wss://community.example").unwrap();
+    client.assertion(&session, &relay, &owner).await.unwrap();
+
+    let agent_keys = Keys::generate();
+    let agent = SignerHandle::spawn(agent_keys.clone());
+    let tag = owner
+        .owner_auth_tag(agent_keys.public_key(), "")
+        .await
+        .unwrap();
+    let owner_hex = owner_keys.public_key().to_hex();
+    let grant = client
+        .agent_grant(&session, &agent, &tag, &owner_hex)
+        .await
+        .unwrap();
+    assert!(
+        !format!("{grant:?}").contains("grant-"),
+        "the grant never prints"
+    );
+    let request = adapter
+        .requests()
+        .into_iter()
+        .find(|request| request.path == "/v1/nip-fi/agent-grant")
+        .unwrap();
+    assert!(
+        request.header("authorization").is_none(),
+        "session only as subject_token"
+    );
+
+    let clock = ManualClock::new(clock::SystemClock.now_unix());
+    let evidence = AgentEvidence::new(
+        AdapterClient::new(adapter.base()).unwrap(),
+        grant,
+        agent.clone(),
+        clock.clone(),
+    );
+    let header = evidence.evidence(&relay).await.unwrap().unwrap();
+    assert!(header.starts_with("Bearer ey"));
+    let claims = adapter.issued().last().cloned().unwrap();
+    assert_eq!(claims["nostr_pubkey"], agent_keys.public_key().to_hex());
+    assert_eq!(claims["nostr_owner_pubkey"], owner_hex);
+
+    // An attestation from a different owner is refused for this session.
+    let stranger = SignerHandle::spawn(Keys::generate());
+    let other = Keys::generate();
+    let foreign = stranger
+        .owner_auth_tag(other.public_key(), "")
+        .await
+        .unwrap();
+    let refused = client
+        .agent_grant(&session, &SignerHandle::spawn(other), &foreign, &owner_hex)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        refused,
+        AdapterError::Denied(Denial::Refused(RefusalReason::InvalidGrant))
+    ));
+
+    // Revocation is idempotent and ends the grant: the next mint discards it.
+    let agent_hex = agent_keys.public_key().to_hex();
+    client.agent_revoke(&session, &agent_hex).await.unwrap();
+    client.agent_revoke(&session, &agent_hex).await.unwrap();
+    evidence.invalidate(&relay);
+    assert!(evidence.evidence(&relay).await.is_err());
+    assert!(!evidence.has_grant(), "invalid_grant discards the grant");
+    let unknown = client
+        .agent_revoke(&session, &Keys::generate().public_key().to_hex())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        unknown,
+        AdapterError::Denied(Denial::Refused(RefusalReason::AgentNotFound))
+    ));
+    // A revoked agent cannot enroll again.
+    let again = client
+        .agent_grant(&session, &agent, &tag, &owner_hex)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        again,
+        AdapterError::Denied(Denial::Refused(RefusalReason::InvalidGrant))
+    ));
+    for signer in [owner, agent, stranger] {
+        signer.lock().await;
+    }
 }
