@@ -63,6 +63,9 @@ pub struct TelemetryConfig {
 pub enum KeyBackend {
     Keychain,
     EncryptedFile,
+    /// The key lives in a running Buzz Desktop (local credential provider);
+    /// `key_ref` names the keychain entry holding the paired token.
+    BuzzDesktop,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -21,7 +21,7 @@ fn fresh_database_has_expected_pragmas_and_schema() {
     let foreign_keys: u32 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
     assert_eq!(
         foreign_keys, 1,
         "foreign-key enforcement must remain enabled"
@@ -175,7 +175,7 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
     let version: u32 = upgraded
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
     let inbox_projection_table: u32 = upgraded
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='inbox_conversations'",
@@ -278,7 +278,7 @@ fn schema_eight_repairs_historical_bot_roles_and_duplicate_projection_drift() {
         .unwrap();
     connection
         .execute_batch(
-            "DELETE FROM schema_migrations WHERE version IN (8,9,10);
+            "DELETE FROM schema_migrations WHERE version IN (8,9,10,11);
              DROP TABLE viewer_memberships;
              ALTER TABLE channels DROP COLUMN facts_json;",
         )
@@ -448,7 +448,7 @@ fn schema_nine_projects_guest_roles_and_repairs_channel_facts_on_reingest() {
             "UPDATE memberships SET role='member' WHERE channel_id='{channel_id}';
              ALTER TABLE channels DROP COLUMN facts_json;
              DROP TABLE viewer_memberships;
-             DELETE FROM schema_migrations WHERE version IN (9,10);"
+             DELETE FROM schema_migrations WHERE version IN (9,10,11);"
         ))
         .unwrap();
     connection.pragma_update(None, "user_version", 8).unwrap();
@@ -483,4 +483,50 @@ fn schema_nine_projects_guest_roles_and_repairs_channel_facts_on_reingest() {
         .unwrap();
     assert_eq!(channel.facts.labels, vec!["releases"]);
     assert_eq!(channel.facts.join_role, bzz::domain::JoinRole::Guest);
+}
+
+#[test]
+fn schema_eleven_accepts_buzz_desktop_identities_with_their_communities() {
+    let temporary = TempDir::new().unwrap();
+    let path = temporary.path().join("bzz.db");
+    let identity_id = Uuid::new_v4();
+    let community_id = Uuid::new_v4();
+    let config = Config {
+        identities: vec![IdentityConfig {
+            id: identity_id,
+            label: "desktop".into(),
+            pubkey: "d".repeat(64),
+            backend: KeyBackend::BuzzDesktop,
+            key_ref: bzz::auth::desktop_reference("dev.test.buzz"),
+        }],
+        communities: vec![bzz::config::CommunityConfig {
+            id: community_id,
+            label: "desktop".into(),
+            relay_url: "wss://desktop.example".into(),
+            identity_id,
+            allow_insecure_localhost: false,
+            theme: None,
+            identity_adapter: None,
+        }],
+        ..Config::default()
+    };
+    let mut store = Store::open(&path).unwrap();
+    store.sync_config(&config).unwrap();
+    drop(store);
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let (backend, community): (String, String) = connection
+        .query_row(
+            "SELECT i.key_backend,c.id FROM identities i JOIN communities c ON c.identity_id=i.id",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(backend, "buzz-desktop");
+    assert_eq!(community, community_id.to_string());
+    let violations: i64 = connection
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(violations, 0);
 }

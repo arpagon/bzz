@@ -629,7 +629,8 @@ impl SessionStore {
 #[async_trait::async_trait]
 pub trait EvidenceSource: Send + Sync {
     /// A current assertion header value (`Bearer <jws>`), minting if needed.
-    async fn evidence(&self, relay: &Url) -> Result<String>;
+    /// `Ok(None)`: this source has no evidence for the relay; send none.
+    async fn evidence(&self, relay: &Url) -> Result<Option<String>>;
     /// Drop the cached assertion so the next call mints a fresh one.
     fn invalidate(&self, relay: &Url);
 }
@@ -667,12 +668,12 @@ impl AdapterEvidence {
 
 #[async_trait::async_trait]
 impl EvidenceSource for AdapterEvidence {
-    async fn evidence(&self, relay: &Url) -> Result<String> {
+    async fn evidence(&self, relay: &Url) -> Result<Option<String>> {
         let key = canonical_relay_url(relay)?;
         if let Some(cached) = self.cache.lock().expect("cache lock").get(&key)
             && !cached.needs_remint(self.clock.as_ref())
         {
-            return Ok(cached.header_value());
+            return Ok(Some(cached.header_value()));
         }
         let session = self
             .session
@@ -687,7 +688,7 @@ impl EvidenceSource for AdapterEvidence {
                     .lock()
                     .expect("cache lock")
                     .insert(key, assertion);
-                Ok(header)
+                Ok(Some(header))
             }
             Err(AdapterError::Denied(Denial::SessionEnded)) => {
                 *self.session.lock().expect("session lock") = None;
@@ -727,7 +728,7 @@ impl EvidenceSlot {
     pub async fn header(&self, relay: &Url) -> Result<Option<String>> {
         let source = self.0.read().expect("evidence lock").clone();
         match source {
-            Some(source) => source.evidence(relay).await.map(Some),
+            Some(source) => source.evidence(relay).await,
             None => Ok(None),
         }
     }

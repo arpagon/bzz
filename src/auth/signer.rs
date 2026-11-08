@@ -107,6 +107,28 @@ impl SignerHandle {
         Self { public_key, sender }
     }
 
+    /// A signer whose key lives in Buzz Desktop. `pubkey` is the configured
+    /// identity; every returned signature is checked against it. Requests run
+    /// concurrently so an approval held for a sensitive kind cannot block
+    /// relay AUTH.
+    pub fn spawn_remote(
+        client: std::sync::Arc<crate::auth::provider::ProviderClient>,
+        public_key: PublicKey,
+    ) -> Self {
+        let (sender, mut receiver) = mpsc::channel(QUEUE);
+        tokio::spawn(async move {
+            while let Some(command) = receiver.recv().await {
+                if let Command::Lock(response) = command {
+                    let _ = response.send(());
+                    break;
+                }
+                let client = client.clone();
+                tokio::spawn(async move { remote_command(&client, public_key, command).await });
+            }
+        });
+        Self { public_key, sender }
+    }
+
     pub const fn public_key(&self) -> PublicKey {
         self.public_key
     }
@@ -197,7 +219,7 @@ impl SignerHandle {
     }
 }
 
-fn sign_nip98(keys: &Keys, method: &str, url: &str, body: Option<&[u8]>) -> Result<String> {
+fn nip98_builder(method: &str, url: &str, body: Option<&[u8]>) -> Result<EventBuilder> {
     let mut tags = vec![
         Tag::parse(["u", url]).map_err(|error| Error::Protocol(error.to_string()))?,
         Tag::parse(["method", method]).map_err(|error| Error::Protocol(error.to_string()))?,
@@ -210,9 +232,110 @@ fn sign_nip98(keys: &Keys, method: &str, url: &str, body: Option<&[u8]>) -> Resu
             Tag::parse(["payload", &digest]).map_err(|error| Error::Protocol(error.to_string()))?,
         );
     }
-    let event = EventBuilder::new(nostr::Kind::Custom(27_235), "")
-        .tags(tags)
+    Ok(EventBuilder::new(nostr::Kind::Custom(27_235), "").tags(tags))
+}
+
+fn sign_nip98(keys: &Keys, method: &str, url: &str, body: Option<&[u8]>) -> Result<String> {
+    let event = nip98_builder(method, url, body)?
         .sign_with_keys(keys)
         .map_err(|error| Error::Auth(format!("NIP-98 signing failed: {error}")))?;
     Ok(format!("Nostr {}", STANDARD.encode(event.as_json())))
+}
+
+/// Send a complete unsigned event to Buzz Desktop and accept the result only
+/// if it is a valid signature by `pubkey` over exactly what was sent.
+async fn remote_sign(
+    client: &crate::auth::provider::ProviderClient,
+    pubkey: PublicKey,
+    builder: EventBuilder,
+) -> Result<Event> {
+    let unsigned = builder.build(pubkey);
+    let request = serde_json::json!({
+        "pubkey": pubkey.to_hex(),
+        "created_at": unsigned.created_at.as_secs(),
+        "kind": unsigned.kind.as_u16(),
+        "tags": unsigned.tags,
+        "content": unsigned.content,
+    });
+    let signed = client
+        .call("sign_event", &[request.to_string()])
+        .await
+        .map_err(Error::from)?;
+    let event = Event::from_json(signed)
+        .map_err(|_| Error::Auth("Buzz Desktop returned a malformed event".into()))?;
+    event
+        .verify()
+        .map_err(|_| Error::Auth("Buzz Desktop returned an invalid signature".into()))?;
+    if event.pubkey != pubkey
+        || event.kind != unsigned.kind
+        || event.created_at != unsigned.created_at
+        || event.content != unsigned.content
+        || event.tags != unsigned.tags
+    {
+        return Err(Error::Auth(
+            "Buzz Desktop signed a different event than requested".into(),
+        ));
+    }
+    Ok(event)
+}
+
+async fn remote_command(
+    client: &crate::auth::provider::ProviderClient,
+    pubkey: PublicKey,
+    command: Command,
+) {
+    match command {
+        Command::Sign(builder, response) => {
+            let _ = response.send(remote_sign(client, pubkey, builder).await);
+        }
+        Command::Auth {
+            challenge,
+            relay,
+            response,
+        } => {
+            let _ = response
+                .send(remote_sign(client, pubkey, EventBuilder::auth(challenge, relay)).await);
+        }
+        Command::Nip98 {
+            method,
+            url,
+            body,
+            response,
+        } => {
+            let result = async {
+                let event = remote_sign(
+                    client,
+                    pubkey,
+                    nip98_builder(&method, &url, body.as_deref())?,
+                )
+                .await?;
+                Ok(format!("Nostr {}", STANDARD.encode(event.as_json())))
+            }
+            .await;
+            let _ = response.send(result);
+        }
+        Command::EncryptSelf {
+            plaintext,
+            response,
+        } => {
+            let result = client
+                .call("nip44_encrypt", &[pubkey.to_hex(), plaintext])
+                .await
+                .map_err(Error::from);
+            let _ = response.send(result);
+        }
+        Command::DecryptSelf {
+            ciphertext,
+            response,
+        } => {
+            let result = client
+                .call("nip44_decrypt", &[pubkey.to_hex(), ciphertext])
+                .await
+                .map_err(|_| Error::Auth("read-state decryption failed".into()));
+            let _ = response.send(result);
+        }
+        Command::Lock(response) => {
+            let _ = response.send(());
+        }
+    }
 }

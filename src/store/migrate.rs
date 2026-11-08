@@ -31,6 +31,10 @@ const MIGRATIONS: &[(u32, &str)] = &[
         10,
         include_str!("../../migrations/0010_viewer_memberships.sql"),
     ),
+    (
+        11,
+        include_str!("../../migrations/0011_buzz_desktop_identities.sql"),
+    ),
 ];
 
 pub fn configure(connection: &Connection) -> Result<()> {

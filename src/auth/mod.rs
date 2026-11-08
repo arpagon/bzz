@@ -2,6 +2,7 @@ pub mod backup;
 pub mod encrypted_file;
 pub mod federated;
 pub mod keychain;
+pub mod provider;
 pub mod signer;
 
 use std::{fs, io::Read as _, path::PathBuf};
@@ -87,12 +88,38 @@ impl<'a> IdentityManager<'a> {
         self.persist_secret(identity.backend, &identity.key_ref, &keys, passphrase)
     }
 
+    /// A signer for `identity`, whatever its backend. Buzz Desktop identities
+    /// hold no key here; the signer forwards to the provider.
+    pub fn signer(
+        &self,
+        identity: &IdentityConfig,
+        passphrase: Option<&SecretString>,
+    ) -> Result<signer::SignerHandle> {
+        if identity.backend == KeyBackend::BuzzDesktop {
+            let client = desktop_client(identity)?;
+            let pubkey = nostr::PublicKey::from_hex(&identity.pubkey)
+                .map_err(|_| Error::IdentityCorrupt("configured pubkey is invalid".into()))?;
+            return Ok(signer::SignerHandle::spawn_remote(
+                std::sync::Arc::new(client),
+                pubkey,
+            ));
+        }
+        Ok(signer::SignerHandle::spawn(
+            self.unlock(identity, passphrase)?,
+        ))
+    }
+
     pub fn unlock(
         &self,
         identity: &IdentityConfig,
         passphrase: Option<&SecretString>,
     ) -> Result<Keys> {
         let mut secret = match identity.backend {
+            KeyBackend::BuzzDesktop => {
+                return Err(Error::Unsupported(
+                    "a Buzz Desktop identity has no local key".into(),
+                ));
+            }
             KeyBackend::Keychain => Zeroizing::new(keychain::load(&identity.key_ref)?),
             KeyBackend::EncryptedFile => {
                 let passphrase = passphrase
@@ -124,7 +151,7 @@ impl<'a> IdentityManager<'a> {
 
     pub fn delete(&self, identity: &IdentityConfig) -> Result<()> {
         match identity.backend {
-            KeyBackend::Keychain => keychain::delete(&identity.key_ref),
+            KeyBackend::Keychain | KeyBackend::BuzzDesktop => keychain::delete(&identity.key_ref),
             KeyBackend::EncryptedFile => {
                 let path = self.key_path(&identity.key_ref);
                 if path.exists() {
@@ -174,6 +201,9 @@ impl<'a> IdentityManager<'a> {
     ) -> Result<()> {
         let mut secret = Zeroizing::new(keys.secret_key().to_secret_hex());
         let result = match backend {
+            KeyBackend::BuzzDesktop => Err(Error::Unsupported(
+                "a Buzz Desktop identity has no local key to store".into(),
+            )),
             KeyBackend::Keychain => keychain::store(reference, &secret),
             KeyBackend::EncryptedFile => {
                 let passphrase = passphrase.ok_or_else(|| {
@@ -232,4 +262,31 @@ fn inherited_fd_path(fd: u32) -> PathBuf {
 #[cfg(not(unix))]
 fn inherited_fd_path(fd: u32) -> PathBuf {
     PathBuf::from(format!(r"\\.\pipe\bzz-passphrase-{fd}"))
+}
+
+/// Keychain reference for a paired Buzz Desktop token.
+pub fn desktop_reference(instance: &str) -> String {
+    format!("desktop:{instance}")
+}
+
+/// The provider client for a Buzz Desktop identity: the inherited token when
+/// one is set (never falling through to a paired token), else the paired
+/// token from the keychain with the instance's current advertisement.
+pub fn desktop_client(identity: &IdentityConfig) -> Result<provider::ProviderClient> {
+    if let Some(inherited) = provider::ProviderClient::inherited()? {
+        return Ok(inherited);
+    }
+    let instance = identity
+        .key_ref
+        .strip_prefix("desktop:")
+        .ok_or_else(|| Error::IdentityCorrupt("Buzz Desktop key reference is invalid".into()))?;
+    let token = keychain::load(&identity.key_ref)?;
+    let directory = provider::advertisement_dir()
+        .ok_or_else(|| Error::Locked("home directory is unavailable".into()))?;
+    let url = provider::advertised(&directory, instance)
+        .ok_or_else(|| Error::Locked("Buzz Desktop is not running; start it and retry".into()))?;
+    provider::ProviderClient::new(
+        provider::Endpoint::Advertised(url),
+        Some(SecretString::from(token)),
+    )
 }

@@ -94,7 +94,7 @@ async fn assertion_is_bound_to_key_and_canonical_relay_then_cached_and_reminted(
         clock.clone(),
     );
     let relay = url::Url::parse("wss://Community.Example:8443/ignored/path").unwrap();
-    let first = evidence.evidence(&relay).await.unwrap();
+    let first = evidence.evidence(&relay).await.unwrap().unwrap();
     assert!(first.starts_with("Bearer ey"));
     let claims = &adapter.issued()[0];
     assert_eq!(claims["nostr_pubkey"], keys.public_key().to_hex());
@@ -119,7 +119,7 @@ async fn assertion_is_bound_to_key_and_canonical_relay_then_cached_and_reminted(
     );
 
     // Cached while fresh, re-minted inside the margin.
-    assert_eq!(evidence.evidence(&relay).await.unwrap(), first);
+    assert_eq!(evidence.evidence(&relay).await.unwrap().unwrap(), first);
     assert_eq!(adapter.issued().len(), 1);
     clock.advance(120 - bzz::auth::federated::REMINT_MARGIN_SECONDS);
     evidence.evidence(&relay).await.unwrap();

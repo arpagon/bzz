@@ -127,12 +127,18 @@ impl Runtime {
             let passphrase = matches!(identity.backend, KeyBackend::EncryptedFile)
                 .then(|| read_passphrase("Identity passphrase: ", false))
                 .transpose()?;
-            let keys = IdentityManager::new(paths).unlock(identity, passphrase.as_ref())?;
-            SignerHandle::spawn(keys)
+            IdentityManager::new(paths).signer(identity, passphrase.as_ref())?
         };
         let endpoint =
             validate_relay_url(&community.relay_url, community.allow_insecure_localhost)?;
         let evidence = crate::auth::federated::EvidenceSlot::default();
+        if identity.backend == KeyBackend::BuzzDesktop {
+            // Buzz Desktop owns the enterprise login; it supplies evidence.
+            evidence.set(crate::auth::provider::ProviderEvidence::new(
+                std::sync::Arc::new(crate::auth::desktop_client(identity)?),
+                crate::clock::system(),
+            ));
+        }
         let identity_adapter = community
             .identity_adapter
             .as_deref()

@@ -157,6 +157,18 @@ enum IdentityCommand {
     Verify { id: Uuid },
     /// List public identity metadata.
     List,
+    /// Pair with a running Buzz Desktop; the key stays in the desktop
+    /// (local credential provider). Approve the request in Buzz.
+    PairDesktop {
+        #[arg(long)]
+        label: String,
+        /// The community relay URL this identity will be used with.
+        #[arg(long)]
+        relay: String,
+        /// Desktop instance, when more than one is running.
+        #[arg(long)]
+        instance: Option<String>,
+    },
     /// Delete an identity only when no community uses it.
     Remove {
         id: Uuid,
@@ -349,6 +361,19 @@ async fn run() -> Result<()> {
     paths.ensure()?;
     let mut config = Config::load(&paths)?;
     match cli.command {
+        Some(Command::Identity {
+            command:
+                IdentityCommand::PairDesktop {
+                    label,
+                    relay,
+                    instance,
+                },
+        }) => pair_desktop(&paths, &mut config, label, relay, instance).await,
+        Some(Command::Identity {
+            command: IdentityCommand::Verify { id },
+        }) if find_identity(&config, id)?.backend == KeyBackend::BuzzDesktop => {
+            verify_desktop(find_identity(&config, id)?).await
+        }
         Some(Command::Identity { command }) => identity_command(command, &paths, &mut config),
         Some(Command::Community { command }) => {
             community_command(command, &paths, &mut config).await
@@ -517,6 +542,7 @@ fn identity_command(command: IdentityCommand, paths: &Paths, config: &mut Config
             );
             Ok(())
         }
+        IdentityCommand::PairDesktop { .. } => unreachable!("handled before dispatch"),
         IdentityCommand::List => {
             for identity in &config.identities {
                 println!(
@@ -1405,6 +1431,98 @@ fn find_identity(config: &Config, id: Uuid) -> Result<&bzz::config::IdentityConf
         .iter()
         .find(|identity| identity.id == id)
         .ok_or_else(|| Error::Config(format!("identity {id} does not exist")))
+}
+
+async fn pair_desktop(
+    paths: &Paths,
+    config: &mut Config,
+    label: String,
+    relay: String,
+    instance: Option<String>,
+) -> Result<()> {
+    use bzz::auth::provider;
+    if !provider::supported_platform() {
+        return Err(Error::Unsupported(
+            "Buzz Desktop pairing has no Windows transport in provider version 1".into(),
+        ));
+    }
+    let directory = provider::advertisement_dir()
+        .ok_or_else(|| Error::Config("home directory is unavailable".into()))?;
+    let advertised = provider::advertisements(&directory);
+    let (instance, url) = match instance {
+        Some(wanted) => advertised
+            .into_iter()
+            .find(|(name, _)| *name == wanted)
+            .ok_or_else(|| {
+                Error::Config(format!("Buzz Desktop instance {wanted} is not running"))
+            })?,
+        None => match advertised.len() {
+            0 => return Err(Error::Config("no running Buzz Desktop was found".into())),
+            1 => advertised.into_iter().next().expect("one advertisement"),
+            _ => {
+                return Err(Error::Config(
+                    "several Buzz Desktop instances are running; pass --instance".into(),
+                ));
+            }
+        },
+    };
+    eprintln!("Approve the pairing request in Buzz Desktop ({instance})...");
+    let client = provider::ProviderClient::new(provider::Endpoint::Advertised(url), None)?;
+    let pairing = client.pair("bzz", &relay).await.map_err(Error::from)?;
+    if pairing.instance != instance {
+        return Err(Error::Auth(
+            "Buzz Desktop answered for another instance".into(),
+        ));
+    }
+    if config
+        .identities
+        .iter()
+        .any(|identity| identity.pubkey == pairing.pubkey)
+    {
+        return Err(Error::Config("that identity is already configured".into()));
+    }
+    let reference = bzz::auth::desktop_reference(&instance);
+    // Paired tokens live only in the OS keychain, never in a file.
+    bzz::auth::keychain::store(&reference, &pairing.token)?;
+    let identity = bzz::config::IdentityConfig {
+        id: Uuid::new_v4(),
+        label,
+        pubkey: pairing.pubkey.clone(),
+        backend: KeyBackend::BuzzDesktop,
+        key_ref: reference.clone(),
+    };
+    config.identities.push(identity.clone());
+    if let Err(error) = config.save(paths) {
+        config.identities.retain(|entry| entry.id != identity.id);
+        let _ = bzz::auth::keychain::delete(&reference);
+        return Err(error);
+    }
+    println!(
+        "paired Buzz Desktop identity {}
+pubkey: {}",
+        identity.id, identity.pubkey
+    );
+    Ok(())
+}
+
+async fn verify_desktop(identity: &bzz::config::IdentityConfig) -> Result<()> {
+    let client = bzz::auth::desktop_client(identity)?;
+    let description = client.describe().await.map_err(Error::from)?;
+    if description.pubkey != identity.pubkey {
+        return Err(Error::IdentityCorrupt(
+            "Buzz Desktop serves a different identity than configured".into(),
+        ));
+    }
+    println!(
+        "identity available: {} (Buzz Desktop {})
+pubkey:            {}
+relays:            {}",
+        identity.id,
+        description.instance,
+        description.pubkey,
+        description.relays.join(", ")
+    );
+    Ok(())
 }
 
 fn identity_passphrase(

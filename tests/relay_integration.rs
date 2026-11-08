@@ -1,3 +1,5 @@
+mod support;
+
 use std::{collections::HashSet, process::Command, time::Duration};
 
 use bzz::{
@@ -1445,4 +1447,74 @@ async fn real_relay_channel_types_roles_and_membership() {
     reader_session.shutdown().await;
     owner_signer.lock().await;
     reader_signer.lock().await;
+}
+
+/// v0.13 M3: a Buzz Desktop identity (key only in the provider) authenticates,
+/// queries with NIP-98 and publishes against the pinned relay.
+#[cfg(not(windows))]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_buzz_desktop_identity_signs_through_the_provider() {
+    use bzz::auth::provider::{Endpoint, ProviderClient};
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let provider = support::fake_provider::FakeProvider::start(&["ws://localhost:3030"]).await;
+    let channel = seed_member(&source, &provider.keys.public_key().to_hex());
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let client = std::sync::Arc::new(
+        ProviderClient::new(
+            Endpoint::Advertised(provider.url.clone()),
+            Some(secrecy::SecretString::from(provider.token.clone())),
+        )
+        .unwrap(),
+    );
+    let signer = SignerHandle::spawn_remote(client, provider.keys.public_key());
+    let (session, mut events) = session::connect(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(SessionEvent::Authenticated)
+    ));
+    let http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .unwrap();
+    http.query(&[QueryFilter {
+        kinds: vec![9],
+        limit: Some(1),
+        ..QueryFilter::default()
+    }
+    .tag("h", [channel.to_string()])])
+        .await
+        .unwrap();
+    let message = signer
+        .sign(
+            buzz_sdk::build_message(
+                channel,
+                "generated desktop-signed",
+                None,
+                &[],
+                false,
+                &[],
+                &[],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(session.publish(message).await.unwrap().accepted);
+    assert!(
+        provider
+            .calls()
+            .iter()
+            .filter(|method| *method == "sign_event")
+            .count()
+            >= 3
+    );
+    session.shutdown().await;
+    signer.lock().await;
 }
