@@ -761,6 +761,7 @@ impl App {
         let profiles = runtime.profiles.clone();
         let http = runtime.http.clone();
         let supervisor = runtime.supervisor.clone();
+        let signer = runtime.signer.clone();
         let community = runtime.community_id;
         let selected = self.current_channel().map(|channel| channel.id);
         if let Some(channel) = selected {
@@ -831,6 +832,9 @@ impl App {
                     .call(move |store| store.pin_relay_pubkey(community, &relay_pubkey))
                     .await?;
                 channels.refresh(&pubkey).await?;
+                // NIP-RS atomic snapshot: a complete read-state load when the
+                // relay can prove it; otherwise the subscription above is it.
+                let _ = read_state::load_snapshot(community, &http, &signer, &store).await;
                 let _ = inbox.refresh(&pubkey).await;
                 let _ = profiles.hydrate(authors).await;
                 let _ = outbox::flush_with_diagnostics(

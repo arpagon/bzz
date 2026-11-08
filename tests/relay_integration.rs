@@ -854,6 +854,35 @@ async fn real_relay_mvp_protocol_journey() {
         .unwrap();
     assert_eq!(merged.contexts[&context_key], 20);
 
+    // NIP-RS atomic snapshot: the same two slots, verified and complete.
+    let snapshot = http
+        .read_state_snapshot(&http.nip11().await.unwrap())
+        .await
+        .unwrap()
+        .expect("pinned relay advertises read_state_snapshot");
+    let snapshot_ids = snapshot
+        .events
+        .iter()
+        .map(|event| event.id)
+        .collect::<HashSet<_>>();
+    assert!(snapshot_ids.contains(&read_events[0].id));
+    assert!(snapshot_ids.contains(&read_events_b[0].id));
+    let fresh = {
+        let mut store = Store::open_memory().unwrap();
+        store.sync_config(&local_config).unwrap();
+        StoreHandle::spawn(store).unwrap()
+    };
+    let loaded = read_state::load_snapshot(local_community, &http, &signer, &fresh)
+        .await
+        .expect("verified snapshot loads");
+    assert_eq!(loaded, snapshot.events.len());
+    let pubkey_for_contexts = pubkey.clone();
+    let contexts = fresh
+        .call(move |store| store.read_contexts(local_community, &pubkey_for_contexts, false))
+        .await
+        .unwrap();
+    assert_eq!(contexts[&context_key], 20);
+
     for event in [
         &profile,
         &root,

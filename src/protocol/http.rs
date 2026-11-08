@@ -181,6 +181,34 @@ impl HttpClient {
         .map(Some)
     }
 
+    /// Fetch and verify the NIP-RS atomic read-state snapshot for the signer.
+    /// `Ok(None)` means the relay does not advertise the extension.
+    pub async fn read_state_snapshot(
+        &self,
+        info: &Value,
+    ) -> Result<Option<crate::protocol::read_state_snapshot::VerifiedSnapshot>> {
+        use crate::protocol::read_state_snapshot as snapshot;
+        let Some(descriptor) = snapshot::descriptor(info) else {
+            return Ok(None);
+        };
+        let author = self.signer.public_key();
+        let (status, bytes, _) = self
+            .post_once_bound(
+                "query",
+                snapshot::request_body(&author.to_hex()),
+                descriptor
+                    .max_event_array_bytes
+                    .saturating_add(snapshot::ENVELOPE_ALLOWANCE),
+            )
+            .await?;
+        if status != 200 {
+            return Err(Error::Network(format!(
+                "read-state snapshot returned HTTP {status}"
+            )));
+        }
+        snapshot::verify(&bytes, &descriptor, &author).map(Some)
+    }
+
     async fn post(&self, path: &str, body: Vec<u8>) -> Result<Vec<u8>> {
         let url = self
             .base
