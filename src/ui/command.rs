@@ -24,6 +24,12 @@ pub enum Command {
     Report(String),
     /// NIP-38 status: `:status [--expires N[smhdw]] text`, or `:status clear`.
     Status(String),
+    /// NIP-AR panel for the selected channel, or the open thread.
+    Artifacts,
+    /// Cross-channel `buzz.task` artifacts assigned to me.
+    Tasks,
+    /// `:artifact rename <title> | delete | restore | move <#channel>`.
+    Artifact(String),
     Unknown(String),
 }
 
@@ -46,6 +52,11 @@ pub fn parse(input: &str) -> Command {
         "system" => Command::System,
         "signin" | "sign-in" => Command::SignIn,
         "tochannel" | "send-to-channel" => Command::ToChannel,
+        "artifacts" => Command::Artifacts,
+        "tasks" | "my-tasks" => Command::Tasks,
+        value if value.starts_with("artifact ") => {
+            Command::Artifact(value.trim_start_matches("artifact").trim().to_owned())
+        }
         value if value == "status" || value.starts_with("status ") => {
             Command::Status(value.trim_start_matches("status").trim().to_owned())
         }
@@ -76,5 +87,15 @@ mod tests {
             Command::Report("spam noisy".into())
         );
         assert_eq!(parse(":tochannel"), Command::ToChannel);
+        assert_eq!(parse(":artifacts"), Command::Artifacts);
+        assert_eq!(parse(":tasks"), Command::Tasks);
+        assert_eq!(
+            parse(":artifact rename Ship it"),
+            Command::Artifact("rename Ship it".into())
+        );
+        assert_eq!(
+            parse(":artifact move #ops"),
+            Command::Artifact("move #ops".into())
+        );
     }
 }

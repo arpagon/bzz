@@ -90,6 +90,7 @@ struct Runtime {
     events: broadcast::Receiver<SupervisorEvent>,
     http: HttpClient,
     channels: ChannelService,
+    artifacts: crate::service::artifacts::ArtifactService,
     dms: DmService,
     inbox: InboxService,
     profiles: ProfileService,
@@ -170,6 +171,13 @@ impl Runtime {
             events,
             http: http.clone(),
             channels: ChannelService::new(community.id, http.clone(), store.clone()),
+            artifacts: crate::service::artifacts::ArtifactService::new(
+                community.id,
+                http.clone(),
+                store.clone(),
+                signer.clone(),
+                supervisor.clone(),
+            ),
             dms: DmService::new(
                 community.id,
                 signer.clone(),
@@ -248,6 +256,13 @@ enum Background {
         community: Uuid,
         summaries: Vec<nostr::Event>,
     },
+    /// NIP-11 artifact capabilities for `community`.
+    ArtifactCaps {
+        community: Uuid,
+        caps: crate::protocol::artifact::Capabilities,
+    },
+    /// An artifact edit or assigned-task refresh finished.
+    ArtifactDone(std::result::Result<String, String>),
     /// A verified thread window page landed for `root`.
     ThreadWindow {
         community: Uuid,
@@ -326,6 +341,13 @@ pub struct App {
     /// `(reason, note)` awaiting the report confirmation.
     pending_report: Option<(String, Option<String>)>,
     presence: crate::protocol::presence::PresenceBook,
+    /// NIP-AR: capabilities per community and the selected channel's sync.
+    artifact_caps: Option<(Uuid, crate::protocol::artifact::Capabilities)>,
+    artifact_caps_requested: Option<Uuid>,
+    artifact_sync: Option<ArtifactSync>,
+    artifact_panel: crate::ui::artifacts::ArtifactPanelState,
+    /// `(artifact, destination)` awaiting the move confirmation.
+    pending_artifact_move: Option<(Uuid, Uuid)>,
     /// NIP-CW thread window state for the open thread: `(root, next page)`.
     thread_window: Option<(String, Option<crate::protocol::window::Cursor>)>,
     thread_window_loading: bool,
@@ -423,6 +445,45 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const AGENT_SPINNER_INTERVAL: Duration = Duration::from_millis(200);
 const RELAY_EVENT_DEDUP_CAPACITY: usize = 16_384;
 const AGENT_TYPING_SUBSCRIPTION: &str = "agent-typing-selected";
+const ARTIFACT_SYNC_SUBSCRIPTION: &str = "artifact-sync-selected";
+
+/// The selected channel's NIP-AR sync. Heads before EOSE are buffered and
+/// replace the stored set only at EOSE; a drop before EOSE discards them.
+#[derive(Debug)]
+struct ArtifactSync {
+    community: Uuid,
+    channel: Uuid,
+    buffer: Vec<crate::protocol::artifact::Artifact>,
+    complete: bool,
+    failures: u32,
+    retry_at: Option<Instant>,
+    /// `restricted`: this reader cannot read the channel's artifacts.
+    blocked: bool,
+}
+
+impl ArtifactSync {
+    const fn new(community: Uuid, channel: Uuid) -> Self {
+        Self {
+            community,
+            channel,
+            buffer: Vec::new(),
+            complete: false,
+            failures: 0,
+            retry_at: None,
+            blocked: false,
+        }
+    }
+
+    /// Exponential backoff with jitter before the next sync attempt.
+    fn schedule_retry(&mut self) {
+        self.failures = self.failures.saturating_add(1);
+        let base = 2_u64.saturating_pow(self.failures.min(6)).min(60);
+        let jitter = u64::from(rand::random::<u16>()) % (base * 500 + 1);
+        self.buffer.clear();
+        self.complete = false;
+        self.retry_at = Some(Instant::now() + Duration::from_millis(base * 1000 + jitter));
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TypingSubscriptionTransition {
@@ -602,6 +663,11 @@ impl App {
             emoji_palette: HashMap::new(),
             thread_window: None,
             thread_window_loading: false,
+            artifact_caps: None,
+            artifact_caps_requested: None,
+            artifact_sync: None,
+            artifact_panel: crate::ui::artifacts::ArtifactPanelState::default(),
+            pending_artifact_move: None,
             emoji_lookups: HashSet::new(),
             last_presence_snapshot: Instant::now() - Duration::from_secs(3600),
             last_presence_publish: None,
@@ -780,6 +846,21 @@ impl App {
                                 }
                             }
                         }
+                    },
+                    Background::ArtifactCaps { community, caps }=>{
+                        if self.active_community_id()==Some(community) {
+                            self.artifact_caps=Some((community, caps));
+                            self.reconcile_artifact_sync().await?;
+                        }
+                    },
+                    Background::ArtifactDone(result)=>{
+                        self.artifact_panel.loading=false;
+                        match result {
+                            Ok(message) if message.is_empty() => {},
+                            Ok(message) => self.status_error=Some(message),
+                            Err(error) => self.status_error=Some(error),
+                        }
+                        self.refresh_artifact_panel().await?;
                     },
                     Background::ThreadWindow { community, root, next, supported }=>{
                         self.thread_window_loading=false;
@@ -1141,6 +1222,7 @@ impl App {
         for channel in channels {
             self.subscribe_channel(channel).await?;
         }
+        self.reconcile_artifact_sync().await?;
         self.reconcile_agent_typing_subscription().await
     }
 
@@ -1895,6 +1977,13 @@ impl App {
                     return Ok(false);
                 };
                 let community = runtime.community_id;
+                // Sync may resend a known head (resync, reconnect); it must
+                // reach the buffer, so artifacts bypass the relay dedupe.
+                if subscription == ARTIFACT_SYNC_SUBSCRIPTION
+                    || matches!(event.kind.as_u16(), 45_010 | 45_011)
+                {
+                    return self.apply_artifact_sync_event(&subscription, &event).await;
+                }
                 let event_id = event.id.to_hex();
                 if self.relay_event_was_handled(community, &event_id) {
                     return Ok(false);
@@ -2015,7 +2104,11 @@ impl App {
                     }
                 }
             }
-            SupervisorEvent::Session(SessionEvent::Eose(_)) => {
+            SupervisorEvent::Session(SessionEvent::Eose(subscription)) => {
+                if subscription == ARTIFACT_SYNC_SUBSCRIPTION {
+                    self.commit_artifact_sync().await?;
+                    return Ok(true);
+                }
                 if self.connection != ConnectionState::Backfilling {
                     self.connection = ConnectionState::Online;
                 }
@@ -2027,6 +2120,19 @@ impl App {
                 subscription,
                 message,
             }) => {
+                if subscription == ARTIFACT_SYNC_SUBSCRIPTION {
+                    if let Some(sync) = &mut self.artifact_sync {
+                        // The last complete set stays; it is possibly stale.
+                        if message.starts_with("restricted:") {
+                            sync.blocked = true;
+                            sync.buffer.clear();
+                        } else {
+                            sync.schedule_retry();
+                        }
+                    }
+                    self.refresh_artifact_panel().await?;
+                    return Ok(true);
+                }
                 if subscription == AGENT_TYPING_SUBSCRIPTION {
                     self.closed_typing_channel = self.typing_subscription_channel.take();
                     transient_changed |= self.agent_typing.clear();
@@ -2060,6 +2166,12 @@ impl App {
             SupervisorEvent::Session(SessionEvent::Disconnected(message)) => {
                 self.connection = ConnectionState::Offline;
                 self.status_error = Some(message);
+                // No resume: the supervisor re-sends the sync on reconnect and
+                // the new set replaces the old one only at its EOSE.
+                if let Some(sync) = &mut self.artifact_sync {
+                    sync.buffer.clear();
+                    sync.complete = false;
+                }
                 self.rate_limit_until = None;
                 self.rate_limit_display_seconds = None;
                 transient_changed |= self.agent_typing.clear();
@@ -2595,6 +2707,37 @@ impl App {
                     KeyCode::Esc | KeyCode::Char('n' | 'N') => self.presentation.close_overlay(),
                     _ => {}
                 },
+                Some(ConfirmationKind::ArtifactDelete) => match key.code {
+                    KeyCode::Char('y' | 'Y') => {
+                        if let Some(id) = self.artifact_panel.selected {
+                            self.spawn_artifact_change(
+                                id,
+                                crate::protocol::artifact::Change::Delete,
+                            );
+                        }
+                        self.presentation.return_to_overlay(Overlay::Artifacts);
+                    }
+                    KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                        self.presentation.return_to_overlay(Overlay::Artifacts);
+                    }
+                    _ => {}
+                },
+                Some(ConfirmationKind::ArtifactMove) => match key.code {
+                    KeyCode::Char('y' | 'Y') => {
+                        if let Some((id, destination)) = self.pending_artifact_move.take() {
+                            self.spawn_artifact_change(
+                                id,
+                                crate::protocol::artifact::Change::Move(destination),
+                            );
+                        }
+                        self.presentation.return_to_overlay(Overlay::Artifacts);
+                    }
+                    KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                        self.pending_artifact_move = None;
+                        self.presentation.return_to_overlay(Overlay::Artifacts);
+                    }
+                    _ => {}
+                },
                 Some(ConfirmationKind::Report) => match key.code {
                     KeyCode::Char('y' | 'Y') => {
                         self.send_pending_report();
@@ -2698,6 +2841,7 @@ impl App {
             Some(Overlay::Search) => self.search_key(key).await?,
             Some(Overlay::DmPicker) => self.dm_picker_key(key),
             Some(Overlay::Agents) => self.agent_directory_key(key).await?,
+            Some(Overlay::Artifacts) => self.artifact_panel_key(key).await?,
             None if self.presentation.composer_target.is_some() => {
                 self.handle_composer_key(key).await?
             }
@@ -3328,6 +3472,396 @@ impl App {
             }
             FocusSurface::InboxList | FocusSurface::InboxDetail => {}
         }
+    }
+
+    /// Keeps one NIP-AR sync open for the selected channel when the relay
+    /// advertises `artifacts.sync`, and retries after `resync`/`error`.
+    async fn reconcile_artifact_sync(&mut self) -> Result<()> {
+        let Some(runtime) = &self.runtime else {
+            return Ok(());
+        };
+        let community = runtime.community_id;
+        let supervisor = runtime.supervisor.clone();
+        let caps = match self.artifact_caps {
+            Some((owner, caps)) if owner == community => caps,
+            _ => {
+                if self.artifact_caps_requested != Some(community) {
+                    self.artifact_caps_requested = Some(community);
+                    let service = runtime.artifacts.clone();
+                    let tx = self.background_tx.clone();
+                    tokio::spawn(async move {
+                        // An unreadable NIP-11 means "no artifact sync".
+                        let caps = service.capabilities().await.unwrap_or_default();
+                        let _ = tx.send(Background::ArtifactCaps { community, caps }).await;
+                    });
+                }
+                return Ok(());
+            }
+        };
+        let desired = caps
+            .sync
+            .then(|| self.current_channel().map(|channel| channel.id))
+            .flatten();
+        let current = self
+            .artifact_sync
+            .as_ref()
+            .filter(|sync| sync.community == community)
+            .map(|sync| sync.channel);
+        if desired != current {
+            self.artifact_sync = None;
+            match desired {
+                Some(channel) => {
+                    supervisor
+                        .subscribe_with_priority(
+                            ARTIFACT_SYNC_SUBSCRIPTION,
+                            vec![crate::protocol::artifact::sync_filter(channel)],
+                            SubscriptionPriority::Foreground,
+                        )
+                        .await?;
+                    self.artifact_sync = Some(ArtifactSync::new(community, channel));
+                }
+                None if current.is_some() => supervisor.close(ARTIFACT_SYNC_SUBSCRIPTION).await?,
+                None => {}
+            }
+            return Ok(());
+        }
+        if let Some(sync) = &mut self.artifact_sync
+            && !sync.blocked
+            && sync.retry_at.is_some_and(|at| Instant::now() >= at)
+        {
+            sync.retry_at = None;
+            supervisor
+                .subscribe_with_priority(
+                    ARTIFACT_SYNC_SUBSCRIPTION,
+                    vec![crate::protocol::artifact::sync_filter(sync.channel)],
+                    SubscriptionPriority::Foreground,
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_artifact_sync_event(
+        &mut self,
+        subscription: &str,
+        event: &nostr::Event,
+    ) -> Result<bool> {
+        let max_events = self.artifact_caps.map_or(0, |(_, caps)| caps.max_events);
+        let Some(sync) = self
+            .artifact_sync
+            .as_mut()
+            .filter(|_| subscription == ARTIFACT_SYNC_SUBSCRIPTION)
+        else {
+            return Ok(false);
+        };
+        let community = sync.community;
+        match event.kind.as_u16() {
+            crate::protocol::artifact::KIND_ARTIFACT => {
+                let Ok(head) = crate::protocol::artifact::parse(event) else {
+                    return Ok(false);
+                };
+                if !sync.complete {
+                    if sync.buffer.len() >= max_events.max(1) {
+                        // Over the advertised bound: never commit a partial set.
+                        sync.schedule_retry();
+                    } else {
+                        sync.buffer.push(head);
+                    }
+                    return Ok(false);
+                }
+                let changed = self
+                    .store
+                    .call(move |store| store.apply_artifact_head(community, &head))
+                    .await?;
+                if changed {
+                    self.refresh_artifact_panel().await?;
+                }
+                Ok(changed)
+            }
+            crate::protocol::artifact::KIND_ARTIFACT_REMOVAL if sync.complete => {
+                let relay = self
+                    .store
+                    .call(move |store| store.pinned_relay_pubkey(community))
+                    .await?;
+                let Ok(removal) = crate::protocol::artifact::parse_removal(event, relay.as_deref())
+                else {
+                    return Ok(false);
+                };
+                let changed = self
+                    .store
+                    .call(move |store| store.remove_artifact(community, removal.id, removal.source))
+                    .await?;
+                if changed {
+                    self.refresh_artifact_panel().await?;
+                }
+                Ok(changed)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// EOSE: the buffered heads are the complete set at one cut.
+    async fn commit_artifact_sync(&mut self) -> Result<()> {
+        let Some(sync) = &mut self.artifact_sync else {
+            return Ok(());
+        };
+        if sync.complete || sync.retry_at.is_some() {
+            return Ok(());
+        }
+        let (community, channel) = (sync.community, sync.channel);
+        let heads = std::mem::take(&mut sync.buffer);
+        sync.complete = true;
+        sync.failures = 0;
+        self.store
+            .call(move |store| store.replace_channel_artifacts(community, channel, &heads))
+            .await?;
+        self.refresh_artifact_panel().await
+    }
+
+    fn artifact_sync_note(&self, channel: Uuid) -> Option<String> {
+        let caps = self.artifact_caps.map(|(_, caps)| caps)?;
+        if !caps.sync {
+            return Some("this relay has no artifact sync".into());
+        }
+        let sync = self
+            .artifact_sync
+            .as_ref()
+            .filter(|sync| sync.channel == channel)?;
+        Some(
+            if sync.blocked {
+                "artifacts unavailable here"
+            } else if sync.complete {
+                "synced"
+            } else if sync.retry_at.is_some() {
+                "possibly stale · resyncing"
+            } else {
+                "syncing"
+            }
+            .into(),
+        )
+    }
+
+    async fn refresh_artifact_panel(&mut self) -> Result<()> {
+        if self.presentation.overlay != Some(Overlay::Artifacts)
+            && !matches!(
+                self.presentation.confirmation,
+                Some(ConfirmationKind::ArtifactDelete | ConfirmationKind::ArtifactMove)
+            )
+        {
+            return Ok(());
+        }
+        let Some(community) = self.active_community_id() else {
+            return Ok(());
+        };
+        let scope = self.artifact_panel.scope.clone();
+        let pubkey = self.self_pubkey().unwrap_or_default().to_owned();
+        let items = self
+            .store
+            .call(move |store| match scope {
+                crate::ui::artifacts::ArtifactScope::Channel(channel) => {
+                    store.channel_artifacts(community, channel, None)
+                }
+                crate::ui::artifacts::ArtifactScope::Thread(channel, root) => {
+                    store.channel_artifacts(community, channel, Some(&root))
+                }
+                crate::ui::artifacts::ArtifactScope::Assigned => {
+                    store.assigned_artifacts(community, &pubkey)
+                }
+            })
+            .await?;
+        self.artifact_panel.sync_note = match &self.artifact_panel.scope {
+            crate::ui::artifacts::ArtifactScope::Channel(channel)
+            | crate::ui::artifacts::ArtifactScope::Thread(channel, _) => {
+                self.artifact_sync_note(*channel)
+            }
+            crate::ui::artifacts::ArtifactScope::Assigned => None,
+        };
+        self.artifact_panel.set_items(items);
+        self.cache_dirty = true;
+        Ok(())
+    }
+
+    async fn open_artifacts(&mut self, scope: crate::ui::artifacts::ArtifactScope) -> Result<()> {
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some("connect to a community to see artifacts".into());
+            return Ok(());
+        };
+        if scope == crate::ui::artifacts::ArtifactScope::Assigned {
+            let service = runtime.artifacts.clone();
+            let pubkey = runtime.signer.public_key().to_hex();
+            let tx = self.background_tx.clone();
+            self.artifact_panel.loading = true;
+            tokio::spawn(async move {
+                let result = service
+                    .refresh_assigned(&pubkey)
+                    .await
+                    .map(|_| String::new())
+                    .map_err(|error| error.to_string());
+                let _ = tx.send(Background::ArtifactDone(result)).await;
+            });
+        }
+        self.artifact_panel.scope = scope;
+        self.presentation.open_overlay(Overlay::Artifacts);
+        self.refresh_artifact_panel().await
+    }
+
+    async fn artifact_panel_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
+            KeyCode::Up | KeyCode::Char('k') => self.artifact_panel.move_by(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.artifact_panel.move_by(1),
+            KeyCode::Enter => {
+                // Open the artifact's home channel (its "home link").
+                if let Some(home) = self.artifact_panel.selected().map(|item| item.head.home)
+                    && let Some(index) = self.channels.iter().position(|channel| channel.id == home)
+                {
+                    self.presentation.close_overlay();
+                    self.select_channel_index(index);
+                    self.cache_dirty = true;
+                }
+            }
+            KeyCode::Char('d') => {
+                if self
+                    .artifact_panel
+                    .selected()
+                    .is_some_and(|item| !item.head.is_deleted())
+                {
+                    self.presentation
+                        .open_confirmation(ConfirmationKind::ArtifactDelete);
+                }
+            }
+            KeyCode::Char('u') => {
+                if let Some(item) = self
+                    .artifact_panel
+                    .selected()
+                    .filter(|item| item.head.is_deleted())
+                {
+                    let id = item.head.id;
+                    self.spawn_artifact_change(id, crate::protocol::artifact::Change::Restore);
+                }
+            }
+            KeyCode::Char('r') => {
+                self.command = "artifact rename ".into();
+                self.presentation.open_overlay(Overlay::Command);
+            }
+            KeyCode::Char('m') => {
+                self.command = "artifact move #".into();
+                self.presentation.open_overlay(Overlay::Command);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// `:artifact rename <title> | delete | restore | move <#channel>` on the
+    /// panel's selected artifact.
+    async fn artifact_command(&mut self, arguments: &str) -> Result<()> {
+        use crate::protocol::artifact::Change;
+        let Some(item) = self.artifact_panel.selected().cloned() else {
+            self.status_error = Some("open :artifacts or :tasks and select an artifact".into());
+            return Ok(());
+        };
+        let (verb, rest) = arguments.split_once(' ').unwrap_or((arguments, ""));
+        let rest = rest.trim();
+        match verb {
+            "rename" if !rest.is_empty() && !item.head.is_deleted() => {
+                self.spawn_artifact_change(item.head.id, Change::Rename(rest.to_owned()));
+            }
+            "delete" if !item.head.is_deleted() => {
+                self.presentation.open_overlay(Overlay::Artifacts);
+                self.presentation
+                    .open_confirmation(ConfirmationKind::ArtifactDelete);
+                return Ok(());
+            }
+            "restore" if item.head.is_deleted() => {
+                self.spawn_artifact_change(item.head.id, Change::Restore);
+            }
+            "move" if !rest.is_empty() && !item.head.is_deleted() => {
+                let name = rest.trim_start_matches('#');
+                let Some(destination) = self
+                    .channels
+                    .iter()
+                    .find(|channel| channel.is_member && channel.name.eq_ignore_ascii_case(name))
+                    .map(|channel| channel.id)
+                else {
+                    self.status_error = Some(format!("no joined channel named #{name}"));
+                    return Ok(());
+                };
+                if destination == item.head.home {
+                    self.status_error = Some("the artifact already lives there".into());
+                    return Ok(());
+                }
+                self.pending_artifact_move = Some((item.head.id, destination));
+                self.presentation.open_overlay(Overlay::Artifacts);
+                self.presentation
+                    .open_confirmation(ConfirmationKind::ArtifactMove);
+                return Ok(());
+            }
+            _ => {
+                self.status_error = Some(
+                    "usage: :artifact rename <title> | delete | restore | move <#channel> (deleted artifacts can only be restored)".into(),
+                );
+                return Ok(());
+            }
+        }
+        self.presentation.open_overlay(Overlay::Artifacts);
+        self.refresh_artifact_panel().await
+    }
+
+    fn spawn_artifact_change(&mut self, id: Uuid, change: crate::protocol::artifact::Change) {
+        let Some(runtime) = &self.runtime else { return };
+        let service = runtime.artifacts.clone();
+        let tx = self.background_tx.clone();
+        self.artifact_panel.loading = true;
+        tokio::spawn(async move {
+            let result = service
+                .apply(id, change)
+                .await
+                .map(|applied| match applied {
+                    crate::service::artifacts::Applied::Published(_) => "artifact updated".into(),
+                    crate::service::artifacts::Applied::AlreadyCurrent => {
+                        "artifact was already up to date".into()
+                    }
+                })
+                .map_err(|error| format!("artifact not changed: {error}"));
+            let _ = tx.send(Background::ArtifactDone(result)).await;
+        });
+    }
+
+    /// NIP-AR requires showing the destination audience and what is shared.
+    fn artifact_move_preview(&self) -> String {
+        let Some((id, destination)) = self.pending_artifact_move else {
+            return String::new();
+        };
+        let item = self
+            .artifact_panel
+            .items
+            .iter()
+            .find(|item| item.head.id == id);
+        let title = item
+            .and_then(|item| item.head.title.as_deref())
+            .map_or_else(String::new, |title| {
+                crate::protocol::artifact::display(title, 60)
+            });
+        let tags = item.map_or(0, |item| item.head.client_tags().len());
+        let channel = self
+            .channels
+            .iter()
+            .find(|channel| channel.id == destination);
+        let audience = channel.map_or_else(
+            || "unknown audience".to_owned(),
+            |channel| {
+                format!(
+                    "#{} · {} · {} members",
+                    crate::protocol::artifact::display(&channel.name, 40),
+                    format!("{:?}", channel.visibility).to_lowercase(),
+                    channel.member_count
+                )
+            },
+        );
+        format!(
+            "\"{title}\" moves to {audience}. Everyone there can read its title, {tags} tags and content · y move · n/Esc cancel"
+        )
     }
 
     fn spawn_thread_window(
@@ -5978,6 +6512,30 @@ impl App {
             crate::ui::command::Command::SignIn => self.begin_federated_sign_in().await,
             crate::ui::command::Command::ToChannel => self.send_draft_to_channel(),
             crate::ui::command::Command::Status(arguments) => self.set_status(&arguments),
+            crate::ui::command::Command::Artifacts => {
+                let scope = match (
+                    self.current_channel().map(|channel| channel.id),
+                    self.thread_root.clone(),
+                ) {
+                    (Some(channel), Some(root)) => {
+                        crate::ui::artifacts::ArtifactScope::Thread(channel, root)
+                    }
+                    (Some(channel), None) => crate::ui::artifacts::ArtifactScope::Channel(channel),
+                    (None, _) => {
+                        self.status_error = Some("select a channel to see its artifacts".into());
+                        return Ok(());
+                    }
+                };
+                return self.open_artifacts(scope).await;
+            }
+            crate::ui::command::Command::Tasks => {
+                return self
+                    .open_artifacts(crate::ui::artifacts::ArtifactScope::Assigned)
+                    .await;
+            }
+            crate::ui::command::Command::Artifact(arguments) => {
+                return self.artifact_command(&arguments).await;
+            }
             crate::ui::command::Command::Report(arguments) => {
                 let mut parts = arguments.splitn(2, ' ');
                 let reason = parts.next().unwrap_or_default().to_owned();
@@ -6874,6 +7432,7 @@ impl App {
             Some(Overlay::Search) => "SEARCH",
             Some(Overlay::DmPicker) => "DM",
             Some(Overlay::Agents) => "AGENTS",
+            Some(Overlay::Artifacts) => "ARTIFACTS",
             Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) | None
                 if self.presentation.composer_target.is_some() =>
             {
@@ -7004,6 +7563,22 @@ impl App {
                         self.pending_inbox_read.len()
                     ),
                 ),
+                Some(ConfirmationKind::ArtifactDelete) => self.render_prompt(
+                    frame,
+                    area,
+                    " delete artifact? ",
+                    &format!(
+                        "\"{}\" leaves every current view and can be restored · y delete · n/Esc cancel",
+                        self.artifact_panel
+                            .selected()
+                            .and_then(|item| item.head.title.clone())
+                            .unwrap_or_default()
+                    ),
+                ),
+                Some(ConfirmationKind::ArtifactMove) => {
+                    let detail = self.artifact_move_preview();
+                    self.render_prompt(frame, area, " move artifact? ", &detail)
+                }
                 Some(ConfirmationKind::ClearDraft) => self.render_prompt(
                     frame,
                     area,
@@ -7100,6 +7675,22 @@ impl App {
                     }
                 }
                 crate::ui::search::render(frame, popup, &self.search_state, &self.theme);
+            }
+            Some(Overlay::Artifacts) => {
+                let popup = centered(area, 104, area.height.saturating_sub(2).min(30));
+                let names = self
+                    .channels
+                    .iter()
+                    .map(|channel| (channel.id, channel.name.clone()))
+                    .collect::<HashMap<_, _>>();
+                crate::ui::artifacts::render(
+                    frame,
+                    popup,
+                    &self.artifact_panel,
+                    &names,
+                    &self.profiles,
+                    &self.theme,
+                );
             }
             Some(Overlay::Agents) => {
                 let popup = centered(area, 96, area.height.saturating_sub(2).min(34));
@@ -8628,6 +9219,143 @@ mod tests {
         .unwrap();
         assert!(app.composer.attachments.is_empty());
         assert!(app.staging_attachments.is_empty());
+    }
+
+    fn artifact_event(keys: &Keys, home: Uuid, title: &str) -> nostr::Event {
+        let id = Uuid::new_v4().to_string();
+        let home = home.to_string();
+        EventBuilder::new(Kind::Custom(45_010), "{\"version\":1}")
+            .tags(
+                [
+                    ["ar", "1"],
+                    ["d", id.as_str()],
+                    ["h", home.as_str()],
+                    ["type", "buzz.task"],
+                    ["title", title],
+                    ["op", "create"],
+                ]
+                .map(|parts| Tag::parse(parts).unwrap()),
+            )
+            .sign_with_keys(keys)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn artifact_sync_commits_only_at_eose_and_never_touches_chat() {
+        use crate::config::{IdentityConfig, KeyBackend};
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let keys = Keys::generate();
+        let identity = IdentityConfig {
+            id: Uuid::new_v4(),
+            label: "a".into(),
+            pubkey: keys.public_key().to_hex(),
+            backend: KeyBackend::EncryptedFile,
+            key_ref: "a".into(),
+        };
+        let mut config = Config::default();
+        config.identities.push(identity.clone());
+        let community = config
+            .add_community("a".into(), "ws://localhost:3030".into(), identity.id, true)
+            .unwrap();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        // No runtime: a configured community would prompt for the identity.
+        let mut app = super::App::new(Config::default(), paths, handle)
+            .await
+            .unwrap();
+        app.config = config;
+        let channel = Uuid::new_v4();
+        let caps = crate::protocol::artifact::Capabilities {
+            sync: true,
+            head: true,
+            max_events: 2,
+        };
+        app.artifact_caps = Some((community, caps));
+        app.artifact_sync = Some(super::ArtifactSync::new(community, channel));
+        let sync = super::ARTIFACT_SYNC_SUBSCRIPTION;
+        let stored = |app: &super::App| {
+            let store = app.store.clone();
+            async move {
+                store
+                    .call(move |store| store.channel_artifacts(community, channel, None))
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // Heads before EOSE are only buffered.
+        let first = artifact_event(&keys, channel, "First");
+        assert!(!app.apply_artifact_sync_event(sync, &first).await.unwrap());
+        assert!(stored(&app).await.is_empty());
+        // Another subscription's artifact is ignored.
+        assert!(
+            !app.apply_artifact_sync_event("other", &first)
+                .await
+                .unwrap()
+        );
+        app.commit_artifact_sync().await.unwrap();
+        assert_eq!(stored(&app).await.len(), 1, "committed at EOSE");
+
+        // After EOSE a live head applies immediately.
+        let live = artifact_event(&keys, channel, "Live");
+        assert!(app.apply_artifact_sync_event(sync, &live).await.unwrap());
+        assert_eq!(stored(&app).await.len(), 2);
+
+        // A set larger than max_events is never committed partially.
+        app.artifact_sync = Some(super::ArtifactSync::new(community, channel));
+        for title in ["A", "B", "C"] {
+            let event = artifact_event(&keys, channel, title);
+            app.apply_artifact_sync_event(sync, &event).await.unwrap();
+        }
+        assert!(app.artifact_sync.as_ref().unwrap().retry_at.is_some());
+        app.commit_artifact_sync().await.unwrap();
+        assert_eq!(stored(&app).await.len(), 2, "the last complete set stays");
+        assert!(!app.artifact_sync.as_ref().unwrap().complete);
+
+        // The panel shows the set; artifacts never become messages or unread.
+        // A new cut holding only `live` replaces the set: `first` left it.
+        app.artifact_sync = Some(super::ArtifactSync::new(community, channel));
+        app.apply_artifact_sync_event(sync, &live).await.unwrap();
+        app.commit_artifact_sync().await.unwrap();
+        let held = stored(&app).await;
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].head.title.as_deref(), Some("Live"));
+        app.artifact_panel.scope = crate::ui::artifacts::ArtifactScope::Channel(channel);
+        app.presentation.open_overlay(Overlay::Artifacts);
+        app.refresh_artifact_panel().await.unwrap();
+        assert_eq!(app.artifact_panel.sync_note.as_deref(), Some("synced"));
+        assert!(app.messages.is_empty());
+        assert!(app.computed_unread.is_empty() && app.manual_unread.is_empty());
+        let mut terminal = Terminal::new(TestBackend::new(110, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                crate::ui::artifacts::render(
+                    frame,
+                    frame.area(),
+                    &app.artifact_panel,
+                    &std::collections::HashMap::new(),
+                    &app.profiles,
+                    &app.theme,
+                )
+            })
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(screen.contains("synced"), "{screen}");
+        assert!(screen.contains("Live"), "{screen}");
+        assert!(screen.contains("buzz.task"), "{screen}");
     }
 
     #[tokio::test]

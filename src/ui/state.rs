@@ -39,6 +39,7 @@ pub enum Overlay {
     Attachment,
     DmPicker,
     Agents,
+    Artifacts,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +50,10 @@ pub enum ConfirmationKind {
     ClearDraft,
     /// NIP-56 report of the selected message (reason held by the App).
     Report,
+    /// Soft delete of the selected artifact.
+    ArtifactDelete,
+    /// Move of the selected artifact (destination held by the App).
+    ArtifactMove,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -211,6 +216,12 @@ impl PresentationState {
     pub fn open_confirmation(&mut self, kind: ConfirmationKind) {
         self.overlay = Some(Overlay::Confirmation);
         self.confirmation = Some(kind);
+    }
+
+    /// Leaves a confirmation and shows `overlay` again (artifact panel).
+    pub fn return_to_overlay(&mut self, overlay: Overlay) {
+        self.confirmation = None;
+        self.overlay = Some(overlay);
     }
 
     pub fn open_attachment_prompt(&mut self, prompt: AttachmentPrompt) {
