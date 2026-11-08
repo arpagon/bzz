@@ -44,6 +44,12 @@ enum Command {
         #[command(subcommand)]
         command: AgentsCommand,
     },
+    /// Manage agents whose keys bzz holds for the local broker; bzz never
+    /// runs agent processes.
+    Broker {
+        #[command(subcommand)]
+        command: BrokerCommand,
+    },
     /// Manage cached conversation data.
     Cache {
         #[command(subcommand)]
@@ -196,6 +202,42 @@ enum CommunityCommand {
     },
     Default {
         id: Uuid,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum BrokerCommand {
+    /// Create an agent key held by bzz and print its credential once.
+    Create {
+        label: String,
+        #[arg(long)]
+        community: Option<Uuid>,
+        /// Sign the owner authorization without asking.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// List hosted agents and their policies (never credentials).
+    List,
+    /// Allow exactly these comma-separated actions (writes are opt-in).
+    Allow {
+        label: String,
+        actions: String,
+    },
+    /// Replace the agent's credential and print the new one once.
+    Rotate {
+        label: String,
+    },
+    Pause {
+        label: String,
+    },
+    Resume {
+        label: String,
+    },
+    /// Delete the agent and its sealed key.
+    Delete {
+        label: String,
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -379,6 +421,7 @@ async fn run() -> Result<()> {
             community_command(command, &paths, &mut config).await
         }
         Some(Command::Agents { command }) => agents_command(command, &paths, &config).await,
+        Some(Command::Broker { command }) => broker_command(command, &paths, &mut config).await,
         Some(Command::Cache { command }) => cache_command(command, &paths, &mut config),
         Some(Command::Media { command }) => media_command(command, &paths, &config),
         Some(Command::Diagnostics { command }) => diagnostics_command(command, &paths),
@@ -695,6 +738,135 @@ async fn community_command(
             }
             config.default_community = Some(id);
             config.save(paths)
+        }
+    }
+}
+
+fn confirm(prompt: &str) -> Result<bool> {
+    eprint!("{prompt} [y/N] ");
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| Error::io("stdin", error))?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
+}
+
+fn hosted_agent_index(config: &Config, label: &str) -> Result<usize> {
+    config
+        .hosted_agents
+        .iter()
+        .position(|agent| agent.label == label)
+        .ok_or_else(|| Error::Config(format!("no hosted agent named {label}")))
+}
+
+async fn broker_command(command: BrokerCommand, paths: &Paths, config: &mut Config) -> Result<()> {
+    use bzz::broker::custody;
+    match command {
+        BrokerCommand::Create {
+            label,
+            community,
+            yes,
+        } => {
+            if config
+                .hosted_agents
+                .iter()
+                .any(|agent| agent.label == label.trim())
+            {
+                return Err(Error::Config(format!(
+                    "a hosted agent named {label} exists"
+                )));
+            }
+            let community = selected_community(config, community)?.clone();
+            let identity = find_identity(config, community.identity_id)?.clone();
+            if !yes
+                && !confirm(&format!(
+                    "Sign an owner authorization (NIP-OA) letting agent \"{}\" act for {}?",
+                    label.trim(),
+                    identity.label
+                ))?
+            {
+                return Err(Error::Config("agent creation cancelled".into()));
+            }
+            let passphrase = identity_passphrase(&identity, "Owner identity passphrase: ", false)?;
+            let owner = IdentityManager::new(paths).signer(&identity, passphrase.as_ref())?;
+            let (agent, credential) =
+                custody::create(&paths.keys_dir(), &owner, identity.id, community.id, &label)
+                    .await?;
+            owner.lock().await;
+            config.hosted_agents.push(agent.clone());
+            if let Err(error) = config.save(paths) {
+                let _ = custody::delete(&paths.keys_dir(), &agent);
+                config.hosted_agents.retain(|entry| entry.id != agent.id);
+                return Err(error);
+            }
+            println!(
+                "agent {} ({}) created in {}",
+                agent.label, agent.pubkey, community.label
+            );
+            println!("allowed: {}", agent.allowed.join(", "));
+            println!("credential (shown once; give it to the agent process): {credential}");
+            println!(
+                "the owner must add the agent with the bot role to each channel it may write in"
+            );
+            Ok(())
+        }
+        BrokerCommand::List => {
+            if config.hosted_agents.is_empty() {
+                println!("no hosted agents; create one with `bzz broker create <label>`");
+            }
+            for agent in &config.hosted_agents {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    agent.label,
+                    agent.pubkey,
+                    if agent.paused { "paused" } else { "active" },
+                    agent.allowed.join(",")
+                );
+            }
+            Ok(())
+        }
+        BrokerCommand::Allow { label, actions } => {
+            let index = hosted_agent_index(config, &label)?;
+            let actions = actions
+                .split(',')
+                .map(str::trim)
+                .filter(|action| !action.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            custody::set_allowed(&mut config.hosted_agents[index], &actions)?;
+            config.save(paths)?;
+            println!(
+                "allowed: {}",
+                config.hosted_agents[index].allowed.join(", ")
+            );
+            Ok(())
+        }
+        BrokerCommand::Rotate { label } => {
+            let index = hosted_agent_index(config, &label)?;
+            let credential = custody::rotate(&mut config.hosted_agents[index]);
+            config.save(paths)?;
+            println!("new credential (shown once; the old one no longer works): {credential}");
+            Ok(())
+        }
+        BrokerCommand::Pause { ref label } | BrokerCommand::Resume { ref label } => {
+            let paused = matches!(command, BrokerCommand::Pause { .. });
+            let label = label.clone();
+            let index = hosted_agent_index(config, &label)?;
+            config.hosted_agents[index].paused = paused;
+            config.save(paths)?;
+            println!("{label} {}", if paused { "paused" } else { "resumed" });
+            Ok(())
+        }
+        BrokerCommand::Delete { label, yes } => {
+            let index = hosted_agent_index(config, &label)?;
+            if !yes && !confirm(&format!("Delete agent {label} and its key?"))? {
+                return Err(Error::Config("agent deletion cancelled".into()));
+            }
+            let agent = config.hosted_agents.remove(index);
+            config.save(paths)?;
+            custody::delete(&paths.keys_dir(), &agent)?;
+            println!("agent {label} deleted");
+            Ok(())
         }
     }
 }
