@@ -206,6 +206,11 @@ pub struct UiConfig {
     /// Publish your own online/away presence (kind 20001). Off by default:
     /// bzz publishes nothing about activity unless you opt in.
     pub publish_presence: bool,
+    /// Owner-signed kind 20003 presence for hosted agents while the broker
+    /// serves them. The only automatic owner-signed event; off by default and
+    /// shown in `:broker`. Requires `publish_presence`.
+    #[serde(default)]
+    pub broker_agent_presence: bool,
 }
 
 impl Default for UiConfig {
@@ -220,6 +225,7 @@ impl Default for UiConfig {
             theme: crate::ui::theme::DEFAULT_THEME_ID.into(),
             mouse: MouseMode::Auto,
             publish_presence: false,
+            broker_agent_presence: false,
         }
     }
 }

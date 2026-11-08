@@ -111,8 +111,10 @@ pub async fn unlock(
     owner: &SignerHandle,
     agent: &HostedAgentConfig,
 ) -> Result<SignerHandle> {
-    Ok(SignerHandle::spawn(
+    let tag = crate::broker::relay::auth_tag(&agent.auth_tag)?;
+    Ok(SignerHandle::spawn_with_auth_tag(
         open_sealed(&key_file(keys_dir, agent.id), owner, &agent.pubkey).await?,
+        Some(tag),
     ))
 }
 

@@ -54,6 +54,12 @@ enum Command {
 
 impl SignerHandle {
     pub fn spawn(keys: Keys) -> Self {
+        Self::spawn_with_auth_tag(keys, None)
+    }
+
+    /// A hosted agent's signer: its NIP-42 AUTH events carry the owner's
+    /// NIP-OA `auth` tag, which is how the relay learns (and pins) the owner.
+    pub fn spawn_with_auth_tag(keys: Keys, owner_tag: Option<Tag>) -> Self {
         let public_key = keys.public_key();
         let (sender, mut receiver) = mpsc::channel(QUEUE);
         tokio::spawn(async move {
@@ -71,7 +77,11 @@ impl SignerHandle {
                         relay,
                         response,
                     } => {
-                        let result = EventBuilder::auth(challenge, relay)
+                        let mut builder = EventBuilder::auth(challenge, relay);
+                        if let Some(tag) = &owner_tag {
+                            builder = builder.tag(tag.clone());
+                        }
+                        let result = builder
                             .sign_with_keys(&keys)
                             .map_err(|error| Error::Auth(format!("AUTH signing failed: {error}")));
                         let _ = response.send(result);

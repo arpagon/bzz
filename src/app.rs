@@ -538,6 +538,40 @@ fn publish_presence(runtime: &Runtime, presence: crate::protocol::presence::Pres
     });
 }
 
+/// Kind 20003: the owner states its hosted agents' presence (`p` per agent).
+pub fn agent_presence_builder(
+    presence: crate::protocol::presence::Presence,
+    agents: &[String],
+) -> Result<nostr::EventBuilder> {
+    let tags = agents
+        .iter()
+        .take(256)
+        .map(|agent| nostr::Tag::parse(["p", agent.as_str()]))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| Error::Protocol(error.to_string()))?;
+    Ok(nostr::EventBuilder::new(
+        nostr::Kind::Custom(crate::protocol::presence::KIND_AGENT_PRESENCE),
+        presence.as_str(),
+    )
+    .tags(tags))
+}
+
+fn publish_agent_presence(
+    runtime: &Runtime,
+    presence: crate::protocol::presence::Presence,
+    agents: Vec<String>,
+) {
+    let signer = runtime.signer.clone();
+    let supervisor = runtime.supervisor.clone();
+    tokio::spawn(async move {
+        if let Ok(builder) = agent_presence_builder(presence, &agents)
+            && let Ok(event) = signer.sign(builder).await
+        {
+            let _ = supervisor.publish_maintenance(event).await;
+        }
+    });
+}
+
 /// Publish `offline` and wait briefly for the relay, so lock and quit clear
 /// presence immediately instead of after the 180 s TTL.
 async fn publish_offline(runtime: &Runtime) {
@@ -2873,6 +2907,13 @@ impl App {
                 KeyCode::Char('p') => {
                     if let Some(broker) = &self.broker {
                         broker.host.set_paused_all(!broker.host.paused_all());
+                    }
+                }
+                // Opt in or out of owner-signed agent presence (kind 20003).
+                KeyCode::Char('o') => {
+                    self.config.ui.broker_agent_presence = !self.config.ui.broker_agent_presence;
+                    if let Err(error) = self.config.save(&self.paths) {
+                        self.status_error = Some(error.to_string());
                     }
                 }
                 _ => {}
@@ -5624,6 +5665,23 @@ impl App {
         }
         self.last_presence_publish = Some((Instant::now(), wanted));
         publish_presence(runtime, wanted);
+        let agents = self.hosted_agent_pubkeys();
+        if self.config.ui.broker_agent_presence && !agents.is_empty() {
+            publish_agent_presence(runtime, wanted, agents);
+        }
+    }
+
+    /// Hosted agents the broker is serving right now.
+    fn hosted_agent_pubkeys(&self) -> Vec<String> {
+        let Some(broker) = &self.broker else {
+            return Vec::new();
+        };
+        self.config
+            .hosted_agents
+            .iter()
+            .filter(|agent| agent.community == broker.community && !agent.paused)
+            .map(|agent| agent.pubkey.clone())
+            .collect()
     }
 
     async fn begin_federated_sign_in(&mut self) {
@@ -7868,8 +7926,12 @@ impl App {
                     popup,
                     &agents,
                     &activity,
-                    self.broker.as_ref().map(|broker| broker.server.address.port()),
-                    self.broker.as_ref().is_some_and(|broker| broker.host.paused_all()),
+                    crate::ui::broker::BrokerStatus {
+                        serving: self.broker.as_ref().map(|broker| broker.server.address.port()),
+                        paused_all: self.broker.as_ref().is_some_and(|broker| broker.host.paused_all()),
+                        agent_presence: self.config.ui.broker_agent_presence
+                            && self.config.ui.publish_presence,
+                    },
                     &self.theme,
                 );
             }

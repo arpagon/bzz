@@ -13,16 +13,28 @@ use crate::{
     ui::theme::{BorderSurface, HighlightGroup, Theme},
 };
 
+/// The broker's live state shown in the panel title.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BrokerStatus {
+    pub serving: Option<u16>,
+    pub paused_all: bool,
+    pub agent_presence: bool,
+}
+
 pub fn render(
     frame: &mut Frame<'_>,
     area: Rect,
     agents: &[HostedAgentConfig],
     activity: &[Activity],
-    serving: Option<u16>,
-    paused_all: bool,
+    status: BrokerStatus,
     theme: &Theme,
 ) {
     frame.render_widget(Clear, area);
+    let BrokerStatus {
+        serving,
+        paused_all,
+        agent_presence,
+    } = status;
     let state = match (serving, paused_all) {
         (None, _) => "not serving".to_owned(),
         (Some(port), true) => format!("127.0.0.1:{port} · ALL PAUSED"),
@@ -34,7 +46,8 @@ pub fn render(
         .border_style(theme.style(HighlightGroup::ModalBorder))
         .title_style(theme.style(HighlightGroup::ModalTitle))
         .title(format!(
-            " agent broker · {state} · p pause/resume all · Esc "
+            " agent broker · {state} · p pause/resume all · o owner-signed agent presence: {} · Esc ",
+            if agent_presence { "on" } else { "off" }
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);

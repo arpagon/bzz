@@ -2401,8 +2401,9 @@ async fn real_relay_local_agent_broker() {
         .map(str::to_owned),
     )
     .unwrap();
-    let _ = seed_member(&source, &agent.pubkey);
-    // The owner gives the agent the bot role in #general.
+    // The agent is not seeded as a relay member: its NIP-42 AUTH carries the
+    // owner's NIP-OA tag, which admits it and pins its owner.
+    // The owner gives the agent the bot role in its channel.
     let owner_supervisor = SupervisorHandle::spawn(
         url::Url::parse("ws://localhost:3030/").unwrap(),
         owner.clone(),
@@ -2662,6 +2663,65 @@ async fn real_relay_local_agent_broker() {
         (address.kind, address.d_tag.as_str()),
         (30_174, owner_side.as_str())
     );
+
+    // Owner-signed agent presence (20003). The relay records it only for
+    // agents it knows this owner owns; the snapshot shows the effect.
+    let snapshot = |http: HttpClient, agent: String| async move {
+        http.query_raw(&[serde_json::json!({"kinds": [20001], "authors": [agent]})])
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|event| event.content)
+            .collect::<Vec<_>>()
+    };
+    let publish_presence = |signer: SignerHandle, supervisor: SupervisorHandle, presence| {
+        let agent = agent.pubkey.clone();
+        async move {
+            let event = signer
+                .sign(
+                    bzz::app::agent_presence_builder(presence, std::slice::from_ref(&agent))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            supervisor.publish(event).await.unwrap()
+        }
+    };
+    // Someone who is not the agent's owner cannot speak for it.
+    let stranger_keys = Keys::generate();
+    let _ = seed_member(&source, &stranger_keys.public_key().to_hex());
+    let stranger = SignerHandle::spawn(stranger_keys);
+    let stranger_supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        stranger.clone(),
+    );
+    publish_presence(
+        stranger.clone(),
+        stranger_supervisor.clone(),
+        bzz::protocol::presence::Presence::Away,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        snapshot(owner_http.clone(), agent.pubkey.clone())
+            .await
+            .is_empty(),
+        "a non-owner's 20003 has no effect"
+    );
+    let ack = publish_presence(
+        owner.clone(),
+        owner_supervisor.clone(),
+        bzz::protocol::presence::Presence::Online,
+    )
+    .await;
+    assert!(ack.accepted, "agent presence: {}", ack.message);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        snapshot(owner_http.clone(), agent.pubkey.clone()).await,
+        vec!["online".to_owned()],
+        "the owner's 20003 sets the agent online"
+    );
+    stranger_supervisor.shutdown().await;
 
     // The activity log carries no content and no credential.
     let activity = format!("{:?}", host.activity());
