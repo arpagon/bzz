@@ -75,6 +75,8 @@ rfd = { version = "=0.17.2", default-features = false }
 
 [dev-dependencies]
 criterion = "0.7"
+# Test-only NIP-FI issuer (fake NIP-FA adapter signs ES256 assertions).
+p256 = { version = "0.13", features = ["ecdsa", "jwk"] }
 insta = "1"
 proptest = "1"
 tempfile = "3"

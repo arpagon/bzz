@@ -13,6 +13,9 @@ on:
       - 'src/ui/agents.rs'
       - 'migrations/**'
       - 'tests/relay_integration.rs'
+      - 'tests/relay_nip_fi_integration.rs'
+      - 'tests/support/**'
+      - 'examples/**'
       - 'scripts/test-relay.sh'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -29,6 +32,9 @@ on:
       - 'src/ui/agents.rs'
       - 'migrations/**'
       - 'tests/relay_integration.rs'
+      - 'tests/relay_nip_fi_integration.rs'
+      - 'tests/support/**'
+      - 'examples/**'
       - 'scripts/test-relay.sh'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -38,6 +44,10 @@ jobs:
   relay:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [default, nip-fi]
     steps:
       - uses: actions/checkout@v4
       - name: Install Linux keychain build dependencies
@@ -49,7 +59,7 @@ jobs:
           path: .buzz-source
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
-      - name: Run isolated real-relay suite
+      - name: Run isolated real-relay suite (${{ matrix.profile }})
         env:
           BZZ_BUZZ_SOURCE: ${{ github.workspace }}/.buzz-source
-        run: ./scripts/test-relay.sh
+        run: ./scripts/test-relay.sh ${{ matrix.profile == 'nip-fi' && '--nip-fi' || '' }}

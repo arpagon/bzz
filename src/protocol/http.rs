@@ -17,6 +17,7 @@ pub struct HttpClient {
     base: Url,
     client: Client,
     signer: SignerHandle,
+    evidence: crate::auth::federated::EvidenceSlot,
 }
 
 pub fn relay_signing_pubkey(info: &Value) -> Option<&str> {
@@ -39,7 +40,26 @@ impl HttpClient {
             base,
             client,
             signer,
+            evidence: crate::auth::federated::EvidenceSlot::default(),
         })
+    }
+
+    /// Attach NIP-FI evidence from `slot` to every protected request.
+    #[must_use]
+    pub fn with_evidence(mut self, slot: crate::auth::federated::EvidenceSlot) -> Self {
+        self.evidence = slot;
+        self
+    }
+
+    /// Evidence first, so a slow mint cannot age the NIP-98 proof.
+    async fn evidence_header(&self) -> Result<Option<reqwest::header::HeaderValue>> {
+        let Some(value) = self.evidence.header(&self.base).await? else {
+            return Ok(None);
+        };
+        let mut value = reqwest::header::HeaderValue::from_str(&value)
+            .map_err(|_| Error::Protocol("federated identity evidence is not a header".into()))?;
+        value.set_sensitive(true);
+        Ok(Some(value))
     }
 
     pub async fn nip11(&self) -> Result<Value> {
@@ -116,14 +136,17 @@ impl HttpClient {
             .base
             .join(path)
             .map_err(|error| Error::Config(error.to_string()))?;
+        let evidence = self.evidence_header().await?;
         let auth = self
             .signer
             .nip98_header("POST", url.as_str(), Some(&body))
             .await?;
         let request_id = nip98_event_id(&auth)?;
-        let response = self
-            .client
-            .post(url)
+        let mut request = self.client.post(url);
+        if let Some(evidence) = evidence {
+            request = request.header(crate::auth::federated::HEADER, evidence);
+        }
+        let response = request
             .header("Authorization", auth)
             .header("Content-Type", "application/json")
             .body(body)
@@ -216,13 +239,16 @@ impl HttpClient {
             .map_err(|error| Error::Config(error.to_string()))?;
         let mut attempt = 0_u32;
         loop {
+            let evidence = self.evidence_header().await?;
             let auth = self
                 .signer
                 .nip98_header("POST", url.as_str(), Some(&body))
                 .await?;
-            let result = self
-                .client
-                .post(url.clone())
+            let mut request = self.client.post(url.clone());
+            if let Some(evidence) = evidence {
+                request = request.header(crate::auth::federated::HEADER, evidence);
+            }
+            let result = request
                 .header("Authorization", auth)
                 .header("Content-Type", "application/json")
                 .body(body.clone())
@@ -238,9 +264,24 @@ impl HttpClient {
                 Err(error) => return Err(Error::Network(error.to_string())),
             };
             let status = response.status();
+            let www = response
+                .headers()
+                .get(reqwest::header::WWW_AUTHENTICATE)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
             let bytes = read_bounded_response(response, 32 * 1024 * 1024).await?;
             if status.is_success() {
                 return Ok(bytes.to_vec());
+            }
+            match crate::auth::federated::relay_denial(status.as_u16(), www.as_deref(), &bytes) {
+                Some(denial @ crate::auth::federated::RelayDenial::EvidenceRequired) => {
+                    return Err(Error::Auth(denial.notice().into()));
+                }
+                Some(denial) => {
+                    self.evidence.invalidate(&self.base);
+                    return Err(Error::Access(denial.notice().into()));
+                }
+                None => {}
             }
             if status == StatusCode::TOO_MANY_REQUESTS && attempt < 2 {
                 attempt += 1;

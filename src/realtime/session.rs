@@ -150,10 +150,52 @@ pub async fn connect_with_diagnostics(
     signer: SignerHandle,
     diagnostics: DiagnosticHandle,
 ) -> Result<(SessionHandle, mpsc::Receiver<SessionEvent>)> {
+    connect_with_evidence(relay, signer, diagnostics, None).await
+}
+
+/// Connect, sending `Nostr-Federated-Identity` on the upgrade when `evidence`
+/// is present (NIP-FI client-attached transport). An HTTP denial of the
+/// upgrade becomes a typed, text-free terminal error.
+pub async fn connect_with_evidence(
+    relay: Url,
+    signer: SignerHandle,
+    diagnostics: DiagnosticHandle,
+    evidence: Option<String>,
+) -> Result<(SessionHandle, mpsc::Receiver<SessionEvent>)> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
     let connect_started = Instant::now();
-    let (socket, _response) = connect_async(relay.as_str())
-        .await
-        .map_err(|error| Error::Network(error.to_string()))?;
+    let mut request = relay
+        .as_str()
+        .into_client_request()
+        .map_err(|error| Error::Config(error.to_string()))?;
+    if let Some(evidence) = evidence {
+        let mut value = tokio_tungstenite::tungstenite::http::HeaderValue::from_str(&evidence)
+            .map_err(|_| Error::Protocol("federated identity evidence is not a header".into()))?;
+        value.set_sensitive(true);
+        request
+            .headers_mut()
+            .insert(crate::auth::federated::HEADER, value);
+    }
+    let (socket, _response) = connect_async(request).await.map_err(|error| match error {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            let www = response
+                .headers()
+                .get("www-authenticate")
+                .and_then(|value| value.to_str().ok());
+            let body = response.body().as_deref().unwrap_or_default();
+            match crate::auth::federated::relay_denial(response.status().as_u16(), www, body) {
+                Some(denial @ crate::auth::federated::RelayDenial::EvidenceRequired) => {
+                    Error::Auth(denial.notice().into())
+                }
+                Some(denial) => Error::Access(denial.notice().into()),
+                None => Error::Network(format!(
+                    "relay refused the WebSocket upgrade (HTTP {})",
+                    response.status().as_u16()
+                )),
+            }
+        }
+        other => Error::Network(other.to_string()),
+    })?;
     diagnostics.emit(DiagnosticEvent::TransportConnected {
         duration_ms: elapsed_millis(connect_started),
     });
@@ -211,6 +253,13 @@ pub async fn connect_with_diagnostics(
                     .send(Message::Pong(payload))
                     .await
                     .map_err(|error| Error::Network(error.to_string()))?,
+                Some(Ok(Message::Close(Some(frame)))) if u16::from(frame.code) == 1008 => {
+                    return Err(Error::Access(
+                        crate::auth::federated::RelayDenial::KeyRefused
+                            .notice()
+                            .into(),
+                    ));
+                }
                 Some(Ok(_)) => {}
                 Some(Err(error)) => return Err(Error::Network(error.to_string())),
                 None => return Err(Error::Network("relay closed during authentication".into())),
@@ -311,6 +360,9 @@ pub async fn connect_with_diagnostics(
                     Some(Ok(Message::Pong(_)))=>last_inbound=Instant::now(),
                     Some(Ok(Message::Close(frame)))=>{
                         close_code=frame.map(|frame|u16::from(frame.code));
+                        if close_code==Some(1008) {
+                            break Err(Error::Network(crate::auth::federated::POLICY_CLOSE_MARKER.into()));
+                        }
                         break Err(Error::Network("relay closed the connection".into()));
                     }
                     None=>break Err(Error::Network("relay closed the connection".into())),

@@ -73,6 +73,22 @@ impl SupervisorHandle {
         signer: SignerHandle,
         diagnostics: DiagnosticHandle,
     ) -> Self {
+        Self::spawn_with_evidence(
+            relay,
+            signer,
+            diagnostics,
+            crate::auth::federated::EvidenceSlot::default(),
+        )
+    }
+
+    /// Like `spawn_with_diagnostics`, attaching NIP-FI evidence from `evidence`
+    /// to every upgrade. Each connection fetches current evidence.
+    pub fn spawn_with_evidence(
+        relay: Url,
+        signer: SignerHandle,
+        diagnostics: DiagnosticHandle,
+        evidence: crate::auth::federated::EvidenceSlot,
+    ) -> Self {
         let (commands, receiver) = mpsc::channel(COMMANDS);
         let (events, _) = broadcast::channel(2048);
         tokio::spawn(run(
@@ -81,6 +97,7 @@ impl SupervisorHandle {
             receiver,
             events.clone(),
             diagnostics.clone(),
+            evidence,
         ));
         Self {
             commands,
@@ -393,6 +410,7 @@ async fn run(
     mut commands: mpsc::Receiver<Command>,
     events: broadcast::Sender<SupervisorEvent>,
     diagnostics: DiagnosticHandle,
+    evidence: crate::auth::federated::EvidenceSlot,
 ) {
     let mut desired: BTreeMap<String, DesiredSubscription> = BTreeMap::new();
     let mut publications = PublicationQueues::default();
@@ -424,9 +442,18 @@ async fn run(
         });
         let connect_started = StdInstant::now();
         let _ = events.send(SupervisorEvent::Connecting);
-        let connected =
-            session::connect_with_diagnostics(relay.clone(), signer.clone(), diagnostics.clone())
-                .await;
+        let connected = match evidence.header(&relay).await {
+            Ok(header) => {
+                session::connect_with_evidence(
+                    relay.clone(),
+                    signer.clone(),
+                    diagnostics.clone(),
+                    header,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
         let (handle, mut session_events) = match connected {
             Ok(value) => {
                 delay = Duration::from_millis(250);
@@ -532,6 +559,11 @@ async fn run(
                 }
                 event=session_events.recv()=>match event {
                     Some(event@SessionEvent::Disconnected(_))=>{
+                        if matches!(&event, SessionEvent::Disconnected(message) if message.contains(crate::auth::federated::POLICY_CLOSE_MARKER)) {
+                            // NIP-FI deadline, revocation or upgrade: never reuse the
+                            // assertion that was just closed.
+                            evidence.invalidate(&relay);
+                        }
                         diagnostics.emit(DiagnosticEvent::ReconnectRequested { source:"supervisor".into() });
                         publications.reject_all("session disconnected before publication admission");
                         let _=events.send(SupervisorEvent::Session(event));

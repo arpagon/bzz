@@ -34,6 +34,7 @@ use tokio_tungstenite::{
 pub struct HttpRequest {
     pub method: String,
     pub path: String,
+    pub query: String,
     pub headers: BTreeMap<String, String>,
     pub body: Vec<u8>,
     pub at: Instant,
@@ -206,7 +207,11 @@ pub struct ScriptedRelay {
 
 impl ScriptedRelay {
     pub async fn start(script: Script) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        Self::start_on("127.0.0.1:0", script).await
+    }
+
+    pub async fn start_on(address: &str, script: Script) -> Self {
+        let listener = TcpListener::bind(address).await.unwrap();
         let address = listener.local_addr().unwrap();
         let script = Arc::new(script);
         let log = Arc::new(Mutex::new(Log::default()));
@@ -291,6 +296,7 @@ async fn serve_websocket(stream: TcpStream, script: Arc<Script>, log: Arc<Mutex<
             let recorded = HttpRequest {
                 method: request.method().to_string(),
                 path: request.uri().path().to_owned(),
+                query: request.uri().query().unwrap_or_default().to_owned(),
                 headers: request
                     .headers()
                     .iter()
@@ -438,7 +444,8 @@ async fn read_http_request(stream: &mut TcpStream) -> Option<HttpRequest> {
     let mut request_line = lines.next()?.split(' ');
     let method = request_line.next()?.to_owned();
     let target = request_line.next()?.to_owned();
-    let path = target.split('?').next().unwrap_or_default().to_owned();
+    let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
+    let (path, query) = (path.to_owned(), query.to_owned());
     let headers: BTreeMap<String, String> = lines
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
@@ -460,6 +467,7 @@ async fn read_http_request(stream: &mut TcpStream) -> Option<HttpRequest> {
     Some(HttpRequest {
         method,
         path,
+        query,
         headers,
         body,
         at: Instant::now(),
