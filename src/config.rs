@@ -211,6 +211,11 @@ pub struct UiConfig {
     /// shown in `:broker`. Requires `publish_presence`.
     #[serde(default)]
     pub broker_agent_presence: bool,
+    /// Huddle microphone and speaker by name (default devices when unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub huddle_input_device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub huddle_output_device: Option<String>,
 }
 
 impl Default for UiConfig {
@@ -226,6 +231,8 @@ impl Default for UiConfig {
             mouse: MouseMode::Auto,
             publish_presence: false,
             broker_agent_presence: false,
+            huddle_input_device: None,
+            huddle_output_device: None,
         }
     }
 }

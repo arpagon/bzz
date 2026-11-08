@@ -30,6 +30,8 @@ pub enum Command {
     Tasks,
     /// Local agent broker: hosted agents and activity.
     Broker,
+    /// `:huddle [start|join|leave|end|mute|react <emoji>|devices|input <name>|output <name>]`.
+    Huddle(String),
     /// `:artifact rename <title> | delete | restore | move <#channel>`.
     Artifact(String),
     Unknown(String),
@@ -57,6 +59,9 @@ pub fn parse(input: &str) -> Command {
         "artifacts" => Command::Artifacts,
         "tasks" | "my-tasks" => Command::Tasks,
         "broker" => Command::Broker,
+        value if value == "huddle" || value.starts_with("huddle ") => {
+            Command::Huddle(value.trim_start_matches("huddle").trim().to_owned())
+        }
         value if value.starts_with("artifact ") => {
             Command::Artifact(value.trim_start_matches("artifact").trim().to_owned())
         }
@@ -93,6 +98,11 @@ mod tests {
         assert_eq!(parse(":artifacts"), Command::Artifacts);
         assert_eq!(parse(":tasks"), Command::Tasks);
         assert_eq!(parse(":broker"), Command::Broker);
+        assert_eq!(parse(":huddle"), Command::Huddle(String::new()));
+        assert_eq!(
+            parse(":huddle react 🎉"),
+            Command::Huddle("react 🎉".into())
+        );
         assert_eq!(
             parse(":artifact rename Ship it"),
             Command::Artifact("rename Ship it".into())

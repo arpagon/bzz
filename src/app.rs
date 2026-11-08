@@ -256,6 +256,19 @@ enum Background {
         community: Uuid,
         summaries: Vec<nostr::Event>,
     },
+    /// The selected channel's replayed huddle state.
+    HuddleState {
+        community: Uuid,
+        channel: Uuid,
+        active: Option<crate::protocol::huddle::ActiveHuddle>,
+    },
+    /// A huddle this viewer started is ready to join.
+    HuddleStarted {
+        parent: Uuid,
+        backing: Uuid,
+    },
+    #[cfg(feature = "huddles-audio")]
+    HuddleJoined(std::result::Result<Box<HuddleCall>, String>),
     /// NIP-11 artifact capabilities for `community`.
     ArtifactCaps {
         community: Uuid,
@@ -344,6 +357,19 @@ pub struct App {
     /// NIP-AR: capabilities per community and the selected channel's sync.
     artifact_caps: Option<(Uuid, crate::protocol::artifact::Capabilities)>,
     broker: Option<BrokerRuntime>,
+    /// Huddles: the selected channel's replayed state and your call.
+    huddle_view: Option<(Uuid, Option<crate::protocol::huddle::ActiveHuddle>)>,
+    huddle_loading: bool,
+    huddle_dirty: bool,
+    huddle_subscribed: Option<Uuid>,
+    huddle_backing_subscribed: Option<Uuid>,
+    huddle_reactions: std::collections::VecDeque<(String, String)>,
+    huddle_guidelines: Option<String>,
+    huddle_devices: Option<(Vec<String>, Vec<String>)>,
+    huddle_joining: bool,
+    huddle_ptt_until: Option<Instant>,
+    #[cfg(feature = "huddles-audio")]
+    huddle_call: Option<HuddleCall>,
     broker_attempted: Option<Uuid>,
     artifact_caps_requested: Option<Uuid>,
     artifact_sync: Option<ArtifactSync>,
@@ -448,6 +474,8 @@ const AGENT_SPINNER_INTERVAL: Duration = Duration::from_millis(200);
 const RELAY_EVENT_DEDUP_CAPACITY: usize = 16_384;
 const AGENT_TYPING_SUBSCRIPTION: &str = "agent-typing-selected";
 const ARTIFACT_SYNC_SUBSCRIPTION: &str = "artifact-sync-selected";
+const HUDDLE_LIFECYCLE_SUBSCRIPTION: &str = "huddle-lifecycle-selected";
+const HUDDLE_BACKING_SUBSCRIPTION: &str = "huddle-backing-selected";
 
 /// The local agent broker, served only while the owner's runtime is unlocked.
 struct BrokerRuntime {
@@ -466,6 +494,34 @@ impl BrokerRuntime {
         for signer in &self.signers {
             signer.lock().await;
         }
+    }
+}
+
+/// A joined huddle call: audio engine plus the devices it owns. Dropping it
+/// leaves the room and releases both devices.
+#[cfg(feature = "huddles-audio")]
+struct HuddleCall {
+    call: crate::huddle::audio::AudioCall,
+    _devices: crate::huddle::audio::Devices,
+    backing: Uuid,
+    parent: Uuid,
+}
+
+#[cfg(feature = "huddles-audio")]
+impl std::fmt::Debug for HuddleCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never device names or audio state beyond the room identity.
+        formatter
+            .debug_struct("HuddleCall")
+            .field("backing", &self.backing)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "huddles-audio")]
+impl HuddleCall {
+    async fn stop(self) {
+        self.call.stop().await;
     }
 }
 
@@ -721,6 +777,18 @@ impl App {
             thread_window_loading: false,
             artifact_caps: None,
             broker: None,
+            huddle_view: None,
+            huddle_loading: false,
+            huddle_dirty: false,
+            huddle_subscribed: None,
+            huddle_backing_subscribed: None,
+            huddle_reactions: std::collections::VecDeque::new(),
+            huddle_guidelines: None,
+            huddle_devices: None,
+            huddle_joining: false,
+            huddle_ptt_until: None,
+            #[cfg(feature = "huddles-audio")]
+            huddle_call: None,
             broker_attempted: None,
             artifact_caps_requested: None,
             artifact_sync: None,
@@ -904,6 +972,48 @@ impl App {
                                 }
                             }
                         }
+                    },
+                    Background::HuddleState { community, channel, active }=>{
+                        self.huddle_loading=false;
+                        if self.active_community_id()==Some(community)
+                            && self.current_channel().map(|channel| channel.id)==Some(channel)
+                        {
+                            self.huddle_view=Some((channel, active));
+                            self.cache_dirty=true;
+                            #[cfg(feature = "huddles-audio")]
+                            {
+                                let ended = self.huddle_call.as_ref().is_some_and(|call| {
+                                    call.parent == channel
+                                        && self
+                                            .huddle_view
+                                            .as_ref()
+                                            .and_then(|(_, active)| active.as_ref())
+                                            .is_none_or(|active| active.backing != call.backing)
+                                });
+                                if ended && let Some(call) = self.huddle_call.take() {
+                                    call.stop().await;
+                                    self.status_error=Some("the huddle ended; audio devices released".into());
+                                }
+                            }
+                        }
+                    },
+                    Background::HuddleStarted { parent, backing }=>{
+                        self.huddle_dirty=true;
+                        self.spawn_huddle_join(parent, backing);
+                    },
+                    #[cfg(feature = "huddles-audio")]
+                    Background::HuddleJoined(result)=>{
+                        self.huddle_joining=false;
+                        match result {
+                            Ok(call) => {
+                                if let Some(previous) = self.huddle_call.replace(*call) {
+                                    previous.stop().await;
+                                }
+                                self.status_error=Some("joined the huddle · muted · m to unmute, space to talk".into());
+                            }
+                            Err(error) => self.status_error=Some(error),
+                        }
+                        self.cache_dirty=true;
                     },
                     Background::ArtifactCaps { community, caps }=>{
                         if self.active_community_id()==Some(community) {
@@ -1282,6 +1392,7 @@ impl App {
         }
         self.reconcile_artifact_sync().await?;
         self.reconcile_broker().await;
+        self.reconcile_huddle().await?;
         self.reconcile_agent_typing_subscription().await
     }
 
@@ -2043,6 +2154,9 @@ impl App {
                 {
                     return self.apply_artifact_sync_event(&subscription, &event).await;
                 }
+                if matches!(event.kind.as_u16(), 48_100..=48_106 | 24_810) {
+                    return Ok(self.apply_huddle_event(&event));
+                }
                 let event_id = event.id.to_hex();
                 if self.relay_event_was_handled(community, &event_id) {
                     return Ok(false);
@@ -2766,6 +2880,32 @@ impl App {
                     KeyCode::Esc | KeyCode::Char('n' | 'N') => self.presentation.close_overlay(),
                     _ => {}
                 },
+                Some(
+                    ref kind @ (ConfirmationKind::HuddleStart
+                    | ConfirmationKind::HuddleJoin
+                    | ConfirmationKind::HuddleEnd),
+                ) => match key.code {
+                    KeyCode::Char('y' | 'Y') => {
+                        let kind = kind.clone();
+                        self.presentation.return_to_overlay(Overlay::Huddle);
+                        match kind {
+                            ConfirmationKind::HuddleStart => self.spawn_huddle_start(),
+                            ConfirmationKind::HuddleJoin => {
+                                if let Some(active) = self.active_huddle().cloned()
+                                    && let Some(parent) =
+                                        self.current_channel().map(|channel| channel.id)
+                                {
+                                    self.spawn_huddle_join(parent, active.backing);
+                                }
+                            }
+                            _ => self.end_huddle().await,
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                        self.presentation.return_to_overlay(Overlay::Huddle);
+                    }
+                    _ => {}
+                },
                 Some(ConfirmationKind::ArtifactDelete) => match key.code {
                     KeyCode::Char('y' | 'Y') => {
                         if let Some(id) = self.artifact_panel.selected {
@@ -2901,6 +3041,7 @@ impl App {
             Some(Overlay::DmPicker) => self.dm_picker_key(key),
             Some(Overlay::Agents) => self.agent_directory_key(key).await?,
             Some(Overlay::Artifacts) => self.artifact_panel_key(key).await?,
+            Some(Overlay::Huddle) => self.huddle_key(key).await?,
             Some(Overlay::Broker) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
                 // The owner's one-key pause for every hosted agent.
@@ -3548,6 +3689,523 @@ impl App {
             }
             FocusSurface::InboxList | FocusSurface::InboxDetail => {}
         }
+    }
+
+    fn active_huddle(&self) -> Option<&crate::protocol::huddle::ActiveHuddle> {
+        let channel = self.current_channel().map(|channel| channel.id)?;
+        self.huddle_view
+            .as_ref()
+            .filter(|(id, _)| *id == channel)
+            .and_then(|(_, active)| active.as_ref())
+    }
+
+    fn huddle_call_state(&self) -> Option<bool> {
+        #[cfg(feature = "huddles-audio")]
+        {
+            self.huddle_call.as_ref().map(|call| call.call.is_muted())
+        }
+        #[cfg(not(feature = "huddles-audio"))]
+        {
+            None
+        }
+    }
+
+    async fn stop_huddle_call(&mut self) {
+        self.huddle_ptt_until = None;
+        #[cfg(feature = "huddles-audio")]
+        if let Some(call) = self.huddle_call.take() {
+            call.stop().await;
+        }
+    }
+
+    /// One live lifecycle subscription for the selected channel, one for the
+    /// active huddle's backing channel; push-to-talk expiry; call liveness.
+    async fn reconcile_huddle(&mut self) -> Result<()> {
+        let Some(runtime) = &self.runtime else {
+            return Ok(());
+        };
+        let supervisor = runtime.supervisor.clone();
+        let now = nostr::Timestamp::now().as_secs();
+        let desired = self.current_channel().map(|channel| channel.id);
+        if desired != self.huddle_subscribed {
+            self.huddle_subscribed = desired;
+            self.huddle_view = desired.map(|channel| (channel, None));
+            self.huddle_reactions.clear();
+            self.huddle_guidelines = None;
+            match desired {
+                Some(channel) => {
+                    supervisor
+                        .subscribe_with_priority(
+                            HUDDLE_LIFECYCLE_SUBSCRIPTION,
+                            vec![serde_json::json!({
+                                "kinds": crate::protocol::huddle::LIFECYCLE_KINDS,
+                                "#h": [channel.to_string()],
+                                "since": now,
+                            })],
+                            SubscriptionPriority::Foreground,
+                        )
+                        .await?;
+                    self.huddle_dirty = true;
+                }
+                None => supervisor.close(HUDDLE_LIFECYCLE_SUBSCRIPTION).await?,
+            }
+        }
+        if self.huddle_dirty && !self.huddle_loading {
+            self.huddle_dirty = false;
+            self.spawn_huddle_query();
+        }
+        let backing = self.active_huddle().map(|active| active.backing);
+        if backing != self.huddle_backing_subscribed {
+            self.huddle_backing_subscribed = backing;
+            self.huddle_reactions.clear();
+            self.huddle_guidelines = None;
+            match backing {
+                Some(backing) => {
+                    supervisor
+                        .subscribe_with_priority(
+                            HUDDLE_BACKING_SUBSCRIPTION,
+                            vec![serde_json::json!({
+                                "kinds": [crate::protocol::huddle::KIND_REACTION, crate::protocol::huddle::KIND_GUIDELINES],
+                                "#h": [backing.to_string()],
+                                "since": now.saturating_sub(crate::protocol::huddle::JOINABLE_WINDOW_SECONDS),
+                                "limit": 50,
+                            })],
+                            SubscriptionPriority::Foreground,
+                        )
+                        .await?;
+                }
+                None => supervisor.close(HUDDLE_BACKING_SUBSCRIPTION).await?,
+            }
+        }
+        #[cfg(feature = "huddles-audio")]
+        {
+            if self
+                .huddle_ptt_until
+                .is_some_and(|until| Instant::now() >= until)
+            {
+                self.huddle_ptt_until = None;
+                if let Some(call) = &self.huddle_call {
+                    call.call.set_muted(true);
+                }
+                self.cache_dirty = true;
+            }
+            // The relay closed the room or the socket dropped.
+            if self
+                .huddle_call
+                .as_ref()
+                .is_some_and(|call| !call.call.is_running())
+            {
+                self.stop_huddle_call().await;
+                self.status_error = Some("left the huddle; audio devices released".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn spawn_huddle_query(&mut self) {
+        let (Some(runtime), Some(channel)) = (
+            &self.runtime,
+            self.current_channel().map(|channel| channel.id),
+        ) else {
+            return;
+        };
+        self.huddle_loading = true;
+        let http = runtime.http.clone();
+        let store = self.store.clone();
+        let community = runtime.community_id;
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let relay = store
+                .call(move |store| store.pinned_relay_pubkey(community))
+                .await
+                .ok()
+                .flatten();
+            let events = http
+                .query_raw(&[crate::protocol::huddle::lifecycle_filter(channel)])
+                .await
+                .unwrap_or_default();
+            let active = relay.and_then(|relay| {
+                crate::protocol::huddle::active(&events, &relay, nostr::Timestamp::now().as_secs())
+            });
+            let _ = tx
+                .send(Background::HuddleState {
+                    community,
+                    channel,
+                    active,
+                })
+                .await;
+        });
+    }
+
+    /// Lifecycle events re-replay the channel; reactions and the creator's
+    /// guidelines come from the backing channel. Nothing reaches the store.
+    fn apply_huddle_event(&mut self, event: &nostr::Event) -> bool {
+        let kind = event.kind.as_u16();
+        if crate::protocol::huddle::LIFECYCLE_KINDS.contains(&kind) {
+            let channel = self.current_channel().map(|channel| channel.id.to_string());
+            if crate::protocol::events::first_tag(event, "h") == channel {
+                self.huddle_dirty = true;
+            }
+            return false;
+        }
+        let Some(active) = self.active_huddle().cloned() else {
+            return false;
+        };
+        if kind == crate::protocol::huddle::KIND_REACTION {
+            if let Some((sender, emoji)) =
+                crate::protocol::huddle::parse_reaction(event, active.backing)
+            {
+                self.huddle_reactions.push_back((sender, emoji));
+                while self.huddle_reactions.len() > 20 {
+                    self.huddle_reactions.pop_front();
+                }
+                return true;
+            }
+        } else if kind == crate::protocol::huddle::KIND_GUIDELINES
+            && event.pubkey.to_hex() == active.creator
+            && crate::protocol::events::first_tag(event, "h").as_deref()
+                == Some(active.backing.to_string().as_str())
+            && crate::protocol::events::verify(event).is_ok()
+        {
+            self.huddle_guidelines = Some(crate::protocol::artifact::display(&event.content, 2000));
+            return true;
+        }
+        false
+    }
+
+    fn huddle_panel_view(&self) -> crate::ui::huddle::HuddleView {
+        let name = |pubkey: &str| {
+            self.profiles
+                .get(pubkey)
+                .and_then(|profile| {
+                    profile
+                        .display_name
+                        .clone()
+                        .or_else(|| profile.name.clone())
+                })
+                .unwrap_or_else(|| pubkey.chars().take(8).collect())
+        };
+        let active = self.active_huddle();
+        crate::ui::huddle::HuddleView {
+            channel: self
+                .current_channel()
+                .map(|channel| channel.name.clone())
+                .unwrap_or_default(),
+            roster: active.map(|active| {
+                active
+                    .participants
+                    .iter()
+                    .map(|pubkey| name(pubkey))
+                    .collect()
+            }),
+            started_minutes_ago: active.map_or(0, |active| {
+                nostr::Timestamp::now()
+                    .as_secs()
+                    .saturating_sub(active.started_at)
+                    / 60
+            }),
+            guidelines: self.huddle_guidelines.clone(),
+            reactions: self
+                .huddle_reactions
+                .iter()
+                .map(|(sender, emoji)| format!("{emoji} {}", name(sender)))
+                .collect(),
+            call: self.huddle_call_state(),
+            joining: self.huddle_joining,
+            audio_available: crate::huddle::AUDIO,
+            devices: self.huddle_devices.clone(),
+            you_created: active
+                .is_some_and(|active| Some(active.creator.as_str()) == self.self_pubkey()),
+        }
+    }
+
+    async fn huddle_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
+            KeyCode::Char('s') => return self.huddle_command("start").await,
+            KeyCode::Char('j') => return self.huddle_command("join").await,
+            KeyCode::Char('l') => return self.huddle_command("leave").await,
+            KeyCode::Char('e') => return self.huddle_command("end").await,
+            KeyCode::Char('m') => return self.huddle_command("mute").await,
+            // Push-to-talk: each press (and key repeat) keeps you live 600 ms.
+            #[cfg(feature = "huddles-audio")]
+            KeyCode::Char(' ') => {
+                if let Some(call) = &self.huddle_call {
+                    call.call.set_muted(false);
+                    self.huddle_ptt_until = Some(Instant::now() + Duration::from_millis(600));
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn huddle_command(&mut self, arguments: &str) -> Result<()> {
+        let (verb, rest) = arguments.split_once(' ').unwrap_or((arguments, ""));
+        let rest = rest.trim();
+        if self.runtime.is_none() || self.current_channel().is_none() {
+            self.status_error = Some("select a channel in a connected community".into());
+            return Ok(());
+        }
+        let active = self.active_huddle().cloned();
+        let in_call = self.huddle_call_state().is_some();
+        match verb {
+            "" => {
+                self.huddle_dirty = true;
+                self.presentation.open_overlay(Overlay::Huddle);
+            }
+            "start" if active.is_some() => {
+                self.status_error = Some("a huddle is already running here; join it".into());
+            }
+            "start" => {
+                self.presentation.open_overlay(Overlay::Huddle);
+                self.presentation
+                    .open_confirmation(ConfirmationKind::HuddleStart);
+            }
+            "join" if !crate::huddle::AUDIO => {
+                self.status_error = Some(crate::huddle::VIEW_ONLY.into())
+            }
+            "join" if active.is_none() => {
+                self.status_error = Some("no huddle is running here".into())
+            }
+            "join" if in_call || self.huddle_joining => {}
+            "join" => {
+                self.presentation.open_overlay(Overlay::Huddle);
+                self.presentation
+                    .open_confirmation(ConfirmationKind::HuddleJoin);
+            }
+            "leave" => self.leave_huddle().await,
+            "end"
+                if active
+                    .as_ref()
+                    .is_some_and(|active| Some(active.creator.as_str()) == self.self_pubkey()) =>
+            {
+                self.presentation.open_overlay(Overlay::Huddle);
+                self.presentation
+                    .open_confirmation(ConfirmationKind::HuddleEnd);
+            }
+            "end" => self.status_error = Some("only the huddle's creator can end it".into()),
+            "mute" => {
+                #[cfg(feature = "huddles-audio")]
+                if let Some(call) = &self.huddle_call {
+                    call.call.set_muted(!call.call.is_muted());
+                    self.huddle_ptt_until = None;
+                }
+                if !in_call {
+                    self.status_error = Some("you are not in a huddle call".into());
+                }
+            }
+            "react" if !rest.is_empty() => {
+                if let (Some(active), Some(runtime)) = (active, &self.runtime) {
+                    let name = self
+                        .self_pubkey()
+                        .and_then(|pubkey| self.profiles.get(pubkey))
+                        .and_then(|profile| {
+                            profile
+                                .display_name
+                                .clone()
+                                .or_else(|| profile.name.clone())
+                        })
+                        .unwrap_or_default();
+                    match crate::protocol::huddle::reaction(active.backing, rest, &name) {
+                        Ok(builder) => {
+                            let signer = runtime.signer.clone();
+                            let supervisor = runtime.supervisor.clone();
+                            tokio::spawn(async move {
+                                if let Ok(event) = signer.sign(builder).await {
+                                    let _ = supervisor.publish(event).await;
+                                }
+                            });
+                        }
+                        Err(error) => self.status_error = Some(error.to_string()),
+                    }
+                }
+            }
+            "devices" => {
+                #[cfg(feature = "huddles-audio")]
+                {
+                    self.huddle_devices = Some(crate::huddle::audio::device_names());
+                }
+                self.presentation.open_overlay(Overlay::Huddle);
+            }
+            "input" | "output" => {
+                let value = (!rest.is_empty()).then(|| rest.to_owned());
+                if verb == "input" {
+                    self.config.ui.huddle_input_device = value;
+                } else {
+                    self.config.ui.huddle_output_device = value;
+                }
+                if let Err(error) = self.config.save(&self.paths) {
+                    self.status_error = Some(error.to_string());
+                } else {
+                    self.status_error = Some(format!(
+                        "huddle {verb} device saved; it applies on the next join"
+                    ));
+                }
+            }
+            _ => {
+                self.status_error = Some(
+                    "usage: :huddle [start|join|leave|end|mute|react <emoji>|devices|input <name>|output <name>]".into(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Start (after confirmation): backing channel, then 48100; then join.
+    fn spawn_huddle_start(&mut self) {
+        let (Some(runtime), Some(parent)) = (
+            &self.runtime,
+            self.current_channel().map(|channel| channel.id),
+        ) else {
+            return;
+        };
+        let signer = runtime.signer.clone();
+        let supervisor = runtime.supervisor.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let backing = Uuid::new_v4();
+            let steps = async {
+                for builder in [
+                    crate::protocol::huddle::backing_channel(backing)?,
+                    crate::protocol::huddle::started(parent, backing)?,
+                ] {
+                    let ack = supervisor.publish(signer.sign(builder).await?).await?;
+                    if !ack.accepted {
+                        return Err(Error::Protocol(format!(
+                            "the relay refused the huddle: {}",
+                            crate::protocol::artifact::display(&ack.message, 120)
+                        )));
+                    }
+                }
+                Ok::<_, Error>(())
+            };
+            let message = match steps.await {
+                Ok(()) => Background::HuddleStarted { parent, backing },
+                Err(error) => {
+                    // Roll back the backing channel, as desktop does.
+                    if let Ok(builder) = crate::protocol::huddle::archive(backing)
+                        && let Ok(event) = signer.sign(builder).await
+                    {
+                        let _ = supervisor.publish(event).await;
+                    }
+                    Background::Failed(error.to_string())
+                }
+            };
+            let _ = tx.send(message).await;
+        });
+    }
+
+    #[cfg_attr(not(feature = "huddles-audio"), allow(unused_variables))]
+    fn spawn_huddle_join(&mut self, parent: Uuid, backing: Uuid) {
+        #[cfg(not(feature = "huddles-audio"))]
+        {
+            self.status_error = Some(crate::huddle::VIEW_ONLY.into());
+        }
+        #[cfg(feature = "huddles-audio")]
+        {
+            let Some(runtime) = &self.runtime else { return };
+            let Some(entry) = self
+                .config
+                .communities
+                .iter()
+                .find(|entry| entry.id == runtime.community_id)
+            else {
+                return;
+            };
+            let Ok(endpoint) = validate_relay_url(&entry.relay_url, entry.allow_insecure_localhost)
+            else {
+                return;
+            };
+            self.huddle_joining = true;
+            let signer = runtime.signer.clone();
+            let input = self.config.ui.huddle_input_device.clone();
+            let output = self.config.ui.huddle_output_device.clone();
+            let tx = self.background_tx.clone();
+            tokio::spawn(async move {
+                let joined = async {
+                    let (devices, capture, playback) = tokio::task::spawn_blocking(move || {
+                        crate::huddle::audio::open_devices(input.as_deref(), output.as_deref())
+                    })
+                    .await
+                    .map_err(|_| {
+                        Error::Unsupported(crate::huddle::audio::MICROPHONE_DENIED.into())
+                    })??;
+                    let joined =
+                        crate::huddle::audio::join(&endpoint.websocket, backing, parent, &signer)
+                            .await?;
+                    let call = crate::huddle::audio::start(joined, capture, playback)?;
+                    Ok::<_, Error>(Box::new(HuddleCall {
+                        call,
+                        _devices: devices,
+                        backing,
+                        parent,
+                    }))
+                };
+                let _ = tx
+                    .send(Background::HuddleJoined(
+                        joined.await.map_err(|error| error.to_string()),
+                    ))
+                    .await;
+            });
+        }
+    }
+
+    /// Leave: if other humans remain, leave the backing channel; the last
+    /// human out who created it ends it, as desktop does.
+    async fn leave_huddle(&mut self) {
+        let active = self.active_huddle().cloned();
+        self.stop_huddle_call().await;
+        let (Some(active), Some(runtime)) = (active, &self.runtime) else {
+            return;
+        };
+        let me = runtime.signer.public_key().to_hex();
+        let others = active
+            .participants
+            .iter()
+            .filter(|pubkey| **pubkey != me)
+            .count();
+        if others == 0 && active.creator == me {
+            self.end_huddle().await;
+            return;
+        }
+        if let Ok(builder) = crate::protocol::huddle::leave(active.backing) {
+            let signer = runtime.signer.clone();
+            let supervisor = runtime.supervisor.clone();
+            tokio::spawn(async move {
+                if let Ok(event) = signer.sign(builder).await {
+                    let _ = supervisor.publish(event).await;
+                }
+            });
+        }
+        self.status_error = Some("left the huddle; audio devices released".into());
+        self.huddle_dirty = true;
+    }
+
+    async fn end_huddle(&mut self) {
+        let active = self.active_huddle().cloned();
+        let parent = self.current_channel().map(|channel| channel.id);
+        self.stop_huddle_call().await;
+        let (Some(active), Some(parent), Some(runtime)) = (active, parent, &self.runtime) else {
+            return;
+        };
+        let signer = runtime.signer.clone();
+        let supervisor = runtime.supervisor.clone();
+        tokio::spawn(async move {
+            for builder in [
+                crate::protocol::huddle::ended(parent, active.backing),
+                crate::protocol::huddle::archive(active.backing),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if let Ok(event) = signer.sign(builder).await {
+                    let _ = supervisor.publish(event).await;
+                }
+            }
+        });
+        self.status_error = Some("huddle ended".into());
+        self.huddle_dirty = true;
     }
 
     /// Serves the broker for this community's hosted agents while the owner
@@ -6692,6 +7350,8 @@ impl App {
                 if let Some(broker) = self.broker.take() {
                     broker.stop().await;
                 }
+                // No audio runs while bzz is locked.
+                self.stop_huddle_call().await;
                 if let Some(runtime) = self.runtime.take() {
                     if self.config.ui.publish_presence
                         && self.last_presence_publish.take().is_some()
@@ -6753,6 +7413,9 @@ impl App {
                     }
                 };
                 return self.open_artifacts(scope).await;
+            }
+            crate::ui::command::Command::Huddle(arguments) => {
+                return self.huddle_command(&arguments).await;
             }
             crate::ui::command::Command::Broker => {
                 self.presentation.open_overlay(Overlay::Broker);
@@ -7068,6 +7731,7 @@ impl App {
     }
 
     async fn shutdown(&mut self) {
+        self.stop_huddle_call().await;
         self.agent_typing.clear();
         self.typing_subscription_channel = None;
         self.closed_typing_channel = None;
@@ -7663,6 +8327,7 @@ impl App {
             Some(Overlay::Agents) => "AGENTS",
             Some(Overlay::Artifacts) => "ARTIFACTS",
             Some(Overlay::Broker) => "BROKER",
+            Some(Overlay::Huddle) => "HUDDLE",
             Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) | None
                 if self.presentation.composer_target.is_some() =>
             {
@@ -7690,7 +8355,18 @@ impl App {
                 .map(sanitize::single_line)
                 .unwrap_or_default()
         });
-        let activity = self.visible_agent_typing_line(area.width);
+        let huddle_line = self.active_huddle().map(|active| {
+            let call = match self.huddle_call_state() {
+                Some(true) => " · you: muted",
+                Some(false) => " · you: LIVE",
+                None => "",
+            };
+            format!(
+                "🎧 huddle · {} in it{call} · :huddle",
+                active.participants.len()
+            )
+        });
+        let activity = self.visible_agent_typing_line(area.width).or(huddle_line);
         crate::ui::status::render(
             frame,
             area,
@@ -7805,6 +8481,24 @@ impl App {
                             .unwrap_or_default()
                     ),
                 ),
+                Some(ConfirmationKind::HuddleStart) => self.render_prompt(
+                    frame,
+                    area,
+                    " start a huddle? ",
+                    "Everyone in this channel can see it and join · you join muted · y start · n/Esc cancel",
+                ),
+                Some(ConfirmationKind::HuddleJoin) => self.render_prompt(
+                    frame,
+                    area,
+                    " join the huddle? ",
+                    "bzz opens your microphone and speaker; you start muted · y join · n/Esc cancel",
+                ),
+                Some(ConfirmationKind::HuddleEnd) => self.render_prompt(
+                    frame,
+                    area,
+                    " end the huddle for everyone? ",
+                    "Everyone is disconnected · y end · n/Esc cancel",
+                ),
                 Some(ConfirmationKind::ArtifactMove) => {
                     let detail = self.artifact_move_preview();
                     self.render_prompt(frame, area, " move artifact? ", &detail)
@@ -7905,6 +8599,11 @@ impl App {
                     }
                 }
                 crate::ui::search::render(frame, popup, &self.search_state, &self.theme);
+            }
+            Some(Overlay::Huddle) => {
+                let popup = centered(area, 90, area.height.saturating_sub(2).min(30));
+                let view = self.huddle_panel_view();
+                crate::ui::huddle::render(frame, popup, &view, &self.theme);
             }
             Some(Overlay::Broker) => {
                 let popup = centered(area, 100, area.height.saturating_sub(2).min(30));
@@ -8598,6 +9297,85 @@ mod tests {
         ));
         assert!(!triggers_directory_refresh(40_099, "malformed"));
         assert!(!triggers_directory_refresh(9, "member_joined"));
+    }
+
+    #[tokio::test]
+    async fn huddle_panel_shows_roster_reactions_and_only_creator_guidelines() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let channel = Uuid::new_v4();
+        let backing = Uuid::new_v4();
+        app.channels = vec![Channel {
+            id: channel,
+            name: "talk".into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 2,
+            last_event_at: None,
+            facts: Default::default(),
+        }];
+        app.selected_channel = 0;
+        let creator = Keys::generate();
+        let guest = Keys::generate();
+        app.huddle_view = Some((
+            channel,
+            Some(crate::protocol::huddle::ActiveHuddle {
+                backing,
+                creator: creator.public_key().to_hex(),
+                started_at: nostr::Timestamp::now().as_secs(),
+                participants: vec![creator.public_key().to_hex(), guest.public_key().to_hex()],
+            }),
+        ));
+        let reaction = crate::protocol::huddle::reaction(backing, "🎉", "guest")
+            .unwrap()
+            .sign_with_keys(&guest)
+            .unwrap();
+        assert!(app.apply_huddle_event(&reaction));
+        let guidelines = |keys: &Keys, text: &str| {
+            EventBuilder::new(Kind::Custom(crate::protocol::huddle::KIND_GUIDELINES), text)
+                .tags([Tag::parse(["h", backing.to_string().as_str()]).unwrap()])
+                .sign_with_keys(keys)
+                .unwrap()
+        };
+        assert!(!app.apply_huddle_event(&guidelines(&guest, "forged")));
+        assert!(
+            app.huddle_guidelines.is_none(),
+            "only the creator sets guidelines"
+        );
+        assert!(app.apply_huddle_event(&guidelines(&creator, "Keep it short")));
+        // A live lifecycle event for this channel re-replays its state.
+        let ended = crate::protocol::huddle::ended(channel, backing)
+            .unwrap()
+            .sign_with_keys(&creator)
+            .unwrap();
+        app.apply_huddle_event(&ended);
+        assert!(app.huddle_dirty);
+        // Without a connected runtime, commands explain instead of acting.
+        app.huddle_command("join").await.unwrap();
+        assert!(app.status_error.is_some());
+
+        let view = app.huddle_panel_view();
+        assert_eq!(view.roster.as_ref().map(Vec::len), Some(2));
+        let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::huddle::render(frame, frame.area(), &view, &app.theme))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(screen.contains("2 in it"), "{screen}");
+        assert!(screen.contains("Keep it short"), "{screen}");
+        // Names come from profiles, never the sender's own `sender_name`.
+        assert!(screen.contains("🎉"), "{screen}");
+        assert!(!screen.contains("guest"), "{screen}");
+        assert!(!screen.contains("forged"), "{screen}");
     }
 
     #[tokio::test]

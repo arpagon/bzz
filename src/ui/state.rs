@@ -41,6 +41,7 @@ pub enum Overlay {
     Agents,
     Artifacts,
     Broker,
+    Huddle,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,6 +56,12 @@ pub enum ConfirmationKind {
     ArtifactDelete,
     /// Move of the selected artifact (destination held by the App).
     ArtifactMove,
+    /// Start a huddle in the selected channel.
+    HuddleStart,
+    /// Join the selected channel's huddle audio (muted).
+    HuddleJoin,
+    /// End the huddle for everyone (creator only).
+    HuddleEnd,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
