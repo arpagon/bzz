@@ -223,6 +223,7 @@ fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
                 about: None,
                 event_id: "d".repeat(64),
                 created_at: 1,
+                verified: None,
             },
         ),
         (
@@ -236,6 +237,7 @@ fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
                 about: None,
                 event_id: "e".repeat(64),
                 created_at: 1,
+                verified: None,
             },
         ),
     ]);
@@ -560,6 +562,7 @@ fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
         about: None,
         event_id: "b".repeat(64),
         created_at: 1,
+        verified: None,
     };
     let profiles = HashMap::from([(pubkey.clone(), profile)]);
     let items = vec![InboxItem {

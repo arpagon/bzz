@@ -46,7 +46,7 @@ if [[ "$PROFILE" == nip-fi ]]; then
   # The test issuer is reached over loopback HTTP, which NIP-FI allows only
   # through the operator-asserted `mesh` JWKS transport. Never do this in
   # production.
-  export BUZZ_NIP_FI_ISSUERS='[{"issuer":"http://localhost:3093","command_audiences":["https://localhost:3030"],"token_class":"nip-fi+jwt","algorithms":["ES256"],"skew_seconds":5,"maximum_assertion_age_seconds":600,"jwks_uri":"http://localhost:3093/.well-known/jwks.json","jwks_transport":"mesh","jwks_refresh_interval_seconds":60,"jwks_hard_deadline_seconds":3600,"maximum_command_age_seconds":30,"authorized_principals":["bzz-test-operator"]}]'
+  export BUZZ_NIP_FI_ISSUERS='[{"issuer":"http://localhost:3093","command_audiences":["https://localhost:3030"],"token_class":"nip-fi+jwt","algorithms":["ES256"],"skew_seconds":5,"maximum_assertion_age_seconds":600,"jwks_uri":"http://localhost:3093/.well-known/jwks.json","jwks_transport":"mesh","jwks_refresh_interval_seconds":60,"jwks_hard_deadline_seconds":3600,"maximum_command_age_seconds":30,"authorized_principals":["bzz-test-operator"],"public_profile":true,"public_issuer_label":"bzz Test IdP"}]'
   export BUZZ_NIP_FI_COMMUNITIES='[{"canonical_uri":"https://localhost:3030","authorized_issuers":["http://localhost:3093"]}]'
   # Short lifetime so the deadline-reconnect test runs in seconds.
   export BUZZ_NIP_FI_MAX_CONNECTION_LIFETIME_SECS=20

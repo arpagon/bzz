@@ -47,7 +47,7 @@ impl Store {
         }
         if matches!(
             event.kind.as_u16(),
-            30_622 | 39_000..=39_003 | 40_099 | 44_100 | 44_101
+            30_382 | 30_622 | 39_000..=39_003 | 40_099 | 44_100 | 44_101
         ) {
             let relay_pubkey = self.connection.query_row(
                 "SELECT relay_pubkey FROM communities WHERE id=?1",
@@ -109,6 +109,10 @@ impl Store {
         if event.kind.as_u16() == 30_622 {
             apply_dm_visibility_snapshot(&transaction, community_id, event)?;
         }
+        let verified_profile = (event.kind.as_u16()
+            == crate::protocol::verified_profile::KIND_VERIFIED_PROFILE)
+            .then(|| crate::protocol::verified_profile::parse(event, &event.pubkey.to_hex()))
+            .flatten();
         if matches!(event.kind.as_u16(), 9 | 40_002)
             && let Some(channel) = channel
         {
@@ -238,6 +242,9 @@ impl Store {
             crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
         }
         transaction.commit()?;
+        if let Some(profile) = verified_profile {
+            self.apply_verified_profile(community_id, &profile)?;
+        }
         if event.kind.as_u16() == 39_002 {
             // Membership is the bounded candidate authority. Public agent
             // records are reconciled in one coalesced pass after directory

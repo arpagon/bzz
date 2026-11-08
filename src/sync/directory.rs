@@ -320,6 +320,43 @@ pub async fn hydrate_profiles(
     Ok(count)
 }
 
+/// NIP-FI verified profiles (relay-signed 30382) for `people`, when the relay
+/// advertises them (`federated_identity.public_profile` in NIP-11).
+pub async fn hydrate_verified_profiles(
+    community_id: Uuid,
+    people: impl IntoIterator<Item = String>,
+    relay_pubkey: &str,
+    http: &HttpClient,
+    store: &StoreHandle,
+) -> Result<usize> {
+    let people = people
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut count = 0;
+    for chunk in people.chunks(100) {
+        let mut events = http
+            .query(&[QueryFilter {
+                kinds: vec![u32::from(
+                    crate::protocol::verified_profile::KIND_VERIFIED_PROFILE,
+                )],
+                authors: vec![relay_pubkey.to_owned()],
+                limit: Some(chunk.len() as u32),
+                ..QueryFilter::default()
+            }
+            .tag("d", chunk.to_vec())])
+            .await?;
+        events.retain(|event| {
+            event.kind.as_u16() == crate::protocol::verified_profile::KIND_VERIFIED_PROFILE
+                && event.pubkey.to_hex() == relay_pubkey
+        });
+        count += events.len();
+        apply(community_id, events, store).await?;
+    }
+    Ok(count)
+}
+
 async fn query_all(http: &HttpClient, mut filter: QueryFilter) -> Result<Vec<Event>> {
     const PAGE_SIZE: u32 = 500;
     let mut events = Vec::new();

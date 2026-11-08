@@ -21,7 +21,7 @@ fn fresh_database_has_expected_pragmas_and_schema() {
     let foreign_keys: u32 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
     assert_eq!(
         foreign_keys, 1,
         "foreign-key enforcement must remain enabled"
@@ -175,7 +175,7 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
     let version: u32 = upgraded
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
     let inbox_projection_table: u32 = upgraded
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='inbox_conversations'",
@@ -278,8 +278,9 @@ fn schema_eight_repairs_historical_bot_roles_and_duplicate_projection_drift() {
         .unwrap();
     connection
         .execute_batch(
-            "DELETE FROM schema_migrations WHERE version IN (8,9,10,11);
+            "DELETE FROM schema_migrations WHERE version IN (8,9,10,11,12);
              DROP TABLE viewer_memberships;
+             DROP TABLE verified_profiles;
              ALTER TABLE channels DROP COLUMN facts_json;",
         )
         .unwrap();
@@ -448,7 +449,8 @@ fn schema_nine_projects_guest_roles_and_repairs_channel_facts_on_reingest() {
             "UPDATE memberships SET role='member' WHERE channel_id='{channel_id}';
              ALTER TABLE channels DROP COLUMN facts_json;
              DROP TABLE viewer_memberships;
-             DELETE FROM schema_migrations WHERE version IN (9,10,11);"
+             DROP TABLE verified_profiles;
+             DELETE FROM schema_migrations WHERE version IN (9,10,11,12);"
         ))
         .unwrap();
     connection.pragma_update(None, "user_version", 8).unwrap();

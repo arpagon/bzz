@@ -227,6 +227,9 @@ pub struct Profile {
     pub about: Option<String>,
     pub event_id: String,
     pub created_at: u64,
+    /// Relay-signed NIP-FI verified name (kind 30382), when current.
+    #[serde(default)]
+    pub verified: Option<crate::protocol::verified_profile::VerifiedName>,
 }
 
 impl Profile {
@@ -234,8 +237,40 @@ impl Profile {
         self.display_name
             .as_ref()
             .or(self.name.as_ref())
+            .or(self
+                .verified
+                .as_ref()
+                .map(|verified| &verified.display_name))
             .cloned()
             .unwrap_or_else(|| abbreviated_pubkey(&self.pubkey))
+    }
+
+    /// A person known only through a verified profile.
+    pub fn verified_only(
+        pubkey: &str,
+        name: crate::protocol::verified_profile::VerifiedName,
+        event_id: String,
+        created_at: u64,
+    ) -> Self {
+        Self {
+            pubkey: pubkey.to_owned(),
+            display_name: None,
+            name: None,
+            picture: None,
+            nip05: None,
+            about: None,
+            event_id,
+            created_at,
+            verified: Some(name),
+        }
+    }
+
+    /// Author label with a verified marker for NIP-FI verified people.
+    pub fn author_label(&self) -> String {
+        match &self.verified {
+            Some(_) => format!("{} ✓", self.label()),
+            None => self.label(),
+        }
     }
 }
 

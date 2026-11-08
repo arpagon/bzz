@@ -6,5 +6,6 @@ pub mod read_state_snapshot;
 pub mod system;
 pub mod thread_summary;
 pub mod types;
+pub mod verified_profile;
 
 pub use crate::config::validate_relay_url;

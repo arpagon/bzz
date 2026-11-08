@@ -318,6 +318,8 @@ fn handle(
                 "aud": format!("https://{}", relay.trim_start_matches("wss://")),
                 "iat": issued_at,
                 "exp": issued_at + config.assertion_ttl,
+                // Operator-authorized public names (NIP-FI verified profiles).
+                "nostr_public_profile": {"display_name": "Test Employee", "username": "employee"},
             });
             let jws = sign_jws(key, &claims);
             state.lock().unwrap().issued.push(claims.clone());

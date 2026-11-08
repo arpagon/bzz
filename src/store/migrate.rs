@@ -35,6 +35,10 @@ const MIGRATIONS: &[(u32, &str)] = &[
         11,
         include_str!("../../migrations/0011_buzz_desktop_identities.sql"),
     ),
+    (
+        12,
+        include_str!("../../migrations/0012_verified_profiles.sql"),
+    ),
 ];
 
 pub fn configure(connection: &Connection) -> Result<()> {

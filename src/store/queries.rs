@@ -448,11 +448,59 @@ impl Store {
     }
 
     pub fn profile(&self, community_id: Uuid, pubkey: &str) -> Result<Option<Profile>> {
-        self.connection.query_row(
+        let profile = self.connection.query_row(
             "SELECT pubkey,display_name,name,picture,nip05,about,event_id,created_at FROM profiles WHERE community_id=?1 AND pubkey=?2",
             params![community_id.to_string(),pubkey],
-            |row| Ok(Profile { pubkey:row.get(0)?,display_name:row.get(1)?,name:row.get(2)?,picture:row.get(3)?,nip05:row.get(4)?,about:row.get(5)?,event_id:row.get(6)?,created_at:u64::try_from(row.get::<_,i64>(7)?).unwrap_or(0) }),
-        ).optional().map_err(Into::into)
+            |row| Ok(Profile { pubkey:row.get(0)?,display_name:row.get(1)?,name:row.get(2)?,picture:row.get(3)?,nip05:row.get(4)?,about:row.get(5)?,event_id:row.get(6)?,created_at:u64::try_from(row.get::<_,i64>(7)?).unwrap_or(0),verified:None }),
+        ).optional()?;
+        let verified = self
+            .verified_names(community_id, Some(pubkey))?
+            .remove(pubkey);
+        Ok(match (profile, verified) {
+            (Some(mut profile), verified) => {
+                profile.verified = verified.map(|(name, _, _)| name);
+                Some(profile)
+            }
+            (None, Some((name, event_id, created_at))) => {
+                Some(Profile::verified_only(pubkey, name, event_id, created_at))
+            }
+            (None, None) => None,
+        })
+    }
+
+    /// Current active verified names, optionally for one person.
+    fn verified_names(
+        &self,
+        community_id: Uuid,
+        pubkey: Option<&str>,
+    ) -> Result<
+        std::collections::HashMap<
+            String,
+            (crate::protocol::verified_profile::VerifiedName, String, u64),
+        >,
+    > {
+        let mut statement = self.connection.prepare(
+            "SELECT pubkey,display_name,username,full_name,issuer_label,verified_at,event_id,created_at
+             FROM verified_profiles WHERE community_id=?1 AND active=1 AND (?2 IS NULL OR pubkey=?2)",
+        )?;
+        Ok(statement
+            .query_map(params![community_id.to_string(), pubkey], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (
+                        crate::protocol::verified_profile::VerifiedName {
+                            display_name: row.get(1)?,
+                            username: row.get(2)?,
+                            full_name: row.get(3)?,
+                            issuer_label: row.get(4)?,
+                            verified_at: u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                        },
+                        row.get::<_, String>(6)?,
+                        u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                    ),
+                ))
+            })?
+            .collect::<std::result::Result<_, _>>()?)
     }
 
     pub fn insert_outbox(&mut self, community_id: Uuid, event: &Event) -> Result<()> {
@@ -1185,7 +1233,7 @@ impl Store {
         let mut statement = self.connection.prepare(
             "SELECT pubkey,display_name,name,picture,nip05,about,event_id,created_at FROM profiles WHERE community_id=?1",
         )?;
-        Ok(statement
+        let profiles = statement
             .query_map([community_id.to_string()], |row| {
                 let profile = Profile {
                     pubkey: row.get(0)?,
@@ -1196,10 +1244,25 @@ impl Store {
                     about: row.get(5)?,
                     event_id: row.get(6)?,
                     created_at: u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                    verified: None,
                 };
                 Ok((profile.pubkey.clone(), profile))
             })?
-            .collect::<std::result::Result<std::collections::HashMap<_, _>, _>>()?)
+            .collect::<std::result::Result<std::collections::HashMap<_, _>, _>>()?;
+        drop(statement);
+        let mut profiles = profiles;
+        for (pubkey, (name, event_id, created_at)) in self.verified_names(community_id, None)? {
+            match profiles.get_mut(&pubkey) {
+                Some(profile) => profile.verified = Some(name),
+                None => {
+                    profiles.insert(
+                        pubkey.clone(),
+                        Profile::verified_only(&pubkey, name, event_id, created_at),
+                    );
+                }
+            }
+        }
+        Ok(profiles)
     }
 
     pub fn save_ui_state<T: serde::Serialize>(
@@ -1234,6 +1297,36 @@ impl Store {
             serde_json::from_str(&value).map_err(|error| Error::Serialization(error.to_string()))
         })
         .transpose()
+    }
+
+    /// Project a relay-signed NIP-FI verified profile (kind 30382), newest wins.
+    pub fn apply_verified_profile(
+        &self,
+        community_id: Uuid,
+        profile: &crate::protocol::verified_profile::VerifiedProfile,
+    ) -> Result<bool> {
+        let name = profile.name.as_ref();
+        let changed = self.connection.execute(
+            "INSERT INTO verified_profiles(community_id,pubkey,active,display_name,username,full_name,issuer_label,verified_at,event_id,created_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+             ON CONFLICT(community_id,pubkey) DO UPDATE SET active=excluded.active,display_name=excluded.display_name,
+               username=excluded.username,full_name=excluded.full_name,issuer_label=excluded.issuer_label,
+               verified_at=excluded.verified_at,event_id=excluded.event_id,created_at=excluded.created_at
+             WHERE (excluded.created_at,excluded.event_id) > (verified_profiles.created_at,verified_profiles.event_id)",
+            params![
+                community_id.to_string(),
+                profile.pubkey,
+                name.is_some(),
+                name.map(|name| name.display_name.clone()),
+                name.map(|name| name.username.clone()),
+                name.and_then(|name| name.full_name.clone()),
+                name.map(|name| name.issuer_label.clone()),
+                name.map(|name| i64::try_from(name.verified_at).unwrap_or(i64::MAX)),
+                profile.event_id,
+                i64::try_from(profile.created_at).unwrap_or(i64::MAX),
+            ],
+        )?;
+        Ok(changed > 0)
     }
 
     pub fn pinned_relay_pubkey(&self, community_id: Uuid) -> Result<Option<String>> {

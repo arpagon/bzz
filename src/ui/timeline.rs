@@ -754,7 +754,7 @@ fn message_block(
     }
     let author = profiles
         .get(&message.pubkey)
-        .map(Profile::label)
+        .map(Profile::author_label)
         .unwrap_or_else(|| crate::domain::abbreviated_pubkey(&message.pubkey));
     let author = sanitize::single_line(&author);
     let agent = agents.get(&message.pubkey);

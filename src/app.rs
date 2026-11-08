@@ -893,7 +893,10 @@ impl App {
                     })?
                     .to_owned();
                 store
-                    .call(move |store| store.pin_relay_pubkey(community, &relay_pubkey))
+                    .call({
+                        let relay_pubkey = relay_pubkey.clone();
+                        move |store| store.pin_relay_pubkey(community, &relay_pubkey)
+                    })
                     .await?;
                 let had_evidence = evidence.is_set();
                 match crate::auth::federated::install_from_store(
@@ -928,6 +931,16 @@ impl App {
                 // relay can prove it; otherwise the subscription above is it.
                 let _ = read_state::load_snapshot(community, &http, &signer, &store).await;
                 let _ = inbox.refresh(&pubkey).await;
+                if info.pointer("/federated_identity/public_profile").is_some() {
+                    let _ = crate::sync::directory::hydrate_verified_profiles(
+                        community,
+                        authors.iter().cloned(),
+                        &relay_pubkey,
+                        &http,
+                        &store,
+                    )
+                    .await;
+                }
                 let _ = profiles.hydrate(authors).await;
                 let _ = outbox::flush_with_diagnostics(
                     community,

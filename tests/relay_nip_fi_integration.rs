@@ -126,6 +126,71 @@ async fn fi_relay_denies_without_evidence_and_admits_with_nip_fa_evidence() {
         Some(SessionEvent::Authenticated)
     ));
     handle.shutdown().await;
+
+    // The admission published a relay-signed NIP-FI verified profile.
+    let advertised = http_info.nip11().await.unwrap();
+    assert!(
+        advertised
+            .pointer("/federated_identity/public_profile")
+            .is_some()
+    );
+    let relay_pubkey = bzz::protocol::http::relay_signing_pubkey(&advertised)
+        .unwrap()
+        .to_owned();
+    let (store, community) = {
+        let identity = bzz::config::IdentityConfig {
+            id: uuid::Uuid::new_v4(),
+            label: "fi".into(),
+            pubkey: pubkey.clone(),
+            backend: bzz::config::KeyBackend::EncryptedFile,
+            key_ref: "fi".into(),
+        };
+        let mut config = bzz::config::Config::default();
+        config.identities.push(identity.clone());
+        let community = config
+            .add_community("fi".into(), "ws://localhost:3030".into(), identity.id, true)
+            .unwrap();
+        let mut store = bzz::store::Store::open_memory().unwrap();
+        store.sync_config(&config).unwrap();
+        store.pin_relay_pubkey(community, &relay_pubkey).unwrap();
+        (
+            bzz::store::writer::StoreHandle::spawn(store).unwrap(),
+            community,
+        )
+    };
+    let fi_http = HttpClient::new(url::Url::parse(RELAY_HTTP).unwrap(), signer.clone())
+        .unwrap()
+        .with_evidence(slot.clone());
+    let mut found = 0;
+    for _ in 0..20 {
+        found = bzz::sync::directory::hydrate_verified_profiles(
+            community,
+            [pubkey.clone()],
+            &relay_pubkey,
+            &fi_http,
+            &store,
+        )
+        .await
+        .unwrap();
+        if found > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(
+        found, 1,
+        "relay published a verified profile after admission"
+    );
+    let lookup = pubkey.clone();
+    let profile = store
+        .call(move |store| store.profile(community, &lookup))
+        .await
+        .unwrap()
+        .unwrap();
+    let verified = profile.verified.as_ref().expect("verified name projected");
+    assert_eq!(verified.display_name, "Test Employee");
+    assert_eq!(verified.issuer_label, "bzz Test IdP");
+    assert_eq!(profile.author_label(), "Test Employee ✓");
     let http = HttpClient::new(url::Url::parse(RELAY_HTTP).unwrap(), signer.clone())
         .unwrap()
         .with_evidence(slot.clone());

@@ -126,6 +126,7 @@ pub fn as_profile(event: &Event) -> Option<Profile> {
         about: string("about"),
         event_id: event.id.to_hex(),
         created_at: event.created_at.as_secs(),
+        verified: None,
     })
 }
 
