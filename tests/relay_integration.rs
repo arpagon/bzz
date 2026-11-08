@@ -2728,3 +2728,156 @@ async fn real_relay_local_agent_broker() {
     assert!(!activity.contains("hello from the broker") && !activity.contains(&credential));
     owner_supervisor.shutdown().await;
 }
+
+#[cfg(feature = "huddles-audio")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_huddle_lifecycle_and_audio_round_trip() {
+    use bzz::{huddle::audio, protocol::huddle};
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let alice_keys = Keys::generate();
+    let bob_keys = Keys::generate();
+    let _ = seed_member(&source, &alice_keys.public_key().to_hex());
+    let _ = seed_member(&source, &bob_keys.public_key().to_hex());
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let alice = SignerHandle::spawn(alice_keys.clone());
+    let bob = SignerHandle::spawn(bob_keys.clone());
+    let ws = url::Url::parse("ws://localhost:3030/").unwrap();
+    let alice_supervisor = SupervisorHandle::spawn(ws.clone(), alice.clone());
+    // A parent channel with both as members.
+    let parent = uuid::Uuid::new_v4();
+    let publish = |signer: SignerHandle, supervisor: SupervisorHandle, builder: EventBuilder| async move {
+        let event = signer.sign(builder).await.unwrap();
+        let ack = supervisor.publish(event).await.unwrap();
+        assert!(ack.accepted, "{}", ack.message);
+    };
+    publish(
+        alice.clone(),
+        alice_supervisor.clone(),
+        buzz_sdk::build_create_channel(
+            parent,
+            &format!("talk-{}", &parent.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Open),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    publish(
+        alice.clone(),
+        alice_supervisor.clone(),
+        buzz_sdk::build_add_member(parent, &bob_keys.public_key().to_hex(), None).unwrap(),
+    )
+    .await;
+    // Start: backing channel, then 48100 in the parent.
+    let backing = uuid::Uuid::new_v4();
+    publish(
+        alice.clone(),
+        alice_supervisor.clone(),
+        huddle::backing_channel(backing).unwrap(),
+    )
+    .await;
+    publish(
+        alice.clone(),
+        alice_supervisor.clone(),
+        huddle::started(parent, backing).unwrap(),
+    )
+    .await;
+
+    // Both join audio; the engine starts muted.
+    let alice_joined = audio::join(&ws, backing, parent, &alice).await.unwrap();
+    let bob_joined = audio::join(&ws, backing, parent, &bob).await.unwrap();
+    let (alice_capture, alice_capture_rx) = tokio::sync::mpsc::channel(64);
+    let (alice_playback, _alice_playback_rx) = tokio::sync::mpsc::channel(256);
+    let alice_call = audio::start(alice_joined, alice_capture_rx, alice_playback).unwrap();
+    let (_bob_capture, bob_capture_rx) = tokio::sync::mpsc::channel(64);
+    let (bob_playback, mut bob_playback_rx) = tokio::sync::mpsc::channel(256);
+    let bob_call = audio::start(bob_joined, bob_capture_rx, bob_playback).unwrap();
+    assert!(
+        alice_call.is_muted() && bob_call.is_muted(),
+        "muted on join"
+    );
+
+    // Muted: Bob hears nothing while Alice "speaks".
+    let tone = |frame: usize| {
+        (0..960)
+            .map(|index| {
+                let t = (frame * 960 + index) as f32 / 48_000.0;
+                0.5 * (2.0 * std::f32::consts::PI * 440.0 * t).sin()
+            })
+            .collect::<Vec<f32>>()
+    };
+    let loudest = |rx: &mut tokio::sync::mpsc::Receiver<Vec<f32>>| {
+        let mut peak = 0.0_f32;
+        while let Ok(chunk) = rx.try_recv() {
+            peak = chunk
+                .iter()
+                .fold(peak, |peak, sample| peak.max(sample.abs()));
+        }
+        peak
+    };
+    for frame in 0..25 {
+        alice_capture.send(tone(frame)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        loudest(&mut bob_playback_rx) < 0.01,
+        "muted capture is never sent"
+    );
+
+    // Unmuted: the tone round-trips through the relay to Bob's playback.
+    alice_call.set_muted(false);
+    for frame in 25..100 {
+        alice_capture.send(tone(frame)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let peak = loudest(&mut bob_playback_rx);
+    assert!(peak > 0.1, "Bob hears Alice: peak {peak}");
+
+    // The relay-signed roster has both.
+    let http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        alice.clone(),
+    )
+    .unwrap();
+    let relay = bzz::protocol::http::relay_signing_pubkey(&http.nip11().await.unwrap())
+        .unwrap()
+        .to_owned();
+    let lifecycle = http
+        .query_raw(&[huddle::lifecycle_filter(parent)])
+        .await
+        .unwrap();
+    let now = Timestamp::now().as_secs();
+    let active = huddle::active(&lifecycle, &relay, now).expect("an active huddle");
+    assert_eq!(active.backing, backing);
+    let mut roster = active.participants.clone();
+    roster.sort();
+    let mut expected = vec![
+        alice_keys.public_key().to_hex(),
+        bob_keys.public_key().to_hex(),
+    ];
+    expected.sort();
+    assert_eq!(roster, expected);
+
+    // Leave and end: the huddle is no longer active.
+    bob_call.stop().await;
+    alice_call.stop().await;
+    publish(
+        alice.clone(),
+        alice_supervisor.clone(),
+        huddle::ended(parent, backing).unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let lifecycle = http
+        .query_raw(&[huddle::lifecycle_filter(parent)])
+        .await
+        .unwrap();
+    assert!(huddle::active(&lifecycle, &relay, now).is_none());
+    alice_supervisor.shutdown().await;
+}

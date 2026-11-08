@@ -3,6 +3,8 @@ pub mod emoji;
 pub mod envelope;
 pub mod events;
 pub mod http;
+pub mod huddle;
+pub mod huddle_tracker;
 pub mod membership_snapshot;
 pub mod presence;
 pub mod read_state_snapshot;
