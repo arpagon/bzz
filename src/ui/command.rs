@@ -28,6 +28,8 @@ pub enum Command {
     Artifacts,
     /// Cross-channel `buzz.task` artifacts assigned to me.
     Tasks,
+    /// Local agent broker: hosted agents and activity.
+    Broker,
     /// `:artifact rename <title> | delete | restore | move <#channel>`.
     Artifact(String),
     Unknown(String),
@@ -54,6 +56,7 @@ pub fn parse(input: &str) -> Command {
         "tochannel" | "send-to-channel" => Command::ToChannel,
         "artifacts" => Command::Artifacts,
         "tasks" | "my-tasks" => Command::Tasks,
+        "broker" => Command::Broker,
         value if value.starts_with("artifact ") => {
             Command::Artifact(value.trim_start_matches("artifact").trim().to_owned())
         }
@@ -89,6 +92,7 @@ mod tests {
         assert_eq!(parse(":tochannel"), Command::ToChannel);
         assert_eq!(parse(":artifacts"), Command::Artifacts);
         assert_eq!(parse(":tasks"), Command::Tasks);
+        assert_eq!(parse(":broker"), Command::Broker);
         assert_eq!(
             parse(":artifact rename Ship it"),
             Command::Artifact("rename Ship it".into())

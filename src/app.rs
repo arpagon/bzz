@@ -343,6 +343,8 @@ pub struct App {
     presence: crate::protocol::presence::PresenceBook,
     /// NIP-AR: capabilities per community and the selected channel's sync.
     artifact_caps: Option<(Uuid, crate::protocol::artifact::Capabilities)>,
+    broker: Option<BrokerRuntime>,
+    broker_attempted: Option<Uuid>,
     artifact_caps_requested: Option<Uuid>,
     artifact_sync: Option<ArtifactSync>,
     artifact_panel: crate::ui::artifacts::ArtifactPanelState,
@@ -446,6 +448,26 @@ const AGENT_SPINNER_INTERVAL: Duration = Duration::from_millis(200);
 const RELAY_EVENT_DEDUP_CAPACITY: usize = 16_384;
 const AGENT_TYPING_SUBSCRIPTION: &str = "agent-typing-selected";
 const ARTIFACT_SYNC_SUBSCRIPTION: &str = "artifact-sync-selected";
+
+/// The local agent broker, served only while the owner's runtime is unlocked.
+struct BrokerRuntime {
+    community: Uuid,
+    host: crate::broker::host::Host,
+    server: crate::broker::http::BrokerServer,
+    signers: Vec<SignerHandle>,
+    supervisors: Vec<SupervisorHandle>,
+}
+
+impl BrokerRuntime {
+    async fn stop(self) {
+        for supervisor in &self.supervisors {
+            supervisor.shutdown().await;
+        }
+        for signer in &self.signers {
+            signer.lock().await;
+        }
+    }
+}
 
 /// The selected channel's NIP-AR sync. Heads before EOSE are buffered and
 /// replace the stored set only at EOSE; a drop before EOSE discards them.
@@ -664,6 +686,8 @@ impl App {
             thread_window: None,
             thread_window_loading: false,
             artifact_caps: None,
+            broker: None,
+            broker_attempted: None,
             artifact_caps_requested: None,
             artifact_sync: None,
             artifact_panel: crate::ui::artifacts::ArtifactPanelState::default(),
@@ -1223,6 +1247,7 @@ impl App {
             self.subscribe_channel(channel).await?;
         }
         self.reconcile_artifact_sync().await?;
+        self.reconcile_broker().await;
         self.reconcile_agent_typing_subscription().await
     }
 
@@ -2842,6 +2867,16 @@ impl App {
             Some(Overlay::DmPicker) => self.dm_picker_key(key),
             Some(Overlay::Agents) => self.agent_directory_key(key).await?,
             Some(Overlay::Artifacts) => self.artifact_panel_key(key).await?,
+            Some(Overlay::Broker) => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
+                // The owner's one-key pause for every hosted agent.
+                KeyCode::Char('p') => {
+                    if let Some(broker) = &self.broker {
+                        broker.host.set_paused_all(!broker.host.paused_all());
+                    }
+                }
+                _ => {}
+            },
             None if self.presentation.composer_target.is_some() => {
                 self.handle_composer_key(key).await?
             }
@@ -3471,6 +3506,105 @@ impl App {
                 }
             }
             FocusSurface::InboxList | FocusSurface::InboxDetail => {}
+        }
+    }
+
+    /// Serves the broker for this community's hosted agents while the owner
+    /// runtime is unlocked; stops it when the runtime goes away or changes.
+    async fn reconcile_broker(&mut self) {
+        let Some(runtime) = &self.runtime else {
+            if let Some(broker) = self.broker.take() {
+                broker.stop().await;
+            }
+            self.broker_attempted = None;
+            return;
+        };
+        let community = runtime.community_id;
+        if self
+            .broker
+            .as_ref()
+            .is_some_and(|broker| broker.community == community)
+            || self.broker_attempted == Some(community)
+        {
+            return;
+        }
+        if let Some(broker) = self.broker.take() {
+            broker.stop().await;
+        }
+        self.broker_attempted = Some(community);
+        let agents = self
+            .config
+            .hosted_agents
+            .iter()
+            .filter(|agent| {
+                agent.community == community && agent.owner_identity == runtime.identity_id
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let Some(entry) = self
+            .config
+            .communities
+            .iter()
+            .find(|entry| entry.id == community)
+        else {
+            return;
+        };
+        if agents.is_empty() {
+            return;
+        }
+        let Ok(endpoint) = validate_relay_url(&entry.relay_url, entry.allow_insecure_localhost)
+        else {
+            return;
+        };
+        let keys_dir = self.paths.keys_dir();
+        let mut runtimes = HashMap::new();
+        let mut hosted = Vec::new();
+        let mut signers = Vec::new();
+        let mut supervisors = Vec::new();
+        for agent in &agents {
+            let built = async {
+                let signer =
+                    crate::broker::custody::unlock(&keys_dir, &runtime.signer, agent).await?;
+                let auth_tag = crate::broker::relay::auth_tag(&agent.auth_tag)?;
+                let http = HttpClient::new(endpoint.http_base.clone(), signer.clone())?;
+                let supervisor =
+                    SupervisorHandle::spawn(endpoint.websocket.clone(), signer.clone());
+                Ok::<_, Error>(crate::broker::relay::AgentRuntime {
+                    signer,
+                    http,
+                    supervisor,
+                    owner: runtime.signer.public_key(),
+                    auth_tag,
+                })
+            }
+            .await;
+            match built {
+                Ok(agent_runtime) => {
+                    signers.push(agent_runtime.signer.clone());
+                    supervisors.push(agent_runtime.supervisor.clone());
+                    runtimes.insert(agent.id, agent_runtime);
+                    hosted.push(crate::broker::custody::hosted(agent));
+                }
+                Err(error) => {
+                    self.status_error = Some(format!("agent {} unavailable: {error}", agent.label));
+                }
+            }
+        }
+        let executor =
+            crate::broker::relay::RelayExecutor::new(community, self.store.clone(), runtimes);
+        let host = crate::broker::host::Host::new(std::sync::Arc::new(executor), hosted);
+        let port_file = self.paths.data_dir.join("broker.port");
+        match crate::broker::http::serve(host.clone(), Some(&port_file)).await {
+            Ok(server) => {
+                self.broker = Some(BrokerRuntime {
+                    community,
+                    host,
+                    server,
+                    signers,
+                    supervisors,
+                });
+            }
+            Err(error) => self.status_error = Some(format!("agent broker unavailable: {error}")),
         }
     }
 
@@ -6466,6 +6600,10 @@ impl App {
     async fn execute_command(&mut self) -> Result<()> {
         match crate::ui::command::parse(&self.command) {
             crate::ui::command::Command::Lock => {
+                // Nothing is served while bzz is locked.
+                if let Some(broker) = self.broker.take() {
+                    broker.stop().await;
+                }
                 if let Some(runtime) = self.runtime.take() {
                     if self.config.ui.publish_presence
                         && self.last_presence_publish.take().is_some()
@@ -6527,6 +6665,9 @@ impl App {
                     }
                 };
                 return self.open_artifacts(scope).await;
+            }
+            crate::ui::command::Command::Broker => {
+                self.presentation.open_overlay(Overlay::Broker);
             }
             crate::ui::command::Command::Tasks => {
                 return self
@@ -7433,6 +7574,7 @@ impl App {
             Some(Overlay::DmPicker) => "DM",
             Some(Overlay::Agents) => "AGENTS",
             Some(Overlay::Artifacts) => "ARTIFACTS",
+            Some(Overlay::Broker) => "BROKER",
             Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) | None
                 if self.presentation.composer_target.is_some() =>
             {
@@ -7675,6 +7817,31 @@ impl App {
                     }
                 }
                 crate::ui::search::render(frame, popup, &self.search_state, &self.theme);
+            }
+            Some(Overlay::Broker) => {
+                let popup = centered(area, 100, area.height.saturating_sub(2).min(30));
+                let community = self.active_community_id();
+                let agents = self
+                    .config
+                    .hosted_agents
+                    .iter()
+                    .filter(|agent| Some(agent.community) == community)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let activity = self
+                    .broker
+                    .as_ref()
+                    .map(|broker| broker.host.activity())
+                    .unwrap_or_default();
+                crate::ui::broker::render(
+                    frame,
+                    popup,
+                    &agents,
+                    &activity,
+                    self.broker.as_ref().map(|broker| broker.server.address.port()),
+                    self.broker.as_ref().is_some_and(|broker| broker.host.paused_all()),
+                    &self.theme,
+                );
             }
             Some(Overlay::Artifacts) => {
                 let popup = centered(area, 104, area.height.saturating_sub(2).min(30));

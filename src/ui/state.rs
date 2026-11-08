@@ -40,6 +40,7 @@ pub enum Overlay {
     DmPicker,
     Agents,
     Artifacts,
+    Broker,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
