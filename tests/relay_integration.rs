@@ -2023,6 +2023,42 @@ async fn real_relay_channel_and_thread_windows() {
         expected.iter().map(|reply| reply.id).collect::<Vec<_>>(),
         "newest first across pages, exact order"
     );
+
+    // The app's entry points: the selected channel takes the windowed path
+    // (with summaries) and threads page through the service.
+    let service =
+        bzz::service::channels::ChannelService::new(community, http.clone(), store.clone());
+    let outcome = service.selected_history(channel).await.unwrap();
+    assert!(
+        outcome.windowed,
+        "pinned relay serves verified channel windows"
+    );
+    assert_eq!(service.relay_host().as_deref(), Some("localhost:3030"));
+    let request = ThreadRequest {
+        host: "localhost:3030",
+        reader: &pubkey,
+        channel,
+        root: &root_hex,
+        limit: bzz::sync::window::THREAD_PAGE,
+        depth: 100,
+        include_aux: true,
+        cursor: None,
+    };
+    let first = service
+        .thread_page(&request)
+        .await
+        .unwrap()
+        .expect("thread windows");
+    assert_eq!(first.rows.first().map(|row| row.id), Some(expected[0].id));
+    assert!(first.next.is_some(), "120 replies need more than one page");
+    // Without a pinned signer the service reports "unsupported", so the app
+    // keeps the local archive and the legacy backfill.
+    let mut unpinned = Store::open_memory().unwrap();
+    unpinned.sync_config(&config).unwrap();
+    let unpinned = StoreHandle::spawn(unpinned).unwrap();
+    let fallback =
+        bzz::service::channels::ChannelService::new(community, http.clone(), unpinned.clone());
+    assert!(fallback.thread_page(&request).await.unwrap().is_none());
     session.shutdown().await;
     signer.lock().await;
 }

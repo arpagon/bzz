@@ -242,6 +242,19 @@ enum Background {
     FederatedReady,
     /// A fixed status notice (federated identity, reports, send to channel).
     Notice(String),
+    /// Selected-channel history landed; relay-signed 39005 summaries from
+    /// channel windows refine the live thread badges.
+    HistoryLoaded {
+        community: Uuid,
+        summaries: Vec<nostr::Event>,
+    },
+    /// A verified thread window page landed for `root`.
+    ThreadWindow {
+        community: Uuid,
+        root: String,
+        next: Option<crate::protocol::window::Cursor>,
+        supported: bool,
+    },
     /// Remote NIP-CE prefix search results for the reaction picker.
     EmojiSearch {
         query: String,
@@ -313,6 +326,9 @@ pub struct App {
     /// `(reason, note)` awaiting the report confirmation.
     pending_report: Option<(String, Option<String>)>,
     presence: crate::protocol::presence::PresenceBook,
+    /// NIP-CW thread window state for the open thread: `(root, next page)`.
+    thread_window: Option<(String, Option<crate::protocol::window::Cursor>)>,
+    thread_window_loading: bool,
     /// Shortcode -> image URL from 30030 sets and 30180 entries.
     emoji_palette: HashMap<String, String>,
     /// Shortcodes already looked up remotely (30180 `#d`), bounded.
@@ -584,6 +600,8 @@ impl App {
             pending_report: None,
             presence: crate::protocol::presence::PresenceBook::default(),
             emoji_palette: HashMap::new(),
+            thread_window: None,
+            thread_window_loading: false,
             emoji_lookups: HashSet::new(),
             last_presence_snapshot: Instant::now() - Duration::from_secs(3600),
             last_presence_publish: None,
@@ -751,6 +769,27 @@ impl App {
                         }
                     },
                     Background::Notice(message)=>self.status_error=Some(message),
+                    Background::HistoryLoaded { community, summaries }=>{
+                        self.cache_dirty=true;
+                        if self.active_community_id()==Some(community) {
+                            self.hydrate_cache().await?;
+                            for event in summaries {
+                                let parsed=self.store.call(move |store| store.live_thread_summary(community,&event)).await?;
+                                if let Some(summary)=parsed {
+                                    self.apply_live_thread_summary(summary);
+                                }
+                            }
+                        }
+                    },
+                    Background::ThreadWindow { community, root, next, supported }=>{
+                        self.thread_window_loading=false;
+                        if self.active_community_id()==Some(community)
+                            && self.thread_root.as_deref()==Some(root.as_str())
+                        {
+                            self.thread_window=supported.then_some((root, next));
+                            self.cache_dirty=true;
+                        }
+                    },
                     Background::EmojiSearch { query, found }=>{
                         if self.reaction_query.as_deref()==Some(query.as_str()) {
                             for emoji in found {
@@ -1155,12 +1194,16 @@ impl App {
     fn spawn_backfill(&self, channel: Uuid) {
         if let Some(runtime) = &self.runtime {
             let service = runtime.channels.clone();
+            let community = runtime.community_id;
             let tx = self.background_tx.clone();
             tokio::spawn(async move {
-                let result = service.backfill(channel).await;
+                let result = service.selected_history(channel).await;
                 let _ = tx
                     .send(match result {
-                        Ok(_) => Background::Changed,
+                        Ok(outcome) => Background::HistoryLoaded {
+                            community,
+                            summaries: outcome.summaries,
+                        },
                         Err(error) => Background::Failed(error.to_string()),
                     })
                     .await;
@@ -3269,9 +3312,76 @@ impl App {
                 }
             }
             FocusSurface::Timeline => self.timeline.move_by(&self.messages, delta),
-            FocusSurface::Context => self.thread_timeline.move_by(&self.thread_messages, delta),
+            FocusSurface::Context => {
+                let at_oldest = self
+                    .thread_timeline
+                    .selected_index(&self.thread_messages)
+                    .is_some_and(|index| index <= 1);
+                self.thread_timeline.move_by(&self.thread_messages, delta);
+                // Moving above the oldest loaded reply pages older history.
+                if delta < 0
+                    && at_oldest
+                    && let Some((root, Some(next))) = self.thread_window.clone()
+                {
+                    self.spawn_thread_window(root, Some(next));
+                }
+            }
             FocusSurface::InboxList | FocusSurface::InboxDetail => {}
         }
+    }
+
+    fn spawn_thread_window(
+        &mut self,
+        root: String,
+        cursor: Option<crate::protocol::window::Cursor>,
+    ) {
+        if self.thread_window_loading {
+            return;
+        }
+        let (Some(runtime), Some(channel)) = (
+            &self.runtime,
+            self.current_channel().map(|channel| channel.id),
+        ) else {
+            return;
+        };
+        let Some(host) = runtime.channels.relay_host() else {
+            return;
+        };
+        self.thread_window_loading = true;
+        let service = runtime.channels.clone();
+        let community = runtime.community_id;
+        let reader = runtime.signer.public_key().to_hex();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let request = crate::protocol::window::ThreadRequest {
+                host: &host,
+                reader: &reader,
+                channel,
+                root: &root,
+                limit: crate::sync::window::THREAD_PAGE,
+                depth: 100,
+                include_aux: true,
+                cursor: cursor.as_ref(),
+            };
+            let result = service.thread_page(&request).await;
+            let message = match result {
+                Ok(page) => Background::ThreadWindow {
+                    community,
+                    root: root.clone(),
+                    supported: page.is_some(),
+                    next: page.and_then(|page| page.next),
+                },
+                // A failed page (timeout, 503, changed access) keeps the local
+                // archive and never downgrades to another protocol mode.
+                Err(_) => Background::ThreadWindow {
+                    community,
+                    root: root.clone(),
+                    supported: false,
+                    next: None,
+                },
+            };
+            let _ = tx.send(message).await;
+        });
     }
 
     fn move_to_edge(&mut self, last: bool) {
@@ -3365,7 +3475,9 @@ impl App {
                 .map(|reference| reference.root_event_id.clone())
                 .or_else(|| message.root_event_id.clone())
                 .unwrap_or_else(|| message.event_id.clone());
-            self.thread_root = Some(root);
+            self.thread_root = Some(root.clone());
+            self.thread_window = None;
+            self.spawn_thread_window(root, None);
             self.presentation.set_workspace_focus(FocusSurface::Context);
             self.cache_dirty = true;
             self.hydrate_cache().await?;
