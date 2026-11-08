@@ -96,6 +96,11 @@ struct Runtime {
     messages: MessageService,
     media: MediaClient,
     read_state: ReadStateService,
+    /// NIP-FI evidence shared by the supervisor, HTTP and media clients.
+    evidence: crate::auth::federated::EvidenceSlot,
+    /// The community's NIP-FA adapter origin, when configured.
+    identity_adapter: Option<url::Url>,
+    data_dir: std::path::PathBuf,
 }
 
 impl Runtime {
@@ -127,19 +132,29 @@ impl Runtime {
         };
         let endpoint =
             validate_relay_url(&community.relay_url, community.allow_insecure_localhost)?;
-        let supervisor = SupervisorHandle::spawn_with_diagnostics(
+        let evidence = crate::auth::federated::EvidenceSlot::default();
+        let identity_adapter = community
+            .identity_adapter
+            .as_deref()
+            .map(url::Url::parse)
+            .transpose()
+            .map_err(|_| Error::Config("identity_adapter is not a URL".into()))?;
+        let supervisor = SupervisorHandle::spawn_with_evidence(
             endpoint.websocket,
             signer.clone(),
             diagnostics.clone(),
+            evidence.clone(),
         );
         let events = supervisor.subscribe_events();
-        let http = HttpClient::new(endpoint.http_base.clone(), signer.clone())?;
+        let http = HttpClient::new(endpoint.http_base.clone(), signer.clone())?
+            .with_evidence(evidence.clone());
         let media = MediaClient::new(
             endpoint.http_base,
             endpoint.authority,
             signer.clone(),
             config.media.download_concurrency,
-        )?;
+        )?
+        .with_evidence(evidence.clone());
         Ok(Self {
             community_id: community.id,
             identity_id: identity.id,
@@ -166,6 +181,9 @@ impl Runtime {
             ),
             media,
             read_state: ReadStateService::new(community.id, signer, store, supervisor),
+            evidence,
+            identity_adapter,
+            data_dir: paths.data_dir.clone(),
         })
     }
 }
@@ -213,6 +231,10 @@ enum AttachmentBackground {
 #[derive(Debug)]
 enum Background {
     Changed,
+    /// A federated sign-in finished; evidence is installed, reconnect now.
+    FederatedReady,
+    /// A fixed, text-free federated identity notice.
+    FederatedNotice(String),
     DraftAcknowledged,
     Failed(String),
     Saved,
@@ -371,6 +393,27 @@ fn typing_subscription_transition(
         (_, Some(channel)) => TypingSubscriptionTransition::Subscribe(channel),
         (None, None) => TypingSubscriptionTransition::Unchanged,
     }
+}
+
+/// Best-effort: open `url` in the user's browser. The caller always shows the
+/// URL too, so a headless or remote terminal can copy it.
+fn open_in_browser(url: &url::Url) {
+    let (program, arguments): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
+        ("open", vec![url.as_str()])
+    } else if cfg!(windows) {
+        (
+            "rundll32",
+            vec!["url.dll,FileProtocolHandler", url.as_str()],
+        )
+    } else {
+        ("xdg-open", vec![url.as_str()])
+    };
+    let _ = std::process::Command::new(program)
+        .args(arguments)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 fn triggers_directory_refresh(kind: u16, content: &str) -> bool {
@@ -629,6 +672,17 @@ impl App {
                         self.agent_directory.loading=false;
                     },
                     Background::Saved=>self.status_error=Some("attachment saved".into()),
+                    Background::FederatedReady=>{
+                        self.status_error=Some("federated sign-in complete; reconnecting".into());
+                        if let Some(runtime)=&self.runtime {
+                            runtime.supervisor.reconnect().await;
+                        }
+                        // Re-run the startup sync, now carrying evidence.
+                        if let Err(error)=self.start_sync().await {
+                            self.status_error=Some(error.to_string());
+                        }
+                    },
+                    Background::FederatedNotice(message)=>self.status_error=Some(message),
                     Background::InboxLoaded { community, items }=>{
                         if self.active_community_id()==Some(community) {
                             self.inbox_items=items;
@@ -763,6 +817,10 @@ impl App {
         let supervisor = runtime.supervisor.clone();
         let signer = runtime.signer.clone();
         let community = runtime.community_id;
+        let evidence = runtime.evidence.clone();
+        let adapter = runtime.identity_adapter.clone();
+        let data_dir = runtime.data_dir.clone();
+        let identity_id = runtime.identity_id;
         let selected = self.current_channel().map(|channel| channel.id);
         if let Some(channel) = selected {
             self.subscribe_channel_with_priority(channel, SubscriptionPriority::Foreground)
@@ -831,6 +889,34 @@ impl App {
                 store
                     .call(move |store| store.pin_relay_pubkey(community, &relay_pubkey))
                     .await?;
+                let had_evidence = evidence.is_set();
+                match crate::auth::federated::install_from_store(
+                    &info,
+                    adapter.as_ref(),
+                    &data_dir,
+                    identity_id,
+                    &signer,
+                    &evidence,
+                )
+                .await
+                {
+                    crate::auth::federated::Startup::NotRequired => {}
+                    crate::auth::federated::Startup::Ready => {
+                        if !had_evidence {
+                            supervisor.reconnect().await;
+                        }
+                    }
+                    blocked => {
+                        // Fail once and quietly: no HTTP sync, no reconnect loop.
+                        let notice = if blocked == crate::auth::federated::Startup::NeedsSignIn {
+                            "this community requires federated sign-in: run :signin"
+                        } else {
+                            crate::auth::federated::RelayDenial::EvidenceRequired.notice()
+                        };
+                        let _ = tx.send(Background::FederatedNotice(notice.into())).await;
+                        return Ok(());
+                    }
+                }
                 channels.refresh(&pubkey).await?;
                 // NIP-RS atomic snapshot: a complete read-state load when the
                 // relay can prove it; otherwise the subscription above is it.
@@ -4160,6 +4246,70 @@ impl App {
         });
     }
 
+    async fn begin_federated_sign_in(&mut self) {
+        self.presentation.close_overlay();
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some(
+                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
+            );
+            return;
+        };
+        let Some(adapter) = runtime.identity_adapter.clone() else {
+            self.status_error =
+                Some("set identity_adapter for this community to use federated sign-in".into());
+            return;
+        };
+        let client = match crate::auth::federated::AdapterClient::new(adapter) {
+            Ok(client) => client,
+            Err(error) => {
+                self.status_error = Some(error.to_string());
+                return;
+            }
+        };
+        let pending = match client.begin_login().await {
+            Ok(pending) => pending,
+            Err(error) => {
+                self.status_error = Some(error.to_string());
+                return;
+            }
+        };
+        open_in_browser(&pending.url);
+        // The login URL carries only the S256 challenge, never a secret.
+        self.status_error = Some(format!(
+            "federated sign-in: finish in your browser · {}",
+            pending.url
+        ));
+        let tx = self.background_tx.clone();
+        let signer = runtime.signer.clone();
+        let evidence = runtime.evidence.clone();
+        let store = crate::auth::federated::SessionStore::new(&runtime.data_dir);
+        let identity = runtime.identity_id;
+        tokio::spawn(async move {
+            let outcome = async {
+                let session = client
+                    .complete_login(pending, std::time::Duration::from_secs(300))
+                    .await?;
+                store
+                    .save(identity, &client.origin(), &session, &signer)
+                    .await?;
+                evidence.set(crate::auth::federated::AdapterEvidence::new(
+                    client,
+                    session,
+                    signer,
+                    crate::clock::system(),
+                ));
+                Ok::<_, Error>(())
+            }
+            .await;
+            let _ = tx
+                .send(match outcome {
+                    Ok(()) => Background::FederatedReady,
+                    Err(error) => Background::FederatedNotice(error.to_string()),
+                })
+                .await;
+        });
+    }
+
     async fn mark_unread(&mut self) -> Result<()> {
         if let Some(channel) = self.current_channel().map(|channel| channel.id) {
             self.manual_unread.insert(channel);
@@ -5138,6 +5288,7 @@ impl App {
                     self.media.protocol_name()
                 ));
             }
+            crate::ui::command::Command::SignIn => self.begin_federated_sign_in().await,
             crate::ui::command::Command::System => {
                 self.show_system_channels = !self.show_system_channels;
                 self.presentation.close_overlay();

@@ -200,3 +200,89 @@ async fn fi_session_deadline_reconnects_with_fresh_evidence() {
     supervisor.shutdown().await;
     signer.lock().await;
 }
+
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh --nip-fi"]
+async fn fi_startup_installs_evidence_only_from_a_stored_session() {
+    use bzz::auth::federated::{SessionStore, Startup, install_from_store};
+    let keys = Keys::generate();
+    seed_member(&keys.public_key().to_hex());
+    let signer = SignerHandle::spawn(keys);
+    let http_plain = HttpClient::new(url::Url::parse(RELAY_HTTP).unwrap(), signer.clone()).unwrap();
+    let info = http_plain.nip11().await.unwrap();
+    let data = tempfile::TempDir::new().unwrap();
+    let identity = uuid::Uuid::new_v4();
+    let adapter_url = url::Url::parse(ADAPTER).unwrap();
+
+    let slot = EvidenceSlot::default();
+    assert_eq!(
+        install_from_store(&info, None, data.path(), identity, &signer, &slot).await,
+        Startup::NoAdapter
+    );
+    assert_eq!(
+        install_from_store(
+            &info,
+            Some(&adapter_url),
+            data.path(),
+            identity,
+            &signer,
+            &slot
+        )
+        .await,
+        Startup::NeedsSignIn
+    );
+    assert!(!slot.is_set());
+
+    // Sign in once and persist, as `:signin` does; a later start is ready.
+    let adapter = AdapterClient::new(adapter_url.clone()).unwrap();
+    let pending = adapter.begin_login().await.unwrap();
+    let login = pending.url.clone();
+    tokio::spawn(async move { FakeAdapter::browse(&login).await });
+    let session = adapter
+        .complete_login(pending, Duration::from_secs(10))
+        .await
+        .unwrap();
+    SessionStore::new(data.path())
+        .save(identity, &adapter.origin(), &session, &signer)
+        .await
+        .unwrap();
+    assert_eq!(
+        install_from_store(
+            &info,
+            Some(&adapter_url),
+            data.path(),
+            identity,
+            &signer,
+            &slot
+        )
+        .await,
+        Startup::Ready
+    );
+    let http = HttpClient::new(url::Url::parse(RELAY_HTTP).unwrap(), signer.clone())
+        .unwrap()
+        .with_evidence(slot);
+    http.query(&[QueryFilter {
+        kinds: vec![9],
+        limit: Some(1),
+        ..QueryFilter::default()
+    }])
+    .await
+    .unwrap();
+
+    // A host that does not require NIP-FI never installs anything.
+    let unset = EvidenceSlot::default();
+    assert_eq!(
+        install_from_store(
+            &serde_json::json!({}),
+            Some(&adapter_url),
+            data.path(),
+            identity,
+            &signer,
+            &unset
+        )
+        .await,
+        Startup::NotRequired
+    );
+    assert!(!unset.is_set());
+    signer.lock().await;
+}

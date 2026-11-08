@@ -86,6 +86,10 @@ pub struct CommunityConfig {
     pub allow_insecure_localhost: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// NIP-FA adapter origin for communities that require federated identity
+    /// (ADR v0.13). HTTPS, or loopback HTTP for local testing only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_adapter: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -337,6 +341,15 @@ impl Config {
             }
             let endpoint =
                 validate_relay_url(&community.relay_url, community.allow_insecure_localhost)?;
+            if let Some(adapter) = &community.identity_adapter {
+                let url = url::Url::parse(adapter).map_err(|_| {
+                    Error::Config(format!(
+                        "community {} identity_adapter is not a URL",
+                        community.id
+                    ))
+                })?;
+                crate::auth::federated::AdapterClient::new(url)?;
+            }
             if !urls.insert(endpoint.websocket.to_string()) {
                 return Err(Error::Config(format!(
                     "duplicate relay URL {}",
@@ -451,6 +464,7 @@ impl Config {
             identity_id,
             allow_insecure_localhost: insecure,
             theme: None,
+            identity_adapter: None,
         });
         self.default_community.get_or_insert(id);
         self.validate()?;

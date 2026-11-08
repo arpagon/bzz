@@ -378,6 +378,7 @@ async fn startup_repair_drops_metadata_for_missing_cache_files() {
             identity_id: identity,
             allow_insecure_localhost: false,
             theme: None,
+            identity_adapter: None,
         }],
         default_community: Some(community),
         ..Config::default()
@@ -424,6 +425,7 @@ async fn verified_offline_images_are_prepared_off_the_ui_thread() {
             identity_id: identity,
             allow_insecure_localhost: false,
             theme: None,
+            identity_adapter: None,
         }],
         default_community: Some(community),
         ..Config::default()
@@ -502,6 +504,7 @@ async fn verified_offline_video_posters_are_prepared_for_preview() {
             identity_id: identity,
             allow_insecure_localhost: false,
             theme: None,
+            identity_adapter: None,
         }],
         default_community: Some(community),
         ..Config::default()
@@ -611,6 +614,7 @@ fn stored_imeta_is_projected_and_the_generated_body_line_is_hidden() {
             identity_id: identity,
             allow_insecure_localhost: false,
             theme: None,
+            identity_adapter: None,
         }],
         default_community: Some(community),
         ..Config::default()

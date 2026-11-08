@@ -771,6 +771,64 @@ pub fn relay_denial(
 /// Marker the session uses for a 1008 policy close after AUTH.
 pub const POLICY_CLOSE_MARKER: &str = "relay policy close (1008)";
 
+/// The startup decision for one community runtime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Startup {
+    /// The host does not require evidence; nothing installed.
+    NotRequired,
+    /// Evidence already present, or installed from a stored session.
+    Ready,
+    /// Required, adapter configured, no usable stored session: `:signin`.
+    NeedsSignIn,
+    /// Required but no adapter is configured.
+    NoAdapter,
+}
+
+/// Install evidence from a stored NIP-FA session when NIP-11 requires it.
+pub async fn install_from_store(
+    info: &Value,
+    adapter: Option<&Url>,
+    data_dir: &std::path::Path,
+    identity: uuid::Uuid,
+    signer: &SignerHandle,
+    slot: &EvidenceSlot,
+) -> Startup {
+    if requirement(info) != Requirement::Required {
+        return Startup::NotRequired;
+    }
+    if slot.is_set() {
+        return Startup::Ready;
+    }
+    let Some(adapter) = adapter else {
+        return Startup::NoAdapter;
+    };
+    let Ok(client) = AdapterClient::new(adapter.clone()) else {
+        return Startup::NoAdapter;
+    };
+    let session = SessionStore::new(data_dir)
+        .load(
+            identity,
+            &client.origin(),
+            signer,
+            &crate::clock::SystemClock,
+        )
+        .await
+        .ok()
+        .flatten();
+    match session {
+        Some(session) => {
+            slot.set(AdapterEvidence::new(
+                client,
+                session,
+                signer.clone(),
+                crate::clock::system(),
+            ));
+            Startup::Ready
+        }
+        None => Startup::NeedsSignIn,
+    }
+}
+
 /// A relay denial at the WebSocket upgrade or after NIP-42, typed for UI and
 /// diagnostics. Raw relay text never leaves this classification.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

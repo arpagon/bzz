@@ -235,6 +235,7 @@ fn schema_eight_repairs_historical_bot_roles_and_duplicate_projection_drift() {
             identity_id,
             allow_insecure_localhost: false,
             theme: None,
+            identity_adapter: None,
         }],
         ..Config::default()
     };
@@ -408,6 +409,7 @@ fn schema_nine_projects_guest_roles_and_repairs_channel_facts_on_reingest() {
             identity_id,
             allow_insecure_localhost: false,
             theme: None,
+            identity_adapter: None,
         }],
         ..Config::default()
     };

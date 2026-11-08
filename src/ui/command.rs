@@ -16,6 +16,8 @@ pub enum Command {
     PurgeCache,
     /// Expand or collapse the System sidebar group.
     System,
+    /// Federated (NIP-FA) browser sign-in for the active community.
+    SignIn,
     Unknown(String),
 }
 
@@ -36,6 +38,7 @@ pub fn parse(input: &str) -> Command {
         "community remove" => Command::RemoveCommunity,
         "purge-cache" => Command::PurgeCache,
         "system" => Command::System,
+        "signin" | "sign-in" => Command::SignIn,
         value => Command::Unknown(value.to_owned()),
     }
 }

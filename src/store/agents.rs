@@ -605,6 +605,7 @@ mod tests {
                 identity_id,
                 allow_insecure_localhost: false,
                 theme: None,
+                identity_adapter: None,
             }],
             ..Config::default()
         };
