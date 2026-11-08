@@ -2324,3 +2324,347 @@ async fn real_relay_channel_artifacts() {
     supervisor.shutdown().await;
     signer.lock().await;
 }
+
+/// The broker's HTTP binding, driven by the SDK's validating client.
+struct BrokerHttp(String, String);
+
+impl buzz_sdk::broker::BrokerClient for BrokerHttp {
+    fn send<'a>(
+        &'a self,
+        request: &'a buzz_sdk::broker::PreparedRequest,
+        _dispatch: buzz_sdk::broker::Dispatch,
+    ) -> buzz_sdk::broker::BrokerFuture<'a> {
+        Box::pin(async move {
+            let unreachable = |error: reqwest::Error| {
+                buzz_sdk::broker::BrokerTransportError::Unreachable(error.to_string())
+            };
+            let bytes = reqwest::Client::new()
+                .post(&self.0)
+                .header("authorization", format!("Bearer {}", self.1))
+                .header("content-type", "application/json")
+                .body(request.body().to_vec())
+                .send()
+                .await
+                .map_err(unreachable)?
+                .bytes()
+                .await
+                .map_err(unreachable)?;
+            serde_json::from_slice(&bytes).map_err(|error| {
+                buzz_sdk::broker::BrokerTransportError::Unreachable(error.to_string())
+            })
+        })
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_local_agent_broker() {
+    use buzz_sdk::broker::{
+        ActionArgs, ActionOutcome, BrokerClientExt, BrokerErrorCode, BrokerRequest,
+        ChannelReadArgs, MessagePostArgs, MessageReplyArgs, ProfileSetArgs, ReactionAddArgs,
+        StorageAddressArgs,
+    };
+    use bzz::broker::{custody, host::Host, http as broker_http, relay};
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let owner_keys = Keys::generate();
+    let owner_hex = owner_keys.public_key().to_hex();
+    let channel = seed_member(&source, &owner_hex);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let owner = SignerHandle::spawn(owner_keys.clone());
+    let identity = IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "m9".into(),
+        pubkey: owner_hex.clone(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "m9".into(),
+    };
+    let mut config = Config::default();
+    config.identities.push(identity.clone());
+    let community = config
+        .add_community("m9".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    let keys_dir = tempfile::TempDir::new().unwrap();
+    let (mut agent, credential) =
+        custody::create(keys_dir.path(), &owner, identity.id, community, "helper")
+            .await
+            .unwrap();
+    custody::set_allowed(
+        &mut agent,
+        &[
+            "channel.read",
+            "message.post",
+            "message.reply",
+            "reaction.add",
+            "profile.set",
+            "storage.address",
+        ]
+        .map(str::to_owned),
+    )
+    .unwrap();
+    let _ = seed_member(&source, &agent.pubkey);
+    // The owner gives the agent the bot role in #general.
+    let owner_supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        owner.clone(),
+    );
+    // The bot channel is one the owner belongs to, so the owner's directory
+    // sees its roster (and the agent's relay-signed role).
+    let _ = channel;
+    let channel = uuid::Uuid::new_v4();
+    let home = owner
+        .sign(
+            buzz_sdk::build_create_channel(
+                channel,
+                &format!("agents-{}", &channel.simple().to_string()[..8]),
+                Some(buzz_sdk::Visibility::Open),
+                Some(buzz_sdk::ChannelKind::Stream),
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(owner_supervisor.publish(home).await.unwrap().accepted);
+    let add = owner
+        .sign(
+            buzz_sdk::build_add_member(channel, &agent.pubkey, Some(buzz_sdk::MemberRole::Bot))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let ack = owner_supervisor.publish(add).await.unwrap();
+    assert!(ack.accepted, "{}", ack.message);
+    // A second channel where the agent has no role.
+    let elsewhere = uuid::Uuid::new_v4();
+    let create = owner
+        .sign(
+            buzz_sdk::build_create_channel(
+                elsewhere,
+                &format!("broker-{}", &elsewhere.simple().to_string()[..8]),
+                Some(buzz_sdk::Visibility::Open),
+                Some(buzz_sdk::ChannelKind::Stream),
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(owner_supervisor.publish(create).await.unwrap().accepted);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let owner_http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        owner.clone(),
+    )
+    .unwrap();
+    let relay_pubkey =
+        bzz::protocol::http::relay_signing_pubkey(&owner_http.nip11().await.unwrap())
+            .unwrap()
+            .to_owned();
+    let mut store = Store::open_memory().unwrap();
+    store.sync_config(&config).unwrap();
+    store.pin_relay_pubkey(community, &relay_pubkey).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let role = |store: StoreHandle, agent: String| async move {
+        store
+            .call(move |store| store.member_role(community, channel, &agent))
+            .await
+            .unwrap()
+    };
+    directory::refresh(community, &owner_hex, &owner_http, &store)
+        .await
+        .unwrap();
+    assert_eq!(
+        role(store.clone(), agent.pubkey.clone()).await.as_deref(),
+        Some("bot"),
+        "the relay-signed roster gives the agent the bot role"
+    );
+
+    let agent_signer = custody::unlock(keys_dir.path(), &owner, &agent)
+        .await
+        .unwrap();
+    let runtime = relay::AgentRuntime {
+        signer: agent_signer.clone(),
+        http: HttpClient::new(
+            url::Url::parse("http://localhost:3030/").unwrap(),
+            agent_signer.clone(),
+        )
+        .unwrap(),
+        supervisor: SupervisorHandle::spawn(
+            url::Url::parse("ws://localhost:3030/").unwrap(),
+            agent_signer.clone(),
+        ),
+        owner: owner_keys.public_key(),
+        auth_tag: relay::auth_tag(&agent.auth_tag).unwrap(),
+    };
+    let executor = relay::RelayExecutor::new(
+        community,
+        store.clone(),
+        [(agent.id, runtime)].into_iter().collect(),
+    );
+    let host = Host::new(std::sync::Arc::new(executor), vec![custody::hosted(&agent)]);
+    let server = broker_http::serve(host.clone(), None).await.unwrap();
+    let client = BrokerHttp(
+        format!("http://{}/v1/action", server.address),
+        credential.clone(),
+    );
+    let run = |id: &str, args: ActionArgs| BrokerRequest::new(id, args).unwrap().prepare().unwrap();
+    let published =
+        |response: &buzz_sdk::broker::ValidatedResponse| match response.result().outcome() {
+            Some(
+                ActionOutcome::MessagePost(event)
+                | ActionOutcome::MessageReply(event)
+                | ActionOutcome::ReactionAdd(event)
+                | ActionOutcome::ProfileSet(event),
+            ) => event.event_id.clone(),
+            other => panic!(
+                "expected a publish, got {other:?} / {:?}",
+                response.result().error()
+            ),
+        };
+
+    // Post, reply and react as the agent in its bot channel.
+    let post = client
+        .execute(&run(
+            "post-1",
+            ActionArgs::MessagePost(MessagePostArgs {
+                channel_id: channel.to_string(),
+                content: "hello from the broker".into(),
+                mentions: Vec::new(),
+            }),
+        ))
+        .await
+        .unwrap();
+    let post_id = published(&post);
+    let reply = client
+        .execute(&run(
+            "reply-1",
+            ActionArgs::MessageReply(MessageReplyArgs {
+                channel_id: channel.to_string(),
+                reply_to_event_id: post_id.clone(),
+                content: "a reply".into(),
+                mentions: Vec::new(),
+            }),
+        ))
+        .await
+        .unwrap();
+    let reply_id = published(&reply);
+    let reaction = client
+        .execute(&run(
+            "react-1",
+            ActionArgs::ReactionAdd(ReactionAddArgs {
+                channel_id: channel.to_string(),
+                target_event_id: post_id.clone(),
+                reaction: "👍".into(),
+            }),
+        ))
+        .await
+        .unwrap();
+    published(&reaction);
+    // The stored event is the agent's, with a valid owner NIP-OA tag.
+    let stored = owner_http
+        .query_raw(&[serde_json::json!({"ids": [post_id], "limit": 1})])
+        .await
+        .unwrap();
+    let stored = stored.first().expect("post stored");
+    assert_eq!(stored.pubkey.to_hex(), agent.pubkey);
+    let auth = stored
+        .tags
+        .iter()
+        .find(|tag| tag.as_slice().first().map(String::as_str) == Some("auth"))
+        .expect("NIP-OA tag");
+    let auth = serde_json::to_string(auth.as_slice()).unwrap();
+    assert_eq!(
+        buzz_sdk::nip_oa::verify_auth_tag(&auth, &stored.pubkey).unwrap(),
+        owner_keys.public_key()
+    );
+
+    // channel.read pages newest-first with an opaque cursor.
+    let read = |id: &str, cursor: Option<String>| {
+        run(
+            id,
+            ActionArgs::ChannelRead(ChannelReadArgs {
+                channel_id: channel.to_string(),
+                root_event_id: None,
+                mentions_only: false,
+                cursor,
+                limit: Some(1),
+            }),
+        )
+    };
+    let first = client.execute(&read("read-1", None)).await.unwrap();
+    let Some(ActionOutcome::ChannelRead(page)) = first.result().outcome() else {
+        panic!("{:?}", first.result().error())
+    };
+    assert_eq!(page.messages.len(), 1);
+    let cursor = page.next_cursor.clone().expect("more pages");
+    let second = client.execute(&read("read-2", Some(cursor))).await.unwrap();
+    let Some(ActionOutcome::ChannelRead(next)) = second.result().outcome() else {
+        panic!("{:?}", second.result().error())
+    };
+    assert_eq!(next.messages.len(), 1);
+    let seen = [&page.messages[0].0.id, &next.messages[0].0.id].map(|id| id.to_hex());
+    assert_ne!(seen[0], seen[1], "the cursor advanced");
+    assert!(seen.contains(&reply_id) || seen.contains(&post_id));
+
+    // No bot role in the other channel: a typed denial, nothing published.
+    let denied = client
+        .execute(&run(
+            "post-2",
+            ActionArgs::MessagePost(MessagePostArgs {
+                channel_id: elsewhere.to_string(),
+                content: "should not land".into(),
+                mentions: Vec::new(),
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        denied.result().error().map(|error| error.code),
+        Some(BrokerErrorCode::Unauthorized)
+    );
+
+    // Profile and NIP-AE memory addressing (the owner derives the same d tag).
+    let profile = client
+        .execute(&run(
+            "profile-1",
+            ActionArgs::ProfileSet(ProfileSetArgs {
+                display_name: Some("Helper".into()),
+                about: None,
+                picture: None,
+            }),
+        ))
+        .await
+        .unwrap();
+    published(&profile);
+    let address = client
+        .execute(&run(
+            "mem-1",
+            ActionArgs::StorageAddress(StorageAddressArgs {
+                slug: "core".into(),
+            }),
+        ))
+        .await
+        .unwrap();
+    let Some(ActionOutcome::StorageAddress(address)) = address.result().outcome() else {
+        panic!("{:?}", address.result().error())
+    };
+    let agent_pubkey = nostr::PublicKey::from_hex(&agent.pubkey).unwrap();
+    let owner_side = buzz_core::engram::d_tag(
+        &buzz_core::engram::conversation_key(owner_keys.secret_key(), &agent_pubkey),
+        "core",
+    );
+    assert_eq!(
+        (address.kind, address.d_tag.as_str()),
+        (30_174, owner_side.as_str())
+    );
+
+    // The activity log carries no content and no credential.
+    let activity = format!("{:?}", host.activity());
+    assert!(!activity.contains("hello from the broker") && !activity.contains(&credential));
+    owner_supervisor.shutdown().await;
+}

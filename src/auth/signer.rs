@@ -37,6 +37,18 @@ enum Command {
         ciphertext: String,
         response: oneshot::Sender<Result<String>>,
     },
+    /// NIP-OA owner `auth` tag (compact JSON) for `agent`, made by this key.
+    OwnerAuthTag {
+        agent: PublicKey,
+        conditions: String,
+        response: oneshot::Sender<Result<String>>,
+    },
+    /// NIP-AE memory `d` tag for `slug`, keyed by this (agent) key and `owner`.
+    MemoryDTag {
+        owner: PublicKey,
+        slug: String,
+        response: oneshot::Sender<Result<String>>,
+    },
     Lock(oneshot::Sender<()>),
 }
 
@@ -96,6 +108,25 @@ impl SignerHandle {
                             nip44::decrypt(keys.secret_key(), &keys.public_key(), ciphertext)
                                 .map_err(|_| Error::Auth("read-state decryption failed".into()));
                         let _ = response.send(result);
+                    }
+                    Command::OwnerAuthTag {
+                        agent,
+                        conditions,
+                        response,
+                    } => {
+                        let result = buzz_sdk::nip_oa::compute_auth_tag(&keys, &agent, &conditions)
+                            .map_err(|error| {
+                                Error::Auth(format!("owner authorization failed: {error}"))
+                            });
+                        let _ = response.send(result);
+                    }
+                    Command::MemoryDTag {
+                        owner,
+                        slug,
+                        response,
+                    } => {
+                        let key = buzz_core::engram::conversation_key(keys.secret_key(), &owner);
+                        let _ = response.send(Ok(buzz_core::engram::d_tag(&key, &slug)));
                     }
                     Command::Lock(response) => {
                         let _ = response.send(());
@@ -202,6 +233,38 @@ impl SignerHandle {
         self.sender
             .send(Command::DecryptSelf {
                 ciphertext,
+                response,
+            })
+            .await
+            .map_err(|_| Error::Locked("signer is locked".into()))?;
+        received
+            .await
+            .map_err(|_| Error::Locked("signer stopped".into()))?
+    }
+
+    /// The NIP-OA `auth` tag that lets `agent` act for this (owner) key.
+    pub async fn owner_auth_tag(&self, agent: PublicKey, conditions: &str) -> Result<String> {
+        let (response, received) = oneshot::channel();
+        self.sender
+            .send(Command::OwnerAuthTag {
+                agent,
+                conditions: conditions.to_owned(),
+                response,
+            })
+            .await
+            .map_err(|_| Error::Locked("signer is locked".into()))?;
+        received
+            .await
+            .map_err(|_| Error::Locked("signer stopped".into()))?
+    }
+
+    /// NIP-AE memory record `d` tag for `slug` (this key is the agent's).
+    pub async fn memory_d_tag(&self, owner: PublicKey, slug: &str) -> Result<String> {
+        let (response, received) = oneshot::channel();
+        self.sender
+            .send(Command::MemoryDTag {
+                owner,
+                slug: slug.to_owned(),
                 response,
             })
             .await
@@ -333,6 +396,11 @@ async fn remote_command(
                 .await
                 .map_err(|_| Error::Auth("read-state decryption failed".into()));
             let _ = response.send(result);
+        }
+        Command::OwnerAuthTag { response, .. } | Command::MemoryDTag { response, .. } => {
+            let _ = response.send(Err(Error::Unsupported(
+                "a Buzz Desktop identity cannot host local agents".into(),
+            )));
         }
         Command::Lock(response) => {
             let _ = response.send(());

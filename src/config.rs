@@ -26,6 +26,10 @@ pub struct Config {
     pub diagnostics: DiagnosticsConfig,
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+    /// Agents whose keys bzz holds for the local broker (M9). Never secrets:
+    /// keys live NIP-44-sealed to the owner, credentials only as hashes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosted_agents: Vec<HostedAgentConfig>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -76,6 +80,25 @@ pub struct IdentityConfig {
     pub pubkey: String,
     pub backend: KeyBackend,
     pub key_ref: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostedAgentConfig {
+    pub id: Uuid,
+    pub label: String,
+    pub pubkey: String,
+    pub community: Uuid,
+    /// The human identity that owns the agent and seals its key.
+    pub owner_identity: Uuid,
+    /// NIP-OA owner `auth` tag (compact JSON), signed once at creation.
+    pub auth_tag: String,
+    /// Lowercase hex SHA-256 of the bearer credential.
+    pub credential_hash: String,
+    #[serde(default)]
+    pub allowed: Vec<String>,
+    #[serde(default)]
+    pub paused: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

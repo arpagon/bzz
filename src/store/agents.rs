@@ -575,6 +575,25 @@ fn parse_presence(value: &str) -> Result<Presence> {
     }
 }
 
+impl Store {
+    /// The relay-projected role of `pubkey` in `channel`, if a member.
+    pub fn member_role(
+        &self,
+        community: Uuid,
+        channel: Uuid,
+        pubkey: &str,
+    ) -> Result<Option<String>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT role FROM memberships WHERE community_id=?1 AND channel_id=?2 AND pubkey=?3",
+                params![community.to_string(), channel.to_string(), pubkey.to_ascii_lowercase()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use nostr::{EventBuilder, Keys, Kind, Tag};
