@@ -1161,3 +1161,255 @@ fn seed_member(source: &str, pubkey: &str) -> uuid::Uuid {
     assert!(output.status.success());
     uuid::Uuid::parse_str(String::from_utf8(output.stdout).unwrap().trim()).unwrap()
 }
+
+/// v0.13 M1 against the pinned relay: announce channels make joiners
+/// read-only guests, system channels are reachable only through the NIP-CL
+/// opt-in, and a kick removes the channel on the next directory refresh.
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_channel_types_roles_and_membership() {
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let owner = Keys::generate();
+    let reader = Keys::generate();
+    let owner_hex = owner.public_key().to_hex();
+    let reader_hex = reader.public_key().to_hex();
+    let _ = seed_member(&source, &owner_hex);
+    let _ = seed_member(&source, &reader_hex);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let relay_ws = url::Url::parse("ws://localhost:3030/").unwrap();
+    let relay_http = url::Url::parse("http://localhost:3030/").unwrap();
+    let owner_signer = SignerHandle::spawn(owner.clone());
+    let reader_signer = SignerHandle::spawn(reader.clone());
+    let (owner_session, mut owner_events) =
+        session::connect(relay_ws.clone(), owner_signer.clone())
+            .await
+            .unwrap();
+    assert!(matches!(
+        owner_events.recv().await,
+        Some(SessionEvent::Authenticated)
+    ));
+    let (reader_session, mut reader_events) =
+        session::connect(relay_ws.clone(), reader_signer.clone())
+            .await
+            .unwrap();
+    assert!(matches!(
+        reader_events.recv().await,
+        Some(SessionEvent::Authenticated)
+    ));
+    let owner_http = HttpClient::new(relay_http.clone(), owner_signer.clone()).unwrap();
+    let reader_http = HttpClient::new(relay_http.clone(), reader_signer.clone()).unwrap();
+    let relay_pubkey =
+        bzz::protocol::http::relay_signing_pubkey(&owner_http.nip11().await.unwrap())
+            .unwrap()
+            .to_owned();
+
+    // Announce channel: open stream whose joiners become guests.
+    let announce = uuid::Uuid::new_v4();
+    let create = owner_signer
+        .sign(
+            buzz_sdk::build_create_channel(
+                announce,
+                &format!("announce-{}", &announce.simple().to_string()[..8]),
+                Some(buzz_sdk::Visibility::Open),
+                Some(buzz_sdk::ChannelKind::Stream),
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let ack = owner_session.publish(create).await.unwrap();
+    assert!(ack.accepted, "{}", ack.message);
+    let guest_policy = owner_signer
+        .sign(
+            buzz_sdk::build_update_channel(
+                announce,
+                None,
+                None,
+                None,
+                None,
+                Some(buzz_sdk::ChannelJoinRole::Guest),
+                None,
+                None,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let ack = owner_session.publish(guest_policy).await.unwrap();
+    assert!(ack.accepted, "{}", ack.message);
+    let join = reader_signer
+        .sign(buzz_sdk::build_join(announce).unwrap())
+        .await
+        .unwrap();
+    let ack = reader_session.publish(join).await.unwrap();
+    assert!(ack.accepted, "{}", ack.message);
+
+    // System channel: private, created by the owner.
+    let system = uuid::Uuid::new_v4();
+    let create_system = owner_signer
+        .sign(
+            buzz_sdk::build_create_channel(
+                system,
+                &format!("agent-config-{}", &system.simple().to_string()[..8]),
+                Some(buzz_sdk::Visibility::Private),
+                Some(buzz_sdk::ChannelKind::System),
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let ack = owner_session.publish(create_system).await.unwrap();
+    assert!(ack.accepted, "{}", ack.message);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    async fn local_directory(
+        pubkey: &str,
+        relay_pubkey: &str,
+        http: &HttpClient,
+    ) -> (StoreHandle, uuid::Uuid) {
+        let identity = IdentityConfig {
+            id: uuid::Uuid::new_v4(),
+            label: "m1".into(),
+            pubkey: pubkey.to_owned(),
+            backend: KeyBackend::EncryptedFile,
+            key_ref: "m1".into(),
+        };
+        let mut config = Config::default();
+        config.identities.push(identity.clone());
+        let community = config
+            .add_community("m1".into(), "ws://localhost:3030".into(), identity.id, true)
+            .unwrap();
+        let mut store = Store::open_memory().unwrap();
+        store.sync_config(&config).unwrap();
+        store.pin_relay_pubkey(community, relay_pubkey).unwrap();
+        let store = StoreHandle::spawn(store).unwrap();
+        directory::refresh(community, pubkey, http, &store)
+            .await
+            .unwrap();
+        (store, community)
+    }
+    async fn channel(
+        store: &StoreHandle,
+        community: uuid::Uuid,
+        id: uuid::Uuid,
+    ) -> Option<bzz::domain::Channel> {
+        store
+            .call(move |store| store.channels(community))
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|channel| channel.id == id)
+    }
+
+    // Reader: a guest in the announce channel, offered no composer.
+    let (reader_store, reader_community) =
+        local_directory(&reader_hex, &relay_pubkey, &reader_http).await;
+    let guest = channel(&reader_store, reader_community, announce)
+        .await
+        .unwrap();
+    assert!(guest.is_member);
+    assert_eq!(guest.facts.join_role, bzz::domain::JoinRole::Guest);
+    assert_eq!(
+        guest.facts.viewer_role,
+        Some(bzz::domain::MemberRole::Guest)
+    );
+    assert_eq!(
+        guest.read_only_reason(),
+        Some(bzz::domain::ReadOnlyReason::Guest)
+    );
+    assert_eq!(guest.facts.creator.as_deref(), Some(owner_hex.as_str()));
+    // The relay agrees: a guest's message is refused.
+    let refused = reader_signer
+        .sign(
+            buzz_sdk::build_message(
+                announce,
+                "generated guest write",
+                None,
+                &[],
+                false,
+                &[],
+                &[],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let ack = reader_session.publish(refused).await.unwrap();
+    assert!(!ack.accepted, "relay accepted a guest write");
+    // The reader cannot see the owner's private system channel at all.
+    assert!(
+        channel(&reader_store, reader_community, system)
+            .await
+            .is_none()
+    );
+
+    // Owner: the system channel arrives only through the NIP-CL opt-in and
+    // stays a member channel, typed System and read-only.
+    let (owner_store, owner_community) =
+        local_directory(&owner_hex, &relay_pubkey, &owner_http).await;
+    let system_channel = channel(&owner_store, owner_community, system)
+        .await
+        .unwrap();
+    assert!(
+        system_channel.is_member,
+        "system membership was reconciled away"
+    );
+    assert_eq!(system_channel.kind, bzz::domain::ChannelKind::System);
+    assert_eq!(
+        system_channel.read_only_reason(),
+        Some(bzz::domain::ReadOnlyReason::SystemChannel)
+    );
+    let owner_announce = channel(&owner_store, owner_community, announce)
+        .await
+        .unwrap();
+    assert_eq!(
+        owner_announce.read_only_reason(),
+        None,
+        "owner writes in announce"
+    );
+    let legacy_only = owner_http
+        .query(&[QueryFilter {
+            kinds: vec![39_002],
+            ..QueryFilter::default()
+        }
+        .tag("p", [owner_hex.clone()])])
+        .await
+        .unwrap();
+    assert!(
+        legacy_only
+            .iter()
+            .all(|event| bzz::protocol::events::first_tag(event, "d") != Some(system.to_string())),
+        "a read that names no channel must not return system channels"
+    );
+
+    // Kick: the owner removes the reader; the reader's next refresh drops it.
+    let kick = owner_signer
+        .sign(buzz_sdk::build_remove_member(announce, &reader_hex).unwrap())
+        .await
+        .unwrap();
+    let ack = owner_session.publish(kick).await.unwrap();
+    assert!(ack.accepted, "{}", ack.message);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    directory::refresh(reader_community, &reader_hex, &reader_http, &reader_store)
+        .await
+        .unwrap();
+    let kicked = channel(&reader_store, reader_community, announce)
+        .await
+        .unwrap();
+    assert!(
+        !kicked.is_member,
+        "kicked membership survived a directory refresh"
+    );
+
+    owner_session.shutdown().await;
+    reader_session.shutdown().await;
+    owner_signer.lock().await;
+    reader_signer.lock().await;
+}

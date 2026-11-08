@@ -49,7 +49,10 @@ impl Store {
                       SELECT 1 FROM dm_visibility v JOIN communities co ON co.id=v.community_id JOIN identities i ON i.id=co.identity_id
                       WHERE v.community_id=c.community_id AND v.channel_id=c.channel_id AND v.identity_pubkey=i.pubkey
                     ) ELSE c.is_hidden END,
-                    c.member_count,c.last_event_at
+                    c.member_count,c.last_event_at,c.facts_json,
+                    (SELECT m.role FROM memberships m JOIN communities co ON co.id=m.community_id
+                       JOIN identities i ON i.id=co.identity_id
+                     WHERE m.community_id=c.community_id AND m.channel_id=c.channel_id AND m.pubkey=i.pubkey)
              FROM channels c
              WHERE c.community_id=?1 AND (
                (c.channel_type<>'dm' AND c.is_hidden=0) OR
@@ -84,6 +87,14 @@ impl Store {
                     last_event_at: row
                         .get::<_, Option<i64>>(8)?
                         .and_then(|value| u64::try_from(value).ok()),
+                    facts: {
+                        let mut facts: crate::domain::ChannelFacts =
+                            serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default();
+                        facts.viewer_role = row
+                            .get::<_, Option<String>>(10)?
+                            .map(|role| crate::domain::MemberRole::parse(Some(&role)));
+                        facts
+                    },
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

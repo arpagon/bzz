@@ -36,7 +36,22 @@ pub async fn refresh(
         .tag("p", [self_pubkey.to_owned()]),
     )
     .await?;
+    // NIP-CL leaves system channels out of reads that do not name them; ask
+    // for them explicitly so their memberships are not reconciled away.
+    let system = query_all(
+        http,
+        QueryFilter {
+            kinds: vec![39_002],
+            ..QueryFilter::default()
+        }
+        .tag("p", [self_pubkey.to_owned()])
+        .tag("t", ["system".to_owned()]),
+    )
+    .await?;
+    joined.extend(system);
     joined.retain(|event| event.kind.as_u16() == 39_002);
+    joined.sort_by_key(|event| event.id);
+    joined.dedup_by_key(|event| event.id);
     let mut ids = joined
         .iter()
         .filter(|event| {

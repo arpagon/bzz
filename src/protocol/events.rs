@@ -2,7 +2,9 @@ use nostr::Event;
 use uuid::Uuid;
 
 use crate::{
-    domain::{Channel, ChannelKind, Message, Profile, Reaction, Visibility},
+    domain::{
+        Channel, ChannelFacts, ChannelKind, JoinRole, Message, Profile, Reaction, Visibility,
+    },
     error::{Error, Result},
 };
 
@@ -137,8 +139,10 @@ pub fn as_channel(event: &Event) -> Option<Channel> {
     } else {
         Visibility::Public
     };
-    let kind =
-        first_tag(event, "t").map_or(ChannelKind::Stream, |value| ChannelKind::parse(&value));
+    let types = tag_values(event, "t");
+    let kind = types
+        .first()
+        .map_or(ChannelKind::Stream, |value| ChannelKind::parse(value));
     Some(Channel {
         id,
         name: first_tag(event, "name").unwrap_or_else(|| id.to_string()),
@@ -151,5 +155,52 @@ pub fn as_channel(event: &Event) -> Option<Channel> {
         is_hidden: false,
         member_count: 0,
         last_event_at: None,
+        facts: channel_facts(event, types.get(1..).unwrap_or_default()),
     })
+}
+
+/// Maximum NIP-CL labels per channel.
+pub const MAX_CHANNEL_LABELS: usize = 8;
+
+/// NIP-CL label rule: 1-64 of `a-z 0-9 . : -`, never a channel type name.
+pub fn valid_channel_label(label: &str) -> bool {
+    (1..=64).contains(&label.len())
+        && label.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".:-".contains(&byte)
+        })
+        && !matches!(label, "stream" | "forum" | "dm" | "workflow" | "system")
+}
+
+fn has_bare_tag(event: &Event, name: &str) -> bool {
+    event
+        .tags
+        .iter()
+        .any(|tag| tag.as_slice().first().map(String::as_str) == Some(name))
+}
+
+fn channel_facts(event: &Event, labels: &[String]) -> ChannelFacts {
+    let mut seen = std::collections::BTreeSet::new();
+    let labels = labels
+        .iter()
+        .filter(|label| valid_channel_label(label) && seen.insert(label.as_str()))
+        .take(MAX_CHANNEL_LABELS)
+        .cloned()
+        .collect();
+    let creator = first_tag(event, "P").filter(|value| {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    ChannelFacts {
+        labels,
+        creator,
+        created_at: first_tag(event, "created_at").and_then(|value| value.parse().ok()),
+        join_role: first_tag(event, "join_role")
+            .map_or(JoinRole::Member, |value| JoinRole::parse(&value)),
+        unlisted: has_bare_tag(event, "unlisted"),
+        archived: first_tag(event, "archived").as_deref() == Some("true"),
+        auto_join: has_bare_tag(event, "auto_join"),
+        viewer_role: None,
+    }
 }

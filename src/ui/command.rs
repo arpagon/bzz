@@ -14,6 +14,8 @@ pub enum Command {
     AddCommunity,
     RemoveCommunity,
     PurgeCache,
+    /// Expand or collapse the System sidebar group.
+    System,
     Unknown(String),
 }
 
@@ -33,6 +35,7 @@ pub fn parse(input: &str) -> Command {
         "community add" => Command::AddCommunity,
         "community remove" => Command::RemoveCommunity,
         "purge-cache" => Command::PurgeCache,
+        "system" => Command::System,
         value => Command::Unknown(value.to_owned()),
     }
 }

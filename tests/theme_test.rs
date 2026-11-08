@@ -28,6 +28,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
         is_hidden: false,
         member_count: 1,
         last_event_at: Some(1),
+        facts: Default::default(),
     }];
     let messages = vec![Message {
         event_id: event_id.clone(),
@@ -95,6 +96,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
                         },
                         &HashSet::from([channel_id]),
                         ChannelSort::Smart,
+                        false,
                         &theme,
                         true,
                     );

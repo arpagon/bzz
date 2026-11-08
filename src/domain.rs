@@ -22,6 +22,10 @@ pub enum ChannelKind {
     Stream,
     Forum,
     Dm,
+    Workflow,
+    /// NIP-CL access-control channel (agent config and similar).
+    System,
+    /// A type this bzz does not know. Always read-only.
     Other(String),
 }
 
@@ -31,6 +35,8 @@ impl ChannelKind {
             "stream" => Self::Stream,
             "forum" => Self::Forum,
             "dm" => Self::Dm,
+            "workflow" => Self::Workflow,
+            "system" => Self::System,
             other => Self::Other(other.to_owned()),
         }
     }
@@ -39,12 +45,128 @@ impl ChannelKind {
         matches!(self, Self::Dm)
     }
 
+    pub const fn is_system(&self) -> bool {
+        matches!(self, Self::System)
+    }
+
     pub fn as_str(&self) -> &str {
         match self {
             Self::Stream => "stream",
             Self::Forum => "forum",
             Self::Dm => "dm",
+            Self::Workflow => "workflow",
+            Self::System => "system",
             Self::Other(value) => value,
+        }
+    }
+}
+
+/// NIP-29 roles as Buzz publishes them in kind 39002 `["p", pubkey, "", role]`.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
+pub enum MemberRole {
+    Owner,
+    Admin,
+    #[default]
+    Member,
+    /// Reads and leaves; cannot write (announce channels).
+    Guest,
+    Bot,
+    /// A role this bzz does not know. Fails closed: cannot write.
+    Unknown,
+}
+
+impl MemberRole {
+    /// Parse the fourth `p`-tag field. An absent field is the NIP-29 default
+    /// member role; anything unrecognized is `Unknown`.
+    pub fn parse(value: Option<&str>) -> Self {
+        match value {
+            None | Some("" | "member") => Self::Member,
+            Some("owner") => Self::Owner,
+            Some("admin") => Self::Admin,
+            Some("guest") => Self::Guest,
+            Some("bot") => Self::Bot,
+            Some(_) => Self::Unknown,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Admin => "admin",
+            Self::Member => "member",
+            Self::Guest => "guest",
+            Self::Bot => "bot",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub const fn can_write(self) -> bool {
+        matches!(self, Self::Owner | Self::Admin | Self::Member | Self::Bot)
+    }
+}
+
+/// The role a new member gets in an open channel (block/buzz#8143).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum JoinRole {
+    #[default]
+    Member,
+    Guest,
+}
+
+impl JoinRole {
+    /// Unknown values fail closed to `Guest`, exactly like the relay.
+    pub fn parse(value: &str) -> Self {
+        if value == "member" {
+            Self::Member
+        } else {
+            Self::Guest
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Member => "member",
+            Self::Guest => "guest",
+        }
+    }
+}
+
+/// NIP-CL identity and Buzz channel settings carried by relay-signed 39000,
+/// plus the viewer's own role from 39002. A missing tag means unknown.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct ChannelFacts {
+    pub labels: Vec<String>,
+    pub creator: Option<String>,
+    pub created_at: Option<u64>,
+    pub join_role: JoinRole,
+    pub unlisted: bool,
+    pub archived: bool,
+    pub auto_join: bool,
+    pub viewer_role: Option<MemberRole>,
+}
+
+/// Why the composer, reactions and replies are unavailable in a channel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadOnlyReason {
+    UnknownType,
+    SystemChannel,
+    Guest,
+    UnknownRole,
+    Archived,
+}
+
+impl ReadOnlyReason {
+    /// Fixed one-line notice; never includes relay-provided text.
+    pub const fn notice(self) -> &'static str {
+        match self {
+            Self::UnknownType => "read-only · channel type not supported by this bzz",
+            Self::SystemChannel => "read-only · system channel",
+            Self::Guest => "read-only · announce channel (guest)",
+            Self::UnknownRole => "read-only · unknown channel role",
+            Self::Archived => "read-only · archived channel",
         }
     }
 }
@@ -60,6 +182,39 @@ pub struct Channel {
     pub is_hidden: bool,
     pub member_count: u32,
     pub last_event_at: Option<u64>,
+    pub facts: ChannelFacts,
+}
+
+impl Channel {
+    /// Local write gate for composer, reactions and replies. The relay stays
+    /// the authority; this only avoids offering actions it will refuse.
+    pub fn read_only_reason(&self) -> Option<ReadOnlyReason> {
+        match self.kind {
+            ChannelKind::Other(_) => return Some(ReadOnlyReason::UnknownType),
+            ChannelKind::System => return Some(ReadOnlyReason::SystemChannel),
+            _ => {}
+        }
+        if self.facts.archived {
+            return Some(ReadOnlyReason::Archived);
+        }
+        match self.facts.viewer_role {
+            Some(MemberRole::Guest) => Some(ReadOnlyReason::Guest),
+            Some(MemberRole::Unknown) => Some(ReadOnlyReason::UnknownRole),
+            // Not yet a member of an announce channel: joining makes a guest.
+            None if self.facts.join_role == JoinRole::Guest
+                && matches!(self.visibility, Visibility::Public) =>
+            {
+                Some(ReadOnlyReason::Guest)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether browse and finder may list this channel. Unlisted open channels
+    /// are named-only for non-members (NIP-CL); they stay reachable by link.
+    pub fn listed_for_viewer(&self) -> bool {
+        self.is_member || !self.facts.unlisted
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -269,6 +269,7 @@ pub struct App {
     typing_subscription_channel: Option<Uuid>,
     closed_typing_channel: Option<Uuid>,
     reactions: HashMap<String, Vec<Reaction>>,
+    show_system_channels: bool,
     profile_requested: HashSet<String>,
     thread_messages: Vec<Message>,
     thread_root: Option<String>,
@@ -481,6 +482,7 @@ impl App {
             typing_subscription_channel: None,
             closed_typing_channel: None,
             reactions: HashMap::new(),
+            show_system_channels: false,
             profile_requested: HashSet::new(),
             thread_messages: Vec::new(),
             thread_root: None,
@@ -2726,6 +2728,10 @@ impl App {
                         "cached read-only mode: restore or unlock the identity, then restart bzz"
                             .into(),
                     );
+                } else if let Some(reason) =
+                    self.current_channel().and_then(Channel::read_only_reason)
+                {
+                    self.status_error = Some(reason.notice().into());
                 } else if self.selected_message().is_some() {
                     self.presentation.open_overlay(Overlay::Reaction);
                 }
@@ -3069,6 +3075,15 @@ impl App {
         root: Option<String>,
         parent: Option<String>,
     ) -> Result<()> {
+        if let Some(reason) = self
+            .channels
+            .iter()
+            .find(|value| value.id == channel)
+            .and_then(Channel::read_only_reason)
+        {
+            self.status_error = Some(reason.notice().into());
+            return Ok(());
+        }
         if self.runtime.is_none() {
             self.status_error = Some(
                 "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
@@ -3182,6 +3197,20 @@ impl App {
                     self.status_error = Some("attachment processing is not ready to send".into());
                 } else if !self.composer.sendable() && !self.composer.attachments.is_empty() {
                     self.status_error = Some("wait for every attachment to become ready".into());
+                } else if let Some(reason) = self
+                    .presentation
+                    .composer_target
+                    .as_ref()
+                    .and_then(|target| {
+                        self.channels
+                            .iter()
+                            .find(|value| value.id == target.channel_id)
+                    })
+                    .and_then(Channel::read_only_reason)
+                {
+                    // The role or channel settings changed while composing:
+                    // keep the draft, refuse locally, let the user decide.
+                    self.status_error = Some(reason.notice().into());
                 } else if self.composer.sendable() {
                     let Some(prepared_target) = self.presentation.composer_target.clone() else {
                         return Ok(());
@@ -4039,6 +4068,11 @@ impl App {
         self.cache_dirty = true;
     }
     fn send_reaction(&mut self) {
+        if let Some(reason) = self.current_channel().and_then(Channel::read_only_reason) {
+            self.status_error = Some(reason.notice().into());
+            self.presentation.close_overlay();
+            return;
+        }
         let Some(runtime) = &self.runtime else { return };
         let Some(message) = self.selected_message() else {
             return;
@@ -5072,6 +5106,10 @@ impl App {
                     self.media.protocol_name()
                 ));
             }
+            crate::ui::command::Command::System => {
+                self.show_system_channels = !self.show_system_channels;
+                self.presentation.close_overlay();
+            }
             crate::ui::command::Command::Inbox => self.open_inbox(),
             crate::ui::command::Command::Search => self.open_search(),
             crate::ui::command::Command::Dm => self.open_dm_picker(None),
@@ -5239,6 +5277,7 @@ impl App {
             &self.channels,
             &self.unread_channels(),
             self.config.ui.channel_sort,
+            self.show_system_channels,
         )
     }
 
@@ -5483,6 +5522,7 @@ impl App {
                 &self.channel_viewport,
                 &self.unread_channels(),
                 self.config.ui.channel_sort,
+                self.show_system_channels,
                 &self.theme,
                 self.presentation.focus == FocusSurface::Channels,
             );
@@ -5850,6 +5890,13 @@ impl App {
                 "Select a joined channel to write.".into(),
                 HighlightGroup::ComposerBorder,
                 HighlightGroup::ComposerHint,
+            )
+        } else if let Some(reason) = self.current_channel().and_then(Channel::read_only_reason) {
+            (
+                format!(" {target} "),
+                reason.notice().into(),
+                HighlightGroup::ComposerBorder,
+                HighlightGroup::ComposerDisabled,
             )
         } else if self.runtime.is_none() {
             (
@@ -6790,6 +6837,7 @@ mod tests {
             is_hidden: false,
             member_count: 1,
             last_event_at: None,
+            facts: Default::default(),
         }];
         app.selected_channel = 0;
         app.messages = vec![Message {
@@ -6852,6 +6900,7 @@ mod tests {
             is_hidden: false,
             member_count: 2,
             last_event_at: None,
+            facts: Default::default(),
         }];
         app.selected_channel = 0;
         let keys = Keys::generate();
@@ -7348,6 +7397,7 @@ mod tests {
             is_hidden: false,
             member_count: 1,
             last_event_at: Some(42),
+            facts: Default::default(),
         }];
         app.messages = vec![Message {
             event_id: "event-1".into(),
@@ -7882,6 +7932,7 @@ mod tests {
             is_hidden: false,
             member_count: 1,
             last_event_at: None,
+            facts: Default::default(),
         }];
         app.messages = vec![Message {
             event_id: "event-1".into(),
@@ -8107,5 +8158,136 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("bzz effective keymap"));
         assert!(text.contains("active scoped overrides"));
+    }
+
+    async fn read_only_fixture(
+        temporary: &TempDir,
+        kind: ChannelKind,
+        facts: crate::domain::ChannelFacts,
+    ) -> super::App {
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+        let identity = crate::config::IdentityConfig {
+            id: Uuid::new_v4(),
+            label: "read-only".into(),
+            pubkey: "a".repeat(64),
+            backend: crate::config::KeyBackend::Keychain,
+            key_ref: "identity:read-only".into(),
+        };
+        app.config.identities.push(identity.clone());
+        app.config
+            .add_community(
+                "read-only".into(),
+                "wss://read-only.example".into(),
+                identity.id,
+                false,
+            )
+            .unwrap();
+        app.channels = vec![Channel {
+            id: Uuid::new_v4(),
+            name: "announcements".into(),
+            about: String::new(),
+            kind,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 1,
+            last_event_at: None,
+            facts,
+        }];
+        app
+    }
+
+    fn screen_text(app: &mut super::App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    #[tokio::test]
+    async fn guest_channel_shows_fixed_read_only_notice_and_refuses_composer() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = read_only_fixture(
+            &temporary,
+            ChannelKind::Stream,
+            crate::domain::ChannelFacts {
+                join_role: crate::domain::JoinRole::Guest,
+                viewer_role: Some(crate::domain::MemberRole::Guest),
+                ..Default::default()
+            },
+        )
+        .await;
+        let screen = screen_text(&mut app);
+        assert!(
+            screen.contains("read-only · announce channel (guest)"),
+            "{screen}"
+        );
+        let community = app.active_community_id().unwrap();
+        let channel = app.channels[0].id;
+        app.open_composer_target(community, channel, None, None)
+            .await
+            .unwrap();
+        assert!(app.presentation.composer_target.is_none());
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("read-only · announce channel (guest)")
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_channel_type_is_read_only_and_member_role_writes() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = read_only_fixture(
+            &temporary,
+            ChannelKind::Other("future".into()),
+            crate::domain::ChannelFacts::default(),
+        )
+        .await;
+        assert!(screen_text(&mut app).contains("read-only · channel type not supported"));
+        app.channels[0].kind = ChannelKind::Stream;
+        app.channels[0].facts.viewer_role = Some(crate::domain::MemberRole::Member);
+        let screen = screen_text(&mut app);
+        assert!(!screen.contains("read-only ·"), "{screen}");
+    }
+
+    #[tokio::test]
+    async fn system_channels_stay_collapsed_until_the_system_command() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = read_only_fixture(
+            &temporary,
+            ChannelKind::Stream,
+            crate::domain::ChannelFacts::default(),
+        )
+        .await;
+        let mut system = app.channels[0].clone();
+        system.id = Uuid::new_v4();
+        system.name = "agent-config".into();
+        system.kind = ChannelKind::System;
+        app.channels.push(system);
+        let collapsed = screen_text(&mut app);
+        assert!(collapsed.contains("· ⚙1 "), "{collapsed}");
+        assert!(!collapsed.contains("agent-config"));
+        assert_eq!(app.ordered_channel_indexes(), vec![0]);
+        app.command = ":system".into();
+        app.execute_command().await.unwrap();
+        let expanded = screen_text(&mut app);
+        assert!(expanded.contains("· ⚙ open"), "{expanded}");
+        assert!(expanded.contains("⚙agent-config"), "{expanded}");
+        assert_eq!(app.ordered_channel_indexes(), vec![0, 1]);
     }
 }

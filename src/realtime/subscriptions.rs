@@ -29,7 +29,12 @@ impl SubscriptionRegistry {
 }
 
 pub fn membership(pubkey: &str, since: u64) -> Vec<Value> {
-    vec![json!({"kinds":[44100,44101],"#p":[pubkey],"since":since.saturating_sub(30),"limit":100})]
+    // NIP-CL: a filter without `#t` matches only legacy-type notices; system
+    // channel notices need their own filter. Old relays return nothing for it.
+    vec![
+        json!({"kinds":[44100,44101],"#p":[pubkey],"since":since.saturating_sub(30),"limit":100}),
+        json!({"kinds":[44100,44101],"#p":[pubkey],"#t":["system"],"since":since.saturating_sub(30),"limit":100}),
+    ]
 }
 
 pub fn personal(pubkey: &str, since: u64) -> Vec<Value> {

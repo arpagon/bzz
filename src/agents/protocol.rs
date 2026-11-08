@@ -135,7 +135,7 @@ pub fn verified_owner_pubkey(profile: &Event) -> Result<String, VerificationFail
         let Ok(encoded) = serde_json::to_string(values) else {
             continue;
         };
-        if let Ok(owner) = buzz_sdk::nip_oa::verify_auth_tag(&encoded, &profile.pubkey) {
+        if let Ok(owner) = verify_auth_tag_for_event(&encoded, &values[2], profile) {
             owners.insert(owner.to_hex());
         }
     }
@@ -144,6 +144,28 @@ pub fn verified_owner_pubkey(profile: &Event) -> Result<String, VerificationFail
         1 => Ok(owners.into_iter().next().expect("one owner exists")),
         _ => Err(VerificationFailure::ConflictingOwner),
     }
+}
+
+/// NIP-OA: an `auth` tag authorizes only events that satisfy its conditions.
+/// `created_at<`/`created_at>` (strict) are checked against the carrying
+/// event's `created_at` by the SDK; `kind=` clauses must name its kind.
+fn verify_auth_tag_for_event(
+    encoded: &str,
+    conditions: &str,
+    event: &Event,
+) -> Result<nostr::PublicKey, ()> {
+    let owner = buzz_sdk::nip_oa::verify_auth_tag_for_auth_event(
+        encoded,
+        &event.pubkey,
+        event.created_at.as_secs(),
+    )
+    .map_err(|_| ())?;
+    let kind = u64::from(event.kind.as_u16());
+    let kinds_ok = conditions
+        .split('&')
+        .filter_map(|clause| clause.strip_prefix("kind="))
+        .all(|value| value.parse::<u64>().is_ok_and(|bound| bound == kind));
+    kinds_ok.then_some(owner).ok_or(())
 }
 
 fn parse_profile(profile: &Event) -> Result<PublicMetadata, VerificationFailure> {
@@ -229,6 +251,49 @@ mod tests {
     use nostr::{EventBuilder, Keys, Kind, Tag};
 
     use super::*;
+
+    fn profile_with_conditions(conditions: &str, created_at: u64) -> (Event, Keys) {
+        let owner = Keys::generate();
+        let agent = Keys::generate();
+        let auth =
+            buzz_sdk::nip_oa::compute_auth_tag(&owner, &agent.public_key(), conditions).unwrap();
+        let auth: Vec<String> = serde_json::from_str(&auth).unwrap();
+        let profile = EventBuilder::new(Kind::Metadata, "{}")
+            .tags([Tag::parse(auth).unwrap()])
+            .custom_created_at(nostr::Timestamp::from(created_at))
+            .sign_with_keys(&agent)
+            .unwrap();
+        (profile, owner)
+    }
+
+    #[test]
+    fn nip_oa_time_and_kind_conditions_bind_the_carrying_profile() {
+        let (in_window, owner) = profile_with_conditions("created_at>100&created_at<300", 200);
+        assert_eq!(
+            verified_owner_pubkey(&in_window).unwrap(),
+            owner.public_key().to_hex()
+        );
+        for (conditions, created_at) in [
+            ("created_at<200", 200),
+            ("created_at<100", 200),
+            ("created_at>200", 200),
+            ("created_at>300", 200),
+            ("kind=1", 200),
+            ("kind=0&created_at<100", 200),
+        ] {
+            let (profile, _) = profile_with_conditions(conditions, created_at);
+            assert_eq!(
+                verified_owner_pubkey(&profile),
+                Err(VerificationFailure::MissingOwnership),
+                "{conditions} at {created_at}"
+            );
+        }
+        let (kind_ok, owner) = profile_with_conditions("kind=0", 200);
+        assert_eq!(
+            verified_owner_pubkey(&kind_ok).unwrap(),
+            owner.public_key().to_hex()
+        );
+    }
 
     fn records(
         respond_to: Option<&str>,

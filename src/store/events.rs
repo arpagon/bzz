@@ -75,10 +75,10 @@ impl Store {
                     "conflicting bytes for an existing event ID".into(),
                 ));
             }
-            let projection_changed = if event.kind.as_u16() == 39_002 {
-                self.repair_current_membership_projection(community_id, event)?
-            } else {
-                false
+            let projection_changed = match event.kind.as_u16() {
+                39_002 => self.repair_current_membership_projection(community_id, event)?,
+                39_000 => self.repair_current_channel_facts(community_id, event)?,
+                _ => false,
             };
             let outbox_changed = self.mark_outbox_observed(community_id, &event.id.to_hex())?;
             if projection_changed {
@@ -132,11 +132,11 @@ impl Store {
                 Visibility::Private => "private",
             };
             transaction.execute(
-                "INSERT INTO channels(community_id,channel_id,name,about,channel_type,visibility,is_hidden,metadata_event_id,metadata_created_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,0,?7,?8)
-                 ON CONFLICT(community_id,channel_id) DO UPDATE SET name=excluded.name,about=excluded.about,channel_type=excluded.channel_type,visibility=excluded.visibility,metadata_event_id=excluded.metadata_event_id,metadata_created_at=excluded.metadata_created_at
+                "INSERT INTO channels(community_id,channel_id,name,about,channel_type,visibility,is_hidden,metadata_event_id,metadata_created_at,facts_json)
+                 VALUES(?1,?2,?3,?4,?5,?6,0,?7,?8,?9)
+                 ON CONFLICT(community_id,channel_id) DO UPDATE SET name=excluded.name,about=excluded.about,channel_type=excluded.channel_type,visibility=excluded.visibility,metadata_event_id=excluded.metadata_event_id,metadata_created_at=excluded.metadata_created_at,facts_json=excluded.facts_json
                  WHERE (excluded.metadata_created_at,excluded.metadata_event_id) > (COALESCE(channels.metadata_created_at,0),COALESCE(channels.metadata_event_id,''))",
-                params![community_id.to_string(),channel.id.to_string(),channel.name,channel.about,channel.kind.as_str(),visibility,event.id.to_hex(),u64_to_i64(event.created_at.as_secs())?],
+                params![community_id.to_string(),channel.id.to_string(),channel.name,channel.about,channel.kind.as_str(),visibility,event.id.to_hex(),u64_to_i64(event.created_at.as_secs())?,facts_json(&channel.facts)?],
             )?;
             if channel.kind.is_dm() {
                 let participant_count: usize = transaction.query_row(
@@ -245,6 +245,26 @@ impl Store {
             self.reconcile_remote_agents(community_id)?;
         }
         Ok(true)
+    }
+
+    /// Older bzz binaries did not project NIP-CL facts. When the current
+    /// metadata event is re-ingested, re-derive them in place.
+    fn repair_current_channel_facts(&mut self, community_id: Uuid, event: &Event) -> Result<bool> {
+        let Some(channel) = as_channel(event) else {
+            return Ok(false);
+        };
+        let facts = facts_json(&channel.facts)?;
+        let changed = self.connection.execute(
+            "UPDATE channels SET facts_json=?4
+             WHERE community_id=?1 AND channel_id=?2 AND metadata_event_id=?3 AND facts_json<>?4",
+            params![
+                community_id.to_string(),
+                channel.id.to_string(),
+                event.id.to_hex(),
+                facts
+            ],
+        )?;
+        Ok(changed > 0)
     }
 
     /// An event ID is immutable, but an older bzz binary may have projected
@@ -377,11 +397,14 @@ fn membership_snapshot(event: &Event) -> Result<Option<MembershipSnapshot>> {
                 "membership snapshot has an invalid participant tag".into(),
             ));
         };
-        let role = if values.len() == 4 && values[3] == "bot" {
-            "bot"
-        } else {
-            "member"
-        };
+        // Exact NIP-29 shape `["p", pubkey, relay, role]`; a longer tag is not
+        // a role grant (a lookalike `bot` with extra fields stays non-writing).
+        let role = match values.len() {
+            0..=3 => crate::domain::MemberRole::Member,
+            4 => crate::domain::MemberRole::parse(Some(values[3].as_str())),
+            _ => crate::domain::MemberRole::Unknown,
+        }
+        .as_str();
         members.push((pubkey.clone(), role));
     }
     if members.len() > 10_000
@@ -536,4 +559,12 @@ fn apply_dm_visibility_snapshot(
 
 pub(crate) fn u64_to_i64(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| Error::Protocol("timestamp is out of range".into()))
+}
+
+/// The stored facts never include the viewer's role; that is derived from
+/// memberships at read time.
+fn facts_json(facts: &crate::domain::ChannelFacts) -> Result<String> {
+    let mut stored = facts.clone();
+    stored.viewer_role = None;
+    serde_json::to_string(&stored).map_err(|error| Error::Serialization(error.to_string()))
 }

@@ -42,7 +42,31 @@ impl ParsedSearch {
             .count()
             >= 2
     }
+
+    /// Whether the relay will run a message prefix search for this text
+    /// (block/buzz#8947). The relay splits the last whitespace-separated word
+    /// with Postgres' `simple` parser and returns no hits when any of its
+    /// lexemes is shorter than three characters. Profile search is exempt.
+    pub fn remote_message_prefix_ok(&self) -> bool {
+        let Some(last) = self.text.split_whitespace().last() else {
+            return false;
+        };
+        // Postgres keeps dotted/at-joined words (`v1.2`, `foo@bar.com`) as one
+        // lexeme but splits hyphenated parts and underscores (verified against
+        // the pinned harness: `bzz-dm-search` -> bzz, dm, search).
+        let mut lexemes = last
+            .split(|character: char| {
+                !character.is_alphanumeric() && !matches!(character, '.' | '@')
+            })
+            .map(|lexeme| lexeme.trim_matches(|character| matches!(character, '.' | '@')))
+            .filter(|lexeme| !lexeme.is_empty())
+            .peekable();
+        lexemes.peek().is_some() && lexemes.all(|lexeme| lexeme.chars().count() >= 3)
+    }
 }
+
+pub const SHORT_PREFIX_NOTICE: &str =
+    "relay message search needs 3+ characters in each part of the last word";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SearchOutput {
@@ -111,6 +135,7 @@ impl SearchService {
             return Ok(local);
         }
 
+        let short_prefix = !parsed.remote_message_prefix_ok();
         let (profile_result, message_result) = tokio::join!(
             self.remote_profiles(&parsed),
             self.remote_messages(&parsed, &resolved, identity_pubkey)
@@ -172,6 +197,9 @@ impl SearchService {
         }
         merge_remote(&mut local.results, remote);
         local.results.truncate(SESSION_LIMIT);
+        if short_prefix && local.notice.is_none() {
+            local.notice = Some(SHORT_PREFIX_NOTICE.into());
+        }
         Ok(local)
     }
 
@@ -311,7 +339,7 @@ impl SearchService {
         resolved: &ResolvedSearch,
         _identity_pubkey: &str,
     ) -> Result<Vec<Event>> {
-        if !parsed.enough_text() {
+        if !parsed.enough_text() || !parsed.remote_message_prefix_ok() {
             return Ok(Vec::new());
         }
         let mut filter = QueryFilter {
@@ -679,6 +707,34 @@ const fn section_order(kind: SearchResultKind) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn message_prefix_follows_the_relay_lexeme_minimum() {
+        for (text, ok) in [
+            ("deploy", true),
+            ("hello wor", true),
+            ("ab", false),
+            ("hello a", false),
+            ("bzz-dm-search", false),
+            ("bzzdmsearch1234", true),
+            ("release-notes", true),
+            ("v1.2", true),
+            ("hello.world", true),
+            ("foo@bar.com", true),
+            ("abc_de", false),
+            ("x86_64", false),
+            ("!!!", false),
+            ("", false),
+            ("año", true),
+            ("über", true),
+        ] {
+            let parsed = super::ParsedSearch {
+                text: text.into(),
+                ..super::ParsedSearch::default()
+            };
+            assert_eq!(parsed.remote_message_prefix_ok(), ok, "{text:?}");
+        }
+    }
+
     use proptest::prelude::*;
 
     use super::{fts_prefix_query, parse, parse_date};

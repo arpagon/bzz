@@ -35,6 +35,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
             is_hidden: false,
             member_count: 3,
             last_event_at: Some(1),
+            facts: Default::default(),
         },
         Channel {
             id: Uuid::new_v4(),
@@ -46,6 +47,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
             is_hidden: false,
             member_count: 1,
             last_event_at: None,
+            facts: Default::default(),
         },
     ];
     let messages = vec![Message {
@@ -110,6 +112,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                 },
                 &HashSet::from([channel]),
                 ChannelSort::Smart,
+                false,
                 &theme,
                 true,
             );

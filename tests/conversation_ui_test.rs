@@ -26,6 +26,7 @@ fn finder_ranks_joined_channels_before_open_when_query_empty() {
             is_hidden: false,
             member_count: 0,
             last_event_at: None,
+            facts: Default::default(),
         },
         Channel {
             id: uuid::Uuid::new_v4(),
@@ -37,6 +38,7 @@ fn finder_ranks_joined_channels_before_open_when_query_empty() {
             is_hidden: false,
             member_count: 0,
             last_event_at: Some(1),
+            facts: Default::default(),
         },
         Channel {
             id: uuid::Uuid::new_v4(),
@@ -48,6 +50,7 @@ fn finder_ranks_joined_channels_before_open_when_query_empty() {
             is_hidden: false,
             member_count: 0,
             last_event_at: Some(2),
+            facts: Default::default(),
         },
     ];
     let ranked = finder::rank("", &channels);
