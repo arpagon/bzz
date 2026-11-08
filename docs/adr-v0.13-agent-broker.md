@@ -90,3 +90,38 @@ bzz v0.13 implements a **local broker host**.
   contract rejects in favor of named operations with policy.
 - **Spawn agents from bzz.** Runtime supervision is a separate product with a
   much larger trust boundary, and it stays out of scope.
+
+## Implementation notes (v0.13.0)
+
+Recorded while implementing M9; they refine the decision above.
+
+- **Managed-agent actions.** `agents.create`, `agents.update` and
+  `agents.delete` create agents that some runtime must run (runtime, model,
+  system prompt). bzz runs none (decision 1), so its host answers them
+  `failed`/`unsupported`, which the contract allows for any action. The six
+  other actions are fully hosted. Upstream has no reference host and the pinned
+  revision lacks `docs/agent-broker.md`; the SDK's own validating client is
+  the conformance check.
+- **Key custody.** Each agent key is sealed with NIP-44 to the owner's own key
+  (`keys/agent-<id>.nip44`, owner-only) and verified by reading it back. It
+  opens only while the owner identity is unlocked, on every backend; a Buzz
+  Desktop identity cannot host agents. The NIP-OA tag and the NIP-AE memory
+  `d` tag are computed inside the signer actors, so no secret key leaves them.
+- **Owner on AUTH.** Agent NIP-42 AUTH events carry the owner's NIP-OA tag, the
+  relay's path for admitting a non-member agent and pinning its owner. Every
+  agent event carries it too.
+- **Bot role.** Writes need the relay-signed `bot` role in a channel whose
+  roster the owner's directory sees, so the owner must be a member of every
+  channel an agent writes in.
+- **Admission.** Each agent has its own connection and HTTP client, separate
+  from the human's admission budget, plus a per-agent write budget (burst 5,
+  one every two seconds).
+- **Federated identity.** In FI communities the broker enrolls each agent with
+  the owner's stored adapter session (`:signin` first) and the agent's
+  connection presents only its own `nip-fi-agent+jwt` evidence. `bzz broker
+  delete` revokes the agent first and keeps it if revocation fails.
+- **Idempotency.** Replay records are in memory (1024 per agent) and do not
+  survive a restart.
+- **Management.** `bzz broker create|list|allow|rotate|pause|resume|delete`;
+  the TUI `:broker` panel shows agents, policy and the activity log, `p`
+  pauses every agent and `o` toggles owner-signed presence.
