@@ -1704,3 +1704,130 @@ async fn real_relay_presence_snapshot_and_status() {
     session.shutdown().await;
     signer.lock().await;
 }
+
+/// v0.13 M5: NIP-CE entries and 30030 sets resolve, outgoing messages carry
+/// NIP-30 tags, NIP-50 prefix search finds entries, custom reactions land.
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_custom_emoji() {
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let keys = Keys::generate();
+    let pubkey = keys.public_key().to_hex();
+    let channel = seed_member(&source, &pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let signer = SignerHandle::spawn(keys);
+    let identity = IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "m5".into(),
+        pubkey: pubkey.clone(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "m5".into(),
+    };
+    let mut config = Config::default();
+    config.identities.push(identity.clone());
+    let community = config
+        .add_community("m5".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    let mut store = Store::open_memory().unwrap();
+    store.sync_config(&config).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        signer.clone(),
+    );
+    let service = bzz::service::messages::MessageService::new(
+        community,
+        signer.clone(),
+        store.clone(),
+        supervisor.clone(),
+    );
+    let suffix = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    let shortcode = format!("bzzparrot{suffix}");
+    let url = format!("https://example.invalid/media/{suffix}.gif");
+    let entry = service
+        .publish_builder(buzz_sdk::build_emoji_entry(&shortcode, &url).unwrap())
+        .await
+        .unwrap();
+    let set = service
+        .publish_builder(
+            buzz_sdk::build_custom_emoji_set(&[buzz_sdk::CustomEmoji {
+                shortcode: format!("bzzwave{suffix}"),
+                url: format!("https://example.invalid/media/w{suffix}.png"),
+            }])
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(entry.kind.as_u16(), 30_180);
+    assert_eq!(set.kind.as_u16(), 30_030);
+
+    let http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .unwrap();
+    // Palette from the relay: the set, plus the entry by exact #d lookup.
+    bzz::sync::directory::hydrate_emoji_sets(community, &http, &store)
+        .await
+        .unwrap();
+    let looked_up = http
+        .query(&[QueryFilter {
+            kinds: vec![30_180],
+            limit: Some(5),
+            ..QueryFilter::default()
+        }
+        .tag("d", [shortcode.clone()])])
+        .await
+        .unwrap();
+    assert_eq!(looked_up.len(), 1);
+    store
+        .call(move |store| store.apply_event(community, &looked_up[0]))
+        .await
+        .unwrap();
+    let palette = store
+        .call(move |store| store.emoji_palette(community))
+        .await
+        .unwrap();
+    assert_eq!(palette[&shortcode], url);
+    assert!(palette.contains_key(&format!("bzzwave{suffix}")));
+
+    // Outgoing message with both shortcodes gets NIP-30 tags.
+    let content = format!("ship it :{shortcode}: :bzzwave{suffix}: :unknown{suffix}:");
+    let sent = service.send(channel, &content).await.unwrap();
+    let emoji = bzz::protocol::emoji::tags_of(
+        &sent
+            .tags
+            .iter()
+            .map(|tag| tag.as_slice().to_vec())
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        emoji.len(),
+        2,
+        "known shortcodes tagged, unknown left as text"
+    );
+
+    // NIP-50 prefix search over 30180.
+    let found = http
+        .query(&[QueryFilter {
+            kinds: vec![30_180],
+            search: Some(format!("bzzparrot{}", &suffix[..2])),
+            search_mode: Some(bzz::protocol::types::SearchMode::Prefix),
+            limit: Some(50),
+            ..QueryFilter::default()
+        }])
+        .await
+        .unwrap();
+    assert!(
+        found.iter().any(|event| event.id == entry.id),
+        "NIP-50 prefix search finds the entry"
+    );
+
+    let reaction = service
+        .react_custom(&sent.id.to_hex(), &shortcode, &url)
+        .await
+        .unwrap();
+    assert_eq!(reaction.content, format!(":{shortcode}:"));
+    supervisor.shutdown().await;
+    signer.lock().await;
+}

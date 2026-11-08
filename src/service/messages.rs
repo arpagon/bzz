@@ -57,8 +57,9 @@ impl MessageService {
     ) -> Result<Event> {
         let (content, tags) = message_media(content, attachments)?;
         let mentions = mention_references(mentions)?;
+        let emoji = self.emoji_tags(&content).await;
         self.send_builder(
-            buzz_sdk::build_message(channel, &content, None, &mentions, false, &tags, &[])
+            buzz_sdk::build_message(channel, &content, None, &mentions, false, &tags, &emoji)
                 .map_err(|error| Error::Protocol(error.to_string()))?,
         )
         .await
@@ -74,10 +75,11 @@ impl MessageService {
         mentions: &[String],
         submission: DraftSubmission,
     ) -> Result<Event> {
+        let emoji = self.emoji_tags(content).await;
         let builder = (|| {
             let (content, tags) = message_media(content, attachments)?;
             let mentions = mention_references(mentions)?;
-            buzz_sdk::build_message(channel, &content, None, &mentions, false, &tags, &[])
+            buzz_sdk::build_message(channel, &content, None, &mentions, false, &tags, &emoji)
                 .map_err(|error| Error::Protocol(error.to_string()))
         })();
         let builder = match builder {
@@ -102,12 +104,14 @@ impl MessageService {
     ) -> Result<Event> {
         let mentions = mention_references(mentions)?;
         let excerpt = crate::protocol::sent_from_thread::summarize_thread_root(root_content);
-        let builder = buzz_sdk::build_message(channel, content, None, &mentions, false, &[], &[])
-            .map_err(|error| Error::Protocol(error.to_string()))?
-            .tag(crate::protocol::sent_from_thread::build_tag(
-                root_event_id,
-                excerpt.as_deref(),
-            ));
+        let emoji = self.emoji_tags(content).await;
+        let builder =
+            buzz_sdk::build_message(channel, content, None, &mentions, false, &[], &emoji)
+                .map_err(|error| Error::Protocol(error.to_string()))?
+                .tag(crate::protocol::sent_from_thread::build_tag(
+                    root_event_id,
+                    excerpt.as_deref(),
+                ));
         self.send_builder(builder).await
     }
 
@@ -171,6 +175,7 @@ impl MessageService {
         };
         let (content, tags) = message_media(content, attachments)?;
         let mentions = mention_references(mentions)?;
+        let emoji = self.emoji_tags(&content).await;
         self.send_builder(
             buzz_sdk::build_message(
                 channel,
@@ -179,7 +184,7 @@ impl MessageService {
                 &mentions,
                 false,
                 &tags,
-                &[],
+                &emoji,
             )
             .map_err(|error| Error::Protocol(error.to_string()))?,
         )
@@ -196,6 +201,7 @@ impl MessageService {
         mentions: &[String],
         submission: DraftSubmission,
     ) -> Result<Event> {
+        let emoji = self.emoji_tags(content).await;
         let builder = (|| {
             let thread = buzz_sdk::ThreadRef {
                 root_event_id: EventId::from_hex(thread.0)
@@ -212,7 +218,7 @@ impl MessageService {
                 &mentions,
                 false,
                 &tags,
-                &[],
+                &emoji,
             )
             .map_err(|error| Error::Protocol(error.to_string()))
         })();
@@ -225,6 +231,32 @@ impl MessageService {
         };
         self.send_builder_for_draft(builder, submission).await
     }
+    /// NIP-30 tags for every palette shortcode in `content`, so the message
+    /// renders without lookups for every reader. Unknown shortcodes stay text.
+    async fn emoji_tags(&self, content: &str) -> Vec<Vec<String>> {
+        if !content.contains(':') {
+            return Vec::new();
+        }
+        let community = self.community_id;
+        let palette = self
+            .store
+            .call(move |store| store.emoji_palette(community))
+            .await
+            .unwrap_or_default();
+        crate::protocol::emoji::outgoing_tags(content, &palette)
+    }
+
+    /// NIP-25 reaction with a NIP-30 custom emoji (`:shortcode:` + tag).
+    pub async fn react_custom(&self, target: &str, shortcode: &str, url: &str) -> Result<Event> {
+        let target =
+            EventId::from_hex(target).map_err(|error| Error::Protocol(error.to_string()))?;
+        self.send_builder(
+            buzz_sdk::build_custom_emoji_reaction(target, shortcode, url)
+                .map_err(|error| Error::Protocol(error.to_string()))?,
+        )
+        .await
+    }
+
     pub async fn react(&self, target: &str, emoji: &str) -> Result<Event> {
         let target =
             EventId::from_hex(target).map_err(|error| Error::Protocol(error.to_string()))?;

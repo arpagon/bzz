@@ -400,9 +400,10 @@ impl Store {
                         .map(|base| crate::media::imeta::parse_tags(&tags_json, &content, &base))
                         .unwrap_or_default()
                 };
-                let sent_from_thread = serde_json::from_str::<Vec<Vec<String>>>(&tags_json)
-                    .ok()
-                    .and_then(|tags| crate::protocol::sent_from_thread::parse_tag(&tags));
+                let parsed_tags =
+                    serde_json::from_str::<Vec<Vec<String>>>(&tags_json).unwrap_or_default();
+                let sent_from_thread = crate::protocol::sent_from_thread::parse_tag(&parsed_tags);
+                let emoji = crate::protocol::emoji::tags_of(&parsed_tags);
                 let visible_content = if system.is_some() {
                     String::new()
                 } else {
@@ -427,6 +428,7 @@ impl Store {
                     delivery: crate::domain::DeliveryState::from_outbox(state.as_deref()),
                     system,
                     sent_from_thread,
+                    emoji,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -435,7 +437,7 @@ impl Store {
 
     pub fn reactions(&self, community_id: Uuid, target: &str) -> Result<Vec<Reaction>> {
         let mut statement = self.connection.prepare(
-            "SELECT reaction_event_id,target_event_id,pubkey,emoji,created_at,deleted_by_event_id FROM reactions WHERE community_id=?1 AND target_event_id=?2 ORDER BY created_at,reaction_event_id",
+            "SELECT reaction_event_id,target_event_id,pubkey,emoji,created_at,deleted_by_event_id,emoji_url FROM reactions WHERE community_id=?1 AND target_event_id=?2 ORDER BY created_at,reaction_event_id",
         )?;
         Ok(statement
             .query_map(params![community_id.to_string(), target], |row| {
@@ -446,6 +448,7 @@ impl Store {
                     emoji: row.get(3)?,
                     created_at: u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
                     deleted: row.get::<_, Option<String>>(5)?.is_some(),
+                    emoji_url: row.get(6)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?)
@@ -1365,6 +1368,38 @@ impl Store {
             ],
         )?;
         Ok(changed > 0)
+    }
+
+    /// The custom emoji palette: newest contribution per shortcode.
+    pub fn emoji_palette(&self, community_id: Uuid) -> Result<HashMap<String, String>> {
+        let mut statement = self.connection.prepare(
+            "SELECT shortcode,url,created_at,event_id FROM emoji_contributions WHERE community_id=?1",
+        )?;
+        let rows = statement
+            .query_map([community_id.to_string()], |row| {
+                Ok(crate::protocol::emoji::Contribution {
+                    emoji: crate::protocol::emoji::Emoji {
+                        shortcode: row.get(0)?,
+                        url: row.get(1)?,
+                    },
+                    created_at: u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                    event_id: row.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut best: HashMap<String, crate::protocol::emoji::Contribution> = HashMap::new();
+        for row in rows {
+            match best.get(&row.emoji.shortcode) {
+                Some(current) if !crate::protocol::emoji::replaces(&row, current) => {}
+                _ => {
+                    best.insert(row.emoji.shortcode.clone(), row);
+                }
+            }
+        }
+        Ok(best
+            .into_iter()
+            .map(|(shortcode, contribution)| (shortcode, contribution.emoji.url))
+            .collect())
     }
 
     pub fn pinned_relay_pubkey(&self, community_id: Uuid) -> Result<Option<String>> {

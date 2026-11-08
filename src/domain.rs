@@ -399,6 +399,9 @@ pub struct Message {
     /// Desktop "Send to channel" provenance (`buzz:sent-from-thread`).
     #[serde(skip)]
     pub sent_from_thread: Option<crate::protocol::sent_from_thread::SentFromThread>,
+    /// NIP-30 custom emoji carried by this message's own tags.
+    #[serde(skip)]
+    pub emoji: Vec<crate::protocol::emoji::Emoji>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -415,6 +418,9 @@ pub struct Reaction {
     pub emoji: String,
     pub created_at: u64,
     pub deleted: bool,
+    /// Image of a NIP-30 custom emoji reaction (`:shortcode:` content).
+    #[serde(default)]
+    pub emoji_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

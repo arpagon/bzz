@@ -72,6 +72,11 @@ pub fn as_message(event: &Event) -> Option<Message> {
     let (root_event_id, parent_event_id) = thread_coordinates(event);
     let system =
         (event.kind.as_u16() == 40_099).then(|| crate::protocol::system::parse(&event.content));
+    let tags = event
+        .tags
+        .iter()
+        .map(|tag| tag.as_slice().to_vec())
+        .collect::<Vec<_>>();
     Some(Message {
         event_id: event.id.to_hex(),
         channel_id,
@@ -88,7 +93,8 @@ pub fn as_message(event: &Event) -> Option<Message> {
         deleted: false,
         delivery: crate::domain::DeliveryState::Delivered,
         system,
-        sent_from_thread: None,
+        sent_from_thread: crate::protocol::sent_from_thread::parse_tag(&tags),
+        emoji: crate::protocol::emoji::tags_of(&tags),
     })
 }
 
@@ -104,6 +110,21 @@ pub fn as_reaction(event: &Event) -> Option<Reaction> {
         emoji: event.content.clone(),
         created_at: event.created_at.as_secs(),
         deleted: false,
+        emoji_url: event
+            .content
+            .strip_prefix(':')
+            .and_then(|rest| rest.strip_suffix(':'))
+            .and_then(|shortcode| {
+                let tags = event
+                    .tags
+                    .iter()
+                    .map(|tag| tag.as_slice().to_vec())
+                    .collect::<Vec<_>>();
+                crate::protocol::emoji::tags_of(&tags)
+                    .into_iter()
+                    .find(|emoji| emoji.shortcode == shortcode.to_lowercase())
+                    .map(|emoji| emoji.url)
+            }),
     })
 }
 

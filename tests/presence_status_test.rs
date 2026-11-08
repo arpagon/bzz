@@ -116,6 +116,7 @@ fn timeline_shows_presence_marker_and_status() {
         delivery: bzz::domain::DeliveryState::Delivered,
         system: None,
         sent_from_thread: None,
+        emoji: Vec::new(),
     }];
     let theme = bzz::ui::theme::Theme::default();
     let mut state = bzz::ui::timeline::TimelineState::default();

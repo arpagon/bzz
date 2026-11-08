@@ -190,9 +190,62 @@ const MESSAGE_TEXT_INDENT: u16 = 6;
 
 enum TimelineRow {
     Text(Line<'static>),
-    Indented { line: Line<'static>, indent: u16 },
+    Indented {
+        line: Line<'static>,
+        indent: u16,
+    },
     Image(Arc<SlicedProtocol>),
+    /// Custom emoji images of one message, side by side, one row high.
+    ImageStrip(Vec<Arc<SlicedProtocol>>),
 }
+
+/// Style every resolvable `:shortcode:` token so custom emoji read as such in
+/// any terminal; unknown shortcodes stay plain text.
+fn style_custom_emoji(
+    line: Line<'static>,
+    known: &std::collections::HashSet<&str>,
+    style: ratatui::style::Style,
+) -> Line<'static> {
+    let mut spans = Vec::new();
+    for span in line.spans {
+        let text = span.content.to_string();
+        let mut rest = text.as_str();
+        let mut emitted = false;
+        while let Some(start) = rest.find(':') {
+            let after = &rest[start + 1..];
+            let Some(end) = after.find(':') else { break };
+            let candidate = &after[..end];
+            if known.contains(candidate.to_lowercase().as_str()) {
+                if start > 0 {
+                    spans.push(Span::styled(rest[..start].to_owned(), span.style));
+                }
+                spans.push(Span::styled(
+                    format!(":{candidate}:"),
+                    span.style.patch(style),
+                ));
+                rest = &after[end + 1..];
+                emitted = true;
+            } else {
+                if start + 1 > 0 {
+                    spans.push(Span::styled(rest[..start + 1].to_owned(), span.style));
+                }
+                rest = after;
+                emitted = true;
+            }
+        }
+        if emitted {
+            if !rest.is_empty() {
+                spans.push(Span::styled(rest.to_owned(), span.style));
+            }
+        } else {
+            spans.push(span);
+        }
+    }
+    Line::from(spans).style(line.style)
+}
+
+/// Custom emoji images drawn per message.
+const MAX_EMOJI_IMAGES: usize = 8;
 
 struct AvatarPlacement {
     protocol: Arc<SlicedProtocol>,
@@ -220,6 +273,11 @@ impl MessageBlock {
                 text_height(line, width.saturating_sub(*indent).max(1))
             }
             TimelineRow::Image(protocol) => protocol.size().height,
+            TimelineRow::ImageStrip(images) => images
+                .iter()
+                .map(|image| image.size().height)
+                .max()
+                .unwrap_or(0),
         }
     }
 
@@ -519,6 +577,9 @@ fn render_internal(
             for attachment in &message.attachments {
                 runtime.request_inline(attachment, image_width, false);
             }
+            for emoji in message.emoji.iter().take(MAX_EMOJI_IMAGES) {
+                runtime.request_emoji(&emoji.url);
+            }
             if message.system.is_none()
                 && let Some(picture) = profiles
                     .get(&message.pubkey)
@@ -665,6 +726,20 @@ fn render_internal(
                             );
                         }
                     }
+                    TimelineRow::ImageStrip(images) => {
+                        let relative_y = i32::try_from(row_y).unwrap_or(i32::MAX)
+                            - i32::try_from(scroll).unwrap_or(i32::MAX);
+                        let mut x = i32::from(MESSAGE_TEXT_INDENT);
+                        for image in images {
+                            let position = SignedPosition::from((
+                                x.clamp(0, i32::from(i16::MAX)) as i16,
+                                relative_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                            ));
+                            frame
+                                .render_widget(SlicedImage::new(image.as_ref(), position), content);
+                            x += i32::from(image.size().width) + 1;
+                        }
+                    }
                     TimelineRow::Image(protocol) => {
                         let relative_y = i32::try_from(row_y).unwrap_or(i32::MAX)
                             - i32::try_from(scroll).unwrap_or(i32::MAX);
@@ -809,9 +884,24 @@ fn message_block(
     let mut body_lines = if message.deleted {
         Vec::new().into_iter()
     } else {
-        markdown::render_with_width(&message.content, theme, image_width.saturating_sub(1))
-            .lines
-            .into_iter()
+        let lines =
+            markdown::render_with_width(&message.content, theme, image_width.saturating_sub(1))
+                .lines;
+        let known = message
+            .emoji
+            .iter()
+            .map(|emoji| emoji.shortcode.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        if known.is_empty() {
+            lines.into_iter()
+        } else {
+            let style = theme.style(HighlightGroup::Reaction);
+            lines
+                .into_iter()
+                .map(|line| style_custom_emoji(line, &known, style))
+                .collect::<Vec<_>>()
+                .into_iter()
+        }
     };
     let grouped_body = grouped.then(|| body_lines.next()).flatten();
     let mut header = vec![];
@@ -936,6 +1026,28 @@ fn message_block(
                 line,
                 indent: MESSAGE_TEXT_INDENT,
             });
+        }
+        // Graphics terminals show the message's custom emoji as images; the
+        // styled `:shortcode:` text stays in the body for every terminal.
+        let emoji_images = message
+            .emoji
+            .iter()
+            .filter(|emoji| {
+                message
+                    .content
+                    .to_lowercase()
+                    .contains(&format!(":{}:", emoji.shortcode))
+            })
+            .take(MAX_EMOJI_IMAGES)
+            .filter_map(
+                |emoji| match media.and_then(|runtime| runtime.emoji_state(&emoji.url)) {
+                    Some(MediaState::Ready(protocol)) => Some(protocol.clone()),
+                    _ => None,
+                },
+            )
+            .collect::<Vec<_>>();
+        if !emoji_images.is_empty() {
+            rows.push(TimelineRow::ImageStrip(emoji_images));
         }
         for attachment in &message.attachments {
             let state = media.and_then(|runtime| runtime.state(attachment, image_width));
@@ -1312,6 +1424,7 @@ mod tests {
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
             sent_from_thread: None,
+            emoji: Vec::new(),
         }
     }
 

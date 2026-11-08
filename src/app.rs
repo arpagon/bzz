@@ -242,6 +242,11 @@ enum Background {
     FederatedReady,
     /// A fixed status notice (federated identity, reports, send to channel).
     Notice(String),
+    /// Remote NIP-CE prefix search results for the reaction picker.
+    EmojiSearch {
+        query: String,
+        found: Vec<crate::protocol::emoji::Emoji>,
+    },
     /// Authoritative relay presence for the people asked about.
     PresenceSnapshot {
         community: Uuid,
@@ -308,6 +313,10 @@ pub struct App {
     /// `(reason, note)` awaiting the report confirmation.
     pending_report: Option<(String, Option<String>)>,
     presence: crate::protocol::presence::PresenceBook,
+    /// Shortcode -> image URL from 30030 sets and 30180 entries.
+    emoji_palette: HashMap<String, String>,
+    /// Shortcodes already looked up remotely (30180 `#d`), bounded.
+    emoji_lookups: HashSet<String>,
     last_presence_snapshot: Instant,
     last_presence_publish: Option<(Instant, crate::protocol::presence::Presence)>,
     last_input_at: Instant,
@@ -323,6 +332,10 @@ pub struct App {
     mention_picker: Option<MentionPicker>,
     finder: String,
     reaction_index: usize,
+    /// `Some(query)` while the reaction picker searches custom emoji.
+    reaction_query: Option<String>,
+    reaction_candidates: Vec<crate::protocol::emoji::Emoji>,
+    reaction_candidate: usize,
     command: String,
     attachment_input: String,
     inbox_items: Vec<InboxItem>,
@@ -570,6 +583,8 @@ impl App {
             show_system_channels: false,
             pending_report: None,
             presence: crate::protocol::presence::PresenceBook::default(),
+            emoji_palette: HashMap::new(),
+            emoji_lookups: HashSet::new(),
             last_presence_snapshot: Instant::now() - Duration::from_secs(3600),
             last_presence_publish: None,
             last_input_at: Instant::now(),
@@ -589,6 +604,9 @@ impl App {
             mention_picker: None,
             finder: String::new(),
             reaction_index: 0,
+            reaction_query: None,
+            reaction_candidates: Vec::new(),
+            reaction_candidate: 0,
             command: String::new(),
             attachment_input: String::new(),
             inbox_items: Vec::new(),
@@ -733,6 +751,17 @@ impl App {
                         }
                     },
                     Background::Notice(message)=>self.status_error=Some(message),
+                    Background::EmojiSearch { query, found }=>{
+                        if self.reaction_query.as_deref()==Some(query.as_str()) {
+                            for emoji in found {
+                                if !self.reaction_candidates.iter().any(|known| known.shortcode==emoji.shortcode)
+                                    && self.reaction_candidates.len()<8
+                                {
+                                    self.reaction_candidates.push(emoji);
+                                }
+                            }
+                        }
+                    },
                     Background::PresenceSnapshot { community, asked, observations }=>{
                         if self.active_community_id()==Some(community) {
                             self.presence.apply_snapshot(&asked, &observations, crate::clock::SystemClock.now_unix());
@@ -988,6 +1017,7 @@ impl App {
                 // relay can prove it; otherwise the subscription above is it.
                 let _ = read_state::load_snapshot(community, &http, &signer, &store).await;
                 let _ = inbox.refresh(&pubkey).await;
+                let _ = crate::sync::directory::hydrate_emoji_sets(community, &http, &store).await;
                 if info.pointer("/federated_identity/public_profile").is_some() {
                     let _ = crate::sync::directory::hydrate_verified_profiles(
                         community,
@@ -1462,6 +1492,7 @@ impl App {
             self.thread_summaries.clear();
             self.thread_messages.clear();
         }
+        self.resolve_custom_emoji(community).await?;
         let reaction_targets = self
             .messages
             .iter()
@@ -2555,8 +2586,50 @@ impl App {
             Some(Overlay::Finder) => self.text_overlay_key(key, true).await?,
             Some(Overlay::Command) => self.text_overlay_key(key, false).await?,
             Some(Overlay::Theme) => self.theme_picker_key(key),
+            Some(Overlay::Reaction) if self.reaction_query.is_some() => match key.code {
+                KeyCode::Esc => {
+                    self.reaction_query = None;
+                    self.reaction_candidates.clear();
+                }
+                KeyCode::Backspace => {
+                    if let Some(query) = self.reaction_query.as_mut() {
+                        query.pop();
+                    }
+                    self.refresh_reaction_candidates();
+                }
+                KeyCode::Char(character)
+                    if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') =>
+                {
+                    if let Some(query) = self.reaction_query.as_mut()
+                        && query.len() < 64
+                    {
+                        query.push(character.to_ascii_lowercase());
+                    }
+                    self.refresh_reaction_candidates();
+                }
+                KeyCode::Down | KeyCode::Tab => {
+                    if !self.reaction_candidates.is_empty() {
+                        self.reaction_candidate =
+                            (self.reaction_candidate + 1) % self.reaction_candidates.len();
+                    }
+                }
+                KeyCode::Up | KeyCode::BackTab => {
+                    if !self.reaction_candidates.is_empty() {
+                        self.reaction_candidate = self
+                            .reaction_candidate
+                            .checked_sub(1)
+                            .unwrap_or(self.reaction_candidates.len() - 1);
+                    }
+                }
+                KeyCode::Enter => self.send_custom_reaction(),
+                _ => {}
+            },
             Some(Overlay::Reaction) => match key.code {
                 KeyCode::Esc => self.presentation.close_overlay(),
+                KeyCode::Char(':') => {
+                    self.reaction_query = Some(String::new());
+                    self.refresh_reaction_candidates();
+                }
                 KeyCode::Char(digit @ '1'..='8') => {
                     self.reaction_index = usize::from(digit as u8 - b'1');
                     self.send_reaction();
@@ -4352,6 +4425,90 @@ impl App {
         });
         self.presentation.close_overlay();
     }
+    fn refresh_reaction_candidates(&mut self) {
+        let Some(query) = self.reaction_query.clone() else {
+            return;
+        };
+        self.reaction_candidates = crate::protocol::emoji::matches(&self.emoji_palette, &query, 8);
+        self.reaction_candidate = 0;
+        // NIP-CE prefix search over the relay index (at most 50 hits, as the
+        // spec asks); the relay skips prefixes shorter than three characters.
+        if query.chars().count() < 3 {
+            return;
+        }
+        let Some(runtime) = &self.runtime else { return };
+        let (http, community, store, tx) = (
+            runtime.http.clone(),
+            runtime.community_id,
+            self.store.clone(),
+            self.background_tx.clone(),
+        );
+        tokio::spawn(async move {
+            let Ok(events) = http
+                .query(&[crate::protocol::types::QueryFilter {
+                    kinds: vec![u32::from(crate::protocol::emoji::KIND_EMOJI_ENTRY)],
+                    search: Some(query.clone()),
+                    search_mode: Some(crate::protocol::types::SearchMode::Prefix),
+                    limit: Some(50),
+                    ..crate::protocol::types::QueryFilter::default()
+                }])
+                .await
+            else {
+                return;
+            };
+            let found = events
+                .iter()
+                .filter(|event| crate::protocol::events::verify(event).is_ok())
+                .flat_map(crate::protocol::emoji::contributions)
+                .map(|contribution| contribution.emoji)
+                .collect::<Vec<_>>();
+            let _ = store
+                .call(move |store| {
+                    for event in events {
+                        let _ = store.apply_event(community, &event);
+                    }
+                    Ok(())
+                })
+                .await;
+            let _ = tx.send(Background::EmojiSearch { query, found }).await;
+        });
+    }
+
+    fn send_custom_reaction(&mut self) {
+        if let Some(reason) = self.current_channel().and_then(Channel::read_only_reason) {
+            self.status_error = Some(reason.notice().into());
+            self.presentation.close_overlay();
+            return;
+        }
+        let Some(emoji) = self
+            .reaction_candidates
+            .get(self.reaction_candidate)
+            .cloned()
+        else {
+            return;
+        };
+        let (Some(runtime), Some(message)) = (&self.runtime, self.selected_message()) else {
+            return;
+        };
+        let service = runtime.messages.clone();
+        let target = message.event_id.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = service
+                .react_custom(&target, &emoji.shortcode, &emoji.url)
+                .await;
+            let _ = tx
+                .send(match result {
+                    Ok(_) => Background::Changed,
+                    Err(error) => Background::Failed(error.to_string()),
+                })
+                .await;
+        });
+        self.reaction_query = None;
+        self.reaction_candidates.clear();
+        self.presentation.close_overlay();
+    }
+
     fn set_status(&mut self, arguments: &str) {
         let Some(runtime) = &self.runtime else {
             self.status_error = Some(
@@ -4496,6 +4653,84 @@ impl App {
                 })
                 .await;
         });
+    }
+
+    /// Fill each visible message's emoji from the palette (its own tags win),
+    /// and look up still-unknown shortcodes once, batched by NIP-CE `#d`.
+    async fn resolve_custom_emoji(&mut self, community: Uuid) -> Result<()> {
+        self.emoji_palette = self
+            .store
+            .call(move |store| store.emoji_palette(community))
+            .await?;
+        let mut unknown = Vec::new();
+        for message in self
+            .messages
+            .iter_mut()
+            .chain(self.thread_messages.iter_mut())
+        {
+            if !message.content.contains(':') {
+                continue;
+            }
+            for shortcode in crate::protocol::emoji::scan_shortcodes(&message.content) {
+                if message
+                    .emoji
+                    .iter()
+                    .any(|emoji| emoji.shortcode == shortcode)
+                {
+                    continue;
+                }
+                match self.emoji_palette.get(&shortcode) {
+                    Some(url) => message.emoji.push(crate::protocol::emoji::Emoji {
+                        shortcode,
+                        url: url.clone(),
+                    }),
+                    None => unknown.push(shortcode),
+                }
+            }
+        }
+        unknown.retain(|shortcode| {
+            self.emoji_lookups.len() < 4096 && self.emoji_lookups.insert(shortcode.clone())
+        });
+        if unknown.is_empty() {
+            return Ok(());
+        }
+        let Some(runtime) = &self.runtime else {
+            return Ok(());
+        };
+        let http = runtime.http.clone();
+        let store = self.store.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let mut changed = false;
+            for chunk in unknown.chunks(crate::protocol::emoji::MAX_LOOKUP_NAMES) {
+                let Ok(events) = http
+                    .query(&[crate::protocol::types::QueryFilter {
+                        kinds: vec![u32::from(crate::protocol::emoji::KIND_EMOJI_ENTRY)],
+                        limit: Some(u32::try_from(chunk.len() * 4).unwrap_or(200)),
+                        ..crate::protocol::types::QueryFilter::default()
+                    }
+                    .tag("d", chunk.to_vec())])
+                    .await
+                else {
+                    return;
+                };
+                let applied = store
+                    .call(move |store| {
+                        let mut any = false;
+                        for event in events {
+                            any |= store.apply_event(community, &event).unwrap_or(false);
+                        }
+                        Ok(any)
+                    })
+                    .await
+                    .unwrap_or(false);
+                changed |= applied;
+            }
+            if changed {
+                let _ = tx.send(Background::Changed).await;
+            }
+        });
+        Ok(())
     }
 
     /// People whose presence is visible now: DM participants and recent
@@ -6687,10 +6922,35 @@ impl App {
                         HitTarget::Reaction(index),
                     );
                 }
+                if let Some(query) = &self.reaction_query {
+                    let list = if self.reaction_candidates.is_empty() {
+                        "no matching custom emoji".to_owned()
+                    } else {
+                        self.reaction_candidates
+                            .iter()
+                            .enumerate()
+                            .map(|(index, emoji)| {
+                                if index == self.reaction_candidate {
+                                    format!("[:{}:]", emoji.shortcode)
+                                } else {
+                                    format!(":{}:", emoji.shortcode)
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("  ")
+                    };
+                    self.render_prompt(
+                        frame,
+                        area,
+                        " custom emoji · Tab next · Enter react · Esc back ",
+                        &sanitize::single_line(&format!(":{query}  {list}")),
+                    );
+                    return;
+                }
                 self.render_prompt(
                     frame,
                     area,
-                    " reaction · Enter toggle ",
+                    " reaction · Enter toggle · : custom ",
                     crate::ui::reaction_picker::REACTIONS
                         .iter()
                         .enumerate()
@@ -7410,6 +7670,7 @@ mod tests {
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
             sent_from_thread: None,
+            emoji: Vec::new(),
         }];
         app.local_thread_summaries.insert(
             root.clone(),
@@ -7970,6 +8231,7 @@ mod tests {
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
             sent_from_thread: None,
+            emoji: Vec::new(),
         }];
         app.timeline.at_live_bottom = true;
         app.computed_unread.insert(channel);
@@ -8129,6 +8391,7 @@ mod tests {
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
             sent_from_thread: None,
+            emoji: Vec::new(),
         };
         let mut timeline = TimelineState {
             at_live_bottom: true,
@@ -8507,6 +8770,7 @@ mod tests {
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
             sent_from_thread: None,
+            emoji: Vec::new(),
         }];
         app.timeline.reconcile(&app.messages);
 

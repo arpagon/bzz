@@ -1,3 +1,4 @@
+pub mod emoji;
 pub mod envelope;
 pub mod events;
 pub mod http;

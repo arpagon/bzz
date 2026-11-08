@@ -40,6 +40,7 @@ const MIGRATIONS: &[(u32, &str)] = &[
         include_str!("../../migrations/0012_verified_profiles.sql"),
     ),
     (13, include_str!("../../migrations/0013_user_statuses.sql")),
+    (14, include_str!("../../migrations/0014_custom_emoji.sql")),
 ];
 
 pub fn configure(connection: &Connection) -> Result<()> {

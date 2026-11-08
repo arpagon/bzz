@@ -43,6 +43,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
         delivery: bzz::domain::DeliveryState::Pending,
         system: None,
         sent_from_thread: None,
+        emoji: Vec::new(),
     }];
     let profiles = HashMap::from([(
         self_pubkey.clone(),
@@ -69,6 +70,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
             emoji: "+".into(),
             created_at: 2,
             deleted: false,
+            emoji_url: None,
         }],
     )]);
     let mut state = TimelineState {

@@ -320,6 +320,27 @@ pub async fn hydrate_profiles(
     Ok(count)
 }
 
+/// Every member's kind 30030 `buzz:custom-emoji` set (the workspace palette).
+pub async fn hydrate_emoji_sets(
+    community_id: Uuid,
+    http: &HttpClient,
+    store: &StoreHandle,
+) -> Result<usize> {
+    let mut events = query_all(
+        http,
+        QueryFilter {
+            kinds: vec![u32::from(crate::protocol::emoji::KIND_EMOJI_SET)],
+            ..QueryFilter::default()
+        }
+        .tag("d", [crate::protocol::emoji::SET_D_TAG.to_owned()]),
+    )
+    .await?;
+    events.retain(|event| event.kind.as_u16() == crate::protocol::emoji::KIND_EMOJI_SET);
+    let count = events.len();
+    apply(community_id, events, store).await?;
+    Ok(count)
+}
+
 /// NIP-FI verified profiles (relay-signed 30382) for `people`, when the relay
 /// advertises them (`federated_identity.public_profile` in NIP-11).
 pub async fn hydrate_verified_profiles(

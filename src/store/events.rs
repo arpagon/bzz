@@ -129,6 +129,13 @@ impl Store {
                 ],
             )?;
         }
+        let contributions = crate::protocol::emoji::contributions(event);
+        if matches!(
+            event.kind.as_u16(),
+            crate::protocol::emoji::KIND_EMOJI_SET | crate::protocol::emoji::KIND_EMOJI_ENTRY
+        ) {
+            apply_emoji_source(&transaction, community_id, event, &contributions)?;
+        }
         let verified_profile = (event.kind.as_u16()
             == crate::protocol::verified_profile::KIND_VERIFIED_PROFILE)
             .then(|| crate::protocol::verified_profile::parse(event, &event.pubkey.to_hex()))
@@ -211,8 +218,8 @@ impl Store {
         }
         if let Some(reaction) = as_reaction(event) {
             transaction.execute(
-                "INSERT INTO reactions(community_id,reaction_event_id,target_event_id,pubkey,emoji,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
-                params![community_id.to_string(),reaction.event_id,reaction.target_event_id,reaction.pubkey,reaction.emoji,u64_to_i64(reaction.created_at)?],
+                "INSERT INTO reactions(community_id,reaction_event_id,target_event_id,pubkey,emoji,created_at,emoji_url) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![community_id.to_string(),reaction.event_id,reaction.target_event_id,reaction.pubkey,reaction.emoji,u64_to_i64(reaction.created_at)?,reaction.emoji_url],
             )?;
         }
         if matches!(event.kind.as_u16(), 5 | 9005) {
@@ -598,4 +605,52 @@ fn facts_json(facts: &crate::domain::ChannelFacts) -> Result<String> {
     let mut stored = facts.clone();
     stored.viewer_role = None;
     serde_json::to_string(&stored).map_err(|error| Error::Serialization(error.to_string()))
+}
+
+/// Replace one replaceable emoji source (a 30030 set or a 30180 entry) when
+/// this event is newer than what is stored for its coordinate.
+fn apply_emoji_source(
+    transaction: &Transaction<'_>,
+    community_id: Uuid,
+    event: &Event,
+    contributions: &[crate::protocol::emoji::Contribution],
+) -> Result<()> {
+    let d = crate::protocol::events::first_tag(event, "d").unwrap_or_default();
+    let (author, kind) = (event.pubkey.to_hex(), i64::from(event.kind.as_u16()));
+    let current: Option<(i64, String)> = transaction
+        .query_row(
+            "SELECT created_at,event_id FROM emoji_contributions
+             WHERE community_id=?1 AND source_pubkey=?2 AND source_kind=?3 AND source_d=?4 LIMIT 1",
+            params![community_id.to_string(), author, kind, d],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let created = u64_to_i64(event.created_at.as_secs())?;
+    let id = event.id.to_hex();
+    if current.is_some_and(|(at, event_id)| {
+        (at, std::cmp::Reverse(event_id)) >= (created, std::cmp::Reverse(id.clone()))
+    }) {
+        return Ok(());
+    }
+    transaction.execute(
+        "DELETE FROM emoji_contributions WHERE community_id=?1 AND source_pubkey=?2 AND source_kind=?3 AND source_d=?4",
+        params![community_id.to_string(), author, kind, d],
+    )?;
+    for contribution in contributions.iter().take(1000) {
+        transaction.execute(
+            "INSERT OR IGNORE INTO emoji_contributions(community_id,source_pubkey,source_kind,source_d,shortcode,url,created_at,event_id)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                community_id.to_string(),
+                author,
+                kind,
+                d,
+                contribution.emoji.shortcode,
+                contribution.emoji.url,
+                created,
+                id
+            ],
+        )?;
+    }
+    Ok(())
 }
