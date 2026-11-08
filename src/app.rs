@@ -1202,11 +1202,39 @@ impl App {
             return Ok(());
         };
         let selected_channel_id = self.current_channel().map(|channel| channel.id);
+        let selected_was_member = self
+            .current_channel()
+            .is_some_and(|channel| channel.is_member);
         self.channels = self
             .store
             .call(move |store| store.channels(community))
             .await?;
+        // Membership removed by the relay (kick, delete, moderation): keep the
+        // persisted draft, close the composer and move to a joined channel.
+        let removed = selected_was_member
+            && selected_channel_id.is_some_and(|id| {
+                !self
+                    .channels
+                    .iter()
+                    .any(|channel| channel.id == id && channel.is_member)
+            });
+        if removed {
+            if self
+                .presentation
+                .composer_target
+                .as_ref()
+                .is_some_and(|target| Some(target.channel_id) == selected_channel_id)
+            {
+                self.persist_draft().await?;
+                self.presentation.composer_target = None;
+            }
+            self.thread_root = None;
+            self.showing_open_channel = false;
+            self.status_error =
+                Some("you are no longer a member of that channel; draft kept".into());
+        }
         self.selected_channel = selected_channel_id
+            .filter(|_| !removed)
             .and_then(|id| self.channels.iter().position(|channel| channel.id == id))
             .or_else(|| {
                 self.channels
@@ -8289,5 +8317,94 @@ mod tests {
         assert!(expanded.contains("· ⚙ open"), "{expanded}");
         assert!(expanded.contains("⚙agent-config"), "{expanded}");
         assert_eq!(app.ordered_channel_indexes(), vec![0, 1]);
+    }
+
+    #[tokio::test]
+    async fn kicked_selected_channel_keeps_its_draft_and_moves_selection() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = read_only_fixture(
+            &temporary,
+            ChannelKind::Stream,
+            crate::domain::ChannelFacts::default(),
+        )
+        .await;
+        let community = app.active_community_id().unwrap();
+        let relay = nostr::Keys::generate();
+        let relay_hex = relay.public_key().to_hex();
+        let config = app.config.clone();
+        app.store
+            .call(move |store| {
+                store.sync_config(&config)?;
+                store.pin_relay_pubkey(community, &relay_hex)
+            })
+            .await
+            .unwrap();
+        let (kept, kicked) = (Uuid::new_v4(), Uuid::new_v4());
+        let me = "a".repeat(64);
+        let sign = |kind: u16, tags: Vec<Vec<String>>, at: u64| {
+            nostr::EventBuilder::new(nostr::Kind::Custom(kind), "")
+                .tags(tags.into_iter().map(|tag| nostr::Tag::parse(tag).unwrap()))
+                .custom_created_at(nostr::Timestamp::from(at))
+                .sign_with_keys(&relay)
+                .unwrap()
+        };
+        for (channel, name) in [(kept, "alpha"), (kicked, "zulu")] {
+            let id = channel.to_string();
+            let events = vec![
+                sign(
+                    39_000,
+                    vec![
+                        vec!["d".into(), id.clone()],
+                        vec!["name".into(), name.into()],
+                    ],
+                    1,
+                ),
+                sign(
+                    39_002,
+                    vec![vec!["d".into(), id.clone()], vec!["p".into(), me.clone()]],
+                    1,
+                ),
+            ];
+            app.store
+                .call(move |store| {
+                    for event in events {
+                        store.apply_event(community, &event)?;
+                    }
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
+        app.hydrate_cache().await.unwrap();
+        app.selected_channel = app.channels.iter().position(|c| c.id == kicked).unwrap();
+        app.presentation.composer_target = Some(crate::ui::state::ComposerTarget {
+            community_id: community,
+            channel_id: kicked,
+            thread_root_id: None,
+            parent_event_id: None,
+        });
+        app.composer
+            .set_draft("unsent words".into(), vec![], vec![]);
+
+        let kick = sign(39_002, vec![vec!["d".into(), kicked.to_string()]], 2);
+        app.store
+            .call(move |store| store.apply_event(community, &kick))
+            .await
+            .unwrap();
+        app.hydrate_cache().await.unwrap();
+
+        assert!(app.presentation.composer_target.is_none());
+        assert_eq!(app.current_channel().map(|c| c.id), Some(kept));
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("you are no longer a member of that channel; draft kept")
+        );
+        let draft = app
+            .store
+            .call(move |store| store.draft_record(community, kicked, None))
+            .await
+            .unwrap()
+            .expect("draft persisted");
+        assert_eq!(draft.body, "unsent words");
     }
 }
