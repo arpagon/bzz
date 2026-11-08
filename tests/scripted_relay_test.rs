@@ -68,7 +68,12 @@ async fn denies_upgrade_with_scripted_status_and_records_headers() {
         .await
         .err()
         .expect("denied upgrade must fail");
-    assert!(error.to_string().contains("401"), "{error}");
+    // NIP-FI's exact 401 contract becomes a typed, text-free denial.
+    assert!(
+        matches!(&error, bzz::Error::Auth(message)
+            if message == bzz::auth::federated::RelayDenial::EvidenceRequired.notice()),
+        "{error:?}"
+    );
     assert_eq!(relay.upgrades().len(), 1);
     assert_eq!(relay.connections(), 0);
     signer.lock().await;
