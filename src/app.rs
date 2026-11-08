@@ -19,6 +19,7 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
+use crate::clock::WallClock as _;
 use crate::{
     agents::typing::{AgentTypingState, TypingScope},
     auth::{IdentityManager, read_passphrase, signer::SignerHandle},
@@ -241,6 +242,12 @@ enum Background {
     FederatedReady,
     /// A fixed status notice (federated identity, reports, send to channel).
     Notice(String),
+    /// Authoritative relay presence for the people asked about.
+    PresenceSnapshot {
+        community: Uuid,
+        asked: Vec<String>,
+        observations: Vec<crate::protocol::presence::Observation>,
+    },
     DraftAcknowledged,
     Failed(String),
     Saved,
@@ -300,6 +307,10 @@ pub struct App {
     show_system_channels: bool,
     /// `(reason, note)` awaiting the report confirmation.
     pending_report: Option<(String, Option<String>)>,
+    presence: crate::protocol::presence::PresenceBook,
+    last_presence_snapshot: Instant,
+    last_presence_publish: Option<(Instant, crate::protocol::presence::Presence)>,
+    last_input_at: Instant,
     profile_requested: HashSet<String>,
     thread_messages: Vec<Message>,
     thread_root: Option<String>,
@@ -401,6 +412,29 @@ fn typing_subscription_transition(
         (_, Some(channel)) => TypingSubscriptionTransition::Subscribe(channel),
         (None, None) => TypingSubscriptionTransition::Unchanged,
     }
+}
+
+fn publish_presence(runtime: &Runtime, presence: crate::protocol::presence::Presence) {
+    let signer = runtime.signer.clone();
+    let supervisor = runtime.supervisor.clone();
+    tokio::spawn(async move {
+        if let Ok(builder) = buzz_sdk::build_presence_update(presence.as_str())
+            && let Ok(event) = signer.sign(builder).await
+        {
+            let _ = supervisor.publish_maintenance(event).await;
+        }
+    });
+}
+
+/// Publish `offline` and wait briefly for the relay, so lock and quit clear
+/// presence immediately instead of after the 180 s TTL.
+async fn publish_offline(runtime: &Runtime) {
+    let attempt = async {
+        let builder = buzz_sdk::build_presence_update("offline").ok()?;
+        let event = runtime.signer.sign(builder).await.ok()?;
+        runtime.supervisor.publish_maintenance(event).await.ok()
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(2), attempt).await;
 }
 
 /// Best-effort: open `url` in the user's browser. The caller always shows the
@@ -535,6 +569,10 @@ impl App {
             reactions: HashMap::new(),
             show_system_channels: false,
             pending_report: None,
+            presence: crate::protocol::presence::PresenceBook::default(),
+            last_presence_snapshot: Instant::now() - Duration::from_secs(3600),
+            last_presence_publish: None,
+            last_input_at: Instant::now(),
             profile_requested: HashSet::new(),
             thread_messages: Vec::new(),
             thread_root: None,
@@ -647,7 +685,10 @@ impl App {
                 maybe=next_terminal_event(&mut input)=>{
                     if let Some(event)=maybe {
                         match event {
-                            TerminalEvent::Key(key) if key.kind==KeyEventKind::Press => self.handle_key(key,&mut guard,&mut terminal).await?,
+                            TerminalEvent::Key(key) if key.kind==KeyEventKind::Press => {
+                                self.last_input_at=Instant::now();
+                                self.handle_key(key,&mut guard,&mut terminal).await?
+                            },
                             TerminalEvent::Paste(text) => self.handle_terminal_paste(text).await?,
                             TerminalEvent::Mouse(mouse) => self.handle_mouse(mouse,&mut guard,&mut terminal).await?,
                             TerminalEvent::Resize(_, _) => {},
@@ -692,6 +733,12 @@ impl App {
                         }
                     },
                     Background::Notice(message)=>self.status_error=Some(message),
+                    Background::PresenceSnapshot { community, asked, observations }=>{
+                        if self.active_community_id()==Some(community) {
+                            self.presence.apply_snapshot(&asked, &observations, crate::clock::SystemClock.now_unix());
+                            self.cache_dirty=true;
+                        }
+                    },
                     Background::InboxLoaded { community, items }=>{
                         if self.active_community_id()==Some(community) {
                             self.inbox_items=items;
@@ -848,6 +895,13 @@ impl App {
                 "global-stream",
                 subscriptions::global_stream(nostr::Timestamp::now().as_secs()),
                 SubscriptionPriority::Baseline,
+            )
+            .await?;
+        supervisor
+            .subscribe_with_priority(
+                "presence",
+                subscriptions::presence(nostr::Timestamp::now().as_secs()),
+                SubscriptionPriority::Background,
             )
             .await?;
         supervisor
@@ -1431,6 +1485,10 @@ impl App {
             .store
             .call(move |store| store.profiles(community))
             .await?;
+        let now = crate::clock::SystemClock.now_unix();
+        for profile in self.profiles.values_mut() {
+            profile.presence = Some(self.presence.get(&profile.pubkey, now));
+        }
         let self_pubkey = self.self_pubkey().unwrap_or_default().to_owned();
         self.agents = if self_pubkey.is_empty() {
             HashMap::new()
@@ -1767,6 +1825,34 @@ impl App {
                 if self.relay_event_was_handled(community, &event_id) {
                     return Ok(false);
                 }
+                if matches!(
+                    event.kind.as_u16(),
+                    crate::protocol::presence::KIND_PRESENCE
+                        | crate::protocol::presence::KIND_AGENT_PRESENCE
+                ) {
+                    self.remember_relay_event(community, event_id);
+                    if crate::protocol::events::verify(&event).is_err() {
+                        return Ok(false);
+                    }
+                    let relay = self
+                        .store
+                        .call(move |store| store.pinned_relay_pubkey(community))
+                        .await?;
+                    let observation =
+                        crate::protocol::presence::observe(&event, relay.as_deref(), |agent| {
+                            self.agents
+                                .get(agent)
+                                .filter(|view| !view.stale)
+                                .map(|view| view.owner_pubkey.clone())
+                        });
+                    if let Some(observation) = observation {
+                        self.presence
+                            .apply(&observation, crate::clock::SystemClock.now_unix());
+                        self.cache_dirty = true;
+                        return Ok(true);
+                    }
+                    return Ok(false);
+                }
                 if event.kind.as_u16() == crate::agents::typing::KIND_TYPING_INDICATOR {
                     let changed = subscription == AGENT_TYPING_SUBSCRIPTION
                         && self.apply_agent_typing_event(&event, nostr::Timestamp::now().as_secs());
@@ -2005,6 +2091,13 @@ impl App {
             self.spawn_dm_profile_search();
             changed = true;
         }
+        if self.last_presence_snapshot.elapsed()
+            >= Duration::from_secs(crate::protocol::presence::HEARTBEAT_SECONDS)
+        {
+            self.last_presence_snapshot = Instant::now();
+            self.spawn_presence_snapshot();
+        }
+        self.maybe_publish_presence().await;
         if self.last_inbox_refresh.elapsed() >= Duration::from_secs(30) {
             self.last_inbox_refresh = Instant::now();
             if self.runtime.is_some() {
@@ -4259,6 +4352,53 @@ impl App {
         });
         self.presentation.close_overlay();
     }
+    fn set_status(&mut self, arguments: &str) {
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some(
+                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
+            );
+            return;
+        };
+        let now = crate::clock::SystemClock.now_unix();
+        let (text, expires) = if arguments == "clear" {
+            (String::new(), None)
+        } else if let Some(rest) = arguments.strip_prefix("--expires ") {
+            let (expiry, text) = rest.split_once(' ').unwrap_or((rest, ""));
+            match crate::protocol::presence::parse_expiry(expiry, now) {
+                Some(at) => (text.trim().to_owned(), Some(at)),
+                None => {
+                    self.status_error =
+                        Some("usage: :status [--expires <unix|N[smhdw]>] <text> | clear".into());
+                    return;
+                }
+            }
+        } else {
+            (arguments.to_owned(), None)
+        };
+        let builder = match buzz_sdk::build_user_status_expiring(&text, None, expires) {
+            Ok(builder) => builder,
+            Err(error) => {
+                self.status_error = Some(error.to_string());
+                return;
+            }
+        };
+        let service = runtime.messages.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = service.publish_builder(builder).await;
+            let _ = tx
+                .send(match result {
+                    Ok(_) => Background::Notice(if text.is_empty() {
+                        "status cleared".into()
+                    } else {
+                        "status updated".into()
+                    }),
+                    Err(error) => Background::Failed(error.to_string()),
+                })
+                .await;
+        });
+    }
+
     fn send_pending_report(&mut self) {
         let Some((reason, note)) = self.pending_report.take() else {
             return;
@@ -4356,6 +4496,89 @@ impl App {
                 })
                 .await;
         });
+    }
+
+    /// People whose presence is visible now: DM participants and recent
+    /// authors, bounded.
+    fn presence_subjects(&self) -> Vec<String> {
+        let mut subjects = std::collections::BTreeSet::new();
+        for message in self.messages.iter().rev().take(200) {
+            subjects.insert(message.pubkey.clone());
+        }
+        for agent in self.agents.values() {
+            subjects.insert(agent.pubkey.clone());
+        }
+        subjects.into_iter().take(100).collect()
+    }
+
+    fn spawn_presence_snapshot(&mut self) {
+        let Some(runtime) = &self.runtime else { return };
+        let asked = self.presence_subjects();
+        if asked.is_empty() {
+            return;
+        }
+        let http = runtime.http.clone();
+        let community = runtime.community_id;
+        let store = self.store.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let relay = store
+                .call(move |store| store.pinned_relay_pubkey(community))
+                .await
+                .ok()
+                .flatten();
+            let Ok(events) = http
+                .query(&[crate::protocol::types::QueryFilter {
+                    kinds: vec![u32::from(crate::protocol::presence::KIND_PRESENCE)],
+                    authors: asked.clone(),
+                    limit: Some(u32::try_from(asked.len()).unwrap_or(100)),
+                    ..crate::protocol::types::QueryFilter::default()
+                }])
+                .await
+            else {
+                return;
+            };
+            let observations = events
+                .iter()
+                .filter(|event| crate::protocol::events::verify(event).is_ok())
+                .filter(|event| relay.as_deref() == Some(event.pubkey.to_hex().as_str()))
+                .filter_map(|event| {
+                    crate::protocol::presence::observe(event, relay.as_deref(), |_| None)
+                })
+                .collect();
+            let _ = tx
+                .send(Background::PresenceSnapshot {
+                    community,
+                    asked,
+                    observations,
+                })
+                .await;
+        });
+    }
+
+    /// Opt-in own presence: online while active, away after inactivity,
+    /// heartbeat within the relay TTL, maintenance priority.
+    async fn maybe_publish_presence(&mut self) {
+        if !self.config.ui.publish_presence {
+            return;
+        }
+        let Some(runtime) = &self.runtime else { return };
+        let wanted = if self.last_input_at.elapsed()
+            >= Duration::from_secs(crate::protocol::presence::AWAY_AFTER_SECONDS)
+        {
+            crate::protocol::presence::Presence::Away
+        } else {
+            crate::protocol::presence::Presence::Online
+        };
+        let due = self.last_presence_publish.is_none_or(|(at, last)| {
+            last != wanted
+                || at.elapsed() >= Duration::from_secs(crate::protocol::presence::HEARTBEAT_SECONDS)
+        });
+        if !due {
+            return;
+        }
+        self.last_presence_publish = Some((Instant::now(), wanted));
+        publish_presence(runtime, wanted);
     }
 
     async fn begin_federated_sign_in(&mut self) {
@@ -5363,6 +5586,11 @@ impl App {
         match crate::ui::command::parse(&self.command) {
             crate::ui::command::Command::Lock => {
                 if let Some(runtime) = self.runtime.take() {
+                    if self.config.ui.publish_presence
+                        && self.last_presence_publish.take().is_some()
+                    {
+                        publish_offline(&runtime).await;
+                    }
                     runtime.supervisor.shutdown().await;
                     runtime.signer.lock().await;
                 }
@@ -5402,6 +5630,7 @@ impl App {
             }
             crate::ui::command::Command::SignIn => self.begin_federated_sign_in().await,
             crate::ui::command::Command::ToChannel => self.send_draft_to_channel(),
+            crate::ui::command::Command::Status(arguments) => self.set_status(&arguments),
             crate::ui::command::Command::Report(arguments) => {
                 let mut parts = arguments.splitn(2, ' ');
                 let reason = parts.next().unwrap_or_default().to_owned();
@@ -5709,6 +5938,9 @@ impl App {
         self.typing_subscription_channel = None;
         self.closed_typing_channel = None;
         if let Some(runtime) = self.runtime.take() {
+            if self.config.ui.publish_presence && self.last_presence_publish.is_some() {
+                publish_offline(&runtime).await;
+            }
             let _ = tokio::time::timeout(
                 Duration::from_secs(3),
                 outbox::flush_with_diagnostics(

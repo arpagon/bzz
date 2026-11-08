@@ -56,6 +56,8 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
             event_id: "d".repeat(64),
             created_at: 1,
             verified: None,
+            status: None,
+            presence: None,
         },
     )]);
     let reactions = HashMap::from([(

@@ -98,7 +98,7 @@ fn agent_typing_is_ephemeral_and_never_enters_the_event_store() {
         .sign_with_keys(&agent)
         .unwrap();
     let error = store.apply_event(community, &typing).unwrap_err();
-    assert!(error.to_string().contains("ephemeral typing indicators"));
+    assert!(error.to_string().contains("ephemeral events"));
     assert!(store.messages(community, channel, 100).unwrap().is_empty());
 }
 

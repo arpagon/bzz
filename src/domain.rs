@@ -230,6 +230,12 @@ pub struct Profile {
     /// Relay-signed NIP-FI verified name (kind 30382), when current.
     #[serde(default)]
     pub verified: Option<crate::protocol::verified_profile::VerifiedName>,
+    /// Newest NIP-38 status; check `visible(now)` before showing it.
+    #[serde(default)]
+    pub status: Option<crate::protocol::presence::UserStatus>,
+    /// Live presence, filled by the App from the presence book; never stored.
+    #[serde(skip)]
+    pub presence: Option<crate::protocol::presence::Presence>,
 }
 
 impl Profile {
@@ -262,6 +268,8 @@ impl Profile {
             event_id,
             created_at,
             verified: Some(name),
+            status: None,
+            presence: None,
         }
     }
 
@@ -271,6 +279,28 @@ impl Profile {
             Some(_) => format!("{} ✓", self.label()),
             None => self.label(),
         }
+    }
+
+    /// `● ` / `◐ ` before a name for online or away people; nothing when
+    /// offline or unknown, so silent users add no visual noise.
+    pub fn presence_marker(&self) -> &'static str {
+        match self.presence {
+            Some(crate::protocol::presence::Presence::Online) => "● ",
+            Some(crate::protocol::presence::Presence::Away) => "◐ ",
+            _ => "",
+        }
+    }
+
+    /// The visible status as `emoji text`, sanitized by the caller.
+    pub fn status_text(&self, now: u64) -> Option<String> {
+        let status = self.status.as_ref().filter(|status| status.visible(now))?;
+        Some(
+            [status.emoji.as_str(), status.text.as_str()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
     }
 }
 

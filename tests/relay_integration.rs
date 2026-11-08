@@ -1609,3 +1609,98 @@ async fn real_relay_send_to_channel_and_report() {
     supervisor.shutdown().await;
     signer.lock().await;
 }
+
+/// v0.13 M6: presence via WebSocket and the relay-signed Redis snapshot, and a
+/// NIP-38 status with expiry.
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_presence_snapshot_and_status() {
+    use bzz::protocol::presence::{Presence, observe, status};
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let keys = Keys::generate();
+    let pubkey = keys.public_key().to_hex();
+    let _ = seed_member(&source, &pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let signer = SignerHandle::spawn(keys);
+    let (session, mut events) = session::connect(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(SessionEvent::Authenticated)
+    ));
+    let http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .unwrap();
+    let relay = bzz::protocol::http::relay_signing_pubkey(&http.nip11().await.unwrap())
+        .unwrap()
+        .to_owned();
+    let snapshot = |http: HttpClient, pubkey: String| async move {
+        http.query(&[QueryFilter {
+            kinds: vec![20_001],
+            authors: vec![pubkey],
+            limit: Some(1),
+            ..QueryFilter::default()
+        }])
+        .await
+        .unwrap()
+    };
+    assert!(
+        snapshot(http.clone(), pubkey.clone()).await.is_empty(),
+        "offline before publishing"
+    );
+
+    let online = signer
+        .sign(buzz_sdk::build_presence_update("online").unwrap())
+        .await
+        .unwrap();
+    assert!(session.publish(online).await.unwrap().accepted);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let events_now = snapshot(http.clone(), pubkey.clone()).await;
+    assert_eq!(events_now.len(), 1);
+    let observed = observe(&events_now[0], Some(&relay), |_| None).unwrap();
+    assert_eq!(observed.subjects, vec![pubkey.clone()]);
+    assert_eq!(observed.presence, Presence::Online);
+
+    let offline = signer
+        .sign(buzz_sdk::build_presence_update("offline").unwrap())
+        .await
+        .unwrap();
+    assert!(session.publish(offline).await.unwrap().accepted);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let after = snapshot(http.clone(), pubkey.clone()).await;
+    assert!(
+        after.is_empty()
+            || observe(&after[0], Some(&relay), |_| None).unwrap().presence == Presence::Offline
+    );
+
+    let expires = Timestamp::now().as_secs() + 3600;
+    let user_status = signer
+        .sign(buzz_sdk::build_user_status_expiring("in review", Some("👀"), Some(expires)).unwrap())
+        .await
+        .unwrap();
+    assert!(session.publish(user_status.clone()).await.unwrap().accepted);
+    let stored = http
+        .query(&[QueryFilter {
+            kinds: vec![30_315],
+            authors: vec![pubkey.clone()],
+            limit: Some(1),
+            ..QueryFilter::default()
+        }
+        .tag("d", ["general".to_owned()])])
+        .await
+        .unwrap();
+    let parsed = status(&stored[0]).unwrap();
+    assert_eq!(
+        (parsed.text.as_str(), parsed.emoji.as_str()),
+        ("in review", "👀")
+    );
+    assert_eq!(parsed.expires_at, Some(i64::try_from(expires).unwrap()));
+    session.shutdown().await;
+    signer.lock().await;
+}

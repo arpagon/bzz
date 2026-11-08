@@ -33,9 +33,10 @@ impl Store {
     pub fn apply_event(&mut self, community_id: Uuid, event: &Event) -> Result<bool> {
         verify(event)?;
         match event.kind.as_u16() {
-            20_002 => {
+            20_000..=29_999 => {
                 return Err(Error::Protocol(
-                    "ephemeral typing indicators cannot enter the durable event store".into(),
+                    "ephemeral events (typing, presence) cannot enter the durable event store"
+                        .into(),
                 ));
             }
             39_005 => {
@@ -108,6 +109,25 @@ impl Store {
         crate::store::search::project_event(&transaction, community_id, event, &http_base)?;
         if event.kind.as_u16() == 30_622 {
             apply_dm_visibility_snapshot(&transaction, community_id, event)?;
+        }
+        if let Some(status) = crate::protocol::presence::status(event) {
+            transaction.execute(
+                "INSERT INTO user_statuses(community_id,pubkey,text,emoji,expires_at,event_id,created_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7)
+                 ON CONFLICT(community_id,pubkey) DO UPDATE SET text=excluded.text,emoji=excluded.emoji,
+                   expires_at=excluded.expires_at,event_id=excluded.event_id,created_at=excluded.created_at
+                 WHERE excluded.created_at>user_statuses.created_at
+                    OR (excluded.created_at=user_statuses.created_at AND excluded.event_id<user_statuses.event_id)",
+                params![
+                    community_id.to_string(),
+                    event.pubkey.to_hex(),
+                    status.text,
+                    status.emoji,
+                    status.expires_at,
+                    event.id.to_hex(),
+                    u64_to_i64(event.created_at.as_secs())?
+                ],
+            )?;
         }
         let verified_profile = (event.kind.as_u16()
             == crate::protocol::verified_profile::KIND_VERIFIED_PROFILE)

@@ -39,6 +39,7 @@ const MIGRATIONS: &[(u32, &str)] = &[
         12,
         include_str!("../../migrations/0012_verified_profiles.sql"),
     ),
+    (13, include_str!("../../migrations/0013_user_statuses.sql")),
 ];
 
 pub fn configure(connection: &Connection) -> Result<()> {
@@ -185,5 +186,32 @@ mod tests {
             .query_row("SELECT value FROM marker", [], |row| row.get(0))
             .unwrap();
         assert_eq!(marker, "safe");
+    }
+}
+
+#[cfg(test)]
+mod registration_tests {
+    #[test]
+    fn every_migration_file_is_registered_in_order() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let mut files = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.ends_with(".sql"))
+            .collect::<Vec<_>>();
+        files.sort();
+        assert_eq!(
+            files.len(),
+            super::MIGRATIONS.len(),
+            "unregistered migration: {files:?}"
+        );
+        for (index, (version, _)) in super::MIGRATIONS.iter().enumerate() {
+            assert_eq!(*version as usize, index + 1);
+            assert!(
+                files[index].starts_with(&format!("{:04}_", version)),
+                "{}",
+                files[index]
+            );
+        }
     }
 }

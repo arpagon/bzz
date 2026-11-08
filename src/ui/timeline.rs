@@ -752,11 +752,19 @@ fn message_block(
             copy_selected,
         );
     }
-    let author = profiles
-        .get(&message.pubkey)
+    let author_profile = profiles.get(&message.pubkey);
+    let author = author_profile
         .map(Profile::author_label)
         .unwrap_or_else(|| crate::domain::abbreviated_pubkey(&message.pubkey));
     let author = sanitize::single_line(&author);
+    let presence_marker = author_profile.map_or("", Profile::presence_marker);
+    let status = author_profile
+        .and_then(|profile| {
+            profile.status_text(crate::clock::WallClock::now_unix(
+                &crate::clock::SystemClock,
+            ))
+        })
+        .map(|status| format!(" · {}", sanitize::single_line(&status)));
     let agent = agents.get(&message.pubkey);
     let agent_marker = agent.map(|agent| if agent.stale { "◇ " } else { "◆ " });
     let owner_presentation = agent.filter(|agent| !agent.stale).map(|agent| {
@@ -829,6 +837,12 @@ fn message_block(
                 theme.style(HighlightGroup::SelectionMarker),
             ));
         }
+        if !presence_marker.is_empty() {
+            header.push(Span::styled(
+                presence_marker,
+                theme.style(HighlightGroup::MessageTimestamp),
+            ));
+        }
         header.push(Span::styled(
             author,
             theme.style(HighlightGroup::MessageAuthor),
@@ -836,6 +850,12 @@ fn message_block(
         if let Some(owner) = owner_presentation {
             header.push(Span::styled(
                 owner,
+                theme.style(HighlightGroup::MessageTimestamp),
+            ));
+        }
+        if let Some(status) = status {
+            header.push(Span::styled(
+                status,
                 theme.style(HighlightGroup::MessageTimestamp),
             ));
         }

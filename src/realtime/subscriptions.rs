@@ -50,6 +50,12 @@ pub fn read_state(pubkey: &str, since: u64) -> Vec<Value> {
     vec![json!({"kinds":[30078],"authors":[pubkey],"#t":["read-state"],"since":since,"limit":500})]
 }
 
+/// Live presence (20001) and owner presence for agents (20003). Ephemeral:
+/// only events from now on; the 60 s relay snapshot covers the rest.
+pub fn presence(now: u64) -> Vec<Value> {
+    vec![json!({"kinds":[20001,20003],"since":now,"limit":200})]
+}
+
 pub fn global_stream(since: u64) -> Vec<Value> {
     vec![
         json!({"kinds":[5,7,9,9005,30382,39000,39002,40002,40003,40099],"since":since.saturating_sub(300),"limit":50}),

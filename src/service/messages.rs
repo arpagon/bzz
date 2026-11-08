@@ -255,6 +255,12 @@ impl MessageService {
         )
         .await
     }
+    /// Sign and publish a non-message event (status and similar) through the
+    /// acknowledgement-aware outbox.
+    pub async fn publish_builder(&self, builder: nostr::EventBuilder) -> Result<Event> {
+        self.send_builder(builder).await
+    }
+
     async fn send_builder(&self, builder: nostr::EventBuilder) -> Result<Event> {
         let event = self.signer.sign(builder).await?;
         self.publish_signed(event, None).await

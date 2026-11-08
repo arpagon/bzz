@@ -22,6 +22,8 @@ pub enum Command {
     ToChannel,
     /// Report the selected message to the relay moderators (NIP-56).
     Report(String),
+    /// NIP-38 status: `:status [--expires N[smhdw]] text`, or `:status clear`.
+    Status(String),
     Unknown(String),
 }
 
@@ -44,6 +46,9 @@ pub fn parse(input: &str) -> Command {
         "system" => Command::System,
         "signin" | "sign-in" => Command::SignIn,
         "tochannel" | "send-to-channel" => Command::ToChannel,
+        value if value == "status" || value.starts_with("status ") => {
+            Command::Status(value.trim_start_matches("status").trim().to_owned())
+        }
         value if value == "report" || value.starts_with("report ") => {
             Command::Report(value.trim_start_matches("report").trim().to_owned())
         }
@@ -61,5 +66,15 @@ mod tests {
         assert_eq!(parse(":media reload"), Command::MediaReload);
         assert_eq!(parse(":agents"), Command::Agents);
         assert!(matches!(parse(":theme watch"), Command::Unknown(_)));
+        assert_eq!(
+            parse(":status --expires 2h lunch"),
+            Command::Status("--expires 2h lunch".into())
+        );
+        assert_eq!(parse(":status clear"), Command::Status("clear".into()));
+        assert_eq!(
+            parse(":report spam noisy"),
+            Command::Report("spam noisy".into())
+        );
+        assert_eq!(parse(":tochannel"), Command::ToChannel);
     }
 }

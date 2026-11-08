@@ -180,6 +180,9 @@ pub struct UiConfig {
     pub profile_avatars: ProfileAvatars,
     pub theme: String,
     pub mouse: MouseMode,
+    /// Publish your own online/away presence (kind 20001). Off by default:
+    /// bzz publishes nothing about activity unless you opt in.
+    pub publish_presence: bool,
 }
 
 impl Default for UiConfig {
@@ -193,6 +196,7 @@ impl Default for UiConfig {
             profile_avatars: ProfileAvatars::Trusted,
             theme: crate::ui::theme::DEFAULT_THEME_ID.into(),
             mouse: MouseMode::Auto,
+            publish_presence: false,
         }
     }
 }
