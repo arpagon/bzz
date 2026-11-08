@@ -17,6 +17,12 @@ ignore = [
   # block/buzz deny.toml; the bans.deny wrapper rule below keeps every other
   # consumer on a patched ringbuf. Remove when neteq drops the dependency.
   { id = "RUSTSEC-2026-0293", reason = "unused dependency of exactly pinned neteq 0.8.3; no Rust references to ringbuf" },
+  # crypto-bigint 0.5.5 reaches bzz only through the dev-dependency p256 0.13,
+  # which signs throwaway test JWTs in tests/support/fake_adapter.rs (T3). It
+  # is absent from the shipped binary (`cargo tree -i crypto-bigint@0.5.5 -e
+  # normal,build` is empty, checked 2026-11-08). Remove when p256 moves to a
+  # crypto-bigint >= 0.7.6.
+  { id = "RUSTSEC-2026-0387", reason = "dev-only: test JWT signer in the fake NIP-FA adapter; not in the release binary" },
 ]
 
 [licenses]

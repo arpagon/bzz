@@ -373,6 +373,42 @@ and unknown mouse events intentionally do nothing.
 bzz installs a restoration panic hook, including mouse-capture restoration. If
 the process is force-killed, run `reset` or `stty sane`.
 
+## Federated sign-in required or denied
+
+The relay requires federated identity (NIP-FI). Configure the community's
+`identity_adapter`, then run `:signin`; bzz opens the adapter login in your
+browser and prints the URL for headless terminals. "access to this community
+was denied" is the adapter's or relay's authorization decision: sign-in again
+will not change it. "session ended" means sign in again. Buzz Desktop
+identities get evidence from Desktop: keep it running and signed in.
+
+## Channel is read-only
+
+Announce channels let guests read but not write, System channels are read-only
+for everyone in v0.13.0, and archived channels reject writes. The composer
+shows the reason; reactions and replies are disabled the same way.
+
+## Microphone or speaker unavailable in a huddle
+
+Allow microphone access for your terminal app (macOS: System Settings ›
+Privacy & Security › Microphone, then restart the terminal), check the device
+with `:huddle devices`, choose one with `:huddle input <name>` /
+`:huddle output <name>`, and join again. A build made with
+`--no-default-features` has no audio and shows huddles view-only.
+
+## Broker agent cannot act
+
+- `unauthenticated`: the credential is wrong or was rotated; run `bzz broker
+  rotate <label>` and give the agent the new one.
+- `unauthorized`: the agent is paused (`:broker`, `bzz broker resume`), the
+  action is not allowed (`bzz broker allow <label> <actions>`), or the agent
+  has no `bot` role in that channel. You must be a member of the channel, and
+  the agent must be added with the `bot` role.
+- "agent unavailable" in the status bar: its sealed key did not open with your
+  identity, or (FI communities) you are not signed in to the adapter; run
+  `:signin`.
+- `unsupported` for `agents.*`: bzz does not run managed agents.
+
 ## Development relay
 
 Use `ws://localhost:3030` only with the explicit insecure-localhost flag. The
