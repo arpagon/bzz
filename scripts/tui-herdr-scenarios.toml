@@ -64,6 +64,37 @@ keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario]]
+id = "v013-panels-empty-profile"
+kind = "automated"
+description = "v0.13 commands on an empty isolated profile: the broker panel opens and is not serving, huddles and My tasks explain they need a connected community, and the terminal restores on quit."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "b", "r", "o", "k", "e", "r", "enter"]
+visible = "agent broker · not serving"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = [":", "h", "u", "d", "d", "l", "e", "enter"]
+visible = "select a channel in a connected community"
+
+[[scenario.step]]
+keys = [":", "t", "a", "s", "k", "s", "enter"]
+visible = "connect to a community to see artifacts"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
 id = "operator-remote-agents"
 kind = "operator"
 description = "Disposable public-only agent fixture: verified directory wide/narrow layout, owner/policy/freshness detail, keyboard/mouse selection, refresh, exact composer insertion, community/lock invalidation, and terminal restoration."

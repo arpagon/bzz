@@ -9299,6 +9299,52 @@ mod tests {
         assert!(!triggers_directory_refresh(9, "member_joined"));
     }
 
+    /// The deterministic twin of the `v013-panels-empty-profile` Herdr scenario.
+    #[tokio::test]
+    async fn v013_commands_on_an_empty_profile_explain_or_open_their_panels() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.command = "broker".into();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.presentation.overlay, Some(Overlay::Broker));
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                crate::ui::broker::render(
+                    frame,
+                    frame.area(),
+                    &[],
+                    &[],
+                    crate::ui::broker::BrokerStatus::default(),
+                    &app.theme,
+                )
+            })
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(screen.contains("agent broker · not serving"), "{screen}");
+        assert!(
+            screen.contains("o owner-signed agent presence: off"),
+            "{screen}"
+        );
+        app.presentation.close_overlay();
+        for (command, expected) in [
+            ("huddle", "select a channel in a connected community"),
+            ("tasks", "connect to a community to see artifacts"),
+            ("artifacts", "select a channel to see its artifacts"),
+        ] {
+            app.status_error = None;
+            app.command = command.into();
+            app.execute_command().await.unwrap();
+            assert_eq!(app.status_error.as_deref(), Some(expected), "{command}");
+        }
+    }
+
     #[tokio::test]
     async fn huddle_panel_shows_roster_reactions_and_only_creator_guidelines() {
         let temporary = TempDir::new().unwrap();
