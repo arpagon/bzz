@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod artifacts;
 pub mod dm;
 pub mod events;
 pub mod inbox;

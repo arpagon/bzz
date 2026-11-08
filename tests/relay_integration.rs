@@ -2062,3 +2062,265 @@ async fn real_relay_channel_and_thread_windows() {
     session.shutdown().await;
     signer.lock().await;
 }
+
+/// Waits for the next sync message on subscription `id`.
+async fn next_sync(
+    events: &mut tokio::sync::broadcast::Receiver<bzz::realtime::supervisor::SupervisorEvent>,
+    id: &str,
+) -> SessionEvent {
+    use bzz::realtime::supervisor::SupervisorEvent;
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(15), events.recv())
+            .await
+            .expect("sync message in time")
+            .unwrap();
+        if let SupervisorEvent::Session(
+            message @ (SessionEvent::Event { .. }
+            | SessionEvent::Eose(_)
+            | SessionEvent::Closed { .. }),
+        ) = event
+        {
+            let subscription = match &message {
+                SessionEvent::Event { subscription, .. }
+                | SessionEvent::Closed { subscription, .. } => subscription.clone(),
+                SessionEvent::Eose(subscription) => subscription.clone(),
+                _ => unreachable!(),
+            };
+            if subscription == id {
+                return message;
+            }
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_channel_artifacts() {
+    use bzz::protocol::artifact::{self, Change};
+    use bzz::service::artifacts::{Applied, ArtifactService};
+    use nostr::Tag;
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let keys = Keys::generate();
+    let pubkey = keys.public_key().to_hex();
+    let channel = seed_member(&source, &pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let signer = SignerHandle::spawn(keys.clone());
+    let identity = IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "m4".into(),
+        pubkey: pubkey.clone(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "m4".into(),
+    };
+    let mut config = Config::default();
+    config.identities.push(identity.clone());
+    let community = config
+        .add_community("m4".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    let http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .unwrap();
+    let relay = bzz::protocol::http::relay_signing_pubkey(&http.nip11().await.unwrap())
+        .unwrap()
+        .to_owned();
+    let mut store = Store::open_memory().unwrap();
+    store.sync_config(&config).unwrap();
+    store.pin_relay_pubkey(community, &relay).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        signer.clone(),
+    );
+    let mut stream = supervisor.subscribe_events();
+    let service = ArtifactService::new(
+        community,
+        http.clone(),
+        store.clone(),
+        signer.clone(),
+        supervisor.clone(),
+    );
+    let caps = service.capabilities().await.unwrap();
+    assert!(caps.sync && caps.head && caps.max_events > 0, "{caps:?}");
+
+    // Another client creates a task assigned to us, with a schema bzz does not
+    // know: an unknown tag and future content fields.
+    let id = uuid::Uuid::new_v4();
+    let content = r#"{"version":9,"status":"open","future":{"x":[1,2]}}"#;
+    let tags = [
+        ["ar", "1"],
+        ["d", &id.to_string()],
+        ["h", &channel.to_string()],
+        ["type", "buzz.task"],
+        ["title", "Fix the payment timeout"],
+        ["op", "create"],
+        ["assignee", &pubkey],
+        ["x-priority", "p1"],
+    ]
+    .map(|parts| Tag::parse(parts).unwrap());
+    let created = EventBuilder::new(Kind::Custom(45_010), content)
+        .tags(tags)
+        .sign_with_keys(&keys)
+        .unwrap();
+    let ack = supervisor.publish(created.clone()).await.unwrap();
+    assert!(ack.accepted, "{}", ack.message);
+
+    // Sync: the complete set arrives before EOSE.
+    supervisor
+        .subscribe("ar-test", vec![artifact::sync_filter(channel)])
+        .await
+        .unwrap();
+    let mut initial = Vec::new();
+    loop {
+        match next_sync(&mut stream, "ar-test").await {
+            SessionEvent::Event { event, .. } => initial.push(artifact::parse(&event).unwrap()),
+            SessionEvent::Eose(_) => break,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(initial.len(), 1);
+    assert_eq!(initial[0].head, created.id.to_hex());
+    store
+        .call({
+            let initial = initial.clone();
+            move |store| store.replace_channel_artifacts(community, channel, &initial)
+        })
+        .await
+        .unwrap();
+    // Cross-channel "My tasks".
+    assert_eq!(service.refresh_assigned(&pubkey).await.unwrap(), 1);
+    let mine = store
+        .call({
+            let pubkey = pubkey.clone();
+            move |store| store.assigned_artifacts(community, &pubkey)
+        })
+        .await
+        .unwrap();
+    assert_eq!(mine.len(), 1);
+
+    // Rename keeps unknown tags and content; the live head arrives on sync.
+    let renamed = service
+        .apply(id, Change::Rename("Fix the timeout".into()))
+        .await
+        .unwrap();
+    let Applied::Published(renamed) = renamed else {
+        panic!("expected a publish")
+    };
+    let SessionEvent::Event { event, .. } = next_sync(&mut stream, "ar-test").await else {
+        panic!("live head")
+    };
+    assert_eq!(event.id.to_hex(), renamed);
+    let head = artifact::parse(&event).unwrap();
+    assert_eq!(head.title.as_deref(), Some("Fix the timeout"));
+    assert_eq!(head.event.content, content);
+    assert!(
+        head.client_tags()
+            .contains(&("x-priority".into(), "p1".into()))
+    );
+
+    // A competing edit from another device lands first: bzz's next edit
+    // conflicts, reloads the head and rebuilds on it.
+    let stored = store
+        .call(move |store| store.artifact(community, id))
+        .await
+        .unwrap()
+        .unwrap();
+    let competing = artifact::build(&Change::Rename("Other device".into()), &stored.head, None)
+        .unwrap()
+        .sign_with_keys(&keys)
+        .unwrap();
+    assert!(
+        supervisor
+            .publish(competing.clone())
+            .await
+            .unwrap()
+            .accepted
+    );
+    let _ = next_sync(&mut stream, "ar-test").await;
+    let after = service
+        .apply(id, Change::Rename("Final title".into()))
+        .await
+        .unwrap();
+    assert!(matches!(after, Applied::Published(_)));
+    let head = service.head(id).await.unwrap().unwrap();
+    assert_eq!(head.title.as_deref(), Some("Final title"));
+    assert_eq!(
+        head.tag("prev"),
+        Some(competing.id.to_hex()),
+        "built on the winner"
+    );
+    let _ = next_sync(&mut stream, "ar-test").await;
+
+    // Delete, then restore the last live snapshot.
+    service.apply(id, Change::Delete).await.unwrap();
+    let SessionEvent::Event { event, .. } = next_sync(&mut stream, "ar-test").await else {
+        panic!("deletion head")
+    };
+    assert!(artifact::parse(&event).unwrap().is_deleted());
+    assert!(
+        service.head(id).await.unwrap().unwrap().is_deleted(),
+        "head view sees deletions"
+    );
+    service.apply(id, Change::Restore).await.unwrap();
+    let SessionEvent::Event { event, .. } = next_sync(&mut stream, "ar-test").await else {
+        panic!("restore head")
+    };
+    let restored = artifact::parse(&event).unwrap();
+    assert_eq!(restored.title.as_deref(), Some("Final title"));
+    assert_eq!(restored.event.content, content);
+
+    // Move to a second channel. This reader can read the destination, so the
+    // source sync receives the new head homed elsewhere (NIP-AR Sync rule 3);
+    // a reader without destination access gets the 45011 removal instead.
+    let destination = uuid::Uuid::new_v4();
+    let create = signer
+        .sign(
+            buzz_sdk::build_create_channel(
+                destination,
+                &format!("artifacts-{}", &destination.simple().to_string()[..8]),
+                Some(buzz_sdk::Visibility::Open),
+                Some(buzz_sdk::ChannelKind::Stream),
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(supervisor.publish(create).await.unwrap().accepted);
+    service.apply(id, Change::Move(destination)).await.unwrap();
+    let SessionEvent::Event { event, .. } = next_sync(&mut stream, "ar-test").await else {
+        panic!("moved head")
+    };
+    let moved_head = artifact::parse(&event).unwrap();
+    assert_eq!((moved_head.id, moved_head.home), (id, destination));
+    assert!(moved_head.root.is_none());
+    store
+        .call(move |store| store.apply_artifact_head(community, &moved_head))
+        .await
+        .unwrap();
+    let left = store
+        .call(move |store| store.channel_artifacts(community, channel, None))
+        .await
+        .unwrap();
+    assert!(
+        left.is_empty(),
+        "the artifact left the source channel's set"
+    );
+    let moved = service.head(id).await.unwrap().unwrap();
+    assert_eq!(moved.home, destination);
+
+    // Artifacts are state, not chat: nothing entered the message timeline.
+    let messages = store
+        .call(move |store| store.messages(community, channel, 100))
+        .await
+        .unwrap();
+    assert!(
+        messages.iter().all(|message| message.system.is_some()),
+        "{messages:?}"
+    );
+    supervisor.shutdown().await;
+    signer.lock().await;
+}
