@@ -366,6 +366,9 @@ pub struct Message {
     pub delivery: DeliveryState,
     #[serde(default)]
     pub system: Option<SystemEvent>,
+    /// Desktop "Send to channel" provenance (`buzz:sent-from-thread`).
+    #[serde(skip)]
+    pub sent_from_thread: Option<crate::protocol::sent_from_thread::SentFromThread>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

@@ -897,6 +897,20 @@ fn message_block(
             indent: MESSAGE_TEXT_INDENT,
         });
     } else {
+        if let Some(reference) = &message.sent_from_thread {
+            let excerpt = reference
+                .excerpt
+                .as_deref()
+                .map(sanitize::single_line)
+                .unwrap_or_else(|| "a thread".into());
+            rows.push(TimelineRow::Indented {
+                line: Line::styled(
+                    format!("↪ sent from thread · {excerpt}"),
+                    theme.style(HighlightGroup::MessageTimestamp),
+                ),
+                indent: MESSAGE_TEXT_INDENT,
+            });
+        }
         for line in body_lines {
             rows.push(TimelineRow::Indented {
                 line,
@@ -1277,6 +1291,7 @@ mod tests {
             deleted: false,
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
+            sent_from_thread: None,
         }
     }
 

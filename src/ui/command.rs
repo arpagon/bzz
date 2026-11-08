@@ -18,6 +18,10 @@ pub enum Command {
     System,
     /// Federated (NIP-FA) browser sign-in for the active community.
     SignIn,
+    /// Send the open thread's draft to its channel as a new message.
+    ToChannel,
+    /// Report the selected message to the relay moderators (NIP-56).
+    Report(String),
     Unknown(String),
 }
 
@@ -39,6 +43,10 @@ pub fn parse(input: &str) -> Command {
         "purge-cache" => Command::PurgeCache,
         "system" => Command::System,
         "signin" | "sign-in" => Command::SignIn,
+        "tochannel" | "send-to-channel" => Command::ToChannel,
+        value if value == "report" || value.starts_with("report ") => {
+            Command::Report(value.trim_start_matches("report").trim().to_owned())
+        }
         value => Command::Unknown(value.to_owned()),
     }
 }

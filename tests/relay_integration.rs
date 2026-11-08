@@ -1518,3 +1518,94 @@ async fn real_relay_buzz_desktop_identity_signs_through_the_provider() {
     session.shutdown().await;
     signer.lock().await;
 }
+
+/// v0.13 M10: "Send to channel" and NIP-56 reports through MessageService.
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_send_to_channel_and_report() {
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let keys = Keys::generate();
+    let pubkey = keys.public_key().to_hex();
+    let channel = seed_member(&source, &pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let signer = SignerHandle::spawn(keys);
+    let identity = IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "m10".into(),
+        pubkey: pubkey.clone(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "m10".into(),
+    };
+    let mut config = Config::default();
+    config.identities.push(identity.clone());
+    let community = config
+        .add_community(
+            "m10".into(),
+            "ws://localhost:3030".into(),
+            identity.id,
+            true,
+        )
+        .unwrap();
+    let mut store = Store::open_memory().unwrap();
+    store.sync_config(&config).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        signer.clone(),
+    );
+    let service = bzz::service::messages::MessageService::new(
+        community,
+        signer.clone(),
+        store.clone(),
+        supervisor.clone(),
+    );
+    let root_text = format!(
+        "**Release** plan for [v0.13](https://x.io) {}",
+        "words ".repeat(20)
+    );
+    let root = service.send(channel, &root_text).await.unwrap();
+    let copy = service
+        .send_to_channel(
+            channel,
+            &root.id.to_hex(),
+            &root_text,
+            "summary for the channel",
+            &[],
+        )
+        .await
+        .unwrap();
+    let http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .unwrap();
+    let stored = http
+        .query(&[QueryFilter {
+            ids: vec![copy.id.to_hex()],
+            limit: Some(1),
+            ..QueryFilter::default()
+        }])
+        .await
+        .unwrap();
+    assert_eq!(stored.len(), 1, "relay stored the channel copy");
+    let tags = stored[0]
+        .tags
+        .iter()
+        .map(|tag| tag.as_slice().to_vec())
+        .collect::<Vec<_>>();
+    let reference = bzz::protocol::sent_from_thread::parse_tag(&tags).unwrap();
+    assert_eq!(reference.root_event_id, root.id.to_hex());
+    assert_eq!(
+        reference.excerpt.as_deref(),
+        bzz::protocol::sent_from_thread::summarize_thread_root(&root_text).as_deref()
+    );
+    assert!(tags.iter().all(|tag| tag[0] != "e"), "no NIP-10 reply tags");
+
+    let report = service
+        .report(&root.id.to_hex(), &pubkey, "spam", Some("generated report"))
+        .await
+        .unwrap();
+    assert_eq!(report.kind.as_u16(), 1984);
+    supervisor.shutdown().await;
+    signer.lock().await;
+}

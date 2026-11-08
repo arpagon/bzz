@@ -47,6 +47,8 @@ pub enum ConfirmationKind {
     Delete,
     InboxRead,
     ClearDraft,
+    /// NIP-56 report of the selected message (reason held by the App).
+    Report,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -89,6 +89,49 @@ impl MessageService {
         };
         self.send_builder_for_draft(builder, submission).await
     }
+    /// Desktop "Send to channel": a new top-level kind 9 in `channel`
+    /// carrying `["buzz:sent-from-thread", root, excerpt]` and no NIP-10 tags.
+    /// `root_content` is the thread root's text, clipped exactly like desktop.
+    pub async fn send_to_channel(
+        &self,
+        channel: Uuid,
+        root_event_id: &str,
+        root_content: &str,
+        content: &str,
+        mentions: &[String],
+    ) -> Result<Event> {
+        let mentions = mention_references(mentions)?;
+        let excerpt = crate::protocol::sent_from_thread::summarize_thread_root(root_content);
+        let builder = buzz_sdk::build_message(channel, content, None, &mentions, false, &[], &[])
+            .map_err(|error| Error::Protocol(error.to_string()))?
+            .tag(crate::protocol::sent_from_thread::build_tag(
+                root_event_id,
+                excerpt.as_deref(),
+            ));
+        self.send_builder(builder).await
+    }
+
+    /// NIP-56 report (kind 1984) of a message to the relay moderators. The
+    /// relay keeps it in its moderation queue; it is never a timeline event.
+    pub async fn report(
+        &self,
+        event_id: &str,
+        author: &str,
+        reason: &str,
+        note: Option<&str>,
+    ) -> Result<Event> {
+        let builder = buzz_sdk::build_report(
+            buzz_sdk::ReportTarget::Event {
+                author_pubkey: author,
+                event_id,
+            },
+            reason,
+            note,
+        )
+        .map_err(|error| Error::Protocol(error.to_string()))?;
+        self.send_builder(builder).await
+    }
+
     pub async fn reply(
         &self,
         channel: Uuid,

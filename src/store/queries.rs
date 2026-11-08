@@ -400,6 +400,9 @@ impl Store {
                         .map(|base| crate::media::imeta::parse_tags(&tags_json, &content, &base))
                         .unwrap_or_default()
                 };
+                let sent_from_thread = serde_json::from_str::<Vec<Vec<String>>>(&tags_json)
+                    .ok()
+                    .and_then(|tags| crate::protocol::sent_from_thread::parse_tag(&tags));
                 let visible_content = if system.is_some() {
                     String::new()
                 } else {
@@ -423,6 +426,7 @@ impl Store {
                     deleted: row.get::<_, Option<String>>(7)?.is_some(),
                     delivery: crate::domain::DeliveryState::from_outbox(state.as_deref()),
                     system,
+                    sent_from_thread,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

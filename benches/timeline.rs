@@ -28,6 +28,7 @@ fn bench_timeline(c: &mut Criterion) {
             deleted: false,
             delivery: bzz::domain::DeliveryState::Delivered,
             system: None,
+            sent_from_thread: None,
         })
         .collect::<Vec<_>>();
     c.bench_function("timeline cursor move in 10k messages", |bench| {

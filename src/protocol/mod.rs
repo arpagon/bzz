@@ -3,6 +3,7 @@ pub mod events;
 pub mod http;
 pub mod membership_snapshot;
 pub mod read_state_snapshot;
+pub mod sent_from_thread;
 pub mod system;
 pub mod thread_summary;
 pub mod types;

@@ -88,6 +88,7 @@ pub fn as_message(event: &Event) -> Option<Message> {
         deleted: false,
         delivery: crate::domain::DeliveryState::Delivered,
         system,
+        sent_from_thread: None,
     })
 }
 

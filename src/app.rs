@@ -239,8 +239,8 @@ enum Background {
     Changed,
     /// A federated sign-in finished; evidence is installed, reconnect now.
     FederatedReady,
-    /// A fixed, text-free federated identity notice.
-    FederatedNotice(String),
+    /// A fixed status notice (federated identity, reports, send to channel).
+    Notice(String),
     DraftAcknowledged,
     Failed(String),
     Saved,
@@ -298,6 +298,8 @@ pub struct App {
     closed_typing_channel: Option<Uuid>,
     reactions: HashMap<String, Vec<Reaction>>,
     show_system_channels: bool,
+    /// `(reason, note)` awaiting the report confirmation.
+    pending_report: Option<(String, Option<String>)>,
     profile_requested: HashSet<String>,
     thread_messages: Vec<Message>,
     thread_root: Option<String>,
@@ -532,6 +534,7 @@ impl App {
             closed_typing_channel: None,
             reactions: HashMap::new(),
             show_system_channels: false,
+            pending_report: None,
             profile_requested: HashSet::new(),
             thread_messages: Vec::new(),
             thread_root: None,
@@ -688,7 +691,7 @@ impl App {
                             self.status_error=Some(error.to_string());
                         }
                     },
-                    Background::FederatedNotice(message)=>self.status_error=Some(message),
+                    Background::Notice(message)=>self.status_error=Some(message),
                     Background::InboxLoaded { community, items }=>{
                         if self.active_community_id()==Some(community) {
                             self.inbox_items=items;
@@ -922,7 +925,7 @@ impl App {
                         } else {
                             crate::auth::federated::RelayDenial::EvidenceRequired.notice()
                         };
-                        let _ = tx.send(Background::FederatedNotice(notice.into())).await;
+                        let _ = tx.send(Background::Notice(notice.into())).await;
                         return Ok(());
                     }
                 }
@@ -2425,6 +2428,17 @@ impl App {
                     KeyCode::Esc | KeyCode::Char('n' | 'N') => self.presentation.close_overlay(),
                     _ => {}
                 },
+                Some(ConfirmationKind::Report) => match key.code {
+                    KeyCode::Char('y' | 'Y') => {
+                        self.send_pending_report();
+                        self.presentation.close_overlay();
+                    }
+                    KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                        self.pending_report = None;
+                        self.presentation.close_overlay();
+                    }
+                    _ => {}
+                },
                 Some(ConfirmationKind::InboxRead) => match key.code {
                     KeyCode::Char('y' | 'Y') => self.mark_pending_inbox_read().await?,
                     KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
@@ -3178,9 +3192,12 @@ impl App {
             return Ok(());
         }
         if let Some(message) = self.selected_message() {
+            // A "sent from thread" copy opens the thread it came from.
             let root = message
-                .root_event_id
-                .clone()
+                .sent_from_thread
+                .as_ref()
+                .map(|reference| reference.root_event_id.clone())
+                .or_else(|| message.root_event_id.clone())
                 .unwrap_or_else(|| message.event_id.clone());
             self.thread_root = Some(root);
             self.presentation.set_workspace_focus(FocusSurface::Context);
@@ -4242,6 +4259,82 @@ impl App {
         });
         self.presentation.close_overlay();
     }
+    fn send_pending_report(&mut self) {
+        let Some((reason, note)) = self.pending_report.take() else {
+            return;
+        };
+        let Some(runtime) = &self.runtime else { return };
+        let Some(message) = self.selected_message() else {
+            return;
+        };
+        let service = runtime.messages.clone();
+        let (target, author) = (message.event_id.clone(), message.pubkey.clone());
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = service
+                .report(&target, &author, &reason, note.as_deref())
+                .await;
+            let _ = tx
+                .send(match result {
+                    Ok(_) => Background::Notice("report sent to the moderators".into()),
+                    Err(error) => Background::Failed(error.to_string()),
+                })
+                .await;
+        });
+    }
+
+    /// `:tochannel`: send the open thread's draft to the channel as a new
+    /// top-level message that points back at the thread.
+    fn send_draft_to_channel(&mut self) {
+        let Some(runtime) = &self.runtime else { return };
+        let (Some(root), Some(channel)) = (
+            self.thread_root.clone(),
+            self.current_channel().map(|channel| channel.id),
+        ) else {
+            self.status_error = Some("open a thread to send its draft to the channel".into());
+            return;
+        };
+        if let Some(reason) = self.current_channel().and_then(Channel::read_only_reason) {
+            self.status_error = Some(reason.notice().into());
+            return;
+        }
+        let Some(root_message) = self
+            .thread_messages
+            .iter()
+            .find(|message| message.event_id == root)
+            .cloned()
+        else {
+            self.status_error = Some("the thread root is not available locally".into());
+            return;
+        };
+        let content = self.composer.body.trim().to_owned();
+        if content.is_empty() {
+            self.status_error = Some("write the message in the thread composer first".into());
+            return;
+        }
+        let mentions = self
+            .composer
+            .mentions()
+            .iter()
+            .map(|mention| mention.pubkey.clone())
+            .collect::<Vec<_>>();
+        let service = runtime.messages.clone();
+        let tx = self.background_tx.clone();
+        // The thread draft stays until the user clears it; the channel copy
+        // goes through the same acknowledgement-aware outbox as any send.
+        tokio::spawn(async move {
+            let result = service
+                .send_to_channel(channel, &root, &root_message.content, &content, &mentions)
+                .await;
+            let _ = tx
+                .send(match result {
+                    Ok(_) => Background::Notice("sent to the channel".into()),
+                    Err(error) => Background::Failed(error.to_string()),
+                })
+                .await;
+        });
+    }
+
     fn delete_selected(&mut self) {
         let Some(runtime) = &self.runtime else { return };
         let Some(channel) = self.current_channel().map(|channel| channel.id) else {
@@ -4323,7 +4416,7 @@ impl App {
             let _ = tx
                 .send(match outcome {
                     Ok(()) => Background::FederatedReady,
-                    Err(error) => Background::FederatedNotice(error.to_string()),
+                    Err(error) => Background::Notice(error.to_string()),
                 })
                 .await;
         });
@@ -5308,6 +5401,25 @@ impl App {
                 ));
             }
             crate::ui::command::Command::SignIn => self.begin_federated_sign_in().await,
+            crate::ui::command::Command::ToChannel => self.send_draft_to_channel(),
+            crate::ui::command::Command::Report(arguments) => {
+                let mut parts = arguments.splitn(2, ' ');
+                let reason = parts.next().unwrap_or_default().to_owned();
+                let note = parts.next().map(str::trim).filter(|note| !note.is_empty());
+                if !buzz_sdk::REPORT_TYPES.contains(&reason.as_str()) {
+                    self.status_error = Some(format!(
+                        "usage: :report <{}> [note]",
+                        buzz_sdk::REPORT_TYPES.join("|")
+                    ));
+                } else if self.runtime.is_none() || self.selected_message().is_none() {
+                    self.status_error = Some("select a message to report".into());
+                } else {
+                    self.pending_report = Some((reason, note.map(str::to_owned)));
+                    self.presentation
+                        .open_confirmation(ConfirmationKind::Report);
+                    return Ok(());
+                }
+            }
             crate::ui::command::Command::System => {
                 self.show_system_channels = !self.show_system_channels;
                 self.presentation.close_overlay();
@@ -6293,6 +6405,17 @@ impl App {
                     " delete message? ",
                     "Press y to delete or n/Esc to cancel",
                 ),
+                Some(ConfirmationKind::Report) => self.render_prompt(
+                    frame,
+                    area,
+                    " report message to moderators? ",
+                    &format!(
+                        "Reason: {} · press y to report or n/Esc to cancel",
+                        self.pending_report
+                            .as_ref()
+                            .map_or("", |(reason, _)| reason.as_str())
+                    ),
+                ),
                 Some(ConfirmationKind::InboxRead) => self.render_prompt(
                     frame,
                     area,
@@ -7054,6 +7177,7 @@ mod tests {
             deleted: false,
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
+            sent_from_thread: None,
         }];
         app.local_thread_summaries.insert(
             root.clone(),
@@ -7613,6 +7737,7 @@ mod tests {
             deleted: false,
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
+            sent_from_thread: None,
         }];
         app.timeline.at_live_bottom = true;
         app.computed_unread.insert(channel);
@@ -7771,6 +7896,7 @@ mod tests {
             deleted: false,
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
+            sent_from_thread: None,
         };
         let mut timeline = TimelineState {
             at_live_bottom: true,
@@ -8148,6 +8274,7 @@ mod tests {
             deleted: false,
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
+            sent_from_thread: None,
         }];
         app.timeline.reconcile(&app.messages);
 

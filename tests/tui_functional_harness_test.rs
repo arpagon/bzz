@@ -48,6 +48,7 @@ fn fixture() -> (Vec<InboxItem>, Vec<Message>) {
             deleted: false,
             delivery: bzz::domain::DeliveryState::Delivered,
             system: None,
+            sent_from_thread: None,
         }],
     )
 }
