@@ -110,6 +110,22 @@ impl HttpClient {
         Ok(events)
     }
 
+    /// `POST /query` with raw extension filters (NIP-CW windows). The relay
+    /// decides the response size; it is bounded by the 32 MiB transport cap.
+    pub async fn query_raw(&self, filters: &[Value]) -> Result<Vec<Event>> {
+        if filters.is_empty() || filters.len() > 4 {
+            return Err(Error::Config(
+                "a raw query takes one to four filters".into(),
+            ));
+        }
+        let body =
+            serde_json::to_vec(filters).map_err(|error| Error::Serialization(error.to_string()))?;
+        let bytes = self.post("query", body).await?;
+        let response: QueryResponse = serde_json::from_slice(&bytes)
+            .map_err(|error| Error::Protocol(format!("invalid query response: {error}")))?;
+        Ok(response.into_events())
+    }
+
     pub async fn event(&self, event: &Event) -> Result<Value> {
         let body = serde_json::to_vec(&json!({ "event": event }))
             .map_err(|error| Error::Serialization(error.to_string()))?;

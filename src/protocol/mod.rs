@@ -10,5 +10,6 @@ pub mod system;
 pub mod thread_summary;
 pub mod types;
 pub mod verified_profile;
+pub mod window;
 
 pub use crate::config::validate_relay_url;

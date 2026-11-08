@@ -1831,3 +1831,198 @@ async fn real_relay_custom_emoji() {
     supervisor.shutdown().await;
     signer.lock().await;
 }
+
+/// v0.13 M7: verified NIP-CW channel and thread windows on the pinned relay.
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_channel_and_thread_windows() {
+    use bzz::protocol::window::ThreadRequest;
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let keys = Keys::generate();
+    let pubkey = keys.public_key().to_hex();
+    let _ = seed_member(&source, &pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let signer = SignerHandle::spawn(keys.clone());
+    let (session, mut events) = session::connect(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(SessionEvent::Authenticated)
+    ));
+    // A fresh channel so the counts are exact.
+    let channel = uuid::Uuid::new_v4();
+    let create = signer
+        .sign(
+            buzz_sdk::build_create_channel(
+                channel,
+                &format!("windows-{}", &channel.simple().to_string()[..8]),
+                Some(buzz_sdk::Visibility::Open),
+                Some(buzz_sdk::ChannelKind::Stream),
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(session.publish(create).await.unwrap().accepted);
+    // 230 top-level rows, many sharing a second, plus one thread of 120 replies.
+    let base = Timestamp::now().as_secs() - 200;
+    let mut roots = Vec::new();
+    for index in 0..230_u64 {
+        let event =
+            buzz_sdk::build_message(channel, &format!("row {index}"), None, &[], false, &[], &[])
+                .unwrap()
+                .custom_created_at(Timestamp::from(base + index / 7))
+                .sign_with_keys(&keys)
+                .unwrap();
+        let ack = session.publish(event.clone()).await.unwrap();
+        assert!(ack.accepted, "{}", ack.message);
+        roots.push(event);
+    }
+    let root = roots[200].clone();
+    let mut replies = Vec::new();
+    for index in 0..120_u64 {
+        let event = buzz_sdk::build_message(
+            channel,
+            &format!("reply {index}"),
+            Some(&buzz_sdk::ThreadRef {
+                root_event_id: root.id,
+                parent_event_id: root.id,
+            }),
+            &[],
+            false,
+            &[],
+            &[],
+        )
+        .unwrap()
+        .custom_created_at(Timestamp::from(base + 60 + index / 5))
+        .sign_with_keys(&keys)
+        .unwrap();
+        assert!(session.publish(event.clone()).await.unwrap().accepted);
+        replies.push(event);
+    }
+    let reaction = signer
+        .sign(buzz_sdk::build_reaction(roots[3].id, "👍").unwrap())
+        .await
+        .unwrap();
+    assert!(session.publish(reaction.clone()).await.unwrap().accepted);
+
+    let http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .unwrap();
+    let relay = bzz::protocol::http::relay_signing_pubkey(&http.nip11().await.unwrap())
+        .unwrap()
+        .to_owned();
+    let identity = IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "m7".into(),
+        pubkey: pubkey.clone(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "m7".into(),
+    };
+    let mut config = Config::default();
+    config.identities.push(identity.clone());
+    let community = config
+        .add_community("m7".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    let mut store = Store::open_memory().unwrap();
+    store.sync_config(&config).unwrap();
+    store.pin_relay_pubkey(community, &relay).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+
+    let report = bzz::sync::window::channel(community, channel, &relay, &http, &store)
+        .await
+        .unwrap();
+    // Every top-level row (plus the relay's kind 40099 channel_created
+    // system row), none of the replies.
+    assert_eq!(report.rows, 231, "{report:?}");
+    assert!(report.pages >= 3, "paged across dense seconds: {report:?}");
+    assert!(report.crossed_watermark);
+    assert!(report.aux >= 1, "reaction arrived through the aux closure");
+    assert!(
+        report
+            .summaries
+            .iter()
+            .any(|summary| bzz::protocol::events::first_tag(summary, "e") == Some(root.id.to_hex())),
+        "39005 summary for the thread root"
+    );
+    let stored = store
+        .call(move |store| store.messages(community, channel, 1_000))
+        .await
+        .unwrap();
+    let root_ids = roots
+        .iter()
+        .map(|root| root.id.to_hex())
+        .collect::<HashSet<_>>();
+    let ids = stored
+        .iter()
+        .filter(|message| message.system.is_none())
+        .map(|message| message.event_id.clone())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        ids, root_ids,
+        "exactly the published rows: no gaps, no extras"
+    );
+    assert_eq!(stored.len(), 231, "rows plus one system row, no duplicates");
+    let target = roots[3].id.to_hex();
+    let reactions = store
+        .call(move |store| store.reactions(community, &target))
+        .await
+        .unwrap();
+    assert_eq!(reactions.len(), 1);
+    // A second load stops at the watermark after one page.
+    let again = bzz::sync::window::channel(community, channel, &relay, &http, &store)
+        .await
+        .unwrap();
+    assert_eq!(again.pages, 1);
+
+    // Thread windows newest-first, paged backwards to the start.
+    let root_hex = root.id.to_hex();
+    let mut cursor: Option<bzz::protocol::window::Cursor> = None;
+    let mut seen = Vec::new();
+    for _ in 0..10 {
+        let request = ThreadRequest {
+            host: "localhost:3030",
+            reader: &pubkey,
+            channel,
+            root: &root_hex,
+            limit: bzz::sync::window::THREAD_PAGE,
+            depth: 100,
+            include_aux: true,
+            cursor: cursor.as_ref(),
+        };
+        let page = bzz::sync::window::thread_page(community, &request, &relay, &http, &store)
+            .await
+            .unwrap();
+        seen.extend(page.rows.iter().map(|row| row.id));
+        match page.next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(seen.len(), 120);
+    assert_eq!(seen.iter().collect::<HashSet<_>>().len(), 120);
+    // NIP-CW total order: created_at DESC, then id ASC within a second.
+    let mut expected = replies.clone();
+    expected.sort_by(|left, right| {
+        right
+            .created_at
+            .cmp(&left.created_at)
+            .then_with(|| left.id.to_hex().cmp(&right.id.to_hex()))
+    });
+    assert_eq!(
+        seen,
+        expected.iter().map(|reply| reply.id).collect::<Vec<_>>(),
+        "newest first across pages, exact order"
+    );
+    session.shutdown().await;
+    signer.lock().await;
+}
