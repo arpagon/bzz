@@ -18,11 +18,11 @@ claim has a test that was seen failing without the change where noted.
 | Format | `cargo fmt --check` | clean |
 | Lint (audio) | `cargo clippy --locked --all-targets --all-features -- -D warnings` | clean |
 | Lint (view-only) | `cargo clippy --locked --all-targets --no-default-features -- -D warnings` | clean |
-| Tests (audio) | `cargo test --locked --all-targets` | 448 passed, 0 failed |
-| Tests (view-only) | `cargo test --locked --all-targets --no-default-features` | 447 passed, 0 failed |
+| Tests (audio) | `cargo test --locked --all-targets` | 453 passed, 0 failed |
+| Tests (view-only) | `cargo test --locked --all-targets --no-default-features` | 452 passed, 0 failed |
 | Supply chain | `cargo deny --locked check` / `cargo audit` | ok (recorded exceptions below) |
 | Release build | `cargo build --locked --release`; `bzz --version` | `bzz 0.13.0` |
-| Pinned relay | `BZZ_BUZZ_SOURCE=<pin> ./scripts/test-relay.sh` | 12 passed |
+| Pinned relay | `BZZ_BUZZ_SOURCE=<pin> ./scripts/test-relay.sh` | 13 passed |
 | FI-enforcing relay (T4) | `BZZ_BUZZ_SOURCE=<pin> ./scripts/test-relay.sh --nip-fi` | 4 passed |
 | Herdr, harness (T9) | `BZZ_BUZZ_SOURCE=<pin> BZZ_HERDR_PANE=<pane> ./scripts/test-relay.sh --herdr` | 3 scenarios passed |
 | Herdr, empty profile | `BZZ_HERDR_PANE=<pane> ./scripts/test-tui-herdr.sh` | 3 scenarios passed |
@@ -91,7 +91,9 @@ Pinned-relay tests are in `tests/relay_integration.rs` and
   seen red) and the profile card. Real-browser sign-in: headless Chrome
   followed the fake adapter's login redirect to bzz's callback ("You can
   close this tab and return to bzz") and the community came online.
-- [x] **M4 artifacts** — `real_relay_channel_artifacts`: sync set at EOSE,
+- [x] **M4 artifacts** — a `CLOSED "resync: …"` after a redaction keeps
+  the held set, marks it possibly stale and schedules a fresh sync whose
+  complete cut is authoritative. `real_relay_channel_artifacts`: sync set at EOSE,
   assigned tasks, rename keeping unknown tags/content, a competing edit
   reconciled on the winner (`prev` = winner), delete, restore, move (the source
   sync receives the destination head), nothing in the chat timeline. App test
@@ -101,18 +103,26 @@ Pinned-relay tests are in `tests/relay_integration.rs` and
 - [x] **M5 custom emoji** — `real_relay_custom_emoji`; the graphics capture
   shows the image inline in Ghostty (Kitty protocol).
 - [x] **M6 presence and status** — `real_relay_presence_snapshot_and_status`;
+  online/away marks on one-to-one DM rows, mention candidates and `:agents`
+  rows (`presence_markers_test`);
   `:presence [on|off]` toggles and saves the opt-in (`73b7634`).
 - [x] **M7 windows** — `real_relay_channel_and_thread_windows`: 230 dense rows
   without gaps or duplicates, aux reaction, 39005 summary, 120 replies
   newest-first in NIP-CW order, the app's service path windowed, unpinned
   store reports unsupported. The scroll video walks 260 messages across three
   window pages; frames at the 60/61 and 160/161 page boundaries show
-  contiguous numbering.
+  contiguous numbering. `real_relay_windows_send_fewer_requests_than_backfill`:
+  2 `/query` requests through windows against 3 for the legacy backfill with
+  its `#e` fan-out, counted in the relay's access log. Depth-1 replies tagged
+  `["broadcast","1"]` are channel rows with their thread reference
+  (`broadcast_depth_one_replies_are_channel_rows`, seen red with the old
+  filter).
 - [x] **M8 huddles** — all 14 upstream recorded tracker sequences match their
   rosters and end state; `real_relay_huddle_lifecycle_and_audio_round_trip`:
   muted capture never reaches the peer, an unmuted 440 Hz tone round-trips
   through the relay (peak > 0.1), the relay-signed roster lists both, ending
-  clears it. App test for roster, creator-only guidelines and reactions.
+  clears it. App test for roster, creator-only guidelines and reactions,
+  and the 🎧 mark on the channel row and on roster members' names.
 - [x] **M9 broker** — the SDK's own `BrokerClientExt::execute` validates every
   host answer in process and over HTTP (T6): success, replay, conflict, typed
   denials, indeterminate, pause, unknown credential, explicit `null`, unknown
@@ -122,8 +132,18 @@ Pinned-relay tests are in `tests/relay_integration.rs` and
   derives the same NIP-AE `d` tag, a non-owner's 20003 has no effect on the
   presence snapshot while the owner's sets the agent online.
   `fi_relay_admits_a_hosted_agent_only_with_its_owner_grant` on the
-  FI-enforcing relay. `bzz broker create/list` on the release binary.
-- [x] **M10 send to channel and report** — `real_relay_send_to_channel_and_report`.
+  FI-enforcing relay. `bzz broker create/list` on the release binary. Policy
+  per agent and action from the `:broker` panel (`j`/`k`, `1`–`6`, `Space`
+  to pause one agent), saved and applied to the running host at once
+  (`broker_panel_edits_and_saves_agent_policy` and the host test; seen red
+  without the save and without the host update).
+- [x] **M10 send to channel and report** — `real_relay_send_to_channel_and_report`,
+  now also reporting an author as a user (`:report author`; `p` with the
+  reason, no `e`). Every NIP-56 reason is accepted for a message or an
+  author and anything else is a usage error; send to channel refuses a
+  missing, foreign-channel, reply, system or deleted root
+  (`report_reasons_and_send_to_channel_roots_are_checked`, seen red without
+  the channel check).
 
 ## Shared infrastructure
 
