@@ -17,7 +17,8 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/bzz-t7.XXXXXXXX")
 nodes=()
 module=
 cleanup() {
-  for node in "${nodes[@]}"; do pw-cli destroy "$node" >/dev/null 2>&1 || true; done
+  # ${nodes[@]+...}: an empty array under `set -u` on bash 3.2 (macOS).
+  for node in ${nodes[@]+"${nodes[@]}"}; do pw-cli destroy "$node" >/dev/null 2>&1 || true; done
   if [[ -n $module ]]; then pactl unload-module "$module" >/dev/null 2>&1 || true; fi
   rm -rf -- "$work"
 }

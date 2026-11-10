@@ -105,10 +105,10 @@ jobs:
         include:
           - os: ubuntu-latest
             experimental: false
-          # Hosted macOS and Windows runners may deny capture or expose no
-          # audio endpoint; their result is recorded, not required.
           - os: macos-15
-            experimental: true
+            experimental: false
+          # Hosted Windows runners expose no audio endpoint, so opening the
+          # default devices fails there; the result is recorded, not required.
           - os: windows-latest
             experimental: true
     runs-on: ${{ matrix.os }}
