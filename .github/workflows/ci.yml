@@ -97,3 +97,35 @@ jobs:
       - name: Open a v0.12.1 data directory with this build
         shell: bash
         run: ./scripts/upgrade-test.sh
+  audio:
+    # T7: huddle audio through a virtual device (tests/huddle_device_loopback_test.rs).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            experimental: false
+          # Hosted macOS and Windows runners may deny capture or expose no
+          # audio endpoint; their result is recorded, not required.
+          - os: macos-15
+            experimental: true
+          - os: windows-latest
+            experimental: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build and PulseAudio dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libasound2-dev cmake pkg-config pulseaudio pulseaudio-utils libasound2-plugins
+      - name: Install BlackHole
+        if: runner.os == 'macOS'
+        run: |
+          brew install --cask blackhole-2ch
+          sudo killall coreaudiod || true
+          sleep 5
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Tone round trip and device release through a virtual device
+        shell: bash
+        run: ./scripts/test-audio-loopback.sh
