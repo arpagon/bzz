@@ -11037,6 +11037,27 @@ mod tests {
         assert_eq!(stored(&app).await.len(), 2, "the last complete set stays");
         assert!(!app.artifact_sync.as_ref().unwrap().complete);
 
+        // Redaction of a current head: the relay ends the sync with
+        // `CLOSED "resync: ..."`. The held set stays (marked possibly stale)
+        // and a fresh sync is scheduled; its complete cut is authoritative.
+        app.artifact_sync = Some(super::ArtifactSync::new(community, channel));
+        app.artifact_sync.as_mut().unwrap().complete = true;
+        app.handle_network(crate::realtime::supervisor::SupervisorEvent::Session(
+            crate::realtime::session::SessionEvent::Closed {
+                subscription: sync.into(),
+                message: "resync: artifact retired".into(),
+            },
+        ))
+        .await
+        .unwrap();
+        let retry = app.artifact_sync.as_ref().unwrap();
+        assert!(retry.retry_at.is_some() && !retry.complete && !retry.blocked);
+        assert_eq!(
+            stored(&app).await.len(),
+            2,
+            "nothing dropped before the new cut"
+        );
+
         // The panel shows the set; artifacts never become messages or unread.
         // A new cut holding only `live` replaces the set: `first` left it.
         app.artifact_sync = Some(super::ArtifactSync::new(community, channel));
