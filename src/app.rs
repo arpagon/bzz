@@ -682,6 +682,21 @@ fn open_in_browser(url: &url::Url) {
         .spawn();
 }
 
+/// M10.2: "send to channel" needs a local thread root in the same channel.
+fn send_to_channel_root(
+    root: Option<Message>,
+    channel: Uuid,
+) -> std::result::Result<Message, &'static str> {
+    let root = root.ok_or("the thread root is not available locally")?;
+    if root.channel_id != channel {
+        return Err("the thread root belongs to another channel");
+    }
+    if root.root_event_id.is_some() || root.system.is_some() || root.deleted {
+        return Err("only a thread root's thread can be sent to the channel");
+    }
+    Ok(root)
+}
+
 fn triggers_directory_refresh(kind: u16, content: &str) -> bool {
     matches!(kind, 39_002 | 44_100 | 44_101)
         || (kind == 40_099
@@ -6435,14 +6450,17 @@ impl App {
             self.status_error = Some(reason.notice().into());
             return;
         }
-        let Some(root_message) = self
+        let root_message = self
             .thread_messages
             .iter()
             .find(|message| message.event_id == root)
-            .cloned()
-        else {
-            self.status_error = Some("the thread root is not available locally".into());
-            return;
+            .cloned();
+        let root_message = match send_to_channel_root(root_message, channel) {
+            Ok(message) => message,
+            Err(reason) => {
+                self.status_error = Some(reason.into());
+                return;
+            }
         };
         let content = self.composer.body.trim().to_owned();
         if content.is_empty() {
@@ -9749,6 +9767,73 @@ mod tests {
                 .allowed,
             vec!["message.post"]
         );
+    }
+
+    /// M10 fixtures: every NIP-56 reason is accepted (then needs a selected
+    /// message), anything else is a usage error; "send to channel" refuses a
+    /// missing, foreign, reply, system or deleted root.
+    #[tokio::test]
+    async fn report_reasons_and_send_to_channel_roots_are_checked() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        for reason in buzz_sdk::REPORT_TYPES {
+            for command in [
+                format!("report {reason}"),
+                format!("report author {reason} note"),
+            ] {
+                app.status_error = None;
+                app.command = command.clone();
+                app.execute_command().await.unwrap();
+                assert_eq!(
+                    app.status_error.as_deref(),
+                    Some("select a message to report"),
+                    "{command}"
+                );
+            }
+        }
+        for command in ["report", "report bogus", "report author", "report SPAM"] {
+            app.status_error = None;
+            app.command = command.into();
+            app.execute_command().await.unwrap();
+            assert!(
+                app.status_error
+                    .as_deref()
+                    .is_some_and(|error| error.starts_with("usage: :report [author]")),
+                "{command}: {:?}",
+                app.status_error
+            );
+        }
+
+        let channel = Uuid::new_v4();
+        let root = Message {
+            event_id: "a".repeat(64),
+            channel_id: channel,
+            pubkey: "b".repeat(64),
+            created_at: 1,
+            content: "root".into(),
+            attachments: Vec::new(),
+            root_event_id: None,
+            parent_event_id: None,
+            deleted: false,
+            delivery: crate::domain::DeliveryState::Delivered,
+            system: None,
+            sent_from_thread: None,
+            broadcast: false,
+            emoji: Vec::new(),
+        };
+        assert!(super::send_to_channel_root(Some(root.clone()), channel).is_ok());
+        assert!(super::send_to_channel_root(None, channel).is_err());
+        assert!(super::send_to_channel_root(Some(root.clone()), Uuid::new_v4()).is_err());
+        let reply = Message {
+            root_event_id: Some("c".repeat(64)),
+            ..root.clone()
+        };
+        assert!(super::send_to_channel_root(Some(reply), channel).is_err());
+        let deleted = Message {
+            deleted: true,
+            ..root.clone()
+        };
+        assert!(super::send_to_channel_root(Some(deleted), channel).is_err());
     }
 
     /// The deterministic twin of the `v013-panels-empty-profile` Herdr scenario.
