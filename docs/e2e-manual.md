@@ -85,7 +85,11 @@ the relay instead of unlocking an owner key. Then configure bzz:
 Set `BZZ_COMMUNITY_ID` to the returned UUID. The local identity label is not a
 public profile: if the administrative interface searches for members by name,
 first publish a test Nostr kind `0` profile or use an administrative path that
-accepts the exact pubkey. Create a dedicated active channel (for example,
+accepts the exact pubkey. bzz never publishes a human kind `0` itself; for a
+disposable identity, `cargo run --example publish_test_profile -- <label>
+"<Display Name>"` (with the same `BZZ_*` paths and, for an encrypted-file
+identity, `BZZ_PASSPHRASE_FD`) publishes a generated one. The DM picker and
+mention search only offer people with a cached profile. Create a dedicated active channel (for example,
 `bzz-e2e-manual`) and add the test identity. Do not reuse a business channel or
 an archived channel.
 

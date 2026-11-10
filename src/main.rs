@@ -665,20 +665,10 @@ async fn community_command(
             let relay_pubkey = bzz::protocol::http::relay_signing_pubkey(&info)
                 .ok_or_else(|| Error::Protocol("NIP-11 document has no relay signing key".into()))?
                 .to_owned();
-            let supported = info
-                .get("supported_nips")
-                .and_then(serde_json::Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            for required in [29_u64, 42_u64, 98_u64] {
-                if !supported
-                    .iter()
-                    .any(|value| value.as_u64() == Some(required))
-                {
-                    eprintln!(
-                        "warning: relay does not advertise NIP-{required}; compatibility may be degraded"
-                    );
-                }
+            for required in bzz::protocol::http::missing_required_nips(&info) {
+                eprintln!(
+                    "warning: relay does not advertise NIP-{required}; compatibility may be degraded"
+                );
             }
             let id =
                 config.add_community(label, relay_url, identity_id, allow_insecure_localhost)?;

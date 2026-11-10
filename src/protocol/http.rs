@@ -20,6 +20,25 @@ pub struct HttpClient {
     evidence: crate::auth::federated::EvidenceSlot,
 }
 
+/// NIPs bzz needs a Buzz relay to advertise in NIP-11 `supported_nips`.
+/// NIP-98 HTTP auth is required too, but Buzz relays use it without listing
+/// it (they never have), so it is not checked here.
+pub fn missing_required_nips(info: &Value) -> Vec<u64> {
+    let supported = info
+        .get("supported_nips")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    [29_u64, 42]
+        .into_iter()
+        .filter(|required| {
+            !supported
+                .iter()
+                .any(|value| value.as_u64() == Some(*required))
+        })
+        .collect()
+}
+
 pub fn relay_signing_pubkey(info: &Value) -> Option<&str> {
     info.get("self")
         .and_then(Value::as_str)
@@ -408,4 +427,23 @@ fn nip98_event_id(header: &str) -> Result<String> {
     let event = nostr::Event::from_json(decoded)
         .map_err(|_| Error::Protocol("NIP-98 header is not an event".into()))?;
     Ok(event.id.to_hex())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    /// The pinned relay's exact list (and the v0.12 pin's): no NIP-98, yet
+    /// `community add` must not warn about it.
+    #[test]
+    fn buzz_relays_need_no_nip_98_advertisement() {
+        let pinned =
+            json!({"supported_nips": [1, 2, 10, 11, 16, 17, 23, 25, 29, 33, 38, 42, 50, 56]});
+        assert!(super::missing_required_nips(&pinned).is_empty());
+        assert_eq!(
+            super::missing_required_nips(&json!({"supported_nips": [1, 42]})),
+            vec![29]
+        );
+        assert_eq!(super::missing_required_nips(&json!({})), vec![29, 42]);
+    }
 }
