@@ -244,6 +244,8 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   instead.
 - **`[ui] publish_presence`** (default `false`): publish your own online/away
   presence (kind 20001). Nothing about activity is published unless enabled.
+  `:presence on|off` changes and saves it from the TUI; turning it off sends
+  `offline` once if bzz had published.
 - **`[ui] broker_agent_presence`** (default `false`, requires
   `publish_presence`): publish owner-signed kind 20003 presence for the local
   agents the broker is serving. Toggle it with `o` in `:broker`.

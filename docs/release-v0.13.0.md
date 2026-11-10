@@ -28,8 +28,9 @@ upstream surfaces a terminal client can support. The plan is
   upstream, so content is never rewritten and artifacts cannot be created.
 - **Custom emoji (M5).** NIP-30/NIP-CE emoji inline in graphics terminals and
   `:shortcode:` elsewhere, plus custom reactions.
-- **Presence and status (M6).** Presence dots, opt-in publishing, owner
-  presence for agents, and `:status` with expiry.
+- **Presence and status (M6).** Presence dots, opt-in publishing
+  (`[ui] publish_presence` or `:presence on|off`), owner presence for agents,
+  and `:status` with expiry.
 - **Channel and thread windows (M7).** The selected channel and threads page
   through relay-signed NIP-CW windows; threads open at their newest replies.
 - **Huddles (M8).** Active-huddle marker, `:huddle` roster with guidelines and

@@ -66,7 +66,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "v013-panels-empty-profile"
 kind = "automated"
-description = "v0.13 commands on an empty isolated profile: the broker panel opens and is not serving, huddles and My tasks explain they need a connected community, and the terminal restores on quit."
+description = "v0.13 commands on an empty isolated profile: the broker panel opens and is not serving, huddles and My tasks explain they need a connected community, presence reports it is off, and the terminal restores on quit."
 ready = "Welcome to bzz"
 exit = "__BZZ_HERDR_EXIT__:0"
 
@@ -85,6 +85,10 @@ visible = "select a channel in a connected community"
 [[scenario.step]]
 keys = [":", "t", "a", "s", "k", "s", "enter"]
 visible = "connect to a community to see artifacts"
+
+[[scenario.step]]
+keys = [":", "p", "r", "e", "s", "e", "n", "c", "e", "enter"]
+visible = "presence: off"
 
 [[scenario.step]]
 keys = ["q"]

@@ -6188,6 +6188,42 @@ impl App {
         self.presentation.close_overlay();
     }
 
+    /// `:presence [on|off]`. Off is the default; turning it off after a
+    /// publish sends `offline` once, so others do not see a stale dot.
+    async fn presence_command(&mut self, argument: &str) -> Result<()> {
+        let enable = match argument {
+            "" => None,
+            "on" => Some(true),
+            "off" => Some(false),
+            _ => {
+                self.status_error = Some("usage: :presence [on|off]".into());
+                return Ok(());
+            }
+        };
+        if let Some(enable) = enable
+            && enable != self.config.ui.publish_presence
+        {
+            self.config.ui.publish_presence = enable;
+            self.config.save(&self.paths)?;
+            if enable {
+                self.maybe_publish_presence().await;
+            } else if self.last_presence_publish.take().is_some()
+                && let Some(runtime) = &self.runtime
+            {
+                publish_offline(runtime).await;
+            }
+        }
+        self.status_error = Some(
+            if self.config.ui.publish_presence {
+                "presence: on · online while active, away after inactivity, offline on exit"
+            } else {
+                "presence: off · nothing is published"
+            }
+            .into(),
+        );
+        Ok(())
+    }
+
     fn set_status(&mut self, arguments: &str) {
         let Some(runtime) = &self.runtime else {
             self.status_error = Some(
@@ -7568,6 +7604,9 @@ impl App {
             crate::ui::command::Command::SignIn => self.begin_federated_sign_in().await,
             crate::ui::command::Command::ToChannel => self.send_draft_to_channel(),
             crate::ui::command::Command::Status(arguments) => self.set_status(&arguments),
+            crate::ui::command::Command::Presence(argument) => {
+                return self.presence_command(&argument).await;
+            }
             crate::ui::command::Command::Artifacts => {
                 let scope = match (
                     self.current_channel().map(|channel| channel.id),
@@ -9547,12 +9586,30 @@ mod tests {
             ("huddle", "select a channel in a connected community"),
             ("tasks", "connect to a community to see artifacts"),
             ("artifacts", "select a channel to see its artifacts"),
+            ("presence", "presence: off · nothing is published"),
+            ("presence maybe", "usage: :presence [on|off]"),
+            (
+                "presence on",
+                "presence: on · online while active, away after inactivity, offline on exit",
+            ),
+            ("presence off", "presence: off · nothing is published"),
         ] {
             app.status_error = None;
             app.command = command.into();
             app.execute_command().await.unwrap();
             assert_eq!(app.status_error.as_deref(), Some(expected), "{command}");
         }
+        // The setting is persisted, and off again after the last command.
+        let saved = crate::config::Config::load(&app.paths).unwrap();
+        assert!(!saved.ui.publish_presence);
+        app.command = "presence on".into();
+        app.execute_command().await.unwrap();
+        assert!(
+            crate::config::Config::load(&app.paths)
+                .unwrap()
+                .ui
+                .publish_presence
+        );
     }
 
     #[tokio::test]

@@ -32,6 +32,8 @@ pub enum Command {
     Broker,
     /// `:huddle [start|join|leave|end|mute|react <emoji>|devices|input <name>|output <name>]`.
     Huddle(String),
+    /// `:presence [on|off]`: show or change the opt-in presence setting.
+    Presence(String),
     /// Profile card for the selected message's author, or `:profile <npub|hex>`.
     Profile(String),
     /// `:artifact rename <title> | delete | restore | move <#channel>`.
@@ -61,6 +63,9 @@ pub fn parse(input: &str) -> Command {
         "artifacts" => Command::Artifacts,
         "tasks" | "my-tasks" => Command::Tasks,
         "broker" => Command::Broker,
+        value if value == "presence" || value.starts_with("presence ") => {
+            Command::Presence(value.trim_start_matches("presence").trim().to_owned())
+        }
         value if value == "profile" || value.starts_with("profile ") => {
             Command::Profile(value.trim_start_matches("profile").trim().to_owned())
         }
@@ -104,6 +109,7 @@ mod tests {
         assert_eq!(parse(":tasks"), Command::Tasks);
         assert_eq!(parse(":broker"), Command::Broker);
         assert_eq!(parse(":profile"), Command::Profile(String::new()));
+        assert_eq!(parse(":presence off"), Command::Presence("off".into()));
         assert_eq!(parse(":profile npub1x"), Command::Profile("npub1x".into()));
         assert_eq!(parse(":huddle"), Command::Huddle(String::new()));
         assert_eq!(
