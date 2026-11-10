@@ -3185,3 +3185,139 @@ async fn real_relay_profile_search_matches_names_only() {
     );
     signer.lock().await;
 }
+
+/// v0.13 M7 exit: opening a channel through windows sends fewer HTTP
+/// requests than the legacy backfill plus per-message `#e` aux fan-out, for
+/// the same history. Counted from the relay's own access log.
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_windows_send_fewer_requests_than_backfill() {
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let writer = Keys::generate();
+    let _ = seed_member(&source, &writer.public_key().to_hex());
+    let readers = [Keys::generate(), Keys::generate()];
+    for reader in &readers {
+        let _ = seed_member(&source, &reader.public_key().to_hex());
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let signer = SignerHandle::spawn(writer.clone());
+    let (session, mut events) = session::connect(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(SessionEvent::Authenticated)
+    ));
+    let channel = uuid::Uuid::new_v4();
+    let create = signer
+        .sign(
+            buzz_sdk::build_create_channel(
+                channel,
+                &format!("frames-{}", &channel.simple().to_string()[..8]),
+                Some(buzz_sdk::Visibility::Open),
+                Some(buzz_sdk::ChannelKind::Stream),
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(session.publish(create).await.unwrap().accepted);
+    let base = Timestamp::now().as_secs() - 150;
+    for index in 0..120_u64 {
+        let message =
+            buzz_sdk::build_message(channel, &format!("row {index}"), None, &[], false, &[], &[])
+                .unwrap()
+                .custom_created_at(Timestamp::from(base + index))
+                .sign_with_keys(&writer)
+                .unwrap();
+        assert!(session.publish(message.clone()).await.unwrap().accepted);
+        let reaction = buzz_sdk::build_reaction(message.id, "👍")
+            .unwrap()
+            .sign_with_keys(&writer)
+            .unwrap();
+        assert!(session.publish(reaction).await.unwrap().accepted);
+    }
+    session.shutdown().await;
+
+    let mut counts = Vec::new();
+    for (index, reader) in readers.iter().enumerate() {
+        let reader_signer = SignerHandle::spawn(reader.clone());
+        let http = HttpClient::new(
+            url::Url::parse("http://localhost:3030/").unwrap(),
+            reader_signer.clone(),
+        )
+        .unwrap();
+        let relay = bzz::protocol::http::relay_signing_pubkey(&http.nip11().await.unwrap())
+            .unwrap()
+            .to_owned();
+        let identity = IdentityConfig {
+            id: uuid::Uuid::new_v4(),
+            label: format!("frames-{index}"),
+            pubkey: reader.public_key().to_hex(),
+            backend: KeyBackend::EncryptedFile,
+            key_ref: format!("frames-{index}"),
+        };
+        let mut config = Config::default();
+        config.identities.push(identity.clone());
+        let community = config
+            .add_community(
+                "frames".into(),
+                "ws://localhost:3030".into(),
+                identity.id,
+                true,
+            )
+            .unwrap();
+        let mut store = Store::open_memory().unwrap();
+        store.sync_config(&config).unwrap();
+        store.pin_relay_pubkey(community, &relay).unwrap();
+        let store = StoreHandle::spawn(store).unwrap();
+        if index == 0 {
+            bzz::sync::window::channel(community, channel, &relay, &http, &store)
+                .await
+                .unwrap();
+        } else {
+            bzz::sync::backfill::channel(community, channel, &http, &store, 500)
+                .await
+                .unwrap();
+        }
+        let channel_id = channel;
+        let stored = store
+            .call(move |store| store.messages(community, channel_id, 1_000))
+            .await
+            .unwrap();
+        assert!(stored.len() >= 120, "both paths load the history");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let log = std::fs::read_to_string(
+            std::env::var("BZZ_RELAY_LOG").unwrap_or_else(|_| "/tmp/dawn-relay-run.log".into()),
+        )
+        .expect("relay access log");
+        let pubkey = format!("\"pubkey\":\"{}\"", reader.public_key().to_hex());
+        counts.push(
+            log.lines()
+                .filter(|line| {
+                    line.contains("\"event\":\"http\"")
+                        && line.contains("\"route\":\"/query\"")
+                        && line.contains(&pubkey)
+                })
+                .count(),
+        );
+        reader_signer.lock().await;
+    }
+    println!(
+        "M7 /query requests: windows {} vs backfill {}",
+        counts[0], counts[1]
+    );
+    assert!(counts[0] >= 1 && counts[1] >= 1, "{counts:?}");
+    assert!(
+        counts[0] < counts[1],
+        "windows {} vs backfill {}",
+        counts[0],
+        counts[1]
+    );
+}
