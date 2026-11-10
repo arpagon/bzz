@@ -1,6 +1,6 @@
 # bzz v0.13.0 — Upstream parity
 
-**Status:** Release candidate 2026-11-08; production acceptance and
+**Status:** Release candidate 2026-11-10; production acceptance and
 publication pending (see [`validation-v0.13.0.md`](validation-v0.13.0.md))
 
 v0.13.0 moves the protocol baseline from Buzz `9f55bf67` (2026-08-24) to
@@ -12,7 +12,8 @@ upstream surfaces a terminal client can support. The plan is
 
 - **Channels and roles (M1).** Channel types, announce channels (guests read
   only), unlisted channels hidden from discovery, a collapsed read-only System
-  group, live membership changes, and a removed channel that keeps its draft.
+  group, live membership changes, a removed channel that keeps its draft, and
+  readable notices for every channel-settings change the relay reports.
 - **Snapshots (M2).** Verified NIP-CL membership and NIP-RS read-state
   snapshots replace bursts of startup requests. A new profile card
   (`:profile`, `Space p`) shows a person's verified identity, status and, where
@@ -50,7 +51,12 @@ upstream surfaces a terminal client can support. The plan is
 ## Compatibility and upgrade
 
 - Database migrations 0009–0015 run automatically; the pre-migration backup is
-  kept as in earlier releases.
+  kept as in earlier releases. A real v0.12.1 data directory upgrades with
+  its Inbox, search, history and drafts intact on Linux, macOS and Windows
+  (`scripts/upgrade-test.sh`).
+- `bzz community add` no longer warns that a Buzz relay does not advertise
+  NIP-98 (Buzz relays use it without listing it).
+- The bundled SQLite moves to `libsqlite3-sys` 0.39 (RUSTSEC-2026-0459).
 - New configuration: `identity_adapter`, `[ui] publish_presence`,
   `broker_agent_presence`, `huddle_input_device`, `huddle_output_device`, and
   `[[hosted_agents]]` (managed by `bzz broker`). See
