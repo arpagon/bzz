@@ -13,26 +13,12 @@ public/
   styles.css      theme tokens mirroring src/ui/theme/builtin.rs palettes
   app.js          theme switcher, install tabs, copy button
   _redirects      /install.sh + /install.ps1 -> latest GitHub release installer
-  assets/         logo.svg, favicon.svg, logo-terminal.txt, mdi-attribution.txt, og.png
+  assets/         logo.svg, favicon.svg, og.png
 ```
 
 The site theme switcher uses real bzz built-in palettes (bzz, Dracula, Nord,
 Gruvbox Dark, Catppuccin Mocha, Tokyo Night). When palettes change in
 `src/ui/theme/builtin.rs`, update the token blocks at the top of `styles.css`.
-
-## Logo animation
-
-The hero animates the terminal-compatible Nerd Fonts v3 sequence
-`nf-md-hexagon_outline` (`U+F02D9`) → `nf-md-hexagon_slice_1…6`
-(`U+F0AC3…U+F0AC8`), then resolves into the existing bzz honeycomb and terminal
-lines. `public/assets/logo-terminal.txt` records the copyable glyph sequence.
-The website embeds matching SVG paths so it does not depend on a visitor having
-Nerd Fonts installed. The animation respects `prefers-reduced-motion` and
-pauses while the page is hidden. Hexagon frame geometry comes from
-Pictogrammers Material Design Icons 7.4.47 under Apache-2.0; attribution is
-recorded in `public/assets/mdi-attribution.txt` and the license text is at
-[`LICENSE-APACHE`](../LICENSE-APACHE). Usage rules live in the short
-[`docs/brand` manual](../docs/brand/README.md).
 
 ## Demo media
 
