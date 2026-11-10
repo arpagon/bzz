@@ -3092,3 +3092,96 @@ async fn real_relay_public_membership_lookup() {
     requester_session.shutdown().await;
     subject_session.shutdown().await;
 }
+
+/// v0.13 M1.8: people search uses the relay's name-only profile search, so a
+/// profile whose `about` merely mentions the query is not a match.
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_profile_search_matches_names_only() {
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let named = Keys::generate();
+    let mentions = Keys::generate();
+    let reader = Keys::generate();
+    for keys in [&named, &mentions, &reader] {
+        let _ = seed_member(&source, &keys.public_key().to_hex());
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let needle = format!("zq{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
+    for (keys, content) in [
+        (
+            &named,
+            serde_json::json!({"display_name": format!("{needle} Person")}),
+        ),
+        (
+            &mentions,
+            serde_json::json!({"name": "someone", "about": format!("fan of {needle}")}),
+        ),
+    ] {
+        let signer = SignerHandle::spawn(keys.clone());
+        let (session, mut events) = session::connect(
+            url::Url::parse("ws://localhost:3030/").unwrap(),
+            signer.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            events.recv().await,
+            Some(SessionEvent::Authenticated)
+        ));
+        let event = EventBuilder::new(Kind::Metadata, content.to_string())
+            .sign_with_keys(keys)
+            .unwrap();
+        assert!(session.publish(event).await.unwrap().accepted);
+        session.shutdown().await;
+    }
+    let signer = SignerHandle::spawn(reader.clone());
+    let http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .unwrap();
+    let raw = http
+        .profile_search(&needle, 20, 1)
+        .await
+        .unwrap()
+        .expect("the pinned relay serves POST /profiles/search");
+    assert_eq!(
+        raw.iter().map(|event| event.pubkey).collect::<Vec<_>>(),
+        vec![named.public_key()],
+        "name match only"
+    );
+    let identity = IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "m1-search".into(),
+        pubkey: reader.public_key().to_hex(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "m1-search".into(),
+    };
+    let mut config = Config::default();
+    config.identities.push(identity.clone());
+    let community = config
+        .add_community("m1".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    let mut store = Store::open_memory().unwrap();
+    store.sync_config(&config).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let service = bzz::service::search::SearchService::new(community, http.clone(), store.clone());
+    assert_eq!(service.hydrate_profiles(&needle).await.unwrap(), 1);
+    let named_hex = named.public_key().to_hex();
+    let mentions_hex = mentions.public_key().to_hex();
+    assert!(
+        store
+            .call(move |store| store.profile(community, &named_hex))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store
+            .call(move |store| store.profile(community, &mentions_hex))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    signer.lock().await;
+}

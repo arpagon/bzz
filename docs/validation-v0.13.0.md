@@ -18,11 +18,11 @@ claim has a test that was seen failing without the change where noted.
 | Format | `cargo fmt --check` | clean |
 | Lint (audio) | `cargo clippy --locked --all-targets --all-features -- -D warnings` | clean |
 | Lint (view-only) | `cargo clippy --locked --all-targets --no-default-features -- -D warnings` | clean |
-| Tests (audio) | `cargo test --locked --all-targets` | 446 passed, 0 failed |
-| Tests (view-only) | `cargo test --locked --all-targets --no-default-features` | 445 passed, 0 failed |
+| Tests (audio) | `cargo test --locked --all-targets` | 448 passed, 0 failed |
+| Tests (view-only) | `cargo test --locked --all-targets --no-default-features` | 447 passed, 0 failed |
 | Supply chain | `cargo deny --locked check` / `cargo audit` | ok (recorded exceptions below) |
 | Release build | `cargo build --locked --release`; `bzz --version` | `bzz 0.13.0` |
-| Pinned relay | `BZZ_BUZZ_SOURCE=<pin> ./scripts/test-relay.sh` | 11 passed |
+| Pinned relay | `BZZ_BUZZ_SOURCE=<pin> ./scripts/test-relay.sh` | 12 passed |
 | FI-enforcing relay (T4) | `BZZ_BUZZ_SOURCE=<pin> ./scripts/test-relay.sh --nip-fi` | 4 passed |
 | Herdr, harness (T9) | `BZZ_BUZZ_SOURCE=<pin> BZZ_HERDR_PANE=<pane> ./scripts/test-relay.sh --herdr` | 3 scenarios passed |
 | Herdr, empty profile | `BZZ_HERDR_PANE=<pane> ./scripts/test-tui-herdr.sh` | 3 scenarios passed |
@@ -66,6 +66,15 @@ Pinned-relay tests are in `tests/relay_integration.rs` and
   visibility, unlisted, auto-join, TTL, deletion, auto-archive, admin kick)
   renders in the desktop client's wording (`ed1f3c8`; a capture had shown
   "Unsupported system event"; seen red without the arm).
+  A malformed mention or more than 50 fails before anything is signed, with
+  a composer error, and the exact draft comes back
+  (`malformed_mentions_fail_before_publishing_and_keep_the_draft`; seen red
+  without the restore). People search uses the relay's name-only
+  `POST /profiles/search` (NIP-50 over kind 0 only where it is absent), so a
+  profile that merely mentions the query in `about` is not a match
+  (`real_relay_profile_search_matches_names_only`, seen red on the old path),
+  and a person matched only by a relay-signed verified name resolves as a
+  `from:` candidate (`verified_names_from_the_pinned_relay_are_people`).
 - [x] **M2 snapshots** — NIP-CL 39008 and NIP-RS snapshots (`0738435`,
   `9988383`). NIP-CL `membership_public` (39009) for the new profile card
   (`e3eb770`): every spec rejection case fails closed (each check seen red

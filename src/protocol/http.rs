@@ -284,6 +284,36 @@ impl HttpClient {
         )
     }
 
+    /// Relay-owned profile name search (`POST /profiles/search`): matches
+    /// only `name`/`display_name` and, where advertised, relay-signed kind
+    /// 30382 verified names. `Ok(None)` when the relay has no endpoint (404),
+    /// so the caller falls back to NIP-50 over kind 0.
+    pub async fn profile_search(
+        &self,
+        query: &str,
+        limit: u32,
+        page: u32,
+    ) -> Result<Option<Vec<Event>>> {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "query": query,
+            "limit": limit.clamp(1, 100),
+            "page": page.clamp(1, 1000),
+        }))
+        .map_err(|error| Error::Serialization(error.to_string()))?;
+        let (status, bytes, _) = self
+            .post_once_bound("profiles/search", body, 8 * 1024 * 1024)
+            .await?;
+        match status {
+            200 => serde_json::from_slice::<Vec<Event>>(&bytes)
+                .map(Some)
+                .map_err(|error| Error::Protocol(format!("invalid profile search: {error}"))),
+            404 => Ok(None),
+            status => Err(Error::Network(format!(
+                "profile search returned HTTP {status}"
+            ))),
+        }
+    }
+
     /// Fetch and verify the NIP-RS atomic read-state snapshot for the signer.
     /// `Ok(None)` means the relay does not advertise the extension.
     pub async fn read_state_snapshot(

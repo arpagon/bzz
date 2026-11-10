@@ -406,7 +406,9 @@ fn mention_references(mentions: &[String]) -> Result<Vec<&str>> {
             .iter()
             .any(|pubkey| !crate::ui::composer::valid_pubkey(pubkey))
     {
-        return Err(Error::Protocol("invalid message mentions".into()));
+        return Err(Error::Protocol(
+            "a mention is invalid or there are more than 50; the draft is kept".into(),
+        ));
     }
     let mut seen = HashSet::new();
     Ok(mentions

@@ -113,6 +113,11 @@ contract (see below and
   verified kind `39009` public lookup where the relay advertises
   `membership_public`; that list is display data only, never membership
   authority, and a failed or unsupported lookup is never shown as empty.
+- **People search:** the relay's name-only `POST /profiles/search` (kind 0
+  `name`/`display_name`, and relay-signed kind 30382 verified names where
+  advertised); NIP-50 prefix search over kind 0 only when it answers 404.
+- **Mentions:** a malformed mention or more than 50 is a composer error
+  before signing; the draft is kept.
 - **Read state (NIP-RS):** a verified atomic snapshot as the complete startup
   load.
 - **Federated identity (NIP-FI, NIP-FA):** browser sign-in with an identity
