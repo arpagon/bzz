@@ -17,6 +17,7 @@ import signal
 import sys
 import termios
 import time
+import tty
 
 
 def parser() -> argparse.ArgumentParser:
@@ -74,6 +75,21 @@ def main() -> int:
         os.execvpe(command[0], command, env)
 
     copy_window_size(master)
+    # The outer terminal's own input (mouse reports, stray keys) is not
+    # forwarded; raw mode keeps the line discipline from echoing it on top of
+    # the captured screen.
+    saved = None
+    if sys.stdin.isatty():
+        saved = termios.tcgetattr(sys.stdin.fileno())
+        tty.setraw(sys.stdin.fileno())
+    try:
+        return relay(args, child, master, pending)
+    finally:
+        if saved is not None:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, saved)
+
+
+def relay(args: argparse.Namespace, child: int, master: int, pending: bytes | None) -> int:
     stopped = False
 
     def forward_signal(signum: int, _frame: object) -> None:
@@ -86,6 +102,10 @@ def main() -> int:
 
     for value in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(value, forward_signal)
+    # Ghostty settles its final size after the child starts. Copying the new
+    # size to the child PTY makes the kernel deliver SIGWINCH to bzz, which
+    # then redraws for the real geometry instead of the first one.
+    signal.signal(signal.SIGWINCH, lambda _signum, _frame: copy_window_size(master))
 
     started = time.monotonic()
     while True:

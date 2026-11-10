@@ -286,6 +286,7 @@ fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
                 actor: Some(owner.clone()),
                 target: None,
                 participants: vec![owner.clone(), agent.clone()],
+                detail: None,
             }),
             sent_from_thread: None,
             emoji: Vec::new(),

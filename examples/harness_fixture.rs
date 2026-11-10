@@ -175,13 +175,17 @@ async fn main() {
         buzz_sdk::build_reaction(thread_root.id, "👍").unwrap(),
     )
     .await;
-    // Custom emoji (the image URL is deliberately unreachable: text fallback).
+    // Custom emoji. The default image URL is deliberately unreachable (text
+    // fallback); graphics captures set BZZ_FIXTURE_EMOJI_URL to a public
+    // bzz-owned image.
+    let emoji_url = std::env::var("BZZ_FIXTURE_EMOJI_URL")
+        .unwrap_or_else(|_| "https://example.invalid/bzz/wave.png".into());
     publish(
         &owner_session,
         &owner_signer,
         buzz_sdk::build_custom_emoji_set(&[buzz_sdk::CustomEmoji {
             shortcode: "bzzwave".into(),
-            url: "https://example.invalid/bzz/wave.png".into(),
+            url: emoji_url.clone(),
         }])
         .unwrap(),
     )
@@ -196,11 +200,7 @@ async fn main() {
             &[],
             false,
             &[],
-            &[vec![
-                "emoji".into(),
-                "bzzwave".into(),
-                "https://example.invalid/bzz/wave.png".into(),
-            ]],
+            &[vec!["emoji".into(), "bzzwave".into(), emoji_url.clone()]],
         )
         .unwrap(),
     )

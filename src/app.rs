@@ -685,6 +685,11 @@ fn triggers_directory_refresh(kind: u16, content: &str) -> bool {
                 SystemEventKind::MemberJoined
                     | SystemEventKind::MemberLeft
                     | SystemEventKind::MemberRemoved
+                    | SystemEventKind::AdminKick
+                    | SystemEventKind::VisibilityChanged
+                    | SystemEventKind::JoinRoleChanged
+                    | SystemEventKind::UnlistedChanged
+                    | SystemEventKind::ChannelDeleted
             ))
 }
 

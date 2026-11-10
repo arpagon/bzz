@@ -371,6 +371,16 @@ pub enum SystemEventKind {
     ChannelArchived,
     ChannelUnarchived,
     MessageDeleted,
+    TopicChanged,
+    PurposeChanged,
+    VisibilityChanged,
+    JoinRoleChanged,
+    UnlistedChanged,
+    AutoJoinChanged,
+    TtlChanged,
+    ChannelDeleted,
+    ChannelAutoArchived,
+    AdminKick,
     Unsupported,
 }
 
@@ -380,6 +390,11 @@ pub struct SystemEvent {
     pub actor: Option<String>,
     pub target: Option<String>,
     pub participants: Vec<String>,
+    /// The one validated value a settings change carries: a single-line,
+    /// bounded topic/purpose, `open`/`private`, `guest`/`member`,
+    /// `true`/`false`, or TTL seconds (empty for permanent).
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

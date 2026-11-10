@@ -1199,8 +1199,94 @@ pub(crate) fn system_summary(
             || "A message was deleted".to_owned(),
             |actor| format!("A message was deleted by {actor}"),
         ),
+        SystemEventKind::TopicChanged | SystemEventKind::PurposeChanged => {
+            let field = if system.kind == SystemEventKind::TopicChanged {
+                "topic"
+            } else {
+                "purpose"
+            };
+            let detail = system.detail.as_deref().unwrap_or_default();
+            let change = if detail.is_empty() {
+                format!("cleared the {field}")
+            } else {
+                format!("changed the {field} to “{}”", sanitize::single_line(detail))
+            };
+            format!("{} {change}", actor.unwrap_or_else(|| "Someone".into()))
+        }
+        SystemEventKind::VisibilityChanged => format!(
+            "{} made the channel {}",
+            actor.unwrap_or_else(|| "Someone".into()),
+            match system.detail.as_deref() {
+                Some("private") => "private",
+                _ => "open",
+            }
+        ),
+        SystemEventKind::JoinRoleChanged => format!(
+            "{} set new members to join as {}",
+            actor.unwrap_or_else(|| "Someone".into()),
+            match system.detail.as_deref() {
+                Some("guest") => "guests (read-only)",
+                _ => "members",
+            }
+        ),
+        SystemEventKind::UnlistedChanged => format!(
+            "{} {} the channel",
+            actor.unwrap_or_else(|| "Someone".into()),
+            if system.detail.as_deref() == Some("true") {
+                "unlisted"
+            } else {
+                "listed"
+            }
+        ),
+        SystemEventKind::AutoJoinChanged => format!(
+            "{} turned auto-join {}",
+            actor.unwrap_or_else(|| "Someone".into()),
+            if system.detail.as_deref() == Some("true") {
+                "on"
+            } else {
+                "off"
+            }
+        ),
+        SystemEventKind::TtlChanged => {
+            let actor = actor.unwrap_or_else(|| "Someone".into());
+            match system
+                .detail
+                .as_deref()
+                .and_then(|seconds| seconds.parse::<u64>().ok())
+            {
+                Some(seconds) => format!(
+                    "{actor} set the channel to archive after {} of inactivity",
+                    humanize_seconds(seconds)
+                ),
+                None => format!("{actor} made the channel permanent"),
+            }
+        }
+        SystemEventKind::ChannelDeleted => actor.map_or_else(
+            || "Channel deleted".to_owned(),
+            |actor| format!("Channel deleted by {actor}"),
+        ),
+        SystemEventKind::ChannelAutoArchived => "Channel archived after inactivity".to_owned(),
+        SystemEventKind::AdminKick => target.map_or_else(
+            || "A member was removed by a relay administrator".to_owned(),
+            |target| format!("{target} was removed by a relay administrator"),
+        ),
         SystemEventKind::Unsupported => "Unsupported system event".to_owned(),
     }
+}
+
+/// `90` → `1 min`, `86400` → `1 day`, largest whole unit.
+fn humanize_seconds(seconds: u64) -> String {
+    for (unit, size) in [("day", 86_400), ("hour", 3_600), ("min", 60)] {
+        if seconds >= size {
+            let count = seconds / size;
+            return if unit == "min" || count == 1 {
+                format!("{count} {unit}")
+            } else {
+                format!("{count} {unit}s")
+            };
+        }
+    }
+    format!("{seconds} s")
 }
 
 fn attachment_line(
