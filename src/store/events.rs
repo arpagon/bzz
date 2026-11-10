@@ -170,7 +170,7 @@ impl Store {
                 params![community_id.to_string(),channel.id.to_string(),channel.name,channel.about,channel.kind.as_str(),visibility,event.id.to_hex(),u64_to_i64(event.created_at.as_secs())?,facts_json(&channel.facts)?],
             )?;
             if channel.kind.is_dm() {
-                let participant_count: usize = transaction.query_row(
+                let participant_count: i64 = transaction.query_row(
                     "SELECT count(*) FROM memberships WHERE community_id=?1 AND channel_id=?2",
                     params![community_id.to_string(), channel.id.to_string()],
                     |row| row.get(0),

@@ -202,7 +202,7 @@ pub struct ScriptedRelay {
     pub ws_url: url::Url,
     pub http_url: url::Url,
     log: Arc<Mutex<Log>>,
-    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    stop: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 impl ScriptedRelay {
@@ -210,24 +210,33 @@ impl ScriptedRelay {
         Self::start_on("127.0.0.1:0", script).await
     }
 
+    /// `address` may list several comma-separated addresses (for example
+    /// both loopbacks, `127.0.0.1:3093,[::1]:3093`); the URLs use the first.
     pub async fn start_on(address: &str, script: Script) -> Self {
-        let listener = TcpListener::bind(address).await.unwrap();
-        let address = listener.local_addr().unwrap();
+        let mut listeners = Vec::new();
+        for address in address.split(',') {
+            listeners.push(TcpListener::bind(address.trim()).await.unwrap());
+        }
+        let address = listeners[0].local_addr().unwrap();
         let script = Arc::new(script);
         let log = Arc::new(Mutex::new(Log::default()));
-        let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel();
-        let task_log = log.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut stop_rx => break,
-                    accepted = listener.accept() => {
-                        let Ok((stream, _)) = accepted else { break };
-                        tokio::spawn(serve(stream, script.clone(), task_log.clone()));
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        for listener in listeners {
+            let script = script.clone();
+            let task_log = log.clone();
+            let mut stop_rx = stop_rx.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = stop_rx.changed() => break,
+                        accepted = listener.accept() => {
+                            let Ok((stream, _)) = accepted else { break };
+                            tokio::spawn(serve(stream, script.clone(), task_log.clone()));
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
         Self {
             ws_url: url::Url::parse(&format!("ws://{address}/")).unwrap(),
             http_url: url::Url::parse(&format!("http://{address}/")).unwrap(),
@@ -262,7 +271,7 @@ impl ScriptedRelay {
 
     pub fn stop(mut self) {
         if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
+            let _ = stop.send(true);
         }
     }
 }
@@ -270,7 +279,7 @@ impl ScriptedRelay {
 impl Drop for ScriptedRelay {
     fn drop(&mut self) {
         if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
+            let _ = stop.send(true);
         }
     }
 }

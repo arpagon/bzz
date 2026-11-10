@@ -48,7 +48,7 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm_0
 ratatui-image = { version = "=11.0.5", default-features = false, features = ["crossterm"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 rpassword = "7"
-rusqlite = { version = "0.37", features = ["backup", "bundled", "serde_json"] }
+rusqlite = { version = "0.41", features = ["backup", "bundled", "serde_json"] }
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

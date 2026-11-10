@@ -951,7 +951,7 @@ mod tests {
             ),
             Err(Error::Access(_))
         ));
-        let events: usize = store
+        let events: i64 = store
             .connection
             .query_row(
                 "SELECT count(*) FROM events WHERE community_id=?1",

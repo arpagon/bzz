@@ -14,11 +14,17 @@ if [[ "$HEAD" != "$PIN" && "${BZZ_ALLOW_UNPINNED_RELAY:-}" != 1 ]]; then
 fi
 RELAY_ENV=(
   BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC
-  BUZZ_MEMBERSHIP_SNAPSHOT_ENABLED BUZZ_NIP_FI_MODE BUZZ_NIP_FI_ISSUERS
+  BUZZ_MEMBERSHIP_SNAPSHOT_ENABLED BUZZ_MEMBERSHIP_PUBLIC_ENABLED BUZZ_NIP_FI_MODE BUZZ_NIP_FI_ISSUERS
   BUZZ_NIP_FI_COMMUNITIES BUZZ_NIP_FI_MAX_CONNECTION_LIFETIME_SECS
 )
 ISSUER_PID=
 cleanup() {
+  status=$?
+  if [[ $status -ne 0 && -f /tmp/dawn-relay-run.log ]]; then
+    # Disposable harness: only warnings/errors, for diagnosing CI-only failures.
+    echo "--- relay warnings/errors (last 60) ---"
+    grep -aE 'WARN|ERROR' /tmp/dawn-relay-run.log | tail -n 60 | cut -c1-400 || true
+  fi
   tmux kill-session -t "${TMUX_SESSION:-dawn-relay}" 2>/dev/null || true
   if [[ -n "${BZZ_TMUX_KEEPALIVE:-}" ]]; then
     tmux kill-session -t "$BZZ_TMUX_KEEPALIVE" 2>/dev/null || true
@@ -34,12 +40,21 @@ export BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN=5000
 export BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC=5000
 # v0.13 exercises optional relay capabilities that are off by default.
 export BUZZ_MEMBERSHIP_SNAPSHOT_ENABLED=true
+export BUZZ_MEMBERSHIP_PUBLIC_ENABLED=true
 # The Buzz harness generates a fresh relay key per run. Tests read it from
 # NIP-11, the same origin-bound source production pinning uses.
 if [[ "$PROFILE" == nip-fi ]]; then
   cargo build --locked --example fake_nip_fa
   key=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
-  ./target/debug/examples/fake_nip_fa 127.0.0.1:3093 http://localhost:3093 "$key" &
+  # The relay resolves the issuer's `localhost` and pins the first address.
+  # Where that is ::1, an IPv4-only issuer is unreachable and every FI check
+  # is "authorization unavailable" (503), so listen on both loopbacks.
+  echo "localhost resolves to: $(getent ahosts localhost | awk '{print $1}' | sort -u | tr '\n' ' ')"
+  bind=127.0.0.1:3093
+  if python3 -c 'import socket; s=socket.socket(socket.AF_INET6); s.bind(("::1", 0))' 2>/dev/null; then
+    bind="$bind,[::1]:3093"
+  fi
+  ./target/debug/examples/fake_nip_fa "$bind" http://localhost:3093 "$key" &
   ISSUER_PID=$!
   for _ in $(seq 1 30); do curl -fsS http://localhost:3093/.well-known/jwks.json >/dev/null && break; sleep 1; done
   export BUZZ_NIP_FI_MODE=enforce
