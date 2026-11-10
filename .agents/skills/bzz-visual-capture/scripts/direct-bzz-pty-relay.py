@@ -33,6 +33,12 @@ def parser() -> argparse.ArgumentParser:
         default=4.0,
         help="seconds before injecting --inject-file (default: 4)",
     )
+    value.add_argument(
+        "--inject-step",
+        type=float,
+        default=0.0,
+        help="seconds between injected bytes (default 0: all at once), for videos",
+    )
     value.add_argument("command", nargs=argparse.REMAINDER, help="command after --")
     return value
 
@@ -61,8 +67,8 @@ def main() -> int:
         command = command[1:]
     if not command:
         raise SystemExit("pass the release bzz command after --")
-    if args.inject_after < 0:
-        raise SystemExit("--inject-after must be non-negative")
+    if args.inject_after < 0 or args.inject_step < 0:
+        raise SystemExit("--inject-after and --inject-step must be non-negative")
     pending = injection_bytes(args.inject_file)
 
     child, master = pty.fork()
@@ -108,10 +114,16 @@ def relay(args: argparse.Namespace, child: int, master: int, pending: bytes | No
     signal.signal(signal.SIGWINCH, lambda _signum, _frame: copy_window_size(master))
 
     started = time.monotonic()
+    next_at = started + args.inject_after
     while True:
-        if pending is not None and time.monotonic() - started >= args.inject_after:
-            os.write(master, pending)
-            pending = None
+        if pending and time.monotonic() >= next_at:
+            if args.inject_step > 0:
+                os.write(master, pending[:1])
+                pending = pending[1:]
+                next_at = time.monotonic() + args.inject_step
+            else:
+                os.write(master, pending)
+                pending = b""
         ready, _, _ = select.select([master], [], [], 0.05)
         if master in ready:
             try:

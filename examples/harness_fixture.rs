@@ -107,7 +107,17 @@ async fn main() {
         !root.exists() || std::fs::read_dir(&root).unwrap().next().is_none(),
         "use an empty fixture directory"
     );
-    CLOCK.store(nostr::Timestamp::now().as_secs() - 120, Ordering::Relaxed);
+    // BZZ_FIXTURE_HISTORY: generated messages in #t9-general (default 24;
+    // more than 100 spans several channel-window pages for scroll captures).
+    let history = std::env::var("BZZ_FIXTURE_HISTORY")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(24)
+        .clamp(1, 2_000);
+    CLOCK.store(
+        nostr::Timestamp::now().as_secs() - history - 60,
+        Ordering::Relaxed,
+    );
     let owner = Keys::generate();
     let viewer = Keys::generate();
     seed_member(&source, &owner.public_key().to_hex());
@@ -134,9 +144,9 @@ async fn main() {
     )
     .await;
     let mut last = None;
-    for index in 1..=24 {
+    for index in 1..=history {
         let text = format!(
-            "Generated fixture message {index:02}: the harness relay keeps this channel busy."
+            "Generated fixture message {index:03}: the harness relay keeps this channel busy."
         );
         last = Some(
             publish(
