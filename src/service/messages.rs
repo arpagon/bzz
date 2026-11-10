@@ -117,22 +117,24 @@ impl MessageService {
 
     /// NIP-56 report (kind 1984) of a message to the relay moderators. The
     /// relay keeps it in its moderation queue; it is never a timeline event.
+    /// NIP-56 report of a message (`event_id`) or, with `None`, of its
+    /// author as a user.
     pub async fn report(
         &self,
-        event_id: &str,
+        event_id: Option<&str>,
         author: &str,
         reason: &str,
         note: Option<&str>,
     ) -> Result<Event> {
-        let builder = buzz_sdk::build_report(
-            buzz_sdk::ReportTarget::Event {
+        let target = match event_id {
+            Some(event_id) => buzz_sdk::ReportTarget::Event {
                 author_pubkey: author,
                 event_id,
             },
-            reason,
-            note,
-        )
-        .map_err(|error| Error::Protocol(error.to_string()))?;
+            None => buzz_sdk::ReportTarget::Pubkey(author),
+        };
+        let builder = buzz_sdk::build_report(target, reason, note)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
         self.send_builder(builder).await
     }
 

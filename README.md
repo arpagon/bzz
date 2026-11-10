@@ -110,7 +110,7 @@ integration with `bzz completions <shell>`. Inside the TUI, `:inbox`, `:search`,
 `:dm`, `:agents`, `:reconnect`, `:resync`, `:theme reload`, `:purge-cache`, and `:lock`
 cover the main conversation, recovery, appearance, and security operations.
 v0.13.0 adds `:signin` (federated identity), `:system`, `:artifacts`, `:tasks`,
-`:artifact rename|delete|restore|move`, `:status`, `:tochannel`, `:report`,
+`:artifact rename|delete|restore|move`, `:status`, `:tochannel`, `:report [author]`,
 `:profile` (also `Space p` on a message: verified identity and public channels),
 `:presence [on|off]`,
 `:huddle` (`start`, `join`, `leave`, `end`, `mute`, `react`, `devices`) and

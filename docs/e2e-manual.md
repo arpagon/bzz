@@ -574,6 +574,8 @@ with `--allow-insecure-localhost` and the URL `ws://localhost:3030`.
    channel as a new message whose sent-from-thread tag carries the thread
    root and a short excerpt of it.
 2. Select a generated message and run `:report spam generated fixture`; confirm.
+   Run `:report author impersonation` to report its author instead; the
+   prompt says so.
    The relay accepts the kind 1984 report.
 
 ## Results log

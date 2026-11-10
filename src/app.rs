@@ -359,7 +359,8 @@ pub struct App {
     reactions: HashMap<String, Vec<Reaction>>,
     show_system_channels: bool,
     /// `(reason, note)` awaiting the report confirmation.
-    pending_report: Option<(String, Option<String>)>,
+    /// `(reason, note, author only)` awaiting the report confirmation.
+    pending_report: Option<(String, Option<String>, bool)>,
     presence: crate::protocol::presence::PresenceBook,
     /// NIP-AR: capabilities per community and the selected channel's sync.
     artifact_caps: Option<(Uuid, crate::protocol::artifact::Capabilities)>,
@@ -6277,7 +6278,7 @@ impl App {
     }
 
     fn send_pending_report(&mut self) {
-        let Some((reason, note)) = self.pending_report.take() else {
+        let Some((reason, note, author_only)) = self.pending_report.take() else {
             return;
         };
         let Some(runtime) = &self.runtime else { return };
@@ -6289,7 +6290,12 @@ impl App {
         let tx = self.background_tx.clone();
         tokio::spawn(async move {
             let result = service
-                .report(&target, &author, &reason, note.as_deref())
+                .report(
+                    (!author_only).then_some(target.as_str()),
+                    &author,
+                    &reason,
+                    note.as_deref(),
+                )
                 .await;
             let _ = tx
                 .send(match result {
@@ -7662,18 +7668,24 @@ impl App {
                 return self.artifact_command(&arguments).await;
             }
             crate::ui::command::Command::Report(arguments) => {
+                // `:report author <reason> [note]` reports the selected
+                // message's author as a user instead of the message.
+                let (author_only, arguments) = match arguments.strip_prefix("author") {
+                    Some(rest) if rest.is_empty() || rest.starts_with(' ') => (true, rest.trim()),
+                    _ => (false, arguments.as_str()),
+                };
                 let mut parts = arguments.splitn(2, ' ');
                 let reason = parts.next().unwrap_or_default().to_owned();
                 let note = parts.next().map(str::trim).filter(|note| !note.is_empty());
                 if !buzz_sdk::REPORT_TYPES.contains(&reason.as_str()) {
                     self.status_error = Some(format!(
-                        "usage: :report <{}> [note]",
+                        "usage: :report [author] <{}> [note]",
                         buzz_sdk::REPORT_TYPES.join("|")
                     ));
                 } else if self.runtime.is_none() || self.selected_message().is_none() {
                     self.status_error = Some("select a message to report".into());
                 } else {
-                    self.pending_report = Some((reason, note.map(str::to_owned)));
+                    self.pending_report = Some((reason, note.map(str::to_owned), author_only));
                     self.presentation
                         .open_confirmation(ConfirmationKind::Report);
                     return Ok(());
@@ -8696,12 +8708,20 @@ impl App {
                 Some(ConfirmationKind::Report) => self.render_prompt(
                     frame,
                     area,
-                    " report message to moderators? ",
+                    if self
+                        .pending_report
+                        .as_ref()
+                        .is_some_and(|(_, _, author_only)| *author_only)
+                    {
+                        " report this author to moderators? "
+                    } else {
+                        " report message to moderators? "
+                    },
                     &format!(
                         "Reason: {} · press y to report or n/Esc to cancel",
                         self.pending_report
                             .as_ref()
-                            .map_or("", |(reason, _)| reason.as_str())
+                            .map_or("", |(reason, _, _)| reason.as_str())
                     ),
                 ),
                 Some(ConfirmationKind::InboxRead) => self.render_prompt(

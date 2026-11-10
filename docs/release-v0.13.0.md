@@ -46,7 +46,8 @@ upstream surfaces a terminal client can support. The plan is
   AUTH, NIP-FA agent grants in FI communities, and opt-in owner-signed agent
   presence. `agents.create/update/delete` answer `unsupported`.
 - **Messages (M10).** `:tochannel` sends a thread draft to the channel, and
-  `:report` sends a NIP-56 report to moderators.
+  `:report` sends a NIP-56 report of a message (or, with `:report author`, of its
+  author) to moderators.
 
 ## Compatibility and upgrade
 

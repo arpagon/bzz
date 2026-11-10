@@ -1602,10 +1602,30 @@ async fn real_relay_send_to_channel_and_report() {
     assert!(tags.iter().all(|tag| tag[0] != "e"), "no NIP-10 reply tags");
 
     let report = service
-        .report(&root.id.to_hex(), &pubkey, "spam", Some("generated report"))
+        .report(
+            Some(&root.id.to_hex()),
+            &pubkey,
+            "spam",
+            Some("generated report"),
+        )
         .await
         .unwrap();
     assert_eq!(report.kind.as_u16(), 1984);
+    // M10.3: an author, as a user, with no message.
+    let user_report = service
+        .report(None, &pubkey, "impersonation", None)
+        .await
+        .unwrap();
+    assert_eq!(user_report.kind.as_u16(), 1984);
+    let tags = user_report
+        .tags
+        .iter()
+        .map(|tag| tag.as_slice().to_vec())
+        .collect::<Vec<_>>();
+    assert!(tags.iter().all(|tag| tag[0] != "e"), "no message reference");
+    assert!(tags.iter().any(|tag| tag[0] == "p"
+        && tag[1] == pubkey
+        && tag.get(2).map(String::as_str) == Some("impersonation")));
     supervisor.shutdown().await;
     signer.lock().await;
 }
