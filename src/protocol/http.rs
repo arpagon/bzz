@@ -220,6 +220,51 @@ impl HttpClient {
         .map(Some)
     }
 
+    /// NIP-CL public membership lookup (kind 39009) for `subject`. Every
+    /// answer other than `Lookup::Verified` is not a membership list.
+    pub async fn membership_public(
+        &self,
+        info: &Value,
+        pinned_relay_pubkey: &str,
+        subject: &str,
+    ) -> Result<crate::protocol::membership_public::Lookup> {
+        use crate::protocol::{membership_public as public, membership_snapshot::canonical_host};
+        let Some(descriptor) = public::descriptor(info) else {
+            return Ok(public::Lookup::Unsupported);
+        };
+        if descriptor.relay_pubkey != pinned_relay_pubkey {
+            return Err(Error::Protocol(
+                "public membership descriptor names an unpinned relay key".into(),
+            ));
+        }
+        let url = self
+            .base
+            .join("query")
+            .map_err(|error| Error::Config(error.to_string()))?;
+        let host =
+            canonical_host(&url).ok_or_else(|| Error::Config("relay URL has no host".into()))?;
+        let requester = self.signer.public_key().to_hex();
+        let (status, bytes, request_id) = self
+            .post_once_bound(
+                "query",
+                public::request_body(subject),
+                descriptor.max_response_bytes,
+            )
+            .await?;
+        public::classify(
+            status,
+            &bytes,
+            &public::Expected {
+                relay_pubkey: pinned_relay_pubkey,
+                community_id: descriptor.community_id,
+                host: &host,
+                requester: &requester,
+                subject,
+                request_id: &request_id,
+            },
+        )
+    }
+
     /// Fetch and verify the NIP-RS atomic read-state snapshot for the signer.
     /// `Ok(None)` means the relay does not advertise the extension.
     pub async fn read_state_snapshot(

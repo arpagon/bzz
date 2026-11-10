@@ -65,8 +65,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, picker: &MentionPicker, theme: 
                 String::new()
             };
             ListItem::new(Line::from(format!(
-                "@{}  {}{}",
+                "@{}{}  {}{}",
                 sanitize::single_line(&candidate.label),
+                if candidate.verified { " ✓" } else { "" },
                 crate::domain::abbreviated_pubkey(&candidate.pubkey),
                 kind,
             )))

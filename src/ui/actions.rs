@@ -207,6 +207,11 @@ pub fn derive(context: ActionContext) -> Vec<ContextAction> {
                 "mark unread",
             ));
             add(media_action(context));
+            add(event_action(
+                context,
+                UiAction::ViewProfile,
+                "view author profile",
+            ));
         }
         _ => {}
     }

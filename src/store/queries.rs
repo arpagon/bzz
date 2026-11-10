@@ -1115,8 +1115,8 @@ impl Store {
             .optional()?
             .is_none_or(|kind| kind == "dm");
         let mut statement = self.connection.prepare(
-            "SELECT m.pubkey,COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),NULLIF(a.name,''),''),
-                    a.owner_pubkey,a.respond_to,a.respond_to_allowlist_json
+            "SELECT m.pubkey,COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),NULLIF(a.name,''),NULLIF(v.display_name,''),''),
+                    a.owner_pubkey,a.respond_to,a.respond_to_allowlist_json,v.pubkey IS NOT NULL
              FROM memberships m
              JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
              LEFT JOIN profiles p ON p.community_id=m.community_id AND p.pubkey=m.pubkey
@@ -1124,8 +1124,10 @@ impl Store {
                   AND a.verification_state='verified'
                   AND (m.role='bot' OR (c.channel_type='dm' AND c.is_member=1
                        AND c.member_count BETWEEN 2 AND 9))
+             LEFT JOIN verified_profiles v ON v.community_id=m.community_id AND v.pubkey=m.pubkey AND v.active=1
              WHERE m.community_id=?1 AND m.channel_id=?2 AND lower(m.pubkey)<>lower(?3)
-               AND (lower(COALESCE(p.display_name,p.name,a.name,m.pubkey)) LIKE ?4 ESCAPE '\\')
+               AND (lower(COALESCE(p.display_name,p.name,a.name,v.display_name,m.pubkey)) LIKE ?4 ESCAPE '\\'
+                    OR lower(COALESCE(v.username,'')) LIKE ?4 ESCAPE '\\')
              ORDER BY a.owner_pubkey IS NULL DESC,
                       lower(COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),a.name,m.pubkey)),m.pubkey
              LIMIT 32",
@@ -1145,12 +1147,13 @@ impl Store {
                         row.get::<_, Option<String>>(2)?,
                         row.get::<_, Option<String>>(3)?,
                         row.get::<_, Option<String>>(4)?,
+                        row.get::<_, bool>(5)?,
                     ))
                 },
             )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows.into_iter()
-            .map(|(pubkey, label, owner, respond_to, allowlist)| {
+            .map(|(pubkey, label, owner, respond_to, allowlist, verified)| {
                 let agent_eligibility = owner
                     .as_deref()
                     .map(|owner| -> Result<crate::agents::Eligibility> {
@@ -1182,6 +1185,7 @@ impl Store {
                     pubkey,
                     is_agent: owner.is_some(),
                     agent_eligibility,
+                    verified,
                 })
             })
             .collect()

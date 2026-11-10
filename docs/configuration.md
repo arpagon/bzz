@@ -185,7 +185,8 @@ send/confirmation path.
 The accepted action names are the kebab-case forms of the generated help
 labels: route actions include `open-inbox`, `open-context-actions`,
 `activate-focused`, `compose`, `filter`, `mark-read`, `mark-unread`,
-`mark-visible-read`, and `open-canonical-context`; navigation and viewport
+`mark-visible-read`, `open-canonical-context`, and `view-profile` (`Space p`,
+the selected message's author); navigation and viewport
 actions include `select-next`, `select-previous`, `jump-top`, `jump-bottom`,
 `scroll-viewport-up`, `scroll-viewport-down`, `half-page-up`, and
 `half-page-down`. `mark-read`, `mark-unread`, `mark-visible-read`, and

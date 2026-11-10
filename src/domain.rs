@@ -331,6 +331,8 @@ pub struct MentionCandidate {
     pub label: String,
     pub is_agent: bool,
     pub agent_eligibility: Option<crate::agents::Eligibility>,
+    /// A current relay-signed NIP-FI verified profile (kind 30382).
+    pub verified: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

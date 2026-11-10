@@ -108,7 +108,11 @@ contract (see below and
 - **Channels (NIP-CL):** channel types and roles, announce channels (guests read
   only), unlisted channels hidden from discovery, a collapsed read-only System
   group, and live membership changes; the viewer's memberships come from a
-  verified kind `39008` snapshot when the relay serves one.
+  verified kind `39008` snapshot when the relay serves one. The profile card
+  (`:profile`, `Space p`) lists a person's listed, open channels from a
+  verified kind `39009` public lookup where the relay advertises
+  `membership_public`; that list is display data only, never membership
+  authority, and a failed or unsupported lookup is never shown as empty.
 - **Read state (NIP-RS):** a verified atomic snapshot as the complete startup
   load.
 - **Federated identity (NIP-FI, NIP-FA):** browser sign-in with an identity

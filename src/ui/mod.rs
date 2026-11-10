@@ -16,6 +16,7 @@ pub mod input;
 pub mod keymap;
 pub mod layout;
 pub mod mention_picker;
+pub mod profile;
 pub mod reaction_picker;
 pub mod redraw_gate;
 pub mod search;

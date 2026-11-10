@@ -629,3 +629,77 @@ proptest! {
         prop_assert_eq!(store.messages(community,channel,100).unwrap().len(),1);
     }
 }
+
+/// v0.13 M3: the mention picker marks NIP-FI verified people, and finds them
+/// by their verified display name or username even without a kind 0.
+#[test]
+fn mention_candidates_mark_and_find_verified_people() {
+    let (mut store, community, channel, relay) = fixture();
+    store
+        .pin_relay_pubkey(community, &relay.public_key().to_hex())
+        .unwrap();
+    let verified = Keys::generate().public_key().to_hex();
+    let plain = Keys::generate().public_key().to_hex();
+    let metadata = EventBuilder::new(Kind::Custom(39_000), "")
+        .tags([
+            Tag::parse(["d", &channel.to_string()]).unwrap(),
+            Tag::parse(["name", "general"]).unwrap(),
+        ])
+        .sign_with_keys(&relay)
+        .unwrap();
+    store.apply_event(community, &metadata).unwrap();
+    let membership = EventBuilder::new(Kind::Custom(39_002), "")
+        .tags([
+            Tag::parse(["d", &channel.to_string()]).unwrap(),
+            Tag::parse(["p", &verified]).unwrap(),
+            Tag::parse(["p", &plain]).unwrap(),
+        ])
+        .sign_with_keys(&relay)
+        .unwrap();
+    store.apply_event(community, &membership).unwrap();
+    store
+        .apply_verified_profile(
+            community,
+            &bzz::protocol::verified_profile::VerifiedProfile {
+                pubkey: verified.clone(),
+                name: Some(bzz::protocol::verified_profile::VerifiedName {
+                    display_name: "Ada Lovelace".into(),
+                    username: "ada@corp.example".into(),
+                    full_name: None,
+                    issuer_label: "Corp IdP".into(),
+                    verified_at: 1,
+                }),
+                event_id: "e".repeat(64),
+                created_at: 1,
+            },
+        )
+        .unwrap();
+    let all = store
+        .mention_candidates(community, channel, &"a".repeat(64), "")
+        .unwrap();
+    let marked = all
+        .iter()
+        .find(|candidate| candidate.pubkey == verified)
+        .unwrap();
+    assert!(marked.verified);
+    assert_eq!(marked.label, "Ada Lovelace");
+    assert!(
+        !all.iter()
+            .find(|candidate| candidate.pubkey == plain)
+            .unwrap()
+            .verified
+    );
+    for query in ["ada love", "ada@corp"] {
+        let found = store
+            .mention_candidates(community, channel, &"a".repeat(64), query)
+            .unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .map(|candidate| candidate.pubkey.clone())
+                .collect::<Vec<_>>(),
+            vec![verified.clone()],
+            "{query}"
+        );
+    }
+}

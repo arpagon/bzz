@@ -14,10 +14,13 @@ upstream surfaces a terminal client can support. The plan is
   only), unlisted channels hidden from discovery, a collapsed read-only System
   group, live membership changes, and a removed channel that keeps its draft.
 - **Snapshots (M2).** Verified NIP-CL membership and NIP-RS read-state
-  snapshots replace bursts of startup requests.
+  snapshots replace bursts of startup requests. A new profile card
+  (`:profile`, `Space p`) shows a person's verified identity, status and, where
+  the relay offers NIP-CL `membership_public`, their listed open channels.
 - **Federated identity (M3).** `identity_adapter` plus `:signin` browser login
   (NIP-FA), evidence on every relay transport with re-minting, typed denials,
-  Buzz Desktop as a credential provider, and verified profiles with a ✓.
+  Buzz Desktop as a credential provider, and verified profiles with a ✓ on
+  names, in the mention picker and on the profile card.
 - **Artifacts (M4).** `:artifacts` for the selected channel or open thread and
   `:tasks` for `buzz.task` artifacts assigned to you. Rename, delete, restore
   and move (with a confirmation that names the destination audience), with

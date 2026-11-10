@@ -2881,3 +2881,214 @@ async fn real_relay_huddle_lifecycle_and_audio_round_trip() {
     assert!(huddle::active(&lifecycle, &relay, now).is_none());
     alice_supervisor.shutdown().await;
 }
+
+/// v0.13 M2.2: NIP-CL public membership lookup (kind 39009), the spec's
+/// normative example on the pinned relay.
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_public_membership_lookup() {
+    use bzz::protocol::membership_public::Lookup;
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let requester = Keys::generate();
+    let subject = Keys::generate();
+    let requester_hex = requester.public_key().to_hex();
+    let subject_hex = subject.public_key().to_hex();
+    let _ = seed_member(&source, &requester_hex);
+    let _ = seed_member(&source, &subject_hex);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let relay_ws = url::Url::parse("ws://localhost:3030/").unwrap();
+    let relay_http = url::Url::parse("http://localhost:3030/").unwrap();
+    let requester_signer = SignerHandle::spawn(requester.clone());
+    let subject_signer = SignerHandle::spawn(subject.clone());
+    let (requester_session, mut requester_events) =
+        session::connect(relay_ws.clone(), requester_signer.clone())
+            .await
+            .unwrap();
+    assert!(matches!(
+        requester_events.recv().await,
+        Some(SessionEvent::Authenticated)
+    ));
+    let (subject_session, mut subject_events) =
+        session::connect(relay_ws.clone(), subject_signer.clone())
+            .await
+            .unwrap();
+    assert!(matches!(
+        subject_events.recv().await,
+        Some(SessionEvent::Authenticated)
+    ));
+    async fn publish(
+        session: &session::SessionHandle,
+        signer: &SignerHandle,
+        builder: nostr::EventBuilder,
+    ) {
+        let event = signer.sign(builder).await.unwrap();
+        let ack = session.publish(event).await.unwrap();
+        assert!(ack.accepted, "{}", ack.message);
+    }
+    let create = |id: uuid::Uuid,
+                  visibility: buzz_sdk::Visibility,
+                  kind: buzz_sdk::ChannelKind,
+                  unlisted: bool| {
+        buzz_sdk::build_create_channel(
+            id,
+            &format!("pub-{}", &id.simple().to_string()[..8]),
+            Some(visibility),
+            Some(kind),
+            None,
+            None,
+            unlisted,
+        )
+        .unwrap()
+    };
+    use buzz_sdk::{ChannelKind, Visibility};
+    let open_stream = uuid::Uuid::new_v4();
+    let archived_forum = uuid::Uuid::new_v4();
+    let shared_private = uuid::Uuid::new_v4();
+    let unlisted = uuid::Uuid::new_v4();
+    let joined = uuid::Uuid::new_v4();
+    publish(
+        &subject_session,
+        &subject_signer,
+        create(open_stream, Visibility::Open, ChannelKind::Stream, false),
+    )
+    .await;
+    publish(
+        &subject_session,
+        &subject_signer,
+        create(archived_forum, Visibility::Open, ChannelKind::Forum, false),
+    )
+    .await;
+    publish(
+        &subject_session,
+        &subject_signer,
+        buzz_sdk::build_archive(archived_forum).unwrap(),
+    )
+    .await;
+    publish(
+        &subject_session,
+        &subject_signer,
+        create(
+            shared_private,
+            Visibility::Private,
+            ChannelKind::Stream,
+            false,
+        ),
+    )
+    .await;
+    publish(
+        &subject_session,
+        &subject_signer,
+        buzz_sdk::build_add_member(shared_private, &requester_hex, None).unwrap(),
+    )
+    .await;
+    publish(
+        &subject_session,
+        &subject_signer,
+        create(unlisted, Visibility::Open, ChannelKind::Stream, true),
+    )
+    .await;
+    // The requester's own open channel, which the subject joins as a member.
+    publish(
+        &requester_session,
+        &requester_signer,
+        create(joined, Visibility::Open, ChannelKind::Stream, false),
+    )
+    .await;
+    publish(
+        &subject_session,
+        &subject_signer,
+        buzz_sdk::build_join(joined).unwrap(),
+    )
+    .await;
+
+    let http = HttpClient::new(relay_http, requester_signer.clone()).unwrap();
+    let info = http.nip11().await.unwrap();
+    let pinned = bzz::protocol::http::relay_signing_pubkey(&info)
+        .unwrap()
+        .to_owned();
+    assert!(
+        bzz::protocol::membership_public::descriptor(&info).is_some(),
+        "the harness advertises membership_public"
+    );
+    let Lookup::Verified(found) = http
+        .membership_public(&info, &pinned, &subject_hex)
+        .await
+        .unwrap()
+    else {
+        panic!("expected a verified public list");
+    };
+    let mut expected = vec![open_stream, archived_forum, joined];
+    expected.sort();
+    assert_eq!(
+        found
+            .memberships
+            .iter()
+            .map(|membership| membership.channel_id)
+            .collect::<Vec<_>>(),
+        expected,
+        "public listed-open only: no private (even shared), no unlisted"
+    );
+    let role = |id| {
+        found
+            .memberships
+            .iter()
+            .find(|membership| membership.channel_id == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(role(open_stream).role, bzz::domain::MemberRole::Owner);
+    assert!(role(archived_forum).archived);
+    assert_eq!(role(archived_forum).channel_type, "forum");
+    assert_eq!(role(joined).role, bzz::domain::MemberRole::Member);
+    // A never-seen subject: a valid signed complete empty list.
+    let stranger = Keys::generate().public_key().to_hex();
+    let Lookup::Verified(empty) = http
+        .membership_public(&info, &pinned, &stranger)
+        .await
+        .unwrap()
+    else {
+        panic!("expected a verified empty list");
+    };
+    assert!(empty.memberships.is_empty());
+
+    // The profile card's service path: pinned key from the store, a fresh
+    // host-bound NIP-11 read, the same verified answer.
+    let identity = IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "m2-public".into(),
+        pubkey: requester_hex.clone(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "m2-public".into(),
+    };
+    let mut config = Config::default();
+    config.identities.push(identity.clone());
+    let community = config
+        .add_community("m2".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    let mut store = Store::open_memory().unwrap();
+    store.sync_config(&config).unwrap();
+    let mut unpinned_store = Store::open_memory().unwrap();
+    unpinned_store.sync_config(&config).unwrap();
+    let unpinned = bzz::service::profiles::ProfileService::new(
+        community,
+        http.clone(),
+        StoreHandle::spawn(unpinned_store).unwrap(),
+    );
+    assert_eq!(
+        unpinned.public_memberships(&subject_hex).await.unwrap(),
+        Lookup::Unsupported,
+        "nothing to verify against without a pinned relay key"
+    );
+    store.pin_relay_pubkey(community, &pinned).unwrap();
+    let service = bzz::service::profiles::ProfileService::new(
+        community,
+        http.clone(),
+        StoreHandle::spawn(store).unwrap(),
+    );
+    let Lookup::Verified(again) = service.public_memberships(&subject_hex).await.unwrap() else {
+        panic!("expected a verified public list through the service");
+    };
+    assert_eq!(again.memberships, found.memberships);
+    requester_session.shutdown().await;
+    subject_session.shutdown().await;
+}

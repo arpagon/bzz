@@ -42,6 +42,8 @@ pub enum Overlay {
     Artifacts,
     Broker,
     Huddle,
+    /// A person's profile card (NIP-CL public channels where offered).
+    Profile,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

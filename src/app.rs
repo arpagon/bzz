@@ -283,6 +283,13 @@ enum Background {
         next: Option<crate::protocol::window::Cursor>,
         supported: bool,
     },
+    /// NIP-CL public membership lookup answer for a profile card.
+    PublicMemberships {
+        community: Uuid,
+        subject: String,
+        generation: u64,
+        result: std::result::Result<crate::protocol::membership_public::Lookup, String>,
+    },
     /// Remote NIP-CE prefix search results for the reaction picker.
     EmojiSearch {
         query: String,
@@ -379,6 +386,16 @@ pub struct App {
     /// NIP-CW thread window state for the open thread: `(root, next page)`.
     thread_window: Option<(String, Option<crate::protocol::window::Cursor>)>,
     thread_window_loading: bool,
+    /// Open profile card and the generation counter for its lookups.
+    profile_card: Option<crate::ui::profile::ProfileCard>,
+    profile_generation: u64,
+    /// Verified public lists keyed by (community, subject); display data
+    /// only, in memory, never authority.
+    public_lookup_cache:
+        HashMap<(Uuid, String), Vec<crate::protocol::membership_public::PublicMembership>>,
+    /// Per community: no lookups before this unix second; `true` when the
+    /// relay rate-limited (429), `false` when it does not offer the lookup.
+    public_lookup_backoff: HashMap<Uuid, (u64, bool)>,
     /// Shortcode -> image URL from 30030 sets and 30180 entries.
     emoji_palette: HashMap<String, String>,
     /// Shortcodes already looked up remotely (30180 `#d`), bounded.
@@ -775,6 +792,10 @@ impl App {
             emoji_palette: HashMap::new(),
             thread_window: None,
             thread_window_loading: false,
+            profile_card: None,
+            profile_generation: 0,
+            public_lookup_cache: HashMap::new(),
+            public_lookup_backoff: HashMap::new(),
             artifact_caps: None,
             broker: None,
             huddle_view: None,
@@ -1038,6 +1059,9 @@ impl App {
                             self.thread_window=supported.then_some((root, next));
                             self.cache_dirty=true;
                         }
+                    },
+                    Background::PublicMemberships { community, subject, generation, result }=>{
+                        self.apply_public_lookup(community, &subject, generation, result);
                     },
                     Background::EmojiSearch { query, found }=>{
                         if self.reaction_query.as_deref()==Some(query.as_str()) {
@@ -3042,6 +3066,7 @@ impl App {
             Some(Overlay::Agents) => self.agent_directory_key(key).await?,
             Some(Overlay::Artifacts) => self.artifact_panel_key(key).await?,
             Some(Overlay::Huddle) => self.huddle_key(key).await?,
+            Some(Overlay::Profile) => self.profile_key(key),
             Some(Overlay::Broker) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
                 // The owner's one-key pause for every hosted agent.
@@ -3480,6 +3505,15 @@ impl App {
                     );
                 } else {
                     self.mark_unread().await?;
+                }
+            }
+            WorkspaceEffect::OpenProfile => {
+                match self
+                    .selected_message()
+                    .map(|message| message.pubkey.clone())
+                {
+                    Some(pubkey) => self.open_profile(pubkey).await?,
+                    None => self.status_error = Some("select a message first".into()),
                 }
             }
             WorkspaceEffect::Unavailable(action) => {
@@ -4725,6 +4759,142 @@ impl App {
         format!(
             "\"{title}\" moves to {audience}. Everyone there can read its title, {tags} tags and content · y move · n/Esc cancel"
         )
+    }
+
+    fn profile_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                // Closing cancels the lookup: a late answer is discarded.
+                self.profile_card = None;
+                self.presentation.close_overlay();
+            }
+            KeyCode::Char('r') => self.spawn_public_lookup(),
+            _ => {}
+        }
+    }
+
+    /// Open the profile card for `pubkey` and start its public lookup.
+    async fn open_profile(&mut self, pubkey: String) -> Result<()> {
+        let community = self.active_community_id();
+        let profile = match self.profiles.get(&pubkey) {
+            Some(profile) => Some(profile.clone()),
+            None => match community {
+                Some(community) => {
+                    let subject = pubkey.clone();
+                    self.store
+                        .call(move |store| store.profile(community, &subject))
+                        .await?
+                }
+                None => None,
+            },
+        };
+        let mut card = crate::ui::profile::ProfileCard::new(pubkey.clone(), profile);
+        card.stale = community
+            .and_then(|community| self.public_lookup_cache.get(&(community, pubkey)).cloned());
+        self.profile_card = Some(card);
+        self.presentation.open_overlay(Overlay::Profile);
+        self.spawn_public_lookup();
+        Ok(())
+    }
+
+    fn spawn_public_lookup(&mut self) {
+        use crate::ui::profile::PublicChannels;
+        let now = crate::clock::WallClock::now_unix(&crate::clock::SystemClock);
+        let Some(card) = self.profile_card.as_mut() else {
+            return;
+        };
+        let Some(runtime) = &self.runtime else {
+            card.public = PublicChannels::Locked;
+            return;
+        };
+        // Respect the relay's retry delay and back off capability probes.
+        if let Some(&(until, rate_limited)) = self.public_lookup_backoff.get(&runtime.community_id)
+            && now < until
+        {
+            card.public = if rate_limited {
+                PublicChannels::RateLimited(until - now)
+            } else {
+                PublicChannels::Unsupported
+            };
+            return;
+        }
+        self.profile_generation = self.profile_generation.wrapping_add(1);
+        let generation = self.profile_generation;
+        card.outstanding = Some(generation);
+        card.public = PublicChannels::Loading;
+        let service = runtime.profiles.clone();
+        let community = runtime.community_id;
+        let subject = card.pubkey.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = service
+                .public_memberships(&subject)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = tx
+                .send(Background::PublicMemberships {
+                    community,
+                    subject,
+                    generation,
+                    result,
+                })
+                .await;
+        });
+    }
+
+    fn apply_public_lookup(
+        &mut self,
+        community: Uuid,
+        subject: &str,
+        generation: u64,
+        result: std::result::Result<crate::protocol::membership_public::Lookup, String>,
+    ) {
+        use crate::{protocol::membership_public::Lookup, ui::profile::PublicChannels};
+        let now = crate::clock::WallClock::now_unix(&crate::clock::SystemClock);
+        // Backoff state follows the relay, whether or not the card is open.
+        match &result {
+            Ok(Lookup::Unsupported) => {
+                self.public_lookup_backoff
+                    .insert(community, (now.saturating_add(600), false));
+            }
+            Ok(Lookup::RateLimited(seconds)) => {
+                let jitter = u64::from(rand::random::<u16>()) % (seconds / 4 + 2);
+                self.public_lookup_backoff.insert(
+                    community,
+                    (now.saturating_add(*seconds).saturating_add(jitter), true),
+                );
+            }
+            _ => {}
+        }
+        if let Ok(Lookup::Verified(verified)) = &result {
+            // A verified list for this community and subject replaces the
+            // cached display list; it is never membership authority.
+            self.public_lookup_cache.insert(
+                (community, subject.to_owned()),
+                verified.memberships.clone(),
+            );
+        }
+        let active = self.active_community_id();
+        let Some(card) = self.profile_card.as_mut() else {
+            return;
+        };
+        // Canceled, superseded or foreign answers never replace current data.
+        if active != Some(community)
+            || card.pubkey != subject
+            || card.outstanding != Some(generation)
+        {
+            return;
+        }
+        card.outstanding = None;
+        card.public = match result {
+            Ok(Lookup::Verified(verified)) => {
+                card.stale = None;
+                PublicChannels::Verified(verified.memberships)
+            }
+            Ok(Lookup::Unsupported) => PublicChannels::Unsupported,
+            Ok(Lookup::RateLimited(seconds)) => PublicChannels::RateLimited(seconds),
+            Err(_) => PublicChannels::Failed,
+        };
     }
 
     fn spawn_thread_window(
@@ -7417,6 +7587,25 @@ impl App {
             crate::ui::command::Command::Huddle(arguments) => {
                 return self.huddle_command(&arguments).await;
             }
+            crate::ui::command::Command::Profile(argument) => {
+                let pubkey = if argument.is_empty() {
+                    self.selected_message()
+                        .map(|message| message.pubkey.clone())
+                } else {
+                    nostr::PublicKey::parse(&argument)
+                        .ok()
+                        .map(|key| key.to_hex())
+                };
+                match pubkey {
+                    Some(pubkey) => return self.open_profile(pubkey).await,
+                    None => {
+                        self.status_error = Some(
+                            "usage: :profile (selected message author) or :profile <npub|hex>"
+                                .into(),
+                        );
+                    }
+                }
+            }
             crate::ui::command::Command::Broker => {
                 self.presentation.open_overlay(Overlay::Broker);
             }
@@ -8327,6 +8516,7 @@ impl App {
             Some(Overlay::Agents) => "AGENTS",
             Some(Overlay::Artifacts) => "ARTIFACTS",
             Some(Overlay::Broker) => "BROKER",
+            Some(Overlay::Profile) => "PROFILE",
             Some(Overlay::Huddle) => "HUDDLE",
             Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) | None
                 if self.presentation.composer_target.is_some() =>
@@ -8599,6 +8789,26 @@ impl App {
                     }
                 }
                 crate::ui::search::render(frame, popup, &self.search_state, &self.theme);
+            }
+            Some(Overlay::Profile) => {
+                if let Some(card) = &self.profile_card {
+                    let popup = centered(area, 80, area.height.saturating_sub(2).min(28));
+                    let channels = &self.channels;
+                    let name = |id: Uuid| {
+                        channels
+                            .iter()
+                            .find(|channel| channel.id == id)
+                            .map(|channel| channel.name.clone())
+                    };
+                    crate::ui::profile::render(
+                        frame,
+                        popup,
+                        card,
+                        crate::clock::WallClock::now_unix(&crate::clock::SystemClock),
+                        &name,
+                        &self.theme,
+                    );
+                }
             }
             Some(Overlay::Huddle) => {
                 let popup = centered(area, 90, area.height.saturating_sub(2).min(30));
@@ -10745,6 +10955,7 @@ mod tests {
                 label: "member".into(),
                 is_agent: false,
                 agent_eligibility: None,
+                verified: false,
             }],
         ));
         terminal.draw(|frame| app.render(frame)).unwrap();
@@ -11126,5 +11337,136 @@ mod tests {
             .unwrap()
             .expect("draft persisted");
         assert_eq!(draft.body, "unsent words");
+    }
+
+    /// v0.13 M2.2/M3: the profile card shows the verified identity and the
+    /// NIP-CL public channels, applies only its own outstanding answer once,
+    /// keeps a failed refresh explicitly stale and records relay backoff.
+    #[tokio::test]
+    async fn profile_card_applies_only_its_outstanding_public_lookup() {
+        use crate::{
+            domain::MemberRole,
+            protocol::membership_public::{Lookup, PublicMembership, VerifiedPublic},
+            ui::profile::PublicChannels,
+        };
+        let temporary = TempDir::new().unwrap();
+        let mut app = read_only_fixture(
+            &temporary,
+            ChannelKind::Stream,
+            crate::domain::ChannelFacts::default(),
+        )
+        .await;
+        let community = app.active_community_id().unwrap();
+        let known = app.channels[0].id;
+        let subject = "c".repeat(64);
+        app.profiles.insert(
+            subject.clone(),
+            crate::domain::Profile::verified_only(
+                &subject,
+                crate::protocol::verified_profile::VerifiedName {
+                    display_name: "Ada Lovelace".into(),
+                    username: "ada@corp.example".into(),
+                    full_name: None,
+                    issuer_label: "Corp IdP".into(),
+                    verified_at: 1,
+                },
+                "e".repeat(64),
+                1,
+            ),
+        );
+        app.command = format!("profile {subject}");
+        app.execute_command().await.unwrap();
+        assert_eq!(app.presentation.overlay, Some(Overlay::Profile));
+        // No runtime: the lookup cannot be signed.
+        assert_eq!(
+            app.profile_card.as_ref().unwrap().public,
+            PublicChannels::Locked
+        );
+        let screen = screen_text(&mut app);
+        assert!(screen.contains("Ada Lovelace ✓"), "{screen}");
+        assert!(
+            screen.contains("✓ verified by Corp IdP · ada@corp.example"),
+            "{screen}"
+        );
+        assert!(screen.contains("unlock the identity"), "{screen}");
+
+        let verified = |channels: Vec<PublicMembership>| {
+            Ok(Lookup::Verified(VerifiedPublic {
+                snapshot_id: "0".repeat(64),
+                memberships: channels,
+            }))
+        };
+        let unknown = Uuid::new_v4();
+        let list = vec![
+            PublicMembership {
+                channel_id: known,
+                role: MemberRole::Guest,
+                channel_type: "stream".into(),
+                archived: true,
+            },
+            PublicMembership {
+                channel_id: unknown,
+                role: MemberRole::Owner,
+                channel_type: "forum".into(),
+                archived: false,
+            },
+        ];
+        app.profile_card.as_mut().unwrap().outstanding = Some(7);
+        app.profile_card.as_mut().unwrap().public = PublicChannels::Loading;
+        // Superseded generation, another subject, another community: ignored.
+        app.apply_public_lookup(community, &subject, 6, verified(list.clone()));
+        app.apply_public_lookup(community, &"d".repeat(64), 7, verified(list.clone()));
+        app.apply_public_lookup(Uuid::new_v4(), &subject, 7, verified(list.clone()));
+        assert_eq!(
+            app.profile_card.as_ref().unwrap().public,
+            PublicChannels::Loading
+        );
+        app.apply_public_lookup(community, &subject, 7, verified(list.clone()));
+        assert_eq!(
+            app.profile_card.as_ref().unwrap().public,
+            PublicChannels::Verified(list.clone())
+        );
+        // Consumed once: a second answer for the same request changes nothing.
+        app.apply_public_lookup(community, &subject, 7, Err("late".into()));
+        assert_eq!(
+            app.profile_card.as_ref().unwrap().public,
+            PublicChannels::Verified(list.clone())
+        );
+        let screen = screen_text(&mut app);
+        assert!(
+            screen.contains("#announcements · stream · guest · archived"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains(&format!(
+                "(not cached) {} · forum · owner",
+                &unknown.to_string()[..8]
+            )),
+            "{screen}"
+        );
+        // A failed refresh is never an empty list: the old one stays, stale.
+        app.profile_card.as_mut().unwrap().stale = app
+            .public_lookup_cache
+            .get(&(community, subject.clone()))
+            .cloned();
+        app.profile_card.as_mut().unwrap().outstanding = Some(8);
+        app.apply_public_lookup(community, &subject, 8, Err("bad signature".into()));
+        assert_eq!(
+            app.profile_card.as_ref().unwrap().public,
+            PublicChannels::Failed
+        );
+        let screen = screen_text(&mut app);
+        assert!(screen.contains("could not verify"), "{screen}");
+        assert!(screen.contains("stale — last verified list"), "{screen}");
+        // 429 records a retry delay for the community.
+        app.profile_card.as_mut().unwrap().outstanding = Some(9);
+        app.apply_public_lookup(community, &subject, 9, Ok(Lookup::RateLimited(30)));
+        let (until, rate_limited) = app.public_lookup_backoff[&community];
+        let now = crate::clock::WallClock::now_unix(&crate::clock::SystemClock);
+        assert!(rate_limited && until >= now + 29, "{until} vs {now}");
+        // Esc closes and cancels.
+        app.profile_key(KeyEvent::from(KeyCode::Esc));
+        assert!(app.profile_card.is_none());
+        assert_eq!(app.presentation.overlay, None);
     }
 }

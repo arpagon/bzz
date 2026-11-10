@@ -57,6 +57,7 @@ pub enum UiAction {
     React,
     Delete,
     MarkUnread,
+    ViewProfile,
     MarkRead,
     MarkVisibleRead,
     OpenCanonicalContext,
@@ -122,6 +123,7 @@ impl UiAction {
             Self::React => "react",
             Self::Delete => "delete",
             Self::MarkUnread => "mark unread",
+            Self::ViewProfile => "view author profile",
             Self::MarkRead => "mark read",
             Self::MarkVisibleRead => "mark visible rows read",
             Self::OpenCanonicalContext => "open canonical context",
@@ -437,6 +439,7 @@ impl KeyMap {
         add(KeyScope::Global, &["space", "2"], UiAction::ToggleChannels);
         add(KeyScope::Global, &["space", "4"], UiAction::ToggleContext);
         add(KeyScope::Global, &["space", "r"], UiAction::Refresh);
+        add(KeyScope::Global, &["space", "p"], UiAction::ViewProfile);
         add(KeyScope::Global, &["space", "o"], UiAction::OpenOptions);
         add(KeyScope::Global, &[":"], UiAction::OpenCommand);
 

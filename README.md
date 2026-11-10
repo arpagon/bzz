@@ -111,6 +111,7 @@ integration with `bzz completions <shell>`. Inside the TUI, `:inbox`, `:search`,
 cover the main conversation, recovery, appearance, and security operations.
 v0.13.0 adds `:signin` (federated identity), `:system`, `:artifacts`, `:tasks`,
 `:artifact rename|delete|restore|move`, `:status`, `:tochannel`, `:report`,
+`:profile` (also `Space p` on a message: verified identity and public channels),
 `:huddle` (`start`, `join`, `leave`, `end`, `mute`, `react`, `devices`) and
 `:broker`; agents for the local broker are managed with `bzz broker …`.
 
