@@ -1195,6 +1195,7 @@ impl Store {
                     is_agent: owner.is_some(),
                     agent_eligibility,
                     verified,
+                    presence: None,
                 })
             })
             .collect()

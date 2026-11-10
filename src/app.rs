@@ -391,6 +391,8 @@ pub struct App {
     profile_card: Option<crate::ui::profile::ProfileCard>,
     /// The `:broker` panel's selected agent.
     broker_selected: usize,
+    /// Presence of the other person in each one-to-one DM, for the sidebar.
+    dm_presence: HashMap<Uuid, crate::protocol::presence::Presence>,
     profile_generation: u64,
     /// Verified public lists keyed by (community, subject); display data
     /// only, in memory, never authority.
@@ -802,6 +804,7 @@ impl App {
             thread_window_loading: false,
             profile_card: None,
             broker_selected: 0,
+            dm_presence: HashMap::new(),
             profile_generation: 0,
             public_lookup_cache: HashMap::new(),
             public_lookup_backoff: HashMap::new(),
@@ -1857,7 +1860,19 @@ impl App {
                 .call(move |store| store.list_remote_agents(community, &identity))
                 .await?
                 .into_iter()
-                .map(|agent| (agent.pubkey.clone(), agent))
+                .map(|mut agent| {
+                    // Owner-signed 20003 presence the pinned relay accepted.
+                    match self.presence.get(&agent.pubkey, now) {
+                        crate::protocol::presence::Presence::Online => {
+                            agent.presence = crate::agents::Presence::Online;
+                        }
+                        crate::protocol::presence::Presence::Away => {
+                            agent.presence = crate::agents::Presence::Away;
+                        }
+                        _ => {}
+                    }
+                    (agent.pubkey.clone(), agent)
+                })
                 .collect()
         };
         let authorized_typing_agents = self
@@ -1884,6 +1899,7 @@ impl App {
             .store
             .call(move |store| store.dm_participants_map(community))
             .await?;
+        self.dm_presence.clear();
         for channel in self
             .channels
             .iter_mut()
@@ -1891,6 +1907,14 @@ impl App {
         {
             if let Some(participants) = dm_participants.get(&channel.id) {
                 channel.name = dm_label(participants, &self_pubkey, &self.profiles);
+                let others = participants
+                    .iter()
+                    .filter(|pubkey| !pubkey.eq_ignore_ascii_case(&self_pubkey))
+                    .collect::<Vec<_>>();
+                if let [other] = others.as_slice() {
+                    self.dm_presence
+                        .insert(channel.id, self.presence.get(other, now));
+                }
             }
         }
         if self.presentation.overlay == Some(Overlay::DmPicker) {
@@ -5529,10 +5553,14 @@ impl App {
         };
         let query = self.composer.body[range.start + 1..range.end].to_owned();
         let lookup = query.clone();
-        let candidates = self
+        let mut candidates = self
             .store
             .call(move |store| store.mention_candidates(community, channel, &self_pubkey, &lookup))
             .await?;
+        let now = crate::clock::SystemClock.now_unix();
+        for candidate in &mut candidates {
+            candidate.presence = Some(self.presence.get(&candidate.pubkey, now));
+        }
         self.mention_picker = Some(MentionPicker::new(range, query, candidates));
         Ok(())
     }
@@ -8193,6 +8221,7 @@ impl App {
                 &self.unread_channels(),
                 self.config.ui.channel_sort,
                 self.show_system_channels,
+                &self.dm_presence,
                 &self.theme,
                 self.presentation.focus == FocusSurface::Channels,
             );
@@ -11216,6 +11245,7 @@ mod tests {
                 is_agent: false,
                 agent_eligibility: None,
                 verified: false,
+                presence: None,
             }],
         ));
         terminal.draw(|frame| app.render(frame)).unwrap();

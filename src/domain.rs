@@ -333,6 +333,8 @@ pub struct MentionCandidate {
     pub agent_eligibility: Option<crate::agents::Eligibility>,
     /// A current relay-signed NIP-FI verified profile (kind 30382).
     pub verified: bool,
+    /// Live presence, filled by the App from the presence book.
+    pub presence: Option<crate::protocol::presence::Presence>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

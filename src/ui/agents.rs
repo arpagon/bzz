@@ -156,6 +156,11 @@ fn render_list(
                     sanitize::single_line(&agent.name),
                     theme.style(HighlightGroup::Normal),
                 ),
+                Span::raw(match agent.presence {
+                    crate::agents::Presence::Online => " ●",
+                    crate::agents::Presence::Away => " ◐",
+                    _ => "",
+                }),
                 Span::raw(format!("  {eligibility}")),
             ]))
         })

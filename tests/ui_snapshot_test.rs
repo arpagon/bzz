@@ -118,6 +118,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                 &HashSet::from([channel]),
                 ChannelSort::Smart,
                 false,
+                &HashMap::new(),
                 &theme,
                 true,
             );

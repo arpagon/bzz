@@ -82,6 +82,7 @@ pub fn render(
     unread: &std::collections::HashSet<uuid::Uuid>,
     sort: ChannelSort,
     show_system: bool,
+    dm_presence: &HashMap<uuid::Uuid, crate::protocol::presence::Presence>,
     theme: &Theme,
     focused: bool,
 ) {
@@ -110,8 +111,15 @@ pub fn render(
         } else {
             "#"
         };
+        // The unread badge is the leading dot; presence trails the name so the
+        // two never read as one another.
+        let presence = match dm_presence.get(&channel.id) {
+            Some(crate::protocol::presence::Presence::Online) => " ●",
+            Some(crate::protocol::presence::Presence::Away) => " ◐",
+            _ => "",
+        };
         ListItem::new(Line::from(format!(
-            "{badge} {privacy}{}",
+            "{badge} {privacy}{}{presence}",
             sanitize::single_line(&channel.name)
         )))
         .style(theme.style(if is_unread {

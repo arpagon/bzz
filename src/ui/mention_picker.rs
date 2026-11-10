@@ -64,8 +64,13 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, picker: &MentionPicker, theme: 
             } else {
                 String::new()
             };
+            let presence = match candidate.presence {
+                Some(crate::protocol::presence::Presence::Online) => "● ",
+                Some(crate::protocol::presence::Presence::Away) => "◐ ",
+                _ => "",
+            };
             ListItem::new(Line::from(format!(
-                "@{}{}  {}{}",
+                "{presence}@{}{}  {}{}",
                 sanitize::single_line(&candidate.label),
                 if candidate.verified { " ✓" } else { "" },
                 crate::domain::abbreviated_pubkey(&candidate.pubkey),
