@@ -63,6 +63,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
         delivery: bzz::domain::DeliveryState::Pending,
         system: None,
         sent_from_thread: None,
+        broadcast: false,
         emoji: Vec::new(),
     }];
     let reactions = HashMap::from([(
@@ -169,6 +170,7 @@ fn timeline_roots_show_compact_thread_activity() {
         delivery: bzz::domain::DeliveryState::Delivered,
         system: None,
         sent_from_thread: None,
+        broadcast: false,
         emoji: Vec::new(),
     };
     let summaries = HashMap::from([(
@@ -289,6 +291,7 @@ fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
                 detail: None,
             }),
             sent_from_thread: None,
+            broadcast: false,
             emoji: Vec::new(),
         },
         Message {
@@ -304,6 +307,7 @@ fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
             delivery: bzz::domain::DeliveryState::Delivered,
             system: None,
             sent_from_thread: None,
+            broadcast: false,
             emoji: Vec::new(),
         },
     ];
@@ -368,6 +372,7 @@ fn timeline_distinguishes_pending_unknown_and_rejected_delivery() {
             delivery,
             system: None,
             sent_from_thread: None,
+            broadcast: false,
             emoji: Vec::new(),
         })
         .collect::<Vec<_>>();
@@ -426,6 +431,7 @@ fn nearby_same_author_messages_share_a_compact_header_and_keep_date_context() {
             delivery: bzz::domain::DeliveryState::Delivered,
             system: None,
             sent_from_thread: None,
+            broadcast: false,
             emoji: Vec::new(),
         })
         .collect::<Vec<_>>();
@@ -499,6 +505,7 @@ fn attachment_cards_remain_visible_without_a_graphics_protocol() {
         delivery: bzz::domain::DeliveryState::Delivered,
         system: None,
         sent_from_thread: None,
+        broadcast: false,
         emoji: Vec::new(),
     };
     let backend = TestBackend::new(80, 12);
@@ -617,6 +624,7 @@ fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
         delivery: bzz::domain::DeliveryState::Delivered,
         system: None,
         sent_from_thread: None,
+        broadcast: false,
         emoji: Vec::new(),
     }];
     let mut inbox_state = InboxState::default();

@@ -9922,6 +9922,7 @@ mod tests {
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
             sent_from_thread: None,
+            broadcast: false,
             emoji: Vec::new(),
         }];
         app.local_thread_summaries.insert(
@@ -10483,6 +10484,7 @@ mod tests {
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
             sent_from_thread: None,
+            broadcast: false,
             emoji: Vec::new(),
         }];
         app.timeline.at_live_bottom = true;
@@ -10643,6 +10645,7 @@ mod tests {
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
             sent_from_thread: None,
+            broadcast: false,
             emoji: Vec::new(),
         };
         let mut timeline = TimelineState {
@@ -11159,6 +11162,7 @@ mod tests {
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
             sent_from_thread: None,
+            broadcast: false,
             emoji: Vec::new(),
         }];
         app.timeline.reconcile(&app.messages);

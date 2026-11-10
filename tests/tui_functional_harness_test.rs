@@ -49,6 +49,7 @@ fn fixture() -> (Vec<InboxItem>, Vec<Message>) {
             delivery: bzz::domain::DeliveryState::Delivered,
             system: None,
             sent_from_thread: None,
+            broadcast: false,
             emoji: Vec::new(),
         }],
     )

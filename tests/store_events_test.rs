@@ -703,3 +703,85 @@ fn mention_candidates_mark_and_find_verified_people() {
         );
     }
 }
+
+/// M7.7: a depth-1 reply its author broadcast to the channel is a channel
+/// timeline row (with its thread reference); other replies are not, and a
+/// deeper reply with the tag is not either.
+#[test]
+fn broadcast_depth_one_replies_are_channel_rows() {
+    let (mut store, community, channel, keys) = fixture();
+    let message =
+        |content: &str, root: Option<&str>, parent: Option<&str>, broadcast: bool, at: u64| {
+            let mut tags = vec![Tag::parse(["h", &channel.to_string()]).unwrap()];
+            if let Some(root) = root {
+                tags.push(Tag::parse(["e", root, "", "root"]).unwrap());
+            }
+            if let Some(parent) = parent {
+                tags.push(Tag::parse(["e", parent, "", "reply"]).unwrap());
+            }
+            if broadcast {
+                tags.push(Tag::parse(["broadcast", "1"]).unwrap());
+            }
+            EventBuilder::new(Kind::Custom(9), content)
+                .tags(tags)
+                .custom_created_at(Timestamp::from(at))
+                .sign_with_keys(&keys)
+                .unwrap()
+        };
+    let root = message("root", None, None, false, 10);
+    let root_id = root.id.to_hex();
+    let plain = message("plain reply", Some(&root_id), Some(&root_id), false, 11);
+    let shared = message("shared reply", Some(&root_id), Some(&root_id), true, 12);
+    let deep = message(
+        "deep shared",
+        Some(&root_id),
+        Some(&plain.id.to_hex()),
+        true,
+        13,
+    );
+    for event in [&root, &plain, &shared, &deep] {
+        store.apply_event(community, event).unwrap();
+    }
+    let rows = store.messages(community, channel, 100).unwrap();
+    let contents = rows
+        .iter()
+        .map(|row| row.content.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(contents, vec!["root", "shared reply"]);
+    assert!(rows[1].broadcast);
+    assert_eq!(rows[1].root_event_id.as_deref(), Some(root_id.as_str()));
+    assert!(!rows[0].broadcast);
+    let theme = bzz::ui::theme::Theme::default();
+    let mut state = bzz::ui::timeline::TimelineState::default();
+    state.reconcile(&rows);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 12)).unwrap();
+    terminal
+        .draw(|frame| {
+            bzz::ui::timeline::render(
+                frame,
+                frame.area(),
+                &rows,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+                &mut state,
+                "timeline",
+                &theme,
+                true,
+                None,
+            );
+        })
+        .unwrap();
+    let screen = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(
+        screen.contains("↪ thread reply, also sent to the channel"),
+        "{screen}"
+    );
+}

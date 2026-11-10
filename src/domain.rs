@@ -416,6 +416,10 @@ pub struct Message {
     /// Desktop "Send to channel" provenance (`buzz:sent-from-thread`).
     #[serde(skip)]
     pub sent_from_thread: Option<crate::protocol::sent_from_thread::SentFromThread>,
+    /// A depth-1 thread reply its author also sent to the channel
+    /// (`["broadcast", "1"]`): shown on the channel timeline too.
+    #[serde(default)]
+    pub broadcast: bool,
     /// NIP-30 custom emoji carried by this message's own tags.
     #[serde(skip)]
     pub emoji: Vec<crate::protocol::emoji::Emoji>,

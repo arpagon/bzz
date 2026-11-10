@@ -1007,6 +1007,15 @@ fn message_block(
             indent: MESSAGE_TEXT_INDENT,
         });
     } else {
+        if message.broadcast {
+            rows.push(TimelineRow::Indented {
+                line: Line::styled(
+                    "↪ thread reply, also sent to the channel",
+                    theme.style(HighlightGroup::MessageTimestamp),
+                ),
+                indent: MESSAGE_TEXT_INDENT,
+            });
+        }
         if let Some(reference) = &message.sent_from_thread {
             let excerpt = reference
                 .excerpt
@@ -1510,6 +1519,7 @@ mod tests {
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
             sent_from_thread: None,
+            broadcast: false,
             emoji: Vec::new(),
         }
     }

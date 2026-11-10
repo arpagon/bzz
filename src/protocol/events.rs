@@ -94,6 +94,10 @@ pub fn as_message(event: &Event) -> Option<Message> {
         delivery: crate::domain::DeliveryState::Delivered,
         system,
         sent_from_thread: crate::protocol::sent_from_thread::parse_tag(&tags),
+        broadcast: tags.iter().any(|tag| {
+            tag.first().map(String::as_str) == Some("broadcast")
+                && tag.get(1).map(String::as_str) == Some("1")
+        }),
         emoji: crate::protocol::emoji::tags_of(&tags),
     })
 }

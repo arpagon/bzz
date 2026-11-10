@@ -29,6 +29,7 @@ fn bench_timeline(c: &mut Criterion) {
             delivery: bzz::domain::DeliveryState::Delivered,
             system: None,
             sent_from_thread: None,
+            broadcast: false,
             emoji: Vec::new(),
         })
         .collect::<Vec<_>>();

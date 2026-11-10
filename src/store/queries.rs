@@ -20,6 +20,11 @@ use crate::{
     },
 };
 
+/// Channel-timeline rows: top-level messages plus depth-1 thread replies
+/// their author also sent to the channel (`["broadcast", "1"]`), the relay's
+/// own top-level predicate for channel windows.
+const TOP_LEVEL: &str = "(e.root_event_id IS NULL OR (e.parent_event_id=e.root_event_id AND instr(e.tags_json,'\"broadcast\",\"1\"')>0))";
+
 impl Store {
     /// Make a verified NIP-CL snapshot the authority for the viewer's own
     /// memberships and roles. It covers every v1 type, so omission removes.
@@ -193,11 +198,11 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<Message>> {
         self.message_query(
-            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind
+            &format!("SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind
              FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
              WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099)
-               AND (e.kind<>40099 OR e.pubkey=c.relay_pubkey) AND e.root_event_id IS NULL
-             ORDER BY e.created_at DESC,e.event_id DESC LIMIT ?3",
+               AND (e.kind<>40099 OR e.pubkey=c.relay_pubkey) AND {TOP_LEVEL}
+             ORDER BY e.created_at DESC,e.event_id DESC LIMIT ?3"),
             params![community_id.to_string(),channel_id.to_string(),i64::try_from(limit).unwrap_or(i64::MAX)],
         ).map(|mut values| { values.reverse(); values })
     }
@@ -324,7 +329,7 @@ impl Store {
         let scope = if root.is_some() {
             "(e.event_id=?5 OR e.root_event_id=?5)"
         } else {
-            "e.root_event_id IS NULL"
+            TOP_LEVEL
         };
         let columns = "e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind";
         let older_sql = format!(
@@ -428,6 +433,10 @@ impl Store {
                     delivery: crate::domain::DeliveryState::from_outbox(state.as_deref()),
                     system,
                     sent_from_thread,
+                    broadcast: parsed_tags.iter().any(|tag| {
+                        tag.first().map(String::as_str) == Some("broadcast")
+                            && tag.get(1).map(String::as_str) == Some("1")
+                    }),
                     emoji,
                 })
             })?
