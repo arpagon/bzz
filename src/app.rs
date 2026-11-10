@@ -8293,28 +8293,38 @@ impl App {
     }
 
     fn render_empty(&self, frame: &mut Frame<'_>, area: Rect) {
-        frame.render_widget(
-            Paragraph::new(Text::from(vec![
-                Line::styled(
-                    "Welcome to bzz",
-                    self.theme.style(HighlightGroup::CommunitySelected),
-                ),
-                Line::default(),
-                Line::from("No communities are configured."),
-                Line::from("Run bzz identity new, then bzz community add."),
-                Line::default(),
-                Line::from("? help · q quit"),
-            ]))
-            .style(self.theme.style(HighlightGroup::Normal))
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::bordered()
-                    .border_type(self.theme.border_type(BorderSurface::Pane))
-                    .border_style(self.theme.style(HighlightGroup::PaneBorder))
-                    .title_style(self.theme.style(HighlightGroup::PaneTitle))
-                    .title(" bzz "),
+        let mut lines = vec![
+            Line::styled(
+                "Welcome to bzz",
+                self.theme.style(HighlightGroup::CommunitySelected),
             ),
+            Line::default(),
+            Line::from("No communities are configured."),
+            Line::from("Run bzz identity new, then bzz community add."),
+            Line::default(),
+            Line::from("? help · q quit"),
+        ];
+        // Without a workspace there is no status bar: command feedback
+        // (`:huddle`, `:presence`, ...) is shown here instead.
+        if let Some(notice) = &self.status_error {
+            lines.push(Line::default());
+            lines.push(Line::styled(
+                sanitize::single_line(notice),
+                self.theme.style(HighlightGroup::Muted),
+            ));
+        }
+        frame.render_widget(
+            Paragraph::new(Text::from(lines))
+                .style(self.theme.style(HighlightGroup::Normal))
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::bordered()
+                        .border_type(self.theme.border_type(BorderSurface::Pane))
+                        .border_style(self.theme.style(HighlightGroup::PaneBorder))
+                        .title_style(self.theme.style(HighlightGroup::PaneTitle))
+                        .title(" bzz "),
+                ),
             area,
         );
     }
@@ -9610,6 +9620,38 @@ mod tests {
                 .ui
                 .publish_presence
         );
+    }
+
+    /// A profile with no community has no workspace and no status bar; the
+    /// welcome screen must still show command feedback. The release Herdr
+    /// run of `v013-panels-empty-profile` caught it missing.
+    #[tokio::test]
+    async fn empty_profile_welcome_screen_shows_command_feedback() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+        assert!(app.config.communities.is_empty());
+        for (command, expected) in [
+            ("huddle", "select a channel in a connected community"),
+            ("tasks", "connect to a community to see artifacts"),
+            ("presence", "presence: off · nothing is published"),
+        ] {
+            app.status_error = None;
+            app.command = command.into();
+            app.execute_command().await.unwrap();
+            let screen = screen_text(&mut app);
+            assert!(screen.contains("Welcome to bzz"), "{screen}");
+            assert!(screen.contains(expected), "{command}: {screen}");
+        }
     }
 
     #[tokio::test]

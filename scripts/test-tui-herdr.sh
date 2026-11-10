@@ -19,8 +19,11 @@ Required environment for execution:
   BZZ_BIN=<absolute path>     release bzz binary (default: target/release/bzz)
 
 Optional environment:
-  BZZ_HERDR_SCENARIOS=automated|all|ID[,ID...]
+  BZZ_HERDR_SCENARIOS=automated|harness|all|ID[,ID...]
   BZZ_HERDR_MANIFEST=<path>
+  BZZ_HERDR_FIXTURE=<absolute dir> harness scenarios: the disposable profile
+                              written by examples/harness_fixture.rs (use
+                              scripts/test-tui-herdr-harness.sh)
 
 Only automated empty-profile scenarios run by default. Operator scenarios
 require the public disposable fixture and postconditions in docs/e2e-herdr.md;
@@ -59,7 +62,7 @@ if document.get("version") != 1 or set(document) - {"version", "scenario"}:
 values = document.get("scenario")
 if not isinstance(values, list) or not values:
     raise SystemExit("Herdr scenario manifest contains no scenarios")
-wanted = None if selected in {"all", "automated"} else set(selected.split(","))
+wanted = None if selected in {"all", "automated", "harness"} else set(selected.split(","))
 for scenario in values:
     if set(scenario) - {"id", "kind", "description", "ready", "exit", "keymap", "step"}:
         raise SystemExit("Herdr scenario manifest contains an unknown scenario field")
@@ -70,13 +73,13 @@ for scenario in values:
     steps = scenario.get("step")
     if not all(isinstance(value, str) and value for value in (identifier, kind, ready)):
         raise SystemExit("Herdr scenario manifest has invalid scenario metadata")
-    if kind not in {"automated", "operator"} or not isinstance(exit_marker, str):
+    if kind not in {"automated", "operator", "harness"} or not isinstance(exit_marker, str):
         raise SystemExit("Herdr scenario manifest has an invalid scenario kind")
     if not isinstance(steps, list) or not steps:
         raise SystemExit("Herdr scenario manifest has no steps")
     if wanted is not None and identifier not in wanted:
         continue
-    if selected == "automated" and kind != "automated":
+    if selected in {"automated", "harness"} and kind != selected:
         continue
     safe = [identifier, kind, ready, exit_marker, scenario.get("keymap", "")]
     if any("\t" in value or "\n" in value or "\r" in value for value in safe[:-1]):
@@ -123,6 +126,25 @@ binary=${BZZ_BIN:-"$repo_root/target/release/bzz"}
 }
 herdr pane process-info --pane "$pane" >/dev/null
 
+# Every scenario starts from the pane's shell prompt. A TUI left running by an
+# interrupted run would otherwise receive the next launch command as keys.
+require_shell() {
+    local state
+    for _ in $(seq 1 50); do
+        state=$(herdr pane process-info --pane "$pane" | python3 -c '
+import json, sys
+names = [p["name"] for p in json.load(sys.stdin)["result"]["process_info"]["foreground_processes"]]
+shells = {"bash", "zsh", "sh", "fish", "dash"}
+print("bzz" if "bzz" in names else "shell" if set(names) <= shells else "busy")
+')
+        [[ $state == shell ]] && return 0
+        [[ $state == bzz ]] && break
+        sleep 0.1 # a prompt helper (starship, git, ...) is still running
+    done
+    echo "the target pane is not at its shell prompt ($state); quit any bzz left running there first" >&2
+    exit 2
+}
+
 root=$(mktemp -d "${TMPDIR:-/tmp}/bzz-herdr.XXXXXXXX")
 cleanup() {
     rm -rf -- "$root"
@@ -131,6 +153,10 @@ trap cleanup EXIT INT TERM
 
 run_scenario() {
     local identifier=$1 kind=$2 ready=$3 exit_marker=$4 encoded_keymap=$5
+    if [[ $kind == harness ]]; then
+        run_harness_scenario "$identifier" "$ready"
+        return
+    fi
     if [[ $kind != automated ]]; then
         echo "operator scenario '$identifier' is intentionally manual; see docs/e2e-herdr.md" >&2
         return 2
@@ -156,9 +182,32 @@ run_scenario() {
         "$config" "$data" "$cache" "$binary"
     # Clear only the disposable terminal surface so a prior visible label
     # cannot satisfy a later readiness predicate. Scrollback is never saved.
+    require_shell
     herdr pane run "$pane" "printf '\\033[2J\\033[H'" >/dev/null
     herdr pane run "$pane" "$command" >/dev/null
     herdr pane wait-output "$pane" --source visible --match "$ready" --timeout 15000 >/dev/null
+    printf 'scenario %s ready\n' "$identifier"
+}
+
+# Harness scenarios run the disposable harness profile. The passphrase comes
+# from its owner-only file through a descriptor, never an argument or variable,
+# and ALSA's default device is the null device so no real microphone opens.
+run_harness_scenario() {
+    local identifier=$1 ready=$2
+    local fixture=${BZZ_HERDR_FIXTURE:?harness scenarios need BZZ_HERDR_FIXTURE}
+    [[ $fixture = /* && -f $fixture/passphrase && -d $fixture/config ]] || {
+        echo "BZZ_HERDR_FIXTURE must be an absolute harness fixture directory" >&2
+        exit 2
+    }
+    printf '%s\n' 'pcm.!default { type null }' >"$root/null-asound.conf"
+    local command
+    printf -v command \
+        'env BZZ_CONFIG_DIR=%q BZZ_DATA_DIR=%q BZZ_CACHE_DIR=%q BZZ_PASSPHRASE_FD=3 ALSA_CONFIG_PATH=%q %q 3<%q; status=$?; printf "__BZZ_HERDR_EXIT__:%%s\\n" "$status"' \
+        "$fixture/config" "$fixture/data" "$fixture/cache" "$root/null-asound.conf" "$binary" "$fixture/passphrase"
+    require_shell
+    herdr pane run "$pane" "printf '\\033[2J\\033[H'" >/dev/null
+    herdr pane run "$pane" "$command" >/dev/null
+    herdr pane wait-output "$pane" --source visible --match "$ready" --timeout 30000 >/dev/null
     printf 'scenario %s ready\n' "$identifier"
 }
 
@@ -198,4 +247,4 @@ done
     echo "scenario '$active_identifier' did not produce its expected exit marker" >&2
     exit 1
 }
-printf 'Herdr automated acceptance scenarios passed.\n'
+printf 'Herdr %s acceptance scenarios passed.\n' "$selection"

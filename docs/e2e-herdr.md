@@ -47,6 +47,31 @@ content. Preserve only sanitized visible output and the normal-exit marker;
 Inbox/relay authority is established by the manual store/relay postconditions
 below.
 
+### Harness scenarios (v0.13.0)
+
+`harness` scenarios drive the release TUI against a **fresh** isolated pinned
+relay with generated content. From a Herdr-managed controlling pane:
+
+```bash
+export BZZ_BUZZ_SOURCE=/path/to/pinned/buzz   # the pin in Cargo.toml
+export BZZ_HERDR_PANE=w1:p2                   # a disposable shell pane, at its prompt
+./scripts/test-relay.sh --herdr
+```
+
+The wrapper starts the relay with the optional v0.13 capabilities, writes a
+disposable viewer profile and content with `examples/harness_fixture.rs`
+(`#t9-general` with history, a thread, a task artifact and a custom emoji;
+`#t9-announcements` where the viewer is a guest; the viewer's own
+`#t9-agent-config` system channel), runs every `harness` scenario, then
+removes the profile and tears the relay down. The viewer's passphrase stays
+in an owner-only file passed through a descriptor (`BZZ_PASSPHRASE_FD`), and
+ALSA's default device is the null device, so the huddle scenario never opens
+a real microphone. The scenarios cover the System group, the read-only
+announce composer, the artifacts panel, custom emoji in the reaction picker,
+the report confirmation, `:presence`, the broker panel and a huddle (start,
+join muted, unmute, mute, leave). The runner refuses to start a scenario
+while a TUI is still in the foreground of the target pane.
+
 ### Manual disposable-fixture journey
 
 Create `.env` from the template and set only non-secret values:

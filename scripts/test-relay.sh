@@ -3,10 +3,15 @@
 # --nip-fi: start a test-only NIP-FA issuer (examples/fake_nip_fa.rs) on
 # localhost:3093 and the relay in BUZZ_NIP_FI_MODE=enforce trusting it, then
 # run tests/relay_nip_fi_integration.rs.
+# --herdr: write a disposable viewer profile and generated content with
+# examples/harness_fixture.rs, then drive the release TUI through the
+# `harness` scenarios of scripts/tui-herdr-scenarios.toml (run this from a
+# Herdr pane with BZZ_HERDR_PANE set; see docs/e2e-herdr.md).
 set -euo pipefail
 : "${BZZ_BUZZ_SOURCE:?set BZZ_BUZZ_SOURCE to the pinned block/buzz checkout}"
 PROFILE=default
 if [[ "${1:-}" == "--nip-fi" ]]; then PROFILE=nip-fi; fi
+if [[ "${1:-}" == "--herdr" ]]; then PROFILE=herdr; fi
 PIN=f3b127e3af5c14d2314faa2b63556c3f51ec6743
 HEAD=$(git -C "$BZZ_BUZZ_SOURCE" rev-parse HEAD)
 if [[ "$HEAD" != "$PIN" && "${BZZ_ALLOW_UNPINNED_RELAY:-}" != 1 ]]; then
@@ -79,6 +84,17 @@ done
 for _ in $(seq 1 60); do curl -fsS http://localhost:3030/ >/dev/null && break; sleep 1; done
 if [[ "$PROFILE" == nip-fi ]]; then
   cargo test --locked --test relay_nip_fi_integration -- --ignored --test-threads=1
+elif [[ "$PROFILE" == herdr ]]; then
+  cargo build --locked --release
+  cargo build --locked --example harness_fixture
+  fixture=$(mktemp -d "${TMPDIR:-/tmp}/bzz-harness-fixture.XXXXXXXX")
+  chmod 700 "$fixture"
+  ./target/debug/examples/harness_fixture "$fixture/profile" "$BZZ_BUZZ_SOURCE"
+  status=0
+  BZZ_BIN="$PWD/target/release/bzz" BZZ_HERDR_FIXTURE="$fixture/profile" BZZ_HERDR_SCENARIOS=harness \
+    ./scripts/test-tui-herdr.sh || status=$?
+  rm -rf -- "$fixture"
+  exit "$status"
 else
   BZZ_E2E_RELAY_URL=ws://localhost:3030 cargo test --locked --test relay_integration -- --ignored --test-threads=1
 fi
