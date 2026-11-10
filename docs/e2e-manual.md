@@ -25,7 +25,7 @@ debug builds deliberately use separate paths and keychain services.
 
 Expected result:
 
-- candidate version `0.11.0`;
+- candidate version `0.13.0`;
 - config, data, and cache under `BZZ_E2E_ROOT`;
 - `configuration, theme, media, diagnostics, telemetry, and database are valid`;
 - no secrets in `.env` or command output.
@@ -484,6 +484,94 @@ databases. Never use the production owner identity.
 5. Publish a generated kind 1059 fixture only in the isolated automated relay;
    NIP-50 and local FTS must not return it.
 
+## 11. v0.13.0 surfaces
+
+Use disposable identities and dedicated test channels only. The isolated
+pinned harness (`BZZ_BUZZ_SOURCE=<pin> ./scripts/test-relay.sh` brings it up
+and tears it down; start the relay alone with
+`./scripts/start-isolated-test-relay.sh --profile dev` inside the pinned Buzz
+checkout) enables the optional relay capabilities this section needs:
+`BUZZ_MEMBERSHIP_SNAPSHOT_ENABLED=true` and
+`BUZZ_MEMBERSHIP_PUBLIC_ENABLED=true`. Against the harness, add the community
+with `--allow-insecure-localhost` and the URL `ws://localhost:3030`.
+
+### Channels, roles and the profile card
+
+1. Join an announce channel (join role `guest`) with B. B's composer shows
+   `read-only · announce channel (guest)`; `i`, `r` and `Enter` publish
+   nothing and keep any draft.
+2. A system channel stays in the collapsed `⚙` group until `:system`; it is
+   read-only for every role.
+3. Have the owner remove B from the selected channel. B's selection moves to
+   a safe channel and B's draft for the removed channel is kept.
+4. Select one of A's messages on B and press `Space p` (or run `:profile`).
+   The card lists A's listed, open channels with A's role, marks archived ones,
+   and never shows a shared private channel, an unlisted channel or a DM. On a
+   relay without `membership_public` the card says the relay does not offer
+   the lookup; it never shows an empty list for a failure.
+
+### Snapshots and windows
+
+1. Start with `membership_snapshot` enabled and confirm every joined channel
+   (system channels included) appears with the right role; restart with it
+   disabled and confirm nothing is lost.
+2. In a channel with several hundred generated messages (harness only), scroll
+   to the top: no gap, no duplicate, reactions present. Open a long thread: it
+   opens at its newest replies, and moving above the oldest loaded reply loads
+   older ones.
+
+### Federated identity (FI communities only)
+
+1. With `identity_adapter` configured and no session, the status explains that
+   sign-in is required; `:signin` opens the browser, and after login the
+   community connects. Media uploads and HTTP queries keep working.
+2. Revoke the session at the adapter: the next re-mint fails with a typed
+   denial, never a silent retry loop.
+3. On Linux or macOS with Buzz Desktop running, `bzz identity pair-desktop
+   --label <label> --relay <url>` pairs; approve in Buzz. The identity signs
+   through Desktop and bzz never holds its key.
+
+### Artifacts, emoji, presence and status
+
+1. `:artifacts` lists the channel's artifacts; `:tasks` lists `buzz.task`
+   artifacts assigned to you. `:artifact rename <title>`, `delete`, `restore`
+   and `move <#channel>` ask for confirmation where the audience changes.
+2. Press `r` on a message, then `:` and a shortcode prefix: custom emoji from
+   the community appear; the reaction shows inline in a graphics terminal and
+   as `:shortcode:` elsewhere.
+3. With `[ui] publish_presence = true`, a second client shows the presence dot;
+   with it off nothing is published. `:status --expires 10m testing` shows the
+   status until it expires; `:status clear` removes it.
+
+### Huddles
+
+1. `:huddle start` (confirm), then join from a second client with
+   `:huddle join`. Both enter muted; in the `:huddle` panel `m` toggles mute
+   and `Space` is push-to-talk (each press or key repeat keeps you live for
+   600 ms).
+2. `:huddle devices` lists devices; `:huddle input <name>` and
+   `:huddle output <name>` select them. Lock (`:lock`) and quit release the
+   microphone.
+3. `:huddle end` (creator only, confirmed) ends it for everyone.
+
+### Local agent broker
+
+1. `bzz broker create test-agent` prints the credential once. `bzz broker list`
+   never shows it. `bzz broker allow test-agent channel.read,message.post`
+   opts in to writes; an unknown action name is refused with the hosted list.
+2. With bzz unlocked, an agent process posts through `POST /v1/action` on the
+   loopback address shown in `:broker`; the post carries your NIP-OA tag. `p`
+   in `:broker` pauses every agent; `o` toggles owner-signed agent presence.
+3. `bzz broker delete test-agent --yes` revokes and removes the key.
+
+### Send to channel and report
+
+1. In an open thread, type a reply and run `:tochannel`: it is posted to the
+   channel as a new message whose sent-from-thread tag carries the thread
+   root and a short excerpt of it.
+2. Select a generated message and run `:report spam generated fixture`; confirm.
+   The relay accepts the kind 1984 report.
+
 ## Results log
 
 | Section | Result | Evidence/notes |
@@ -500,6 +588,7 @@ databases. Never use the production owner identity.
 | 8. Network/multi-client | ☐ | |
 | 9. Images/attachments | ☐ | |
 | 10. Inbox/DMs/search | ☐ | |
+| 11. v0.13.0 surfaces | ☐ | |
 
 ## Cleanup
 

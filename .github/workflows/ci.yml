@@ -78,3 +78,22 @@ jobs:
           test -n "$identity_id"
           ${{ matrix.binary }} identity verify "$identity_id"
           ${{ matrix.binary }} identity remove "$identity_id" --yes
+  upgrade:
+    # Release acceptance: a real v0.12.1 data directory opened by this build.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Linux keychain build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libasound2-dev cmake pkg-config
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Open a v0.12.1 data directory with this build
+        shell: bash
+        run: ./scripts/upgrade-test.sh
