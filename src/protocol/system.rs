@@ -85,7 +85,26 @@ fn parse_known(content: &str) -> Option<SystemEvent> {
             participants: Vec::new(),
             detail: None,
         },
-        "message_deleted" => member_event(SystemEventKind::MessageDeleted, actor?, target?),
+        // The relay names the removed event (`target_event_id`), never a
+        // person; a moderator removal adds a sanitized `public_reason`.
+        "message_deleted" => SystemEvent {
+            kind: SystemEventKind::MessageDeleted,
+            actor: Some(actor?),
+            target: None,
+            participants: Vec::new(),
+            detail: match object.get("public_reason") {
+                None | Some(Value::Null) => None,
+                Some(reason) => {
+                    let reason = crate::render::sanitize::single_line(reason.as_str()?);
+                    let reason = reason
+                        .trim()
+                        .chars()
+                        .take(MAX_DETAIL_CHARS)
+                        .collect::<String>();
+                    (!reason.is_empty()).then_some(reason)
+                }
+            },
+        },
         "topic_changed" | "purpose_changed" => {
             let field = if kind == "topic_changed" {
                 "topic"
@@ -228,6 +247,34 @@ mod tests {
             .to_string(),
         );
         assert_eq!(duplicate.kind, SystemEventKind::Unsupported);
+    }
+
+    /// The pinned relay's exact `message_deleted` payloads (self-delete and
+    /// moderator removal); production showed them as unsupported.
+    #[test]
+    fn message_deleted_matches_the_relay_payload() {
+        use std::collections::HashMap;
+        let profiles = HashMap::new();
+        let owner = crate::domain::abbreviated_pubkey(OWNER);
+        let event = "e".repeat(64);
+        let plain =
+            serde_json::json!({"type":"message_deleted","actor":OWNER,"target_event_id":event});
+        assert_eq!(
+            crate::ui::timeline::system_summary(&parse(&plain.to_string()), &profiles, None),
+            format!("{owner} removed a message")
+        );
+        let moderated = serde_json::json!({
+            "type":"message_deleted","actor":OWNER,"target_event_id":event,"public_reason":"spam\nlinks"
+        });
+        assert_eq!(
+            crate::ui::timeline::system_summary(&parse(&moderated.to_string()), &profiles, None),
+            "Removed by community moderators · spam links"
+        );
+        let no_actor = serde_json::json!({"type":"message_deleted","target_event_id":event});
+        assert_eq!(
+            parse(&no_actor.to_string()).kind,
+            SystemEventKind::Unsupported
+        );
     }
 
     /// Every channel-settings notice the pinned relay emits, rendered the

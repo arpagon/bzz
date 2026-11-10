@@ -13,7 +13,7 @@ categories = ["command-line-utilities"]
 [features]
 default = ["huddles-audio"]
 # Live huddle audio: microphone capture, playback and Opus (ADR v0.13 huddle audio).
-huddles-audio = ["dep:buzz-audio-client", "dep:cpal"]
+huddles-audio = ["dep:buzz-audio-client", "dep:cpal", "dep:rustix"]
 
 [[bin]]
 name = "bzz"
@@ -69,6 +69,11 @@ zeroize = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "=0.13.13", default-features = false, features = ["file_chooser", "tokio"] }
+
+# ALSA writes plugin errors straight to fd 2; huddle device setup silences
+# it so the full-screen TUI is never corrupted (safe `dup2`).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["std", "stdio"], optional = true }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 rfd = { version = "=0.17.2", default-features = false }

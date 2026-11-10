@@ -229,6 +229,30 @@ frame: `/tmp/bzz-v013-visual.p6pDzi/` —
 drawn inline) and `m7-scroll.mp4` (34 s, 1130×654, 10 fps). README has no
 media.
 
+## Production smoke findings (follow-up in progress)
+
+The owner's huddle screenshot exposed ALSA plugin errors writing over the TUI
+and an unsupported `message_deleted` notice. The notice uses the pinned relay's
+`target_event_id`, not a member `target`; the new regression test
+`message_deleted_matches_the_relay_payload` failed with `Unsupported system
+event` when the old target requirement was restored, then passed with the fix.
+Self-delete and sanitized moderator reasons are covered.
+
+Audio probing now tries a usable fallback when the default device configuration
+is broken, without changing the user's ALSA configuration or overriding an
+explicitly selected device. The isolated PipeWire loopback with a deliberately
+broken PulseAudio default passed (170 ms, peak 0.50, zero `ALSA lib` lines on
+stderr). Device probing temporarily redirects process-wide stderr on Unix;
+callers are serialized and restoration is guarded against unwinding.
+
+Default-feature all-target tests, no-default-feature all-target tests, clippy
+all-targets/all-features, cargo deny and cargo audit passed on this follow-up.
+The release binary was rebuilt. Production audio retest remains pending;
+this follow-up is not release acceptance. A proposed automatic end on the
+creator's failed audio join was withdrawn: a local device failure must not
+end a huddle another participant may already have joined. The creator can
+explicitly end the huddle from the panel.
+
 ## Pending
 
 | Item | Why | Who |

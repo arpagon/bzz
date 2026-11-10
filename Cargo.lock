@@ -561,6 +561,7 @@ dependencies = [
  "rfd",
  "rpassword",
  "rusqlite",
+ "rustix 1.1.4",
  "secrecy",
  "serde",
  "serde_json",

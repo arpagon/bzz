@@ -1210,10 +1210,14 @@ pub(crate) fn system_summary(
             || "Channel restored".to_owned(),
             |actor| format!("Channel restored by {actor}"),
         ),
-        SystemEventKind::MessageDeleted => actor.map_or_else(
-            || "A message was deleted".to_owned(),
-            |actor| format!("A message was deleted by {actor}"),
-        ),
+        SystemEventKind::MessageDeleted => match (&system.detail, actor) {
+            (Some(reason), _) => format!(
+                "Removed by community moderators · {}",
+                sanitize::single_line(reason)
+            ),
+            (None, Some(actor)) => format!("{actor} removed a message"),
+            (None, None) => "A message was removed".to_owned(),
+        },
         SystemEventKind::TopicChanged | SystemEventKind::PurposeChanged => {
             let field = if system.kind == SystemEventKind::TopicChanged {
                 "topic"

@@ -112,6 +112,7 @@ mod tests {
         assert_eq!(parse(":presence off"), Command::Presence("off".into()));
         assert_eq!(parse(":profile npub1x"), Command::Profile("npub1x".into()));
         assert_eq!(parse(":huddle"), Command::Huddle(String::new()));
+        assert_eq!(parse(":huddle start"), Command::Huddle("start".into()));
         assert_eq!(
             parse(":huddle react 🎉"),
             Command::Huddle("react 🎉".into())

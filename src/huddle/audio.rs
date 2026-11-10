@@ -218,8 +218,50 @@ impl Drop for Devices {
     }
 }
 
+/// ALSA reports plugin and configuration errors (for example a `pulse`
+/// default whose plugin is not installed) by writing to fd 2, on top of the
+/// full-screen TUI. Device enumeration and opening run with fd 2 pointed at
+/// the null device; it is restored right after.
+fn quiet_stderr<T>(operation: impl FnOnce() -> T) -> T {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsFd as _;
+        // Redirection is process-wide: serialize our callers and restore on
+        // unwinding too, so a failed device probe cannot leave stderr muted.
+        static REDIRECT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = REDIRECT.lock().unwrap_or_else(|error| error.into_inner());
+        struct Restore(Option<rustix::fd::OwnedFd>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if let Some(saved) = &self.0 {
+                    let _ = rustix::stdio::dup2_stderr(saved);
+                }
+            }
+        }
+        let saved = rustix::io::dup(std::io::stderr().as_fd()).ok();
+        let null = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .ok();
+        let silenced = match (&saved, &null) {
+            (Some(_), Some(null)) => rustix::stdio::dup2_stderr(null).is_ok(),
+            _ => false,
+        };
+        let _restore = Restore(if silenced { saved } else { None });
+        operation()
+    }
+    #[cfg(not(unix))]
+    {
+        operation()
+    }
+}
+
 /// Device names for the pickers (local UI only; never logged).
 pub fn device_names() -> (Vec<String>, Vec<String>) {
+    quiet_stderr(device_names_inner)
+}
+
+fn device_names_inner() -> (Vec<String>, Vec<String>) {
     use cpal::traits::{DeviceTrait as _, HostTrait as _};
     let host = cpal::default_host();
     let names = |devices: Option<Vec<cpal::Device>>| {
@@ -250,7 +292,9 @@ pub fn open_devices(input: Option<&str>, output: Option<&str>) -> Result<DeviceB
     let thread = std::thread::Builder::new()
         .name("bzz-huddle-audio".into())
         .spawn(move || {
-            match device_streams(input.as_deref(), output.as_deref(), capture_tx, playback_rx) {
+            match quiet_stderr(|| {
+                device_streams(input.as_deref(), output.as_deref(), capture_tx, playback_rx)
+            }) {
                 Ok(streams) => {
                     let _ = ready_tx.send(Ok(()));
                     let _ = stop_rx.recv();
@@ -294,14 +338,40 @@ fn device_streams(
                 .find(|device| device.name().is_ok_and(|n| n == name))
         })
     };
+    // With no device configured: the system default when it actually
+    // opens, else the first device that does (`pipewire` is tried first, as
+    // a broken `default` is usually a stale `~/.asoundrc`).
+    let usable_input = |device: &cpal::Device| device.default_input_config().is_ok();
+    let usable_output = |device: &cpal::Device| device.default_output_config().is_ok();
+    let fallback = |devices: Option<Vec<cpal::Device>>, usable: &dyn Fn(&cpal::Device) -> bool| {
+        let mut devices = devices.unwrap_or_default();
+        devices.sort_by_key(|device| device.name().map_or(true, |name| name != "pipewire"));
+        devices.into_iter().find(|device| usable(device))
+    };
     let mic = match input {
         Some(name) => find(host.input_devices().ok().map(Iterator::collect), name),
-        None => host.default_input_device(),
+        None => host
+            .default_input_device()
+            .filter(|device| usable_input(device))
+            .or_else(|| {
+                fallback(
+                    host.input_devices().ok().map(Iterator::collect),
+                    &usable_input,
+                )
+            }),
     }
     .ok_or_else(|| Error::Unsupported(MICROPHONE_DENIED.into()))?;
     let speaker = match output {
         Some(name) => find(host.output_devices().ok().map(Iterator::collect), name),
-        None => host.default_output_device(),
+        None => host
+            .default_output_device()
+            .filter(|device| usable_output(device))
+            .or_else(|| {
+                fallback(
+                    host.output_devices().ok().map(Iterator::collect),
+                    &usable_output,
+                )
+            }),
     }
     .ok_or_else(|| Error::Unsupported(SPEAKER_UNAVAILABLE.into()))?;
     let input_config = mic
