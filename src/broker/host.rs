@@ -156,6 +156,15 @@ impl Host {
         self.lock().agents = agents;
     }
 
+    /// The owner changed one served agent's policy; others are untouched and
+    /// an agent this host does not serve is not added.
+    pub fn update_policy(&self, id: Uuid, allowed: BTreeSet<String>, paused: bool) {
+        if let Some(agent) = self.lock().agents.iter_mut().find(|agent| agent.id == id) {
+            agent.allowed = allowed;
+            agent.paused = paused;
+        }
+    }
+
     /// The owner's one-key pause for every hosted agent.
     pub fn set_paused_all(&self, paused: bool) {
         self.lock().paused_all = paused;
@@ -530,6 +539,26 @@ mod tests {
         assert_eq!(
             code(&client.execute(&managed).await.unwrap()),
             Some(BrokerErrorCode::Unsupported)
+        );
+
+        // A panel policy edit applies to the served agent at once: denying
+        // message.post refuses the next post; pausing one agent refuses all.
+        let served = host.lock().agents[0].id;
+        host.update_policy(served, ["channel.read".to_owned()].into(), false);
+        let revoked = client.execute(&post("p6", "hello")).await.unwrap();
+        assert_eq!(code(&revoked), Some(BrokerErrorCode::Unauthorized));
+        host.update_policy(Uuid::new_v4(), BTreeSet::new(), true);
+        assert_eq!(
+            host.lock().agents.len(),
+            1,
+            "an unserved agent is not added"
+        );
+        host.update_policy(
+            served,
+            ["channel.read", "message.post", "storage.address"]
+                .map(str::to_owned)
+                .into(),
+            false,
         );
 
         // Pause: every action is refused with a typed denial.

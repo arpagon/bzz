@@ -566,6 +566,9 @@ with `--allow-insecure-localhost` and the URL `ws://localhost:3030`.
 2. With bzz unlocked, an agent process posts through `POST /v1/action` on the
    loopback address shown in `:broker`; the post carries your NIP-OA tag. `p`
    in `:broker` pauses every agent; `o` toggles owner-signed agent presence.
+   In the same panel `j`/`k` select an agent, `1`–`6` allow or deny one
+   action for it (shown as `[x]`), and `Space` pauses only that agent; the
+   next agent request sees the change.
 3. `bzz broker delete test-agent --yes` revokes and removes the key.
 
 ### Send to channel and report

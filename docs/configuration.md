@@ -254,6 +254,8 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   `:huddle input <name>` / `:huddle output <name>`; `:huddle devices` lists
   them. Device names are stored here and nowhere else.
 - **`[[hosted_agents]]`**: written by `bzz broker create`; do not hand-edit.
+  Change an agent's allowed actions with `bzz broker allow` or in `:broker`
+  (`j`/`k` select, `1`–`6` toggle an action, `Space` pause that agent).
   Each entry holds an agent's public key, community, owner identity, the
   owner's NIP-OA tag, the credential **hash** and the allowed actions. The
   agent key itself is NIP-44-sealed to the owner's key in

@@ -19,6 +19,8 @@ pub struct BrokerStatus {
     pub serving: Option<u16>,
     pub paused_all: bool,
     pub agent_presence: bool,
+    /// The agent whose policy the number keys edit.
+    pub selected: usize,
 }
 
 pub fn render(
@@ -34,6 +36,7 @@ pub fn render(
         serving,
         paused_all,
         agent_presence,
+        selected,
     } = status;
     let state = match (serving, paused_all) {
         (None, _) => "not serving".to_owned(),
@@ -54,12 +57,12 @@ pub fn render(
     let panes = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(u16::try_from(agents.len().clamp(1, 8) + 1).unwrap_or(9)),
+            Constraint::Length(u16::try_from(agents.len().clamp(1, 8) + 3).unwrap_or(11)),
             Constraint::Min(1),
         ])
         .split(inner);
     let mut lines = vec![Line::from(Span::styled(
-        "hosted agents (manage with `bzz broker …`)",
+        "hosted agents · j/k select · 1-6 allow/deny action · space pause agent · create with `bzz broker create`",
         theme.style(HighlightGroup::Muted),
     ))];
     if agents.is_empty() {
@@ -67,17 +70,37 @@ pub fn render(
             "none — create one with `bzz broker create <label>`",
         ));
     }
-    for agent in agents.iter().take(8) {
+    for (index, agent) in agents.iter().enumerate().take(8) {
         lines.push(Line::from(format!(
-            "{} · {} · {}",
+            "{} {} · {}",
+            if index == selected { "›" } else { " " },
             crate::protocol::artifact::display(&agent.label, 32),
             if agent.paused || paused_all {
                 "paused"
             } else {
                 "active"
             },
-            agent.allowed.join(", ")
         )));
+    }
+    if let Some(agent) = agents.get(selected) {
+        lines.push(Line::from(
+            crate::broker::host::hosted_actions()
+                .iter()
+                .enumerate()
+                .map(|(index, action)| {
+                    format!(
+                        "{}[{}] {action}",
+                        index + 1,
+                        if agent.allowed.contains(action) {
+                            "x"
+                        } else {
+                            " "
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("  "),
+        ));
     }
     frame.render_widget(
         Paragraph::new(lines).style(theme.style(HighlightGroup::Normal)),

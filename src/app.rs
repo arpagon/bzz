@@ -389,6 +389,8 @@ pub struct App {
     thread_window_loading: bool,
     /// Open profile card and the generation counter for its lookups.
     profile_card: Option<crate::ui::profile::ProfileCard>,
+    /// The `:broker` panel's selected agent.
+    broker_selected: usize,
     profile_generation: u64,
     /// Verified public lists keyed by (community, subject); display data
     /// only, in memory, never authority.
@@ -799,6 +801,7 @@ impl App {
             thread_window: None,
             thread_window_loading: false,
             profile_card: None,
+            broker_selected: 0,
             profile_generation: 0,
             public_lookup_cache: HashMap::new(),
             public_lookup_backoff: HashMap::new(),
@@ -3081,6 +3084,12 @@ impl App {
                         broker.host.set_paused_all(!broker.host.paused_all());
                     }
                 }
+                KeyCode::Char('j') | KeyCode::Down => self.broker_select(1),
+                KeyCode::Char('k') | KeyCode::Up => self.broker_select(-1),
+                KeyCode::Char(digit @ '1'..='9') => {
+                    self.broker_toggle_action(usize::from(digit as u8 - b'1'))
+                }
+                KeyCode::Char(' ') => self.broker_toggle_paused(),
                 // Opt in or out of owner-signed agent presence (kind 20003).
                 KeyCode::Char('o') => {
                     self.config.ui.broker_agent_presence = !self.config.ui.broker_agent_presence;
@@ -4765,6 +4774,78 @@ impl App {
         format!(
             "\"{title}\" moves to {audience}. Everyone there can read its title, {tags} tags and content · y move · n/Esc cancel"
         )
+    }
+
+    /// Hosted agents of the active community, in panel order.
+    fn broker_agent_indexes(&self) -> Vec<usize> {
+        let community = self.active_community_id();
+        self.config
+            .hosted_agents
+            .iter()
+            .enumerate()
+            .filter(|(_, agent)| Some(agent.community) == community)
+            .map(|(index, _)| index)
+            .take(8)
+            .collect()
+    }
+
+    fn broker_select(&mut self, delta: isize) {
+        let count = self.broker_agent_indexes().len();
+        if count > 0 {
+            self.broker_selected = self
+                .broker_selected
+                .saturating_add_signed(delta)
+                .min(count - 1);
+        }
+    }
+
+    /// Owner policy edit from the panel: allow or deny one hosted action for
+    /// the selected agent. Saved, then applied to the running host at once.
+    fn broker_toggle_action(&mut self, index: usize) {
+        let Some(&agent) = self.broker_agent_indexes().get(self.broker_selected) else {
+            return;
+        };
+        let Some(action) = crate::broker::host::hosted_actions().into_iter().nth(index) else {
+            return;
+        };
+        let mut allowed = self.config.hosted_agents[agent].allowed.clone();
+        if let Some(position) = allowed.iter().position(|value| *value == action) {
+            allowed.remove(position);
+        } else {
+            allowed.push(action);
+        }
+        if let Err(error) =
+            crate::broker::custody::set_allowed(&mut self.config.hosted_agents[agent], &allowed)
+        {
+            self.status_error = Some(error.to_string());
+            return;
+        }
+        self.save_broker_policy();
+    }
+
+    fn broker_toggle_paused(&mut self) {
+        let Some(&agent) = self.broker_agent_indexes().get(self.broker_selected) else {
+            return;
+        };
+        let paused = &mut self.config.hosted_agents[agent].paused;
+        *paused = !*paused;
+        self.save_broker_policy();
+    }
+
+    fn save_broker_policy(&mut self) {
+        if let Err(error) = self.config.save(&self.paths) {
+            self.status_error = Some(error.to_string());
+            return;
+        }
+        if let Some(broker) = &self.broker {
+            for agent in &self.config.hosted_agents {
+                broker.host.update_policy(
+                    agent.id,
+                    agent.allowed.iter().cloned().collect(),
+                    agent.paused,
+                );
+            }
+        }
     }
 
     fn profile_key(&mut self, key: KeyEvent) {
@@ -8912,6 +8993,7 @@ impl App {
                     crate::ui::broker::BrokerStatus {
                         serving: self.broker.as_ref().map(|broker| broker.server.address.port()),
                         paused_all: self.broker.as_ref().is_some_and(|broker| broker.host.paused_all()),
+                        selected: self.broker_selected,
                         agent_presence: self.config.ui.broker_agent_presence
                             && self.config.ui.publish_presence,
                     },
@@ -9581,6 +9663,56 @@ mod tests {
         ));
         assert!(!triggers_directory_refresh(40_099, "malformed"));
         assert!(!triggers_directory_refresh(9, "member_joined"));
+    }
+
+    /// M9.4: the owner sets per-agent, per-action policy and pauses one agent
+    /// from the `:broker` panel; it is saved and shown at once.
+    #[tokio::test]
+    async fn broker_panel_edits_and_saves_agent_policy() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let community = app.active_community_id().unwrap();
+        for label in ["first", "second"] {
+            app.config
+                .hosted_agents
+                .push(crate::config::HostedAgentConfig {
+                    id: Uuid::new_v4(),
+                    label: label.into(),
+                    pubkey: "b".repeat(64),
+                    community,
+                    owner_identity: Uuid::new_v4(),
+                    auth_tag: "[]".into(),
+                    credential_hash: "c".repeat(64),
+                    allowed: vec!["channel.read".into()],
+                    paused: false,
+                });
+        }
+        app.command = "broker".into();
+        app.execute_command().await.unwrap();
+        // Hosted actions in order: channel.read, message.post, message.reply,
+        // profile.set, reaction.add, storage.address.
+        app.broker_select(1);
+        app.broker_toggle_action(1);
+        app.broker_toggle_action(0);
+        app.broker_toggle_paused();
+        let saved = crate::config::Config::load(&app.paths).unwrap();
+        assert_eq!(saved.hosted_agents[0].allowed, vec!["channel.read"]);
+        assert!(!saved.hosted_agents[0].paused);
+        assert_eq!(saved.hosted_agents[1].allowed, vec!["message.post"]);
+        assert!(saved.hosted_agents[1].paused);
+        let screen = screen_text(&mut app);
+        assert!(screen.contains("› second · paused"), "{screen}");
+        assert!(screen.contains("1[ ] channel.read"), "{screen}");
+        assert!(screen.contains("2[x] message.post"), "{screen}");
+        // A digit past the hosted actions changes nothing.
+        app.broker_toggle_action(8);
+        assert_eq!(
+            crate::config::Config::load(&app.paths)
+                .unwrap()
+                .hosted_agents[1]
+                .allowed,
+            vec!["message.post"]
+        );
     }
 
     /// The deterministic twin of the `v013-panels-empty-profile` Herdr scenario.
