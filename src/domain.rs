@@ -236,6 +236,9 @@ pub struct Profile {
     /// Live presence, filled by the App from the presence book; never stored.
     #[serde(skip)]
     pub presence: Option<crate::protocol::presence::Presence>,
+    /// In the selected channel's active huddle (filled by the App).
+    #[serde(skip)]
+    pub in_huddle: bool,
 }
 
 impl Profile {
@@ -270,6 +273,7 @@ impl Profile {
             verified: Some(name),
             status: None,
             presence: None,
+            in_huddle: false,
         }
     }
 

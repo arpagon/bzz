@@ -933,6 +933,12 @@ fn message_block(
                 theme.style(HighlightGroup::MessageTimestamp),
             ));
         }
+        if author_profile.is_some_and(|profile| profile.in_huddle) {
+            header.push(Span::styled(
+                "🎧 ",
+                theme.style(HighlightGroup::MessageTimestamp),
+            ));
+        }
         header.push(Span::styled(
             author,
             theme.style(HighlightGroup::MessageAuthor),

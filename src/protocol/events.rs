@@ -155,6 +155,7 @@ pub fn as_profile(event: &Event) -> Option<Profile> {
         verified: None,
         status: None,
         presence: None,
+        in_huddle: false,
     })
 }
 

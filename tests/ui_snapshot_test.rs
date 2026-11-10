@@ -119,6 +119,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                 ChannelSort::Smart,
                 false,
                 &HashMap::new(),
+                None,
                 &theme,
                 true,
             );
@@ -235,6 +236,7 @@ fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
                 verified: None,
                 status: None,
                 presence: None,
+                in_huddle: false,
             },
         ),
         (
@@ -251,6 +253,7 @@ fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
                 verified: None,
                 status: None,
                 presence: None,
+                in_huddle: false,
             },
         ),
     ]);
@@ -594,6 +597,7 @@ fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
         verified: None,
         status: None,
         presence: None,
+        in_huddle: false,
     };
     let profiles = HashMap::from([(pubkey.clone(), profile)]);
     let items = vec![InboxItem {

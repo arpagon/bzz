@@ -60,6 +60,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
             verified: None,
             status: None,
             presence: None,
+            in_huddle: false,
         },
     )]);
     let reactions = HashMap::from([(
@@ -105,6 +106,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
                         ChannelSort::Smart,
                         false,
                         &HashMap::new(),
+                        None,
                         &theme,
                         true,
                     );

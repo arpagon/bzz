@@ -101,6 +101,7 @@ fn timeline_shows_presence_marker_and_status() {
             expires_at: None,
         }),
         presence: Some(Presence::Online),
+        in_huddle: false,
     };
     let profiles = HashMap::from([(pubkey.clone(), profile)]);
     let messages = vec![Message {

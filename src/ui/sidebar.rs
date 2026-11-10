@@ -83,6 +83,7 @@ pub fn render(
     sort: ChannelSort,
     show_system: bool,
     dm_presence: &HashMap<uuid::Uuid, crate::protocol::presence::Presence>,
+    huddle_channel: Option<uuid::Uuid>,
     theme: &Theme,
     focused: bool,
 ) {
@@ -118,8 +119,13 @@ pub fn render(
             Some(crate::protocol::presence::Presence::Away) => " ◐",
             _ => "",
         };
+        let huddle = if huddle_channel == Some(channel.id) {
+            " 🎧"
+        } else {
+            ""
+        };
         ListItem::new(Line::from(format!(
-            "{badge} {privacy}{}{presence}",
+            "{badge} {privacy}{}{presence}{huddle}",
             sanitize::single_line(&channel.name)
         )))
         .style(theme.style(if is_unread {

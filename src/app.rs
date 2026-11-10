@@ -1848,8 +1848,13 @@ impl App {
             .call(move |store| store.profiles(community))
             .await?;
         let now = crate::clock::SystemClock.now_unix();
+        let huddle_roster = self
+            .active_huddle()
+            .map(|active| active.participants.iter().cloned().collect::<HashSet<_>>())
+            .unwrap_or_default();
         for profile in self.profiles.values_mut() {
             profile.presence = Some(self.presence.get(&profile.pubkey, now));
+            profile.in_huddle = huddle_roster.contains(&profile.pubkey);
         }
         let self_pubkey = self.self_pubkey().unwrap_or_default().to_owned();
         self.agents = if self_pubkey.is_empty() {
@@ -8222,6 +8227,8 @@ impl App {
                 self.config.ui.channel_sort,
                 self.show_system_channels,
                 &self.dm_presence,
+                self.active_huddle()
+                    .and(self.current_channel().map(|channel| channel.id)),
                 &self.theme,
                 self.presentation.focus == FocusSurface::Channels,
             );
@@ -9917,6 +9924,51 @@ mod tests {
         assert!(screen.contains("🎉"), "{screen}");
         assert!(!screen.contains("guest"), "{screen}");
         assert!(!screen.contains("forged"), "{screen}");
+
+        // M8.1: the channel row and the names of people in the huddle carry
+        // the active-huddle marker.
+        app.presentation.close_overlay();
+        app.presentation.close_overlay();
+        let mut profile = crate::domain::Profile::verified_only(
+            &guest.public_key().to_hex(),
+            crate::protocol::verified_profile::VerifiedName {
+                display_name: "Guest Person".into(),
+                username: "guest".into(),
+                full_name: None,
+                issuer_label: "IdP".into(),
+                verified_at: 1,
+            },
+            "e".repeat(64),
+            1,
+        );
+        profile.in_huddle = app
+            .active_huddle()
+            .is_some_and(|active| active.participants.contains(&profile.pubkey));
+        assert!(profile.in_huddle);
+        app.profiles.insert(profile.pubkey.clone(), profile);
+        app.messages = vec![Message {
+            event_id: "f".repeat(64),
+            channel_id: channel,
+            pubkey: guest.public_key().to_hex(),
+            created_at: 1,
+            content: "in the call".into(),
+            attachments: Vec::new(),
+            root_event_id: None,
+            parent_event_id: None,
+            deleted: false,
+            delivery: crate::domain::DeliveryState::Delivered,
+            system: None,
+            sent_from_thread: None,
+            broadcast: false,
+            emoji: Vec::new(),
+        }];
+        let screen = screen_text(&mut app);
+        assert!(screen.contains("#talk 🎧"), "{screen}");
+        // A wide glyph takes two cells in the test backend.
+        assert!(
+            screen.contains("🎧  Guest Person") || screen.contains("🎧 Guest Person"),
+            "{screen}"
+        );
     }
 
     #[tokio::test]

@@ -467,7 +467,7 @@ impl Store {
         let profile = self.connection.query_row(
             "SELECT pubkey,display_name,name,picture,nip05,about,event_id,created_at FROM profiles WHERE community_id=?1 AND pubkey=?2",
             params![community_id.to_string(),pubkey],
-            |row| Ok(Profile { pubkey:row.get(0)?,display_name:row.get(1)?,name:row.get(2)?,picture:row.get(3)?,nip05:row.get(4)?,about:row.get(5)?,event_id:row.get(6)?,created_at:u64::try_from(row.get::<_,i64>(7)?).unwrap_or(0),verified:None,status:None,presence:None }),
+            |row| Ok(Profile { pubkey:row.get(0)?,display_name:row.get(1)?,name:row.get(2)?,picture:row.get(3)?,nip05:row.get(4)?,about:row.get(5)?,event_id:row.get(6)?,created_at:u64::try_from(row.get::<_,i64>(7)?).unwrap_or(0),verified:None,status:None,presence:None,in_huddle:false }),
         ).optional()?;
         let verified = self
             .verified_names(community_id, Some(pubkey))?
@@ -1272,6 +1272,7 @@ impl Store {
                     verified: None,
                     status: None,
                     presence: None,
+                    in_huddle: false,
                 };
                 Ok((profile.pubkey.clone(), profile))
             })?

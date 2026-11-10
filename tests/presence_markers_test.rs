@@ -58,6 +58,7 @@ fn sidebar_dm_rows_trail_the_other_persons_presence() {
                 ChannelSort::Smart,
                 false,
                 &presence,
+                None,
                 &Theme::default(),
                 true,
             );
