@@ -123,6 +123,17 @@ async fn main() {
     seed_member(&source, &owner.public_key().to_hex());
     seed_member(&source, &viewer.public_key().to_hex());
     tokio::time::sleep(Duration::from_secs(2)).await;
+    // BZZ_FIXTURE_IDENTITY_ADAPTER: an FI-enforcing relay (`test-relay.sh
+    // --nip-fi`) admits nothing without evidence, so write only the viewer's
+    // profile with this adapter and no relay content.
+    let adapter = std::env::var("BZZ_FIXTURE_IDENTITY_ADAPTER").ok();
+    if adapter.is_none() {
+        publish_content(&owner, &viewer, history).await;
+    }
+    write_profile(&root, viewer, adapter);
+}
+
+async fn publish_content(owner: &Keys, viewer: &Keys, history: u64) {
     let owner_signer = SignerHandle::spawn(owner.clone());
     let viewer_signer = SignerHandle::spawn(viewer.clone());
     let owner_session = connect(&owner_signer).await;
@@ -295,8 +306,10 @@ async fn main() {
     .await;
     owner_session.shutdown().await;
     viewer_session.shutdown().await;
+}
 
-    // The viewer's isolated bzz profile.
+/// The viewer's isolated bzz profile.
+fn write_profile(root: &std::path::Path, viewer: Keys, adapter: Option<String>) {
     let paths = Paths {
         config_dir: root.join("config"),
         data_dir: root.join("data"),
@@ -321,7 +334,7 @@ async fn main() {
             Some(&SecretString::from(passphrase)),
         )
         .unwrap();
-    config
+    let community = config
         .add_community(
             "harness".into(),
             "ws://localhost:3030".into(),
@@ -329,6 +342,21 @@ async fn main() {
             true,
         )
         .unwrap();
+    let fi = adapter.is_some();
+    if let Some(adapter) = adapter {
+        config
+            .communities
+            .iter_mut()
+            .find(|entry| entry.id == community)
+            .unwrap()
+            .identity_adapter = Some(adapter);
+    }
     config.save(&paths).unwrap();
-    println!("fixture ready: #t9-general, #t9-announcements (guest), #t9-agent-config (system)");
+    if fi {
+        println!("fixture ready: FI profile (identity_adapter set, no relay content)");
+    } else {
+        println!(
+            "fixture ready: #t9-general, #t9-announcements (guest), #t9-agent-config (system)"
+        );
+    }
 }
