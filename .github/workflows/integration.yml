@@ -17,6 +17,7 @@ on:
       - 'tests/support/**'
       - 'examples/**'
       - 'scripts/test-relay.sh'
+      - '.github/workflows/integration.yml'
       - 'Cargo.toml'
       - 'Cargo.lock'
   push:
@@ -36,6 +37,7 @@ on:
       - 'tests/support/**'
       - 'examples/**'
       - 'scripts/test-relay.sh'
+      - '.github/workflows/integration.yml'
       - 'Cargo.toml'
       - 'Cargo.lock'
 permissions:
@@ -43,6 +45,14 @@ permissions:
 jobs:
   relay:
     runs-on: ubuntu-latest
+    # Compose talks to the runner's Docker daemon. The harness's localhost
+    # ports must be reachable from the job container, not a nested daemon.
+    container:
+      image: ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d
+      options: --network host --volume /var/run/docker.sock:/var/run/docker.sock
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -50,8 +60,6 @@ jobs:
         profile: [default, nip-fi]
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux keychain build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libasound2-dev cmake pkg-config
       - uses: actions/checkout@v4
         with:
           repository: block/buzz

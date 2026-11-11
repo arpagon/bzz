@@ -37,7 +37,9 @@ futures-util = "0.3"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 infer = "0.19"
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# Compile libdbus from the locked source crate; no libdbus-1-dev download
+# is needed when building Linux binaries (the Secret Service API is unchanged).
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "vendored"] }
 nostr = { version = "0.44", features = ["nip44", "nip49", "nip98"] }
 nucleo-matcher = "0.3"
 opentelemetry-proto = { version = "=0.32.0", default-features = false, features = ["gen-tonic-messages", "logs"] }

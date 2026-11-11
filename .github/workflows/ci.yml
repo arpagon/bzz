@@ -5,13 +5,15 @@ on:
   pull_request:
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
 jobs:
   test:
     runs-on: ubuntu-latest
+    container: ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux keychain build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libasound2-dev cmake pkg-config
       - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt, clippy
@@ -31,6 +33,7 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary: target/x86_64-unknown-linux-gnu/release/bzz
+            container: ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d
           - os: macos-15-intel
             target: x86_64-apple-darwin
             binary: target/x86_64-apple-darwin/release/bzz
@@ -41,11 +44,9 @@ jobs:
             target: x86_64-pc-windows-msvc
             binary: target/x86_64-pc-windows-msvc/release/bzz.exe
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container || null }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux keychain build dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libasound2-dev cmake pkg-config
       - uses: dtolnay/rust-toolchain@1.98.1
         with: { targets: '${{ matrix.target }}' }
       - uses: Swatinem/rust-cache@v2
@@ -85,13 +86,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-15, windows-latest]
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.os == 'ubuntu-latest' && 'ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d' || null }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Install Linux keychain build dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libasound2-dev cmake pkg-config
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
       - name: Open a v0.12.1 data directory with this build
@@ -112,12 +111,10 @@ jobs:
           - os: windows-latest
             experimental: true
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.os == 'ubuntu-latest' && 'ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d' || null }}
     continue-on-error: ${{ matrix.experimental }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux build and PulseAudio dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libasound2-dev cmake pkg-config pulseaudio pulseaudio-utils libasound2-plugins
       - name: Install BlackHole
         if: runner.os == 'macOS'
         run: |
