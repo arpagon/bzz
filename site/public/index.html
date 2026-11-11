@@ -7,7 +7,7 @@
 <meta name="description" content="bzz is a human-first terminal client for Buzz: fast keyboard navigation, local offline history, native Nostr authentication, and host-isolated communities. One Rust binary, 60 themes.">
 <link rel="canonical" href="https://getbzz.dev/">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/styles.css?v=2">
+<link rel="stylesheet" href="/styles.css?v=3">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://getbzz.dev/">
 <meta property="og:title" content="bzz — a human-first terminal client for Buzz">
@@ -33,6 +33,7 @@
     bzz
   </a>
   <div class="links">
+    <a href="#new">new in 0.13</a>
     <a href="#features">features</a>
     <a href="#keys">keys</a>
     <a href="#install">install</a>
@@ -52,12 +53,22 @@
 
 <header class="hero">
 <div class="wrap">
-  <svg class="mark" viewBox="0 0 64 64" fill="none" role="img" aria-label="bzz logo: a honeycomb cell holding terminal text lines">
-    <path d="M32 4 L56 18 V46 L32 60 L8 46 V18 Z" stroke="var(--accent)" stroke-width="4.5" stroke-linejoin="round"/>
-    <rect x="19" y="23" width="26" height="5" rx="2.5" fill="var(--accent)"/>
-    <rect x="19" y="33" width="17" height="5" rx="2.5" fill="var(--accent)"/>
-    <rect x="19" y="43" width="10" height="5" rx="2.5" fill="var(--accent)"/>
-    <rect x="33" y="43" width="6" height="5" rx="1" fill="var(--accent)"/>
+  <!-- Terminal frames: Nerd Fonts v3 nf-md-hexagon_outline + slice_1…6.
+       SVG geometry: Pictogrammers Material Design Icons, Apache-2.0. -->
+  <svg class="mark logo-animation" viewBox="0 0 24 24" fill="none" role="img"
+    aria-label="bzz logo: an animated honeycomb resolving into terminal text lines"
+    data-logo-animation data-codepoints="F02D9 F0AC3 F0AC4 F0AC5 F0AC6 F0AC7 F0AC8">
+    <path class="logo-animation-frame" data-logo-frame hidden fill="var(--accent)"
+      d="M21,16.5C21,16.88 20.79,17.21 20.47,17.38L12.57,21.82C12.41,21.94 12.21,22 12,22C11.79,22 11.59,21.94 11.43,21.82L3.53,17.38C3.21,17.21 3,16.88 3,16.5V7.5C3,7.12 3.21,6.79 3.53,6.62L11.43,2.18C11.59,2.06 11.79,2 12,2C12.21,2 12.41,2.06 12.57,2.18L20.47,6.62C20.79,6.79 21,7.12 21,7.5V16.5M12,4.15L5,8.09V15.91L12,19.85L19,15.91V8.09L12,4.15Z"/>
+    <g transform="scale(.375)">
+      <g class="logo-animation-final" data-logo-final>
+        <path d="M32 4 L56 18 V46 L32 60 L8 46 V18 Z" stroke="var(--accent)" stroke-width="4.5" stroke-linejoin="round"/>
+        <rect x="19" y="23" width="26" height="5" rx="2.5" fill="var(--accent)"/>
+        <rect x="19" y="33" width="17" height="5" rx="2.5" fill="var(--accent)"/>
+        <rect x="19" y="43" width="10" height="5" rx="2.5" fill="var(--accent)"/>
+        <rect x="33" y="43" width="6" height="5" rx="1" fill="var(--accent)"/>
+      </g>
+    </g>
   </svg>
   <h1>bzz</h1>
   <p class="tag">a <b>human-first</b> terminal client for <a href="https://github.com/block/buzz">Buzz</a></p>
@@ -97,6 +108,95 @@
     <div><b>100%</b><span>keyboard-driven</span></div>
   </div>
 </div>
+
+<section id="new">
+<div class="wrap">
+  <span class="kicker">new in v0.13.0</span>
+  <h2>Upstream parity with Buzz.</h2>
+  <div class="shot">
+  <div class="term">
+    <div class="term-bar">
+      <span></span><span></span><span></span>
+      <div class="title">bzz 0.13.0 — #team · demo</div>
+    </div>
+    <video autoplay muted loop playsinline preload="metadata"
+      poster="/assets/poster-v013.png?v=1"
+      aria-label="bzz 0.13 demo: a read-only announce channel, the System channel group, a thread, a profile card with public channels, the artifacts panel, custom emoji reactions, and opt-in presence">
+      <source src="/assets/demo-v013.webm?v=1" type="video/webm">
+      <source src="/assets/demo-v013.mp4?v=1" type="video/mp4">
+      <img src="/assets/poster-v013.png?v=1" alt="bzz 0.13 showing a thread open beside the #team channel">
+    </video>
+    <p class="cap">Announce channels, the System group, threads, profile cards, artifacts, custom emoji and presence — real 0.13.0 binary, generated people and messages on an isolated relay.</p>
+  </div>
+  </div>
+  <div class="grid" style="margin-top:2rem">
+    <div class="card">
+      <span class="k">/// channels</span>
+      <h3>Channel types and roles</h3>
+      <p>Announce channels where guests read only, unlisted channels kept out
+      of discovery, agent and system channels folded into a System group
+      (<code>:system</code>), and live membership changes that keep your draft.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// profiles</span>
+      <h3>Profile cards and verified names</h3>
+      <p><code>Space p</code> shows a person's identity, status and listed
+      public channels. Relay-verified identities carry a ✓ in the timeline,
+      mentions and the card.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// sign-in</span>
+      <h3>Federated sign-in</h3>
+      <p>Communities that require an identity provider sign you in through
+      the browser with <code>:signin</code>; Buzz Desktop can also act as the
+      credential provider.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// huddles</span>
+      <h3>Huddles with audio</h3>
+      <p>Start, join and leave voice huddles from the terminal. You always join
+      muted; <code>m</code> toggles the mic, push-to-talk is one key, and audio
+      stops when bzz locks or quits.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// agents</span>
+      <h3>An agent broker you control</h3>
+      <p>Host agents whose keys stay sealed by your identity. Each agent gets
+      a local, per-action allowlist you edit in <code>:broker</code>, and can be
+      paused at any time.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// artifacts</span>
+      <h3>Artifacts, tasks and custom emoji</h3>
+      <p><code>:artifacts</code> and <code>:tasks</code> list a channel's shared
+      artifacts and what is assigned to you. Community emoji render inline and
+      in the reaction picker.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// speed</span>
+      <h3>Faster history and startup</h3>
+      <p>Channel and thread windows fetch history and reactions in fewer
+      requests, and verified membership and read-state snapshots replace
+      bursts of startup queries.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// presence</span>
+      <h3>Opt-in presence and status</h3>
+      <p>See who is online or away in DMs, mentions and the agent list.
+      Publishing your own presence is off until you run
+      <code>:presence on</code>.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// upgrade</span>
+      <h3>Safe upgrade</h3>
+      <p>Your 0.12 data upgrades in place with a backup written first;
+      drafts, unread state and search history are kept.</p>
+    </div>
+  </div>
+  <div class="shot"><p class="cap">Full notes:
+  <a href="https://github.com/arpagon/bzz/releases/tag/v0.13.0">bzz v0.13.0 release</a>.</p></div>
+</div>
+</section>
 
 <section id="why">
 <div class="wrap">
@@ -352,6 +452,6 @@ bzz</code></pre>
 </div>
 </footer>
 
-<script src="/app.js?v=2" defer></script>
+<script src="/app.js?v=3" defer></script>
 </body>
 </html>

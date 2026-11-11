@@ -1,0 +1,4 @@
+# bzz terminal logo animation — Nerd Fonts v3 / Material Design Icons
+# nf-md-hexagon_outline, then nf-md-hexagon_slice_1 through _6
+# U+F02D9 U+F0AC3 U+F0AC4 U+F0AC5 U+F0AC6 U+F0AC7 U+F0AC8
+󰋙 󰫃 󰫄 󰫅 󰫆 󰫇 󰫈
