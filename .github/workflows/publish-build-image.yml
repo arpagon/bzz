@@ -3,9 +3,11 @@ on:
   workflow_dispatch:
   push:
     branches: [main, v0.13.0]
-    paths: ['ci/linux-build/publish.json']
+    paths: ['ci/linux-build/publish.json', '.github/workflows/publish-build-image.yml']
 permissions:
-  contents: read
+  # Reading a draft release requires push access; only this promotion
+  # workflow gets it. Product build/test workflows remain read-only.
+  contents: write
   packages: write
 concurrency:
   group: publish-linux-build-image
