@@ -118,6 +118,12 @@ def relay(args: argparse.Namespace, child: int, master: int, pending: bytes | No
     while True:
         if pending and time.monotonic() >= next_at:
             if args.inject_step > 0:
+                # 0xFF never occurs in UTF-8 key input: it is a one-second
+                # pause marker for paced demo videos, and is never sent.
+                if pending[:1] == b"\xff":
+                    pending = pending[1:]
+                    next_at = time.monotonic() + 1.0
+                    continue
                 os.write(master, pending[:1])
                 pending = pending[1:]
                 next_at = time.monotonic() + args.inject_step
