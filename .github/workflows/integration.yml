@@ -45,11 +45,8 @@ permissions:
 jobs:
   relay:
     runs-on: ubuntu-latest
-    # Compose talks to the runner's Docker daemon. The harness's localhost
-    # ports must be reachable from the job container, not a nested daemon.
-    container:
-      image: ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d
-      options: --network host --volume /var/run/docker.sock:/var/run/docker.sock
+    env:
+      BZZ_BUILD_IMAGE: ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d
     defaults:
       run:
         shell: bash
@@ -68,6 +65,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
       - name: Run isolated real-relay suite (${{ matrix.profile }})
+        # Actions job containers attach to an Actions bridge and cannot use
+        # --network host. Run this one container explicitly so the harness
+        # reaches Compose's localhost ports without a nested Docker daemon.
         env:
-          BZZ_BUZZ_SOURCE: ${{ github.workspace }}/.buzz-source
-        run: ./scripts/test-relay.sh ${{ matrix.profile == 'nip-fi' && '--nip-fi' || '' }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          docker run --rm --network host \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            --volume "${CARGO_HOME:-$HOME/.cargo}:/opt/bzz-cargo" \
+            --volume "${RUSTUP_HOME:-$HOME/.rustup}:/opt/bzz-rustup" \
+            --workdir "$GITHUB_WORKSPACE" \
+            --env CARGO_HOME=/opt/bzz-cargo --env RUSTUP_HOME=/opt/bzz-rustup \
+            --env PATH=/opt/bzz-cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            --env BZZ_BUZZ_SOURCE="$GITHUB_WORKSPACE/.buzz-source" \
+            --env PROFILE \
+            "$BZZ_BUILD_IMAGE" bash -ec '
+              git config --global --add safe.directory "$PWD"
+              git config --global --add safe.directory "$BZZ_BUZZ_SOURCE"
+              if [[ "$PROFILE" == nip-fi ]]; then
+                ./scripts/test-relay.sh --nip-fi
+              else
+                ./scripts/test-relay.sh
+              fi
+            '

@@ -81,7 +81,9 @@ installed package versions. It contains no credentials or product keys.
    is not proof. To refresh older releases, backport only packaging changes
    onto their validated commit; never move a tag with a published release.
 
-The relay integration job shares the runner's Docker socket and host network
-so Compose's isolated localhost ports remain reachable. It starts no nested
-Docker daemon. The image is not an application sandbox; only trusted CI jobs
-receive this access.
+The relay integration step explicitly runs a container sharing the runner's
+Docker socket and host network so Compose's isolated localhost ports remain
+reachable. (An Actions `container:` job cannot use host networking: Actions
+already attaches it to its own bridge.) It starts no nested Docker daemon.
+The image is not an application sandbox; only trusted CI jobs receive this
+access.
