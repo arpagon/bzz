@@ -20,6 +20,9 @@ cleanup() {
   # ${nodes[@]+...}: an empty array under `set -u` on bash 3.2 (macOS).
   for node in ${nodes[@]+"${nodes[@]}"}; do pw-cli destroy "$node" >/dev/null 2>&1 || true; done
   if [[ -n $module ]]; then pactl unload-module "$module" >/dev/null 2>&1 || true; fi
+  if [[ -n ${PULSE_RUNTIME_PATH:-} && ${PULSE_RUNTIME_PATH:-} == "$work/pulse-runtime" ]]; then
+    pulseaudio --kill >/dev/null 2>&1 || true
+  fi
   rm -rf -- "$work"
 }
 trap cleanup EXIT INT TERM
@@ -71,7 +74,14 @@ clients = {item[\"id\"] for item in items if str(props(item).get(\"application.p
 print(sum(1 for item in items if props(item).get(\"client.id\") in clients and str(props(item).get(\"media.class\", \"\")).startswith(\"Stream/\")))"'
     ;;
   pulseaudio)
-    pulseaudio --check 2>/dev/null || pulseaudio -D --exit-idle-time=-1
+    # Container jobs may run as root with an Actions-owned HOME. Give this
+    # disposable server private runtime/state paths instead of inheriting
+    # that home (or a desktop's existing PulseAudio instance).
+    export PULSE_RUNTIME_PATH="$work/pulse-runtime"
+    export PULSE_STATE_PATH="$work/pulse-state"
+    export PULSE_COOKIE="$work/pulse-cookie"
+    mkdir -m 700 "$PULSE_RUNTIME_PATH" "$PULSE_STATE_PATH"
+    pulseaudio -D --exit-idle-time=-1
     for _ in $(seq 1 50); do pactl info >/dev/null 2>&1 && break; sleep 0.1; done
     module=$(pactl load-module module-null-sink sink_name=bzz_t7 rate=48000 channels=1)
     pactl set-default-sink bzz_t7

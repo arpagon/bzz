@@ -95,7 +95,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Open a v0.12.1 data directory with this build
         shell: bash
-        run: ./scripts/upgrade-test.sh
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ./scripts/upgrade-test.sh
   audio:
     # T7: huddle audio through a virtual device (tests/huddle_device_loopback_test.rs).
     strategy:
