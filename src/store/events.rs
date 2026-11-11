@@ -33,9 +33,10 @@ impl Store {
     pub fn apply_event(&mut self, community_id: Uuid, event: &Event) -> Result<bool> {
         verify(event)?;
         match event.kind.as_u16() {
-            20_002 => {
+            20_000..=29_999 => {
                 return Err(Error::Protocol(
-                    "ephemeral typing indicators cannot enter the durable event store".into(),
+                    "ephemeral events (typing, presence) cannot enter the durable event store"
+                        .into(),
                 ));
             }
             39_005 => {
@@ -47,7 +48,7 @@ impl Store {
         }
         if matches!(
             event.kind.as_u16(),
-            30_622 | 39_000..=39_003 | 40_099 | 44_100 | 44_101
+            30_382 | 30_622 | 39_000..=39_003 | 40_099 | 44_100 | 44_101
         ) {
             let relay_pubkey = self.connection.query_row(
                 "SELECT relay_pubkey FROM communities WHERE id=?1",
@@ -75,10 +76,10 @@ impl Store {
                     "conflicting bytes for an existing event ID".into(),
                 ));
             }
-            let projection_changed = if event.kind.as_u16() == 39_002 {
-                self.repair_current_membership_projection(community_id, event)?
-            } else {
-                false
+            let projection_changed = match event.kind.as_u16() {
+                39_002 => self.repair_current_membership_projection(community_id, event)?,
+                39_000 => self.repair_current_channel_facts(community_id, event)?,
+                _ => false,
             };
             let outbox_changed = self.mark_outbox_observed(community_id, &event.id.to_hex())?;
             if projection_changed {
@@ -109,6 +110,36 @@ impl Store {
         if event.kind.as_u16() == 30_622 {
             apply_dm_visibility_snapshot(&transaction, community_id, event)?;
         }
+        if let Some(status) = crate::protocol::presence::status(event) {
+            transaction.execute(
+                "INSERT INTO user_statuses(community_id,pubkey,text,emoji,expires_at,event_id,created_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7)
+                 ON CONFLICT(community_id,pubkey) DO UPDATE SET text=excluded.text,emoji=excluded.emoji,
+                   expires_at=excluded.expires_at,event_id=excluded.event_id,created_at=excluded.created_at
+                 WHERE excluded.created_at>user_statuses.created_at
+                    OR (excluded.created_at=user_statuses.created_at AND excluded.event_id<user_statuses.event_id)",
+                params![
+                    community_id.to_string(),
+                    event.pubkey.to_hex(),
+                    status.text,
+                    status.emoji,
+                    status.expires_at,
+                    event.id.to_hex(),
+                    u64_to_i64(event.created_at.as_secs())?
+                ],
+            )?;
+        }
+        let contributions = crate::protocol::emoji::contributions(event);
+        if matches!(
+            event.kind.as_u16(),
+            crate::protocol::emoji::KIND_EMOJI_SET | crate::protocol::emoji::KIND_EMOJI_ENTRY
+        ) {
+            apply_emoji_source(&transaction, community_id, event, &contributions)?;
+        }
+        let verified_profile = (event.kind.as_u16()
+            == crate::protocol::verified_profile::KIND_VERIFIED_PROFILE)
+            .then(|| crate::protocol::verified_profile::parse(event, &event.pubkey.to_hex()))
+            .flatten();
         if matches!(event.kind.as_u16(), 9 | 40_002)
             && let Some(channel) = channel
         {
@@ -132,14 +163,14 @@ impl Store {
                 Visibility::Private => "private",
             };
             transaction.execute(
-                "INSERT INTO channels(community_id,channel_id,name,about,channel_type,visibility,is_hidden,metadata_event_id,metadata_created_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,0,?7,?8)
-                 ON CONFLICT(community_id,channel_id) DO UPDATE SET name=excluded.name,about=excluded.about,channel_type=excluded.channel_type,visibility=excluded.visibility,metadata_event_id=excluded.metadata_event_id,metadata_created_at=excluded.metadata_created_at
+                "INSERT INTO channels(community_id,channel_id,name,about,channel_type,visibility,is_hidden,metadata_event_id,metadata_created_at,facts_json)
+                 VALUES(?1,?2,?3,?4,?5,?6,0,?7,?8,?9)
+                 ON CONFLICT(community_id,channel_id) DO UPDATE SET name=excluded.name,about=excluded.about,channel_type=excluded.channel_type,visibility=excluded.visibility,metadata_event_id=excluded.metadata_event_id,metadata_created_at=excluded.metadata_created_at,facts_json=excluded.facts_json
                  WHERE (excluded.metadata_created_at,excluded.metadata_event_id) > (COALESCE(channels.metadata_created_at,0),COALESCE(channels.metadata_event_id,''))",
-                params![community_id.to_string(),channel.id.to_string(),channel.name,channel.about,channel.kind.as_str(),visibility,event.id.to_hex(),u64_to_i64(event.created_at.as_secs())?],
+                params![community_id.to_string(),channel.id.to_string(),channel.name,channel.about,channel.kind.as_str(),visibility,event.id.to_hex(),u64_to_i64(event.created_at.as_secs())?,facts_json(&channel.facts)?],
             )?;
             if channel.kind.is_dm() {
-                let participant_count: usize = transaction.query_row(
+                let participant_count: i64 = transaction.query_row(
                     "SELECT count(*) FROM memberships WHERE community_id=?1 AND channel_id=?2",
                     params![community_id.to_string(), channel.id.to_string()],
                     |row| row.get(0),
@@ -187,8 +218,8 @@ impl Store {
         }
         if let Some(reaction) = as_reaction(event) {
             transaction.execute(
-                "INSERT INTO reactions(community_id,reaction_event_id,target_event_id,pubkey,emoji,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
-                params![community_id.to_string(),reaction.event_id,reaction.target_event_id,reaction.pubkey,reaction.emoji,u64_to_i64(reaction.created_at)?],
+                "INSERT INTO reactions(community_id,reaction_event_id,target_event_id,pubkey,emoji,created_at,emoji_url) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![community_id.to_string(),reaction.event_id,reaction.target_event_id,reaction.pubkey,reaction.emoji,u64_to_i64(reaction.created_at)?,reaction.emoji_url],
             )?;
         }
         if matches!(event.kind.as_u16(), 5 | 9005) {
@@ -238,6 +269,9 @@ impl Store {
             crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
         }
         transaction.commit()?;
+        if let Some(profile) = verified_profile {
+            self.apply_verified_profile(community_id, &profile)?;
+        }
         if event.kind.as_u16() == 39_002 {
             // Membership is the bounded candidate authority. Public agent
             // records are reconciled in one coalesced pass after directory
@@ -245,6 +279,26 @@ impl Store {
             self.reconcile_remote_agents(community_id)?;
         }
         Ok(true)
+    }
+
+    /// Older bzz binaries did not project NIP-CL facts. When the current
+    /// metadata event is re-ingested, re-derive them in place.
+    fn repair_current_channel_facts(&mut self, community_id: Uuid, event: &Event) -> Result<bool> {
+        let Some(channel) = as_channel(event) else {
+            return Ok(false);
+        };
+        let facts = facts_json(&channel.facts)?;
+        let changed = self.connection.execute(
+            "UPDATE channels SET facts_json=?4
+             WHERE community_id=?1 AND channel_id=?2 AND metadata_event_id=?3 AND facts_json<>?4",
+            params![
+                community_id.to_string(),
+                channel.id.to_string(),
+                event.id.to_hex(),
+                facts
+            ],
+        )?;
+        Ok(changed > 0)
     }
 
     /// An event ID is immutable, but an older bzz binary may have projected
@@ -377,11 +431,14 @@ fn membership_snapshot(event: &Event) -> Result<Option<MembershipSnapshot>> {
                 "membership snapshot has an invalid participant tag".into(),
             ));
         };
-        let role = if values.len() == 4 && values[3] == "bot" {
-            "bot"
-        } else {
-            "member"
-        };
+        // Exact NIP-29 shape `["p", pubkey, relay, role]`; a longer tag is not
+        // a role grant (a lookalike `bot` with extra fields stays non-writing).
+        let role = match values.len() {
+            0..=3 => crate::domain::MemberRole::Member,
+            4 => crate::domain::MemberRole::parse(Some(values[3].as_str())),
+            _ => crate::domain::MemberRole::Unknown,
+        }
+        .as_str();
         members.push((pubkey.clone(), role));
     }
     if members.len() > 10_000
@@ -453,10 +510,14 @@ fn replace_membership_projection(
     transaction.execute(
         "UPDATE channels SET
            member_count=(SELECT count(*) FROM memberships WHERE community_id=?1 AND channel_id=?2),
-           is_member=EXISTS(SELECT 1 FROM memberships m
-             JOIN communities c ON c.id=m.community_id
-             JOIN identities i ON i.id=c.identity_id
-             WHERE m.community_id=?1 AND m.channel_id=?2 AND m.pubkey=i.pubkey)
+           is_member=CASE
+             WHEN EXISTS(SELECT 1 FROM viewer_memberships WHERE community_id=?1)
+               THEN EXISTS(SELECT 1 FROM viewer_memberships WHERE community_id=?1 AND channel_id=?2)
+             ELSE EXISTS(SELECT 1 FROM memberships m
+               JOIN communities c ON c.id=m.community_id
+               JOIN identities i ON i.id=c.identity_id
+               WHERE m.community_id=?1 AND m.channel_id=?2 AND m.pubkey=i.pubkey)
+           END
          WHERE community_id=?1 AND channel_id=?2",
         params![community_id.to_string(), snapshot.channel],
     )?;
@@ -536,4 +597,60 @@ fn apply_dm_visibility_snapshot(
 
 pub(crate) fn u64_to_i64(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| Error::Protocol("timestamp is out of range".into()))
+}
+
+/// The stored facts never include the viewer's role; that is derived from
+/// memberships at read time.
+fn facts_json(facts: &crate::domain::ChannelFacts) -> Result<String> {
+    let mut stored = facts.clone();
+    stored.viewer_role = None;
+    serde_json::to_string(&stored).map_err(|error| Error::Serialization(error.to_string()))
+}
+
+/// Replace one replaceable emoji source (a 30030 set or a 30180 entry) when
+/// this event is newer than what is stored for its coordinate.
+fn apply_emoji_source(
+    transaction: &Transaction<'_>,
+    community_id: Uuid,
+    event: &Event,
+    contributions: &[crate::protocol::emoji::Contribution],
+) -> Result<()> {
+    let d = crate::protocol::events::first_tag(event, "d").unwrap_or_default();
+    let (author, kind) = (event.pubkey.to_hex(), i64::from(event.kind.as_u16()));
+    let current: Option<(i64, String)> = transaction
+        .query_row(
+            "SELECT created_at,event_id FROM emoji_contributions
+             WHERE community_id=?1 AND source_pubkey=?2 AND source_kind=?3 AND source_d=?4 LIMIT 1",
+            params![community_id.to_string(), author, kind, d],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let created = u64_to_i64(event.created_at.as_secs())?;
+    let id = event.id.to_hex();
+    if current.is_some_and(|(at, event_id)| {
+        (at, std::cmp::Reverse(event_id)) >= (created, std::cmp::Reverse(id.clone()))
+    }) {
+        return Ok(());
+    }
+    transaction.execute(
+        "DELETE FROM emoji_contributions WHERE community_id=?1 AND source_pubkey=?2 AND source_kind=?3 AND source_d=?4",
+        params![community_id.to_string(), author, kind, d],
+    )?;
+    for contribution in contributions.iter().take(1000) {
+        transaction.execute(
+            "INSERT OR IGNORE INTO emoji_contributions(community_id,source_pubkey,source_kind,source_d,shortcode,url,created_at,event_id)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                community_id.to_string(),
+                author,
+                kind,
+                d,
+                contribution.emoji.shortcode,
+                contribution.emoji.url,
+                created,
+                id
+            ],
+        )?;
+    }
+    Ok(())
 }

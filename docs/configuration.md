@@ -185,7 +185,8 @@ send/confirmation path.
 The accepted action names are the kebab-case forms of the generated help
 labels: route actions include `open-inbox`, `open-context-actions`,
 `activate-focused`, `compose`, `filter`, `mark-read`, `mark-unread`,
-`mark-visible-read`, and `open-canonical-context`; navigation and viewport
+`mark-visible-read`, `open-canonical-context`, and `view-profile` (`Space p`,
+the selected message's author); navigation and viewport
 actions include `select-next`, `select-previous`, `jump-top`, `jump-bottom`,
 `scroll-viewport-up`, `scroll-viewport-down`, `half-page-up`, and
 `half-page-down`. `mark-read`, `mark-unread`, `mark-visible-read`, and
@@ -233,3 +234,34 @@ fetches only after `p`; `off` permits explicit save/upload but no automatic
 fetch. `protocol = "off"` disables graphics while retaining attachment cards.
 Cache/concurrency settings are validated against hard safety ceilings. See
 [`media.md`](media.md).
+
+## v0.13.0 settings
+
+- **`identity_adapter`** (per community): the NIP-FA identity adapter origin
+  for communities whose relay requires federated identity (NIP-FI). Sign in
+  with `:signin`; the adapter session is stored NIP-44-sealed to your key. Buzz
+  Desktop identities (`bzz identity pair-desktop`) get evidence from Desktop
+  instead.
+- **`[ui] publish_presence`** (default `false`): publish your own online/away
+  presence (kind 20001). Nothing about activity is published unless enabled.
+  `:presence on|off` changes and saves it from the TUI; turning it off sends
+  `offline` once if bzz had published.
+- **`[ui] broker_agent_presence`** (default `false`, requires
+  `publish_presence`): publish owner-signed kind 20003 presence for the local
+  agents the broker is serving. Toggle it with `o` in `:broker`.
+- **`[ui] huddle_input_device` / `huddle_output_device`**: microphone and
+  speaker names for huddles; unset means the system defaults. Set them with
+  `:huddle input <name>` / `:huddle output <name>`; `:huddle devices` lists
+  them. Device names are stored here and nowhere else.
+- **`[[hosted_agents]]`**: written by `bzz broker create`; do not hand-edit.
+  Change an agent's allowed actions with `bzz broker allow` or in `:broker`
+  (`j`/`k` select, `1`–`6` toggle an action, `Space` pause that agent).
+  Each entry holds an agent's public key, community, owner identity, the
+  owner's NIP-OA tag, the credential **hash** and the allowed actions. The
+  agent key itself is NIP-44-sealed to the owner's key in
+  `<data>/keys/agent-<id>.nip44`, and the bearer credential is printed once and
+  never stored. Manage agents with `bzz broker
+  create|list|allow|rotate|pause|resume|delete`. While bzz is unlocked the
+  broker listens on `127.0.0.1` and writes its port to `<data>/broker.port`.
+- **Cargo feature `huddles-audio`** (default on): microphone capture, playback
+  and Opus. Builds with `--no-default-features` show huddles view-only.

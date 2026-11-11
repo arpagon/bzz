@@ -17,6 +17,7 @@ import signal
 import sys
 import termios
 import time
+import tty
 
 
 def parser() -> argparse.ArgumentParser:
@@ -31,6 +32,12 @@ def parser() -> argparse.ArgumentParser:
         type=float,
         default=4.0,
         help="seconds before injecting --inject-file (default: 4)",
+    )
+    value.add_argument(
+        "--inject-step",
+        type=float,
+        default=0.0,
+        help="seconds between injected bytes (default 0: all at once), for videos",
     )
     value.add_argument("command", nargs=argparse.REMAINDER, help="command after --")
     return value
@@ -60,8 +67,8 @@ def main() -> int:
         command = command[1:]
     if not command:
         raise SystemExit("pass the release bzz command after --")
-    if args.inject_after < 0:
-        raise SystemExit("--inject-after must be non-negative")
+    if args.inject_after < 0 or args.inject_step < 0:
+        raise SystemExit("--inject-after and --inject-step must be non-negative")
     pending = injection_bytes(args.inject_file)
 
     child, master = pty.fork()
@@ -74,6 +81,21 @@ def main() -> int:
         os.execvpe(command[0], command, env)
 
     copy_window_size(master)
+    # The outer terminal's own input (mouse reports, stray keys) is not
+    # forwarded; raw mode keeps the line discipline from echoing it on top of
+    # the captured screen.
+    saved = None
+    if sys.stdin.isatty():
+        saved = termios.tcgetattr(sys.stdin.fileno())
+        tty.setraw(sys.stdin.fileno())
+    try:
+        return relay(args, child, master, pending)
+    finally:
+        if saved is not None:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, saved)
+
+
+def relay(args: argparse.Namespace, child: int, master: int, pending: bytes | None) -> int:
     stopped = False
 
     def forward_signal(signum: int, _frame: object) -> None:
@@ -86,12 +108,28 @@ def main() -> int:
 
     for value in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(value, forward_signal)
+    # Ghostty settles its final size after the child starts. Copying the new
+    # size to the child PTY makes the kernel deliver SIGWINCH to bzz, which
+    # then redraws for the real geometry instead of the first one.
+    signal.signal(signal.SIGWINCH, lambda _signum, _frame: copy_window_size(master))
 
     started = time.monotonic()
+    next_at = started + args.inject_after
     while True:
-        if pending is not None and time.monotonic() - started >= args.inject_after:
-            os.write(master, pending)
-            pending = None
+        if pending and time.monotonic() >= next_at:
+            if args.inject_step > 0:
+                # 0xFF never occurs in UTF-8 key input: it is a one-second
+                # pause marker for paced demo videos, and is never sent.
+                if pending[:1] == b"\xff":
+                    pending = pending[1:]
+                    next_at = time.monotonic() + 1.0
+                    continue
+                os.write(master, pending[:1])
+                pending = pending[1:]
+                next_at = time.monotonic() + args.inject_step
+            else:
+                os.write(master, pending)
+                pending = b""
         ready, _, _ = select.select([master], [], [], 0.05)
         if master in ready:
             try:

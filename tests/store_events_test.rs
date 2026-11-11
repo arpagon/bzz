@@ -31,7 +31,7 @@ fn fixture() -> (Store, Uuid, Uuid, Keys) {
 #[test]
 fn event_delivery_is_idempotent_and_community_isolated() {
     let (mut store, community, channel, keys) = fixture();
-    let event = buzz_sdk::build_message(channel, "hello", None, &[], false, &[])
+    let event = buzz_sdk::build_message(channel, "hello", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&keys)
         .unwrap();
@@ -98,7 +98,7 @@ fn agent_typing_is_ephemeral_and_never_enters_the_event_store() {
         .sign_with_keys(&agent)
         .unwrap();
     let error = store.apply_event(community, &typing).unwrap_err();
-    assert!(error.to_string().contains("ephemeral typing indicators"));
+    assert!(error.to_string().contains("ephemeral events"));
     assert!(store.messages(community, channel, 100).unwrap().is_empty());
 }
 
@@ -255,7 +255,7 @@ fn relay_system_events_are_semantic_content_free_and_not_unread_activity() {
 #[test]
 fn outbox_and_delete_are_reduced_deterministically() {
     let (mut store, community, channel, keys) = fixture();
-    let event = buzz_sdk::build_message(channel, "pending", None, &[], false, &[])
+    let event = buzz_sdk::build_message(channel, "pending", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&keys)
         .unwrap();
@@ -282,7 +282,7 @@ fn outbox_and_delete_are_reduced_deterministically() {
 #[test]
 fn exact_unknown_and_rejected_states_are_not_collapsed_into_pending() {
     let (mut store, community, channel, keys) = fixture();
-    let event = buzz_sdk::build_message(channel, "delivery", None, &[], false, &[])
+    let event = buzz_sdk::build_message(channel, "delivery", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&keys)
         .unwrap();
@@ -317,7 +317,7 @@ fn exact_unknown_and_rejected_states_are_not_collapsed_into_pending() {
 #[test]
 fn repeated_relay_echo_is_a_noop_after_exact_outbox_delivery() {
     let (mut store, community, channel, keys) = fixture();
-    let event = buzz_sdk::build_message(channel, "pending", None, &[], false, &[])
+    let event = buzz_sdk::build_message(channel, "pending", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&keys)
         .unwrap();
@@ -334,7 +334,7 @@ fn repeated_relay_echo_is_a_noop_after_exact_outbox_delivery() {
 #[test]
 fn destructive_outbox_events_wait_for_relay_authority() {
     let (mut store, community, channel, owner) = fixture();
-    let target = buzz_sdk::build_message(channel, "target", None, &[], false, &[])
+    let target = buzz_sdk::build_message(channel, "target", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&owner)
         .unwrap();
@@ -361,7 +361,7 @@ fn destructive_outbox_events_wait_for_relay_authority() {
 #[test]
 fn deletion_reduction_is_authorized_and_order_independent() {
     let (mut store, community, channel, owner) = fixture();
-    let target = buzz_sdk::build_message(channel, "target", None, &[], false, &[])
+    let target = buzz_sdk::build_message(channel, "target", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&owner)
         .unwrap();
@@ -374,7 +374,7 @@ fn deletion_reduction_is_authorized_and_order_independent() {
     store.apply_event(community, &target).unwrap();
     assert!(!store.messages(community, channel, 10).unwrap()[0].deleted);
 
-    let late_target = buzz_sdk::build_message(channel, "late", None, &[], false, &[])
+    let late_target = buzz_sdk::build_message(channel, "late", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&owner)
         .unwrap();
@@ -431,7 +431,7 @@ fn relay_projection_requires_the_pinned_nip11_key() {
 fn thread_read_markers_clear_their_sidebar_unread_indicator() {
     let (mut store, community, channel, other) = fixture();
     let self_pubkey = "a".repeat(64);
-    let root = buzz_sdk::build_message(channel, "root", None, &[], false, &[])
+    let root = buzz_sdk::build_message(channel, "root", None, &[], false, &[], &[])
         .unwrap()
         .custom_created_at(Timestamp::from(10))
         .sign_with_keys(&other)
@@ -445,6 +445,7 @@ fn thread_read_markers_clear_their_sidebar_unread_indicator() {
         }),
         &[],
         false,
+        &[],
         &[],
     )
     .unwrap()
@@ -491,7 +492,7 @@ fn thread_read_markers_clear_their_sidebar_unread_indicator() {
 #[test]
 fn thread_summaries_count_delivered_non_deleted_descendants() {
     let (mut store, community, channel, author) = fixture();
-    let root = buzz_sdk::build_message(channel, "root", None, &[], false, &[])
+    let root = buzz_sdk::build_message(channel, "root", None, &[], false, &[], &[])
         .unwrap()
         .custom_created_at(Timestamp::from(10))
         .sign_with_keys(&author)
@@ -505,6 +506,7 @@ fn thread_summaries_count_delivered_non_deleted_descendants() {
         }),
         &[],
         false,
+        &[],
         &[],
     )
     .unwrap()
@@ -520,6 +522,7 @@ fn thread_summaries_count_delivered_non_deleted_descendants() {
         }),
         &[],
         false,
+        &[],
         &[],
     )
     .unwrap()
@@ -625,4 +628,160 @@ proptest! {
         for _ in 0..deliveries { store.apply_event(community,&event).unwrap(); }
         prop_assert_eq!(store.messages(community,channel,100).unwrap().len(),1);
     }
+}
+
+/// v0.13 M3: the mention picker marks NIP-FI verified people, and finds them
+/// by their verified display name or username even without a kind 0.
+#[test]
+fn mention_candidates_mark_and_find_verified_people() {
+    let (mut store, community, channel, relay) = fixture();
+    store
+        .pin_relay_pubkey(community, &relay.public_key().to_hex())
+        .unwrap();
+    let verified = Keys::generate().public_key().to_hex();
+    let plain = Keys::generate().public_key().to_hex();
+    let metadata = EventBuilder::new(Kind::Custom(39_000), "")
+        .tags([
+            Tag::parse(["d", &channel.to_string()]).unwrap(),
+            Tag::parse(["name", "general"]).unwrap(),
+        ])
+        .sign_with_keys(&relay)
+        .unwrap();
+    store.apply_event(community, &metadata).unwrap();
+    let membership = EventBuilder::new(Kind::Custom(39_002), "")
+        .tags([
+            Tag::parse(["d", &channel.to_string()]).unwrap(),
+            Tag::parse(["p", &verified]).unwrap(),
+            Tag::parse(["p", &plain]).unwrap(),
+        ])
+        .sign_with_keys(&relay)
+        .unwrap();
+    store.apply_event(community, &membership).unwrap();
+    store
+        .apply_verified_profile(
+            community,
+            &bzz::protocol::verified_profile::VerifiedProfile {
+                pubkey: verified.clone(),
+                name: Some(bzz::protocol::verified_profile::VerifiedName {
+                    display_name: "Ada Lovelace".into(),
+                    username: "ada@corp.example".into(),
+                    full_name: None,
+                    issuer_label: "Corp IdP".into(),
+                    verified_at: 1,
+                }),
+                event_id: "e".repeat(64),
+                created_at: 1,
+            },
+        )
+        .unwrap();
+    let all = store
+        .mention_candidates(community, channel, &"a".repeat(64), "")
+        .unwrap();
+    let marked = all
+        .iter()
+        .find(|candidate| candidate.pubkey == verified)
+        .unwrap();
+    assert!(marked.verified);
+    assert_eq!(marked.label, "Ada Lovelace");
+    assert!(
+        !all.iter()
+            .find(|candidate| candidate.pubkey == plain)
+            .unwrap()
+            .verified
+    );
+    for query in ["ada love", "ada@corp"] {
+        let found = store
+            .mention_candidates(community, channel, &"a".repeat(64), query)
+            .unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .map(|candidate| candidate.pubkey.clone())
+                .collect::<Vec<_>>(),
+            vec![verified.clone()],
+            "{query}"
+        );
+    }
+}
+
+/// M7.7: a depth-1 reply its author broadcast to the channel is a channel
+/// timeline row (with its thread reference); other replies are not, and a
+/// deeper reply with the tag is not either.
+#[test]
+fn broadcast_depth_one_replies_are_channel_rows() {
+    let (mut store, community, channel, keys) = fixture();
+    let message =
+        |content: &str, root: Option<&str>, parent: Option<&str>, broadcast: bool, at: u64| {
+            let mut tags = vec![Tag::parse(["h", &channel.to_string()]).unwrap()];
+            if let Some(root) = root {
+                tags.push(Tag::parse(["e", root, "", "root"]).unwrap());
+            }
+            if let Some(parent) = parent {
+                tags.push(Tag::parse(["e", parent, "", "reply"]).unwrap());
+            }
+            if broadcast {
+                tags.push(Tag::parse(["broadcast", "1"]).unwrap());
+            }
+            EventBuilder::new(Kind::Custom(9), content)
+                .tags(tags)
+                .custom_created_at(Timestamp::from(at))
+                .sign_with_keys(&keys)
+                .unwrap()
+        };
+    let root = message("root", None, None, false, 10);
+    let root_id = root.id.to_hex();
+    let plain = message("plain reply", Some(&root_id), Some(&root_id), false, 11);
+    let shared = message("shared reply", Some(&root_id), Some(&root_id), true, 12);
+    let deep = message(
+        "deep shared",
+        Some(&root_id),
+        Some(&plain.id.to_hex()),
+        true,
+        13,
+    );
+    for event in [&root, &plain, &shared, &deep] {
+        store.apply_event(community, event).unwrap();
+    }
+    let rows = store.messages(community, channel, 100).unwrap();
+    let contents = rows
+        .iter()
+        .map(|row| row.content.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(contents, vec!["root", "shared reply"]);
+    assert!(rows[1].broadcast);
+    assert_eq!(rows[1].root_event_id.as_deref(), Some(root_id.as_str()));
+    assert!(!rows[0].broadcast);
+    let theme = bzz::ui::theme::Theme::default();
+    let mut state = bzz::ui::timeline::TimelineState::default();
+    state.reconcile(&rows);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 12)).unwrap();
+    terminal
+        .draw(|frame| {
+            bzz::ui::timeline::render(
+                frame,
+                frame.area(),
+                &rows,
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+                &mut state,
+                "timeline",
+                &theme,
+                true,
+                None,
+            );
+        })
+        .unwrap();
+    let screen = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(
+        screen.contains("↪ thread reply, also sent to the channel"),
+        "{screen}"
+    );
 }

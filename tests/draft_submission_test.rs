@@ -44,7 +44,7 @@ fn configured_store(path: &std::path::Path) -> (Store, Uuid, Uuid) {
 }
 
 fn outbox_event(channel: Uuid) -> nostr::Event {
-    buzz_sdk::build_message(channel, "event", None, &[], false, &[])
+    buzz_sdk::build_message(channel, "event", None, &[], false, &[], &[])
         .unwrap()
         .sign_with_keys(&Keys::generate())
         .unwrap()
@@ -295,4 +295,60 @@ fn restart_recovers_an_interrupted_unbound_submission_without_republishing() {
     assert_eq!(recovered.body, "restart-safe");
     assert_eq!(recovered.revision, submission.revision);
     assert!(store.pending_outbox(community).unwrap().is_empty());
+}
+
+/// M1.6: a mention the SDK would reject (malformed key, or more than 50)
+/// fails before anything is signed or published, with a composer error, and
+/// the exact draft comes back for editing.
+#[tokio::test]
+async fn malformed_mentions_fail_before_publishing_and_keep_the_draft() {
+    let temporary = TempDir::new().unwrap();
+    let (store, community, channel) = configured_store(&temporary.path().join("bzz.db"));
+    // One store for the whole test: opening a store again would recover
+    // `sending` drafts on its own and hide a missing restore.
+    let handle = StoreHandle::spawn(store).unwrap();
+    let (relay, event_frames) =
+        support::fake_relay::FakeRelay::start_counting_event_ack(true, "").await;
+    let signer = SignerHandle::spawn(Keys::generate());
+    let supervisor = SupervisorHandle::spawn(relay.url.clone(), signer.clone());
+    wait_for_authentication(&supervisor).await;
+    let too_many = (0..51)
+        .map(|index| format!("{index:064x}"))
+        .collect::<Vec<_>>();
+    for (body, mentions) in [
+        ("hello @someone", vec!["not-a-pubkey".to_owned()]),
+        ("hello @SOMEONE", vec!["A".repeat(64)]),
+        ("hello everyone", too_many),
+    ] {
+        let owned = body.to_owned();
+        let submission = handle
+            .call(move |store| Ok(save_and_mark(store, community, channel, &owned)))
+            .await
+            .unwrap();
+        let service = MessageService::new(
+            community,
+            signer.clone(),
+            handle.clone(),
+            supervisor.clone(),
+        );
+        let error = service
+            .send_draft_with_media_mentions(channel, body, &[], &mentions, submission)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("the draft is kept"), "{error}");
+        let recovered = handle
+            .call(move |store| store.draft_record(community, channel, None))
+            .await
+            .unwrap()
+            .expect("the draft is back for editing");
+        assert_eq!(recovered.body, body);
+    }
+    assert_eq!(
+        event_frames.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "nothing was published"
+    );
+    supervisor.shutdown().await;
+    signer.lock().await;
+    relay.stop();
 }

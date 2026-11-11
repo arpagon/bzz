@@ -20,7 +20,64 @@ use crate::{
     },
 };
 
+/// Channel-timeline rows: top-level messages plus depth-1 thread replies
+/// their author also sent to the channel (`["broadcast", "1"]`), the relay's
+/// own top-level predicate for channel windows.
+const TOP_LEVEL: &str = "(e.root_event_id IS NULL OR (e.parent_event_id=e.root_event_id AND instr(e.tags_json,'\"broadcast\",\"1\"')>0))";
+
 impl Store {
+    /// Make a verified NIP-CL snapshot the authority for the viewer's own
+    /// memberships and roles. It covers every v1 type, so omission removes.
+    pub fn apply_membership_snapshot(
+        &mut self,
+        community_id: Uuid,
+        snapshot: &crate::protocol::membership_snapshot::VerifiedSnapshot,
+    ) -> Result<()> {
+        let transaction = self.connection.transaction()?;
+        let community = community_id.to_string();
+        transaction.execute(
+            "DELETE FROM viewer_memberships WHERE community_id=?1",
+            [&community],
+        )?;
+        transaction.execute(
+            "UPDATE channels SET is_member=0 WHERE community_id=?1",
+            [&community],
+        )?;
+        for membership in &snapshot.memberships {
+            let channel = membership.channel_id.to_string();
+            transaction.execute(
+                "INSERT INTO channels(community_id,channel_id,name,channel_type,visibility)
+                 VALUES(?1,?2,?2,?3,?4) ON CONFLICT DO NOTHING",
+                params![
+                    community,
+                    channel,
+                    membership.channel_type,
+                    if membership.open { "public" } else { "private" }
+                ],
+            )?;
+            transaction.execute(
+                "UPDATE channels SET is_member=1 WHERE community_id=?1 AND channel_id=?2",
+                params![community, channel],
+            )?;
+            transaction.execute(
+                "INSERT INTO viewer_memberships(community_id,channel_id,role,snapshot_id) VALUES(?1,?2,?3,?4)",
+                params![community, channel, membership.role.as_str(), snapshot.snapshot_id],
+            )?;
+        }
+        crate::store::inbox::mark_projection_dirty(&transaction, community_id)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Fall back to roster authority (no capability, or verification failed).
+    pub fn clear_membership_snapshot(&mut self, community_id: Uuid) -> Result<()> {
+        self.connection.execute(
+            "DELETE FROM viewer_memberships WHERE community_id=?1",
+            [community_id.to_string()],
+        )?;
+        Ok(())
+    }
+
     pub fn reconcile_self_memberships(
         &mut self,
         community_id: Uuid,
@@ -49,7 +106,13 @@ impl Store {
                       SELECT 1 FROM dm_visibility v JOIN communities co ON co.id=v.community_id JOIN identities i ON i.id=co.identity_id
                       WHERE v.community_id=c.community_id AND v.channel_id=c.channel_id AND v.identity_pubkey=i.pubkey
                     ) ELSE c.is_hidden END,
-                    c.member_count,c.last_event_at
+                    c.member_count,c.last_event_at,c.facts_json,
+                    COALESCE(
+                      (SELECT v.role FROM viewer_memberships v
+                       WHERE v.community_id=c.community_id AND v.channel_id=c.channel_id),
+                      (SELECT m.role FROM memberships m JOIN communities co ON co.id=m.community_id
+                         JOIN identities i ON i.id=co.identity_id
+                       WHERE m.community_id=c.community_id AND m.channel_id=c.channel_id AND m.pubkey=i.pubkey))
              FROM channels c
              WHERE c.community_id=?1 AND (
                (c.channel_type<>'dm' AND c.is_hidden=0) OR
@@ -84,6 +147,14 @@ impl Store {
                     last_event_at: row
                         .get::<_, Option<i64>>(8)?
                         .and_then(|value| u64::try_from(value).ok()),
+                    facts: {
+                        let mut facts: crate::domain::ChannelFacts =
+                            serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default();
+                        facts.viewer_role = row
+                            .get::<_, Option<String>>(10)?
+                            .map(|role| crate::domain::MemberRole::parse(Some(&role)));
+                        facts
+                    },
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -127,11 +198,11 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<Message>> {
         self.message_query(
-            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind
+            &format!("SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind
              FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
              WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099)
-               AND (e.kind<>40099 OR e.pubkey=c.relay_pubkey) AND e.root_event_id IS NULL
-             ORDER BY e.created_at DESC,e.event_id DESC LIMIT ?3",
+               AND (e.kind<>40099 OR e.pubkey=c.relay_pubkey) AND {TOP_LEVEL}
+             ORDER BY e.created_at DESC,e.event_id DESC LIMIT ?3"),
             params![community_id.to_string(),channel_id.to_string(),i64::try_from(limit).unwrap_or(i64::MAX)],
         ).map(|mut values| { values.reverse(); values })
     }
@@ -258,7 +329,7 @@ impl Store {
         let scope = if root.is_some() {
             "(e.event_id=?5 OR e.root_event_id=?5)"
         } else {
-            "e.root_event_id IS NULL"
+            TOP_LEVEL
         };
         let columns = "e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind";
         let older_sql = format!(
@@ -334,6 +405,10 @@ impl Store {
                         .map(|base| crate::media::imeta::parse_tags(&tags_json, &content, &base))
                         .unwrap_or_default()
                 };
+                let parsed_tags =
+                    serde_json::from_str::<Vec<Vec<String>>>(&tags_json).unwrap_or_default();
+                let sent_from_thread = crate::protocol::sent_from_thread::parse_tag(&parsed_tags);
+                let emoji = crate::protocol::emoji::tags_of(&parsed_tags);
                 let visible_content = if system.is_some() {
                     String::new()
                 } else {
@@ -357,6 +432,12 @@ impl Store {
                     deleted: row.get::<_, Option<String>>(7)?.is_some(),
                     delivery: crate::domain::DeliveryState::from_outbox(state.as_deref()),
                     system,
+                    sent_from_thread,
+                    broadcast: parsed_tags.iter().any(|tag| {
+                        tag.first().map(String::as_str) == Some("broadcast")
+                            && tag.get(1).map(String::as_str) == Some("1")
+                    }),
+                    emoji,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -365,7 +446,7 @@ impl Store {
 
     pub fn reactions(&self, community_id: Uuid, target: &str) -> Result<Vec<Reaction>> {
         let mut statement = self.connection.prepare(
-            "SELECT reaction_event_id,target_event_id,pubkey,emoji,created_at,deleted_by_event_id FROM reactions WHERE community_id=?1 AND target_event_id=?2 ORDER BY created_at,reaction_event_id",
+            "SELECT reaction_event_id,target_event_id,pubkey,emoji,created_at,deleted_by_event_id,emoji_url FROM reactions WHERE community_id=?1 AND target_event_id=?2 ORDER BY created_at,reaction_event_id",
         )?;
         Ok(statement
             .query_map(params![community_id.to_string(), target], |row| {
@@ -376,17 +457,70 @@ impl Store {
                     emoji: row.get(3)?,
                     created_at: u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
                     deleted: row.get::<_, Option<String>>(5)?.is_some(),
+                    emoji_url: row.get(6)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     pub fn profile(&self, community_id: Uuid, pubkey: &str) -> Result<Option<Profile>> {
-        self.connection.query_row(
+        let profile = self.connection.query_row(
             "SELECT pubkey,display_name,name,picture,nip05,about,event_id,created_at FROM profiles WHERE community_id=?1 AND pubkey=?2",
             params![community_id.to_string(),pubkey],
-            |row| Ok(Profile { pubkey:row.get(0)?,display_name:row.get(1)?,name:row.get(2)?,picture:row.get(3)?,nip05:row.get(4)?,about:row.get(5)?,event_id:row.get(6)?,created_at:u64::try_from(row.get::<_,i64>(7)?).unwrap_or(0) }),
-        ).optional().map_err(Into::into)
+            |row| Ok(Profile { pubkey:row.get(0)?,display_name:row.get(1)?,name:row.get(2)?,picture:row.get(3)?,nip05:row.get(4)?,about:row.get(5)?,event_id:row.get(6)?,created_at:u64::try_from(row.get::<_,i64>(7)?).unwrap_or(0),verified:None,status:None,presence:None,in_huddle:false }),
+        ).optional()?;
+        let verified = self
+            .verified_names(community_id, Some(pubkey))?
+            .remove(pubkey);
+        let status = self
+            .user_statuses(community_id, Some(pubkey))?
+            .remove(pubkey);
+        Ok(match (profile, verified) {
+            (Some(mut profile), verified) => {
+                profile.verified = verified.map(|(name, _, _)| name);
+                profile.status = status;
+                Some(profile)
+            }
+            (None, Some((name, event_id, created_at))) => {
+                Some(Profile::verified_only(pubkey, name, event_id, created_at))
+            }
+            (None, None) => None,
+        })
+    }
+
+    /// Current active verified names, optionally for one person.
+    fn verified_names(
+        &self,
+        community_id: Uuid,
+        pubkey: Option<&str>,
+    ) -> Result<
+        std::collections::HashMap<
+            String,
+            (crate::protocol::verified_profile::VerifiedName, String, u64),
+        >,
+    > {
+        let mut statement = self.connection.prepare(
+            "SELECT pubkey,display_name,username,full_name,issuer_label,verified_at,event_id,created_at
+             FROM verified_profiles WHERE community_id=?1 AND active=1 AND (?2 IS NULL OR pubkey=?2)",
+        )?;
+        Ok(statement
+            .query_map(params![community_id.to_string(), pubkey], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (
+                        crate::protocol::verified_profile::VerifiedName {
+                            display_name: row.get(1)?,
+                            username: row.get(2)?,
+                            full_name: row.get(3)?,
+                            issuer_label: row.get(4)?,
+                            verified_at: u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                        },
+                        row.get::<_, String>(6)?,
+                        u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                    ),
+                ))
+            })?
+            .collect::<std::result::Result<_, _>>()?)
     }
 
     pub fn insert_outbox(&mut self, community_id: Uuid, event: &Event) -> Result<()> {
@@ -990,8 +1124,8 @@ impl Store {
             .optional()?
             .is_none_or(|kind| kind == "dm");
         let mut statement = self.connection.prepare(
-            "SELECT m.pubkey,COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),NULLIF(a.name,''),''),
-                    a.owner_pubkey,a.respond_to,a.respond_to_allowlist_json
+            "SELECT m.pubkey,COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),NULLIF(a.name,''),NULLIF(v.display_name,''),''),
+                    a.owner_pubkey,a.respond_to,a.respond_to_allowlist_json,v.pubkey IS NOT NULL
              FROM memberships m
              JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
              LEFT JOIN profiles p ON p.community_id=m.community_id AND p.pubkey=m.pubkey
@@ -999,8 +1133,10 @@ impl Store {
                   AND a.verification_state='verified'
                   AND (m.role='bot' OR (c.channel_type='dm' AND c.is_member=1
                        AND c.member_count BETWEEN 2 AND 9))
+             LEFT JOIN verified_profiles v ON v.community_id=m.community_id AND v.pubkey=m.pubkey AND v.active=1
              WHERE m.community_id=?1 AND m.channel_id=?2 AND lower(m.pubkey)<>lower(?3)
-               AND (lower(COALESCE(p.display_name,p.name,a.name,m.pubkey)) LIKE ?4 ESCAPE '\\')
+               AND (lower(COALESCE(p.display_name,p.name,a.name,v.display_name,m.pubkey)) LIKE ?4 ESCAPE '\\'
+                    OR lower(COALESCE(v.username,'')) LIKE ?4 ESCAPE '\\')
              ORDER BY a.owner_pubkey IS NULL DESC,
                       lower(COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),a.name,m.pubkey)),m.pubkey
              LIMIT 32",
@@ -1020,12 +1156,13 @@ impl Store {
                         row.get::<_, Option<String>>(2)?,
                         row.get::<_, Option<String>>(3)?,
                         row.get::<_, Option<String>>(4)?,
+                        row.get::<_, bool>(5)?,
                     ))
                 },
             )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows.into_iter()
-            .map(|(pubkey, label, owner, respond_to, allowlist)| {
+            .map(|(pubkey, label, owner, respond_to, allowlist, verified)| {
                 let agent_eligibility = owner
                     .as_deref()
                     .map(|owner| -> Result<crate::agents::Eligibility> {
@@ -1057,6 +1194,8 @@ impl Store {
                     pubkey,
                     is_agent: owner.is_some(),
                     agent_eligibility,
+                    verified,
+                    presence: None,
                 })
             })
             .collect()
@@ -1119,7 +1258,7 @@ impl Store {
         let mut statement = self.connection.prepare(
             "SELECT pubkey,display_name,name,picture,nip05,about,event_id,created_at FROM profiles WHERE community_id=?1",
         )?;
-        Ok(statement
+        let profiles = statement
             .query_map([community_id.to_string()], |row| {
                 let profile = Profile {
                     pubkey: row.get(0)?,
@@ -1130,10 +1269,56 @@ impl Store {
                     about: row.get(5)?,
                     event_id: row.get(6)?,
                     created_at: u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
+                    verified: None,
+                    status: None,
+                    presence: None,
+                    in_huddle: false,
                 };
                 Ok((profile.pubkey.clone(), profile))
             })?
-            .collect::<std::result::Result<std::collections::HashMap<_, _>, _>>()?)
+            .collect::<std::result::Result<std::collections::HashMap<_, _>, _>>()?;
+        drop(statement);
+        let mut profiles = profiles;
+        for (pubkey, (name, event_id, created_at)) in self.verified_names(community_id, None)? {
+            match profiles.get_mut(&pubkey) {
+                Some(profile) => profile.verified = Some(name),
+                None => {
+                    profiles.insert(
+                        pubkey.clone(),
+                        Profile::verified_only(&pubkey, name, event_id, created_at),
+                    );
+                }
+            }
+        }
+        for (pubkey, status) in self.user_statuses(community_id, None)? {
+            if let Some(profile) = profiles.get_mut(&pubkey) {
+                profile.status = Some(status);
+            }
+        }
+        Ok(profiles)
+    }
+
+    fn user_statuses(
+        &self,
+        community_id: Uuid,
+        pubkey: Option<&str>,
+    ) -> Result<std::collections::HashMap<String, crate::protocol::presence::UserStatus>> {
+        let mut statement = self.connection.prepare(
+            "SELECT pubkey,text,emoji,expires_at FROM user_statuses
+             WHERE community_id=?1 AND (?2 IS NULL OR pubkey=?2)",
+        )?;
+        Ok(statement
+            .query_map(params![community_id.to_string(), pubkey], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    crate::protocol::presence::UserStatus {
+                        text: row.get(1)?,
+                        emoji: row.get(2)?,
+                        expires_at: row.get(3)?,
+                    },
+                ))
+            })?
+            .collect::<std::result::Result<_, _>>()?)
     }
 
     pub fn save_ui_state<T: serde::Serialize>(
@@ -1168,6 +1353,76 @@ impl Store {
             serde_json::from_str(&value).map_err(|error| Error::Serialization(error.to_string()))
         })
         .transpose()
+    }
+
+    /// Project a relay-signed NIP-FI verified profile (kind 30382), newest wins.
+    pub fn apply_verified_profile(
+        &self,
+        community_id: Uuid,
+        profile: &crate::protocol::verified_profile::VerifiedProfile,
+    ) -> Result<bool> {
+        let name = profile.name.as_ref();
+        let changed = self.connection.execute(
+            "INSERT INTO verified_profiles(community_id,pubkey,active,display_name,username,full_name,issuer_label,verified_at,event_id,created_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+             ON CONFLICT(community_id,pubkey) DO UPDATE SET active=excluded.active,display_name=excluded.display_name,
+               username=excluded.username,full_name=excluded.full_name,issuer_label=excluded.issuer_label,
+               verified_at=excluded.verified_at,event_id=excluded.event_id,created_at=excluded.created_at
+             WHERE (excluded.created_at,excluded.event_id) > (verified_profiles.created_at,verified_profiles.event_id)",
+            params![
+                community_id.to_string(),
+                profile.pubkey,
+                name.is_some(),
+                name.map(|name| name.display_name.clone()),
+                name.map(|name| name.username.clone()),
+                name.and_then(|name| name.full_name.clone()),
+                name.map(|name| name.issuer_label.clone()),
+                name.map(|name| i64::try_from(name.verified_at).unwrap_or(i64::MAX)),
+                profile.event_id,
+                i64::try_from(profile.created_at).unwrap_or(i64::MAX),
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// The custom emoji palette: newest contribution per shortcode.
+    pub fn emoji_palette(&self, community_id: Uuid) -> Result<HashMap<String, String>> {
+        let mut statement = self.connection.prepare(
+            "SELECT shortcode,url,created_at,event_id FROM emoji_contributions WHERE community_id=?1",
+        )?;
+        let rows = statement
+            .query_map([community_id.to_string()], |row| {
+                Ok(crate::protocol::emoji::Contribution {
+                    emoji: crate::protocol::emoji::Emoji {
+                        shortcode: row.get(0)?,
+                        url: row.get(1)?,
+                    },
+                    created_at: u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+                    event_id: row.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut best: HashMap<String, crate::protocol::emoji::Contribution> = HashMap::new();
+        for row in rows {
+            match best.get(&row.emoji.shortcode) {
+                Some(current) if !crate::protocol::emoji::replaces(&row, current) => {}
+                _ => {
+                    best.insert(row.emoji.shortcode.clone(), row);
+                }
+            }
+        }
+        Ok(best
+            .into_iter()
+            .map(|(shortcode, contribution)| (shortcode, contribution.emoji.url))
+            .collect())
+    }
+
+    pub fn pinned_relay_pubkey(&self, community_id: Uuid) -> Result<Option<String>> {
+        Ok(self.connection.query_row(
+            "SELECT relay_pubkey FROM communities WHERE id=?1",
+            [community_id.to_string()],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn pin_relay_pubkey(&self, community_id: Uuid, pubkey: &str) -> Result<()> {

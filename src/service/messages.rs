@@ -57,8 +57,9 @@ impl MessageService {
     ) -> Result<Event> {
         let (content, tags) = message_media(content, attachments)?;
         let mentions = mention_references(mentions)?;
+        let emoji = self.emoji_tags(&content).await;
         self.send_builder(
-            buzz_sdk::build_message(channel, &content, None, &mentions, false, &tags)
+            buzz_sdk::build_message(channel, &content, None, &mentions, false, &tags, &emoji)
                 .map_err(|error| Error::Protocol(error.to_string()))?,
         )
         .await
@@ -74,10 +75,11 @@ impl MessageService {
         mentions: &[String],
         submission: DraftSubmission,
     ) -> Result<Event> {
+        let emoji = self.emoji_tags(content).await;
         let builder = (|| {
             let (content, tags) = message_media(content, attachments)?;
             let mentions = mention_references(mentions)?;
-            buzz_sdk::build_message(channel, &content, None, &mentions, false, &tags)
+            buzz_sdk::build_message(channel, &content, None, &mentions, false, &tags, &emoji)
                 .map_err(|error| Error::Protocol(error.to_string()))
         })();
         let builder = match builder {
@@ -89,6 +91,53 @@ impl MessageService {
         };
         self.send_builder_for_draft(builder, submission).await
     }
+    /// Desktop "Send to channel": a new top-level kind 9 in `channel`
+    /// carrying `["buzz:sent-from-thread", root, excerpt]` and no NIP-10 tags.
+    /// `root_content` is the thread root's text, clipped exactly like desktop.
+    pub async fn send_to_channel(
+        &self,
+        channel: Uuid,
+        root_event_id: &str,
+        root_content: &str,
+        content: &str,
+        mentions: &[String],
+    ) -> Result<Event> {
+        let mentions = mention_references(mentions)?;
+        let excerpt = crate::protocol::sent_from_thread::summarize_thread_root(root_content);
+        let emoji = self.emoji_tags(content).await;
+        let builder =
+            buzz_sdk::build_message(channel, content, None, &mentions, false, &[], &emoji)
+                .map_err(|error| Error::Protocol(error.to_string()))?
+                .tag(crate::protocol::sent_from_thread::build_tag(
+                    root_event_id,
+                    excerpt.as_deref(),
+                ));
+        self.send_builder(builder).await
+    }
+
+    /// NIP-56 report (kind 1984) of a message to the relay moderators. The
+    /// relay keeps it in its moderation queue; it is never a timeline event.
+    /// NIP-56 report of a message (`event_id`) or, with `None`, of its
+    /// author as a user.
+    pub async fn report(
+        &self,
+        event_id: Option<&str>,
+        author: &str,
+        reason: &str,
+        note: Option<&str>,
+    ) -> Result<Event> {
+        let target = match event_id {
+            Some(event_id) => buzz_sdk::ReportTarget::Event {
+                author_pubkey: author,
+                event_id,
+            },
+            None => buzz_sdk::ReportTarget::Pubkey(author),
+        };
+        let builder = buzz_sdk::build_report(target, reason, note)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        self.send_builder(builder).await
+    }
+
     pub async fn reply(
         &self,
         channel: Uuid,
@@ -128,9 +177,18 @@ impl MessageService {
         };
         let (content, tags) = message_media(content, attachments)?;
         let mentions = mention_references(mentions)?;
+        let emoji = self.emoji_tags(&content).await;
         self.send_builder(
-            buzz_sdk::build_message(channel, &content, Some(&thread), &mentions, false, &tags)
-                .map_err(|error| Error::Protocol(error.to_string()))?,
+            buzz_sdk::build_message(
+                channel,
+                &content,
+                Some(&thread),
+                &mentions,
+                false,
+                &tags,
+                &emoji,
+            )
+            .map_err(|error| Error::Protocol(error.to_string()))?,
         )
         .await
     }
@@ -145,6 +203,7 @@ impl MessageService {
         mentions: &[String],
         submission: DraftSubmission,
     ) -> Result<Event> {
+        let emoji = self.emoji_tags(content).await;
         let builder = (|| {
             let thread = buzz_sdk::ThreadRef {
                 root_event_id: EventId::from_hex(thread.0)
@@ -154,8 +213,16 @@ impl MessageService {
             };
             let (content, tags) = message_media(content, attachments)?;
             let mentions = mention_references(mentions)?;
-            buzz_sdk::build_message(channel, &content, Some(&thread), &mentions, false, &tags)
-                .map_err(|error| Error::Protocol(error.to_string()))
+            buzz_sdk::build_message(
+                channel,
+                &content,
+                Some(&thread),
+                &mentions,
+                false,
+                &tags,
+                &emoji,
+            )
+            .map_err(|error| Error::Protocol(error.to_string()))
         })();
         let builder = match builder {
             Ok(builder) => builder,
@@ -166,6 +233,32 @@ impl MessageService {
         };
         self.send_builder_for_draft(builder, submission).await
     }
+    /// NIP-30 tags for every palette shortcode in `content`, so the message
+    /// renders without lookups for every reader. Unknown shortcodes stay text.
+    async fn emoji_tags(&self, content: &str) -> Vec<Vec<String>> {
+        if !content.contains(':') {
+            return Vec::new();
+        }
+        let community = self.community_id;
+        let palette = self
+            .store
+            .call(move |store| store.emoji_palette(community))
+            .await
+            .unwrap_or_default();
+        crate::protocol::emoji::outgoing_tags(content, &palette)
+    }
+
+    /// NIP-25 reaction with a NIP-30 custom emoji (`:shortcode:` + tag).
+    pub async fn react_custom(&self, target: &str, shortcode: &str, url: &str) -> Result<Event> {
+        let target =
+            EventId::from_hex(target).map_err(|error| Error::Protocol(error.to_string()))?;
+        self.send_builder(
+            buzz_sdk::build_custom_emoji_reaction(target, shortcode, url)
+                .map_err(|error| Error::Protocol(error.to_string()))?,
+        )
+        .await
+    }
+
     pub async fn react(&self, target: &str, emoji: &str) -> Result<Event> {
         let target =
             EventId::from_hex(target).map_err(|error| Error::Protocol(error.to_string()))?;
@@ -196,6 +289,12 @@ impl MessageService {
         )
         .await
     }
+    /// Sign and publish a non-message event (status and similar) through the
+    /// acknowledgement-aware outbox.
+    pub async fn publish_builder(&self, builder: nostr::EventBuilder) -> Result<Event> {
+        self.send_builder(builder).await
+    }
+
     async fn send_builder(&self, builder: nostr::EventBuilder) -> Result<Event> {
         let event = self.signer.sign(builder).await?;
         self.publish_signed(event, None).await
@@ -309,7 +408,9 @@ fn mention_references(mentions: &[String]) -> Result<Vec<&str>> {
             .iter()
             .any(|pubkey| !crate::ui::composer::valid_pubkey(pubkey))
     {
-        return Err(Error::Protocol("invalid message mentions".into()));
+        return Err(Error::Protocol(
+            "a mention is invalid or there are more than 50; the draft is kept".into(),
+        ));
     }
     let mut seen = HashSet::new();
     Ok(mentions

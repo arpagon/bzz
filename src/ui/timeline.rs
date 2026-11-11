@@ -190,9 +190,62 @@ const MESSAGE_TEXT_INDENT: u16 = 6;
 
 enum TimelineRow {
     Text(Line<'static>),
-    Indented { line: Line<'static>, indent: u16 },
+    Indented {
+        line: Line<'static>,
+        indent: u16,
+    },
     Image(Arc<SlicedProtocol>),
+    /// Custom emoji images of one message, side by side, one row high.
+    ImageStrip(Vec<Arc<SlicedProtocol>>),
 }
+
+/// Style every resolvable `:shortcode:` token so custom emoji read as such in
+/// any terminal; unknown shortcodes stay plain text.
+fn style_custom_emoji(
+    line: Line<'static>,
+    known: &std::collections::HashSet<&str>,
+    style: ratatui::style::Style,
+) -> Line<'static> {
+    let mut spans = Vec::new();
+    for span in line.spans {
+        let text = span.content.to_string();
+        let mut rest = text.as_str();
+        let mut emitted = false;
+        while let Some(start) = rest.find(':') {
+            let after = &rest[start + 1..];
+            let Some(end) = after.find(':') else { break };
+            let candidate = &after[..end];
+            if known.contains(candidate.to_lowercase().as_str()) {
+                if start > 0 {
+                    spans.push(Span::styled(rest[..start].to_owned(), span.style));
+                }
+                spans.push(Span::styled(
+                    format!(":{candidate}:"),
+                    span.style.patch(style),
+                ));
+                rest = &after[end + 1..];
+                emitted = true;
+            } else {
+                if start + 1 > 0 {
+                    spans.push(Span::styled(rest[..start + 1].to_owned(), span.style));
+                }
+                rest = after;
+                emitted = true;
+            }
+        }
+        if emitted {
+            if !rest.is_empty() {
+                spans.push(Span::styled(rest.to_owned(), span.style));
+            }
+        } else {
+            spans.push(span);
+        }
+    }
+    Line::from(spans).style(line.style)
+}
+
+/// Custom emoji images drawn per message.
+const MAX_EMOJI_IMAGES: usize = 8;
 
 struct AvatarPlacement {
     protocol: Arc<SlicedProtocol>,
@@ -220,6 +273,11 @@ impl MessageBlock {
                 text_height(line, width.saturating_sub(*indent).max(1))
             }
             TimelineRow::Image(protocol) => protocol.size().height,
+            TimelineRow::ImageStrip(images) => images
+                .iter()
+                .map(|image| image.size().height)
+                .max()
+                .unwrap_or(0),
         }
     }
 
@@ -519,6 +577,9 @@ fn render_internal(
             for attachment in &message.attachments {
                 runtime.request_inline(attachment, image_width, false);
             }
+            for emoji in message.emoji.iter().take(MAX_EMOJI_IMAGES) {
+                runtime.request_emoji(&emoji.url);
+            }
             if message.system.is_none()
                 && let Some(picture) = profiles
                     .get(&message.pubkey)
@@ -665,6 +726,20 @@ fn render_internal(
                             );
                         }
                     }
+                    TimelineRow::ImageStrip(images) => {
+                        let relative_y = i32::try_from(row_y).unwrap_or(i32::MAX)
+                            - i32::try_from(scroll).unwrap_or(i32::MAX);
+                        let mut x = i32::from(MESSAGE_TEXT_INDENT);
+                        for image in images {
+                            let position = SignedPosition::from((
+                                x.clamp(0, i32::from(i16::MAX)) as i16,
+                                relative_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                            ));
+                            frame
+                                .render_widget(SlicedImage::new(image.as_ref(), position), content);
+                            x += i32::from(image.size().width) + 1;
+                        }
+                    }
                     TimelineRow::Image(protocol) => {
                         let relative_y = i32::try_from(row_y).unwrap_or(i32::MAX)
                             - i32::try_from(scroll).unwrap_or(i32::MAX);
@@ -752,11 +827,19 @@ fn message_block(
             copy_selected,
         );
     }
-    let author = profiles
-        .get(&message.pubkey)
-        .map(Profile::label)
+    let author_profile = profiles.get(&message.pubkey);
+    let author = author_profile
+        .map(Profile::author_label)
         .unwrap_or_else(|| crate::domain::abbreviated_pubkey(&message.pubkey));
     let author = sanitize::single_line(&author);
+    let presence_marker = author_profile.map_or("", Profile::presence_marker);
+    let status = author_profile
+        .and_then(|profile| {
+            profile.status_text(crate::clock::WallClock::now_unix(
+                &crate::clock::SystemClock,
+            ))
+        })
+        .map(|status| format!(" · {}", sanitize::single_line(&status)));
     let agent = agents.get(&message.pubkey);
     let agent_marker = agent.map(|agent| if agent.stale { "◇ " } else { "◆ " });
     let owner_presentation = agent.filter(|agent| !agent.stale).map(|agent| {
@@ -801,9 +884,24 @@ fn message_block(
     let mut body_lines = if message.deleted {
         Vec::new().into_iter()
     } else {
-        markdown::render_with_width(&message.content, theme, image_width.saturating_sub(1))
-            .lines
-            .into_iter()
+        let lines =
+            markdown::render_with_width(&message.content, theme, image_width.saturating_sub(1))
+                .lines;
+        let known = message
+            .emoji
+            .iter()
+            .map(|emoji| emoji.shortcode.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        if known.is_empty() {
+            lines.into_iter()
+        } else {
+            let style = theme.style(HighlightGroup::Reaction);
+            lines
+                .into_iter()
+                .map(|line| style_custom_emoji(line, &known, style))
+                .collect::<Vec<_>>()
+                .into_iter()
+        }
     };
     let grouped_body = grouped.then(|| body_lines.next()).flatten();
     let mut header = vec![];
@@ -829,6 +927,18 @@ fn message_block(
                 theme.style(HighlightGroup::SelectionMarker),
             ));
         }
+        if !presence_marker.is_empty() {
+            header.push(Span::styled(
+                presence_marker,
+                theme.style(HighlightGroup::MessageTimestamp),
+            ));
+        }
+        if author_profile.is_some_and(|profile| profile.in_huddle) {
+            header.push(Span::styled(
+                "🎧 ",
+                theme.style(HighlightGroup::MessageTimestamp),
+            ));
+        }
         header.push(Span::styled(
             author,
             theme.style(HighlightGroup::MessageAuthor),
@@ -836,6 +946,12 @@ fn message_block(
         if let Some(owner) = owner_presentation {
             header.push(Span::styled(
                 owner,
+                theme.style(HighlightGroup::MessageTimestamp),
+            ));
+        }
+        if let Some(status) = status {
+            header.push(Span::styled(
+                status,
                 theme.style(HighlightGroup::MessageTimestamp),
             ));
         }
@@ -897,11 +1013,56 @@ fn message_block(
             indent: MESSAGE_TEXT_INDENT,
         });
     } else {
+        if message.broadcast {
+            rows.push(TimelineRow::Indented {
+                line: Line::styled(
+                    "↪ thread reply, also sent to the channel",
+                    theme.style(HighlightGroup::MessageTimestamp),
+                ),
+                indent: MESSAGE_TEXT_INDENT,
+            });
+        }
+        if let Some(reference) = &message.sent_from_thread {
+            let excerpt = reference
+                .excerpt
+                .as_deref()
+                .map(sanitize::single_line)
+                .unwrap_or_else(|| "a thread".into());
+            rows.push(TimelineRow::Indented {
+                line: Line::styled(
+                    format!("↪ sent from thread · {excerpt}"),
+                    theme.style(HighlightGroup::MessageTimestamp),
+                ),
+                indent: MESSAGE_TEXT_INDENT,
+            });
+        }
         for line in body_lines {
             rows.push(TimelineRow::Indented {
                 line,
                 indent: MESSAGE_TEXT_INDENT,
             });
+        }
+        // Graphics terminals show the message's custom emoji as images; the
+        // styled `:shortcode:` text stays in the body for every terminal.
+        let emoji_images = message
+            .emoji
+            .iter()
+            .filter(|emoji| {
+                message
+                    .content
+                    .to_lowercase()
+                    .contains(&format!(":{}:", emoji.shortcode))
+            })
+            .take(MAX_EMOJI_IMAGES)
+            .filter_map(
+                |emoji| match media.and_then(|runtime| runtime.emoji_state(&emoji.url)) {
+                    Some(MediaState::Ready(protocol)) => Some(protocol.clone()),
+                    _ => None,
+                },
+            )
+            .collect::<Vec<_>>();
+        if !emoji_images.is_empty() {
+            rows.push(TimelineRow::ImageStrip(emoji_images));
         }
         for attachment in &message.attachments {
             let state = media.and_then(|runtime| runtime.state(attachment, image_width));
@@ -1049,12 +1210,102 @@ pub(crate) fn system_summary(
             || "Channel restored".to_owned(),
             |actor| format!("Channel restored by {actor}"),
         ),
-        SystemEventKind::MessageDeleted => actor.map_or_else(
-            || "A message was deleted".to_owned(),
-            |actor| format!("A message was deleted by {actor}"),
+        SystemEventKind::MessageDeleted => match (&system.detail, actor) {
+            (Some(reason), _) => format!(
+                "Removed by community moderators · {}",
+                sanitize::single_line(reason)
+            ),
+            (None, Some(actor)) => format!("{actor} removed a message"),
+            (None, None) => "A message was removed".to_owned(),
+        },
+        SystemEventKind::TopicChanged | SystemEventKind::PurposeChanged => {
+            let field = if system.kind == SystemEventKind::TopicChanged {
+                "topic"
+            } else {
+                "purpose"
+            };
+            let detail = system.detail.as_deref().unwrap_or_default();
+            let change = if detail.is_empty() {
+                format!("cleared the {field}")
+            } else {
+                format!("changed the {field} to “{}”", sanitize::single_line(detail))
+            };
+            format!("{} {change}", actor.unwrap_or_else(|| "Someone".into()))
+        }
+        SystemEventKind::VisibilityChanged => format!(
+            "{} made the channel {}",
+            actor.unwrap_or_else(|| "Someone".into()),
+            match system.detail.as_deref() {
+                Some("private") => "private",
+                _ => "open",
+            }
+        ),
+        SystemEventKind::JoinRoleChanged => format!(
+            "{} set new members to join as {}",
+            actor.unwrap_or_else(|| "Someone".into()),
+            match system.detail.as_deref() {
+                Some("guest") => "guests (read-only)",
+                _ => "members",
+            }
+        ),
+        SystemEventKind::UnlistedChanged => format!(
+            "{} {} the channel",
+            actor.unwrap_or_else(|| "Someone".into()),
+            if system.detail.as_deref() == Some("true") {
+                "unlisted"
+            } else {
+                "listed"
+            }
+        ),
+        SystemEventKind::AutoJoinChanged => format!(
+            "{} turned auto-join {}",
+            actor.unwrap_or_else(|| "Someone".into()),
+            if system.detail.as_deref() == Some("true") {
+                "on"
+            } else {
+                "off"
+            }
+        ),
+        SystemEventKind::TtlChanged => {
+            let actor = actor.unwrap_or_else(|| "Someone".into());
+            match system
+                .detail
+                .as_deref()
+                .and_then(|seconds| seconds.parse::<u64>().ok())
+            {
+                Some(seconds) => format!(
+                    "{actor} set the channel to archive after {} of inactivity",
+                    humanize_seconds(seconds)
+                ),
+                None => format!("{actor} made the channel permanent"),
+            }
+        }
+        SystemEventKind::ChannelDeleted => actor.map_or_else(
+            || "Channel deleted".to_owned(),
+            |actor| format!("Channel deleted by {actor}"),
+        ),
+        SystemEventKind::ChannelAutoArchived => "Channel archived after inactivity".to_owned(),
+        SystemEventKind::AdminKick => target.map_or_else(
+            || "A member was removed by a relay administrator".to_owned(),
+            |target| format!("{target} was removed by a relay administrator"),
         ),
         SystemEventKind::Unsupported => "Unsupported system event".to_owned(),
     }
+}
+
+/// `90` → `1 min`, `86400` → `1 day`, largest whole unit.
+fn humanize_seconds(seconds: u64) -> String {
+    for (unit, size) in [("day", 86_400), ("hour", 3_600), ("min", 60)] {
+        if seconds >= size {
+            let count = seconds / size;
+            return if unit == "min" || count == 1 {
+                format!("{count} {unit}")
+            } else {
+                format!("{count} {unit}s")
+            };
+        }
+    }
+    format!("{seconds} s")
 }
 
 fn attachment_line(
@@ -1277,6 +1528,9 @@ mod tests {
             deleted: false,
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
+            sent_from_thread: None,
+            broadcast: false,
+            emoji: Vec::new(),
         }
     }
 

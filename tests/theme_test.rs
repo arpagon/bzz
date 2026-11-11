@@ -28,6 +28,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
         is_hidden: false,
         member_count: 1,
         last_event_at: Some(1),
+        facts: Default::default(),
     }];
     let messages = vec![Message {
         event_id: event_id.clone(),
@@ -41,6 +42,9 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
         deleted: false,
         delivery: bzz::domain::DeliveryState::Pending,
         system: None,
+        sent_from_thread: None,
+        broadcast: false,
+        emoji: Vec::new(),
     }];
     let profiles = HashMap::from([(
         self_pubkey.clone(),
@@ -53,6 +57,10 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
             about: None,
             event_id: "d".repeat(64),
             created_at: 1,
+            verified: None,
+            status: None,
+            presence: None,
+            in_huddle: false,
         },
     )]);
     let reactions = HashMap::from([(
@@ -64,6 +72,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
             emoji: "+".into(),
             created_at: 2,
             deleted: false,
+            emoji_url: None,
         }],
     )]);
     let mut state = TimelineState {
@@ -95,6 +104,9 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
                         },
                         &HashSet::from([channel_id]),
                         ChannelSort::Smart,
+                        false,
+                        &HashMap::new(),
+                        None,
                         &theme,
                         true,
                     );

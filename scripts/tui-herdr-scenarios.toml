@@ -43,9 +43,11 @@ action = "open-inbox"
 keys = ["z", "i"]
 visible = "Welcome to bzz"
 
+# `U` (mark unread) is bound only in the Inbox scope, and it fits a 40-row
+# pane; the longer Inbox list continues below the fold.
 [[scenario.step]]
 keys = ["shift+?"]
-visible = "mark visible rows read"
+visible = "mark unread"
 
 [[scenario.step]]
 keys = ["esc"]
@@ -54,6 +56,41 @@ visible = "Welcome to bzz"
 [[scenario.step]]
 keys = ["q"]
 visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "v013-panels-empty-profile"
+kind = "automated"
+description = "v0.13 commands on an empty isolated profile: the broker panel opens and is not serving, huddles and My tasks explain they need a connected community, presence reports it is off, and the terminal restores on quit."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "b", "r", "o", "k", "e", "r", "enter"]
+visible = "agent broker · not serving"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = [":", "h", "u", "d", "d", "l", "e", "enter"]
+visible = "select a channel in a connected community"
+
+[[scenario.step]]
+keys = [":", "t", "a", "s", "k", "s", "enter"]
+visible = "connect to a community to see artifacts"
+
+[[scenario.step]]
+keys = [":", "p", "r", "e", "s", "e", "n", "c", "e", "enter"]
+visible = "presence: off"
 
 [[scenario.step]]
 keys = ["q"]
@@ -96,3 +133,156 @@ visible = "opening does not acknowledge"
 [[scenario.step]]
 keys = ["i"]
 visible = "message"
+
+# Harness scenarios: `scripts/test-relay.sh --herdr` starts a fresh pinned
+# relay, writes a disposable profile and generated content
+# (examples/harness_fixture.rs) and runs these against the release binary.
+
+[[scenario]]
+id = "t9-system-group-read-only"
+kind = "harness"
+description = "M1: the System group stays collapsed until :system; a guest in an announce channel gets the fixed read-only notice instead of a composer."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "s", "y", "s", "t", "e", "m", "enter"]
+visible = "⚙ open"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "a", "n", "n", "enter"]
+visible = "read-only · announce channel (guest)"
+
+[[scenario.step]]
+keys = ["i"]
+visible = "read-only · announce channel (guest)"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t9-artifacts-emoji-report"
+kind = "harness"
+description = "M4, M5, M10: the artifacts panel lists the generated task, the reaction picker's custom mode finds the community emoji, and :report asks before sending."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = [":", "a", "r", "t", "i", "f", "a", "c", "t", "s", "enter"]
+visible = "Generated fixture task"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = ["3", "k"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = ["r"]
+visible = ": custom"
+
+[[scenario.step]]
+keys = [":", "b", "z", "z"]
+visible = "bzzwave"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = ": custom"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = [":", "r", "e", "p", "o", "r", "t", "space", "s", "p", "a", "m", "enter"]
+visible = "report message to moderators?"
+
+[[scenario.step]]
+keys = ["n"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t9-presence-broker-huddle"
+kind = "harness"
+description = "M6, M8, M9: :presence on, the broker panel, then start a huddle (its creator joins muted), unmute, mute again and leave, which ends it as the last one out (ALSA null device: no real microphone)."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "p", "r", "e", "s", "e", "n", "c", "e", "space", "o", "n", "enter"]
+visible = "presence: on"
+
+[[scenario.step]]
+keys = [":", "b", "r", "o", "k", "e", "r", "enter"]
+visible = "agent broker"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = [":", "h", "u", "d", "d", "l", "e", "space", "s", "t", "a", "r", "t", "enter"]
+visible = "start a huddle?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "you are in the call · muted"
+
+[[scenario.step]]
+keys = ["m"]
+visible = "LIVE (others hear you)"
+
+[[scenario.step]]
+keys = ["m"]
+visible = "you are in the call · muted"
+
+[[scenario.step]]
+keys = ["l"]
+visible = "you are not in the call"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"

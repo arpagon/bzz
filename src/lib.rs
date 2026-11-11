@@ -3,10 +3,13 @@
 pub mod agents;
 pub mod app;
 pub mod auth;
+pub mod broker;
+pub mod clock;
 pub mod config;
 pub mod diagnostics;
 pub mod domain;
 pub mod error;
+pub mod huddle;
 pub mod media;
 pub mod paths;
 pub mod protocol;

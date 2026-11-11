@@ -182,6 +182,21 @@ impl MediaRuntime {
     /// It is a no-op in locked/cache-only mode and on terminals that cannot
     /// safely display an allocated raster row.
     pub fn request_avatar(&mut self, pubkey: &str, picture: &str, width: u16) {
+        self.request_raster(pubkey, picture, width, 3);
+    }
+
+    /// A NIP-30 custom emoji image, one row by two cells, through the same
+    /// bounded, credential-scoped and cache-backed path as profile avatars.
+    pub fn request_emoji(&mut self, url: &str) {
+        self.request_raster(EMOJI_SUBJECT, url, EMOJI_WIDTH, 1);
+    }
+
+    pub fn emoji_state(&self, url: &str) -> Option<&MediaState> {
+        self.states
+            .get(&avatar_key(EMOJI_SUBJECT, url, EMOJI_WIDTH))
+    }
+
+    fn request_raster(&mut self, pubkey: &str, picture: &str, width: u16, height: u16) {
         if !should_request_avatar(
             self.profile_avatars,
             self.avatar_network_enabled,
@@ -238,7 +253,7 @@ impl MediaRuntime {
                 let decode_path = path.clone();
                 let (protocol, weight) = tokio::task::spawn_blocking(move || {
                     let image = decode_image(&decode_path)?;
-                    let allocation = Size::new(width, 3);
+                    let allocation = Size::new(width, height);
                     // The protocol retains its resized terminal representation,
                     // not the full decoded source photograph. Charging the
                     // original dimensions makes a few ordinary avatars evict
@@ -765,6 +780,9 @@ fn auto_protocol_from_environment() -> Option<ProtocolType> {
 fn cache_key(attachment: &Attachment, width: u16) -> String {
     format!("{}:{width}", attachment.sha256)
 }
+
+const EMOJI_SUBJECT: &str = "nip30-custom-emoji";
+pub const EMOJI_WIDTH: u16 = 2;
 
 fn should_request_avatar(
     mode: ProfileAvatars,

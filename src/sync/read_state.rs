@@ -126,6 +126,25 @@ pub async fn merge_events(
     Ok(merged)
 }
 
+/// Complete startup load from a verified NIP-RS atomic snapshot. Returns the
+/// number of events merged, or `None` when the relay cannot prove completeness
+/// (no capability, transport failure or any verification failure); the
+/// caller then relies on the ordinary read-state subscription.
+pub async fn load_snapshot(
+    community_id: Uuid,
+    http: &crate::protocol::http::HttpClient,
+    signer: &SignerHandle,
+    store: &StoreHandle,
+) -> Option<usize> {
+    let info = http.nip11().await.ok()?;
+    let snapshot = http.read_state_snapshot(&info).await.ok().flatten()?;
+    let count = snapshot.events.len();
+    merge_events(community_id, &snapshot.events, signer, store)
+        .await
+        .ok()?;
+    Some(count)
+}
+
 pub fn split(mut contexts: BTreeMap<String, u32>, client_id: &str) -> Result<Vec<ReadStateBlob>> {
     contexts.retain(|key, _| key.len() <= 256);
     if contexts.len() > MAX_CONTEXTS {

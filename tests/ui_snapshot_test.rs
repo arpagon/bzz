@@ -35,6 +35,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
             is_hidden: false,
             member_count: 3,
             last_event_at: Some(1),
+            facts: Default::default(),
         },
         Channel {
             id: Uuid::new_v4(),
@@ -46,6 +47,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
             is_hidden: false,
             member_count: 1,
             last_event_at: None,
+            facts: Default::default(),
         },
     ];
     let messages = vec![Message {
@@ -60,6 +62,9 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
         deleted: false,
         delivery: bzz::domain::DeliveryState::Pending,
         system: None,
+        sent_from_thread: None,
+        broadcast: false,
+        emoji: Vec::new(),
     }];
     let reactions = HashMap::from([(
         "a".repeat(64),
@@ -71,6 +76,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                 emoji: "+".into(),
                 created_at: 2,
                 deleted: false,
+                emoji_url: None,
             },
             Reaction {
                 event_id: "d".repeat(64),
@@ -79,6 +85,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                 emoji: "+".into(),
                 created_at: 3,
                 deleted: true,
+                emoji_url: None,
             },
         ],
     )]);
@@ -110,6 +117,9 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                 },
                 &HashSet::from([channel]),
                 ChannelSort::Smart,
+                false,
+                &HashMap::new(),
+                None,
                 &theme,
                 true,
             );
@@ -161,6 +171,9 @@ fn timeline_roots_show_compact_thread_activity() {
         deleted: false,
         delivery: bzz::domain::DeliveryState::Delivered,
         system: None,
+        sent_from_thread: None,
+        broadcast: false,
+        emoji: Vec::new(),
     };
     let summaries = HashMap::from([(
         root_id,
@@ -220,6 +233,10 @@ fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
                 about: None,
                 event_id: "d".repeat(64),
                 created_at: 1,
+                verified: None,
+                status: None,
+                presence: None,
+                in_huddle: false,
             },
         ),
         (
@@ -233,6 +250,10 @@ fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
                 about: None,
                 event_id: "e".repeat(64),
                 created_at: 1,
+                verified: None,
+                status: None,
+                presence: None,
+                in_huddle: false,
             },
         ),
     ]);
@@ -271,7 +292,11 @@ fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
                 actor: Some(owner.clone()),
                 target: None,
                 participants: vec![owner.clone(), agent.clone()],
+                detail: None,
             }),
+            sent_from_thread: None,
+            broadcast: false,
+            emoji: Vec::new(),
         },
         Message {
             event_id: "1".repeat(64),
@@ -285,6 +310,9 @@ fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
             deleted: false,
             delivery: bzz::domain::DeliveryState::Delivered,
             system: None,
+            sent_from_thread: None,
+            broadcast: false,
+            emoji: Vec::new(),
         },
     ];
     let mut state = TimelineState {
@@ -347,6 +375,9 @@ fn timeline_distinguishes_pending_unknown_and_rejected_delivery() {
             deleted: false,
             delivery,
             system: None,
+            sent_from_thread: None,
+            broadcast: false,
+            emoji: Vec::new(),
         })
         .collect::<Vec<_>>();
     let mut state = TimelineState {
@@ -403,6 +434,9 @@ fn nearby_same_author_messages_share_a_compact_header_and_keep_date_context() {
             deleted: false,
             delivery: bzz::domain::DeliveryState::Delivered,
             system: None,
+            sent_from_thread: None,
+            broadcast: false,
+            emoji: Vec::new(),
         })
         .collect::<Vec<_>>();
     let mut state = TimelineState {
@@ -474,6 +508,9 @@ fn attachment_cards_remain_visible_without_a_graphics_protocol() {
         deleted: false,
         delivery: bzz::domain::DeliveryState::Delivered,
         system: None,
+        sent_from_thread: None,
+        broadcast: false,
+        emoji: Vec::new(),
     };
     let backend = TestBackend::new(80, 12);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -557,6 +594,10 @@ fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
         about: None,
         event_id: "b".repeat(64),
         created_at: 1,
+        verified: None,
+        status: None,
+        presence: None,
+        in_huddle: false,
     };
     let profiles = HashMap::from([(pubkey.clone(), profile)]);
     let items = vec![InboxItem {
@@ -587,6 +628,9 @@ fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
         deleted: false,
         delivery: bzz::domain::DeliveryState::Delivered,
         system: None,
+        sent_from_thread: None,
+        broadcast: false,
+        emoji: Vec::new(),
     }];
     let mut inbox_state = InboxState::default();
     inbox_state.reconcile(&items);

@@ -19,6 +19,8 @@ pub struct DirectoryReport {
     pub verified_agents: usize,
     pub agent_projection_changes: usize,
     pub channel_ids: BTreeSet<Uuid>,
+    /// The viewer's memberships came from a verified NIP-CL 39008 snapshot.
+    pub membership_snapshot: bool,
 }
 
 pub async fn refresh(
@@ -36,7 +38,22 @@ pub async fn refresh(
         .tag("p", [self_pubkey.to_owned()]),
     )
     .await?;
+    // NIP-CL leaves system channels out of reads that do not name them; ask
+    // for them explicitly so their memberships are not reconciled away.
+    let system = query_all(
+        http,
+        QueryFilter {
+            kinds: vec![39_002],
+            ..QueryFilter::default()
+        }
+        .tag("p", [self_pubkey.to_owned()])
+        .tag("t", ["system".to_owned()]),
+    )
+    .await?;
+    joined.extend(system);
     joined.retain(|event| event.kind.as_u16() == 39_002);
+    joined.sort_by_key(|event| event.id);
+    joined.dedup_by_key(|event| event.id);
     let mut ids = joined
         .iter()
         .filter(|event| {
@@ -48,9 +65,26 @@ pub async fn refresh(
         .filter_map(|value| Uuid::parse_str(&value).ok())
         .collect::<BTreeSet<_>>();
     apply(community_id, joined.clone(), store).await?;
+    // Prefer the signed compact snapshot as the viewer's membership authority.
+    // Rosters above still serve other-member features (agents, counts).
+    let snapshot = viewer_snapshot(community_id, self_pubkey, http, store).await;
+    if let Some(snapshot) = &snapshot {
+        ids = snapshot
+            .memberships
+            .iter()
+            .map(|entry| entry.channel_id)
+            .collect();
+    }
     let joined_ids = ids.clone();
+    let authoritative = snapshot.clone();
     store
-        .call(move |store| store.reconcile_self_memberships(community_id, &joined_ids))
+        .call(move |store| match &authoritative {
+            Some(snapshot) => store.apply_membership_snapshot(community_id, snapshot),
+            None => {
+                store.clear_membership_snapshot(community_id)?;
+                store.reconcile_self_memberships(community_id, &joined_ids)
+            }
+        })
         .await?;
 
     let mut metadata = query_all(
@@ -107,7 +141,28 @@ pub async fn refresh(
         verified_agents: agent_report.verified,
         agent_projection_changes: agent_report.projection_changes,
         channel_ids: ids,
+        membership_snapshot: snapshot.is_some(),
     })
+}
+
+/// A verified snapshot, or `None` for "use rosters" (capability absent,
+/// relay key not pinned yet, transport error or any verification failure).
+async fn viewer_snapshot(
+    community_id: Uuid,
+    self_pubkey: &str,
+    http: &HttpClient,
+    store: &StoreHandle,
+) -> Option<crate::protocol::membership_snapshot::VerifiedSnapshot> {
+    let pinned = store
+        .call(move |store| store.pinned_relay_pubkey(community_id))
+        .await
+        .ok()
+        .flatten()?;
+    let info = http.nip11().await.ok()?;
+    http.membership_snapshot(&info, &pinned, self_pubkey)
+        .await
+        .ok()
+        .flatten()
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -259,6 +314,64 @@ pub async fn hydrate_profiles(
             }])
             .await?;
         events.retain(|event| event.kind.as_u16() == 0);
+        count += events.len();
+        apply(community_id, events, store).await?;
+    }
+    Ok(count)
+}
+
+/// Every member's kind 30030 `buzz:custom-emoji` set (the workspace palette).
+pub async fn hydrate_emoji_sets(
+    community_id: Uuid,
+    http: &HttpClient,
+    store: &StoreHandle,
+) -> Result<usize> {
+    let mut events = query_all(
+        http,
+        QueryFilter {
+            kinds: vec![u32::from(crate::protocol::emoji::KIND_EMOJI_SET)],
+            ..QueryFilter::default()
+        }
+        .tag("d", [crate::protocol::emoji::SET_D_TAG.to_owned()]),
+    )
+    .await?;
+    events.retain(|event| event.kind.as_u16() == crate::protocol::emoji::KIND_EMOJI_SET);
+    let count = events.len();
+    apply(community_id, events, store).await?;
+    Ok(count)
+}
+
+/// NIP-FI verified profiles (relay-signed 30382) for `people`, when the relay
+/// advertises them (`federated_identity.public_profile` in NIP-11).
+pub async fn hydrate_verified_profiles(
+    community_id: Uuid,
+    people: impl IntoIterator<Item = String>,
+    relay_pubkey: &str,
+    http: &HttpClient,
+    store: &StoreHandle,
+) -> Result<usize> {
+    let people = people
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut count = 0;
+    for chunk in people.chunks(100) {
+        let mut events = http
+            .query(&[QueryFilter {
+                kinds: vec![u32::from(
+                    crate::protocol::verified_profile::KIND_VERIFIED_PROFILE,
+                )],
+                authors: vec![relay_pubkey.to_owned()],
+                limit: Some(chunk.len() as u32),
+                ..QueryFilter::default()
+            }
+            .tag("d", chunk.to_vec())])
+            .await?;
+        events.retain(|event| {
+            event.kind.as_u16() == crate::protocol::verified_profile::KIND_VERIFIED_PROFILE
+                && event.pubkey.to_hex() == relay_pubkey
+        });
         count += events.len();
         apply(community_id, events, store).await?;
     }

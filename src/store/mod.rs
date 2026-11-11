@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod artifacts;
 pub mod dm;
 pub mod events;
 pub mod inbox;
@@ -97,6 +98,7 @@ impl Store {
             let backend = match identity.backend {
                 KeyBackend::Keychain => "keychain",
                 KeyBackend::EncryptedFile => "encrypted-file",
+                KeyBackend::BuzzDesktop => "buzz-desktop",
             };
             transaction.execute(
                 "INSERT INTO identities(id,pubkey,label,key_backend,key_ref,created_at) VALUES(?1,?2,?3,?4,?5,unixepoch()) ON CONFLICT(id) DO UPDATE SET pubkey=excluded.pubkey,label=excluded.label,key_backend=excluded.key_backend,key_ref=excluded.key_ref",

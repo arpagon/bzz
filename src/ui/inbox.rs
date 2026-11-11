@@ -497,7 +497,7 @@ fn detail_lines(
         }
         let author = profiles.get(&message.pubkey).map_or_else(
             || crate::domain::abbreviated_pubkey(&message.pubkey),
-            Profile::label,
+            Profile::author_label,
         );
         let author = sanitize::single_line(&author);
         let agent = agents.get(&message.pubkey).filter(|agent| !agent.stale);

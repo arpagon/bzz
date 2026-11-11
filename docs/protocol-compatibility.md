@@ -1,9 +1,12 @@
 # Protocol compatibility
 
-The v0.11.3 compatibility baseline remains `block/buzz` revision
-`9f55bf67456be10ff7c8238bf0d9e12e582848f6` and uses revision-pinned
-`buzz-core`/`buzz-sdk` dependencies. Existing v0.10.0 artifacts remain pinned to
-`ede26863345a518ec46edd6d7692e0281883491b`.
+The v0.13.0 compatibility baseline is `block/buzz` revision
+`f3b127e3af5c14d2314faa2b63556c3f51ec6743`, with revision-pinned `buzz-core`,
+`buzz-sdk` and (feature `huddles-audio`) `buzz-audio-client`, built with Rust
+1.98.1. v0.11.x–v0.12.x artifacts remain pinned to
+`9f55bf67456be10ff7c8238bf0d9e12e582848f6`; v0.10.0 to
+`ede26863345a518ec46edd6d7692e0281883491b`. The v0.13.0 surfaces are listed in
+[v0.13.0 additions](#v0130-additions) below.
 
 Implemented MVP protocol surface:
 
@@ -41,8 +44,8 @@ reply archive for at most the 500 retained timeline roots. A selected-channel
 kind `39005` may refine live count/activity presentation only after exact
 signature, pinned-signer, channel, root-coordinate, and bounded-payload
 validation. It never enters SQLite, Inbox, search, unread/read state,
-diagnostics, or telemetry; kind `39006` and the full Buzz channel-window model
-remain unsupported.
+diagnostics, or telemetry. Since v0.13.0 the selected channel and threads load
+through verified NIP-CW windows (kinds `39006`/`39007`); see below.
 
 bzz combines a small global stream (needed for reaction/removal events that
 carry `e` but no `h`) with a bounded set of channel subscriptions, then repairs
@@ -93,9 +96,58 @@ unread/read-state, diagnostic, or telemetry record. bzz does not publish human
 typing, and the row does not prove readiness, health, progress, or a guaranteed
 reply.
 
-Managed-agent support in this baseline is relay-only interoperability. bzz does
-not consume kind `30174` memory, kind `24200` observer/control frames, kind
-`30179` private managed state, or kind `44200` usage metrics. It does not own an
-agent key, spawn ACP or model processes, publish autonomously, or claim control
-of a remote runtime. See
-[`adr-v0.11-remote-managed-agent-interoperability.md`](adr-v0.11-remote-managed-agent-interoperability.md).
+Remote managed agents remain relay-only interoperability: bzz does not consume
+kind `24200` observer/control frames, kind `30179` private managed state, or kind
+`44200` usage metrics, and never spawns ACP or model processes. Since v0.13.0 it
+can hold keys for **local** agents it hosts through the `buzz-sdk::broker`
+contract (see below and
+[`adr-v0.13-agent-broker.md`](adr-v0.13-agent-broker.md)).
+
+## v0.13.0 additions
+
+- **Channels (NIP-CL):** channel types and roles, announce channels (guests read
+  only), unlisted channels hidden from discovery, a collapsed read-only System
+  group, and live membership changes; the viewer's memberships come from a
+  verified kind `39008` snapshot when the relay serves one. The profile card
+  (`:profile`, `Space p`) lists a person's listed, open channels from a
+  verified kind `39009` public lookup where the relay advertises
+  `membership_public`; that list is display data only, never membership
+  authority, and a failed or unsupported lookup is never shown as empty.
+- **People search:** the relay's name-only `POST /profiles/search` (kind 0
+  `name`/`display_name`, and relay-signed kind 30382 verified names where
+  advertised); NIP-50 prefix search over kind 0 only when it answers 404.
+- **Mentions:** a malformed mention or more than 50 is a composer error
+  before signing; the draft is kept.
+- **Read state (NIP-RS):** a verified atomic snapshot as the complete startup
+  load.
+- **Federated identity (NIP-FI, NIP-FA):** browser sign-in with an identity
+  adapter, `nip-fi+jwt` evidence on the WebSocket upgrade, HTTP and media,
+  re-minting before expiry, typed denials, Buzz Desktop as a credential
+  provider, and relay-signed verified profiles (kind `30382`).
+- **Artifacts (NIP-AR, kinds `45010`/`45011`):** one sync subscription for the
+  selected channel (the set is replaced only at EOSE), head lookups including
+  deletions, cross-channel assigned `buzz.task` artifacts, and envelope edits —
+  rename, delete, restore and move — reconciled on `conflict`. The
+  `buzz.task`/`buzz.project` content schemas are unpublished upstream, so bzz
+  renders a safe fallback and never rewrites `content`; creating artifacts is
+  not supported.
+- **Custom emoji (NIP-30, NIP-CE):** kind `30180` entries and `30030` sets,
+  inline images in graphics terminals and `:shortcode:` elsewhere, and custom
+  reactions.
+- **Presence and status:** kind `20001` presence (publishing is opt-in), kind
+  `20003` owner presence for agents, and NIP-38 kind `30315` status with expiry.
+- **Channel and thread windows (NIP-CW):** relay-signed `39006`/`39007` bounds
+  verified against the exact request; paging uses only `has_more`; fallback to
+  the previous loading without notice.
+- **Huddles (kinds `48100`–`48106`, `24810`):** rosters replayed with the
+  upstream CLI/desktop tracker, start and end with confirmation, guidelines and
+  reactions, and audio through `/huddle/{id}/audio` (v2 handshake, Opus,
+  muted on join). Builds without `huddles-audio` are view-only.
+- **Local agent broker (`buzz-sdk::broker`):** `POST /v1/action` on loopback
+  for `channel.read`, `message.post`, `message.reply`, `reaction.add`,
+  `profile.set` and `storage.address` (NIP-AE kind `30174` addressing).
+  `agents.create/update/delete` answer `unsupported`. Agent events and NIP-42
+  AUTH carry the owner's NIP-OA tag; FI communities use NIP-FA agent grants and
+  `nip-fi-agent+jwt` assertions.
+- **Messages:** "send to channel" from a thread and NIP-56 reports (kind
+  `1984`).

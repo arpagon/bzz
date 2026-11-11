@@ -139,11 +139,12 @@ jobs:
       - name: Install dependencies
         run: |
           ${{ matrix.packages_install }}
-      - name: Install Linux keychain build dependencies
+      - name: Verify preinstalled Linux build dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libdbus-1-dev pkg-config
+          test -f /usr/local/share/bzz-build-packages.txt
+          pkg-config --modversion alsa dbus-1
+          cmake --version
       - name: Build artifacts
         run: |
           # Actually do builds and make zips and whatnot

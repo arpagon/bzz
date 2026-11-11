@@ -22,6 +22,10 @@ pub enum ChannelKind {
     Stream,
     Forum,
     Dm,
+    Workflow,
+    /// NIP-CL access-control channel (agent config and similar).
+    System,
+    /// A type this bzz does not know. Always read-only.
     Other(String),
 }
 
@@ -31,6 +35,8 @@ impl ChannelKind {
             "stream" => Self::Stream,
             "forum" => Self::Forum,
             "dm" => Self::Dm,
+            "workflow" => Self::Workflow,
+            "system" => Self::System,
             other => Self::Other(other.to_owned()),
         }
     }
@@ -39,12 +45,128 @@ impl ChannelKind {
         matches!(self, Self::Dm)
     }
 
+    pub const fn is_system(&self) -> bool {
+        matches!(self, Self::System)
+    }
+
     pub fn as_str(&self) -> &str {
         match self {
             Self::Stream => "stream",
             Self::Forum => "forum",
             Self::Dm => "dm",
+            Self::Workflow => "workflow",
+            Self::System => "system",
             Self::Other(value) => value,
+        }
+    }
+}
+
+/// NIP-29 roles as Buzz publishes them in kind 39002 `["p", pubkey, "", role]`.
+#[derive(
+    Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
+)]
+pub enum MemberRole {
+    Owner,
+    Admin,
+    #[default]
+    Member,
+    /// Reads and leaves; cannot write (announce channels).
+    Guest,
+    Bot,
+    /// A role this bzz does not know. Fails closed: cannot write.
+    Unknown,
+}
+
+impl MemberRole {
+    /// Parse the fourth `p`-tag field. An absent field is the NIP-29 default
+    /// member role; anything unrecognized is `Unknown`.
+    pub fn parse(value: Option<&str>) -> Self {
+        match value {
+            None | Some("" | "member") => Self::Member,
+            Some("owner") => Self::Owner,
+            Some("admin") => Self::Admin,
+            Some("guest") => Self::Guest,
+            Some("bot") => Self::Bot,
+            Some(_) => Self::Unknown,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Owner => "owner",
+            Self::Admin => "admin",
+            Self::Member => "member",
+            Self::Guest => "guest",
+            Self::Bot => "bot",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub const fn can_write(self) -> bool {
+        matches!(self, Self::Owner | Self::Admin | Self::Member | Self::Bot)
+    }
+}
+
+/// The role a new member gets in an open channel (block/buzz#8143).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum JoinRole {
+    #[default]
+    Member,
+    Guest,
+}
+
+impl JoinRole {
+    /// Unknown values fail closed to `Guest`, exactly like the relay.
+    pub fn parse(value: &str) -> Self {
+        if value == "member" {
+            Self::Member
+        } else {
+            Self::Guest
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Member => "member",
+            Self::Guest => "guest",
+        }
+    }
+}
+
+/// NIP-CL identity and Buzz channel settings carried by relay-signed 39000,
+/// plus the viewer's own role from 39002. A missing tag means unknown.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct ChannelFacts {
+    pub labels: Vec<String>,
+    pub creator: Option<String>,
+    pub created_at: Option<u64>,
+    pub join_role: JoinRole,
+    pub unlisted: bool,
+    pub archived: bool,
+    pub auto_join: bool,
+    pub viewer_role: Option<MemberRole>,
+}
+
+/// Why the composer, reactions and replies are unavailable in a channel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadOnlyReason {
+    UnknownType,
+    SystemChannel,
+    Guest,
+    UnknownRole,
+    Archived,
+}
+
+impl ReadOnlyReason {
+    /// Fixed one-line notice; never includes relay-provided text.
+    pub const fn notice(self) -> &'static str {
+        match self {
+            Self::UnknownType => "read-only · channel type not supported by this bzz",
+            Self::SystemChannel => "read-only · system channel",
+            Self::Guest => "read-only · announce channel (guest)",
+            Self::UnknownRole => "read-only · unknown channel role",
+            Self::Archived => "read-only · archived channel",
         }
     }
 }
@@ -60,6 +182,39 @@ pub struct Channel {
     pub is_hidden: bool,
     pub member_count: u32,
     pub last_event_at: Option<u64>,
+    pub facts: ChannelFacts,
+}
+
+impl Channel {
+    /// Local write gate for composer, reactions and replies. The relay stays
+    /// the authority; this only avoids offering actions it will refuse.
+    pub fn read_only_reason(&self) -> Option<ReadOnlyReason> {
+        match self.kind {
+            ChannelKind::Other(_) => return Some(ReadOnlyReason::UnknownType),
+            ChannelKind::System => return Some(ReadOnlyReason::SystemChannel),
+            _ => {}
+        }
+        if self.facts.archived {
+            return Some(ReadOnlyReason::Archived);
+        }
+        match self.facts.viewer_role {
+            Some(MemberRole::Guest) => Some(ReadOnlyReason::Guest),
+            Some(MemberRole::Unknown) => Some(ReadOnlyReason::UnknownRole),
+            // Not yet a member of an announce channel: joining makes a guest.
+            None if self.facts.join_role == JoinRole::Guest
+                && matches!(self.visibility, Visibility::Public) =>
+            {
+                Some(ReadOnlyReason::Guest)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether browse and finder may list this channel. Unlisted open channels
+    /// are named-only for non-members (NIP-CL); they stay reachable by link.
+    pub fn listed_for_viewer(&self) -> bool {
+        self.is_member || !self.facts.unlisted
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -72,6 +227,18 @@ pub struct Profile {
     pub about: Option<String>,
     pub event_id: String,
     pub created_at: u64,
+    /// Relay-signed NIP-FI verified name (kind 30382), when current.
+    #[serde(default)]
+    pub verified: Option<crate::protocol::verified_profile::VerifiedName>,
+    /// Newest NIP-38 status; check `visible(now)` before showing it.
+    #[serde(default)]
+    pub status: Option<crate::protocol::presence::UserStatus>,
+    /// Live presence, filled by the App from the presence book; never stored.
+    #[serde(skip)]
+    pub presence: Option<crate::protocol::presence::Presence>,
+    /// In the selected channel's active huddle (filled by the App).
+    #[serde(skip)]
+    pub in_huddle: bool,
 }
 
 impl Profile {
@@ -79,8 +246,65 @@ impl Profile {
         self.display_name
             .as_ref()
             .or(self.name.as_ref())
+            .or(self
+                .verified
+                .as_ref()
+                .map(|verified| &verified.display_name))
             .cloned()
             .unwrap_or_else(|| abbreviated_pubkey(&self.pubkey))
+    }
+
+    /// A person known only through a verified profile.
+    pub fn verified_only(
+        pubkey: &str,
+        name: crate::protocol::verified_profile::VerifiedName,
+        event_id: String,
+        created_at: u64,
+    ) -> Self {
+        Self {
+            pubkey: pubkey.to_owned(),
+            display_name: None,
+            name: None,
+            picture: None,
+            nip05: None,
+            about: None,
+            event_id,
+            created_at,
+            verified: Some(name),
+            status: None,
+            presence: None,
+            in_huddle: false,
+        }
+    }
+
+    /// Author label with a verified marker for NIP-FI verified people.
+    pub fn author_label(&self) -> String {
+        match &self.verified {
+            Some(_) => format!("{} ✓", self.label()),
+            None => self.label(),
+        }
+    }
+
+    /// `● ` / `◐ ` before a name for online or away people; nothing when
+    /// offline or unknown, so silent users add no visual noise.
+    pub fn presence_marker(&self) -> &'static str {
+        match self.presence {
+            Some(crate::protocol::presence::Presence::Online) => "● ",
+            Some(crate::protocol::presence::Presence::Away) => "◐ ",
+            _ => "",
+        }
+    }
+
+    /// The visible status as `emoji text`, sanitized by the caller.
+    pub fn status_text(&self, now: u64) -> Option<String> {
+        let status = self.status.as_ref().filter(|status| status.visible(now))?;
+        Some(
+            [status.emoji.as_str(), status.text.as_str()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
     }
 }
 
@@ -111,6 +335,10 @@ pub struct MentionCandidate {
     pub label: String,
     pub is_agent: bool,
     pub agent_eligibility: Option<crate::agents::Eligibility>,
+    /// A current relay-signed NIP-FI verified profile (kind 30382).
+    pub verified: bool,
+    /// Live presence, filled by the App from the presence book.
+    pub presence: Option<crate::protocol::presence::Presence>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -149,6 +377,16 @@ pub enum SystemEventKind {
     ChannelArchived,
     ChannelUnarchived,
     MessageDeleted,
+    TopicChanged,
+    PurposeChanged,
+    VisibilityChanged,
+    JoinRoleChanged,
+    UnlistedChanged,
+    AutoJoinChanged,
+    TtlChanged,
+    ChannelDeleted,
+    ChannelAutoArchived,
+    AdminKick,
     Unsupported,
 }
 
@@ -158,6 +396,11 @@ pub struct SystemEvent {
     pub actor: Option<String>,
     pub target: Option<String>,
     pub participants: Vec<String>,
+    /// The one validated value a settings change carries: a single-line,
+    /// bounded topic/purpose, `open`/`private`, `guest`/`member`,
+    /// `true`/`false`, or TTL seconds (empty for permanent).
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -176,6 +419,16 @@ pub struct Message {
     pub delivery: DeliveryState,
     #[serde(default)]
     pub system: Option<SystemEvent>,
+    /// Desktop "Send to channel" provenance (`buzz:sent-from-thread`).
+    #[serde(skip)]
+    pub sent_from_thread: Option<crate::protocol::sent_from_thread::SentFromThread>,
+    /// A depth-1 thread reply its author also sent to the channel
+    /// (`["broadcast", "1"]`): shown on the channel timeline too.
+    #[serde(default)]
+    pub broadcast: bool,
+    /// NIP-30 custom emoji carried by this message's own tags.
+    #[serde(skip)]
+    pub emoji: Vec<crate::protocol::emoji::Emoji>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -192,6 +445,9 @@ pub struct Reaction {
     pub emoji: String,
     pub created_at: u64,
     pub deleted: bool,
+    /// Image of a NIP-30 custom emoji reaction (`:shortcode:` content).
+    #[serde(default)]
+    pub emoji_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

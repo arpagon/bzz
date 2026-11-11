@@ -29,7 +29,12 @@ impl SubscriptionRegistry {
 }
 
 pub fn membership(pubkey: &str, since: u64) -> Vec<Value> {
-    vec![json!({"kinds":[44100,44101],"#p":[pubkey],"since":since.saturating_sub(30),"limit":100})]
+    // NIP-CL: a filter without `#t` matches only legacy-type notices; system
+    // channel notices need their own filter. Old relays return nothing for it.
+    vec![
+        json!({"kinds":[44100,44101],"#p":[pubkey],"since":since.saturating_sub(30),"limit":100}),
+        json!({"kinds":[44100,44101],"#p":[pubkey],"#t":["system"],"since":since.saturating_sub(30),"limit":100}),
+    ]
 }
 
 pub fn personal(pubkey: &str, since: u64) -> Vec<Value> {
@@ -45,9 +50,15 @@ pub fn read_state(pubkey: &str, since: u64) -> Vec<Value> {
     vec![json!({"kinds":[30078],"authors":[pubkey],"#t":["read-state"],"since":since,"limit":500})]
 }
 
+/// Live presence (20001) and owner presence for agents (20003). Ephemeral:
+/// only events from now on; the 60 s relay snapshot covers the rest.
+pub fn presence(now: u64) -> Vec<Value> {
+    vec![json!({"kinds":[20001,20003],"since":now,"limit":200})]
+}
+
 pub fn global_stream(since: u64) -> Vec<Value> {
     vec![
-        json!({"kinds":[5,7,9,9005,39000,39002,40002,40003,40099],"since":since.saturating_sub(300),"limit":50}),
+        json!({"kinds":[5,7,9,9005,30030,30180,30315,30382,39000,39002,40002,40003,40099],"since":since.saturating_sub(300),"limit":50}),
     ]
 }
 

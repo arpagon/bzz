@@ -192,6 +192,38 @@ capabilities, and content, and remain local-only rather than entering the OTel
 allowlist. See
 [`adr-v0.11-remote-managed-agent-interoperability.md`](adr-v0.11-remote-managed-agent-interoperability.md).
 
+## v0.13.0 trust boundaries
+
+**Federated identity (NIP-FI / NIP-FA).** The identity adapter is a new party:
+it authenticates you in the browser and mints short-lived relay assertions for
+your key. bzz talks to it only at the configured origin, never follows
+redirects, proves every request with a fresh NIP-98 event over the exact body,
+and stores the adapter session NIP-44-sealed to your key. Sessions, assertions
+and agent grants never appear in `Debug` output, errors, journals, reports or
+telemetry (T8 secret scan). See
+[`adr-v0.13-federated-identity.md`](adr-v0.13-federated-identity.md).
+
+**Local agent broker.** bzz now holds keys for identities other than yours.
+Each agent key is created by bzz, sealed with NIP-44 to your own key (it opens
+only while you are unlocked) and never handed to the agent. Agents
+authenticate to `127.0.0.1` with a 256-bit bearer credential shown once and
+stored only as a hash; any local process holding a credential can act as that
+agent within its policy until you rotate or delete it. Writes require the
+relay-signed `bot` role in a channel whose roster you can see; the relay stays
+the final authority. Nothing is served while bzz is locked, `p` in `:broker`
+pauses every agent, and the activity log records action, outcome and a short
+channel label only. The only automatic event signed with your key is the
+opt-in kind 20003 agent presence. See
+[`adr-v0.13-agent-broker.md`](adr-v0.13-agent-broker.md).
+
+**Huddle audio.** Joining opens your microphone and speaker after a
+confirmation, starts muted and offers push-to-talk. Remote Opus is decoded by
+libopus, as in every Buzz client. Locking, quitting, leaving, a dropped socket
+or an ended huddle releases both devices. Audio, levels, transcripts and
+device names never enter logs, diagnostics or telemetry; device names are
+stored only in `config.toml`. On macOS the microphone permission belongs to
+your terminal app. See [`adr-v0.13-huddle-audio.md`](adr-v0.13-huddle-audio.md).
+
 ## Media
 
 Message media is fetched only from a complete `imeta` descriptor bound to the

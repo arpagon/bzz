@@ -39,6 +39,11 @@ pub enum Overlay {
     Attachment,
     DmPicker,
     Agents,
+    Artifacts,
+    Broker,
+    Huddle,
+    /// A person's profile card (NIP-CL public channels where offered).
+    Profile,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +52,18 @@ pub enum ConfirmationKind {
     Delete,
     InboxRead,
     ClearDraft,
+    /// NIP-56 report of the selected message (reason held by the App).
+    Report,
+    /// Soft delete of the selected artifact.
+    ArtifactDelete,
+    /// Move of the selected artifact (destination held by the App).
+    ArtifactMove,
+    /// Start a huddle in the selected channel.
+    HuddleStart,
+    /// Join the selected channel's huddle audio (muted).
+    HuddleJoin,
+    /// End the huddle for everyone (creator only).
+    HuddleEnd,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -209,6 +226,12 @@ impl PresentationState {
     pub fn open_confirmation(&mut self, kind: ConfirmationKind) {
         self.overlay = Some(Overlay::Confirmation);
         self.confirmation = Some(kind);
+    }
+
+    /// Leaves a confirmation and shows `overlay` again (artifact panel).
+    pub fn return_to_overlay(&mut self, overlay: Overlay) {
+        self.confirmation = None;
+        self.overlay = Some(overlay);
     }
 
     pub fn open_attachment_prompt(&mut self, prompt: AttachmentPrompt) {

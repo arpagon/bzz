@@ -44,6 +44,12 @@ enum Command {
         #[command(subcommand)]
         command: AgentsCommand,
     },
+    /// Manage agents whose keys bzz holds for the local broker; bzz never
+    /// runs agent processes.
+    Broker {
+        #[command(subcommand)]
+        command: BrokerCommand,
+    },
     /// Manage cached conversation data.
     Cache {
         #[command(subcommand)]
@@ -157,6 +163,18 @@ enum IdentityCommand {
     Verify { id: Uuid },
     /// List public identity metadata.
     List,
+    /// Pair with a running Buzz Desktop; the key stays in the desktop
+    /// (local credential provider). Approve the request in Buzz.
+    PairDesktop {
+        #[arg(long)]
+        label: String,
+        /// The community relay URL this identity will be used with.
+        #[arg(long)]
+        relay: String,
+        /// Desktop instance, when more than one is running.
+        #[arg(long)]
+        instance: Option<String>,
+    },
     /// Delete an identity only when no community uses it.
     Remove {
         id: Uuid,
@@ -184,6 +202,42 @@ enum CommunityCommand {
     },
     Default {
         id: Uuid,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum BrokerCommand {
+    /// Create an agent key held by bzz and print its credential once.
+    Create {
+        label: String,
+        #[arg(long)]
+        community: Option<Uuid>,
+        /// Sign the owner authorization without asking.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// List hosted agents and their policies (never credentials).
+    List,
+    /// Allow exactly these comma-separated actions (writes are opt-in).
+    Allow {
+        label: String,
+        actions: String,
+    },
+    /// Replace the agent's credential and print the new one once.
+    Rotate {
+        label: String,
+    },
+    Pause {
+        label: String,
+    },
+    Resume {
+        label: String,
+    },
+    /// Delete the agent and its sealed key.
+    Delete {
+        label: String,
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -349,11 +403,25 @@ async fn run() -> Result<()> {
     paths.ensure()?;
     let mut config = Config::load(&paths)?;
     match cli.command {
+        Some(Command::Identity {
+            command:
+                IdentityCommand::PairDesktop {
+                    label,
+                    relay,
+                    instance,
+                },
+        }) => pair_desktop(&paths, &mut config, label, relay, instance).await,
+        Some(Command::Identity {
+            command: IdentityCommand::Verify { id },
+        }) if find_identity(&config, id)?.backend == KeyBackend::BuzzDesktop => {
+            verify_desktop(find_identity(&config, id)?).await
+        }
         Some(Command::Identity { command }) => identity_command(command, &paths, &mut config),
         Some(Command::Community { command }) => {
             community_command(command, &paths, &mut config).await
         }
         Some(Command::Agents { command }) => agents_command(command, &paths, &config).await,
+        Some(Command::Broker { command }) => broker_command(command, &paths, &mut config).await,
         Some(Command::Cache { command }) => cache_command(command, &paths, &mut config),
         Some(Command::Media { command }) => media_command(command, &paths, &config),
         Some(Command::Diagnostics { command }) => diagnostics_command(command, &paths),
@@ -517,6 +585,7 @@ fn identity_command(command: IdentityCommand, paths: &Paths, config: &mut Config
             );
             Ok(())
         }
+        IdentityCommand::PairDesktop { .. } => unreachable!("handled before dispatch"),
         IdentityCommand::List => {
             for identity in &config.identities {
                 println!(
@@ -596,20 +665,10 @@ async fn community_command(
             let relay_pubkey = bzz::protocol::http::relay_signing_pubkey(&info)
                 .ok_or_else(|| Error::Protocol("NIP-11 document has no relay signing key".into()))?
                 .to_owned();
-            let supported = info
-                .get("supported_nips")
-                .and_then(serde_json::Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            for required in [29_u64, 42_u64, 98_u64] {
-                if !supported
-                    .iter()
-                    .any(|value| value.as_u64() == Some(required))
-                {
-                    eprintln!(
-                        "warning: relay does not advertise NIP-{required}; compatibility may be degraded"
-                    );
-                }
+            for required in bzz::protocol::http::missing_required_nips(&info) {
+                eprintln!(
+                    "warning: relay does not advertise NIP-{required}; compatibility may be degraded"
+                );
             }
             let id =
                 config.add_community(label, relay_url, identity_id, allow_insecure_localhost)?;
@@ -669,6 +728,164 @@ async fn community_command(
             }
             config.default_community = Some(id);
             config.save(paths)
+        }
+    }
+}
+
+fn confirm(prompt: &str) -> Result<bool> {
+    eprint!("{prompt} [y/N] ");
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| Error::io("stdin", error))?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
+}
+
+fn hosted_agent_index(config: &Config, label: &str) -> Result<usize> {
+    config
+        .hosted_agents
+        .iter()
+        .position(|agent| agent.label == label)
+        .ok_or_else(|| Error::Config(format!("no hosted agent named {label}")))
+}
+
+async fn broker_command(command: BrokerCommand, paths: &Paths, config: &mut Config) -> Result<()> {
+    use bzz::broker::custody;
+    match command {
+        BrokerCommand::Create {
+            label,
+            community,
+            yes,
+        } => {
+            if config
+                .hosted_agents
+                .iter()
+                .any(|agent| agent.label == label.trim())
+            {
+                return Err(Error::Config(format!(
+                    "a hosted agent named {label} exists"
+                )));
+            }
+            let community = selected_community(config, community)?.clone();
+            let identity = find_identity(config, community.identity_id)?.clone();
+            if !yes
+                && !confirm(&format!(
+                    "Sign an owner authorization (NIP-OA) letting agent \"{}\" act for {}?",
+                    label.trim(),
+                    identity.label
+                ))?
+            {
+                return Err(Error::Config("agent creation cancelled".into()));
+            }
+            let passphrase = identity_passphrase(&identity, "Owner identity passphrase: ", false)?;
+            let owner = IdentityManager::new(paths).signer(&identity, passphrase.as_ref())?;
+            let (agent, credential) =
+                custody::create(&paths.keys_dir(), &owner, identity.id, community.id, &label)
+                    .await?;
+            owner.lock().await;
+            config.hosted_agents.push(agent.clone());
+            if let Err(error) = config.save(paths) {
+                let _ = custody::delete(&paths.keys_dir(), &agent);
+                config.hosted_agents.retain(|entry| entry.id != agent.id);
+                return Err(error);
+            }
+            println!(
+                "agent {} ({}) created in {}",
+                agent.label, agent.pubkey, community.label
+            );
+            println!("allowed: {}", agent.allowed.join(", "));
+            println!("credential (shown once; give it to the agent process): {credential}");
+            println!(
+                "the owner must add the agent with the bot role to each channel it may write in"
+            );
+            Ok(())
+        }
+        BrokerCommand::List => {
+            if config.hosted_agents.is_empty() {
+                println!("no hosted agents; create one with `bzz broker create <label>`");
+            }
+            for agent in &config.hosted_agents {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    agent.label,
+                    agent.pubkey,
+                    if agent.paused { "paused" } else { "active" },
+                    agent.allowed.join(",")
+                );
+            }
+            Ok(())
+        }
+        BrokerCommand::Allow { label, actions } => {
+            let index = hosted_agent_index(config, &label)?;
+            let actions = actions
+                .split(',')
+                .map(str::trim)
+                .filter(|action| !action.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            custody::set_allowed(&mut config.hosted_agents[index], &actions)?;
+            config.save(paths)?;
+            println!(
+                "allowed: {}",
+                config.hosted_agents[index].allowed.join(", ")
+            );
+            Ok(())
+        }
+        BrokerCommand::Rotate { label } => {
+            let index = hosted_agent_index(config, &label)?;
+            let credential = custody::rotate(&mut config.hosted_agents[index]);
+            config.save(paths)?;
+            println!("new credential (shown once; the old one no longer works): {credential}");
+            Ok(())
+        }
+        BrokerCommand::Pause { ref label } | BrokerCommand::Resume { ref label } => {
+            let paused = matches!(command, BrokerCommand::Pause { .. });
+            let label = label.clone();
+            let index = hosted_agent_index(config, &label)?;
+            config.hosted_agents[index].paused = paused;
+            config.save(paths)?;
+            println!("{label} {}", if paused { "paused" } else { "resumed" });
+            Ok(())
+        }
+        BrokerCommand::Delete { label, yes } => {
+            let index = hosted_agent_index(config, &label)?;
+            if !yes && !confirm(&format!("Delete agent {label} and its key?"))? {
+                return Err(Error::Config("agent deletion cancelled".into()));
+            }
+            // NIP-FI communities: revoke the agent's grants with the adapter.
+            let agent = config.hosted_agents[index].clone();
+            if let Some(adapter) = config
+                .communities
+                .iter()
+                .find(|community| community.id == agent.community)
+                .and_then(|community| community.identity_adapter.clone())
+            {
+                let adapter = url::Url::parse(&adapter)
+                    .map_err(|_| Error::Config("identity_adapter is not a URL".into()))?;
+                let identity = find_identity(config, agent.owner_identity)?.clone();
+                let passphrase =
+                    identity_passphrase(&identity, "Owner identity passphrase: ", false)?;
+                let owner = IdentityManager::new(paths).signer(&identity, passphrase.as_ref())?;
+                let revoked = bzz::auth::federated::revoke_agent(
+                    &adapter,
+                    &paths.data_dir,
+                    identity.id,
+                    &owner,
+                    &agent.pubkey,
+                )
+                .await;
+                owner.lock().await;
+                if let Err(error) = revoked {
+                    return Err(Error::Auth(format!(
+                        "agent {label} kept: revoking it with the identity adapter failed: {error}"
+                    )));
+                }
+            }
+            let agent = config.hosted_agents.remove(index);
+            config.save(paths)?;
+            custody::delete(&paths.keys_dir(), &agent)?;
+            println!("agent {label} deleted");
+            Ok(())
         }
     }
 }
@@ -1405,6 +1622,98 @@ fn find_identity(config: &Config, id: Uuid) -> Result<&bzz::config::IdentityConf
         .iter()
         .find(|identity| identity.id == id)
         .ok_or_else(|| Error::Config(format!("identity {id} does not exist")))
+}
+
+async fn pair_desktop(
+    paths: &Paths,
+    config: &mut Config,
+    label: String,
+    relay: String,
+    instance: Option<String>,
+) -> Result<()> {
+    use bzz::auth::provider;
+    if !provider::supported_platform() {
+        return Err(Error::Unsupported(
+            "Buzz Desktop pairing has no Windows transport in provider version 1".into(),
+        ));
+    }
+    let directory = provider::advertisement_dir()
+        .ok_or_else(|| Error::Config("home directory is unavailable".into()))?;
+    let advertised = provider::advertisements(&directory);
+    let (instance, url) = match instance {
+        Some(wanted) => advertised
+            .into_iter()
+            .find(|(name, _)| *name == wanted)
+            .ok_or_else(|| {
+                Error::Config(format!("Buzz Desktop instance {wanted} is not running"))
+            })?,
+        None => match advertised.len() {
+            0 => return Err(Error::Config("no running Buzz Desktop was found".into())),
+            1 => advertised.into_iter().next().expect("one advertisement"),
+            _ => {
+                return Err(Error::Config(
+                    "several Buzz Desktop instances are running; pass --instance".into(),
+                ));
+            }
+        },
+    };
+    eprintln!("Approve the pairing request in Buzz Desktop ({instance})...");
+    let client = provider::ProviderClient::new(provider::Endpoint::Advertised(url), None)?;
+    let pairing = client.pair("bzz", &relay).await.map_err(Error::from)?;
+    if pairing.instance != instance {
+        return Err(Error::Auth(
+            "Buzz Desktop answered for another instance".into(),
+        ));
+    }
+    if config
+        .identities
+        .iter()
+        .any(|identity| identity.pubkey == pairing.pubkey)
+    {
+        return Err(Error::Config("that identity is already configured".into()));
+    }
+    let reference = bzz::auth::desktop_reference(&instance);
+    // Paired tokens live only in the OS keychain, never in a file.
+    bzz::auth::keychain::store(&reference, &pairing.token)?;
+    let identity = bzz::config::IdentityConfig {
+        id: Uuid::new_v4(),
+        label,
+        pubkey: pairing.pubkey.clone(),
+        backend: KeyBackend::BuzzDesktop,
+        key_ref: reference.clone(),
+    };
+    config.identities.push(identity.clone());
+    if let Err(error) = config.save(paths) {
+        config.identities.retain(|entry| entry.id != identity.id);
+        let _ = bzz::auth::keychain::delete(&reference);
+        return Err(error);
+    }
+    println!(
+        "paired Buzz Desktop identity {}
+pubkey: {}",
+        identity.id, identity.pubkey
+    );
+    Ok(())
+}
+
+async fn verify_desktop(identity: &bzz::config::IdentityConfig) -> Result<()> {
+    let client = bzz::auth::desktop_client(identity)?;
+    let description = client.describe().await.map_err(Error::from)?;
+    if description.pubkey != identity.pubkey {
+        return Err(Error::IdentityCorrupt(
+            "Buzz Desktop serves a different identity than configured".into(),
+        ));
+    }
+    println!(
+        "identity available: {} (Buzz Desktop {})
+pubkey:            {}
+relays:            {}",
+        identity.id,
+        description.instance,
+        description.pubkey,
+        description.relays.join(", ")
+    );
+    Ok(())
 }
 
 fn identity_passphrase(

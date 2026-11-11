@@ -5,14 +5,16 @@ on:
   pull_request:
 permissions:
   contents: read
+defaults:
+  run:
+    shell: bash
 jobs:
   test:
     runs-on: ubuntu-latest
+    container: ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux keychain build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -31,22 +33,21 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary: target/x86_64-unknown-linux-gnu/release/bzz
+            container: ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d
           - os: macos-15-intel
             target: x86_64-apple-darwin
             binary: target/x86_64-apple-darwin/release/bzz
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             binary: target/aarch64-apple-darwin/release/bzz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary: target/x86_64-pc-windows-msvc/release/bzz.exe
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container || null }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux keychain build dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.98.1
         with: { targets: '${{ matrix.target }}' }
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked --release --target ${{ matrix.target }}
@@ -78,3 +79,52 @@ jobs:
           test -n "$identity_id"
           ${{ matrix.binary }} identity verify "$identity_id"
           ${{ matrix.binary }} identity remove "$identity_id" --yes
+  upgrade:
+    # Release acceptance: a real v0.12.1 data directory opened by this build.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.os == 'ubuntu-latest' && 'ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d' || null }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Open a v0.12.1 data directory with this build
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ./scripts/upgrade-test.sh
+  audio:
+    # T7: huddle audio through a virtual device (tests/huddle_device_loopback_test.rs).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            experimental: false
+          - os: macos-15
+            experimental: false
+          # Hosted Windows runners expose no audio endpoint, so opening the
+          # default devices fails there; the result is recorded, not required.
+          - os: windows-latest
+            experimental: true
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.os == 'ubuntu-latest' && 'ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d' || null }}
+    continue-on-error: ${{ matrix.experimental }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install BlackHole
+        if: runner.os == 'macOS'
+        run: |
+          brew install --cask blackhole-2ch
+          sudo killall coreaudiod || true
+          sleep 5
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Tone round trip and device release through a virtual device
+        shell: bash
+        run: ./scripts/test-audio-loopback.sh

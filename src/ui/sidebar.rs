@@ -21,20 +21,31 @@ use crate::{
 /// Returns joined channel indexes in the one local presentation order used by
 /// drawing, keyboard movement, viewport reconciliation, and mouse hit maps.
 /// The underlying channel list remains store order and is never mutated.
+///
+/// System channels form a trailing group that is collapsed (absent) unless
+/// `show_system` is set (`:system`).
 pub fn ordered_indexes(
     channels: &[Channel],
     unread: &std::collections::HashSet<uuid::Uuid>,
     sort: ChannelSort,
+    show_system: bool,
 ) -> Vec<usize> {
     let mut ordered = channels
         .iter()
         .enumerate()
-        .filter(|(_, channel)| channel.is_member)
+        .filter(|(_, channel)| channel.is_member && (show_system || !channel.kind.is_system()))
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
     ordered.sort_by(|left, right| {
         let left_channel = &channels[*left];
         let right_channel = &channels[*right];
+        let group = left_channel
+            .kind
+            .is_system()
+            .cmp(&right_channel.kind.is_system());
+        if group != Ordering::Equal {
+            return group;
+        }
         match sort {
             ChannelSort::Smart => unread
                 .contains(&right_channel.id)
@@ -70,10 +81,17 @@ pub fn render(
     viewport: &ViewportState,
     unread: &std::collections::HashSet<uuid::Uuid>,
     sort: ChannelSort,
+    show_system: bool,
+    dm_presence: &HashMap<uuid::Uuid, crate::protocol::presence::Presence>,
+    huddle_channel: Option<uuid::Uuid>,
     theme: &Theme,
     focused: bool,
 ) {
-    let ordered = ordered_indexes(channels, unread, sort);
+    let ordered = ordered_indexes(channels, unread, sort, show_system);
+    let system_count = channels
+        .iter()
+        .filter(|channel| channel.is_member && channel.kind.is_system())
+        .count();
     let items = ordered.iter().map(|index| {
         let channel = &channels[*index];
         let is_unread = unread.contains(&channel.id);
@@ -87,13 +105,27 @@ pub fn render(
             } else {
                 "@"
             }
+        } else if channel.kind.is_system() {
+            "⚙"
         } else if matches!(channel.visibility, crate::domain::Visibility::Private) {
             "🔒"
         } else {
             "#"
         };
+        // The unread badge is the leading dot; presence trails the name so the
+        // two never read as one another.
+        let presence = match dm_presence.get(&channel.id) {
+            Some(crate::protocol::presence::Presence::Online) => " ●",
+            Some(crate::protocol::presence::Presence::Away) => " ◐",
+            _ => "",
+        };
+        let huddle = if huddle_channel == Some(channel.id) {
+            " 🎧"
+        } else {
+            ""
+        };
         ListItem::new(Line::from(format!(
-            "{badge} {privacy}{}",
+            "{badge} {privacy}{}{presence}{huddle}",
             sanitize::single_line(&channel.name)
         )))
         .style(theme.style(if is_unread {
@@ -123,7 +155,13 @@ pub fn render(
                     .border_type(theme.border_type(BorderSurface::Pane))
                     .border_style(theme.style(border_group))
                     .title_style(theme.style(HighlightGroup::PaneTitle))
-                    .title(format!(" channels · {} ", sort.label())),
+                    .title(match (system_count, show_system) {
+                        (0, _) => format!(" channels · {} ", sort.label()),
+                        (count, false) => {
+                            format!(" channels · {} · ⚙{count} ", sort.label())
+                        }
+                        (_, true) => format!(" channels · {} · ⚙ open ", sort.label()),
+                    }),
             )
             .highlight_style(theme.style(HighlightGroup::Selection))
             .highlight_symbol("› "),
@@ -155,6 +193,7 @@ mod tests {
             is_hidden: false,
             member_count: 0,
             last_event_at,
+            facts: Default::default(),
         }
     }
 
@@ -167,15 +206,15 @@ mod tests {
         ];
         let unread = HashSet::from([channels[0].id]);
         assert_eq!(
-            ordered_indexes(&channels, &unread, ChannelSort::Smart),
+            ordered_indexes(&channels, &unread, ChannelSort::Smart, false),
             vec![0, 1, 2]
         );
         assert_eq!(
-            ordered_indexes(&channels, &unread, ChannelSort::Recent),
+            ordered_indexes(&channels, &unread, ChannelSort::Recent, false),
             vec![1, 0, 2]
         );
         assert_eq!(
-            ordered_indexes(&channels, &unread, ChannelSort::Alphabetical),
+            ordered_indexes(&channels, &unread, ChannelSort::Alphabetical, false),
             vec![1, 2, 0]
         );
     }

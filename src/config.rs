@@ -26,6 +26,10 @@ pub struct Config {
     pub diagnostics: DiagnosticsConfig,
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+    /// Agents whose keys bzz holds for the local broker (M9). Never secrets:
+    /// keys live NIP-44-sealed to the owner, credentials only as hashes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosted_agents: Vec<HostedAgentConfig>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -63,6 +67,9 @@ pub struct TelemetryConfig {
 pub enum KeyBackend {
     Keychain,
     EncryptedFile,
+    /// The key lives in a running Buzz Desktop (local credential provider);
+    /// `key_ref` names the keychain entry holding the paired token.
+    BuzzDesktop,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -77,6 +84,25 @@ pub struct IdentityConfig {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct HostedAgentConfig {
+    pub id: Uuid,
+    pub label: String,
+    pub pubkey: String,
+    pub community: Uuid,
+    /// The human identity that owns the agent and seals its key.
+    pub owner_identity: Uuid,
+    /// NIP-OA owner `auth` tag (compact JSON), signed once at creation.
+    pub auth_tag: String,
+    /// Lowercase hex SHA-256 of the bearer credential.
+    pub credential_hash: String,
+    #[serde(default)]
+    pub allowed: Vec<String>,
+    #[serde(default)]
+    pub paused: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CommunityConfig {
     pub id: Uuid,
     pub label: String,
@@ -86,6 +112,10 @@ pub struct CommunityConfig {
     pub allow_insecure_localhost: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// NIP-FA adapter origin for communities that require federated identity
+    /// (ADR v0.13). HTTPS, or loopback HTTP for local testing only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_adapter: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -173,6 +203,19 @@ pub struct UiConfig {
     pub profile_avatars: ProfileAvatars,
     pub theme: String,
     pub mouse: MouseMode,
+    /// Publish your own online/away presence (kind 20001). Off by default:
+    /// bzz publishes nothing about activity unless you opt in.
+    pub publish_presence: bool,
+    /// Owner-signed kind 20003 presence for hosted agents while the broker
+    /// serves them. The only automatic owner-signed event; off by default and
+    /// shown in `:broker`. Requires `publish_presence`.
+    #[serde(default)]
+    pub broker_agent_presence: bool,
+    /// Huddle microphone and speaker by name (default devices when unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub huddle_input_device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub huddle_output_device: Option<String>,
 }
 
 impl Default for UiConfig {
@@ -186,6 +229,10 @@ impl Default for UiConfig {
             profile_avatars: ProfileAvatars::Trusted,
             theme: crate::ui::theme::DEFAULT_THEME_ID.into(),
             mouse: MouseMode::Auto,
+            publish_presence: false,
+            broker_agent_presence: false,
+            huddle_input_device: None,
+            huddle_output_device: None,
         }
     }
 }
@@ -337,6 +384,15 @@ impl Config {
             }
             let endpoint =
                 validate_relay_url(&community.relay_url, community.allow_insecure_localhost)?;
+            if let Some(adapter) = &community.identity_adapter {
+                let url = url::Url::parse(adapter).map_err(|_| {
+                    Error::Config(format!(
+                        "community {} identity_adapter is not a URL",
+                        community.id
+                    ))
+                })?;
+                crate::auth::federated::AdapterClient::new(url)?;
+            }
             if !urls.insert(endpoint.websocket.to_string()) {
                 return Err(Error::Config(format!(
                     "duplicate relay URL {}",
@@ -451,6 +507,7 @@ impl Config {
             identity_id,
             allow_insecure_localhost: insecure,
             theme: None,
+            identity_adapter: None,
         });
         self.default_community.get_or_insert(id);
         self.validate()?;

@@ -21,7 +21,7 @@ fn fresh_database_has_expected_pragmas_and_schema() {
     let foreign_keys: u32 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, 15);
     assert_eq!(
         foreign_keys, 1,
         "foreign-key enforcement must remain enabled"
@@ -175,7 +175,7 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
     let version: u32 = upgraded
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 8);
+    assert_eq!(version, 15);
     let inbox_projection_table: u32 = upgraded
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='inbox_conversations'",
@@ -235,6 +235,7 @@ fn schema_eight_repairs_historical_bot_roles_and_duplicate_projection_drift() {
             identity_id,
             allow_insecure_localhost: false,
             theme: None,
+            identity_adapter: None,
         }],
         ..Config::default()
     };
@@ -276,7 +277,16 @@ fn schema_eight_repairs_historical_bot_roles_and_duplicate_projection_drift() {
         )
         .unwrap();
     connection
-        .execute("DELETE FROM schema_migrations WHERE version=8", [])
+        .execute_batch(
+            "DELETE FROM schema_migrations WHERE version IN (8,9,10,11,12,13,14,15);
+             DROP TABLE viewer_memberships;
+             DROP TABLE verified_profiles;
+             DROP TABLE user_statuses;
+             DROP TABLE artifacts;
+             DROP TABLE emoji_contributions;
+             ALTER TABLE reactions DROP COLUMN emoji_url;
+             ALTER TABLE channels DROP COLUMN facts_json;",
+        )
         .unwrap();
     connection.pragma_update(None, "user_version", 7).unwrap();
     drop(connection);
@@ -378,4 +388,155 @@ fn config_sync_requires_and_preserves_identity_scope() {
     store.sync_config(&config).unwrap();
     assert!(store.channels(config.communities[0].id).unwrap().is_empty());
     assert!(store.channels(config.communities[1].id).unwrap().is_empty());
+}
+
+#[test]
+fn schema_nine_projects_guest_roles_and_repairs_channel_facts_on_reingest() {
+    let temporary = TempDir::new().unwrap();
+    let path = temporary.path().join("bzz.db");
+    let owner = Keys::generate();
+    let relay = Keys::generate();
+    let identity_id = Uuid::new_v4();
+    let community_id = Uuid::new_v4();
+    let channel_id = Uuid::new_v4();
+    let config = Config {
+        identities: vec![IdentityConfig {
+            id: identity_id,
+            label: "owner".into(),
+            pubkey: owner.public_key().to_hex(),
+            backend: KeyBackend::EncryptedFile,
+            key_ref: "migration-guest".into(),
+        }],
+        communities: vec![bzz::config::CommunityConfig {
+            id: community_id,
+            label: "migration".into(),
+            relay_url: "wss://migration-guest.example".into(),
+            identity_id,
+            allow_insecure_localhost: false,
+            theme: None,
+            identity_adapter: None,
+        }],
+        ..Config::default()
+    };
+    let mut store = Store::open(&path).unwrap();
+    store.sync_config(&config).unwrap();
+    store
+        .pin_relay_pubkey(community_id, &relay.public_key().to_hex())
+        .unwrap();
+    let metadata = EventBuilder::new(Kind::Custom(39_000), "")
+        .tags([
+            Tag::parse(["d", &channel_id.to_string()]).unwrap(),
+            Tag::parse(["name", "announcements"]).unwrap(),
+            Tag::parse(["public"]).unwrap(),
+            Tag::parse(["t", "stream"]).unwrap(),
+            Tag::parse(["t", "releases"]).unwrap(),
+            Tag::parse(["join_role", "guest"]).unwrap(),
+        ])
+        .sign_with_keys(&relay)
+        .unwrap();
+    store.apply_event(community_id, &metadata).unwrap();
+    let membership = EventBuilder::new(Kind::Custom(39_002), "")
+        .tags([
+            Tag::parse(["d", &channel_id.to_string()]).unwrap(),
+            Tag::parse(["p", &owner.public_key().to_hex(), "", "guest"]).unwrap(),
+        ])
+        .sign_with_keys(&relay)
+        .unwrap();
+    store.apply_event(community_id, &membership).unwrap();
+    drop(store);
+
+    // Simulate a v0.12 (schema 8) database: no facts column and the guest
+    // collapsed into the old `member` projection.
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(&format!(
+            "UPDATE memberships SET role='member' WHERE channel_id='{channel_id}';
+             ALTER TABLE channels DROP COLUMN facts_json;
+             DROP TABLE viewer_memberships;
+             DROP TABLE verified_profiles;
+             DROP TABLE user_statuses;
+             DROP TABLE artifacts;
+             DROP TABLE emoji_contributions;
+             ALTER TABLE reactions DROP COLUMN emoji_url;
+             DELETE FROM schema_migrations WHERE version IN (9,10,11,12,13,14,15);"
+        ))
+        .unwrap();
+    connection.pragma_update(None, "user_version", 8).unwrap();
+    drop(connection);
+
+    let mut store = Store::open(&path).unwrap();
+    let channel = store
+        .channels(community_id)
+        .unwrap()
+        .into_iter()
+        .find(|channel| channel.id == channel_id)
+        .unwrap();
+    assert_eq!(
+        channel.facts.viewer_role,
+        Some(bzz::domain::MemberRole::Guest),
+        "migration 0009 re-derives the guest role from the trusted head"
+    );
+    assert!(channel.facts.labels.is_empty(), "facts start unknown");
+    assert_eq!(
+        channel.read_only_reason(),
+        Some(bzz::domain::ReadOnlyReason::Guest)
+    );
+
+    // The next directory refresh re-ingests the same 39000 and repairs facts.
+    assert!(store.apply_event(community_id, &metadata).unwrap());
+    assert!(!store.apply_event(community_id, &metadata).unwrap());
+    let channel = store
+        .channels(community_id)
+        .unwrap()
+        .into_iter()
+        .find(|channel| channel.id == channel_id)
+        .unwrap();
+    assert_eq!(channel.facts.labels, vec!["releases"]);
+    assert_eq!(channel.facts.join_role, bzz::domain::JoinRole::Guest);
+}
+
+#[test]
+fn schema_eleven_accepts_buzz_desktop_identities_with_their_communities() {
+    let temporary = TempDir::new().unwrap();
+    let path = temporary.path().join("bzz.db");
+    let identity_id = Uuid::new_v4();
+    let community_id = Uuid::new_v4();
+    let config = Config {
+        identities: vec![IdentityConfig {
+            id: identity_id,
+            label: "desktop".into(),
+            pubkey: "d".repeat(64),
+            backend: KeyBackend::BuzzDesktop,
+            key_ref: bzz::auth::desktop_reference("dev.test.buzz"),
+        }],
+        communities: vec![bzz::config::CommunityConfig {
+            id: community_id,
+            label: "desktop".into(),
+            relay_url: "wss://desktop.example".into(),
+            identity_id,
+            allow_insecure_localhost: false,
+            theme: None,
+            identity_adapter: None,
+        }],
+        ..Config::default()
+    };
+    let mut store = Store::open(&path).unwrap();
+    store.sync_config(&config).unwrap();
+    drop(store);
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let (backend, community): (String, String) = connection
+        .query_row(
+            "SELECT i.key_backend,c.id FROM identities i JOIN communities c ON c.identity_id=i.id",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(backend, "buzz-desktop");
+    assert_eq!(community, community_id.to_string());
+    let violations: i64 = connection
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(violations, 0);
 }

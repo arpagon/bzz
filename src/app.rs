@@ -19,6 +19,7 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
+use crate::clock::WallClock as _;
 use crate::{
     agents::typing::{AgentTypingState, TypingScope},
     auth::{IdentityManager, read_passphrase, signer::SignerHandle},
@@ -89,6 +90,7 @@ struct Runtime {
     events: broadcast::Receiver<SupervisorEvent>,
     http: HttpClient,
     channels: ChannelService,
+    artifacts: crate::service::artifacts::ArtifactService,
     dms: DmService,
     inbox: InboxService,
     profiles: ProfileService,
@@ -96,6 +98,11 @@ struct Runtime {
     messages: MessageService,
     media: MediaClient,
     read_state: ReadStateService,
+    /// NIP-FI evidence shared by the supervisor, HTTP and media clients.
+    evidence: crate::auth::federated::EvidenceSlot,
+    /// The community's NIP-FA adapter origin, when configured.
+    identity_adapter: Option<url::Url>,
+    data_dir: std::path::PathBuf,
 }
 
 impl Runtime {
@@ -122,24 +129,40 @@ impl Runtime {
             let passphrase = matches!(identity.backend, KeyBackend::EncryptedFile)
                 .then(|| read_passphrase("Identity passphrase: ", false))
                 .transpose()?;
-            let keys = IdentityManager::new(paths).unlock(identity, passphrase.as_ref())?;
-            SignerHandle::spawn(keys)
+            IdentityManager::new(paths).signer(identity, passphrase.as_ref())?
         };
         let endpoint =
             validate_relay_url(&community.relay_url, community.allow_insecure_localhost)?;
-        let supervisor = SupervisorHandle::spawn_with_diagnostics(
+        let evidence = crate::auth::federated::EvidenceSlot::default();
+        if identity.backend == KeyBackend::BuzzDesktop {
+            // Buzz Desktop owns the enterprise login; it supplies evidence.
+            evidence.set(crate::auth::provider::ProviderEvidence::new(
+                std::sync::Arc::new(crate::auth::desktop_client(identity)?),
+                crate::clock::system(),
+            ));
+        }
+        let identity_adapter = community
+            .identity_adapter
+            .as_deref()
+            .map(url::Url::parse)
+            .transpose()
+            .map_err(|_| Error::Config("identity_adapter is not a URL".into()))?;
+        let supervisor = SupervisorHandle::spawn_with_evidence(
             endpoint.websocket,
             signer.clone(),
             diagnostics.clone(),
+            evidence.clone(),
         );
         let events = supervisor.subscribe_events();
-        let http = HttpClient::new(endpoint.http_base.clone(), signer.clone())?;
+        let http = HttpClient::new(endpoint.http_base.clone(), signer.clone())?
+            .with_evidence(evidence.clone());
         let media = MediaClient::new(
             endpoint.http_base,
             endpoint.authority,
             signer.clone(),
             config.media.download_concurrency,
-        )?;
+        )?
+        .with_evidence(evidence.clone());
         Ok(Self {
             community_id: community.id,
             identity_id: identity.id,
@@ -148,6 +171,13 @@ impl Runtime {
             events,
             http: http.clone(),
             channels: ChannelService::new(community.id, http.clone(), store.clone()),
+            artifacts: crate::service::artifacts::ArtifactService::new(
+                community.id,
+                http.clone(),
+                store.clone(),
+                signer.clone(),
+                supervisor.clone(),
+            ),
             dms: DmService::new(
                 community.id,
                 signer.clone(),
@@ -166,6 +196,9 @@ impl Runtime {
             ),
             media,
             read_state: ReadStateService::new(community.id, signer, store, supervisor),
+            evidence,
+            identity_adapter,
+            data_dir: paths.data_dir.clone(),
         })
     }
 }
@@ -213,6 +246,61 @@ enum AttachmentBackground {
 #[derive(Debug)]
 enum Background {
     Changed,
+    /// A federated sign-in finished; evidence is installed, reconnect now.
+    FederatedReady,
+    /// A fixed status notice (federated identity, reports, send to channel).
+    Notice(String),
+    /// Selected-channel history landed; relay-signed 39005 summaries from
+    /// channel windows refine the live thread badges.
+    HistoryLoaded {
+        community: Uuid,
+        summaries: Vec<nostr::Event>,
+    },
+    /// The selected channel's replayed huddle state.
+    HuddleState {
+        community: Uuid,
+        channel: Uuid,
+        active: Option<crate::protocol::huddle::ActiveHuddle>,
+    },
+    /// A huddle this viewer started is ready to join.
+    HuddleStarted {
+        parent: Uuid,
+        backing: Uuid,
+    },
+    #[cfg(feature = "huddles-audio")]
+    HuddleJoined(std::result::Result<Box<HuddleCall>, String>),
+    /// NIP-11 artifact capabilities for `community`.
+    ArtifactCaps {
+        community: Uuid,
+        caps: crate::protocol::artifact::Capabilities,
+    },
+    /// An artifact edit or assigned-task refresh finished.
+    ArtifactDone(std::result::Result<String, String>),
+    /// A verified thread window page landed for `root`.
+    ThreadWindow {
+        community: Uuid,
+        root: String,
+        next: Option<crate::protocol::window::Cursor>,
+        supported: bool,
+    },
+    /// NIP-CL public membership lookup answer for a profile card.
+    PublicMemberships {
+        community: Uuid,
+        subject: String,
+        generation: u64,
+        result: std::result::Result<crate::protocol::membership_public::Lookup, String>,
+    },
+    /// Remote NIP-CE prefix search results for the reaction picker.
+    EmojiSearch {
+        query: String,
+        found: Vec<crate::protocol::emoji::Emoji>,
+    },
+    /// Authoritative relay presence for the people asked about.
+    PresenceSnapshot {
+        community: Uuid,
+        asked: Vec<String>,
+        observations: Vec<crate::protocol::presence::Observation>,
+    },
     DraftAcknowledged,
     Failed(String),
     Saved,
@@ -269,6 +357,57 @@ pub struct App {
     typing_subscription_channel: Option<Uuid>,
     closed_typing_channel: Option<Uuid>,
     reactions: HashMap<String, Vec<Reaction>>,
+    show_system_channels: bool,
+    /// `(reason, note)` awaiting the report confirmation.
+    /// `(reason, note, author only)` awaiting the report confirmation.
+    pending_report: Option<(String, Option<String>, bool)>,
+    presence: crate::protocol::presence::PresenceBook,
+    /// NIP-AR: capabilities per community and the selected channel's sync.
+    artifact_caps: Option<(Uuid, crate::protocol::artifact::Capabilities)>,
+    broker: Option<BrokerRuntime>,
+    /// Huddles: the selected channel's replayed state and your call.
+    huddle_view: Option<(Uuid, Option<crate::protocol::huddle::ActiveHuddle>)>,
+    huddle_loading: bool,
+    huddle_dirty: bool,
+    huddle_subscribed: Option<Uuid>,
+    huddle_backing_subscribed: Option<Uuid>,
+    huddle_reactions: std::collections::VecDeque<(String, String)>,
+    huddle_guidelines: Option<String>,
+    huddle_devices: Option<(Vec<String>, Vec<String>)>,
+    huddle_joining: bool,
+    huddle_ptt_until: Option<Instant>,
+    #[cfg(feature = "huddles-audio")]
+    huddle_call: Option<HuddleCall>,
+    broker_attempted: Option<Uuid>,
+    artifact_caps_requested: Option<Uuid>,
+    artifact_sync: Option<ArtifactSync>,
+    artifact_panel: crate::ui::artifacts::ArtifactPanelState,
+    /// `(artifact, destination)` awaiting the move confirmation.
+    pending_artifact_move: Option<(Uuid, Uuid)>,
+    /// NIP-CW thread window state for the open thread: `(root, next page)`.
+    thread_window: Option<(String, Option<crate::protocol::window::Cursor>)>,
+    thread_window_loading: bool,
+    /// Open profile card and the generation counter for its lookups.
+    profile_card: Option<crate::ui::profile::ProfileCard>,
+    /// The `:broker` panel's selected agent.
+    broker_selected: usize,
+    /// Presence of the other person in each one-to-one DM, for the sidebar.
+    dm_presence: HashMap<Uuid, crate::protocol::presence::Presence>,
+    profile_generation: u64,
+    /// Verified public lists keyed by (community, subject); display data
+    /// only, in memory, never authority.
+    public_lookup_cache:
+        HashMap<(Uuid, String), Vec<crate::protocol::membership_public::PublicMembership>>,
+    /// Per community: no lookups before this unix second; `true` when the
+    /// relay rate-limited (429), `false` when it does not offer the lookup.
+    public_lookup_backoff: HashMap<Uuid, (u64, bool)>,
+    /// Shortcode -> image URL from 30030 sets and 30180 entries.
+    emoji_palette: HashMap<String, String>,
+    /// Shortcodes already looked up remotely (30180 `#d`), bounded.
+    emoji_lookups: HashSet<String>,
+    last_presence_snapshot: Instant,
+    last_presence_publish: Option<(Instant, crate::protocol::presence::Presence)>,
+    last_input_at: Instant,
     profile_requested: HashSet<String>,
     thread_messages: Vec<Message>,
     thread_root: Option<String>,
@@ -281,6 +420,10 @@ pub struct App {
     mention_picker: Option<MentionPicker>,
     finder: String,
     reaction_index: usize,
+    /// `Some(query)` while the reaction picker searches custom emoji.
+    reaction_query: Option<String>,
+    reaction_candidates: Vec<crate::protocol::emoji::Emoji>,
+    reaction_candidate: usize,
     command: String,
     attachment_input: String,
     inbox_items: Vec<InboxItem>,
@@ -352,6 +495,95 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const AGENT_SPINNER_INTERVAL: Duration = Duration::from_millis(200);
 const RELAY_EVENT_DEDUP_CAPACITY: usize = 16_384;
 const AGENT_TYPING_SUBSCRIPTION: &str = "agent-typing-selected";
+const ARTIFACT_SYNC_SUBSCRIPTION: &str = "artifact-sync-selected";
+const HUDDLE_LIFECYCLE_SUBSCRIPTION: &str = "huddle-lifecycle-selected";
+const HUDDLE_BACKING_SUBSCRIPTION: &str = "huddle-backing-selected";
+
+/// The local agent broker, served only while the owner's runtime is unlocked.
+struct BrokerRuntime {
+    community: Uuid,
+    host: crate::broker::host::Host,
+    server: crate::broker::http::BrokerServer,
+    signers: Vec<SignerHandle>,
+    supervisors: Vec<SupervisorHandle>,
+}
+
+impl BrokerRuntime {
+    async fn stop(self) {
+        for supervisor in &self.supervisors {
+            supervisor.shutdown().await;
+        }
+        for signer in &self.signers {
+            signer.lock().await;
+        }
+    }
+}
+
+/// A joined huddle call: audio engine plus the devices it owns. Dropping it
+/// leaves the room and releases both devices.
+#[cfg(feature = "huddles-audio")]
+struct HuddleCall {
+    call: crate::huddle::audio::AudioCall,
+    _devices: crate::huddle::audio::Devices,
+    backing: Uuid,
+    parent: Uuid,
+}
+
+#[cfg(feature = "huddles-audio")]
+impl std::fmt::Debug for HuddleCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never device names or audio state beyond the room identity.
+        formatter
+            .debug_struct("HuddleCall")
+            .field("backing", &self.backing)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "huddles-audio")]
+impl HuddleCall {
+    async fn stop(self) {
+        self.call.stop().await;
+    }
+}
+
+/// The selected channel's NIP-AR sync. Heads before EOSE are buffered and
+/// replace the stored set only at EOSE; a drop before EOSE discards them.
+#[derive(Debug)]
+struct ArtifactSync {
+    community: Uuid,
+    channel: Uuid,
+    buffer: Vec<crate::protocol::artifact::Artifact>,
+    complete: bool,
+    failures: u32,
+    retry_at: Option<Instant>,
+    /// `restricted`: this reader cannot read the channel's artifacts.
+    blocked: bool,
+}
+
+impl ArtifactSync {
+    const fn new(community: Uuid, channel: Uuid) -> Self {
+        Self {
+            community,
+            channel,
+            buffer: Vec::new(),
+            complete: false,
+            failures: 0,
+            retry_at: None,
+            blocked: false,
+        }
+    }
+
+    /// Exponential backoff with jitter before the next sync attempt.
+    fn schedule_retry(&mut self) {
+        self.failures = self.failures.saturating_add(1);
+        let base = 2_u64.saturating_pow(self.failures.min(6)).min(60);
+        let jitter = u64::from(rand::random::<u16>()) % (base * 500 + 1);
+        self.buffer.clear();
+        self.complete = false;
+        self.retry_at = Some(Instant::now() + Duration::from_millis(base * 1000 + jitter));
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TypingSubscriptionTransition {
@@ -372,6 +604,99 @@ fn typing_subscription_transition(
     }
 }
 
+fn publish_presence(runtime: &Runtime, presence: crate::protocol::presence::Presence) {
+    let signer = runtime.signer.clone();
+    let supervisor = runtime.supervisor.clone();
+    tokio::spawn(async move {
+        if let Ok(builder) = buzz_sdk::build_presence_update(presence.as_str())
+            && let Ok(event) = signer.sign(builder).await
+        {
+            let _ = supervisor.publish_maintenance(event).await;
+        }
+    });
+}
+
+/// Kind 20003: the owner states its hosted agents' presence (`p` per agent).
+pub fn agent_presence_builder(
+    presence: crate::protocol::presence::Presence,
+    agents: &[String],
+) -> Result<nostr::EventBuilder> {
+    let tags = agents
+        .iter()
+        .take(256)
+        .map(|agent| nostr::Tag::parse(["p", agent.as_str()]))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| Error::Protocol(error.to_string()))?;
+    Ok(nostr::EventBuilder::new(
+        nostr::Kind::Custom(crate::protocol::presence::KIND_AGENT_PRESENCE),
+        presence.as_str(),
+    )
+    .tags(tags))
+}
+
+fn publish_agent_presence(
+    runtime: &Runtime,
+    presence: crate::protocol::presence::Presence,
+    agents: Vec<String>,
+) {
+    let signer = runtime.signer.clone();
+    let supervisor = runtime.supervisor.clone();
+    tokio::spawn(async move {
+        if let Ok(builder) = agent_presence_builder(presence, &agents)
+            && let Ok(event) = signer.sign(builder).await
+        {
+            let _ = supervisor.publish_maintenance(event).await;
+        }
+    });
+}
+
+/// Publish `offline` and wait briefly for the relay, so lock and quit clear
+/// presence immediately instead of after the 180 s TTL.
+async fn publish_offline(runtime: &Runtime) {
+    let attempt = async {
+        let builder = buzz_sdk::build_presence_update("offline").ok()?;
+        let event = runtime.signer.sign(builder).await.ok()?;
+        runtime.supervisor.publish_maintenance(event).await.ok()
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(2), attempt).await;
+}
+
+/// Best-effort: open `url` in the user's browser. The caller always shows the
+/// URL too, so a headless or remote terminal can copy it.
+fn open_in_browser(url: &url::Url) {
+    let (program, arguments): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
+        ("open", vec![url.as_str()])
+    } else if cfg!(windows) {
+        (
+            "rundll32",
+            vec!["url.dll,FileProtocolHandler", url.as_str()],
+        )
+    } else {
+        ("xdg-open", vec![url.as_str()])
+    };
+    let _ = std::process::Command::new(program)
+        .args(arguments)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// M10.2: "send to channel" needs a local thread root in the same channel.
+fn send_to_channel_root(
+    root: Option<Message>,
+    channel: Uuid,
+) -> std::result::Result<Message, &'static str> {
+    let root = root.ok_or("the thread root is not available locally")?;
+    if root.channel_id != channel {
+        return Err("the thread root belongs to another channel");
+    }
+    if root.root_event_id.is_some() || root.system.is_some() || root.deleted {
+        return Err("only a thread root's thread can be sent to the channel");
+    }
+    Ok(root)
+}
+
 fn triggers_directory_refresh(kind: u16, content: &str) -> bool {
     matches!(kind, 39_002 | 44_100 | 44_101)
         || (kind == 40_099
@@ -380,6 +705,11 @@ fn triggers_directory_refresh(kind: u16, content: &str) -> bool {
                 SystemEventKind::MemberJoined
                     | SystemEventKind::MemberLeft
                     | SystemEventKind::MemberRemoved
+                    | SystemEventKind::AdminKick
+                    | SystemEventKind::VisibilityChanged
+                    | SystemEventKind::JoinRoleChanged
+                    | SystemEventKind::UnlistedChanged
+                    | SystemEventKind::ChannelDeleted
             ))
 }
 
@@ -481,6 +811,41 @@ impl App {
             typing_subscription_channel: None,
             closed_typing_channel: None,
             reactions: HashMap::new(),
+            show_system_channels: false,
+            pending_report: None,
+            presence: crate::protocol::presence::PresenceBook::default(),
+            emoji_palette: HashMap::new(),
+            thread_window: None,
+            thread_window_loading: false,
+            profile_card: None,
+            broker_selected: 0,
+            dm_presence: HashMap::new(),
+            profile_generation: 0,
+            public_lookup_cache: HashMap::new(),
+            public_lookup_backoff: HashMap::new(),
+            artifact_caps: None,
+            broker: None,
+            huddle_view: None,
+            huddle_loading: false,
+            huddle_dirty: false,
+            huddle_subscribed: None,
+            huddle_backing_subscribed: None,
+            huddle_reactions: std::collections::VecDeque::new(),
+            huddle_guidelines: None,
+            huddle_devices: None,
+            huddle_joining: false,
+            huddle_ptt_until: None,
+            #[cfg(feature = "huddles-audio")]
+            huddle_call: None,
+            broker_attempted: None,
+            artifact_caps_requested: None,
+            artifact_sync: None,
+            artifact_panel: crate::ui::artifacts::ArtifactPanelState::default(),
+            pending_artifact_move: None,
+            emoji_lookups: HashSet::new(),
+            last_presence_snapshot: Instant::now() - Duration::from_secs(3600),
+            last_presence_publish: None,
+            last_input_at: Instant::now(),
             profile_requested: HashSet::new(),
             thread_messages: Vec::new(),
             thread_root: None,
@@ -497,6 +862,9 @@ impl App {
             mention_picker: None,
             finder: String::new(),
             reaction_index: 0,
+            reaction_query: None,
+            reaction_candidates: Vec::new(),
+            reaction_candidate: 0,
             command: String::new(),
             attachment_input: String::new(),
             inbox_items: Vec::new(),
@@ -593,7 +961,10 @@ impl App {
                 maybe=next_terminal_event(&mut input)=>{
                     if let Some(event)=maybe {
                         match event {
-                            TerminalEvent::Key(key) if key.kind==KeyEventKind::Press => self.handle_key(key,&mut guard,&mut terminal).await?,
+                            TerminalEvent::Key(key) if key.kind==KeyEventKind::Press => {
+                                self.last_input_at=Instant::now();
+                                self.handle_key(key,&mut guard,&mut terminal).await?
+                            },
                             TerminalEvent::Paste(text) => self.handle_terminal_paste(text).await?,
                             TerminalEvent::Mouse(mouse) => self.handle_mouse(mouse,&mut guard,&mut terminal).await?,
                             TerminalEvent::Resize(_, _) => {},
@@ -627,6 +998,115 @@ impl App {
                         self.agent_directory.loading=false;
                     },
                     Background::Saved=>self.status_error=Some("attachment saved".into()),
+                    Background::FederatedReady=>{
+                        self.status_error=Some("federated sign-in complete; reconnecting".into());
+                        if let Some(runtime)=&self.runtime {
+                            runtime.supervisor.reconnect().await;
+                        }
+                        // Re-run the startup sync, now carrying evidence.
+                        if let Err(error)=self.start_sync().await {
+                            self.status_error=Some(error.to_string());
+                        }
+                    },
+                    Background::Notice(message)=>self.status_error=Some(message),
+                    Background::HistoryLoaded { community, summaries }=>{
+                        self.cache_dirty=true;
+                        if self.active_community_id()==Some(community) {
+                            self.hydrate_cache().await?;
+                            for event in summaries {
+                                let parsed=self.store.call(move |store| store.live_thread_summary(community,&event)).await?;
+                                if let Some(summary)=parsed {
+                                    self.apply_live_thread_summary(summary);
+                                }
+                            }
+                        }
+                    },
+                    Background::HuddleState { community, channel, active }=>{
+                        self.huddle_loading=false;
+                        if self.active_community_id()==Some(community)
+                            && self.current_channel().map(|channel| channel.id)==Some(channel)
+                        {
+                            self.huddle_view=Some((channel, active));
+                            self.cache_dirty=true;
+                            #[cfg(feature = "huddles-audio")]
+                            {
+                                let ended = self.huddle_call.as_ref().is_some_and(|call| {
+                                    call.parent == channel
+                                        && self
+                                            .huddle_view
+                                            .as_ref()
+                                            .and_then(|(_, active)| active.as_ref())
+                                            .is_none_or(|active| active.backing != call.backing)
+                                });
+                                if ended && let Some(call) = self.huddle_call.take() {
+                                    call.stop().await;
+                                    self.status_error=Some("the huddle ended; audio devices released".into());
+                                }
+                            }
+                        }
+                    },
+                    Background::HuddleStarted { parent, backing }=>{
+                        self.huddle_dirty=true;
+                        self.spawn_huddle_join(parent, backing);
+                    },
+                    #[cfg(feature = "huddles-audio")]
+                    Background::HuddleJoined(result)=>{
+                        self.huddle_joining=false;
+                        match result {
+                            Ok(call) => {
+                                if let Some(previous) = self.huddle_call.replace(*call) {
+                                    previous.stop().await;
+                                }
+                                self.status_error=Some("joined the huddle · muted · m to unmute, space to talk".into());
+                            }
+                            Err(error) => self.status_error=Some(error),
+                        }
+                        self.cache_dirty=true;
+                    },
+                    Background::ArtifactCaps { community, caps }=>{
+                        if self.active_community_id()==Some(community) {
+                            self.artifact_caps=Some((community, caps));
+                            self.reconcile_artifact_sync().await?;
+                        }
+                    },
+                    Background::ArtifactDone(result)=>{
+                        self.artifact_panel.loading=false;
+                        match result {
+                            Ok(message) if message.is_empty() => {},
+                            Ok(message) => self.status_error=Some(message),
+                            Err(error) => self.status_error=Some(error),
+                        }
+                        self.refresh_artifact_panel().await?;
+                    },
+                    Background::ThreadWindow { community, root, next, supported }=>{
+                        self.thread_window_loading=false;
+                        if self.active_community_id()==Some(community)
+                            && self.thread_root.as_deref()==Some(root.as_str())
+                        {
+                            self.thread_window=supported.then_some((root, next));
+                            self.cache_dirty=true;
+                        }
+                    },
+                    Background::PublicMemberships { community, subject, generation, result }=>{
+                        self.apply_public_lookup(community, &subject, generation, result);
+                    },
+                    Background::EmojiSearch { query, found }=>{
+                        if self.reaction_query.as_deref()==Some(query.as_str()) {
+                            for emoji in found {
+                                if !self.reaction_candidates.iter().any(|known| known.shortcode==emoji.shortcode)
+                                    && self.reaction_candidates.len()<8
+                                {
+                                    self.reaction_candidates.push(emoji);
+                                }
+                            }
+                        }
+                    },
+                    Background::PresenceSnapshot { community, asked, observations }=>{
+                        if self.active_community_id()==Some(community) {
+                            self.presence.apply_snapshot(&asked, &observations, crate::clock::SystemClock.now_unix());
+                            self.cache_dirty=true;
+                        }
+                    },
                     Background::InboxLoaded { community, items }=>{
                         if self.active_community_id()==Some(community) {
                             self.inbox_items=items;
@@ -759,7 +1239,12 @@ impl App {
         let profiles = runtime.profiles.clone();
         let http = runtime.http.clone();
         let supervisor = runtime.supervisor.clone();
+        let signer = runtime.signer.clone();
         let community = runtime.community_id;
+        let evidence = runtime.evidence.clone();
+        let adapter = runtime.identity_adapter.clone();
+        let data_dir = runtime.data_dir.clone();
+        let identity_id = runtime.identity_id;
         let selected = self.current_channel().map(|channel| channel.id);
         if let Some(channel) = selected {
             self.subscribe_channel_with_priority(channel, SubscriptionPriority::Foreground)
@@ -778,6 +1263,13 @@ impl App {
                 "global-stream",
                 subscriptions::global_stream(nostr::Timestamp::now().as_secs()),
                 SubscriptionPriority::Baseline,
+            )
+            .await?;
+        supervisor
+            .subscribe_with_priority(
+                "presence",
+                subscriptions::presence(nostr::Timestamp::now().as_secs()),
+                SubscriptionPriority::Background,
             )
             .await?;
         supervisor
@@ -826,10 +1318,55 @@ impl App {
                     })?
                     .to_owned();
                 store
-                    .call(move |store| store.pin_relay_pubkey(community, &relay_pubkey))
+                    .call({
+                        let relay_pubkey = relay_pubkey.clone();
+                        move |store| store.pin_relay_pubkey(community, &relay_pubkey)
+                    })
                     .await?;
+                let had_evidence = evidence.is_set();
+                match crate::auth::federated::install_from_store(
+                    &info,
+                    adapter.as_ref(),
+                    &data_dir,
+                    identity_id,
+                    &signer,
+                    &evidence,
+                )
+                .await
+                {
+                    crate::auth::federated::Startup::NotRequired => {}
+                    crate::auth::federated::Startup::Ready => {
+                        if !had_evidence {
+                            supervisor.reconnect().await;
+                        }
+                    }
+                    blocked => {
+                        // Fail once and quietly: no HTTP sync, no reconnect loop.
+                        let notice = if blocked == crate::auth::federated::Startup::NeedsSignIn {
+                            "this community requires federated sign-in: run :signin"
+                        } else {
+                            crate::auth::federated::RelayDenial::EvidenceRequired.notice()
+                        };
+                        let _ = tx.send(Background::Notice(notice.into())).await;
+                        return Ok(());
+                    }
+                }
                 channels.refresh(&pubkey).await?;
+                // NIP-RS atomic snapshot: a complete read-state load when the
+                // relay can prove it; otherwise the subscription above is it.
+                let _ = read_state::load_snapshot(community, &http, &signer, &store).await;
                 let _ = inbox.refresh(&pubkey).await;
+                let _ = crate::sync::directory::hydrate_emoji_sets(community, &http, &store).await;
+                if info.pointer("/federated_identity/public_profile").is_some() {
+                    let _ = crate::sync::directory::hydrate_verified_profiles(
+                        community,
+                        authors.iter().cloned(),
+                        &relay_pubkey,
+                        &http,
+                        &store,
+                    )
+                    .await;
+                }
                 let _ = profiles.hydrate(authors).await;
                 let _ = outbox::flush_with_diagnostics(
                     community,
@@ -904,6 +1441,9 @@ impl App {
         for channel in channels {
             self.subscribe_channel(channel).await?;
         }
+        self.reconcile_artifact_sync().await?;
+        self.reconcile_broker().await;
+        self.reconcile_huddle().await?;
         self.reconcile_agent_typing_subscription().await
     }
 
@@ -957,12 +1497,16 @@ impl App {
     fn spawn_backfill(&self, channel: Uuid) {
         if let Some(runtime) = &self.runtime {
             let service = runtime.channels.clone();
+            let community = runtime.community_id;
             let tx = self.background_tx.clone();
             tokio::spawn(async move {
-                let result = service.backfill(channel).await;
+                let result = service.selected_history(channel).await;
                 let _ = tx
                     .send(match result {
-                        Ok(_) => Background::Changed,
+                        Ok(outcome) => Background::HistoryLoaded {
+                            community,
+                            summaries: outcome.summaries,
+                        },
                         Err(error) => Background::Failed(error.to_string()),
                     })
                     .await;
@@ -1200,11 +1744,39 @@ impl App {
             return Ok(());
         };
         let selected_channel_id = self.current_channel().map(|channel| channel.id);
+        let selected_was_member = self
+            .current_channel()
+            .is_some_and(|channel| channel.is_member);
         self.channels = self
             .store
             .call(move |store| store.channels(community))
             .await?;
+        // Membership removed by the relay (kick, delete, moderation): keep the
+        // persisted draft, close the composer and move to a joined channel.
+        let removed = selected_was_member
+            && selected_channel_id.is_some_and(|id| {
+                !self
+                    .channels
+                    .iter()
+                    .any(|channel| channel.id == id && channel.is_member)
+            });
+        if removed {
+            if self
+                .presentation
+                .composer_target
+                .as_ref()
+                .is_some_and(|target| Some(target.channel_id) == selected_channel_id)
+            {
+                self.persist_draft().await?;
+                self.presentation.composer_target = None;
+            }
+            self.thread_root = None;
+            self.showing_open_channel = false;
+            self.status_error =
+                Some("you are no longer a member of that channel; draft kept".into());
+        }
         self.selected_channel = selected_channel_id
+            .filter(|_| !removed)
             .and_then(|id| self.channels.iter().position(|channel| channel.id == id))
             .or_else(|| {
                 self.channels
@@ -1266,6 +1838,7 @@ impl App {
             self.thread_summaries.clear();
             self.thread_messages.clear();
         }
+        self.resolve_custom_emoji(community).await?;
         let reaction_targets = self
             .messages
             .iter()
@@ -1289,6 +1862,15 @@ impl App {
             .store
             .call(move |store| store.profiles(community))
             .await?;
+        let now = crate::clock::SystemClock.now_unix();
+        let huddle_roster = self
+            .active_huddle()
+            .map(|active| active.participants.iter().cloned().collect::<HashSet<_>>())
+            .unwrap_or_default();
+        for profile in self.profiles.values_mut() {
+            profile.presence = Some(self.presence.get(&profile.pubkey, now));
+            profile.in_huddle = huddle_roster.contains(&profile.pubkey);
+        }
         let self_pubkey = self.self_pubkey().unwrap_or_default().to_owned();
         self.agents = if self_pubkey.is_empty() {
             HashMap::new()
@@ -1298,7 +1880,19 @@ impl App {
                 .call(move |store| store.list_remote_agents(community, &identity))
                 .await?
                 .into_iter()
-                .map(|agent| (agent.pubkey.clone(), agent))
+                .map(|mut agent| {
+                    // Owner-signed 20003 presence the pinned relay accepted.
+                    match self.presence.get(&agent.pubkey, now) {
+                        crate::protocol::presence::Presence::Online => {
+                            agent.presence = crate::agents::Presence::Online;
+                        }
+                        crate::protocol::presence::Presence::Away => {
+                            agent.presence = crate::agents::Presence::Away;
+                        }
+                        _ => {}
+                    }
+                    (agent.pubkey.clone(), agent)
+                })
                 .collect()
         };
         let authorized_typing_agents = self
@@ -1325,6 +1919,7 @@ impl App {
             .store
             .call(move |store| store.dm_participants_map(community))
             .await?;
+        self.dm_presence.clear();
         for channel in self
             .channels
             .iter_mut()
@@ -1332,6 +1927,14 @@ impl App {
         {
             if let Some(participants) = dm_participants.get(&channel.id) {
                 channel.name = dm_label(participants, &self_pubkey, &self.profiles);
+                let others = participants
+                    .iter()
+                    .filter(|pubkey| !pubkey.eq_ignore_ascii_case(&self_pubkey))
+                    .collect::<Vec<_>>();
+                if let [other] = others.as_slice() {
+                    self.dm_presence
+                        .insert(channel.id, self.presence.get(other, now));
+                }
             }
         }
         if self.presentation.overlay == Some(Overlay::DmPicker) {
@@ -1621,8 +2224,46 @@ impl App {
                     return Ok(false);
                 };
                 let community = runtime.community_id;
+                // Sync may resend a known head (resync, reconnect); it must
+                // reach the buffer, so artifacts bypass the relay dedupe.
+                if subscription == ARTIFACT_SYNC_SUBSCRIPTION
+                    || matches!(event.kind.as_u16(), 45_010 | 45_011)
+                {
+                    return self.apply_artifact_sync_event(&subscription, &event).await;
+                }
+                if matches!(event.kind.as_u16(), 48_100..=48_106 | 24_810) {
+                    return Ok(self.apply_huddle_event(&event));
+                }
                 let event_id = event.id.to_hex();
                 if self.relay_event_was_handled(community, &event_id) {
+                    return Ok(false);
+                }
+                if matches!(
+                    event.kind.as_u16(),
+                    crate::protocol::presence::KIND_PRESENCE
+                        | crate::protocol::presence::KIND_AGENT_PRESENCE
+                ) {
+                    self.remember_relay_event(community, event_id);
+                    if crate::protocol::events::verify(&event).is_err() {
+                        return Ok(false);
+                    }
+                    let relay = self
+                        .store
+                        .call(move |store| store.pinned_relay_pubkey(community))
+                        .await?;
+                    let observation =
+                        crate::protocol::presence::observe(&event, relay.as_deref(), |agent| {
+                            self.agents
+                                .get(agent)
+                                .filter(|view| !view.stale)
+                                .map(|view| view.owner_pubkey.clone())
+                        });
+                    if let Some(observation) = observation {
+                        self.presence
+                            .apply(&observation, crate::clock::SystemClock.now_unix());
+                        self.cache_dirty = true;
+                        return Ok(true);
+                    }
                     return Ok(false);
                 }
                 if event.kind.as_u16() == crate::agents::typing::KIND_TYPING_INDICATOR {
@@ -1713,7 +2354,11 @@ impl App {
                     }
                 }
             }
-            SupervisorEvent::Session(SessionEvent::Eose(_)) => {
+            SupervisorEvent::Session(SessionEvent::Eose(subscription)) => {
+                if subscription == ARTIFACT_SYNC_SUBSCRIPTION {
+                    self.commit_artifact_sync().await?;
+                    return Ok(true);
+                }
                 if self.connection != ConnectionState::Backfilling {
                     self.connection = ConnectionState::Online;
                 }
@@ -1725,6 +2370,19 @@ impl App {
                 subscription,
                 message,
             }) => {
+                if subscription == ARTIFACT_SYNC_SUBSCRIPTION {
+                    if let Some(sync) = &mut self.artifact_sync {
+                        // The last complete set stays; it is possibly stale.
+                        if message.starts_with("restricted:") {
+                            sync.blocked = true;
+                            sync.buffer.clear();
+                        } else {
+                            sync.schedule_retry();
+                        }
+                    }
+                    self.refresh_artifact_panel().await?;
+                    return Ok(true);
+                }
                 if subscription == AGENT_TYPING_SUBSCRIPTION {
                     self.closed_typing_channel = self.typing_subscription_channel.take();
                     transient_changed |= self.agent_typing.clear();
@@ -1758,6 +2416,12 @@ impl App {
             SupervisorEvent::Session(SessionEvent::Disconnected(message)) => {
                 self.connection = ConnectionState::Offline;
                 self.status_error = Some(message);
+                // No resume: the supervisor re-sends the sync on reconnect and
+                // the new set replaces the old one only at its EOSE.
+                if let Some(sync) = &mut self.artifact_sync {
+                    sync.buffer.clear();
+                    sync.complete = false;
+                }
                 self.rate_limit_until = None;
                 self.rate_limit_display_seconds = None;
                 transient_changed |= self.agent_typing.clear();
@@ -1863,6 +2527,13 @@ impl App {
             self.spawn_dm_profile_search();
             changed = true;
         }
+        if self.last_presence_snapshot.elapsed()
+            >= Duration::from_secs(crate::protocol::presence::HEARTBEAT_SECONDS)
+        {
+            self.last_presence_snapshot = Instant::now();
+            self.spawn_presence_snapshot();
+        }
+        self.maybe_publish_presence().await;
         if self.last_inbox_refresh.elapsed() >= Duration::from_secs(30) {
             self.last_inbox_refresh = Instant::now();
             if self.runtime.is_some() {
@@ -2286,6 +2957,74 @@ impl App {
                     KeyCode::Esc | KeyCode::Char('n' | 'N') => self.presentation.close_overlay(),
                     _ => {}
                 },
+                Some(
+                    ref kind @ (ConfirmationKind::HuddleStart
+                    | ConfirmationKind::HuddleJoin
+                    | ConfirmationKind::HuddleEnd),
+                ) => match key.code {
+                    KeyCode::Char('y' | 'Y') => {
+                        let kind = kind.clone();
+                        self.presentation.return_to_overlay(Overlay::Huddle);
+                        match kind {
+                            ConfirmationKind::HuddleStart => self.spawn_huddle_start(),
+                            ConfirmationKind::HuddleJoin => {
+                                if let Some(active) = self.active_huddle().cloned()
+                                    && let Some(parent) =
+                                        self.current_channel().map(|channel| channel.id)
+                                {
+                                    self.spawn_huddle_join(parent, active.backing);
+                                }
+                            }
+                            _ => self.end_huddle().await,
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                        self.presentation.return_to_overlay(Overlay::Huddle);
+                    }
+                    _ => {}
+                },
+                Some(ConfirmationKind::ArtifactDelete) => match key.code {
+                    KeyCode::Char('y' | 'Y') => {
+                        if let Some(id) = self.artifact_panel.selected {
+                            self.spawn_artifact_change(
+                                id,
+                                crate::protocol::artifact::Change::Delete,
+                            );
+                        }
+                        self.presentation.return_to_overlay(Overlay::Artifacts);
+                    }
+                    KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                        self.presentation.return_to_overlay(Overlay::Artifacts);
+                    }
+                    _ => {}
+                },
+                Some(ConfirmationKind::ArtifactMove) => match key.code {
+                    KeyCode::Char('y' | 'Y') => {
+                        if let Some((id, destination)) = self.pending_artifact_move.take() {
+                            self.spawn_artifact_change(
+                                id,
+                                crate::protocol::artifact::Change::Move(destination),
+                            );
+                        }
+                        self.presentation.return_to_overlay(Overlay::Artifacts);
+                    }
+                    KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                        self.pending_artifact_move = None;
+                        self.presentation.return_to_overlay(Overlay::Artifacts);
+                    }
+                    _ => {}
+                },
+                Some(ConfirmationKind::Report) => match key.code {
+                    KeyCode::Char('y' | 'Y') => {
+                        self.send_pending_report();
+                        self.presentation.close_overlay();
+                    }
+                    KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                        self.pending_report = None;
+                        self.presentation.close_overlay();
+                    }
+                    _ => {}
+                },
                 Some(ConfirmationKind::InboxRead) => match key.code {
                     KeyCode::Char('y' | 'Y') => self.mark_pending_inbox_read().await?,
                     KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
@@ -2309,8 +3048,50 @@ impl App {
             Some(Overlay::Finder) => self.text_overlay_key(key, true).await?,
             Some(Overlay::Command) => self.text_overlay_key(key, false).await?,
             Some(Overlay::Theme) => self.theme_picker_key(key),
+            Some(Overlay::Reaction) if self.reaction_query.is_some() => match key.code {
+                KeyCode::Esc => {
+                    self.reaction_query = None;
+                    self.reaction_candidates.clear();
+                }
+                KeyCode::Backspace => {
+                    if let Some(query) = self.reaction_query.as_mut() {
+                        query.pop();
+                    }
+                    self.refresh_reaction_candidates();
+                }
+                KeyCode::Char(character)
+                    if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') =>
+                {
+                    if let Some(query) = self.reaction_query.as_mut()
+                        && query.len() < 64
+                    {
+                        query.push(character.to_ascii_lowercase());
+                    }
+                    self.refresh_reaction_candidates();
+                }
+                KeyCode::Down | KeyCode::Tab => {
+                    if !self.reaction_candidates.is_empty() {
+                        self.reaction_candidate =
+                            (self.reaction_candidate + 1) % self.reaction_candidates.len();
+                    }
+                }
+                KeyCode::Up | KeyCode::BackTab => {
+                    if !self.reaction_candidates.is_empty() {
+                        self.reaction_candidate = self
+                            .reaction_candidate
+                            .checked_sub(1)
+                            .unwrap_or(self.reaction_candidates.len() - 1);
+                    }
+                }
+                KeyCode::Enter => self.send_custom_reaction(),
+                _ => {}
+            },
             Some(Overlay::Reaction) => match key.code {
                 KeyCode::Esc => self.presentation.close_overlay(),
+                KeyCode::Char(':') => {
+                    self.reaction_query = Some(String::new());
+                    self.refresh_reaction_candidates();
+                }
                 KeyCode::Char(digit @ '1'..='8') => {
                     self.reaction_index = usize::from(digit as u8 - b'1');
                     self.send_reaction();
@@ -2336,6 +3117,32 @@ impl App {
             Some(Overlay::Search) => self.search_key(key).await?,
             Some(Overlay::DmPicker) => self.dm_picker_key(key),
             Some(Overlay::Agents) => self.agent_directory_key(key).await?,
+            Some(Overlay::Artifacts) => self.artifact_panel_key(key).await?,
+            Some(Overlay::Huddle) => self.huddle_key(key).await?,
+            Some(Overlay::Profile) => self.profile_key(key),
+            Some(Overlay::Broker) => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
+                // The owner's one-key pause for every hosted agent.
+                KeyCode::Char('p') => {
+                    if let Some(broker) = &self.broker {
+                        broker.host.set_paused_all(!broker.host.paused_all());
+                    }
+                }
+                KeyCode::Char('j') | KeyCode::Down => self.broker_select(1),
+                KeyCode::Char('k') | KeyCode::Up => self.broker_select(-1),
+                KeyCode::Char(digit @ '1'..='9') => {
+                    self.broker_toggle_action(usize::from(digit as u8 - b'1'))
+                }
+                KeyCode::Char(' ') => self.broker_toggle_paused(),
+                // Opt in or out of owner-signed agent presence (kind 20003).
+                KeyCode::Char('o') => {
+                    self.config.ui.broker_agent_presence = !self.config.ui.broker_agent_presence;
+                    if let Err(error) = self.config.save(&self.paths) {
+                        self.status_error = Some(error.to_string());
+                    }
+                }
+                _ => {}
+            },
             None if self.presentation.composer_target.is_some() => {
                 self.handle_composer_key(key).await?
             }
@@ -2726,6 +3533,10 @@ impl App {
                         "cached read-only mode: restore or unlock the identity, then restart bzz"
                             .into(),
                     );
+                } else if let Some(reason) =
+                    self.current_channel().and_then(Channel::read_only_reason)
+                {
+                    self.status_error = Some(reason.notice().into());
                 } else if self.selected_message().is_some() {
                     self.presentation.open_overlay(Overlay::Reaction);
                 }
@@ -2753,6 +3564,15 @@ impl App {
                     );
                 } else {
                     self.mark_unread().await?;
+                }
+            }
+            WorkspaceEffect::OpenProfile => {
+                match self
+                    .selected_message()
+                    .map(|message| message.pubkey.clone())
+                {
+                    Some(pubkey) => self.open_profile(pubkey).await?,
+                    None => self.status_error = Some("select a message first".into()),
                 }
             }
             WorkspaceEffect::Unavailable(action) => {
@@ -2946,9 +3766,1320 @@ impl App {
                 }
             }
             FocusSurface::Timeline => self.timeline.move_by(&self.messages, delta),
-            FocusSurface::Context => self.thread_timeline.move_by(&self.thread_messages, delta),
+            FocusSurface::Context => {
+                let at_oldest = self
+                    .thread_timeline
+                    .selected_index(&self.thread_messages)
+                    .is_some_and(|index| index <= 1);
+                self.thread_timeline.move_by(&self.thread_messages, delta);
+                // Moving above the oldest loaded reply pages older history.
+                if delta < 0
+                    && at_oldest
+                    && let Some((root, Some(next))) = self.thread_window.clone()
+                {
+                    self.spawn_thread_window(root, Some(next));
+                }
+            }
             FocusSurface::InboxList | FocusSurface::InboxDetail => {}
         }
+    }
+
+    fn active_huddle(&self) -> Option<&crate::protocol::huddle::ActiveHuddle> {
+        let channel = self.current_channel().map(|channel| channel.id)?;
+        self.huddle_view
+            .as_ref()
+            .filter(|(id, _)| *id == channel)
+            .and_then(|(_, active)| active.as_ref())
+    }
+
+    fn huddle_call_state(&self) -> Option<bool> {
+        #[cfg(feature = "huddles-audio")]
+        {
+            self.huddle_call.as_ref().map(|call| call.call.is_muted())
+        }
+        #[cfg(not(feature = "huddles-audio"))]
+        {
+            None
+        }
+    }
+
+    async fn stop_huddle_call(&mut self) {
+        self.huddle_ptt_until = None;
+        #[cfg(feature = "huddles-audio")]
+        if let Some(call) = self.huddle_call.take() {
+            call.stop().await;
+        }
+    }
+
+    /// One live lifecycle subscription for the selected channel, one for the
+    /// active huddle's backing channel; push-to-talk expiry; call liveness.
+    async fn reconcile_huddle(&mut self) -> Result<()> {
+        let Some(runtime) = &self.runtime else {
+            return Ok(());
+        };
+        let supervisor = runtime.supervisor.clone();
+        let now = nostr::Timestamp::now().as_secs();
+        let desired = self.current_channel().map(|channel| channel.id);
+        if desired != self.huddle_subscribed {
+            self.huddle_subscribed = desired;
+            self.huddle_view = desired.map(|channel| (channel, None));
+            self.huddle_reactions.clear();
+            self.huddle_guidelines = None;
+            match desired {
+                Some(channel) => {
+                    supervisor
+                        .subscribe_with_priority(
+                            HUDDLE_LIFECYCLE_SUBSCRIPTION,
+                            vec![serde_json::json!({
+                                "kinds": crate::protocol::huddle::LIFECYCLE_KINDS,
+                                "#h": [channel.to_string()],
+                                "since": now,
+                            })],
+                            SubscriptionPriority::Foreground,
+                        )
+                        .await?;
+                    self.huddle_dirty = true;
+                }
+                None => supervisor.close(HUDDLE_LIFECYCLE_SUBSCRIPTION).await?,
+            }
+        }
+        if self.huddle_dirty && !self.huddle_loading {
+            self.huddle_dirty = false;
+            self.spawn_huddle_query();
+        }
+        let backing = self.active_huddle().map(|active| active.backing);
+        if backing != self.huddle_backing_subscribed {
+            self.huddle_backing_subscribed = backing;
+            self.huddle_reactions.clear();
+            self.huddle_guidelines = None;
+            match backing {
+                Some(backing) => {
+                    supervisor
+                        .subscribe_with_priority(
+                            HUDDLE_BACKING_SUBSCRIPTION,
+                            vec![serde_json::json!({
+                                "kinds": [crate::protocol::huddle::KIND_REACTION, crate::protocol::huddle::KIND_GUIDELINES],
+                                "#h": [backing.to_string()],
+                                "since": now.saturating_sub(crate::protocol::huddle::JOINABLE_WINDOW_SECONDS),
+                                "limit": 50,
+                            })],
+                            SubscriptionPriority::Foreground,
+                        )
+                        .await?;
+                }
+                None => supervisor.close(HUDDLE_BACKING_SUBSCRIPTION).await?,
+            }
+        }
+        #[cfg(feature = "huddles-audio")]
+        {
+            if self
+                .huddle_ptt_until
+                .is_some_and(|until| Instant::now() >= until)
+            {
+                self.huddle_ptt_until = None;
+                if let Some(call) = &self.huddle_call {
+                    call.call.set_muted(true);
+                }
+                self.cache_dirty = true;
+            }
+            // The relay closed the room or the socket dropped.
+            if self
+                .huddle_call
+                .as_ref()
+                .is_some_and(|call| !call.call.is_running())
+            {
+                self.stop_huddle_call().await;
+                self.status_error = Some("left the huddle; audio devices released".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn spawn_huddle_query(&mut self) {
+        let (Some(runtime), Some(channel)) = (
+            &self.runtime,
+            self.current_channel().map(|channel| channel.id),
+        ) else {
+            return;
+        };
+        self.huddle_loading = true;
+        let http = runtime.http.clone();
+        let store = self.store.clone();
+        let community = runtime.community_id;
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let relay = store
+                .call(move |store| store.pinned_relay_pubkey(community))
+                .await
+                .ok()
+                .flatten();
+            let events = http
+                .query_raw(&[crate::protocol::huddle::lifecycle_filter(channel)])
+                .await
+                .unwrap_or_default();
+            let active = relay.and_then(|relay| {
+                crate::protocol::huddle::active(&events, &relay, nostr::Timestamp::now().as_secs())
+            });
+            let _ = tx
+                .send(Background::HuddleState {
+                    community,
+                    channel,
+                    active,
+                })
+                .await;
+        });
+    }
+
+    /// Lifecycle events re-replay the channel; reactions and the creator's
+    /// guidelines come from the backing channel. Nothing reaches the store.
+    fn apply_huddle_event(&mut self, event: &nostr::Event) -> bool {
+        let kind = event.kind.as_u16();
+        if crate::protocol::huddle::LIFECYCLE_KINDS.contains(&kind) {
+            let channel = self.current_channel().map(|channel| channel.id.to_string());
+            if crate::protocol::events::first_tag(event, "h") == channel {
+                self.huddle_dirty = true;
+            }
+            return false;
+        }
+        let Some(active) = self.active_huddle().cloned() else {
+            return false;
+        };
+        if kind == crate::protocol::huddle::KIND_REACTION {
+            if let Some((sender, emoji)) =
+                crate::protocol::huddle::parse_reaction(event, active.backing)
+            {
+                self.huddle_reactions.push_back((sender, emoji));
+                while self.huddle_reactions.len() > 20 {
+                    self.huddle_reactions.pop_front();
+                }
+                return true;
+            }
+        } else if kind == crate::protocol::huddle::KIND_GUIDELINES
+            && event.pubkey.to_hex() == active.creator
+            && crate::protocol::events::first_tag(event, "h").as_deref()
+                == Some(active.backing.to_string().as_str())
+            && crate::protocol::events::verify(event).is_ok()
+        {
+            self.huddle_guidelines = Some(crate::protocol::artifact::display(&event.content, 2000));
+            return true;
+        }
+        false
+    }
+
+    fn huddle_panel_view(&self) -> crate::ui::huddle::HuddleView {
+        let name = |pubkey: &str| {
+            self.profiles
+                .get(pubkey)
+                .and_then(|profile| {
+                    profile
+                        .display_name
+                        .clone()
+                        .or_else(|| profile.name.clone())
+                })
+                .unwrap_or_else(|| pubkey.chars().take(8).collect())
+        };
+        let active = self.active_huddle();
+        crate::ui::huddle::HuddleView {
+            channel: self
+                .current_channel()
+                .map(|channel| channel.name.clone())
+                .unwrap_or_default(),
+            roster: active.map(|active| {
+                active
+                    .participants
+                    .iter()
+                    .map(|pubkey| name(pubkey))
+                    .collect()
+            }),
+            started_minutes_ago: active.map_or(0, |active| {
+                nostr::Timestamp::now()
+                    .as_secs()
+                    .saturating_sub(active.started_at)
+                    / 60
+            }),
+            guidelines: self.huddle_guidelines.clone(),
+            reactions: self
+                .huddle_reactions
+                .iter()
+                .map(|(sender, emoji)| format!("{emoji} {}", name(sender)))
+                .collect(),
+            call: self.huddle_call_state(),
+            joining: self.huddle_joining,
+            audio_available: crate::huddle::AUDIO,
+            devices: self.huddle_devices.clone(),
+            you_created: active
+                .is_some_and(|active| Some(active.creator.as_str()) == self.self_pubkey()),
+        }
+    }
+
+    async fn huddle_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
+            KeyCode::Char('s') => return self.huddle_command("start").await,
+            KeyCode::Char('j') => return self.huddle_command("join").await,
+            KeyCode::Char('l') => return self.huddle_command("leave").await,
+            KeyCode::Char('e') => return self.huddle_command("end").await,
+            KeyCode::Char('m') => return self.huddle_command("mute").await,
+            // Push-to-talk: each press (and key repeat) keeps you live 600 ms.
+            #[cfg(feature = "huddles-audio")]
+            KeyCode::Char(' ') => {
+                if let Some(call) = &self.huddle_call {
+                    call.call.set_muted(false);
+                    self.huddle_ptt_until = Some(Instant::now() + Duration::from_millis(600));
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn huddle_command(&mut self, arguments: &str) -> Result<()> {
+        let (verb, rest) = arguments.split_once(' ').unwrap_or((arguments, ""));
+        let rest = rest.trim();
+        if self.runtime.is_none() || self.current_channel().is_none() {
+            self.status_error = Some("select a channel in a connected community".into());
+            return Ok(());
+        }
+        let active = self.active_huddle().cloned();
+        let in_call = self.huddle_call_state().is_some();
+        match verb {
+            "" => {
+                self.huddle_dirty = true;
+                self.presentation.open_overlay(Overlay::Huddle);
+            }
+            "start" if active.is_some() => {
+                self.status_error = Some("a huddle is already running here; join it".into());
+            }
+            "start" => {
+                self.presentation.open_overlay(Overlay::Huddle);
+                self.presentation
+                    .open_confirmation(ConfirmationKind::HuddleStart);
+            }
+            "join" if !crate::huddle::AUDIO => {
+                self.status_error = Some(crate::huddle::VIEW_ONLY.into())
+            }
+            "join" if active.is_none() => {
+                self.status_error = Some("no huddle is running here".into())
+            }
+            "join" if in_call || self.huddle_joining => {}
+            "join" => {
+                self.presentation.open_overlay(Overlay::Huddle);
+                self.presentation
+                    .open_confirmation(ConfirmationKind::HuddleJoin);
+            }
+            "leave" => self.leave_huddle().await,
+            "end"
+                if active
+                    .as_ref()
+                    .is_some_and(|active| Some(active.creator.as_str()) == self.self_pubkey()) =>
+            {
+                self.presentation.open_overlay(Overlay::Huddle);
+                self.presentation
+                    .open_confirmation(ConfirmationKind::HuddleEnd);
+            }
+            "end" => self.status_error = Some("only the huddle's creator can end it".into()),
+            "mute" => {
+                #[cfg(feature = "huddles-audio")]
+                if let Some(call) = &self.huddle_call {
+                    call.call.set_muted(!call.call.is_muted());
+                    self.huddle_ptt_until = None;
+                }
+                if !in_call {
+                    self.status_error = Some("you are not in a huddle call".into());
+                }
+            }
+            "react" if !rest.is_empty() => {
+                if let (Some(active), Some(runtime)) = (active, &self.runtime) {
+                    let name = self
+                        .self_pubkey()
+                        .and_then(|pubkey| self.profiles.get(pubkey))
+                        .and_then(|profile| {
+                            profile
+                                .display_name
+                                .clone()
+                                .or_else(|| profile.name.clone())
+                        })
+                        .unwrap_or_default();
+                    match crate::protocol::huddle::reaction(active.backing, rest, &name) {
+                        Ok(builder) => {
+                            let signer = runtime.signer.clone();
+                            let supervisor = runtime.supervisor.clone();
+                            tokio::spawn(async move {
+                                if let Ok(event) = signer.sign(builder).await {
+                                    let _ = supervisor.publish(event).await;
+                                }
+                            });
+                        }
+                        Err(error) => self.status_error = Some(error.to_string()),
+                    }
+                }
+            }
+            "devices" => {
+                #[cfg(feature = "huddles-audio")]
+                {
+                    self.huddle_devices = Some(crate::huddle::audio::device_names());
+                }
+                self.presentation.open_overlay(Overlay::Huddle);
+            }
+            "input" | "output" => {
+                let value = (!rest.is_empty()).then(|| rest.to_owned());
+                if verb == "input" {
+                    self.config.ui.huddle_input_device = value;
+                } else {
+                    self.config.ui.huddle_output_device = value;
+                }
+                if let Err(error) = self.config.save(&self.paths) {
+                    self.status_error = Some(error.to_string());
+                } else {
+                    self.status_error = Some(format!(
+                        "huddle {verb} device saved; it applies on the next join"
+                    ));
+                }
+            }
+            _ => {
+                self.status_error = Some(
+                    "usage: :huddle [start|join|leave|end|mute|react <emoji>|devices|input <name>|output <name>]".into(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Start (after confirmation): backing channel, then 48100; then join.
+    fn spawn_huddle_start(&mut self) {
+        let (Some(runtime), Some(parent)) = (
+            &self.runtime,
+            self.current_channel().map(|channel| channel.id),
+        ) else {
+            return;
+        };
+        let signer = runtime.signer.clone();
+        let supervisor = runtime.supervisor.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let backing = Uuid::new_v4();
+            let steps = async {
+                for builder in [
+                    crate::protocol::huddle::backing_channel(backing)?,
+                    crate::protocol::huddle::started(parent, backing)?,
+                ] {
+                    let ack = supervisor.publish(signer.sign(builder).await?).await?;
+                    if !ack.accepted {
+                        return Err(Error::Protocol(format!(
+                            "the relay refused the huddle: {}",
+                            crate::protocol::artifact::display(&ack.message, 120)
+                        )));
+                    }
+                }
+                Ok::<_, Error>(())
+            };
+            let message = match steps.await {
+                Ok(()) => Background::HuddleStarted { parent, backing },
+                Err(error) => {
+                    // Roll back the backing channel, as desktop does.
+                    if let Ok(builder) = crate::protocol::huddle::archive(backing)
+                        && let Ok(event) = signer.sign(builder).await
+                    {
+                        let _ = supervisor.publish(event).await;
+                    }
+                    Background::Failed(error.to_string())
+                }
+            };
+            let _ = tx.send(message).await;
+        });
+    }
+
+    #[cfg_attr(not(feature = "huddles-audio"), allow(unused_variables))]
+    fn spawn_huddle_join(&mut self, parent: Uuid, backing: Uuid) {
+        #[cfg(not(feature = "huddles-audio"))]
+        {
+            self.status_error = Some(crate::huddle::VIEW_ONLY.into());
+        }
+        #[cfg(feature = "huddles-audio")]
+        {
+            let Some(runtime) = &self.runtime else { return };
+            let Some(entry) = self
+                .config
+                .communities
+                .iter()
+                .find(|entry| entry.id == runtime.community_id)
+            else {
+                return;
+            };
+            let Ok(endpoint) = validate_relay_url(&entry.relay_url, entry.allow_insecure_localhost)
+            else {
+                return;
+            };
+            self.huddle_joining = true;
+            let signer = runtime.signer.clone();
+            let input = self.config.ui.huddle_input_device.clone();
+            let output = self.config.ui.huddle_output_device.clone();
+            let tx = self.background_tx.clone();
+            tokio::spawn(async move {
+                let joined = async {
+                    let (devices, capture, playback) = tokio::task::spawn_blocking(move || {
+                        crate::huddle::audio::open_devices(input.as_deref(), output.as_deref())
+                    })
+                    .await
+                    .map_err(|_| {
+                        Error::Unsupported(crate::huddle::audio::MICROPHONE_DENIED.into())
+                    })??;
+                    let joined =
+                        crate::huddle::audio::join(&endpoint.websocket, backing, parent, &signer)
+                            .await?;
+                    let call = crate::huddle::audio::start(joined, capture, playback)?;
+                    Ok::<_, Error>(Box::new(HuddleCall {
+                        call,
+                        _devices: devices,
+                        backing,
+                        parent,
+                    }))
+                };
+                let _ = tx
+                    .send(Background::HuddleJoined(
+                        joined.await.map_err(|error| error.to_string()),
+                    ))
+                    .await;
+            });
+        }
+    }
+
+    /// Leave: if other humans remain, leave the backing channel; the last
+    /// human out who created it ends it, as desktop does.
+    async fn leave_huddle(&mut self) {
+        let active = self.active_huddle().cloned();
+        self.stop_huddle_call().await;
+        let (Some(active), Some(runtime)) = (active, &self.runtime) else {
+            return;
+        };
+        let me = runtime.signer.public_key().to_hex();
+        let others = active
+            .participants
+            .iter()
+            .filter(|pubkey| **pubkey != me)
+            .count();
+        if others == 0 && active.creator == me {
+            self.end_huddle().await;
+            return;
+        }
+        if let Ok(builder) = crate::protocol::huddle::leave(active.backing) {
+            let signer = runtime.signer.clone();
+            let supervisor = runtime.supervisor.clone();
+            tokio::spawn(async move {
+                if let Ok(event) = signer.sign(builder).await {
+                    let _ = supervisor.publish(event).await;
+                }
+            });
+        }
+        self.status_error = Some("left the huddle; audio devices released".into());
+        self.huddle_dirty = true;
+    }
+
+    async fn end_huddle(&mut self) {
+        let active = self.active_huddle().cloned();
+        let parent = self.current_channel().map(|channel| channel.id);
+        self.stop_huddle_call().await;
+        let (Some(active), Some(parent), Some(runtime)) = (active, parent, &self.runtime) else {
+            return;
+        };
+        let signer = runtime.signer.clone();
+        let supervisor = runtime.supervisor.clone();
+        tokio::spawn(async move {
+            for builder in [
+                crate::protocol::huddle::ended(parent, active.backing),
+                crate::protocol::huddle::archive(active.backing),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if let Ok(event) = signer.sign(builder).await {
+                    let _ = supervisor.publish(event).await;
+                }
+            }
+        });
+        self.status_error = Some("huddle ended".into());
+        self.huddle_dirty = true;
+    }
+
+    /// Serves the broker for this community's hosted agents while the owner
+    /// runtime is unlocked; stops it when the runtime goes away or changes.
+    async fn reconcile_broker(&mut self) {
+        let Some(runtime) = &self.runtime else {
+            if let Some(broker) = self.broker.take() {
+                broker.stop().await;
+            }
+            self.broker_attempted = None;
+            return;
+        };
+        let community = runtime.community_id;
+        if self
+            .broker
+            .as_ref()
+            .is_some_and(|broker| broker.community == community)
+            || self.broker_attempted == Some(community)
+        {
+            return;
+        }
+        if let Some(broker) = self.broker.take() {
+            broker.stop().await;
+        }
+        self.broker_attempted = Some(community);
+        let agents = self
+            .config
+            .hosted_agents
+            .iter()
+            .filter(|agent| {
+                agent.community == community && agent.owner_identity == runtime.identity_id
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let Some(entry) = self
+            .config
+            .communities
+            .iter()
+            .find(|entry| entry.id == community)
+        else {
+            return;
+        };
+        if agents.is_empty() {
+            return;
+        }
+        let Ok(endpoint) = validate_relay_url(&entry.relay_url, entry.allow_insecure_localhost)
+        else {
+            return;
+        };
+        let keys_dir = self.paths.keys_dir();
+        let mut runtimes = HashMap::new();
+        let mut hosted = Vec::new();
+        let mut signers = Vec::new();
+        let mut supervisors = Vec::new();
+        for agent in &agents {
+            let built = async {
+                let signer =
+                    crate::broker::custody::unlock(&keys_dir, &runtime.signer, agent).await?;
+                let auth_tag = crate::broker::relay::auth_tag(&agent.auth_tag)?;
+                // NIP-FI communities: the agent proves itself with its own
+                // owner-authorized grant, never with the owner's session.
+                let evidence = crate::auth::federated::EvidenceSlot::default();
+                if runtime.evidence.is_set()
+                    && let Some(adapter) = &runtime.identity_adapter
+                {
+                    match crate::auth::federated::agent_evidence(
+                        adapter,
+                        &runtime.data_dir,
+                        runtime.identity_id,
+                        &runtime.signer,
+                        &signer,
+                        &agent.auth_tag,
+                    )
+                    .await?
+                    {
+                        Some(source) => evidence.set(source),
+                        None => {
+                            return Err(Error::Auth(
+                                "sign in (:signin) to enroll agents with the identity adapter"
+                                    .into(),
+                            ));
+                        }
+                    }
+                }
+                let http = HttpClient::new(endpoint.http_base.clone(), signer.clone())?
+                    .with_evidence(evidence.clone());
+                let supervisor = SupervisorHandle::spawn_with_evidence(
+                    endpoint.websocket.clone(),
+                    signer.clone(),
+                    self.diagnostics.clone(),
+                    evidence,
+                );
+                Ok::<_, Error>(crate::broker::relay::AgentRuntime {
+                    signer,
+                    http,
+                    supervisor,
+                    owner: runtime.signer.public_key(),
+                    auth_tag,
+                })
+            }
+            .await;
+            match built {
+                Ok(agent_runtime) => {
+                    signers.push(agent_runtime.signer.clone());
+                    supervisors.push(agent_runtime.supervisor.clone());
+                    runtimes.insert(agent.id, agent_runtime);
+                    hosted.push(crate::broker::custody::hosted(agent));
+                }
+                Err(error) => {
+                    self.status_error = Some(format!("agent {} unavailable: {error}", agent.label));
+                }
+            }
+        }
+        let executor =
+            crate::broker::relay::RelayExecutor::new(community, self.store.clone(), runtimes);
+        let host = crate::broker::host::Host::new(std::sync::Arc::new(executor), hosted);
+        let port_file = self.paths.data_dir.join("broker.port");
+        match crate::broker::http::serve(host.clone(), Some(&port_file)).await {
+            Ok(server) => {
+                self.broker = Some(BrokerRuntime {
+                    community,
+                    host,
+                    server,
+                    signers,
+                    supervisors,
+                });
+            }
+            Err(error) => self.status_error = Some(format!("agent broker unavailable: {error}")),
+        }
+    }
+
+    /// Keeps one NIP-AR sync open for the selected channel when the relay
+    /// advertises `artifacts.sync`, and retries after `resync`/`error`.
+    async fn reconcile_artifact_sync(&mut self) -> Result<()> {
+        let Some(runtime) = &self.runtime else {
+            return Ok(());
+        };
+        let community = runtime.community_id;
+        let supervisor = runtime.supervisor.clone();
+        let caps = match self.artifact_caps {
+            Some((owner, caps)) if owner == community => caps,
+            _ => {
+                if self.artifact_caps_requested != Some(community) {
+                    self.artifact_caps_requested = Some(community);
+                    let service = runtime.artifacts.clone();
+                    let tx = self.background_tx.clone();
+                    tokio::spawn(async move {
+                        // An unreadable NIP-11 means "no artifact sync".
+                        let caps = service.capabilities().await.unwrap_or_default();
+                        let _ = tx.send(Background::ArtifactCaps { community, caps }).await;
+                    });
+                }
+                return Ok(());
+            }
+        };
+        let desired = caps
+            .sync
+            .then(|| self.current_channel().map(|channel| channel.id))
+            .flatten();
+        let current = self
+            .artifact_sync
+            .as_ref()
+            .filter(|sync| sync.community == community)
+            .map(|sync| sync.channel);
+        if desired != current {
+            self.artifact_sync = None;
+            match desired {
+                Some(channel) => {
+                    supervisor
+                        .subscribe_with_priority(
+                            ARTIFACT_SYNC_SUBSCRIPTION,
+                            vec![crate::protocol::artifact::sync_filter(channel)],
+                            SubscriptionPriority::Foreground,
+                        )
+                        .await?;
+                    self.artifact_sync = Some(ArtifactSync::new(community, channel));
+                }
+                None if current.is_some() => supervisor.close(ARTIFACT_SYNC_SUBSCRIPTION).await?,
+                None => {}
+            }
+            return Ok(());
+        }
+        if let Some(sync) = &mut self.artifact_sync
+            && !sync.blocked
+            && sync.retry_at.is_some_and(|at| Instant::now() >= at)
+        {
+            sync.retry_at = None;
+            supervisor
+                .subscribe_with_priority(
+                    ARTIFACT_SYNC_SUBSCRIPTION,
+                    vec![crate::protocol::artifact::sync_filter(sync.channel)],
+                    SubscriptionPriority::Foreground,
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_artifact_sync_event(
+        &mut self,
+        subscription: &str,
+        event: &nostr::Event,
+    ) -> Result<bool> {
+        let max_events = self.artifact_caps.map_or(0, |(_, caps)| caps.max_events);
+        let Some(sync) = self
+            .artifact_sync
+            .as_mut()
+            .filter(|_| subscription == ARTIFACT_SYNC_SUBSCRIPTION)
+        else {
+            return Ok(false);
+        };
+        let community = sync.community;
+        match event.kind.as_u16() {
+            crate::protocol::artifact::KIND_ARTIFACT => {
+                let Ok(head) = crate::protocol::artifact::parse(event) else {
+                    return Ok(false);
+                };
+                if !sync.complete {
+                    if sync.buffer.len() >= max_events.max(1) {
+                        // Over the advertised bound: never commit a partial set.
+                        sync.schedule_retry();
+                    } else {
+                        sync.buffer.push(head);
+                    }
+                    return Ok(false);
+                }
+                let changed = self
+                    .store
+                    .call(move |store| store.apply_artifact_head(community, &head))
+                    .await?;
+                if changed {
+                    self.refresh_artifact_panel().await?;
+                }
+                Ok(changed)
+            }
+            crate::protocol::artifact::KIND_ARTIFACT_REMOVAL if sync.complete => {
+                let relay = self
+                    .store
+                    .call(move |store| store.pinned_relay_pubkey(community))
+                    .await?;
+                let Ok(removal) = crate::protocol::artifact::parse_removal(event, relay.as_deref())
+                else {
+                    return Ok(false);
+                };
+                let changed = self
+                    .store
+                    .call(move |store| store.remove_artifact(community, removal.id, removal.source))
+                    .await?;
+                if changed {
+                    self.refresh_artifact_panel().await?;
+                }
+                Ok(changed)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// EOSE: the buffered heads are the complete set at one cut.
+    async fn commit_artifact_sync(&mut self) -> Result<()> {
+        let Some(sync) = &mut self.artifact_sync else {
+            return Ok(());
+        };
+        if sync.complete || sync.retry_at.is_some() {
+            return Ok(());
+        }
+        let (community, channel) = (sync.community, sync.channel);
+        let heads = std::mem::take(&mut sync.buffer);
+        sync.complete = true;
+        sync.failures = 0;
+        self.store
+            .call(move |store| store.replace_channel_artifacts(community, channel, &heads))
+            .await?;
+        self.refresh_artifact_panel().await
+    }
+
+    fn artifact_sync_note(&self, channel: Uuid) -> Option<String> {
+        let caps = self.artifact_caps.map(|(_, caps)| caps)?;
+        if !caps.sync {
+            return Some("this relay has no artifact sync".into());
+        }
+        let sync = self
+            .artifact_sync
+            .as_ref()
+            .filter(|sync| sync.channel == channel)?;
+        Some(
+            if sync.blocked {
+                "artifacts unavailable here"
+            } else if sync.complete {
+                "synced"
+            } else if sync.retry_at.is_some() {
+                "possibly stale · resyncing"
+            } else {
+                "syncing"
+            }
+            .into(),
+        )
+    }
+
+    async fn refresh_artifact_panel(&mut self) -> Result<()> {
+        if self.presentation.overlay != Some(Overlay::Artifacts)
+            && !matches!(
+                self.presentation.confirmation,
+                Some(ConfirmationKind::ArtifactDelete | ConfirmationKind::ArtifactMove)
+            )
+        {
+            return Ok(());
+        }
+        let Some(community) = self.active_community_id() else {
+            return Ok(());
+        };
+        let scope = self.artifact_panel.scope.clone();
+        let pubkey = self.self_pubkey().unwrap_or_default().to_owned();
+        let items = self
+            .store
+            .call(move |store| match scope {
+                crate::ui::artifacts::ArtifactScope::Channel(channel) => {
+                    store.channel_artifacts(community, channel, None)
+                }
+                crate::ui::artifacts::ArtifactScope::Thread(channel, root) => {
+                    store.channel_artifacts(community, channel, Some(&root))
+                }
+                crate::ui::artifacts::ArtifactScope::Assigned => {
+                    store.assigned_artifacts(community, &pubkey)
+                }
+            })
+            .await?;
+        self.artifact_panel.sync_note = match &self.artifact_panel.scope {
+            crate::ui::artifacts::ArtifactScope::Channel(channel)
+            | crate::ui::artifacts::ArtifactScope::Thread(channel, _) => {
+                self.artifact_sync_note(*channel)
+            }
+            crate::ui::artifacts::ArtifactScope::Assigned => None,
+        };
+        self.artifact_panel.set_items(items);
+        self.cache_dirty = true;
+        Ok(())
+    }
+
+    async fn open_artifacts(&mut self, scope: crate::ui::artifacts::ArtifactScope) -> Result<()> {
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some("connect to a community to see artifacts".into());
+            return Ok(());
+        };
+        if scope == crate::ui::artifacts::ArtifactScope::Assigned {
+            let service = runtime.artifacts.clone();
+            let pubkey = runtime.signer.public_key().to_hex();
+            let tx = self.background_tx.clone();
+            self.artifact_panel.loading = true;
+            tokio::spawn(async move {
+                let result = service
+                    .refresh_assigned(&pubkey)
+                    .await
+                    .map(|_| String::new())
+                    .map_err(|error| error.to_string());
+                let _ = tx.send(Background::ArtifactDone(result)).await;
+            });
+        }
+        self.artifact_panel.scope = scope;
+        self.presentation.open_overlay(Overlay::Artifacts);
+        self.refresh_artifact_panel().await
+    }
+
+    async fn artifact_panel_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
+            KeyCode::Up | KeyCode::Char('k') => self.artifact_panel.move_by(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.artifact_panel.move_by(1),
+            KeyCode::Enter => {
+                // Open the artifact's home channel (its "home link").
+                if let Some(home) = self.artifact_panel.selected().map(|item| item.head.home)
+                    && let Some(index) = self.channels.iter().position(|channel| channel.id == home)
+                {
+                    self.presentation.close_overlay();
+                    self.select_channel_index(index);
+                    self.cache_dirty = true;
+                }
+            }
+            KeyCode::Char('d') => {
+                if self
+                    .artifact_panel
+                    .selected()
+                    .is_some_and(|item| !item.head.is_deleted())
+                {
+                    self.presentation
+                        .open_confirmation(ConfirmationKind::ArtifactDelete);
+                }
+            }
+            KeyCode::Char('u') => {
+                if let Some(item) = self
+                    .artifact_panel
+                    .selected()
+                    .filter(|item| item.head.is_deleted())
+                {
+                    let id = item.head.id;
+                    self.spawn_artifact_change(id, crate::protocol::artifact::Change::Restore);
+                }
+            }
+            KeyCode::Char('r') => {
+                self.command = "artifact rename ".into();
+                self.presentation.open_overlay(Overlay::Command);
+            }
+            KeyCode::Char('m') => {
+                self.command = "artifact move #".into();
+                self.presentation.open_overlay(Overlay::Command);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// `:artifact rename <title> | delete | restore | move <#channel>` on the
+    /// panel's selected artifact.
+    async fn artifact_command(&mut self, arguments: &str) -> Result<()> {
+        use crate::protocol::artifact::Change;
+        let Some(item) = self.artifact_panel.selected().cloned() else {
+            self.status_error = Some("open :artifacts or :tasks and select an artifact".into());
+            return Ok(());
+        };
+        let (verb, rest) = arguments.split_once(' ').unwrap_or((arguments, ""));
+        let rest = rest.trim();
+        match verb {
+            "rename" if !rest.is_empty() && !item.head.is_deleted() => {
+                self.spawn_artifact_change(item.head.id, Change::Rename(rest.to_owned()));
+            }
+            "delete" if !item.head.is_deleted() => {
+                self.presentation.open_overlay(Overlay::Artifacts);
+                self.presentation
+                    .open_confirmation(ConfirmationKind::ArtifactDelete);
+                return Ok(());
+            }
+            "restore" if item.head.is_deleted() => {
+                self.spawn_artifact_change(item.head.id, Change::Restore);
+            }
+            "move" if !rest.is_empty() && !item.head.is_deleted() => {
+                let name = rest.trim_start_matches('#');
+                let Some(destination) = self
+                    .channels
+                    .iter()
+                    .find(|channel| channel.is_member && channel.name.eq_ignore_ascii_case(name))
+                    .map(|channel| channel.id)
+                else {
+                    self.status_error = Some(format!("no joined channel named #{name}"));
+                    return Ok(());
+                };
+                if destination == item.head.home {
+                    self.status_error = Some("the artifact already lives there".into());
+                    return Ok(());
+                }
+                self.pending_artifact_move = Some((item.head.id, destination));
+                self.presentation.open_overlay(Overlay::Artifacts);
+                self.presentation
+                    .open_confirmation(ConfirmationKind::ArtifactMove);
+                return Ok(());
+            }
+            _ => {
+                self.status_error = Some(
+                    "usage: :artifact rename <title> | delete | restore | move <#channel> (deleted artifacts can only be restored)".into(),
+                );
+                return Ok(());
+            }
+        }
+        self.presentation.open_overlay(Overlay::Artifacts);
+        self.refresh_artifact_panel().await
+    }
+
+    fn spawn_artifact_change(&mut self, id: Uuid, change: crate::protocol::artifact::Change) {
+        let Some(runtime) = &self.runtime else { return };
+        let service = runtime.artifacts.clone();
+        let tx = self.background_tx.clone();
+        self.artifact_panel.loading = true;
+        tokio::spawn(async move {
+            let result = service
+                .apply(id, change)
+                .await
+                .map(|applied| match applied {
+                    crate::service::artifacts::Applied::Published(_) => "artifact updated".into(),
+                    crate::service::artifacts::Applied::AlreadyCurrent => {
+                        "artifact was already up to date".into()
+                    }
+                })
+                .map_err(|error| format!("artifact not changed: {error}"));
+            let _ = tx.send(Background::ArtifactDone(result)).await;
+        });
+    }
+
+    /// NIP-AR requires showing the destination audience and what is shared.
+    fn artifact_move_preview(&self) -> String {
+        let Some((id, destination)) = self.pending_artifact_move else {
+            return String::new();
+        };
+        let item = self
+            .artifact_panel
+            .items
+            .iter()
+            .find(|item| item.head.id == id);
+        let title = item
+            .and_then(|item| item.head.title.as_deref())
+            .map_or_else(String::new, |title| {
+                crate::protocol::artifact::display(title, 60)
+            });
+        let tags = item.map_or(0, |item| item.head.client_tags().len());
+        let channel = self
+            .channels
+            .iter()
+            .find(|channel| channel.id == destination);
+        let audience = channel.map_or_else(
+            || "unknown audience".to_owned(),
+            |channel| {
+                format!(
+                    "#{} · {} · {} members",
+                    crate::protocol::artifact::display(&channel.name, 40),
+                    format!("{:?}", channel.visibility).to_lowercase(),
+                    channel.member_count
+                )
+            },
+        );
+        format!(
+            "\"{title}\" moves to {audience}. Everyone there can read its title, {tags} tags and content · y move · n/Esc cancel"
+        )
+    }
+
+    /// Hosted agents of the active community, in panel order.
+    fn broker_agent_indexes(&self) -> Vec<usize> {
+        let community = self.active_community_id();
+        self.config
+            .hosted_agents
+            .iter()
+            .enumerate()
+            .filter(|(_, agent)| Some(agent.community) == community)
+            .map(|(index, _)| index)
+            .take(8)
+            .collect()
+    }
+
+    fn broker_select(&mut self, delta: isize) {
+        let count = self.broker_agent_indexes().len();
+        if count > 0 {
+            self.broker_selected = self
+                .broker_selected
+                .saturating_add_signed(delta)
+                .min(count - 1);
+        }
+    }
+
+    /// Owner policy edit from the panel: allow or deny one hosted action for
+    /// the selected agent. Saved, then applied to the running host at once.
+    fn broker_toggle_action(&mut self, index: usize) {
+        let Some(&agent) = self.broker_agent_indexes().get(self.broker_selected) else {
+            return;
+        };
+        let Some(action) = crate::broker::host::hosted_actions().into_iter().nth(index) else {
+            return;
+        };
+        let mut allowed = self.config.hosted_agents[agent].allowed.clone();
+        if let Some(position) = allowed.iter().position(|value| *value == action) {
+            allowed.remove(position);
+        } else {
+            allowed.push(action);
+        }
+        if let Err(error) =
+            crate::broker::custody::set_allowed(&mut self.config.hosted_agents[agent], &allowed)
+        {
+            self.status_error = Some(error.to_string());
+            return;
+        }
+        self.save_broker_policy();
+    }
+
+    fn broker_toggle_paused(&mut self) {
+        let Some(&agent) = self.broker_agent_indexes().get(self.broker_selected) else {
+            return;
+        };
+        let paused = &mut self.config.hosted_agents[agent].paused;
+        *paused = !*paused;
+        self.save_broker_policy();
+    }
+
+    fn save_broker_policy(&mut self) {
+        if let Err(error) = self.config.save(&self.paths) {
+            self.status_error = Some(error.to_string());
+            return;
+        }
+        if let Some(broker) = &self.broker {
+            for agent in &self.config.hosted_agents {
+                broker.host.update_policy(
+                    agent.id,
+                    agent.allowed.iter().cloned().collect(),
+                    agent.paused,
+                );
+            }
+        }
+    }
+
+    fn profile_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                // Closing cancels the lookup: a late answer is discarded.
+                self.profile_card = None;
+                self.presentation.close_overlay();
+            }
+            KeyCode::Char('r') => self.spawn_public_lookup(),
+            _ => {}
+        }
+    }
+
+    /// Open the profile card for `pubkey` and start its public lookup.
+    async fn open_profile(&mut self, pubkey: String) -> Result<()> {
+        let community = self.active_community_id();
+        let profile = match self.profiles.get(&pubkey) {
+            Some(profile) => Some(profile.clone()),
+            None => match community {
+                Some(community) => {
+                    let subject = pubkey.clone();
+                    self.store
+                        .call(move |store| store.profile(community, &subject))
+                        .await?
+                }
+                None => None,
+            },
+        };
+        let mut card = crate::ui::profile::ProfileCard::new(pubkey.clone(), profile);
+        card.stale = community
+            .and_then(|community| self.public_lookup_cache.get(&(community, pubkey)).cloned());
+        self.profile_card = Some(card);
+        self.presentation.open_overlay(Overlay::Profile);
+        self.spawn_public_lookup();
+        Ok(())
+    }
+
+    fn spawn_public_lookup(&mut self) {
+        use crate::ui::profile::PublicChannels;
+        let now = crate::clock::WallClock::now_unix(&crate::clock::SystemClock);
+        let Some(card) = self.profile_card.as_mut() else {
+            return;
+        };
+        let Some(runtime) = &self.runtime else {
+            card.public = PublicChannels::Locked;
+            return;
+        };
+        // Respect the relay's retry delay and back off capability probes.
+        if let Some(&(until, rate_limited)) = self.public_lookup_backoff.get(&runtime.community_id)
+            && now < until
+        {
+            card.public = if rate_limited {
+                PublicChannels::RateLimited(until - now)
+            } else {
+                PublicChannels::Unsupported
+            };
+            return;
+        }
+        self.profile_generation = self.profile_generation.wrapping_add(1);
+        let generation = self.profile_generation;
+        card.outstanding = Some(generation);
+        card.public = PublicChannels::Loading;
+        let service = runtime.profiles.clone();
+        let community = runtime.community_id;
+        let subject = card.pubkey.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = service
+                .public_memberships(&subject)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = tx
+                .send(Background::PublicMemberships {
+                    community,
+                    subject,
+                    generation,
+                    result,
+                })
+                .await;
+        });
+    }
+
+    fn apply_public_lookup(
+        &mut self,
+        community: Uuid,
+        subject: &str,
+        generation: u64,
+        result: std::result::Result<crate::protocol::membership_public::Lookup, String>,
+    ) {
+        use crate::{protocol::membership_public::Lookup, ui::profile::PublicChannels};
+        let now = crate::clock::WallClock::now_unix(&crate::clock::SystemClock);
+        // Backoff state follows the relay, whether or not the card is open.
+        match &result {
+            Ok(Lookup::Unsupported) => {
+                self.public_lookup_backoff
+                    .insert(community, (now.saturating_add(600), false));
+            }
+            Ok(Lookup::RateLimited(seconds)) => {
+                let jitter = u64::from(rand::random::<u16>()) % (seconds / 4 + 2);
+                self.public_lookup_backoff.insert(
+                    community,
+                    (now.saturating_add(*seconds).saturating_add(jitter), true),
+                );
+            }
+            _ => {}
+        }
+        if let Ok(Lookup::Verified(verified)) = &result {
+            // A verified list for this community and subject replaces the
+            // cached display list; it is never membership authority.
+            self.public_lookup_cache.insert(
+                (community, subject.to_owned()),
+                verified.memberships.clone(),
+            );
+        }
+        let active = self.active_community_id();
+        let Some(card) = self.profile_card.as_mut() else {
+            return;
+        };
+        // Canceled, superseded or foreign answers never replace current data.
+        if active != Some(community)
+            || card.pubkey != subject
+            || card.outstanding != Some(generation)
+        {
+            return;
+        }
+        card.outstanding = None;
+        card.public = match result {
+            Ok(Lookup::Verified(verified)) => {
+                card.stale = None;
+                PublicChannels::Verified(verified.memberships)
+            }
+            Ok(Lookup::Unsupported) => PublicChannels::Unsupported,
+            Ok(Lookup::RateLimited(seconds)) => PublicChannels::RateLimited(seconds),
+            Err(_) => PublicChannels::Failed,
+        };
+    }
+
+    fn spawn_thread_window(
+        &mut self,
+        root: String,
+        cursor: Option<crate::protocol::window::Cursor>,
+    ) {
+        if self.thread_window_loading {
+            return;
+        }
+        let (Some(runtime), Some(channel)) = (
+            &self.runtime,
+            self.current_channel().map(|channel| channel.id),
+        ) else {
+            return;
+        };
+        let Some(host) = runtime.channels.relay_host() else {
+            return;
+        };
+        self.thread_window_loading = true;
+        let service = runtime.channels.clone();
+        let community = runtime.community_id;
+        let reader = runtime.signer.public_key().to_hex();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let request = crate::protocol::window::ThreadRequest {
+                host: &host,
+                reader: &reader,
+                channel,
+                root: &root,
+                limit: crate::sync::window::THREAD_PAGE,
+                depth: 100,
+                include_aux: true,
+                cursor: cursor.as_ref(),
+            };
+            let result = service.thread_page(&request).await;
+            let message = match result {
+                Ok(page) => Background::ThreadWindow {
+                    community,
+                    root: root.clone(),
+                    supported: page.is_some(),
+                    next: page.and_then(|page| page.next),
+                },
+                // A failed page (timeout, 503, changed access) keeps the local
+                // archive and never downgrades to another protocol mode.
+                Err(_) => Background::ThreadWindow {
+                    community,
+                    root: root.clone(),
+                    supported: false,
+                    next: None,
+                },
+            };
+            let _ = tx.send(message).await;
+        });
     }
 
     fn move_to_edge(&mut self, last: bool) {
@@ -3035,11 +5166,16 @@ impl App {
             return Ok(());
         }
         if let Some(message) = self.selected_message() {
+            // A "sent from thread" copy opens the thread it came from.
             let root = message
-                .root_event_id
-                .clone()
+                .sent_from_thread
+                .as_ref()
+                .map(|reference| reference.root_event_id.clone())
+                .or_else(|| message.root_event_id.clone())
                 .unwrap_or_else(|| message.event_id.clone());
-            self.thread_root = Some(root);
+            self.thread_root = Some(root.clone());
+            self.thread_window = None;
+            self.spawn_thread_window(root, None);
             self.presentation.set_workspace_focus(FocusSurface::Context);
             self.cache_dirty = true;
             self.hydrate_cache().await?;
@@ -3069,6 +5205,15 @@ impl App {
         root: Option<String>,
         parent: Option<String>,
     ) -> Result<()> {
+        if let Some(reason) = self
+            .channels
+            .iter()
+            .find(|value| value.id == channel)
+            .and_then(Channel::read_only_reason)
+        {
+            self.status_error = Some(reason.notice().into());
+            return Ok(());
+        }
         if self.runtime.is_none() {
             self.status_error = Some(
                 "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
@@ -3182,6 +5327,20 @@ impl App {
                     self.status_error = Some("attachment processing is not ready to send".into());
                 } else if !self.composer.sendable() && !self.composer.attachments.is_empty() {
                     self.status_error = Some("wait for every attachment to become ready".into());
+                } else if let Some(reason) = self
+                    .presentation
+                    .composer_target
+                    .as_ref()
+                    .and_then(|target| {
+                        self.channels
+                            .iter()
+                            .find(|value| value.id == target.channel_id)
+                    })
+                    .and_then(Channel::read_only_reason)
+                {
+                    // The role or channel settings changed while composing:
+                    // keep the draft, refuse locally, let the user decide.
+                    self.status_error = Some(reason.notice().into());
                 } else if self.composer.sendable() {
                     let Some(prepared_target) = self.presentation.composer_target.clone() else {
                         return Ok(());
@@ -3414,10 +5573,14 @@ impl App {
         };
         let query = self.composer.body[range.start + 1..range.end].to_owned();
         let lookup = query.clone();
-        let candidates = self
+        let mut candidates = self
             .store
             .call(move |store| store.mention_candidates(community, channel, &self_pubkey, &lookup))
             .await?;
+        let now = crate::clock::SystemClock.now_unix();
+        for candidate in &mut candidates {
+            candidate.presence = Some(self.presence.get(&candidate.pubkey, now));
+        }
         self.mention_picker = Some(MentionPicker::new(range, query, candidates));
         Ok(())
     }
@@ -4039,6 +6202,11 @@ impl App {
         self.cache_dirty = true;
     }
     fn send_reaction(&mut self) {
+        if let Some(reason) = self.current_channel().and_then(Channel::read_only_reason) {
+            self.status_error = Some(reason.notice().into());
+            self.presentation.close_overlay();
+            return;
+        }
         let Some(runtime) = &self.runtime else { return };
         let Some(message) = self.selected_message() else {
             return;
@@ -4071,6 +6239,257 @@ impl App {
         });
         self.presentation.close_overlay();
     }
+    fn refresh_reaction_candidates(&mut self) {
+        let Some(query) = self.reaction_query.clone() else {
+            return;
+        };
+        self.reaction_candidates = crate::protocol::emoji::matches(&self.emoji_palette, &query, 8);
+        self.reaction_candidate = 0;
+        // NIP-CE prefix search over the relay index (at most 50 hits, as the
+        // spec asks); the relay skips prefixes shorter than three characters.
+        if query.chars().count() < 3 {
+            return;
+        }
+        let Some(runtime) = &self.runtime else { return };
+        let (http, community, store, tx) = (
+            runtime.http.clone(),
+            runtime.community_id,
+            self.store.clone(),
+            self.background_tx.clone(),
+        );
+        tokio::spawn(async move {
+            let Ok(events) = http
+                .query(&[crate::protocol::types::QueryFilter {
+                    kinds: vec![u32::from(crate::protocol::emoji::KIND_EMOJI_ENTRY)],
+                    search: Some(query.clone()),
+                    search_mode: Some(crate::protocol::types::SearchMode::Prefix),
+                    limit: Some(50),
+                    ..crate::protocol::types::QueryFilter::default()
+                }])
+                .await
+            else {
+                return;
+            };
+            let found = events
+                .iter()
+                .filter(|event| crate::protocol::events::verify(event).is_ok())
+                .flat_map(crate::protocol::emoji::contributions)
+                .map(|contribution| contribution.emoji)
+                .collect::<Vec<_>>();
+            let _ = store
+                .call(move |store| {
+                    for event in events {
+                        let _ = store.apply_event(community, &event);
+                    }
+                    Ok(())
+                })
+                .await;
+            let _ = tx.send(Background::EmojiSearch { query, found }).await;
+        });
+    }
+
+    fn send_custom_reaction(&mut self) {
+        if let Some(reason) = self.current_channel().and_then(Channel::read_only_reason) {
+            self.status_error = Some(reason.notice().into());
+            self.presentation.close_overlay();
+            return;
+        }
+        let Some(emoji) = self
+            .reaction_candidates
+            .get(self.reaction_candidate)
+            .cloned()
+        else {
+            return;
+        };
+        let (Some(runtime), Some(message)) = (&self.runtime, self.selected_message()) else {
+            return;
+        };
+        let service = runtime.messages.clone();
+        let target = message.event_id.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = service
+                .react_custom(&target, &emoji.shortcode, &emoji.url)
+                .await;
+            let _ = tx
+                .send(match result {
+                    Ok(_) => Background::Changed,
+                    Err(error) => Background::Failed(error.to_string()),
+                })
+                .await;
+        });
+        self.reaction_query = None;
+        self.reaction_candidates.clear();
+        self.presentation.close_overlay();
+    }
+
+    /// `:presence [on|off]`. Off is the default; turning it off after a
+    /// publish sends `offline` once, so others do not see a stale dot.
+    async fn presence_command(&mut self, argument: &str) -> Result<()> {
+        let enable = match argument {
+            "" => None,
+            "on" => Some(true),
+            "off" => Some(false),
+            _ => {
+                self.status_error = Some("usage: :presence [on|off]".into());
+                return Ok(());
+            }
+        };
+        if let Some(enable) = enable
+            && enable != self.config.ui.publish_presence
+        {
+            self.config.ui.publish_presence = enable;
+            self.config.save(&self.paths)?;
+            if enable {
+                self.maybe_publish_presence().await;
+            } else if self.last_presence_publish.take().is_some()
+                && let Some(runtime) = &self.runtime
+            {
+                publish_offline(runtime).await;
+            }
+        }
+        self.status_error = Some(
+            if self.config.ui.publish_presence {
+                "presence: on · online while active, away after inactivity, offline on exit"
+            } else {
+                "presence: off · nothing is published"
+            }
+            .into(),
+        );
+        Ok(())
+    }
+
+    fn set_status(&mut self, arguments: &str) {
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some(
+                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
+            );
+            return;
+        };
+        let now = crate::clock::SystemClock.now_unix();
+        let (text, expires) = if arguments == "clear" {
+            (String::new(), None)
+        } else if let Some(rest) = arguments.strip_prefix("--expires ") {
+            let (expiry, text) = rest.split_once(' ').unwrap_or((rest, ""));
+            match crate::protocol::presence::parse_expiry(expiry, now) {
+                Some(at) => (text.trim().to_owned(), Some(at)),
+                None => {
+                    self.status_error =
+                        Some("usage: :status [--expires <unix|N[smhdw]>] <text> | clear".into());
+                    return;
+                }
+            }
+        } else {
+            (arguments.to_owned(), None)
+        };
+        let builder = match buzz_sdk::build_user_status_expiring(&text, None, expires) {
+            Ok(builder) => builder,
+            Err(error) => {
+                self.status_error = Some(error.to_string());
+                return;
+            }
+        };
+        let service = runtime.messages.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = service.publish_builder(builder).await;
+            let _ = tx
+                .send(match result {
+                    Ok(_) => Background::Notice(if text.is_empty() {
+                        "status cleared".into()
+                    } else {
+                        "status updated".into()
+                    }),
+                    Err(error) => Background::Failed(error.to_string()),
+                })
+                .await;
+        });
+    }
+
+    fn send_pending_report(&mut self) {
+        let Some((reason, note, author_only)) = self.pending_report.take() else {
+            return;
+        };
+        let Some(runtime) = &self.runtime else { return };
+        let Some(message) = self.selected_message() else {
+            return;
+        };
+        let service = runtime.messages.clone();
+        let (target, author) = (message.event_id.clone(), message.pubkey.clone());
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let result = service
+                .report(
+                    (!author_only).then_some(target.as_str()),
+                    &author,
+                    &reason,
+                    note.as_deref(),
+                )
+                .await;
+            let _ = tx
+                .send(match result {
+                    Ok(_) => Background::Notice("report sent to the moderators".into()),
+                    Err(error) => Background::Failed(error.to_string()),
+                })
+                .await;
+        });
+    }
+
+    /// `:tochannel`: send the open thread's draft to the channel as a new
+    /// top-level message that points back at the thread.
+    fn send_draft_to_channel(&mut self) {
+        let Some(runtime) = &self.runtime else { return };
+        let (Some(root), Some(channel)) = (
+            self.thread_root.clone(),
+            self.current_channel().map(|channel| channel.id),
+        ) else {
+            self.status_error = Some("open a thread to send its draft to the channel".into());
+            return;
+        };
+        if let Some(reason) = self.current_channel().and_then(Channel::read_only_reason) {
+            self.status_error = Some(reason.notice().into());
+            return;
+        }
+        let root_message = self
+            .thread_messages
+            .iter()
+            .find(|message| message.event_id == root)
+            .cloned();
+        let root_message = match send_to_channel_root(root_message, channel) {
+            Ok(message) => message,
+            Err(reason) => {
+                self.status_error = Some(reason.into());
+                return;
+            }
+        };
+        let content = self.composer.body.trim().to_owned();
+        if content.is_empty() {
+            self.status_error = Some("write the message in the thread composer first".into());
+            return;
+        }
+        let mentions = self
+            .composer
+            .mentions()
+            .iter()
+            .map(|mention| mention.pubkey.clone())
+            .collect::<Vec<_>>();
+        let service = runtime.messages.clone();
+        let tx = self.background_tx.clone();
+        // The thread draft stays until the user clears it; the channel copy
+        // goes through the same acknowledgement-aware outbox as any send.
+        tokio::spawn(async move {
+            let result = service
+                .send_to_channel(channel, &root, &root_message.content, &content, &mentions)
+                .await;
+            let _ = tx
+                .send(match result {
+                    Ok(_) => Background::Notice("sent to the channel".into()),
+                    Err(error) => Background::Failed(error.to_string()),
+                })
+                .await;
+        });
+    }
+
     fn delete_selected(&mut self) {
         let Some(runtime) = &self.runtime else { return };
         let Some(channel) = self.current_channel().map(|channel| channel.id) else {
@@ -4089,6 +6508,248 @@ impl App {
                 .send(match result {
                     Ok(_) => Background::Changed,
                     Err(error) => Background::Failed(error.to_string()),
+                })
+                .await;
+        });
+    }
+
+    /// Fill each visible message's emoji from the palette (its own tags win),
+    /// and look up still-unknown shortcodes once, batched by NIP-CE `#d`.
+    async fn resolve_custom_emoji(&mut self, community: Uuid) -> Result<()> {
+        self.emoji_palette = self
+            .store
+            .call(move |store| store.emoji_palette(community))
+            .await?;
+        let mut unknown = Vec::new();
+        for message in self
+            .messages
+            .iter_mut()
+            .chain(self.thread_messages.iter_mut())
+        {
+            if !message.content.contains(':') {
+                continue;
+            }
+            for shortcode in crate::protocol::emoji::scan_shortcodes(&message.content) {
+                if message
+                    .emoji
+                    .iter()
+                    .any(|emoji| emoji.shortcode == shortcode)
+                {
+                    continue;
+                }
+                match self.emoji_palette.get(&shortcode) {
+                    Some(url) => message.emoji.push(crate::protocol::emoji::Emoji {
+                        shortcode,
+                        url: url.clone(),
+                    }),
+                    None => unknown.push(shortcode),
+                }
+            }
+        }
+        unknown.retain(|shortcode| {
+            self.emoji_lookups.len() < 4096 && self.emoji_lookups.insert(shortcode.clone())
+        });
+        if unknown.is_empty() {
+            return Ok(());
+        }
+        let Some(runtime) = &self.runtime else {
+            return Ok(());
+        };
+        let http = runtime.http.clone();
+        let store = self.store.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let mut changed = false;
+            for chunk in unknown.chunks(crate::protocol::emoji::MAX_LOOKUP_NAMES) {
+                let Ok(events) = http
+                    .query(&[crate::protocol::types::QueryFilter {
+                        kinds: vec![u32::from(crate::protocol::emoji::KIND_EMOJI_ENTRY)],
+                        limit: Some(u32::try_from(chunk.len() * 4).unwrap_or(200)),
+                        ..crate::protocol::types::QueryFilter::default()
+                    }
+                    .tag("d", chunk.to_vec())])
+                    .await
+                else {
+                    return;
+                };
+                let applied = store
+                    .call(move |store| {
+                        let mut any = false;
+                        for event in events {
+                            any |= store.apply_event(community, &event).unwrap_or(false);
+                        }
+                        Ok(any)
+                    })
+                    .await
+                    .unwrap_or(false);
+                changed |= applied;
+            }
+            if changed {
+                let _ = tx.send(Background::Changed).await;
+            }
+        });
+        Ok(())
+    }
+
+    /// People whose presence is visible now: DM participants and recent
+    /// authors, bounded.
+    fn presence_subjects(&self) -> Vec<String> {
+        let mut subjects = std::collections::BTreeSet::new();
+        for message in self.messages.iter().rev().take(200) {
+            subjects.insert(message.pubkey.clone());
+        }
+        for agent in self.agents.values() {
+            subjects.insert(agent.pubkey.clone());
+        }
+        subjects.into_iter().take(100).collect()
+    }
+
+    fn spawn_presence_snapshot(&mut self) {
+        let Some(runtime) = &self.runtime else { return };
+        let asked = self.presence_subjects();
+        if asked.is_empty() {
+            return;
+        }
+        let http = runtime.http.clone();
+        let community = runtime.community_id;
+        let store = self.store.clone();
+        let tx = self.background_tx.clone();
+        tokio::spawn(async move {
+            let relay = store
+                .call(move |store| store.pinned_relay_pubkey(community))
+                .await
+                .ok()
+                .flatten();
+            let Ok(events) = http
+                .query(&[crate::protocol::types::QueryFilter {
+                    kinds: vec![u32::from(crate::protocol::presence::KIND_PRESENCE)],
+                    authors: asked.clone(),
+                    limit: Some(u32::try_from(asked.len()).unwrap_or(100)),
+                    ..crate::protocol::types::QueryFilter::default()
+                }])
+                .await
+            else {
+                return;
+            };
+            let observations = events
+                .iter()
+                .filter(|event| crate::protocol::events::verify(event).is_ok())
+                .filter(|event| relay.as_deref() == Some(event.pubkey.to_hex().as_str()))
+                .filter_map(|event| {
+                    crate::protocol::presence::observe(event, relay.as_deref(), |_| None)
+                })
+                .collect();
+            let _ = tx
+                .send(Background::PresenceSnapshot {
+                    community,
+                    asked,
+                    observations,
+                })
+                .await;
+        });
+    }
+
+    /// Opt-in own presence: online while active, away after inactivity,
+    /// heartbeat within the relay TTL, maintenance priority.
+    async fn maybe_publish_presence(&mut self) {
+        if !self.config.ui.publish_presence {
+            return;
+        }
+        let Some(runtime) = &self.runtime else { return };
+        let wanted = if self.last_input_at.elapsed()
+            >= Duration::from_secs(crate::protocol::presence::AWAY_AFTER_SECONDS)
+        {
+            crate::protocol::presence::Presence::Away
+        } else {
+            crate::protocol::presence::Presence::Online
+        };
+        let due = self.last_presence_publish.is_none_or(|(at, last)| {
+            last != wanted
+                || at.elapsed() >= Duration::from_secs(crate::protocol::presence::HEARTBEAT_SECONDS)
+        });
+        if !due {
+            return;
+        }
+        self.last_presence_publish = Some((Instant::now(), wanted));
+        publish_presence(runtime, wanted);
+        let agents = self.hosted_agent_pubkeys();
+        if self.config.ui.broker_agent_presence && !agents.is_empty() {
+            publish_agent_presence(runtime, wanted, agents);
+        }
+    }
+
+    /// Hosted agents the broker is serving right now.
+    fn hosted_agent_pubkeys(&self) -> Vec<String> {
+        let Some(broker) = &self.broker else {
+            return Vec::new();
+        };
+        self.config
+            .hosted_agents
+            .iter()
+            .filter(|agent| agent.community == broker.community && !agent.paused)
+            .map(|agent| agent.pubkey.clone())
+            .collect()
+    }
+
+    async fn begin_federated_sign_in(&mut self) {
+        self.presentation.close_overlay();
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some(
+                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
+            );
+            return;
+        };
+        let Some(adapter) = runtime.identity_adapter.clone() else {
+            self.status_error =
+                Some("set identity_adapter for this community to use federated sign-in".into());
+            return;
+        };
+        let client = match crate::auth::federated::AdapterClient::new(adapter) {
+            Ok(client) => client,
+            Err(error) => {
+                self.status_error = Some(error.to_string());
+                return;
+            }
+        };
+        let pending = match client.begin_login().await {
+            Ok(pending) => pending,
+            Err(error) => {
+                self.status_error = Some(error.to_string());
+                return;
+            }
+        };
+        open_in_browser(&pending.url);
+        // The login URL carries only the S256 challenge, never a secret.
+        self.status_error = Some(format!(
+            "federated sign-in: finish in your browser · {}",
+            pending.url
+        ));
+        let tx = self.background_tx.clone();
+        let signer = runtime.signer.clone();
+        let evidence = runtime.evidence.clone();
+        let store = crate::auth::federated::SessionStore::new(&runtime.data_dir);
+        let identity = runtime.identity_id;
+        tokio::spawn(async move {
+            let outcome = async {
+                let session = client
+                    .complete_login(pending, std::time::Duration::from_secs(300))
+                    .await?;
+                store
+                    .save(identity, &client.origin(), &session, &signer)
+                    .await?;
+                evidence.set(crate::auth::federated::AdapterEvidence::new(
+                    client,
+                    session,
+                    signer,
+                    crate::clock::system(),
+                ));
+                Ok::<_, Error>(())
+            }
+            .await;
+            let _ = tx
+                .send(match outcome {
+                    Ok(()) => Background::FederatedReady,
+                    Err(error) => Background::Notice(error.to_string()),
                 })
                 .await;
         });
@@ -5034,7 +7695,18 @@ impl App {
     async fn execute_command(&mut self) -> Result<()> {
         match crate::ui::command::parse(&self.command) {
             crate::ui::command::Command::Lock => {
+                // Nothing is served while bzz is locked.
+                if let Some(broker) = self.broker.take() {
+                    broker.stop().await;
+                }
+                // No audio runs while bzz is locked.
+                self.stop_huddle_call().await;
                 if let Some(runtime) = self.runtime.take() {
+                    if self.config.ui.publish_presence
+                        && self.last_presence_publish.take().is_some()
+                    {
+                        publish_offline(&runtime).await;
+                    }
                     runtime.supervisor.shutdown().await;
                     runtime.signer.lock().await;
                 }
@@ -5071,6 +7743,89 @@ impl App {
                     "media renderer reloaded: {}",
                     self.media.protocol_name()
                 ));
+            }
+            crate::ui::command::Command::SignIn => self.begin_federated_sign_in().await,
+            crate::ui::command::Command::ToChannel => self.send_draft_to_channel(),
+            crate::ui::command::Command::Status(arguments) => self.set_status(&arguments),
+            crate::ui::command::Command::Presence(argument) => {
+                return self.presence_command(&argument).await;
+            }
+            crate::ui::command::Command::Artifacts => {
+                let scope = match (
+                    self.current_channel().map(|channel| channel.id),
+                    self.thread_root.clone(),
+                ) {
+                    (Some(channel), Some(root)) => {
+                        crate::ui::artifacts::ArtifactScope::Thread(channel, root)
+                    }
+                    (Some(channel), None) => crate::ui::artifacts::ArtifactScope::Channel(channel),
+                    (None, _) => {
+                        self.status_error = Some("select a channel to see its artifacts".into());
+                        return Ok(());
+                    }
+                };
+                return self.open_artifacts(scope).await;
+            }
+            crate::ui::command::Command::Huddle(arguments) => {
+                return self.huddle_command(&arguments).await;
+            }
+            crate::ui::command::Command::Profile(argument) => {
+                let pubkey = if argument.is_empty() {
+                    self.selected_message()
+                        .map(|message| message.pubkey.clone())
+                } else {
+                    nostr::PublicKey::parse(&argument)
+                        .ok()
+                        .map(|key| key.to_hex())
+                };
+                match pubkey {
+                    Some(pubkey) => return self.open_profile(pubkey).await,
+                    None => {
+                        self.status_error = Some(
+                            "usage: :profile (selected message author) or :profile <npub|hex>"
+                                .into(),
+                        );
+                    }
+                }
+            }
+            crate::ui::command::Command::Broker => {
+                self.presentation.open_overlay(Overlay::Broker);
+            }
+            crate::ui::command::Command::Tasks => {
+                return self
+                    .open_artifacts(crate::ui::artifacts::ArtifactScope::Assigned)
+                    .await;
+            }
+            crate::ui::command::Command::Artifact(arguments) => {
+                return self.artifact_command(&arguments).await;
+            }
+            crate::ui::command::Command::Report(arguments) => {
+                // `:report author <reason> [note]` reports the selected
+                // message's author as a user instead of the message.
+                let (author_only, arguments) = match arguments.strip_prefix("author") {
+                    Some(rest) if rest.is_empty() || rest.starts_with(' ') => (true, rest.trim()),
+                    _ => (false, arguments.as_str()),
+                };
+                let mut parts = arguments.splitn(2, ' ');
+                let reason = parts.next().unwrap_or_default().to_owned();
+                let note = parts.next().map(str::trim).filter(|note| !note.is_empty());
+                if !buzz_sdk::REPORT_TYPES.contains(&reason.as_str()) {
+                    self.status_error = Some(format!(
+                        "usage: :report [author] <{}> [note]",
+                        buzz_sdk::REPORT_TYPES.join("|")
+                    ));
+                } else if self.runtime.is_none() || self.selected_message().is_none() {
+                    self.status_error = Some("select a message to report".into());
+                } else {
+                    self.pending_report = Some((reason, note.map(str::to_owned), author_only));
+                    self.presentation
+                        .open_confirmation(ConfirmationKind::Report);
+                    return Ok(());
+                }
+            }
+            crate::ui::command::Command::System => {
+                self.show_system_channels = !self.show_system_channels;
+                self.presentation.close_overlay();
             }
             crate::ui::command::Command::Inbox => self.open_inbox(),
             crate::ui::command::Command::Search => self.open_search(),
@@ -5239,6 +7994,7 @@ impl App {
             &self.channels,
             &self.unread_channels(),
             self.config.ui.channel_sort,
+            self.show_system_channels,
         )
     }
 
@@ -5352,10 +8108,14 @@ impl App {
     }
 
     async fn shutdown(&mut self) {
+        self.stop_huddle_call().await;
         self.agent_typing.clear();
         self.typing_subscription_channel = None;
         self.closed_typing_channel = None;
         if let Some(runtime) = self.runtime.take() {
+            if self.config.ui.publish_presence && self.last_presence_publish.is_some() {
+                publish_offline(&runtime).await;
+            }
             let _ = tokio::time::timeout(
                 Duration::from_secs(3),
                 outbox::flush_with_diagnostics(
@@ -5483,6 +8243,10 @@ impl App {
                 &self.channel_viewport,
                 &self.unread_channels(),
                 self.config.ui.channel_sort,
+                self.show_system_channels,
+                &self.dm_presence,
+                self.active_huddle()
+                    .and(self.current_channel().map(|channel| channel.id)),
                 &self.theme,
                 self.presentation.focus == FocusSurface::Channels,
             );
@@ -5681,28 +8445,38 @@ impl App {
     }
 
     fn render_empty(&self, frame: &mut Frame<'_>, area: Rect) {
-        frame.render_widget(
-            Paragraph::new(Text::from(vec![
-                Line::styled(
-                    "Welcome to bzz",
-                    self.theme.style(HighlightGroup::CommunitySelected),
-                ),
-                Line::default(),
-                Line::from("No communities are configured."),
-                Line::from("Run bzz identity new, then bzz community add."),
-                Line::default(),
-                Line::from("? help · q quit"),
-            ]))
-            .style(self.theme.style(HighlightGroup::Normal))
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::bordered()
-                    .border_type(self.theme.border_type(BorderSurface::Pane))
-                    .border_style(self.theme.style(HighlightGroup::PaneBorder))
-                    .title_style(self.theme.style(HighlightGroup::PaneTitle))
-                    .title(" bzz "),
+        let mut lines = vec![
+            Line::styled(
+                "Welcome to bzz",
+                self.theme.style(HighlightGroup::CommunitySelected),
             ),
+            Line::default(),
+            Line::from("No communities are configured."),
+            Line::from("Run bzz identity new, then bzz community add."),
+            Line::default(),
+            Line::from("? help · q quit"),
+        ];
+        // Without a workspace there is no status bar: command feedback
+        // (`:huddle`, `:presence`, ...) is shown here instead.
+        if let Some(notice) = &self.status_error {
+            lines.push(Line::default());
+            lines.push(Line::styled(
+                sanitize::single_line(notice),
+                self.theme.style(HighlightGroup::Muted),
+            ));
+        }
+        frame.render_widget(
+            Paragraph::new(Text::from(lines))
+                .style(self.theme.style(HighlightGroup::Normal))
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::bordered()
+                        .border_type(self.theme.border_type(BorderSurface::Pane))
+                        .border_style(self.theme.style(HighlightGroup::PaneBorder))
+                        .title_style(self.theme.style(HighlightGroup::PaneTitle))
+                        .title(" bzz "),
+                ),
             area,
         );
     }
@@ -5851,6 +8625,13 @@ impl App {
                 HighlightGroup::ComposerBorder,
                 HighlightGroup::ComposerHint,
             )
+        } else if let Some(reason) = self.current_channel().and_then(Channel::read_only_reason) {
+            (
+                format!(" {target} "),
+                reason.notice().into(),
+                HighlightGroup::ComposerBorder,
+                HighlightGroup::ComposerDisabled,
+            )
         } else if self.runtime.is_none() {
             (
                 format!(" {target} "),
@@ -5934,6 +8715,10 @@ impl App {
             Some(Overlay::Search) => "SEARCH",
             Some(Overlay::DmPicker) => "DM",
             Some(Overlay::Agents) => "AGENTS",
+            Some(Overlay::Artifacts) => "ARTIFACTS",
+            Some(Overlay::Broker) => "BROKER",
+            Some(Overlay::Profile) => "PROFILE",
+            Some(Overlay::Huddle) => "HUDDLE",
             Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) | None
                 if self.presentation.composer_target.is_some() =>
             {
@@ -5961,7 +8746,18 @@ impl App {
                 .map(sanitize::single_line)
                 .unwrap_or_default()
         });
-        let activity = self.visible_agent_typing_line(area.width);
+        let huddle_line = self.active_huddle().map(|active| {
+            let call = match self.huddle_call_state() {
+                Some(true) => " · you: muted",
+                Some(false) => " · you: LIVE",
+                None => "",
+            };
+            format!(
+                "🎧 huddle · {} in it{call} · :huddle",
+                active.participants.len()
+            )
+        });
+        let activity = self.visible_agent_typing_line(area.width).or(huddle_line);
         crate::ui::status::render(
             frame,
             area,
@@ -6044,6 +8840,25 @@ impl App {
                     " delete message? ",
                     "Press y to delete or n/Esc to cancel",
                 ),
+                Some(ConfirmationKind::Report) => self.render_prompt(
+                    frame,
+                    area,
+                    if self
+                        .pending_report
+                        .as_ref()
+                        .is_some_and(|(_, _, author_only)| *author_only)
+                    {
+                        " report this author to moderators? "
+                    } else {
+                        " report message to moderators? "
+                    },
+                    &format!(
+                        "Reason: {} · press y to report or n/Esc to cancel",
+                        self.pending_report
+                            .as_ref()
+                            .map_or("", |(reason, _, _)| reason.as_str())
+                    ),
+                ),
                 Some(ConfirmationKind::InboxRead) => self.render_prompt(
                     frame,
                     area,
@@ -6053,6 +8868,40 @@ impl App {
                         self.pending_inbox_read.len()
                     ),
                 ),
+                Some(ConfirmationKind::ArtifactDelete) => self.render_prompt(
+                    frame,
+                    area,
+                    " delete artifact? ",
+                    &format!(
+                        "\"{}\" leaves every current view and can be restored · y delete · n/Esc cancel",
+                        self.artifact_panel
+                            .selected()
+                            .and_then(|item| item.head.title.clone())
+                            .unwrap_or_default()
+                    ),
+                ),
+                Some(ConfirmationKind::HuddleStart) => self.render_prompt(
+                    frame,
+                    area,
+                    " start a huddle? ",
+                    "Everyone in this channel can see it and join · you join muted · y start · n/Esc cancel",
+                ),
+                Some(ConfirmationKind::HuddleJoin) => self.render_prompt(
+                    frame,
+                    area,
+                    " join the huddle? ",
+                    "bzz opens your microphone and speaker; you start muted · y join · n/Esc cancel",
+                ),
+                Some(ConfirmationKind::HuddleEnd) => self.render_prompt(
+                    frame,
+                    area,
+                    " end the huddle for everyone? ",
+                    "Everyone is disconnected · y end · n/Esc cancel",
+                ),
+                Some(ConfirmationKind::ArtifactMove) => {
+                    let detail = self.artifact_move_preview();
+                    self.render_prompt(frame, area, " move artifact? ", &detail)
+                }
                 Some(ConfirmationKind::ClearDraft) => self.render_prompt(
                     frame,
                     area,
@@ -6083,10 +8932,35 @@ impl App {
                         HitTarget::Reaction(index),
                     );
                 }
+                if let Some(query) = &self.reaction_query {
+                    let list = if self.reaction_candidates.is_empty() {
+                        "no matching custom emoji".to_owned()
+                    } else {
+                        self.reaction_candidates
+                            .iter()
+                            .enumerate()
+                            .map(|(index, emoji)| {
+                                if index == self.reaction_candidate {
+                                    format!("[:{}:]", emoji.shortcode)
+                                } else {
+                                    format!(":{}:", emoji.shortcode)
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("  ")
+                    };
+                    self.render_prompt(
+                        frame,
+                        area,
+                        " custom emoji · Tab next · Enter react · Esc back ",
+                        &sanitize::single_line(&format!(":{query}  {list}")),
+                    );
+                    return;
+                }
                 self.render_prompt(
                     frame,
                     area,
-                    " reaction · Enter toggle ",
+                    " reaction · Enter toggle · : custom ",
                     crate::ui::reaction_picker::REACTIONS
                         .iter()
                         .enumerate()
@@ -6124,6 +8998,77 @@ impl App {
                     }
                 }
                 crate::ui::search::render(frame, popup, &self.search_state, &self.theme);
+            }
+            Some(Overlay::Profile) => {
+                if let Some(card) = &self.profile_card {
+                    let popup = centered(area, 80, area.height.saturating_sub(2).min(28));
+                    let channels = &self.channels;
+                    let name = |id: Uuid| {
+                        channels
+                            .iter()
+                            .find(|channel| channel.id == id)
+                            .map(|channel| channel.name.clone())
+                    };
+                    crate::ui::profile::render(
+                        frame,
+                        popup,
+                        card,
+                        crate::clock::WallClock::now_unix(&crate::clock::SystemClock),
+                        &name,
+                        &self.theme,
+                    );
+                }
+            }
+            Some(Overlay::Huddle) => {
+                let popup = centered(area, 90, area.height.saturating_sub(2).min(30));
+                let view = self.huddle_panel_view();
+                crate::ui::huddle::render(frame, popup, &view, &self.theme);
+            }
+            Some(Overlay::Broker) => {
+                let popup = centered(area, 100, area.height.saturating_sub(2).min(30));
+                let community = self.active_community_id();
+                let agents = self
+                    .config
+                    .hosted_agents
+                    .iter()
+                    .filter(|agent| Some(agent.community) == community)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let activity = self
+                    .broker
+                    .as_ref()
+                    .map(|broker| broker.host.activity())
+                    .unwrap_or_default();
+                crate::ui::broker::render(
+                    frame,
+                    popup,
+                    &agents,
+                    &activity,
+                    crate::ui::broker::BrokerStatus {
+                        serving: self.broker.as_ref().map(|broker| broker.server.address.port()),
+                        paused_all: self.broker.as_ref().is_some_and(|broker| broker.host.paused_all()),
+                        selected: self.broker_selected,
+                        agent_presence: self.config.ui.broker_agent_presence
+                            && self.config.ui.publish_presence,
+                    },
+                    &self.theme,
+                );
+            }
+            Some(Overlay::Artifacts) => {
+                let popup = centered(area, 104, area.height.saturating_sub(2).min(30));
+                let names = self
+                    .channels
+                    .iter()
+                    .map(|channel| (channel.id, channel.name.clone()))
+                    .collect::<HashMap<_, _>>();
+                crate::ui::artifacts::render(
+                    frame,
+                    popup,
+                    &self.artifact_panel,
+                    &names,
+                    &self.profiles,
+                    &self.theme,
+                );
             }
             Some(Overlay::Agents) => {
                 let popup = centered(area, 96, area.height.saturating_sub(2).min(34));
@@ -6774,6 +9719,343 @@ mod tests {
         assert!(!triggers_directory_refresh(9, "member_joined"));
     }
 
+    /// M9.4: the owner sets per-agent, per-action policy and pauses one agent
+    /// from the `:broker` panel; it is saved and shown at once.
+    #[tokio::test]
+    async fn broker_panel_edits_and_saves_agent_policy() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let community = app.active_community_id().unwrap();
+        for label in ["first", "second"] {
+            app.config
+                .hosted_agents
+                .push(crate::config::HostedAgentConfig {
+                    id: Uuid::new_v4(),
+                    label: label.into(),
+                    pubkey: "b".repeat(64),
+                    community,
+                    owner_identity: Uuid::new_v4(),
+                    auth_tag: "[]".into(),
+                    credential_hash: "c".repeat(64),
+                    allowed: vec!["channel.read".into()],
+                    paused: false,
+                });
+        }
+        app.command = "broker".into();
+        app.execute_command().await.unwrap();
+        // Hosted actions in order: channel.read, message.post, message.reply,
+        // profile.set, reaction.add, storage.address.
+        app.broker_select(1);
+        app.broker_toggle_action(1);
+        app.broker_toggle_action(0);
+        app.broker_toggle_paused();
+        let saved = crate::config::Config::load(&app.paths).unwrap();
+        assert_eq!(saved.hosted_agents[0].allowed, vec!["channel.read"]);
+        assert!(!saved.hosted_agents[0].paused);
+        assert_eq!(saved.hosted_agents[1].allowed, vec!["message.post"]);
+        assert!(saved.hosted_agents[1].paused);
+        let screen = screen_text(&mut app);
+        assert!(screen.contains("› second · paused"), "{screen}");
+        assert!(screen.contains("1[ ] channel.read"), "{screen}");
+        assert!(screen.contains("2[x] message.post"), "{screen}");
+        // A digit past the hosted actions changes nothing.
+        app.broker_toggle_action(8);
+        assert_eq!(
+            crate::config::Config::load(&app.paths)
+                .unwrap()
+                .hosted_agents[1]
+                .allowed,
+            vec!["message.post"]
+        );
+    }
+
+    /// M10 fixtures: every NIP-56 reason is accepted (then needs a selected
+    /// message), anything else is a usage error; "send to channel" refuses a
+    /// missing, foreign, reply, system or deleted root.
+    #[tokio::test]
+    async fn report_reasons_and_send_to_channel_roots_are_checked() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        for reason in buzz_sdk::REPORT_TYPES {
+            for command in [
+                format!("report {reason}"),
+                format!("report author {reason} note"),
+            ] {
+                app.status_error = None;
+                app.command = command.clone();
+                app.execute_command().await.unwrap();
+                assert_eq!(
+                    app.status_error.as_deref(),
+                    Some("select a message to report"),
+                    "{command}"
+                );
+            }
+        }
+        for command in ["report", "report bogus", "report author", "report SPAM"] {
+            app.status_error = None;
+            app.command = command.into();
+            app.execute_command().await.unwrap();
+            assert!(
+                app.status_error
+                    .as_deref()
+                    .is_some_and(|error| error.starts_with("usage: :report [author]")),
+                "{command}: {:?}",
+                app.status_error
+            );
+        }
+
+        let channel = Uuid::new_v4();
+        let root = Message {
+            event_id: "a".repeat(64),
+            channel_id: channel,
+            pubkey: "b".repeat(64),
+            created_at: 1,
+            content: "root".into(),
+            attachments: Vec::new(),
+            root_event_id: None,
+            parent_event_id: None,
+            deleted: false,
+            delivery: crate::domain::DeliveryState::Delivered,
+            system: None,
+            sent_from_thread: None,
+            broadcast: false,
+            emoji: Vec::new(),
+        };
+        assert!(super::send_to_channel_root(Some(root.clone()), channel).is_ok());
+        assert!(super::send_to_channel_root(None, channel).is_err());
+        assert!(super::send_to_channel_root(Some(root.clone()), Uuid::new_v4()).is_err());
+        let reply = Message {
+            root_event_id: Some("c".repeat(64)),
+            ..root.clone()
+        };
+        assert!(super::send_to_channel_root(Some(reply), channel).is_err());
+        let deleted = Message {
+            deleted: true,
+            ..root.clone()
+        };
+        assert!(super::send_to_channel_root(Some(deleted), channel).is_err());
+    }
+
+    /// The deterministic twin of the `v013-panels-empty-profile` Herdr scenario.
+    #[tokio::test]
+    async fn v013_commands_on_an_empty_profile_explain_or_open_their_panels() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.command = "broker".into();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.presentation.overlay, Some(Overlay::Broker));
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                crate::ui::broker::render(
+                    frame,
+                    frame.area(),
+                    &[],
+                    &[],
+                    crate::ui::broker::BrokerStatus::default(),
+                    &app.theme,
+                )
+            })
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(screen.contains("agent broker · not serving"), "{screen}");
+        assert!(
+            screen.contains("o owner-signed agent presence: off"),
+            "{screen}"
+        );
+        app.presentation.close_overlay();
+        for (command, expected) in [
+            ("huddle", "select a channel in a connected community"),
+            ("tasks", "connect to a community to see artifacts"),
+            ("artifacts", "select a channel to see its artifacts"),
+            ("presence", "presence: off · nothing is published"),
+            ("presence maybe", "usage: :presence [on|off]"),
+            (
+                "presence on",
+                "presence: on · online while active, away after inactivity, offline on exit",
+            ),
+            ("presence off", "presence: off · nothing is published"),
+        ] {
+            app.status_error = None;
+            app.command = command.into();
+            app.execute_command().await.unwrap();
+            assert_eq!(app.status_error.as_deref(), Some(expected), "{command}");
+        }
+        // The setting is persisted, and off again after the last command.
+        let saved = crate::config::Config::load(&app.paths).unwrap();
+        assert!(!saved.ui.publish_presence);
+        app.command = "presence on".into();
+        app.execute_command().await.unwrap();
+        assert!(
+            crate::config::Config::load(&app.paths)
+                .unwrap()
+                .ui
+                .publish_presence
+        );
+    }
+
+    /// A profile with no community has no workspace and no status bar; the
+    /// welcome screen must still show command feedback. The release Herdr
+    /// run of `v013-panels-empty-profile` caught it missing.
+    #[tokio::test]
+    async fn empty_profile_welcome_screen_shows_command_feedback() {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+        assert!(app.config.communities.is_empty());
+        for (command, expected) in [
+            ("huddle", "select a channel in a connected community"),
+            ("tasks", "connect to a community to see artifacts"),
+            ("presence", "presence: off · nothing is published"),
+        ] {
+            app.status_error = None;
+            app.command = command.into();
+            app.execute_command().await.unwrap();
+            let screen = screen_text(&mut app);
+            assert!(screen.contains("Welcome to bzz"), "{screen}");
+            assert!(screen.contains(expected), "{command}: {screen}");
+        }
+    }
+
+    #[tokio::test]
+    async fn huddle_panel_shows_roster_reactions_and_only_creator_guidelines() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let channel = Uuid::new_v4();
+        let backing = Uuid::new_v4();
+        app.channels = vec![Channel {
+            id: channel,
+            name: "talk".into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 2,
+            last_event_at: None,
+            facts: Default::default(),
+        }];
+        app.selected_channel = 0;
+        let creator = Keys::generate();
+        let guest = Keys::generate();
+        app.huddle_view = Some((
+            channel,
+            Some(crate::protocol::huddle::ActiveHuddle {
+                backing,
+                creator: creator.public_key().to_hex(),
+                started_at: nostr::Timestamp::now().as_secs(),
+                participants: vec![creator.public_key().to_hex(), guest.public_key().to_hex()],
+            }),
+        ));
+        let reaction = crate::protocol::huddle::reaction(backing, "🎉", "guest")
+            .unwrap()
+            .sign_with_keys(&guest)
+            .unwrap();
+        assert!(app.apply_huddle_event(&reaction));
+        let guidelines = |keys: &Keys, text: &str| {
+            EventBuilder::new(Kind::Custom(crate::protocol::huddle::KIND_GUIDELINES), text)
+                .tags([Tag::parse(["h", backing.to_string().as_str()]).unwrap()])
+                .sign_with_keys(keys)
+                .unwrap()
+        };
+        assert!(!app.apply_huddle_event(&guidelines(&guest, "forged")));
+        assert!(
+            app.huddle_guidelines.is_none(),
+            "only the creator sets guidelines"
+        );
+        assert!(app.apply_huddle_event(&guidelines(&creator, "Keep it short")));
+        // A live lifecycle event for this channel re-replays its state.
+        let ended = crate::protocol::huddle::ended(channel, backing)
+            .unwrap()
+            .sign_with_keys(&creator)
+            .unwrap();
+        app.apply_huddle_event(&ended);
+        assert!(app.huddle_dirty);
+        // Without a connected runtime, commands explain instead of acting.
+        app.huddle_command("join").await.unwrap();
+        assert!(app.status_error.is_some());
+
+        let view = app.huddle_panel_view();
+        assert_eq!(view.roster.as_ref().map(Vec::len), Some(2));
+        let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::huddle::render(frame, frame.area(), &view, &app.theme))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(screen.contains("2 in it"), "{screen}");
+        assert!(screen.contains("Keep it short"), "{screen}");
+        // Names come from profiles, never the sender's own `sender_name`.
+        assert!(screen.contains("🎉"), "{screen}");
+        assert!(!screen.contains("guest"), "{screen}");
+        assert!(!screen.contains("forged"), "{screen}");
+
+        // M8.1: the channel row and the names of people in the huddle carry
+        // the active-huddle marker.
+        app.presentation.close_overlay();
+        app.presentation.close_overlay();
+        let mut profile = crate::domain::Profile::verified_only(
+            &guest.public_key().to_hex(),
+            crate::protocol::verified_profile::VerifiedName {
+                display_name: "Guest Person".into(),
+                username: "guest".into(),
+                full_name: None,
+                issuer_label: "IdP".into(),
+                verified_at: 1,
+            },
+            "e".repeat(64),
+            1,
+        );
+        profile.in_huddle = app
+            .active_huddle()
+            .is_some_and(|active| active.participants.contains(&profile.pubkey));
+        assert!(profile.in_huddle);
+        app.profiles.insert(profile.pubkey.clone(), profile);
+        app.messages = vec![Message {
+            event_id: "f".repeat(64),
+            channel_id: channel,
+            pubkey: guest.public_key().to_hex(),
+            created_at: 1,
+            content: "in the call".into(),
+            attachments: Vec::new(),
+            root_event_id: None,
+            parent_event_id: None,
+            deleted: false,
+            delivery: crate::domain::DeliveryState::Delivered,
+            system: None,
+            sent_from_thread: None,
+            broadcast: false,
+            emoji: Vec::new(),
+        }];
+        let screen = screen_text(&mut app);
+        assert!(screen.contains("#talk 🎧"), "{screen}");
+        // A wide glyph takes two cells in the test backend.
+        assert!(
+            screen.contains("🎧  Guest Person") || screen.contains("🎧 Guest Person"),
+            "{screen}"
+        );
+    }
+
     #[tokio::test]
     async fn live_thread_summaries_are_visible_root_scoped_and_deterministic() {
         let temporary = TempDir::new().unwrap();
@@ -6790,6 +10072,7 @@ mod tests {
             is_hidden: false,
             member_count: 1,
             last_event_at: None,
+            facts: Default::default(),
         }];
         app.selected_channel = 0;
         app.messages = vec![Message {
@@ -6804,6 +10087,9 @@ mod tests {
             deleted: false,
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
+            sent_from_thread: None,
+            broadcast: false,
+            emoji: Vec::new(),
         }];
         app.local_thread_summaries.insert(
             root.clone(),
@@ -6852,6 +10138,7 @@ mod tests {
             is_hidden: false,
             member_count: 2,
             last_event_at: None,
+            facts: Default::default(),
         }];
         app.selected_channel = 0;
         let keys = Keys::generate();
@@ -7348,6 +10635,7 @@ mod tests {
             is_hidden: false,
             member_count: 1,
             last_event_at: Some(42),
+            facts: Default::default(),
         }];
         app.messages = vec![Message {
             event_id: "event-1".into(),
@@ -7361,6 +10649,9 @@ mod tests {
             deleted: false,
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
+            sent_from_thread: None,
+            broadcast: false,
+            emoji: Vec::new(),
         }];
         app.timeline.at_live_bottom = true;
         app.computed_unread.insert(channel);
@@ -7519,6 +10810,9 @@ mod tests {
             deleted: false,
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
+            sent_from_thread: None,
+            broadcast: false,
+            emoji: Vec::new(),
         };
         let mut timeline = TimelineState {
             at_live_bottom: true,
@@ -7643,6 +10937,164 @@ mod tests {
         .unwrap();
         assert!(app.composer.attachments.is_empty());
         assert!(app.staging_attachments.is_empty());
+    }
+
+    fn artifact_event(keys: &Keys, home: Uuid, title: &str) -> nostr::Event {
+        let id = Uuid::new_v4().to_string();
+        let home = home.to_string();
+        EventBuilder::new(Kind::Custom(45_010), "{\"version\":1}")
+            .tags(
+                [
+                    ["ar", "1"],
+                    ["d", id.as_str()],
+                    ["h", home.as_str()],
+                    ["type", "buzz.task"],
+                    ["title", title],
+                    ["op", "create"],
+                ]
+                .map(|parts| Tag::parse(parts).unwrap()),
+            )
+            .sign_with_keys(keys)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn artifact_sync_commits_only_at_eose_and_never_touches_chat() {
+        use crate::config::{IdentityConfig, KeyBackend};
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let keys = Keys::generate();
+        let identity = IdentityConfig {
+            id: Uuid::new_v4(),
+            label: "a".into(),
+            pubkey: keys.public_key().to_hex(),
+            backend: KeyBackend::EncryptedFile,
+            key_ref: "a".into(),
+        };
+        let mut config = Config::default();
+        config.identities.push(identity.clone());
+        let community = config
+            .add_community("a".into(), "ws://localhost:3030".into(), identity.id, true)
+            .unwrap();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        // No runtime: a configured community would prompt for the identity.
+        let mut app = super::App::new(Config::default(), paths, handle)
+            .await
+            .unwrap();
+        app.config = config;
+        let channel = Uuid::new_v4();
+        let caps = crate::protocol::artifact::Capabilities {
+            sync: true,
+            head: true,
+            max_events: 2,
+        };
+        app.artifact_caps = Some((community, caps));
+        app.artifact_sync = Some(super::ArtifactSync::new(community, channel));
+        let sync = super::ARTIFACT_SYNC_SUBSCRIPTION;
+        let stored = |app: &super::App| {
+            let store = app.store.clone();
+            async move {
+                store
+                    .call(move |store| store.channel_artifacts(community, channel, None))
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // Heads before EOSE are only buffered.
+        let first = artifact_event(&keys, channel, "First");
+        assert!(!app.apply_artifact_sync_event(sync, &first).await.unwrap());
+        assert!(stored(&app).await.is_empty());
+        // Another subscription's artifact is ignored.
+        assert!(
+            !app.apply_artifact_sync_event("other", &first)
+                .await
+                .unwrap()
+        );
+        app.commit_artifact_sync().await.unwrap();
+        assert_eq!(stored(&app).await.len(), 1, "committed at EOSE");
+
+        // After EOSE a live head applies immediately.
+        let live = artifact_event(&keys, channel, "Live");
+        assert!(app.apply_artifact_sync_event(sync, &live).await.unwrap());
+        assert_eq!(stored(&app).await.len(), 2);
+
+        // A set larger than max_events is never committed partially.
+        app.artifact_sync = Some(super::ArtifactSync::new(community, channel));
+        for title in ["A", "B", "C"] {
+            let event = artifact_event(&keys, channel, title);
+            app.apply_artifact_sync_event(sync, &event).await.unwrap();
+        }
+        assert!(app.artifact_sync.as_ref().unwrap().retry_at.is_some());
+        app.commit_artifact_sync().await.unwrap();
+        assert_eq!(stored(&app).await.len(), 2, "the last complete set stays");
+        assert!(!app.artifact_sync.as_ref().unwrap().complete);
+
+        // Redaction of a current head: the relay ends the sync with
+        // `CLOSED "resync: ..."`. The held set stays (marked possibly stale)
+        // and a fresh sync is scheduled; its complete cut is authoritative.
+        app.artifact_sync = Some(super::ArtifactSync::new(community, channel));
+        app.artifact_sync.as_mut().unwrap().complete = true;
+        app.handle_network(crate::realtime::supervisor::SupervisorEvent::Session(
+            crate::realtime::session::SessionEvent::Closed {
+                subscription: sync.into(),
+                message: "resync: artifact retired".into(),
+            },
+        ))
+        .await
+        .unwrap();
+        let retry = app.artifact_sync.as_ref().unwrap();
+        assert!(retry.retry_at.is_some() && !retry.complete && !retry.blocked);
+        assert_eq!(
+            stored(&app).await.len(),
+            2,
+            "nothing dropped before the new cut"
+        );
+
+        // The panel shows the set; artifacts never become messages or unread.
+        // A new cut holding only `live` replaces the set: `first` left it.
+        app.artifact_sync = Some(super::ArtifactSync::new(community, channel));
+        app.apply_artifact_sync_event(sync, &live).await.unwrap();
+        app.commit_artifact_sync().await.unwrap();
+        let held = stored(&app).await;
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].head.title.as_deref(), Some("Live"));
+        app.artifact_panel.scope = crate::ui::artifacts::ArtifactScope::Channel(channel);
+        app.presentation.open_overlay(Overlay::Artifacts);
+        app.refresh_artifact_panel().await.unwrap();
+        assert_eq!(app.artifact_panel.sync_note.as_deref(), Some("synced"));
+        assert!(app.messages.is_empty());
+        assert!(app.computed_unread.is_empty() && app.manual_unread.is_empty());
+        let mut terminal = Terminal::new(TestBackend::new(110, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                crate::ui::artifacts::render(
+                    frame,
+                    frame.area(),
+                    &app.artifact_panel,
+                    &std::collections::HashMap::new(),
+                    &app.profiles,
+                    &app.theme,
+                )
+            })
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(screen.contains("synced"), "{screen}");
+        assert!(screen.contains("Live"), "{screen}");
+        assert!(screen.contains("buzz.task"), "{screen}");
     }
 
     #[tokio::test]
@@ -7882,6 +11334,7 @@ mod tests {
             is_hidden: false,
             member_count: 1,
             last_event_at: None,
+            facts: Default::default(),
         }];
         app.messages = vec![Message {
             event_id: "event-1".into(),
@@ -7895,6 +11348,9 @@ mod tests {
             deleted: false,
             delivery: crate::domain::DeliveryState::Delivered,
             system: None,
+            sent_from_thread: None,
+            broadcast: false,
+            emoji: Vec::new(),
         }];
         app.timeline.reconcile(&app.messages);
 
@@ -7946,6 +11402,8 @@ mod tests {
                 label: "member".into(),
                 is_agent: false,
                 agent_eligibility: None,
+                verified: false,
+                presence: None,
             }],
         ));
         terminal.draw(|frame| app.render(frame)).unwrap();
@@ -8107,5 +11565,356 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("bzz effective keymap"));
         assert!(text.contains("active scoped overrides"));
+    }
+
+    async fn read_only_fixture(
+        temporary: &TempDir,
+        kind: ChannelKind,
+        facts: crate::domain::ChannelFacts,
+    ) -> super::App {
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(config, paths, handle).await.unwrap();
+        let identity = crate::config::IdentityConfig {
+            id: Uuid::new_v4(),
+            label: "read-only".into(),
+            pubkey: "a".repeat(64),
+            backend: crate::config::KeyBackend::Keychain,
+            key_ref: "identity:read-only".into(),
+        };
+        app.config.identities.push(identity.clone());
+        app.config
+            .add_community(
+                "read-only".into(),
+                "wss://read-only.example".into(),
+                identity.id,
+                false,
+            )
+            .unwrap();
+        app.channels = vec![Channel {
+            id: Uuid::new_v4(),
+            name: "announcements".into(),
+            about: String::new(),
+            kind,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 1,
+            last_event_at: None,
+            facts,
+        }];
+        app
+    }
+
+    fn screen_text(app: &mut super::App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    #[tokio::test]
+    async fn guest_channel_shows_fixed_read_only_notice_and_refuses_composer() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = read_only_fixture(
+            &temporary,
+            ChannelKind::Stream,
+            crate::domain::ChannelFacts {
+                join_role: crate::domain::JoinRole::Guest,
+                viewer_role: Some(crate::domain::MemberRole::Guest),
+                ..Default::default()
+            },
+        )
+        .await;
+        let screen = screen_text(&mut app);
+        assert!(
+            screen.contains("read-only · announce channel (guest)"),
+            "{screen}"
+        );
+        let community = app.active_community_id().unwrap();
+        let channel = app.channels[0].id;
+        app.open_composer_target(community, channel, None, None)
+            .await
+            .unwrap();
+        assert!(app.presentation.composer_target.is_none());
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("read-only · announce channel (guest)")
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_channel_type_is_read_only_and_member_role_writes() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = read_only_fixture(
+            &temporary,
+            ChannelKind::Other("future".into()),
+            crate::domain::ChannelFacts::default(),
+        )
+        .await;
+        assert!(screen_text(&mut app).contains("read-only · channel type not supported"));
+        app.channels[0].kind = ChannelKind::Stream;
+        app.channels[0].facts.viewer_role = Some(crate::domain::MemberRole::Member);
+        let screen = screen_text(&mut app);
+        assert!(!screen.contains("read-only ·"), "{screen}");
+    }
+
+    #[tokio::test]
+    async fn system_channels_stay_collapsed_until_the_system_command() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = read_only_fixture(
+            &temporary,
+            ChannelKind::Stream,
+            crate::domain::ChannelFacts::default(),
+        )
+        .await;
+        let mut system = app.channels[0].clone();
+        system.id = Uuid::new_v4();
+        system.name = "agent-config".into();
+        system.kind = ChannelKind::System;
+        app.channels.push(system);
+        let collapsed = screen_text(&mut app);
+        assert!(collapsed.contains("· ⚙1 "), "{collapsed}");
+        assert!(!collapsed.contains("agent-config"));
+        assert_eq!(app.ordered_channel_indexes(), vec![0]);
+        app.command = ":system".into();
+        app.execute_command().await.unwrap();
+        let expanded = screen_text(&mut app);
+        assert!(expanded.contains("· ⚙ open"), "{expanded}");
+        assert!(expanded.contains("⚙agent-config"), "{expanded}");
+        assert_eq!(app.ordered_channel_indexes(), vec![0, 1]);
+    }
+
+    #[tokio::test]
+    async fn kicked_selected_channel_keeps_its_draft_and_moves_selection() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = read_only_fixture(
+            &temporary,
+            ChannelKind::Stream,
+            crate::domain::ChannelFacts::default(),
+        )
+        .await;
+        let community = app.active_community_id().unwrap();
+        let relay = nostr::Keys::generate();
+        let relay_hex = relay.public_key().to_hex();
+        let config = app.config.clone();
+        app.store
+            .call(move |store| {
+                store.sync_config(&config)?;
+                store.pin_relay_pubkey(community, &relay_hex)
+            })
+            .await
+            .unwrap();
+        let (kept, kicked) = (Uuid::new_v4(), Uuid::new_v4());
+        let me = "a".repeat(64);
+        let sign = |kind: u16, tags: Vec<Vec<String>>, at: u64| {
+            nostr::EventBuilder::new(nostr::Kind::Custom(kind), "")
+                .tags(tags.into_iter().map(|tag| nostr::Tag::parse(tag).unwrap()))
+                .custom_created_at(nostr::Timestamp::from(at))
+                .sign_with_keys(&relay)
+                .unwrap()
+        };
+        for (channel, name) in [(kept, "alpha"), (kicked, "zulu")] {
+            let id = channel.to_string();
+            let events = vec![
+                sign(
+                    39_000,
+                    vec![
+                        vec!["d".into(), id.clone()],
+                        vec!["name".into(), name.into()],
+                    ],
+                    1,
+                ),
+                sign(
+                    39_002,
+                    vec![vec!["d".into(), id.clone()], vec!["p".into(), me.clone()]],
+                    1,
+                ),
+            ];
+            app.store
+                .call(move |store| {
+                    for event in events {
+                        store.apply_event(community, &event)?;
+                    }
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
+        app.hydrate_cache().await.unwrap();
+        app.selected_channel = app.channels.iter().position(|c| c.id == kicked).unwrap();
+        app.presentation.composer_target = Some(crate::ui::state::ComposerTarget {
+            community_id: community,
+            channel_id: kicked,
+            thread_root_id: None,
+            parent_event_id: None,
+        });
+        app.composer
+            .set_draft("unsent words".into(), vec![], vec![]);
+
+        let kick = sign(39_002, vec![vec!["d".into(), kicked.to_string()]], 2);
+        app.store
+            .call(move |store| store.apply_event(community, &kick))
+            .await
+            .unwrap();
+        app.hydrate_cache().await.unwrap();
+
+        assert!(app.presentation.composer_target.is_none());
+        assert_eq!(app.current_channel().map(|c| c.id), Some(kept));
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("you are no longer a member of that channel; draft kept")
+        );
+        let draft = app
+            .store
+            .call(move |store| store.draft_record(community, kicked, None))
+            .await
+            .unwrap()
+            .expect("draft persisted");
+        assert_eq!(draft.body, "unsent words");
+    }
+
+    /// v0.13 M2.2/M3: the profile card shows the verified identity and the
+    /// NIP-CL public channels, applies only its own outstanding answer once,
+    /// keeps a failed refresh explicitly stale and records relay backoff.
+    #[tokio::test]
+    async fn profile_card_applies_only_its_outstanding_public_lookup() {
+        use crate::{
+            domain::MemberRole,
+            protocol::membership_public::{Lookup, PublicMembership, VerifiedPublic},
+            ui::profile::PublicChannels,
+        };
+        let temporary = TempDir::new().unwrap();
+        let mut app = read_only_fixture(
+            &temporary,
+            ChannelKind::Stream,
+            crate::domain::ChannelFacts::default(),
+        )
+        .await;
+        let community = app.active_community_id().unwrap();
+        let known = app.channels[0].id;
+        let subject = "c".repeat(64);
+        app.profiles.insert(
+            subject.clone(),
+            crate::domain::Profile::verified_only(
+                &subject,
+                crate::protocol::verified_profile::VerifiedName {
+                    display_name: "Ada Lovelace".into(),
+                    username: "ada@corp.example".into(),
+                    full_name: None,
+                    issuer_label: "Corp IdP".into(),
+                    verified_at: 1,
+                },
+                "e".repeat(64),
+                1,
+            ),
+        );
+        app.command = format!("profile {subject}");
+        app.execute_command().await.unwrap();
+        assert_eq!(app.presentation.overlay, Some(Overlay::Profile));
+        // No runtime: the lookup cannot be signed.
+        assert_eq!(
+            app.profile_card.as_ref().unwrap().public,
+            PublicChannels::Locked
+        );
+        let screen = screen_text(&mut app);
+        assert!(screen.contains("Ada Lovelace ✓"), "{screen}");
+        assert!(
+            screen.contains("✓ verified by Corp IdP · ada@corp.example"),
+            "{screen}"
+        );
+        assert!(screen.contains("unlock the identity"), "{screen}");
+
+        let verified = |channels: Vec<PublicMembership>| {
+            Ok(Lookup::Verified(VerifiedPublic {
+                snapshot_id: "0".repeat(64),
+                memberships: channels,
+            }))
+        };
+        let unknown = Uuid::new_v4();
+        let list = vec![
+            PublicMembership {
+                channel_id: known,
+                role: MemberRole::Guest,
+                channel_type: "stream".into(),
+                archived: true,
+            },
+            PublicMembership {
+                channel_id: unknown,
+                role: MemberRole::Owner,
+                channel_type: "forum".into(),
+                archived: false,
+            },
+        ];
+        app.profile_card.as_mut().unwrap().outstanding = Some(7);
+        app.profile_card.as_mut().unwrap().public = PublicChannels::Loading;
+        // Superseded generation, another subject, another community: ignored.
+        app.apply_public_lookup(community, &subject, 6, verified(list.clone()));
+        app.apply_public_lookup(community, &"d".repeat(64), 7, verified(list.clone()));
+        app.apply_public_lookup(Uuid::new_v4(), &subject, 7, verified(list.clone()));
+        assert_eq!(
+            app.profile_card.as_ref().unwrap().public,
+            PublicChannels::Loading
+        );
+        app.apply_public_lookup(community, &subject, 7, verified(list.clone()));
+        assert_eq!(
+            app.profile_card.as_ref().unwrap().public,
+            PublicChannels::Verified(list.clone())
+        );
+        // Consumed once: a second answer for the same request changes nothing.
+        app.apply_public_lookup(community, &subject, 7, Err("late".into()));
+        assert_eq!(
+            app.profile_card.as_ref().unwrap().public,
+            PublicChannels::Verified(list.clone())
+        );
+        let screen = screen_text(&mut app);
+        assert!(
+            screen.contains("#announcements · stream · guest · archived"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains(&format!(
+                "(not cached) {} · forum · owner",
+                &unknown.to_string()[..8]
+            )),
+            "{screen}"
+        );
+        // A failed refresh is never an empty list: the old one stays, stale.
+        app.profile_card.as_mut().unwrap().stale = app
+            .public_lookup_cache
+            .get(&(community, subject.clone()))
+            .cloned();
+        app.profile_card.as_mut().unwrap().outstanding = Some(8);
+        app.apply_public_lookup(community, &subject, 8, Err("bad signature".into()));
+        assert_eq!(
+            app.profile_card.as_ref().unwrap().public,
+            PublicChannels::Failed
+        );
+        let screen = screen_text(&mut app);
+        assert!(screen.contains("could not verify"), "{screen}");
+        assert!(screen.contains("stale — last verified list"), "{screen}");
+        // 429 records a retry delay for the community.
+        app.profile_card.as_mut().unwrap().outstanding = Some(9);
+        app.apply_public_lookup(community, &subject, 9, Ok(Lookup::RateLimited(30)));
+        let (until, rate_limited) = app.public_lookup_backoff[&community];
+        let now = crate::clock::WallClock::now_unix(&crate::clock::SystemClock);
+        assert!(rate_limited && until >= now + 29, "{until} vs {now}");
+        // Esc closes and cancels.
+        app.profile_key(KeyEvent::from(KeyCode::Esc));
+        assert!(app.profile_card.is_none());
+        assert_eq!(app.presentation.overlay, None);
     }
 }

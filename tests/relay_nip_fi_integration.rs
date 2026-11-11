@@ -1,0 +1,424 @@
+//! v0.13 M3 against an FI-enforcing pinned relay (T4): `scripts/test-relay.sh
+//! --nip-fi` starts the fake NIP-FA issuer on localhost:3093 and the relay in
+//! `BUZZ_NIP_FI_MODE=enforce` with a 20-second connection lifetime.
+mod support;
+
+use std::{process::Command, sync::Arc, time::Duration};
+
+use bzz::{
+    auth::{
+        federated::{AdapterClient, AdapterEvidence, EvidenceSlot, RelayDenial},
+        signer::SignerHandle,
+    },
+    clock,
+    diagnostics::DiagnosticHandle,
+    error::Error,
+    protocol::{http::HttpClient, types::QueryFilter},
+    realtime::{
+        session::{self, SessionEvent},
+        supervisor::{SupervisorEvent, SupervisorHandle},
+    },
+};
+use nostr::Keys;
+use support::fake_adapter::FakeAdapter;
+
+const RELAY_WS: &str = "ws://localhost:3030/";
+const RELAY_HTTP: &str = "http://localhost:3030/";
+const ADAPTER: &str = "http://localhost:3093/";
+
+fn seed_member(pubkey: &str) {
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let sql = format!(
+        "INSERT INTO relay_members (community_id,pubkey,role,added_by) SELECT id,'{pubkey}','owner',NULL FROM communities WHERE lower(host)='localhost:3030' ON CONFLICT (community_id,pubkey) DO UPDATE SET role='owner',updated_at=now();"
+    );
+    let status = Command::new("docker")
+        .args([
+            "compose",
+            "-p",
+            "buzz-harness",
+            "-f",
+            &format!("{source}/docker-compose.harness.yml"),
+            "exec",
+            "-T",
+            "postgres",
+            "psql",
+            "-U",
+            "buzz",
+            "-d",
+            "buzz",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            &sql,
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+async fn signed_in_slot(signer: &SignerHandle) -> EvidenceSlot {
+    let adapter = AdapterClient::new(url::Url::parse(ADAPTER).unwrap()).unwrap();
+    let pending = adapter.begin_login().await.unwrap();
+    let login = pending.url.clone();
+    let browser = tokio::spawn(async move { FakeAdapter::browse(&login).await });
+    let session = adapter
+        .complete_login(pending, Duration::from_secs(10))
+        .await
+        .unwrap();
+    browser.await.unwrap();
+    let slot = EvidenceSlot::default();
+    slot.set(AdapterEvidence::new(adapter, session, signer.clone(), clock::system()) as Arc<_>);
+    slot
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh --nip-fi"]
+async fn fi_relay_denies_without_evidence_and_admits_with_nip_fa_evidence() {
+    let keys = Keys::generate();
+    let pubkey = keys.public_key().to_hex();
+    seed_member(&pubkey);
+    let signer = SignerHandle::spawn(keys);
+    let http_info = HttpClient::new(url::Url::parse(RELAY_HTTP).unwrap(), signer.clone()).unwrap();
+    let info = http_info.nip11().await.unwrap();
+    assert_eq!(
+        bzz::auth::federated::requirement(&info),
+        bzz::auth::federated::Requirement::Required
+    );
+
+    // No evidence: typed, text-free denials on both transports.
+    let error = session::connect(url::Url::parse(RELAY_WS).unwrap(), signer.clone())
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        matches!(&error, Error::Auth(message) if message == RelayDenial::EvidenceRequired.notice()),
+        "{error:?}"
+    );
+    let error = http_info
+        .query(&[QueryFilter {
+            kinds: vec![9],
+            limit: Some(1),
+            ..QueryFilter::default()
+        }])
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, Error::Auth(message) if message == RelayDenial::EvidenceRequired.notice()),
+        "{error:?}"
+    );
+
+    // NIP-FA sign-in; evidence on the upgrade, HTTP bridge and Blossom.
+    let slot = signed_in_slot(&signer).await;
+    let header = slot
+        .header(&url::Url::parse(RELAY_WS).unwrap())
+        .await
+        .unwrap();
+    let (handle, mut events) = session::connect_with_evidence(
+        url::Url::parse(RELAY_WS).unwrap(),
+        signer.clone(),
+        DiagnosticHandle::disabled(),
+        header,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(SessionEvent::Authenticated)
+    ));
+    handle.shutdown().await;
+
+    // The admission published a relay-signed NIP-FI verified profile.
+    let advertised = http_info.nip11().await.unwrap();
+    assert!(
+        advertised
+            .pointer("/federated_identity/public_profile")
+            .is_some()
+    );
+    let relay_pubkey = bzz::protocol::http::relay_signing_pubkey(&advertised)
+        .unwrap()
+        .to_owned();
+    let (store, community) = {
+        let identity = bzz::config::IdentityConfig {
+            id: uuid::Uuid::new_v4(),
+            label: "fi".into(),
+            pubkey: pubkey.clone(),
+            backend: bzz::config::KeyBackend::EncryptedFile,
+            key_ref: "fi".into(),
+        };
+        let mut config = bzz::config::Config::default();
+        config.identities.push(identity.clone());
+        let community = config
+            .add_community("fi".into(), "ws://localhost:3030".into(), identity.id, true)
+            .unwrap();
+        let mut store = bzz::store::Store::open_memory().unwrap();
+        store.sync_config(&config).unwrap();
+        store.pin_relay_pubkey(community, &relay_pubkey).unwrap();
+        (
+            bzz::store::writer::StoreHandle::spawn(store).unwrap(),
+            community,
+        )
+    };
+    let fi_http = HttpClient::new(url::Url::parse(RELAY_HTTP).unwrap(), signer.clone())
+        .unwrap()
+        .with_evidence(slot.clone());
+    let mut found = 0;
+    for _ in 0..20 {
+        found = bzz::sync::directory::hydrate_verified_profiles(
+            community,
+            [pubkey.clone()],
+            &relay_pubkey,
+            &fi_http,
+            &store,
+        )
+        .await
+        .unwrap();
+        if found > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(
+        found, 1,
+        "relay published a verified profile after admission"
+    );
+    let lookup = pubkey.clone();
+    let profile = store
+        .call(move |store| store.profile(community, &lookup))
+        .await
+        .unwrap()
+        .unwrap();
+    let verified = profile.verified.as_ref().expect("verified name projected");
+    assert_eq!(verified.display_name, "Test Employee");
+    assert_eq!(verified.issuer_label, "bzz Test IdP");
+    assert_eq!(profile.author_label(), "Test Employee ✓");
+    let http = HttpClient::new(url::Url::parse(RELAY_HTTP).unwrap(), signer.clone())
+        .unwrap()
+        .with_evidence(slot.clone());
+    http.query(&[QueryFilter {
+        kinds: vec![9],
+        limit: Some(1),
+        ..QueryFilter::default()
+    }])
+    .await
+    .unwrap();
+    let media = bzz::media::client::MediaClient::new(
+        url::Url::parse(RELAY_HTTP).unwrap(),
+        "localhost:3030".into(),
+        signer.clone(),
+        1,
+    )
+    .unwrap()
+    .with_evidence(slot.clone());
+    let directory = tempfile::TempDir::new().unwrap();
+    let png = directory.path().join("fi.png");
+    let mut bytes = Vec::new();
+    image::DynamicImage::new_rgb8(2, 2)
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    std::fs::write(&png, &bytes).unwrap();
+    let uploaded = media
+        .upload(&png, "image/png", Some("fi.png".into()))
+        .await
+        .unwrap();
+    assert_eq!(uploaded.size, bytes.len() as u64);
+    signer.lock().await;
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh --nip-fi"]
+async fn fi_session_deadline_reconnects_with_fresh_evidence() {
+    let keys = Keys::generate();
+    seed_member(&keys.public_key().to_hex());
+    let signer = SignerHandle::spawn(keys);
+    let slot = signed_in_slot(&signer).await;
+    let supervisor = SupervisorHandle::spawn_with_evidence(
+        url::Url::parse(RELAY_WS).unwrap(),
+        signer.clone(),
+        DiagnosticHandle::disabled(),
+        slot,
+    );
+    let mut events = supervisor.subscribe_events();
+    supervisor
+        .subscribe("deadline", vec![serde_json::json!({"kinds":[9],"limit":1})])
+        .await
+        .unwrap();
+    // The relay ends every FI session at its 20 s lifetime; the supervisor
+    // must come back online on its own, never terminally.
+    let mut authenticated = 0;
+    let mut disconnected = false;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        while authenticated < 2 {
+            match events.recv().await.unwrap() {
+                SupervisorEvent::Session(SessionEvent::Authenticated) => authenticated += 1,
+                SupervisorEvent::Session(SessionEvent::Disconnected(_)) => disconnected = true,
+                SupervisorEvent::Terminal(message) => panic!("deadline became terminal: {message}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("reconnected after the FI session deadline");
+    assert!(disconnected);
+    supervisor.shutdown().await;
+    signer.lock().await;
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh --nip-fi"]
+async fn fi_startup_installs_evidence_only_from_a_stored_session() {
+    use bzz::auth::federated::{SessionStore, Startup, install_from_store};
+    let keys = Keys::generate();
+    seed_member(&keys.public_key().to_hex());
+    let signer = SignerHandle::spawn(keys);
+    let http_plain = HttpClient::new(url::Url::parse(RELAY_HTTP).unwrap(), signer.clone()).unwrap();
+    let info = http_plain.nip11().await.unwrap();
+    let data = tempfile::TempDir::new().unwrap();
+    let identity = uuid::Uuid::new_v4();
+    let adapter_url = url::Url::parse(ADAPTER).unwrap();
+
+    let slot = EvidenceSlot::default();
+    assert_eq!(
+        install_from_store(&info, None, data.path(), identity, &signer, &slot).await,
+        Startup::NoAdapter
+    );
+    assert_eq!(
+        install_from_store(
+            &info,
+            Some(&adapter_url),
+            data.path(),
+            identity,
+            &signer,
+            &slot
+        )
+        .await,
+        Startup::NeedsSignIn
+    );
+    assert!(!slot.is_set());
+
+    // Sign in once and persist, as `:signin` does; a later start is ready.
+    let adapter = AdapterClient::new(adapter_url.clone()).unwrap();
+    let pending = adapter.begin_login().await.unwrap();
+    let login = pending.url.clone();
+    tokio::spawn(async move { FakeAdapter::browse(&login).await });
+    let session = adapter
+        .complete_login(pending, Duration::from_secs(10))
+        .await
+        .unwrap();
+    SessionStore::new(data.path())
+        .save(identity, &adapter.origin(), &session, &signer)
+        .await
+        .unwrap();
+    assert_eq!(
+        install_from_store(
+            &info,
+            Some(&adapter_url),
+            data.path(),
+            identity,
+            &signer,
+            &slot
+        )
+        .await,
+        Startup::Ready
+    );
+    let http = HttpClient::new(url::Url::parse(RELAY_HTTP).unwrap(), signer.clone())
+        .unwrap()
+        .with_evidence(slot);
+    http.query(&[QueryFilter {
+        kinds: vec![9],
+        limit: Some(1),
+        ..QueryFilter::default()
+    }])
+    .await
+    .unwrap();
+
+    // A host that does not require NIP-FI never installs anything.
+    let unset = EvidenceSlot::default();
+    assert_eq!(
+        install_from_store(
+            &serde_json::json!({}),
+            Some(&adapter_url),
+            data.path(),
+            identity,
+            &signer,
+            &unset
+        )
+        .await,
+        Startup::NotRequired
+    );
+    assert!(!unset.is_set());
+    signer.lock().await;
+}
+
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh --nip-fi"]
+async fn fi_relay_admits_a_hosted_agent_only_with_its_owner_grant() {
+    use bzz::auth::federated::{AgentEvidence, EvidenceSource as _};
+    let owner_keys = Keys::generate();
+    seed_member(&owner_keys.public_key().to_hex());
+    let owner = SignerHandle::spawn(owner_keys.clone());
+    let adapter = AdapterClient::new(url::Url::parse(ADAPTER).unwrap()).unwrap();
+    let pending = adapter.begin_login().await.unwrap();
+    let login = pending.url.clone();
+    let browser = tokio::spawn(async move { FakeAdapter::browse(&login).await });
+    let session = adapter
+        .complete_login(pending, Duration::from_secs(10))
+        .await
+        .unwrap();
+    browser.await.unwrap();
+    let relay = url::Url::parse(RELAY_WS).unwrap();
+    adapter.assertion(&session, &relay, &owner).await.unwrap();
+
+    // The agent key is not itself a relay member: only its owner is.
+    let agent_keys = Keys::generate();
+    let agent = SignerHandle::spawn(agent_keys.clone());
+    let denied = session::connect(relay.clone(), agent.clone())
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        matches!(&denied, Error::Auth(message) if message == RelayDenial::EvidenceRequired.notice()),
+        "{denied:?}"
+    );
+    let tag = owner
+        .owner_auth_tag(agent_keys.public_key(), "")
+        .await
+        .unwrap();
+    let grant = adapter
+        .agent_grant(&session, &agent, &tag, &owner_keys.public_key().to_hex())
+        .await
+        .unwrap();
+    let evidence = AgentEvidence::new(
+        AdapterClient::new(url::Url::parse(ADAPTER).unwrap()).unwrap(),
+        grant,
+        agent.clone(),
+        clock::system(),
+    );
+    let header = evidence.evidence(&relay).await.unwrap();
+    let (handle, mut events) = session::connect_with_evidence(
+        relay.clone(),
+        agent.clone(),
+        DiagnosticHandle::disabled(),
+        header,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(events.recv().await, Some(SessionEvent::Authenticated)),
+        "the owner-authorized agent assertion admits the agent"
+    );
+    handle.shutdown().await;
+
+    // Deleting the agent revokes it: no further assertion is minted.
+    adapter
+        .agent_revoke(&session, &agent_keys.public_key().to_hex())
+        .await
+        .unwrap();
+    evidence.invalidate(&relay);
+    assert!(evidence.evidence(&relay).await.is_err());
+    assert!(!evidence.has_grant());
+    owner.lock().await;
+    agent.lock().await;
+}

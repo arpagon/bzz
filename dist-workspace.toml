@@ -21,3 +21,17 @@ cargo-cyclonedx = true
 github-attestations = true
 github-attestations-phase = "host"
 github-attestations-filters = ["*.tar.xz", "*.tar.gz", "*.zip", "*.sha256", "*.json", "*.sh", "*.ps1", "*.rb", "*.xml"]
+
+# GitHub retired the macos-14 image dist 0.30.2 picks for Apple Silicon.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
+
+# Native Linux builds use the same reviewed multi-arch image. No apt at build
+# time; refresh ci/linux-build/ deliberately, then update these digest pins.
+[dist.github-custom-runners.x86_64-unknown-linux-gnu]
+runner = "ubuntu-22.04"
+container = { image = "ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d", host = "x86_64-unknown-linux-gnu" }
+
+[dist.github-custom-runners.aarch64-unknown-linux-gnu]
+runner = "ubuntu-24.04-arm"
+container = { image = "ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d", host = "aarch64-unknown-linux-gnu" }

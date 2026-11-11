@@ -119,6 +119,7 @@ pub enum WorkspaceEffect {
     OpenReaction,
     ConfirmDelete,
     MarkUnread,
+    OpenProfile,
     Unavailable(UiAction),
 }
 
@@ -399,6 +400,14 @@ pub fn reduce_workspace(state: &mut WorkspaceState, action: UiAction) -> Workspa
         }
         UiAction::Delete => WorkspaceEffect::ConfirmDelete,
         UiAction::MarkUnread => WorkspaceEffect::MarkUnread,
+        UiAction::ViewProfile
+            if matches!(
+                state.presentation.focus,
+                FocusSurface::Timeline | FocusSurface::Context
+            ) =>
+        {
+            WorkspaceEffect::OpenProfile
+        }
         unsupported => WorkspaceEffect::Unavailable(unsupported),
     }
 }

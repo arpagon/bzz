@@ -1,14 +1,19 @@
 [package]
 name = "bzz"
-version = "0.12.1"
+version = "0.13.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.98"
 description = "A human-first terminal client for Buzz communities"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/arpagon/bzz"
 homepage = "https://github.com/arpagon/bzz"
 keywords = ["nostr", "tui", "buzz", "chat"]
 categories = ["command-line-utilities"]
+
+[features]
+default = ["huddles-audio"]
+# Live huddle audio: microphone capture, playback and Opus (ADR v0.13 huddle audio).
+huddles-audio = ["dep:buzz-audio-client", "dep:cpal", "dep:rustix"]
 
 [[bin]]
 name = "bzz"
@@ -19,8 +24,10 @@ argon2 = "0.5"
 arboard = { version = "=3.6.1", default-features = false, features = ["image-data", "wayland-data-control"] }
 async-trait = "0.1"
 base64 = "0.22"
-buzz-core = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "9f55bf67456be10ff7c8238bf0d9e12e582848f6" }
-buzz-sdk = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "9f55bf67456be10ff7c8238bf0d9e12e582848f6" }
+buzz-core = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "f3b127e3af5c14d2314faa2b63556c3f51ec6743" }
+buzz-sdk = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "f3b127e3af5c14d2314faa2b63556c3f51ec6743" }
+buzz-audio-client = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "f3b127e3af5c14d2314faa2b63556c3f51ec6743", default-features = false, features = ["webpki-roots"], optional = true }
+cpal = { version = "0.16", optional = true }
 chacha20poly1305 = "0.10"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
@@ -30,7 +37,9 @@ futures-util = "0.3"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 infer = "0.19"
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# Compile libdbus from the locked source crate; no libdbus-1-dev download
+# is needed when building Linux binaries (the Secret Service API is unchanged).
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "vendored"] }
 nostr = { version = "0.44", features = ["nip44", "nip49", "nip98"] }
 nucleo-matcher = "0.3"
 opentelemetry-proto = { version = "=0.32.0", default-features = false, features = ["gen-tonic-messages", "logs"] }
@@ -41,7 +50,7 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm_0
 ratatui-image = { version = "=11.0.5", default-features = false, features = ["crossterm"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 rpassword = "7"
-rusqlite = { version = "0.37", features = ["backup", "bundled", "serde_json"] }
+rusqlite = { version = "0.41", features = ["backup", "bundled", "serde_json"] }
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -63,11 +72,18 @@ zeroize = "1"
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "=0.13.13", default-features = false, features = ["file_chooser", "tokio"] }
 
+# ALSA writes plugin errors straight to fd 2; huddle device setup silences
+# it so the full-screen TUI is never corrupted (safe `dup2`).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["std", "stdio"], optional = true }
+
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 rfd = { version = "=0.17.2", default-features = false }
 
 [dev-dependencies]
 criterion = "0.7"
+# Test-only NIP-FI issuer (fake NIP-FA adapter signs ES256 assertions).
+p256 = { version = "0.13", features = ["ecdsa", "jwk"] }
 insta = "1"
 proptest = "1"
 tempfile = "3"

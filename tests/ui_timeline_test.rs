@@ -22,6 +22,9 @@ fn message(id: &str) -> Message {
         deleted: false,
         delivery: bzz::domain::DeliveryState::Delivered,
         system: None,
+        sent_from_thread: None,
+        broadcast: false,
+        emoji: Vec::new(),
     }
 }
 #[test]

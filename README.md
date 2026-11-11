@@ -4,12 +4,13 @@
 fast keyboard navigation, local offline history, native Nostr authentication,
 and host-isolated communities.
 
-> Status: v0.12.1 adds quota-aware WebSocket admission and recoverable
-> rate-limited subscriptions while preserving the compact v0.12 status and
-> message selection. bzz does not silently republish rejected events, publish
-> human typing, host or control an agent runtime, or launch a local assistant
-> process. Protocol compatibility remains pinned to Buzz
-> `9f55bf67456be10ff7c8238bf0d9e12e582848f6`.
+> Status: v0.13.0 (release candidate) catches up with upstream Buzz:
+> federated identity (NIP-FI/NIP-FA), channel types and roles, artifacts, custom
+> emoji, presence and status, channel and thread windows, huddles with audio, a
+> local agent broker, send-to-channel and reports. bzz holds keys only for local
+> agents you create, never runs agent processes, and publishes nothing about
+> your activity unless you opt in. Protocol compatibility is pinned to Buzz
+> `f3b127e3af5c14d2314faa2b63556c3f51ec6743`.
 
 ## Build
 
@@ -108,6 +109,12 @@ newest attachment and `Ctrl-r` retries failed uploads. Generate shell
 integration with `bzz completions <shell>`. Inside the TUI, `:inbox`, `:search`,
 `:dm`, `:agents`, `:reconnect`, `:resync`, `:theme reload`, `:purge-cache`, and `:lock`
 cover the main conversation, recovery, appearance, and security operations.
+v0.13.0 adds `:signin` (federated identity), `:system`, `:artifacts`, `:tasks`,
+`:artifact rename|delete|restore|move`, `:status`, `:tochannel`, `:report [author]`,
+`:profile` (also `Space p` on a message: verified identity and public channels),
+`:presence [on|off]`,
+`:huddle` (`start`, `join`, `leave`, `end`, `mute`, `react`, `devices`) and
+`:broker`; agents for the local broker are managed with `bzz broker …`.
 
 ## Media safety
 
@@ -167,6 +174,9 @@ See [`docs/configuration.md`](docs/configuration.md),
 [`docs/security.md`](docs/security.md),
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
 [`docs/troubleshooting.md`](docs/troubleshooting.md),
+[the v0.13.0 release](docs/release-v0.13.0.md),
+[v0.13.0 validation](docs/validation-v0.13.0.md),
+[the v0.13.0 plan](docs/planning/2026-11-07/v0.13.0.md),
 [the v0.12.1 release](docs/release-v0.12.1.md),
 [v0.12.1 validation](docs/validation-v0.12.1.md),
 [the approved v0.12.1 admission plan](docs/planning/2026-08-28/v0.12.1.md),

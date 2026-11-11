@@ -42,7 +42,31 @@ impl ParsedSearch {
             .count()
             >= 2
     }
+
+    /// Whether the relay will run a message prefix search for this text
+    /// (block/buzz#8947). The relay splits the last whitespace-separated word
+    /// with Postgres' `simple` parser and returns no hits when any of its
+    /// lexemes is shorter than three characters. Profile search is exempt.
+    pub fn remote_message_prefix_ok(&self) -> bool {
+        let Some(last) = self.text.split_whitespace().last() else {
+            return false;
+        };
+        // Postgres keeps dotted/at-joined words (`v1.2`, `foo@bar.com`) as one
+        // lexeme but splits hyphenated parts and underscores (verified against
+        // the pinned harness: `bzz-dm-search` -> bzz, dm, search).
+        let mut lexemes = last
+            .split(|character: char| {
+                !character.is_alphanumeric() && !matches!(character, '.' | '@')
+            })
+            .map(|lexeme| lexeme.trim_matches(|character| matches!(character, '.' | '@')))
+            .filter(|lexeme| !lexeme.is_empty())
+            .peekable();
+        lexemes.peek().is_some() && lexemes.all(|lexeme| lexeme.chars().count() >= 3)
+    }
 }
+
+pub const SHORT_PREFIX_NOTICE: &str =
+    "relay message search needs 3+ characters in each part of the last word";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SearchOutput {
@@ -111,6 +135,7 @@ impl SearchService {
             return Ok(local);
         }
 
+        let short_prefix = !parsed.remote_message_prefix_ok();
         let (profile_result, message_result) = tokio::join!(
             self.remote_profiles(&parsed),
             self.remote_messages(&parsed, &resolved, identity_pubkey)
@@ -172,6 +197,9 @@ impl SearchService {
         }
         merge_remote(&mut local.results, remote);
         local.results.truncate(SESSION_LIMIT);
+        if short_prefix && local.notice.is_none() {
+            local.notice = Some(SHORT_PREFIX_NOTICE.into());
+        }
         Ok(local)
     }
 
@@ -180,22 +208,8 @@ impl SearchService {
         if !parsed.enough_text() {
             return Ok(0);
         }
-        let events = self
-            .http
-            .query(&[QueryFilter {
-                kinds: vec![0],
-                search: Some(parsed.text),
-                search_mode: Some(SearchMode::Prefix),
-                page: Some(0),
-                limit: Some(50),
-                ..QueryFilter::default()
-            }])
-            .await?;
-        let events = events
-            .into_iter()
-            .filter(|event| event.kind.as_u16() == 0 && verify(event).is_ok())
-            .take(50)
-            .collect::<Vec<_>>();
+        let events = self.profile_events(&parsed.text, 50, 1).await?;
+        let events = events.into_iter().take(100).collect::<Vec<_>>();
         let count = events.len();
         let community = self.community_id;
         self.store
@@ -253,21 +267,20 @@ impl SearchService {
             return Ok(());
         };
         let events = self
-            .search_pages(QueryFilter {
-                kinds: vec![0],
-                search: Some(value.to_owned()),
-                search_mode: Some(SearchMode::Prefix),
-                limit: Some(DEFAULT_LIMIT as u32),
-                ..QueryFilter::default()
-            })
+            .profile_events(
+                value.strip_prefix('@').unwrap_or(value),
+                DEFAULT_LIMIT as u32,
+                REMOTE_PAGE_CAP,
+            )
             .await?;
         let mut matches = events
             .iter()
-            .filter(|event| verify(event).is_ok())
             .filter_map(as_profile)
             .filter(|profile| profile_matches(profile, value))
             .map(|profile| profile.pubkey)
             .collect::<Vec<_>>();
+        // People the relay matched only by a relay-signed verified name.
+        matches.extend(self.verified_subjects(&events).await?);
         matches.extend(
             profiles
                 .values()
@@ -288,17 +301,10 @@ impl SearchService {
             return Ok(Vec::new());
         }
         let values = self
-            .search_pages(QueryFilter {
-                kinds: vec![0],
-                search: Some(parsed.text.clone()),
-                search_mode: Some(SearchMode::Prefix),
-                limit: Some(DEFAULT_LIMIT as u32),
-                ..QueryFilter::default()
-            })
+            .profile_events(&parsed.text, DEFAULT_LIMIT as u32, REMOTE_PAGE_CAP)
             .await?;
         Ok(values
             .into_iter()
-            .filter(|event| verify(event).is_ok())
             .take(DEFAULT_LIMIT * REMOTE_PAGE_CAP as usize)
             .enumerate()
             .map(|(index, event)| (u32::try_from(index).unwrap_or(u32::MAX), event))
@@ -311,7 +317,7 @@ impl SearchService {
         resolved: &ResolvedSearch,
         _identity_pubkey: &str,
     ) -> Result<Vec<Event>> {
-        if !parsed.enough_text() {
+        if !parsed.enough_text() || !parsed.remote_message_prefix_ok() {
             return Ok(Vec::new());
         }
         let mut filter = QueryFilter {
@@ -334,6 +340,70 @@ impl SearchService {
             .into_iter()
             .filter(|event| matches!(event.kind.as_u16(), 9 | 40_002) && verify(event).is_ok())
             .take(DEFAULT_LIMIT * REMOTE_PAGE_CAP as usize)
+            .collect())
+    }
+
+    /// Signed kind 0 (and, where advertised, relay-signed kind 30382) events
+    /// for people whose names match `text`. Uses the relay's name-only
+    /// `POST /profiles/search`; a relay without it (404) gets NIP-50 prefix
+    /// search over kind 0. Signatures are checked here; 30382 authority is
+    /// checked against the pinned relay key when stored.
+    async fn profile_events(&self, text: &str, limit: u32, pages: u32) -> Result<Vec<Event>> {
+        let mut events = Vec::new();
+        for page in 1..=pages {
+            let Some(values) = self.http.profile_search(text, limit, page).await? else {
+                return Ok(self
+                    .search_pages(QueryFilter {
+                        kinds: vec![0],
+                        search: Some(text.to_owned()),
+                        search_mode: Some(SearchMode::Prefix),
+                        limit: Some(limit),
+                        ..QueryFilter::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .filter(|event| event.kind.as_u16() == 0 && verify(event).is_ok())
+                    .collect());
+            };
+            // Pages count people: a 30382 is signed by the relay, so its
+            // subject is its `d` tag, not its author.
+            let people = values
+                .iter()
+                .map(|event| {
+                    if event.kind.as_u16() == 30_382 {
+                        crate::protocol::events::first_tag(event, "d").unwrap_or_default()
+                    } else {
+                        event.pubkey.to_hex()
+                    }
+                })
+                .collect::<HashSet<_>>()
+                .len();
+            events.extend(values.into_iter().filter(|event| {
+                matches!(event.kind.as_u16(), 0 | 30_382) && verify(event).is_ok()
+            }));
+            if people < limit as usize {
+                break;
+            }
+        }
+        Ok(events)
+    }
+
+    /// Subjects of relay-signed verified profiles in `events`.
+    async fn verified_subjects(&self, events: &[Event]) -> Result<Vec<String>> {
+        let community = self.community_id;
+        let Some(relay) = self
+            .store
+            .call(move |store| store.pinned_relay_pubkey(community))
+            .await?
+        else {
+            return Ok(Vec::new());
+        };
+        Ok(events
+            .iter()
+            .filter(|event| event.kind.as_u16() == 30_382)
+            .filter_map(|event| crate::protocol::verified_profile::parse(event, &relay))
+            .filter(|profile| profile.name.is_some())
+            .map(|profile| profile.pubkey)
             .collect())
     }
 
@@ -679,6 +749,34 @@ const fn section_order(kind: SearchResultKind) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn message_prefix_follows_the_relay_lexeme_minimum() {
+        for (text, ok) in [
+            ("deploy", true),
+            ("hello wor", true),
+            ("ab", false),
+            ("hello a", false),
+            ("bzz-dm-search", false),
+            ("bzzdmsearch1234", true),
+            ("release-notes", true),
+            ("v1.2", true),
+            ("hello.world", true),
+            ("foo@bar.com", true),
+            ("abc_de", false),
+            ("x86_64", false),
+            ("!!!", false),
+            ("", false),
+            ("año", true),
+            ("über", true),
+        ] {
+            let parsed = super::ParsedSearch {
+                text: text.into(),
+                ..super::ParsedSearch::default()
+            };
+            assert_eq!(parsed.remote_message_prefix_ok(), ok, "{text:?}");
+        }
+    }
+
     use proptest::prelude::*;
 
     use super::{fts_prefix_query, parse, parse_date};
@@ -714,5 +812,68 @@ mod tests {
                 prop_assert!(fts.len() <= parsed.text.len().saturating_mul(8).saturating_add(32));
             }
         }
+    }
+
+    /// A person the relay matched only by a relay-signed verified name is a
+    /// `from:` candidate; a forged or ended 30382 is not.
+    #[tokio::test]
+    async fn verified_names_from_the_pinned_relay_are_people() {
+        use nostr::{EventBuilder, Keys, Kind, Tag};
+        let relay = Keys::generate();
+        let identity = crate::config::IdentityConfig {
+            id: uuid::Uuid::new_v4(),
+            label: "s".into(),
+            pubkey: "a".repeat(64),
+            backend: crate::config::KeyBackend::EncryptedFile,
+            key_ref: "s".into(),
+        };
+        let mut config = crate::config::Config::default();
+        config.identities.push(identity.clone());
+        let community = config
+            .add_community("s".into(), "wss://s.example".into(), identity.id, false)
+            .unwrap();
+        let mut store = crate::store::Store::open_memory().unwrap();
+        store.sync_config(&config).unwrap();
+        store
+            .pin_relay_pubkey(community, &relay.public_key().to_hex())
+            .unwrap();
+        let store = crate::store::writer::StoreHandle::spawn(store).unwrap();
+        let http = crate::protocol::http::HttpClient::new(
+            url::Url::parse("http://127.0.0.1:9/").unwrap(),
+            crate::auth::signer::SignerHandle::spawn(Keys::generate()),
+        )
+        .unwrap();
+        let service = super::SearchService::new(community, http, store);
+        let card = |signer: &Keys, person: &str, active: &str| {
+            let mut tags = vec![
+                Tag::parse(["d", person]).unwrap(),
+                Tag::parse(["p", person]).unwrap(),
+                Tag::parse(["active", active]).unwrap(),
+            ];
+            if active == "true" {
+                for (name, value) in [
+                    ("display_name", "Wes Johnson"),
+                    ("username", "wes"),
+                    ("issuer_label", "Example IdP"),
+                    ("verified_at", "1790000000"),
+                ] {
+                    tags.push(Tag::parse([name, value]).unwrap());
+                }
+            }
+            EventBuilder::new(Kind::Custom(30_382), "")
+                .tags(tags)
+                .sign_with_keys(signer)
+                .unwrap()
+        };
+        let person = "b".repeat(64);
+        let events = vec![
+            card(&relay, &person, "true"),
+            card(&Keys::generate(), &"c".repeat(64), "true"),
+            card(&relay, &"d".repeat(64), "false"),
+        ];
+        assert_eq!(
+            service.verified_subjects(&events).await.unwrap(),
+            vec![person]
+        );
     }
 }

@@ -27,6 +27,10 @@ use super::{
 };
 
 const IMAGE_LIMIT: u64 = 50 * 1024 * 1024;
+/// Kind 24242 proof lifetime. NIP-FI requires `expiration <= created_at + 60`;
+/// `now` is read before signing, so `now + 60` always satisfies it. Each proof
+/// is minted immediately before its request.
+pub const BLOSSOM_PROOF_SECONDS: u64 = 60;
 const GIF_LIMIT: u64 = 10 * 1024 * 1024;
 const FILE_LIMIT: u64 = 100 * 1024 * 1024;
 const VIDEO_LIMIT: u64 = 500 * 1024 * 1024;
@@ -38,6 +42,7 @@ pub struct MediaClient {
     signer: SignerHandle,
     client: Client,
     transfer_slots: Arc<Semaphore>,
+    evidence: crate::auth::federated::EvidenceSlot,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,6 +92,7 @@ impl MediaClient {
             signer,
             client,
             transfer_slots: Arc::new(Semaphore::new(concurrency)),
+            evidence: crate::auth::federated::EvidenceSlot::default(),
         })
     }
 
@@ -537,13 +543,33 @@ impl MediaClient {
         Ok((url, sha256))
     }
 
+    /// Attach NIP-FI evidence to every Blossom request (kind 24242 proofs).
+    #[must_use]
+    pub fn with_evidence(mut self, slot: crate::auth::federated::EvidenceSlot) -> Self {
+        self.evidence = slot;
+        self
+    }
+
+    async fn evidence_header(&self) -> Result<Option<header::HeaderValue>> {
+        let Some(value) = self.evidence.header(&self.base).await? else {
+            return Ok(None);
+        };
+        let mut value = header::HeaderValue::from_str(&value)
+            .map_err(|_| Error::Protocol("federated identity evidence is not a header".into()))?;
+        value.set_sensitive(true);
+        Ok(Some(value))
+    }
+
     async fn send_get(&self, url: &str, sha256: &str) -> Result<reqwest::Response> {
+        let evidence = self.evidence_header().await?;
         let auth = self.get_auth(sha256).await?;
         let mut attempt = 0_u32;
         loop {
-            let response = self
-                .client
-                .get(url)
+            let mut request = self.client.get(url);
+            if let Some(evidence) = &evidence {
+                request = request.header(crate::auth::federated::HEADER, evidence.clone());
+            }
+            let response = request
                 .header(header::AUTHORIZATION, &auth)
                 .header(header::ACCEPT_ENCODING, "identity")
                 .send()
@@ -586,8 +612,11 @@ impl MediaClient {
             .await
             .map_err(|error| Error::io(path, error))?;
         let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
-        self.client
-            .put(url)
+        let mut request = self.client.put(url);
+        if let Some(evidence) = self.evidence_header().await? {
+            request = request.header(crate::auth::federated::HEADER, evidence);
+        }
+        request
             .header(header::AUTHORIZATION, auth)
             .header(header::CONTENT_TYPE, mime)
             .header(header::CONTENT_LENGTH, length)
@@ -603,7 +632,7 @@ impl MediaClient {
         let tags = vec![
             Tag::parse(["t", "get"]).map_err(|error| Error::Protocol(error.to_string()))?,
             Tag::parse(["x", sha256]).map_err(|error| Error::Protocol(error.to_string()))?,
-            Tag::parse(["expiration", &(now + 600).to_string()])
+            Tag::parse(["expiration", &(now + BLOSSOM_PROOF_SECONDS).to_string()])
                 .map_err(|error| Error::Protocol(error.to_string()))?,
             Tag::parse(["server", &self.authority])
                 .map_err(|error| Error::Protocol(error.to_string()))?,
@@ -620,7 +649,7 @@ impl MediaClient {
         let tags = vec![
             Tag::parse(["t", "upload"]).map_err(|error| Error::Protocol(error.to_string()))?,
             Tag::parse(["x", sha256]).map_err(|error| Error::Protocol(error.to_string()))?,
-            Tag::parse(["expiration", &(now + 300).to_string()])
+            Tag::parse(["expiration", &(now + BLOSSOM_PROOF_SECONDS).to_string()])
                 .map_err(|error| Error::Protocol(error.to_string()))?,
             Tag::parse(["server", &self.authority])
                 .map_err(|error| Error::Protocol(error.to_string()))?,

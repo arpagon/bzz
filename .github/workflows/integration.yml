@@ -13,7 +13,11 @@ on:
       - 'src/ui/agents.rs'
       - 'migrations/**'
       - 'tests/relay_integration.rs'
+      - 'tests/relay_nip_fi_integration.rs'
+      - 'tests/support/**'
+      - 'examples/**'
       - 'scripts/test-relay.sh'
+      - '.github/workflows/integration.yml'
       - 'Cargo.toml'
       - 'Cargo.lock'
   push:
@@ -29,7 +33,11 @@ on:
       - 'src/ui/agents.rs'
       - 'migrations/**'
       - 'tests/relay_integration.rs'
+      - 'tests/relay_nip_fi_integration.rs'
+      - 'tests/support/**'
+      - 'examples/**'
       - 'scripts/test-relay.sh'
+      - '.github/workflows/integration.yml'
       - 'Cargo.toml'
       - 'Cargo.lock'
 permissions:
@@ -37,19 +45,48 @@ permissions:
 jobs:
   relay:
     runs-on: ubuntu-latest
+    env:
+      BZZ_BUILD_IMAGE: ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [default, nip-fi]
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux keychain build dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - uses: actions/checkout@v4
         with:
           repository: block/buzz
-          ref: 9f55bf67456be10ff7c8238bf0d9e12e582848f6
+          ref: f3b127e3af5c14d2314faa2b63556c3f51ec6743
           path: .buzz-source
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
-      - name: Run isolated real-relay suite
+      - name: Run isolated real-relay suite (${{ matrix.profile }})
+        # Actions job containers attach to an Actions bridge and cannot use
+        # --network host. Run this one container explicitly so the harness
+        # reaches Compose's localhost ports without a nested Docker daemon.
         env:
-          BZZ_BUZZ_SOURCE: ${{ github.workspace }}/.buzz-source
-        run: ./scripts/test-relay.sh
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          docker run --rm --network host \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            --volume "${CARGO_HOME:-$HOME/.cargo}:/opt/bzz-cargo" \
+            --volume "${RUSTUP_HOME:-$HOME/.rustup}:/opt/bzz-rustup" \
+            --workdir "$GITHUB_WORKSPACE" \
+            --env CARGO_HOME=/opt/bzz-cargo --env RUSTUP_HOME=/opt/bzz-rustup \
+            --env PATH=/opt/bzz-cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            --env BZZ_BUZZ_SOURCE="$GITHUB_WORKSPACE/.buzz-source" \
+            --env PROFILE \
+            "$BZZ_BUILD_IMAGE" bash -ec '
+              git config --global --add safe.directory "$PWD"
+              git config --global --add safe.directory "$BZZ_BUZZ_SOURCE"
+              if [[ "$PROFILE" == nip-fi ]]; then
+                ./scripts/test-relay.sh --nip-fi
+              else
+                ./scripts/test-relay.sh
+              fi
+            '
