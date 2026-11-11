@@ -21,3 +21,7 @@ cargo-cyclonedx = true
 github-attestations = true
 github-attestations-phase = "host"
 github-attestations-filters = ["*.tar.xz", "*.tar.gz", "*.zip", "*.sha256", "*.json", "*.sh", "*.ps1", "*.rb", "*.xml"]
+
+# GitHub retired the macos-14 image dist 0.30.2 picks for Apple Silicon.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
