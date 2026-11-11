@@ -229,7 +229,7 @@ frame: `/tmp/bzz-v013-visual.p6pDzi/` —
 drawn inline) and `m7-scroll.mp4` (34 s, 1130×654, 10 fps). README has no
 media.
 
-## Production smoke findings (follow-up in progress)
+## Production smoke findings and owner acceptance
 
 The owner's huddle screenshot exposed ALSA plugin errors writing over the TUI
 and an unsupported `message_deleted` notice. The notice uses the pinned relay's
@@ -247,9 +247,16 @@ callers are serialized and restoration is guarded against unwinding.
 
 Default-feature all-target tests, no-default-feature all-target tests, clippy
 all-targets/all-features, cargo deny and cargo audit passed on this follow-up.
-The release binary was rebuilt. Production audio retest remains pending;
-this follow-up is not release acceptance. A proposed automatic end on the
-creator's failed audio join was withdrawn: a local device failure must not
+The release binary was rebuilt from `c7bccb2`. After receiving the production
+checklist and retry instructions, the owner reported: “genial ya probe todo y
+todo perfecto.” This records owner-reported functional production acceptance,
+including the audio retry, not an independently instrumented measurement.
+No startup frame count, real FI-community result, or Windows audio-device
+result was supplied; those gates remain unverified. CI, Pinned Buzz integration
+and Release workflows all succeeded for `c7bccb2`.
+
+A proposed automatic end on the creator's failed audio join was withdrawn:
+a local device failure must not
 end a huddle another participant may already have joined. The creator can
 explicitly end the huddle from the panel.
 
@@ -257,7 +264,7 @@ explicitly end the huddle from the panel.
 
 | Item | Why | Who |
 |---|---|---|
-| Production acceptance on the real community (startup frame count against the 66-channel account, windows, membership changes, a huddle with a second client, a broker agent posting in a test channel) | needs the owner's identity and community | owner |
+| Instrumented startup frame count against the 66-channel production account | functional smoke accepted by owner, but no request count was reported | owner / relay operator |
 | FI community acceptance | no FI community available; T4 and the real-browser harness run are the proof | owner |
 | Tag v0.12.0 and v0.12.1, then v0.13.0 | the plan's prerequisite; each tag publishes binaries | owner |
 | T7 on Windows | hosted runners have no audio endpoint; needs a self-hosted runner or a virtual driver with capture | CI / operator |
