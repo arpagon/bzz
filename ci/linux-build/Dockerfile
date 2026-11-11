@@ -13,7 +13,7 @@ RUN apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update \
       bash build-essential ca-certificates cmake curl git jq libasound2-dev \
       libasound2-plugins libdbus-1-dev libssl-dev lsof openssl perl pkg-config \
       postgresql-client pulseaudio pulseaudio-utils python3 sudo tmux \
-      docker.io docker-compose-v2 \
+      docker.io docker-compose-v2 unzip zip zstd \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1001 --shell /bin/bash builder \
     && printf 'builder ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/builder \

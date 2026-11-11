@@ -1,5 +1,5 @@
 {
-  "source_release": "ci-linux-build-source-2026-11-11",
-  "tag": "2026-11-11",
-  "archive_sha256": "2fe35a325511ba4b1128825286f26e7d0ff7aada6bc9dfa743ae5bc53211fa40"
+  "source_release": "ci-linux-build-source-2026-11-11-2",
+  "tag": "2026-11-11-2",
+  "archive_sha256": "6b4ec4637c7fd567c614e4c8ccf1cd3b78fed96475b525ac63db65a48309b23a"
 }
