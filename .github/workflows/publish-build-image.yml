@@ -1,0 +1,54 @@
+name: Publish Linux build image
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, v0.13.0]
+    paths: ['ci/linux-build/publish.json']
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: publish-linux-build-image
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'arpagon/bzz'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read reviewed image promotion manifest
+        shell: bash
+        run: |
+          release=$(jq -r .source_release ci/linux-build/publish.json)
+          tag=$(jq -r .tag ci/linux-build/publish.json)
+          sha=$(jq -r .archive_sha256 ci/linux-build/publish.json)
+          [[ "$release" =~ ^ci-linux-build-source-[0-9-]+$ ]]
+          [[ "$tag" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}(-[0-9]+)?$ ]]
+          [[ "$sha" =~ ^[a-f0-9]{64}$ ]]
+          echo "SOURCE_RELEASE=$release" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=$tag" >> "$GITHUB_ENV"
+          echo "ARCHIVE_SHA256=$sha" >> "$GITHUB_ENV"
+      - name: Fetch and verify prebuilt multi-architecture OCI archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$SOURCE_RELEASE" --pattern bzz-build.oci.tar --dir "$RUNNER_TEMP/image"
+          cd "$RUNNER_TEMP/image"
+          printf '%s  bzz-build.oci.tar\n' "$ARCHIVE_SHA256" | sha256sum --check
+      - name: Publish exact OCI manifests (no package installation)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DOCKER_CONFIG: ${{ runner.temp }}/image-auth
+        run: |
+          mkdir -p "$DOCKER_CONFIG"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          docker run --rm \
+            -v "$RUNNER_TEMP/image:/image:ro" \
+            -v "$DOCKER_CONFIG:/auth:ro" \
+            quay.io/skopeo/stable@sha256:ed369b58b75b773ebe6cb8b6edd1c9b4323701c703777c8567e3c1fc7df9527c \
+            copy --all --preserve-digests --authfile /auth/config.json \
+            oci-archive:/image/bzz-build.oci.tar \
+            "docker://ghcr.io/arpagon/bzz-build:$IMAGE_TAG"
+          docker buildx imagetools inspect "ghcr.io/arpagon/bzz-build:$IMAGE_TAG" | tee "$RUNNER_TEMP/image-summary.txt"
+          cat "$RUNNER_TEMP/image-summary.txt" >> "$GITHUB_STEP_SUMMARY"
