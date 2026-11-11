@@ -14,6 +14,15 @@
    Smoke-test both the OS credential backend and encrypted fallback before
    publishing package-manager manifests.
 
+## Linux build image
+
+Linux release, CI, upgrade, audio and relay tests use a reviewed Ubuntu 22.04
+multi-architecture image pinned by digest. They do not download system packages
+from Ubuntu mirrors. Native amd64/arm64 builds share that image; Rust/Cargo and
+GitHub/GHCR still require normal network access. Refresh instructions and the
+package inventory are in [`ci/linux-build/README.md`](../ci/linux-build/README.md).
+Do not replace the dependency-verification step with a runtime `apt-get`.
+
 Cache schema changes are called out in release notes. Schema v8 repairs exact
 bot roles from current trusted membership heads; schema v7 adds the rebuildable
 community-scoped remote-agent projection and exact bot-role index; schema v5 added the Inbox conversations projection while schema v4 added

@@ -260,13 +260,56 @@ a local device failure must not
 end a huddle another participant may already have joined. The creator can
 explicitly end the huddle from the panel.
 
+## Linux release infrastructure follow-up
+
+The v0.12.1 release and Linux v0.13 CI repeatedly failed before compilation
+because apt could not resolve Ubuntu mirrors. Product workflows now use the
+public multi-architecture image
+`ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d`.
+System packages are installed only when maintaining the image, not while
+building/testing a release. Current bzz vendors libdbus through keyring;
+Secret Service behavior is unchanged. The image retains DBus headers for the
+unmodified v0.12.1 upgrade fixture.
+
+- Both amd64 and arm64 image prerequisites were exercised with networking
+  disabled. Anonymous GHCR pulls succeeded. The source OCI archive is promoted
+  by a hash-checking workflow (run `43063191448` succeeded); source Dockerfile,
+  manifest and maintenance instructions are in `ci/linux-build/`.
+- `cargo test --locked --all-targets` passed inside the image with
+  `--network none`, `--offline` and `DBUS_1_NO_PKG_CONFIG=1` (no system DBus
+  discovery). Local fmt, clippy all-targets/all-features, all-target tests,
+  cargo deny and cargo audit also passed with the vendored lockfile.
+- In the final pinned image, with networking disabled: the real v0.12.1
+  upgrade/backup/FTS/Inbox test passed; PulseAudio tone loopback passed
+  (964 ms, peak 0.50, streams 0 → 2 → 0). A separate check reproduced
+  Actions' root user / foreign-owned HOME and passed with isolated PulseAudio
+  runtime/state paths.
+- `build_environment_test` passed and was observed red with the former apt
+  installation step restored (`release must not install distro packages at
+  job runtime`). `dist plan` selects the pinned native image for both Linux
+  targets with no `packages_install` command. actionlint 1.7.12 passed.
+- Real GitHub gates passed on `daab03e`: CI `43064918238` succeeded (Linux
+  build/test, three-OS upgrades, Linux/macOS audio, four-platform builds;
+  Windows audio remains an explicitly experimental failure). Pinned relay
+  run `43064917914` succeeded: 13/13 default, 4/4 NIP-FI.
+- The previously unpublished v0.12.1 tag was moved to `3ed8ebb` (packaging
+  changes only). Release run `43064206330` succeeded, including native
+  amd64/arm64 Linux builds without apt, and published 18 assets. Both Linux
+  archives' SHA-256 checks passed; both downloaded binaries printed
+  `bzz 0.12.1` in their matching offline image. No tag with a published
+  release was moved in this follow-up.
+- A minimal keyring build with system DBus probing disabled was observed red
+  without `vendored` (`pkg_config failed: Aborted because
+  DBUS_1_NO_PKG_CONFIG is set`) and green with it. The resulting bzz binary
+  has no dynamic `libdbus` dependency.
+
 ## Pending
 
 | Item | Why | Who |
 |---|---|---|
 | Instrumented startup frame count against the 66-channel production account | functional smoke accepted by owner, but no request count was reported | owner / relay operator |
 | FI community acceptance | no FI community available; T4 and the real-browser harness run are the proof | owner |
-| Tag v0.12.0 and v0.12.1, then v0.13.0 | the plan's prerequisite; each tag publishes binaries | owner |
+| Publish v0.13.0 | v0.12.0 and v0.12.1 are published; owner authorized v0.13.0 publication | release operator |
 | T7 on Windows | hosted runners have no audio endpoint; needs a self-hosted runner or a virtual driver with capture | CI / operator |
 | E2E 4.1 mouse, 4.2 remote agents, 7 keychain recovery, 9 clipboard and OS file chooser | need the operator's desktop pointer, keychain or clipboard, or a remote-agent fixture | operator |
-| `site/` copy and media for v0.13.0 | the owner has uncommitted site work in the same files, and a deploy publishes | owner |
+| Deploy `site/` for v0.13.0 | release section and 49-second sanitized demo committed in ca12225, including the owner's existing deployed logo animation; deploy authorized but not yet performed | release operator |
