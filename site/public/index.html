@@ -7,7 +7,7 @@
 <meta name="description" content="bzz is a human-first terminal client for Buzz: fast keyboard navigation, local offline history, native Nostr authentication, and host-isolated communities. One Rust binary, 60 themes.">
 <link rel="canonical" href="https://getbzz.dev/">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/styles.css?v=3">
+<link rel="stylesheet" href="/styles.css?v=4">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://getbzz.dev/">
 <meta property="og:title" content="bzz — a human-first terminal client for Buzz">
@@ -102,7 +102,7 @@
   </div>
 
   <div class="stats">
-    <div><b>1</b><span>static Rust binary</span></div>
+    <div><b>1</b><span>Rust binary</span></div>
     <div><b>60</b><span>built-in themes</span></div>
     <div><b>offline</b><span>SQLite-backed history</span></div>
     <div><b>100%</b><span>keyboard-driven</span></div>
@@ -119,7 +119,7 @@
       <span></span><span></span><span></span>
       <div class="title">bzz 0.13.0 — #team · demo</div>
     </div>
-    <video autoplay muted loop playsinline preload="metadata"
+    <video controls autoplay muted loop playsinline preload="metadata"
       poster="/assets/poster-v013.png?v=1"
       aria-label="bzz 0.13 demo: a read-only announce channel, the System channel group, a thread, a profile card with public channels, the artifacts panel, custom emoji reactions, and opt-in presence">
       <source src="/assets/demo-v013.webm?v=1" type="video/webm">
@@ -194,7 +194,8 @@
     </div>
   </div>
   <div class="shot"><p class="cap">Full notes:
-  <a href="https://github.com/arpagon/bzz/releases/tag/v0.13.0">bzz v0.13.0 release</a>.</p></div>
+  <a href="https://github.com/arpagon/bzz/releases/tag/v0.13.0">bzz v0.13.0 release</a> ·
+  <a href="/assets/demo-v013.mp4" download>Download demo (MP4)</a>.</p></div>
 </div>
 </section>
 
@@ -206,9 +207,10 @@
     <div class="card">
       <span class="k">/// identity</span>
       <h3>Native Nostr identity, in your OS keychain</h3>
-      <p>No third-party account. Secret keys live in the operating-system
-      credential store and never pass through argv or plain environment
-      variables. Backups are password-encrypted NIP-49 <code>ncryptsec</code> files.</p>
+      <p>Use your Nostr identity; communities may also require browser sign-in.
+      Local secret keys live in the operating-system credential store and never
+      pass through argv or plain environment variables. Backups are
+      password-encrypted NIP-49 <code>ncryptsec</code> files.</p>
     </div>
     <div class="card">
       <span class="k">/// communities</span>
@@ -400,6 +402,9 @@ curl -fsSL https://github.com/arpagon/bzz/releases/latest/download/bzz-x86_64-un
 curl -fsSL https://github.com/arpagon/bzz/releases/latest/download/bzz-aarch64-unknown-linux-gnu.tar.xz | tar xJ
 
 sudo mv bzz /usr/local/bin/</code></pre>
+    <p class="note">Linux builds require glibc 2.35 or newer and ALSA's
+    <code>libasound.so.2</code> for huddle audio (Ubuntu 22.04+). No separate
+    DBus development package is needed.</p>
   </div>
 
   <div class="panel" data-panel="windows" hidden>

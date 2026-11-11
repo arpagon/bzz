@@ -269,6 +269,8 @@ header.hero {
 
 .install-line code {
   white-space: nowrap;
+  min-width: 0;
+  overflow-x: auto;
 }
 
 .install-line button {
@@ -423,11 +425,12 @@ section h2.head {
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
   gap: 1rem;
 }
 
 .card {
+  min-width: 0;
   background: var(--surface-dark);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -453,6 +456,10 @@ section h2.head {
 .card p {
   color: var(--muted);
   font-size: 0.88rem;
+}
+
+.card pre {
+  overflow-x: auto;
 }
 
 .card code {
@@ -593,8 +600,24 @@ footer .disclaimer {
 }
 
 @media (max-width: 640px) {
+  nav {
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  nav .brand {
+    flex-shrink: 0;
+  }
+
   nav .links {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    min-width: 0;
     gap: 0.8rem;
+  }
+
+  nav .links a {
+    white-space: nowrap;
   }
 
   .themes-label {
