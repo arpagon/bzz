@@ -1,12 +1,12 @@
 # bzz v0.13.0 validation
 
-**Status:** Validated 2026-11-10 locally, on the pinned relay (plain and
-FI-enforcing), in CI on Linux, macOS Intel, macOS Apple Silicon and Windows,
-through Herdr on the release binary, and with raster captures. What remains
-needs the owner's production community, an FI community, or the v0.12.x tags
-(see [Pending](#pending)).
+**Status:** Released 2026-11-11 after owner-reported functional production
+acceptance. Verified locally, on the pinned relay (plain and FI-enforcing),
+in CI on Linux, macOS Intel, macOS Apple Silicon and Windows, through Herdr
+on the release binary, and with raster captures. Remaining unmeasured or
+unavailable checks are listed explicitly in [Pending](#pending).
 
-Branch `v0.13.0` (draft PR #6, CI only), Buzz pin
+PR #6 merged; tag `v0.13.0` at `2b3429fd0f0e8667d51b4006807d31cb6cedf187`. Buzz pin
 `f3b127e3af5c14d2314faa2b63556c3f51ec6743`, Rust 1.98.1. Method:
 [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md) — each
 claim has a test that was seen failing without the change where noted.
@@ -18,8 +18,8 @@ claim has a test that was seen failing without the change where noted.
 | Format | `cargo fmt --check` | clean |
 | Lint (audio) | `cargo clippy --locked --all-targets --all-features -- -D warnings` | clean |
 | Lint (view-only) | `cargo clippy --locked --all-targets --no-default-features -- -D warnings` | clean |
-| Tests (audio) | `cargo test --locked --all-targets` | 453 passed, 0 failed |
-| Tests (view-only) | `cargo test --locked --all-targets --no-default-features` | 452 passed, 0 failed |
+| Tests (audio) | `cargo test --locked --all-targets` | 456 passed, 0 failed |
+| Tests (view-only) | `cargo test --locked --all-targets --no-default-features` | 455 passed, 0 failed |
 | Supply chain | `cargo deny --locked check` / `cargo audit` | ok (recorded exceptions below) |
 | Release build | `cargo build --locked --release`; `bzz --version` | `bzz 0.13.0` |
 | Pinned relay | `BZZ_BUZZ_SOURCE=<pin> ./scripts/test-relay.sh` | 13 passed |
@@ -303,13 +303,42 @@ unmodified v0.12.1 upgrade fixture.
   DBUS_1_NO_PKG_CONFIG is set`) and green with it. The resulting bzz binary
   has no dynamic `libdbus` dependency.
 
+## Publication and website
+
+- The owner authorized publication, the demo and the website update. Both
+  prerequisite releases were published first: v0.12.0 and v0.12.1.
+- Final PR checks on `6b256b7` passed: CI `43068357330`, pinned Buzz
+  integration `43068357341`, release plan `43068357481`. PR #6 was merged
+  to `main` at `2b3429f`; its source tree is identical to the checked head.
+- Tag `v0.13.0` release workflow `43070269700` succeeded on all five native
+  targets and published 18 assets. `sha256sum -c sha256.sum` passed for all
+  archives. Signed provenance verification passed for the five platform
+  archives, source archive and SBOM, constrained to this repository's release
+  workflow, source commit `2b3429f` and `refs/tags/v0.13.0`, with self-hosted
+  signers denied. The SBOM identifies bzz 0.13.0 and the updated dependencies.
+- Both downloaded Linux binaries printed `bzz 0.13.0`, passed `check`, and
+  created/verified/backed up/removed an encrypted-file identity in matching
+  isolated offline Ubuntu 22.04 containers (arm64 via emulation). Backup
+  permissions were 0600. Native OS-keychain smoke tests are in the platform
+  CI evidence; this container run does not claim a new desktop-keychain test.
+- `getbzz.dev` production deployment `5e619e81-0d78-4d49-b139-5db761ef75db`
+  published `1c374c3`: release copy, nine feature cards, the 49-second real-TUI
+  demo and preserved logo animation. Desktop/mobile browser checks passed;
+  a detected mobile overflow was red at 390 px (544 px scroll width), fixed,
+  then checked without overflow at 320/390/640/641/768/1280 px. The install
+  copy control stays visible; theme switching and Linux install tabs work.
+  CSS was cache-busted to `?v=4`.
+- The production page and video were fetched after Pages propagation. The
+  public MP4 is byte-identical to the reviewed repository asset (SHA-256
+  `5970b2f1fc2600be5856fee20a37ada73770fa5afdca1481de6416475637e3cb`).
+  Browser playback was confirmed at 1280×720 with no media error, and
+  `/install.sh` now resolves to the v0.13.0 installer.
+
 ## Pending
 
 | Item | Why | Who |
 |---|---|---|
 | Instrumented startup frame count against the 66-channel production account | functional smoke accepted by owner, but no request count was reported | owner / relay operator |
 | FI community acceptance | no FI community available; T4 and the real-browser harness run are the proof | owner |
-| Publish v0.13.0 | v0.12.0 and v0.12.1 are published; owner authorized v0.13.0 publication | release operator |
 | T7 on Windows | hosted runners have no audio endpoint; needs a self-hosted runner or a virtual driver with capture | CI / operator |
 | E2E 4.1 mouse, 4.2 remote agents, 7 keychain recovery, 9 clipboard and OS file chooser | need the operator's desktop pointer, keychain or clipboard, or a remote-agent fixture | operator |
-| Deploy `site/` for v0.13.0 | release section and 49-second sanitized demo committed in ca12225, including the owner's existing deployed logo animation; deploy authorized but not yet performed | release operator |

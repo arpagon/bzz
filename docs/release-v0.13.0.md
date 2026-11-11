@@ -1,7 +1,8 @@
 # bzz v0.13.0 — Upstream parity
 
-**Status:** Release candidate 2026-11-10; production acceptance and
-publication pending (see [`validation-v0.13.0.md`](validation-v0.13.0.md))
+**Status:** Released 2026-11-11 after owner-reported production acceptance.
+See [`validation-v0.13.0.md`](validation-v0.13.0.md) for verification and
+explicitly recorded limitations.
 
 v0.13.0 moves the protocol baseline from Buzz `9f55bf67` (2026-08-24) to
 `f3b127e3af5c14d2314faa2b63556c3f51ec6743` on Rust 1.98.1, and adopts the
@@ -57,7 +58,12 @@ upstream surfaces a terminal client can support. The plan is
   (`scripts/upgrade-test.sh`).
 - `bzz community add` no longer warns that a Buzz relay does not advertise
   NIP-98 (Buzz relays use it without listing it).
-- The bundled SQLite moves to `libsqlite3-sys` 0.39 (RUSTSEC-2026-0459).
+- The bundled SQLite moves to `libsqlite3-sys` 0.39 (RUSTSEC-2026-0459),
+  and `rustix` is updated to 1.1.6 (RUSTSEC-2026-0486).
+- Linux archives require glibc 2.35+ and ALSA's `libasound.so.2`. DBus is
+  compiled from source; Linux builds no longer need a system DBus development
+  package. Release builds use a pinned prebuilt dependency image rather than
+  downloading Ubuntu packages on every run.
 - New configuration: `identity_adapter`, `[ui] publish_presence`,
   `broker_agent_presence`, `huddle_input_device`, `huddle_output_device`, and
   `[[hosted_agents]]` (managed by `bzz broker`). See
@@ -72,6 +78,13 @@ loopback broker, and huddle devices — are described in
 [`security.md`](security.md) and the three v0.13 ADRs. A secret scan (T8) runs
 the broker and NIP-FA flows with real secrets and checks that none reach
 files, reports, status output or `Debug`/`Display` forms.
+
+## Demo
+
+[Watch the release demo](https://getbzz.dev/#new) or
+[download the 49-second MP4](https://getbzz.dev/assets/demo-v013.mp4).
+Recorded from the real release-candidate binary in Ghostty with generated
+people and content on an isolated pinned relay; not a mock UI.
 
 ## Known limitations
 
