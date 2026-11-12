@@ -4,8 +4,18 @@
 emotional delivery); English only; story draft approved; revenue is zero, so
 the Drama Community License permits commercial use of the output (credit
 "Voice: Fish Audio Drama 3" in the video description and `site/README.md`);
-generated music without copyright protection is acceptable. Open: which voice
-to clone (consent required) and formats beyond 16:9.
+generated music without copyright protection is acceptable; 16:9 only. The
+owner consents to cloning `Seb_en` but wants a professional commercial voice.
+So the narrator is cast, not cloned: Drama renders unconditioned voices, the
+owner picks one by ear, and that synthetic take becomes the reference for
+every line, so one voice runs through the film. Shortlist: 002 and 008
+(`runs/experiments/promo-video/voice-casting`). "bzz" is pronounced like
+"buzz".
+
+The published social video is the full-product film, not a teaser: the
+first post may be the only chance, so it must explain the whole product.
+Per X's creative guidance, it shows the real product and the name within
+3 s, works muted (kinetic type plus burned-in captions), and stays 16:9.
 **Goal:** replace the outdated hero video on getbzz.dev with a launch film of
 the same quality as the Buzz × 21c Studios reference. While making the film,
 build `.agents/skills/bzz-promo-video/` so that any agent can make the next
@@ -75,24 +85,28 @@ What makes it good, in order of impact:
 | Captions | None | Burned-in captions for the silent cut; WebVTT for the site |
 | Quality control | Frame review by hand | Script that checks format, loudness, frame privacy and claims |
 
-## Story draft (for owner review)
+## Story v2 (full product)
 
 Audience: Buzz users who live in the terminal, and people who build agents.
-Language: English, as on the site. About 110 words.
+Language: English, as on the site. 91 words; narration measured at 37–40 s, so
+the film is about 48 s. Because "bzz" and "Buzz" sound the same, the picture
+carries the name: the `bzz` wordmark is on screen whenever the narration says
+it. v1 ("all of Buzz, at terminal speed") was approved, then replaced, because
+both names sound alike and a 3 s product reveal is required.
 
 | # | Narration | Picture |
 |---|---|---|
-| 1 | Your team talks in Buzz. Your agents work in the terminal. | Type on dark; Buzz-style chat window and terminals drift apart |
-| 2 | And so do you. | One terminal comes forward; cursor blinks |
-| 3 | So why leave it? | Hard cut to black, then the hexagon draws in amber |
-| 4 | This is bzz — all of Buzz, at terminal speed. | Wordmark with honey particles; the TUI opens behind it |
-| 5 | Channels, threads and reactions, all from the keyboard. | Push-in: `j`/`k`, open a thread, react |
-| 6 | Mention an agent, and it answers in the thread. | `@` picker → a broker agent reply appears |
-| 7 | Jump into a huddle with real audio. | 🎧 markers; push-in on the roster |
-| 8 | Pick from sixty themes. | Fast cut on the beat through six themes |
-| 9 | Your keys stay in your keychain. Your history stays on your disk. It even works offline. | Lock and disk icons; relay disconnects, history still scrolls |
-| 10 | Your agents get only the permissions you give them. | `:broker` panel, toggles flip |
-| 11 | bzz. Install it in one line. | End card: logo, `curl -fsSL https://getbzz.dev/install.sh \| sh`, getbzz.dev |
+| 1 | Your team chats in Buzz. You live in the terminal. | Frame 0: the real TUI, already moving; type "bzz — Buzz in your terminal" |
+| 2 | So bring the chat to you. | The window comes forward; the cursor blinks |
+| 3 | This is bzz. | Hexagon draws in amber, `bzz` wordmark (by 3–4 s) |
+| 4 | Channels, threads, DMs and reactions, all from the keyboard. | Push-in: `j`/`k`, open a thread, react; key overlay |
+| 5 | Your history lives on your disk, and you can search it even offline. | Relay disconnects; search still finds results |
+| 6 | Mention an agent, and its reply lands right in the thread. | `@` picker → a broker agent reply appears |
+| 7 | You decide what each agent is allowed to do. | `:broker` panel, toggles flip |
+| 8 | Jump into a huddle, with real audio. | 🎧 markers; push-in on the roster |
+| 9 | Images and custom emoji, right in your terminal, in sixty themes. | Inline image and emoji; fast cut through six themes on the beat |
+| 10 | Your keys stay in your keychain. | Lock motif over the identity flow |
+| 11 | bzz. Install it with one line. | End card: logo, `curl -fsSL https://getbzz.dev/install.sh \| sh`, getbzz.dev, unofficial-client disclaimer |
 
 Every claim maps to a shipped, validated v0.13 feature (`docs/validation-v0.13.0.md`).
 Avoid claims about platforms where evidence is partial (Windows audio).
@@ -139,9 +153,10 @@ to `site/public/assets/`.
      master to −14 LUFS integrated, −1 dBTP true peak.
 6. **Conform and encode.**
    - Film: 1920×1080, 30 fps, H.264 MP4 and VP9/AV1 WebM, with sound.
-   - Site hero: 20–30 s silent loop in which type carries the message,
-     at most 4 MB per format, plus poster and WebVTT.
-   - Optional: 1080×1920 and 1080×1350 cuts for X (decision 4).
+   - The same film, with burned-in captions, is the post on X and other
+     networks.
+   - Site hero: the film muted with autoplay, at most 4 MB per format, plus
+     poster and WebVTT; a 15 s cut only if the owner asks for one later.
 7. **Quality control** (script) → owner gate 4 (final). Then publish: replace
    the hero video, bump the `?v=` queries, update `site/README.md`, deploy and
    check the live site on desktop and mobile.
