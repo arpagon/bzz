@@ -1,0 +1,3 @@
+[{"wait": 0.3}, {"type": "clear\r", "step": 0.01}, {"wait": 0.6},
+ {"mark": "new"}, {"type": "bzz identity new --label work\r", "step": 0.045}, {"wait": 1.4},
+ {"mark": "list"}, {"type": "bzz identity list\r", "step": 0.045}, {"wait": 2.5}]

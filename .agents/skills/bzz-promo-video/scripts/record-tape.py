@@ -11,6 +11,7 @@ The tape is JSON Lines:
   {"version":1,"cols":…,"rows":…,"cellWidth":…,"cellHeight":…,"term":…}
   {"t":0.512,"o":"<base64 output>"}
   {"t":4.000,"mark":"open-thread"}
+  {"t":9.300,"stop":true}                 (last line: when recording stopped)
 
 The recorder never answers terminal queries and never repaints output.
 bzz takes its cell size from the PTY window size, not from queries.
@@ -151,6 +152,8 @@ def main() -> int:
                 stamp = round(time.monotonic() - origin, 4)
                 out.write(json.dumps({"t": stamp, "o": base64.b64encode(data).decode()}) + "\n")
     finally:
+        # The screen holds its last state until the recording stopped.
+        out.write(json.dumps({"t": round(time.monotonic() - origin, 4), "stop": True}) + "\n")
         out.close()
         if not exited:
             os.kill(pid, signal.SIGTERM)

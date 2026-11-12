@@ -1,6 +1,7 @@
 # bzz launch film and `bzz-promo-video` skill
 
-**Status:** approved 2026-11-11. Owner decisions: Drama 3 narration (for
+**Status:** v1 film rendered 2026-11-12, waiting for the owner's final review (gate 4);
+skill `.agents/skills/bzz-promo-video` written. Approved 2026-11-11. Owner decisions: Drama 3 narration (for
 emotional delivery); English only; story draft approved; revenue is zero, so
 the Drama Community License permits commercial use of the output (credit
 "Voice: Fish Audio Drama 3" in the video description and `site/README.md`);

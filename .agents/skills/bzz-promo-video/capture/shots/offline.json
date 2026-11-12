@@ -1,0 +1,1 @@
+[{"wait": 1.5}, {"type": "  ", "step": 0.15}, {"wait": 0.4}, {"type": "team", "step": 0.08}, {"wait": 0.3}, {"type": "\r", "step": 0.1}, {"wait": 2.0}, {"mark": "cut"}, {"wait": 1.8}, {"mark": "search"}, {"type": "/", "step": 0.1}, {"wait": 0.5}, {"type": "load test", "step": 0.09}, {"wait": 6.0}, {"mark": "open"}, {"type": "\r", "step": 0.1}, {"wait": 2.0}]

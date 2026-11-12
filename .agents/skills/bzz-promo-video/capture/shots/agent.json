@@ -1,0 +1,6 @@
+[{"wait": 1.5}, {"type": "  ", "step": 0.15}, {"wait": 0.4}, {"type": "team", "step": 0.08}, {"wait": 0.3}, {"type": "\r", "step": 0.1}, {"wait": 1.5},
+ {"type": "kkkk", "step": 0.15}, {"wait": 0.3}, {"type": "\r", "step": 0.1}, {"wait": 1.2},
+ {"mark": "compose"}, {"type": "i", "step": 0.1}, {"wait": 0.4}, {"type": "@Sco", "step": 0.14}, {"wait": 0.7},
+ {"mark": "pick"}, {"type": "\r", "step": 0.1}, {"wait": 0.3},
+ {"type": " can you check the launch list?", "step": 0.045}, {"wait": 0.4},
+ {"mark": "send"}, {"type": "\r", "step": 0.1}, {"wait": 5.0}]

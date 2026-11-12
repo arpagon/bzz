@@ -1,0 +1,4 @@
+[{"wait": 1.5}, {"type": "  ", "step": 0.15}, {"wait": 0.4}, {"type": "team", "step": 0.08}, {"wait": 0.3}, {"type": "\r", "step": 0.1}, {"wait": 2.0},
+ {"mark": "nav"}, {"type": "kkkk", "step": 0.32}, {"wait": 0.5},
+ {"mark": "react"}, {"type": "r", "step": 0.1}, {"wait": 0.6}, {"type": "jjj", "step": 0.25}, {"wait": 0.3}, {"mark": "send"}, {"type": "\r", "step": 0.1}, {"wait": 0.9},
+ {"mark": "thread"}, {"type": "\r", "step": 0.1}, {"wait": 2.5}]

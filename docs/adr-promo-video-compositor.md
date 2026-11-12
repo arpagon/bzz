@@ -50,6 +50,23 @@ Real v0.13.0 release binary on a generated offline fixture, 9.4 s tape.
 | Render time | 1080p: 9.7 s for 7 s of film; 4K: 21 s (RTX 3090, hardware GPU capture) |
 | Checks | `hyperframes check`: runtime, layout, motion, audio pass. Lint flags `Math.random` inside xterm.js (no visible effect: frames are identical) and CSS transitions on xterm's scrollbar (hidden). Contrast flags bzz's intentionally dim timestamps; mark terminal hosts `data-layout-ignore`. |
 
+## Evidence (v1 film, 47 s, 2026-11-12)
+
+Eight tapes recorded from the published v0.13.0 Linux x86_64 archive
+(checksum-verified) on the pinned relay with generated people. They show the
+fixture's live messages, the offline transition, broker replies and a live
+huddle. `tape-expect.py` checked 14 on-screen expectations; all passed.
+
+- Two full renders: audio frames identical. 227 of 1,410 video frames
+  differed, worst-frame PSNR 53.1 dB, average 66.2 dB, which is invisible. The
+  differences lie in 27.2–35.5 s (Sixel image, theme previews, shell shot),
+  probably GPU rasterisation of scaled canvases. The 7 s spike, without Sixel,
+  was bit-identical. Treat "identical" as identical audio plus PSNR ≥ 50 dB,
+  not as identical bytes.
+- `xterm.js` needs `@xterm/addon-unicode11`: with the default Unicode 6 widths,
+  emoji drew over the following cell.
+- Render time: 37 s for 47 s at 1080p.
+
 ## Alternatives not built
 
 The plan proposed building the same test in Remotion and in a custom
