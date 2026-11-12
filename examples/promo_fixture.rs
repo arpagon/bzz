@@ -4,11 +4,12 @@
 //! it at a real community.
 //!
 //! ```text
-//! promo_fixture seed    <empty dir> <pinned Buzz checkout>  # people, channels, DM, profile
+//! promo_fixture seed    <empty dir> <pinned Buzz checkout> <avatars dir>  # people (with
+//!                        avatars <name>.png), channels, DM, profile
 //! promo_fixture bot     <dir> <agent pubkey>        # viewer gives the agent the bot role in #team
 //! promo_fixture history <dir> <image.png>           # backdated history, after every system row
 //! promo_fixture drive <dir> live                  # Lin and Sam post while a shot records
-//! promo_fixture drive <dir> agent-profile         # the agent names itself through the broker
+//! promo_fixture drive <dir> agent-profile <png>   # the agent sets its name and avatar via the broker
 //! promo_fixture drive <dir> agent-reply           # answers the viewer's @mention through the broker
 //! promo_fixture drive <dir> huddle <seconds>      # Ada and Sam hold a huddle with live audio
 //! ```
@@ -131,8 +132,11 @@ impl Person {
         ack.message
     }
 
-    async fn named(&self, name: &str, about: &str) {
-        let metadata = Metadata::new().name(name).display_name(name).about(about);
+    async fn named(&self, name: &str, about: &str, picture: Option<&str>) {
+        let mut metadata = Metadata::new().name(name).display_name(name).about(about);
+        if let Some(picture) = picture {
+            metadata = metadata.picture(url::Url::parse(picture).unwrap());
+        }
         self.publish(EventBuilder::metadata(&metadata)).await;
     }
 
@@ -180,6 +184,23 @@ impl Person {
     }
 }
 
+/// Upload a generated avatar to the relay's Blossom store; returns its
+/// canonical same-origin `/media/<sha256>.png` URL (bzz's relay-avatar path).
+async fn upload_avatar(person: &Person, path: PathBuf) -> String {
+    let media = MediaClient::new(
+        url::Url::parse(RELAY_HTTP).unwrap(),
+        "localhost:3030".into(),
+        person.signer.clone(),
+        2,
+    )
+    .unwrap();
+    media
+        .upload(&path, "image/png", None)
+        .await
+        .unwrap_or_else(|error| panic!("uploading {}: {error}", path.display()))
+        .url
+}
+
 fn state_path(root: &Path) -> PathBuf {
     root.join("state.json")
 }
@@ -201,7 +222,7 @@ async fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let root = PathBuf::from(&arguments[1]);
     match arguments[0].as_str() {
-        "seed" => seed(&root, &arguments[2]).await,
+        "seed" => seed(&root, &arguments[2], Path::new(&arguments[3])).await,
         "history" => history(&root, Path::new(&arguments[2])).await,
         "bot" => bot(&root, &arguments[2]).await,
         "drive" => drive(&root, &arguments[2], &arguments[3..]).await,
@@ -209,7 +230,7 @@ async fn main() {
     }
 }
 
-async fn seed(root: &Path, source: &str) {
+async fn seed(root: &Path, source: &str, avatars: &Path) {
     assert!(
         !root.exists() || std::fs::read_dir(root).unwrap().next().is_none(),
         "use an empty fixture directory"
@@ -228,10 +249,22 @@ async fn seed(root: &Path, source: &str) {
     let lin = connect(&key("lin"), false).await;
     let sam = connect(&key("sam"), false).await;
     let viewer = connect(&key("viewer"), false).await;
-    ada.named("Ada", "Generated persona · backend").await;
-    lin.named("Lin", "Generated persona · design").await;
-    sam.named("Sam", "Generated persona · infra").await;
-    viewer.named("You", "Generated viewer").await;
+    let avatar = |who: &str| upload_avatar(&viewer, avatars.join(format!("{who}.png")));
+    let (ada_pic, lin_pic, sam_pic, you_pic) = (
+        avatar("ada").await,
+        avatar("lin").await,
+        avatar("sam").await,
+        avatar("you").await,
+    );
+    ada.named("Ada", "Generated persona · backend", Some(&ada_pic))
+        .await;
+    lin.named("Lin", "Generated persona · design", Some(&lin_pic))
+        .await;
+    sam.named("Sam", "Generated persona · infra", Some(&sam_pic))
+        .await;
+    viewer
+        .named("You", "Generated viewer", Some(&you_pic))
+        .await;
 
     // The viewer owns #team, so it can give its own agent the bot role there.
     let team = viewer.channel("team").await;
@@ -487,12 +520,18 @@ async fn drive(root: &Path, scene: &str, rest: &[String]) {
             sam.say(team, "Status page is ready too.").await;
         }
         "agent-profile" => {
+            let viewer = connect(&keys(&state, "viewer"), false).await;
+            let picture = match rest.first() {
+                Some(path) => Some(upload_avatar(&viewer, PathBuf::from(path)).await),
+                None => None,
+            };
+            viewer.session.shutdown().await;
             let request = BrokerRequest::new(
                 "profile-1",
                 ActionArgs::ProfileSet(buzz_sdk::broker::ProfileSetArgs {
                     display_name: Some(AGENT_NAME.into()),
                     about: Some("Generated demo agent".into()),
-                    picture: None,
+                    picture,
                 }),
             )
             .unwrap()

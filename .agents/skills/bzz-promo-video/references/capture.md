@@ -16,7 +16,7 @@ Build `examples/promo_fixture.rs` first:
 `capture/setup-fixture.sh` tears down the `buzz-harness` project, starts a fresh
 relay (saving its start command, with the signing key, to `run/relay.cmd`), then:
 
-1. `promo_fixture seed`: Ada, Lin, Sam and You; `#team` owned by You, `#design`,
+1. `promo_fixture seed`: Ada, Lin, Sam and You, each with an avatar; `#team` owned by You, `#design`,
    `#infra`, `#launch`, a DM; the viewer profile (encrypted-file identity,
    `[media] protocol = "sixel"`).
 2. `bzz broker create scout` and `allow`; `promo_fixture bot` gives Scout the
@@ -24,7 +24,20 @@ relay (saving its start command, with the signing key, to `run/relay.cmd`), then
 3. `promo_fixture history` (after a pause, so system rows sit above it):
    backdated messages, a thread, reactions, an inline image (`site/public/assets/og.png`
    via the relay's Blossom endpoint), a custom emoji, a DM message, a task.
-4. A warm-up run in which Scout names itself through the broker.
+4. A warm-up run in which Scout sets its name and avatar through the broker.
+
+### Avatars
+
+Without kind-0 `picture`s bzz shows text badges (`[■A]`), which look worse than
+a real community. `assets/avatars/{ada,lin,sam,you,scout}.png` (256×256) are
+fictional illustrated characters made with the `codex-gpt-image-2` skill: one
+shared style prompt ("square profile avatar, flat vector illustration with soft
+shading, readable at 48 px, plain solid background, clearly fictional, no
+text") plus a description and a distinct background colour each. The fixture
+uploads them to the relay's Blossom store, so the picture is a same-origin
+`/media/<sha256>.png` URL that bzz's relay-avatar path fetches with a scoped
+read (`ui.profile_avatars = "trusted"`, graphics terminal). Never use photos of
+real people. The mention picker and composer show text badges; that is bzz.
 
 ## Shots
 

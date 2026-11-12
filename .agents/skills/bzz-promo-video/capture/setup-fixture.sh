@@ -14,7 +14,7 @@ tmux kill-session -t dawn-relay 2>/dev/null || true
 rm -rf "$F"; mkdir -m 700 "$F"; mkdir -p -m 700 "$C/run"
 # Keep the relay's start command (with its signing key) so offline shots can restart it.
 (umask 077; tmux list-panes -t dawn-relay -F '#{pane_start_command}' | sed 's/^"//; s/"$//' > "$C/run/relay.cmd")
-"$FIX" seed "$F" "$C/buzz-pin"
+"$FIX" seed "$F" "$C/buzz-pin" "${AVATARS:-$S/../assets/avatars}"
 export BZZ_CONFIG_DIR=$F/config BZZ_DATA_DIR=$F/data BZZ_CACHE_DIR=$F/cache BZZ_PASSPHRASE_FD=3
 umask 077
 "$B" broker create scout --yes 3<"$F/passphrase" \
@@ -26,5 +26,5 @@ test -s "$F/agent.credential"
 "$FIX" history "$F" "$IMAGE"
 # Warm the cache and let the agent name itself while bzz is unlocked.
 
-"$S/shoot.sh" warmup agent-profile 8
+"$S/shoot.sh" warmup agent-profile 8 "${AVATARS:-$S/../assets/avatars}/scout.png"
 cat "$C/tapes/warmup.driver.log"
