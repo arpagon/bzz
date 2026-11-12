@@ -64,10 +64,10 @@ What makes it good, in order of impact:
 |---|---|---|
 | Story and script | Feature list, release notes | Write a 45–55 s script and shot list |
 | Brand system | Accent `#ffb000` on `#0e0c08`, hexagon logo and owner logo animation, 60 themes | Motion rules, display typeface, end card, lower thirds |
-| Real UI at film quality | Direct Ghostty/Xvfb capture, 1280×720, 15 fps (`bzz-visual-capture`) | Capture at 3840×2160, 30 fps, lossless, with large font so push-ins stay sharp |
+| Real UI at film quality | Direct Ghostty/Xvfb capture, 1280×720, 15 fps (`bzz-visual-capture`) | **Solved by the spike:** terminal tapes replayed by xterm.js inside the film, sharp at 4K ([ADR](../../adr-promo-video-compositor.md)) |
 | Staged data | `examples/demo_fixture.rs` (people, channels, thread, emoji) | Story fixture with a live agent reply through the broker, a huddle and an inline image; no error in any status bar |
 | Choreography | Paced key injection with `0xFF` pause markers | Timeline-driven injection that logs the time of each marker, so cuts and sound hit actions |
-| Motion graphics and composite | `visual-explainer-video` renders HTML on a virtual clock, but cannot play `<video>` | A compositor that is frame-exact with video layers (spike below) |
+| Motion graphics and composite | `visual-explainer-video` renders HTML on a virtual clock, but cannot play `<video>` | **Solved by the spike:** HyperFrames 0.9.13, frame-identical renders |
 | Narration | `voice` skill: Qwen3-TTS locally (saved voices including `Seb_en`) or Drama 3 on Modal (inline delivery tags) | Pick backend and voice by ear (decision 2); Qwen service is stopped |
 | Music | `music` skill: ACE-Step 1.5 XL Turbo locally on the RTX 3090, 48 kHz stereo WAV, pinned image and models | Brief, 4–8 seeded takes, owner audition; cut to beats measured in the take |
 | Sound effects | None | Keystroke, whoosh and logo sting: record, generate with ACE-Step, or use CC0 sources with a license record |
@@ -105,21 +105,19 @@ Sources live in `promo/<slug>/` (brief, script, shot list, compositions).
 Intermediates go to a restricted temporary directory. Only reviewed outputs go
 to `site/public/assets/`.
 
-0. **Compositor spike (half a day).** Build the same 5 s test in each candidate:
-   a real 4K TUI clip pushed in inside a styled window, kinetic type, and a
-   music track. Candidates: Remotion (React; check its license terms for this
-   project), HyperFrames or another HTML-to-video framework, and Playwright on
-   a virtual clock that renders graphics as alpha PNGs composited with
-   `ffmpeg`. Choose by: two renders are frame-identical (hash every frame), TUI
-   text is sharp at 1080p, render time, license, and how easily an agent can
-   edit it. Record the result in an ADR.
+0. **Compositor spike — done 2026-11-11.** HyperFrames plus terminal tapes
+   passed every criterion: frame-identical renders, sharp TUI text at a 4K
+   push-in, and a render time of 9.7 s for 7 s of film. Decision and evidence:
+   [ADR](../../adr-promo-video-compositor.md).
 1. **Brief, script and shot list** → owner gate 1.
 2. **Animatic.** Type and boards at final timing with temporary narration or
    captions → owner gate 2 (timing and story).
 3. **Capture.** Story fixture on an isolated pinned relay with generated
-   identities; release binary; Ghostty in Xvfb at 3840×2160, 30 fps, lossless
-   (FFV1 or PNG). Record each shot with two seconds of handles. Log marker
-   times from the injector. Review every frame for private data and error text.
+   identities, `[media] protocol = "sixel"`, and the release binary. Record
+   one tape per shot with `record-tape.py`, adding two seconds of handles and
+   named marks for each action. Review the rendered frames for private data and
+   error text (the spike's offline fixture showed `network error` in the status
+   bar; the live relay removes it).
 4. **Motion graphics and composite.** Window frames, virtual camera, cursor and
    key overlays, type, particles, end card. Build the window and any desk
    scene in code; a generated still may only be a background, never a fake UI.
@@ -162,8 +160,11 @@ Follow `writing-for-agents` and its `SKILL-MECHANICS.md`.
     audio.md          # routes to the voice and music skills; brief templates,
                       # GPU order, beat measurement, mix targets, license record
     qa.md             # delivery specs and review checklist
+  assets/
+    tape-replay.js    # done: replays a tape in the film (xterm.js + Sixel)
   scripts/
-    capture-shots     # shot list → fixture, timed injection, lossless clips
+    record-tape.py    # done: headless PTY recorder with timeline and marks
+    capture-shots     # shot list → fixture, one tape per shot
     render            # compositor entry point
     mix               # narration + music + effects → mastered stereo
     qa                # ffprobe, loudness, privacy and claim checks, contact sheets
