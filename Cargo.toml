@@ -89,6 +89,11 @@ proptest = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 
+[[example]]
+name = "promo_fixture"
+# Its huddle scene joins with live audio.
+required-features = ["huddles-audio"]
+
 [[bench]]
 name = "timeline"
 harness = false
