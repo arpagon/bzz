@@ -36,12 +36,21 @@ recorded in `public/assets/mdi-attribution.txt` and the license text is at
 
 ## Demo media
 
-`public/assets/demo.webm`, `demo.mp4`, and `poster.png` are a pixel capture of
-`bzz 0.11.0` in Ghostty 1.3.1 at 1280×720 and 15 fps. The 45-second journey
-uses an isolated, generated offline fixture and covers a workspace DM, fuzzy
-navigation, Markdown, verified Kitty media, threads, reactions, Inbox, local
-search, remote-agent mention completion, the writing dock, and live previews of
-Tokyo Night, Kanagawa Dragon, Nord, and Catppuccin Mocha.
+The hero video `public/assets/promo-v013.webm`, `promo-v013.mp4` and
+`poster-promo-v013.png` is the v0.13 launch film: 47 s, 1920×1080, 30 fps,
+narrated, −14 LUFS, captions burned in so it works muted. Every product shot is
+the published `bzz 0.13.0` Linux binary on an isolated pinned relay with
+generated people, generated illustrated avatars and a broker agent, recorded as
+terminal tapes and composed in HyperFrames. Make or remake it with the
+[`bzz-promo-video`](../.agents/skills/bzz-promo-video/SKILL.md) skill; the
+composition is in [`promo/v0.13-launch`](../promo/v0.13-launch/README.md).
+Credits: voice Fish Audio Drama 3 (Fish Audio Community License; credit
+required), music generated with ACE-Step 1.5 (MIT model), avatars generated
+with gpt-image-2. Encodes: H.264 CRF 26 + AAC 128 kb/s; VP9 CRF 32 + Opus
+96 kb/s.
+
+The previous hero (`demo.*`, `poster.png`, a v0.11 Ghostty capture) was
+removed; it is in git history.
 
 `public/assets/demo-v013.webm`, `demo-v013.mp4`, and `poster-v013.png` show
 `bzz 0.13.0` (Ghostty, Xvfb, 1280×720, 15 fps, 49 s) on an isolated pinned
