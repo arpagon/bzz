@@ -1,0 +1,4 @@
+[{"wait": 1.5}, {"type": "  ", "step": 0.15}, {"wait": 0.4}, {"type": "team", "step": 0.08}, {"wait": 0.3}, {"type": "\r", "step": 0.1}, {"wait": 3.0},
+ {"mark": "join"}, {"type": ":huddle join", "step": 0.08}, {"wait": 0.3}, {"type": "\r", "step": 0.1}, {"wait": 0.8}, {"type": "y", "step": 0.1}, {"wait": 2.2},
+ {"mark": "unmute"}, {"type": "m", "step": 0.1}, {"wait": 2.5},
+ {"mark": "end"}]

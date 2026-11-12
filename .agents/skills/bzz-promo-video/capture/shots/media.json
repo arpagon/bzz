@@ -1,0 +1,6 @@
+[{"wait": 1.5}, {"type": "  ", "step": 0.15}, {"wait": 0.4}, {"type": "team", "step": 0.08}, {"wait": 0.3}, {"type": "\r", "step": 0.1}, {"wait": 1.5},
+ {"type": "kk", "step": 0.2}, {"wait": 2.0},
+ {"mark": "media"}, {"wait": 2.0},
+ {"mark": "themes"}, {"type": " o", "step": 0.2}, {"wait": 0.7},
+ {"type": "jjjjjjjjj", "step": 0.5}, {"wait": 0.6},
+ {"mark": "cancel"}, {"type": "\u001b", "step": 0.1}, {"wait": 1.0}]
