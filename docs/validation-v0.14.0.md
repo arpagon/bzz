@@ -9,8 +9,11 @@ Buzz pin `bf3bdd0eaefe39289bf9620594f254c7f68897f5` (2026-11-13), Rust 1.98.1.
 
 ## M0 — Baseline
 
-All checks ran locally on Linux x86_64 on 2026-11-12. CI on four platforms
-runs when the branch's PR opens.
+All checks ran locally on Linux x86_64 on 2026-11-12. On PR #8, `ci.yml`
+(run 43356913999 for M0, 43360812858 after M1) and `integration.yml` (runs
+43356913974 and 43360812906) passed on Linux, macOS Intel, macOS Apple
+Silicon and Windows. `audio (windows-latest)` fails as in v0.13.0 and is
+experimental: hosted Windows runners have no audio endpoint.
 
 | Gate | Command | Result |
 |---|---|---|
@@ -54,5 +57,4 @@ attachments while editing is not supported (the composer says so).
 
 | Item | Why |
 |---|---|
-| M0 on macOS Intel, macOS Apple Silicon and Windows | CI runs on the PR |
 | M2–M5 | not started |
