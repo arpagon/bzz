@@ -68,5 +68,5 @@ deliverables leave it.
 | `scripts/tape-expect.py` | assert `+text`/`-text` at a second or mark; exit 1 on failure |
 | `scripts/preview-tape.sh` | pixel stills of a tape through HyperFrames |
 | `assets/tape-replay.js` | `mountTape()` for compositions (xterm.js, Sixel, Unicode 11) |
-| `capture/*.sh`, `capture/shots/*.json` | relay, fixture, one script per shot, the v0.13 shot list |
+| `capture/*.sh`, `capture/shots/*.json` | relay, fixture, one script per shot, the shot list (v0.14: adds `edit` and `sync`) |
 | `examples/promo_fixture.rs` (repo) | community seed, agent bot role, live "director" scenes |

@@ -36,23 +36,30 @@ recorded in `public/assets/mdi-attribution.txt` and the license text is at
 
 ## Demo media
 
-The hero video `public/assets/promo-v013.webm`, `promo-v013.mp4` and
-`poster-promo-v013.png` is the v0.13 launch film: 47 s, 1920×1080, 30 fps,
-narrated, −14 LUFS, captions burned in so it works muted. Every product shot is
-the published `bzz 0.13.0` Linux binary on an isolated pinned relay with
-generated people, generated illustrated avatars and a broker agent, recorded as
-terminal tapes and composed in HyperFrames. Make or remake it with the
+The hero video `public/assets/promo-v014.webm`, `promo-v014.mp4` and
+`poster-promo-v014.png` is the v0.14 launch film: 54.9 s, 1920×1080, 30 fps,
+narrated, −14 LUFS, captions burned in so it works muted. It is the v0.13
+film with the same voice, music and cut plus two v0.14 shots (editing a
+message; Solo chats and sidebar sections). Every product shot is the
+`bzz 0.14.0` Linux release build on an isolated pinned relay with generated
+people, generated illustrated avatars and a broker agent, recorded as terminal
+tapes and composed in HyperFrames. Make or remake it with the
 [`bzz-promo-video`](../.agents/skills/bzz-promo-video/SKILL.md) skill; the
-composition is in [`promo/v0.13-launch`](../promo/v0.13-launch/README.md).
+composition is in [`promo/v0.14-launch`](../promo/v0.14-launch/README.md).
 Credits: voice Fish Audio Drama 3 (Fish Audio Community License; credit
 required), music generated with ACE-Step 1.5 (MIT model), avatars generated
 with gpt-image-2. Encodes: H.264 CRF 26 + AAC 128 kb/s; VP9 CRF 32 + Opus
 96 kb/s.
 
+The v0.13 film (`promo-v013.*`, `poster-promo-v013.png`,
+[`promo/v0.13-launch`](../promo/v0.13-launch/README.md)) stays published so
+links to it keep working.
+
 The previous hero (`demo.*`, `poster.png`, a v0.11 Ghostty capture) was
 removed; it is in git history.
 
-`public/assets/demo-v013.webm`, `demo-v013.mp4`, and `poster-v013.png` show
+`public/assets/demo-v013.webm`, `demo-v013.mp4`, and `poster-v013.png` (no
+longer on the page; linked from the v0.13.0 release notes) show
 `bzz 0.13.0` (Ghostty, Xvfb, 1280×720, 15 fps, 49 s) on an isolated pinned
 harness relay filled by `examples/demo_fixture.rs` (generated people and
 messages): a read-only announce channel, the System group, a thread, a profile

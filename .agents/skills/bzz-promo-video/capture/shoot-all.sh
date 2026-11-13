@@ -14,6 +14,10 @@ E="$SK/tape-expect.py"
 "$S/shoot.sh" agent agent-reply 0
 "$S/shoot.sh" broker
 "$S/shoot.sh" media
+# v0.14 shots change #team and the sidebar: after the shots that show them
+# as seeded, before the huddle leaves its backing channel in the sidebar.
+"$S/shoot.sh" edit
+"$S/shoot.sh" sync
 "$S/shoot.sh" huddle huddle 0 26
 CMD="$S/identity-shell.sh" COLS=130 ROWS=14 START=1.5 "$S/shoot.sh" identity
 T=tapes; status=0
@@ -32,4 +36,9 @@ check $T/media.jsonl media +'launch-card.png' +'Looks great' -error
 check $T/media.jsonl themes+1.5 +'themes ·'
 check $T/huddle.jsonl end +'3 in it' +'LIVE (others hear you)' -restricted -error
 check $T/identity.jsonl end +'Keychain' +'work'
+check $T/edit.jsonl edit-0.1 +'Release notes go live tomorow' -error
+check $T/edit.jsonl edit+0.6 +'edit message' -error
+check $T/edit.jsonl end +'Release notes go live tomorrow (edited)' -error
+check $T/sync.jsonl solo-0.1 +'Launch week' -error
+check $T/sync.jsonl end +'Notes' +'Solo' -error
 exit $status

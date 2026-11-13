@@ -61,7 +61,7 @@ The protocol baseline moves from Buzz `f3b127e3` to
   automatically, with the usual pre-migration backup, and the search index is
   rebuilt once. A real v0.13.0 data directory upgrades with its history,
   Inbox, search and drafts intact, and its stored edits applied
-  (`scripts/upgrade-test.sh`; v0.12.1 still upgrades too).
+  (`scripts/upgrade-test.sh`).
 - Editing needs a relay that serves edits (`effective_edit`); on an older
   relay bzz refuses to edit rather than guess.
 - New dependencies: `icu_properties` 2.2 and `unicode-normalization` 0.1 for
