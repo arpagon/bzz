@@ -235,6 +235,24 @@ the film capture (edit and sidebar on the pinned relay), the Buzz 1.0.1
 pairing proof (M2) and the scripted-relay 404 test (M5). The multi-client
 and Buzz-desktop comparison steps are left to production acceptance.
 
+## Publication (2026-11-13)
+
+- CI on PR #8 at its final commit: `ci.yml` run 43493267959 and
+  `integration.yml` run 43493268084 passed on Linux, macOS Intel, macOS Apple
+  Silicon and Windows, including `upgrade` from v0.13.0 on all three OSes and
+  `relay (default)` and `relay (nip-fi)`. `audio (windows-latest)` failed as
+  in v0.13.0 (experimental, no audio endpoint on hosted Windows).
+- PR #8 merged as `80e1b07`; tag `v0.14.0` on that commit. `release.yml` run
+  43495597505 built all five targets and published 18 assets.
+- Linux x86_64 archive checked on this machine: `sha256sum -c` OK,
+  `gh attestation verify` OK for the archive and `bzz.cdx.xml`,
+  `bzz --version` prints `bzz 0.14.0`; `curl -fsSL https://getbzz.dev/install.sh | sh`
+  into a temporary `CARGO_HOME` installs `bzz 0.14.0`.
+- getbzz.dev deployed (Cloudflare Pages `bcdf37a8`): the v0.14 film as hero
+  (`promo-v014.*`, poster), "new in v0.14.0", and no Homebrew tab (the
+  `arpagon/homebrew-tap` repository does not exist, so that command failed).
+  Checked live on desktop (1280 px) and mobile (390 px).
+
 ## Still pending after release
 
 The owner approved publishing v0.14.0 on 2026-11-13 with these items open:
