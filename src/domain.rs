@@ -429,6 +429,9 @@ pub struct Message {
     /// NIP-30 custom emoji carried by this message's own tags.
     #[serde(skip)]
     pub emoji: Vec<crate::protocol::emoji::Emoji>,
+    /// A live edit (kind `40003`) governs this message's text and attachments.
+    #[serde(default)]
+    pub edited: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -551,4 +554,68 @@ pub fn abbreviated_pubkey(pubkey: &str) -> String {
     } else {
         format!("{}…{}", &pubkey[..8], &pubkey[pubkey.len() - 4..])
     }
+}
+
+/// Most mention rows shown at once (mention rules v3, section 6).
+pub const MENTION_ROWS: usize = 50;
+
+/// One channel's complete mention choice set, in parallel lists: what the
+/// picker shows and what the mention rules rank.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MentionChoices {
+    pub candidates: Vec<MentionCandidate>,
+    pub choices: Vec<crate::protocol::mention_rules::Choice>,
+}
+
+impl MentionChoices {
+    /// The first `MENTION_ROWS` matching choices for `query`, in order.
+    pub fn ranked(
+        &self,
+        query: &str,
+        history: &std::collections::HashMap<String, u64>,
+        presence: impl Fn(&str) -> crate::protocol::mention_rules::Presence,
+    ) -> Vec<MentionCandidate> {
+        crate::protocol::mention_rules::rank(&self.choices, query, history, presence)
+            .into_iter()
+            .take(MENTION_ROWS)
+            .map(|index| self.candidates[index].clone())
+            .collect()
+    }
+
+    /// Every known name: aliases and labels, for query admission.
+    pub fn names(&self) -> Vec<String> {
+        self.choices
+            .iter()
+            .flat_map(|choice| choice.aliases.iter().chain(std::iter::once(&choice.label)))
+            .cloned()
+            .collect()
+    }
+
+    /// The key Space (or closing punctuation) selects for `query`, if any.
+    pub fn exact(&self, query: &str) -> Option<&MentionCandidate> {
+        let key = crate::protocol::mention_rules::exact_mention(&self.choices, query, |_| true)?;
+        self.candidates
+            .iter()
+            .find(|candidate| candidate.pubkey == key)
+    }
+}
+
+/// One live user section of the synced sidebar.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SidebarSection {
+    pub id: String,
+    pub name: String,
+    pub icon: Option<String>,
+}
+
+/// The user's synced sidebar (channel sections and per-group sort modes),
+/// as Buzz desktop and mobile show it. Empty when none is synced.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SidebarLayout {
+    pub sections: Vec<SidebarSection>,
+    /// Channel → live section id.
+    pub assignments: std::collections::HashMap<Uuid, String>,
+    /// Group key (`channels`, `forums`, `dms`, `section:<id>`) → `alpha` or
+    /// `recent`.
+    pub sort: std::collections::BTreeMap<String, String>,
 }

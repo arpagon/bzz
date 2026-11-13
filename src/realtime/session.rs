@@ -138,6 +138,30 @@ impl SessionHandle {
     }
 }
 
+/// What a relay's 404 at a community address means.
+pub const NO_COMMUNITY: &str =
+    "this relay serves no community at this address; check the community URL";
+
+/// The `User-Agent` bzz names itself with, on HTTP and WebSocket alike.
+pub const USER_AGENT: &str = concat!("bzz/", env!("CARGO_PKG_VERSION"));
+
+/// A WebSocket upgrade request for `url` that names bzz (upstream #9246).
+pub fn upgrade_request(
+    url: &str,
+) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+    use tokio_tungstenite::tungstenite::{
+        client::IntoClientRequest as _,
+        http::{HeaderValue, header::USER_AGENT as HEADER},
+    };
+    let mut request = url
+        .into_client_request()
+        .map_err(|error| Error::Config(error.to_string()))?;
+    request
+        .headers_mut()
+        .insert(HEADER, HeaderValue::from_static(USER_AGENT));
+    Ok(request)
+}
+
 pub async fn connect(
     relay: Url,
     signer: SignerHandle,
@@ -162,12 +186,8 @@ pub async fn connect_with_evidence(
     diagnostics: DiagnosticHandle,
     evidence: Option<String>,
 ) -> Result<(SessionHandle, mpsc::Receiver<SessionEvent>)> {
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
     let connect_started = Instant::now();
-    let mut request = relay
-        .as_str()
-        .into_client_request()
-        .map_err(|error| Error::Config(error.to_string()))?;
+    let mut request = upgrade_request(relay.as_str())?;
     if let Some(evidence) = evidence {
         let mut value = tokio_tungstenite::tungstenite::http::HeaderValue::from_str(&evidence)
             .map_err(|_| Error::Protocol("federated identity evidence is not a header".into()))?;
@@ -188,6 +208,10 @@ pub async fn connect_with_evidence(
                     Error::Auth(denial.notice().into())
                 }
                 Some(denial) => Error::Access(denial.notice().into()),
+                // A single-community relay (upstream #9149) answers other
+                // hosts with a generic 404; so does a relay with no
+                // community at this address. Retrying cannot help.
+                None if response.status().as_u16() == 404 => Error::Access(NO_COMMUNITY.into()),
                 None => Error::Network(format!(
                     "relay refused the WebSocket upgrade (HTTP {})",
                     response.status().as_u16()
@@ -290,7 +314,15 @@ pub async fn connect_with_evidence(
             loop {
                 tokio::select! {
                 command=command_rx.recv()=>match command {
-                    Some(Command::Subscribe{id,filters,response})=>{
+                    Some(Command::Subscribe{id,mut filters,response})=>{
+                        // Filters that select nothing are dropped; with none
+                        // left the subscription is complete at once.
+                        filters.retain(|filter| !crate::protocol::types::matches_nothing(filter));
+                        if filters.is_empty() {
+                            let _=response.send(Ok(()));
+                            let _=event_tx.send(SessionEvent::Eose(id)).await;
+                            continue;
+                        }
                         let wire=envelope::request(&id,&filters);
                         match wire {
                             Ok(wire)=>{

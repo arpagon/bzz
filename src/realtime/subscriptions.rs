@@ -47,7 +47,11 @@ pub fn personal(pubkey: &str, since: u64) -> Vec<Value> {
 }
 
 pub fn read_state(pubkey: &str, since: u64) -> Vec<Value> {
-    vec![json!({"kinds":[30078],"authors":[pubkey],"#t":["read-state"],"since":since,"limit":500})]
+    vec![
+        json!({"kinds":[30078],"authors":[pubkey],"#t":["read-state"],"since":since,"limit":500}),
+        // Synced sidebar sections and sort modes: replaceable heads, no `since`.
+        json!({"kinds":[30078],"authors":[pubkey],"#d":["channel-sections","channel-sort"],"limit":2}),
+    ]
 }
 
 /// Live presence (20001) and owner presence for agents (20003). Ephemeral:

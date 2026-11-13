@@ -39,6 +39,9 @@ pub struct TimelineState {
     /// coordinate, so asynchronous arrivals and wrapping cannot change what a
     /// user selected.
     pub copy_anchor: Option<String>,
+    /// Contextual author labels for this view (identity names v1), by key.
+    /// Authors absent here keep their profile label.
+    pub labels: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -594,6 +597,7 @@ fn render_internal(
         .copy_anchor
         .as_ref()
         .and_then(|_| state.copy_bounds(messages));
+    let labels = std::mem::take(&mut state.labels);
     let blocks = messages
         .iter()
         .enumerate()
@@ -603,6 +607,7 @@ fn render_internal(
                 messages.get(index.saturating_sub(1)).filter(|_| index > 0),
                 thread_summaries.get(&message.event_id),
                 profiles,
+                &labels,
                 agents,
                 reactions,
                 theme,
@@ -615,6 +620,7 @@ fn render_internal(
             )
         })
         .collect::<Vec<_>>();
+    state.labels = labels;
     let heights = blocks
         .iter()
         .map(|block| block.height(content.width))
@@ -805,6 +811,7 @@ fn message_block(
     previous: Option<&Message>,
     thread_summary: Option<&ThreadSummary>,
     profiles: &HashMap<String, Profile>,
+    labels: &HashMap<String, String>,
     agents: &HashMap<String, RemoteAgentView>,
     reactions: &HashMap<String, Vec<Reaction>>,
     theme: &Theme,
@@ -828,9 +835,12 @@ fn message_block(
         );
     }
     let author_profile = profiles.get(&message.pubkey);
-    let author = author_profile
-        .map(Profile::author_label)
-        .unwrap_or_else(|| crate::domain::abbreviated_pubkey(&message.pubkey));
+    let author = match (labels.get(&message.pubkey), author_profile) {
+        (Some(label), Some(profile)) if profile.verified.is_some() => format!("{label} \u{2713}"),
+        (Some(label), _) => label.clone(),
+        (None, Some(profile)) => profile.author_label(),
+        (None, None) => crate::domain::abbreviated_pubkey(&message.pubkey),
+    };
     let author = sanitize::single_line(&author);
     let presence_marker = author_profile.map_or("", Profile::presence_marker);
     let status = author_profile
@@ -850,6 +860,10 @@ fn message_block(
                 .get(&agent.owner_pubkey)
                 .map(Profile::label)
                 .unwrap_or_else(|| crate::domain::abbreviated_pubkey(&agent.owner_pubkey));
+            // The label already names the owner (`Wes’s Honey`).
+            if author.starts_with(&format!("{owner}\u{2019}s ")) {
+                return String::new();
+            }
             format!(" · owned by {}", sanitize::single_line(&owner))
         }
     });
@@ -903,6 +917,19 @@ fn message_block(
                 .into_iter()
         }
     };
+    if message.edited && !message.deleted {
+        // As mobile: the marker follows the body.
+        let mut lines = body_lines.collect::<Vec<_>>();
+        let marker = Span::styled("(edited)", theme.style(HighlightGroup::MessageTimestamp));
+        match lines.last_mut() {
+            Some(last) if !last.spans.is_empty() => {
+                last.spans.push(Span::raw(" "));
+                last.spans.push(marker);
+            }
+            _ => lines.push(Line::from(marker)),
+        }
+        body_lines = lines.into_iter();
+    }
     let grouped_body = grouped.then(|| body_lines.next()).flatten();
     let mut header = vec![];
     if grouped {
@@ -1531,6 +1558,7 @@ mod tests {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         }
     }
 
@@ -1608,6 +1636,7 @@ mod tests {
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
+            &HashMap::new(),
             &Theme::default(),
             None,
             true,
@@ -1631,6 +1660,89 @@ mod tests {
     }
 
     #[test]
+    fn contextual_labels_name_authors_without_repeating_the_owner() {
+        let agent = "a".repeat(64);
+        let wes = "b".repeat(64);
+        let mut profiles = HashMap::new();
+        profiles.insert(
+            wes.clone(),
+            crate::domain::Profile {
+                name: Some("Wes".into()),
+                ..crate::domain::Profile::verified_only(
+                    &wes,
+                    crate::protocol::verified_profile::VerifiedName {
+                        display_name: "Wes".into(),
+                        username: String::new(),
+                        full_name: None,
+                        issuer_label: String::new(),
+                        verified_at: 0,
+                    },
+                    "e".repeat(64),
+                    0,
+                )
+            },
+        );
+        profiles.get_mut(&wes).unwrap().verified = None;
+        let mut agents = HashMap::new();
+        agents.insert(
+            agent.clone(),
+            crate::store::agents::RemoteAgentView {
+                schema_version: 1,
+                community_id: Uuid::nil(),
+                pubkey: agent.clone(),
+                owner_pubkey: wes.clone(),
+                name: "Honey".into(),
+                capabilities: Vec::new(),
+                presence: crate::agents::Presence::Unknown,
+                respond_to: None,
+                respond_to_allowlist: Vec::new(),
+                eligibility: crate::agents::Eligibility::Eligible,
+                stale: false,
+                channel_ids: Vec::new(),
+                last_verified_at: 0,
+            },
+        );
+        let header = |labels: &HashMap<String, String>| {
+            let block = message_block(
+                &message(&agent, 1_700_000_000),
+                None,
+                None,
+                &profiles,
+                labels,
+                &agents,
+                &HashMap::new(),
+                &Theme::default(),
+                None,
+                false,
+                false,
+                None,
+                60,
+                4,
+            );
+            block
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    TimelineRow::Text(line) => Some(
+                        line.spans
+                            .iter()
+                            .map(|span| span.content.as_ref())
+                            .collect::<String>(),
+                    ),
+                    _ => None,
+                })
+                .find(|text| !text.starts_with('─'))
+                .unwrap()
+        };
+        let plain = header(&HashMap::new());
+        assert!(plain.contains("owned by Wes"), "{plain}");
+        let labels = HashMap::from([(agent.clone(), "Wes\u{2019}s Honey".to_owned())]);
+        let labeled = header(&labels);
+        assert!(labeled.contains("Wes\u{2019}s Honey"), "{labeled}");
+        assert!(!labeled.contains("owned by"), "{labeled}");
+    }
+
+    #[test]
     fn body_rows_wrap_inside_the_message_gutter() {
         let mut value = message("a", 1_700_000_000);
         value.content = "one two three four five six seven eight nine ten".into();
@@ -1638,6 +1750,7 @@ mod tests {
             &value,
             None,
             None,
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),

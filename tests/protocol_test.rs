@@ -90,3 +90,29 @@ fn nip10_markers_determine_root_and_parent() {
     let json = event.as_json();
     assert!(!json.is_empty());
 }
+
+/// v0.14 M4: NIP-29 marks a private group with a bare `["private"]` tag, as
+/// the relay emits it; earlier bzz read only a valued tag and showed every
+/// private channel as public. The Solo label is the second `t` tag.
+#[test]
+fn bare_private_tag_and_solo_label_are_read_from_group_metadata() {
+    let relay = nostr::Keys::generate();
+    let id = uuid::Uuid::new_v4();
+    let event = nostr::EventBuilder::new(nostr::Kind::Custom(39_000), "")
+        .tags(
+            [
+                vec!["d".to_owned(), id.to_string()],
+                vec!["name".into(), "Plans".into()],
+                vec!["private".into()],
+                vec!["t".into(), "stream".into()],
+                vec!["t".into(), "buzz.solo".into()],
+            ]
+            .into_iter()
+            .map(|tag| nostr::Tag::parse(tag).unwrap()),
+        )
+        .sign_with_keys(&relay)
+        .unwrap();
+    let channel = bzz::protocol::events::as_channel(&event).unwrap();
+    assert_eq!(channel.visibility, bzz::domain::Visibility::Private);
+    assert_eq!(channel.facts.labels, vec!["buzz.solo".to_owned()]);
+}

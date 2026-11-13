@@ -38,6 +38,15 @@ pub enum Command {
     Profile(String),
     /// `:artifact rename <title> | delete | restore | move <#channel>`.
     Artifact(String),
+    /// Synced sidebar sections: `:section new <name> | rename <name> |
+    /// delete | move <name> | remove | up | down`, acting on the selected
+    /// channel's section.
+    Section(String),
+    /// Synced sort mode of the selected channel's group:
+    /// `:sort alpha | recent | default`.
+    Sort(String),
+    /// Create a Solo chat: `:solo <name>`.
+    Solo(String),
     Unknown(String),
 }
 
@@ -78,6 +87,15 @@ pub fn parse(input: &str) -> Command {
         value if value == "status" || value.starts_with("status ") => {
             Command::Status(value.trim_start_matches("status").trim().to_owned())
         }
+        value if value == "section" || value.starts_with("section ") => {
+            Command::Section(value.trim_start_matches("section").trim().to_owned())
+        }
+        value if value == "sort" || value.starts_with("sort ") => {
+            Command::Sort(value.trim_start_matches("sort").trim().to_owned())
+        }
+        value if value == "solo" || value.starts_with("solo ") => {
+            Command::Solo(value.trim_start_matches("solo").trim().to_owned())
+        }
         value if value == "report" || value.starts_with("report ") => {
             Command::Report(value.trim_start_matches("report").trim().to_owned())
         }
@@ -105,6 +123,12 @@ mod tests {
             Command::Report("spam noisy".into())
         );
         assert_eq!(parse(":tochannel"), Command::ToChannel);
+        assert_eq!(
+            parse(":section new Design team"),
+            Command::Section("new Design team".into())
+        );
+        assert_eq!(parse(":sort alpha"), Command::Sort("alpha".into()));
+        assert_eq!(parse(":solo Plans"), Command::Solo("Plans".into()));
         assert_eq!(parse(":artifacts"), Command::Artifacts);
         assert_eq!(parse(":tasks"), Command::Tasks);
         assert_eq!(parse(":broker"), Command::Broker);

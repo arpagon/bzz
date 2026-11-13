@@ -32,6 +32,9 @@ pub enum Error {
     Timeout(String),
     #[error("unsupported operation: {0}")]
     Unsupported(String),
+    /// The signer (Buzz Desktop) will not sign this; the message says why.
+    #[error("{0}")]
+    SignerRefused(String),
 }
 
 impl Error {

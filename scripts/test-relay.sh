@@ -12,7 +12,7 @@ set -euo pipefail
 PROFILE=default
 if [[ "${1:-}" == "--nip-fi" ]]; then PROFILE=nip-fi; fi
 if [[ "${1:-}" == "--herdr" ]]; then PROFILE=herdr; fi
-PIN=f3b127e3af5c14d2314faa2b63556c3f51ec6743
+PIN=bf3bdd0eaefe39289bf9620594f254c7f68897f5
 HEAD=$(git -C "$BZZ_BUZZ_SOURCE" rev-parse HEAD)
 if [[ "$HEAD" != "$PIN" && "${BZZ_ALLOW_UNPINNED_RELAY:-}" != 1 ]]; then
   echo "expected Buzz $PIN, found $HEAD" >&2; exit 1
@@ -96,5 +96,8 @@ elif [[ "$PROFILE" == herdr ]]; then
   rm -rf -- "$fixture"
   exit "$status"
 else
+  # The `buzz` CLI at the pin, for sidebar interop (v0.14 M4).
+  (cd "$BZZ_BUZZ_SOURCE" && cargo build -p buzz-cli)
+  BZZ_BUZZ_CLI="$BZZ_BUZZ_SOURCE/target/debug/buzz" \
   BZZ_E2E_RELAY_URL=ws://localhost:3030 cargo test --locked --test relay_integration -- --ignored --test-threads=1
 fi

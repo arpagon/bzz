@@ -975,7 +975,10 @@ fn cache_identity(root: &std::path::Path, path: &std::path::Path) -> Option<(Uui
 
 fn safe_error(error: &Error) -> String {
     match error {
-        Error::Protocol(message) | Error::Access(message) | Error::Config(message) => message
+        Error::Protocol(message)
+        | Error::Access(message)
+        | Error::Config(message)
+        | Error::SignerRefused(message) => message
             .chars()
             .filter(|character| !character.is_control())
             .take(160)

@@ -16,7 +16,7 @@ use bzz::{
 };
 use nostr::{EventBuilder, Keys, Kind, Timestamp};
 
-const PIN: &str = "f3b127e3af5c14d2314faa2b63556c3f51ec6743";
+const PIN: &str = "bf3bdd0eaefe39289bf9620594f254c7f68897f5";
 
 #[tokio::test]
 #[ignore = "requires scripts/test-relay.sh"]
@@ -2743,6 +2743,42 @@ async fn real_relay_local_agent_broker() {
     );
     stranger_supervisor.shutdown().await;
 
+    // v0.14 M5 (upstream #9371): an agent cannot write in a DM that has
+    // anyone besides its owner; the broker answers that as `unauthorized`.
+    let stranger_hex = stranger.public_key().to_hex();
+    let open = owner
+        .sign(buzz_sdk::build_dm_open(&[agent.pubkey.as_str(), stranger_hex.as_str()]).unwrap())
+        .await
+        .unwrap();
+    let ack = owner_supervisor.publish(open).await.unwrap();
+    assert!(ack.accepted, "{}", ack.message);
+    let dm: serde_json::Value =
+        serde_json::from_str(ack.message.strip_prefix("response:").unwrap()).unwrap();
+    let dm = uuid::Uuid::parse_str(dm["channel_id"].as_str().unwrap()).unwrap();
+    let agent_supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        agent_signer.clone(),
+    );
+    let in_dm = agent_signer
+        .sign(
+            buzz_sdk::build_message(dm, "agent in a group DM", None, &[], false, &[], &[])
+                .unwrap()
+                .tag(relay::auth_tag(&agent.auth_tag).unwrap()),
+        )
+        .await
+        .unwrap();
+    let refused = agent_supervisor.publish(in_dm).await.unwrap();
+    assert!(!refused.accepted);
+    assert!(
+        refused
+            .message
+            .starts_with("restricted: agents cannot post in direct messages"),
+        "{}",
+        refused.message
+    );
+    assert!(relay::relay_refused_agent(&refused.message));
+    agent_supervisor.shutdown().await;
+
     // The activity log carries no content and no credential.
     let activity = format!("{:?}", host.activity());
     assert!(!activity.contains("hello from the broker") && !activity.contains(&credential));
@@ -3340,4 +3376,405 @@ async fn real_relay_windows_send_fewer_requests_than_backfill() {
         counts[0],
         counts[1]
     );
+}
+
+/// v0.14 M1: an edit from bzz keeps the attachments the relay governs, wins
+/// even within the same second, and keeps the media readable.
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_message_edits() {
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let keys = Keys::generate();
+    let pubkey = keys.public_key().to_hex();
+    let channel = seed_member(&source, &pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let signer = SignerHandle::spawn(keys);
+    let identity = IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "m1".into(),
+        pubkey: pubkey.clone(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "m1".into(),
+    };
+    let mut config = Config::default();
+    config.identities.push(identity.clone());
+    let community = config
+        .add_community("m1".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    let mut store = Store::open_memory().unwrap();
+    store.sync_config(&config).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        signer.clone(),
+    );
+    let http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .unwrap();
+    let service = bzz::service::messages::MessageService::new(
+        community,
+        signer.clone(),
+        store.clone(),
+        supervisor.clone(),
+    );
+    let media_client = MediaClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        "localhost:3030".into(),
+        signer.clone(),
+        2,
+    )
+    .unwrap();
+    let media_root = tempfile::TempDir::new().unwrap();
+    let file = media_root.path().join("generated.txt");
+    tokio::fs::write(&file, b"generated edit fixture\n")
+        .await
+        .unwrap();
+    let attachment = media_client
+        .upload(
+            &file,
+            "application/octet-stream",
+            Some("generated.txt".into()),
+        )
+        .await
+        .unwrap();
+    let original = service
+        .send_with_media(channel, "teh attachment", std::slice::from_ref(&attachment))
+        .await
+        .unwrap();
+    let target = original.id.to_hex();
+
+    let first = service
+        .edit(&http, channel, &target, &pubkey, "the attachment")
+        .await
+        .unwrap();
+    let imeta = |event: &nostr::Event| {
+        event
+            .tags
+            .iter()
+            .filter(|tag| tag.as_slice()[0] == "imeta")
+            .map(|tag| tag.as_slice().to_vec())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        imeta(&first),
+        vec![attachment.imeta_tag()],
+        "attachments kept"
+    );
+    assert!(first.content.starts_with("the attachment\n"));
+    assert!(first.content.contains(&attachment.markdown_line()));
+    // Same second: the second edit is stamped after the first.
+    let second = service
+        .edit(&http, channel, &target, &pubkey, "the attachment, again")
+        .await
+        .unwrap();
+    assert!(second.created_at > first.created_at);
+    let effective = http.effective_edit(&target, channel).await.unwrap();
+    assert_eq!(effective.original.id, original.id);
+    assert_eq!(effective.edit.map(|edit| edit.id), Some(second.id));
+    let download = media_root.path().join("downloaded.bin");
+    media_client.fetch(&attachment, &download).await.unwrap();
+    assert_eq!(
+        tokio::fs::read(&download).await.unwrap(),
+        b"generated edit fixture\n",
+        "the latest edit still references the media"
+    );
+    // Someone else's message cannot be edited from bzz.
+    let stranger = Keys::generate().public_key().to_hex();
+    assert!(
+        service
+            .edit(&http, channel, &target, &stranger, "nope")
+            .await
+            .is_err()
+    );
+}
+
+/// v0.14 M4: sections and sort written by bzz read back through the `buzz`
+/// CLI and the other way round; a Solo chat bzz creates carries the relay's
+/// `buzz.solo` label and its creator.
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_sidebar_documents_and_solo_chats() {
+    use bzz::protocol::{sidebar::Lane, sidebar_doc};
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let cli = std::env::var("BZZ_BUZZ_CLI").expect("relay wrapper builds the buzz CLI");
+    let keys = Keys::generate();
+    let pubkey = keys.public_key().to_hex();
+    let channel = seed_member(&source, &pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let signer = SignerHandle::spawn(keys.clone());
+    let mut config = Config::default();
+    let identity = IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "m4".into(),
+        pubkey: pubkey.clone(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "m4".into(),
+    };
+    config.identities.push(identity.clone());
+    let community = config
+        .add_community("m4".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    let mut store = Store::open_memory().unwrap();
+    store.sync_config(&config).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        signer.clone(),
+    );
+    let http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .unwrap();
+    let messages =
+        bzz::service::messages::MessageService::new(community, signer.clone(), store, supervisor);
+    use nostr::nips::nip19::ToBech32 as _;
+    let nsec = keys.secret_key().to_bech32().unwrap();
+    let buzz = |args: &[&str]| -> serde_json::Value {
+        let output = Command::new(&cli)
+            .args(args)
+            .env("BUZZ_RELAY_URL", "http://localhost:3030")
+            .env("BUZZ_PRIVATE_KEY", &nsec)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "buzz {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+
+    // bzz creates a section and puts #general in it; the CLI sees both.
+    let design = uuid::Uuid::new_v4().to_string();
+    let general = channel.to_string();
+    bzz::service::sidebar::write(&http, &signer, &messages, Lane::Sections, |edit, _| {
+        edit.create_section(&design, "Design", None);
+        edit.set(&["a", &general], serde_json::json!(design));
+        Ok(())
+    })
+    .await
+    .unwrap()
+    .expect("a change");
+    let listed = buzz(&["sidebar", "sections", "list"]);
+    assert_eq!(listed["sections"][0]["name"], "Design");
+    assert_eq!(listed["assignments"][&general], serde_json::json!(design));
+
+    // The CLI adds a section after it; bzz reads both, in order.
+    buzz(&["sidebar", "sections", "create", "--name", "Ops"]);
+    let (_, tree) = bzz::service::sidebar::read_head(&http, &signer, Lane::Sections)
+        .await
+        .unwrap()
+        .expect("a head");
+    let names = sidebar_doc::project(&tree)
+        .sections
+        .into_iter()
+        .map(|section| section.name)
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Design", "Ops"]);
+
+    // bzz reorders on top of the CLI's write; the CLI sees the new order.
+    bzz::service::sidebar::write(&http, &signer, &messages, Lane::Sections, |edit, head| {
+        let ops = sidebar_doc::project(head).sections[1].id.clone();
+        edit.reorder(&[ops]);
+        Ok(())
+    })
+    .await
+    .unwrap()
+    .expect("a change");
+    let listed = buzz(&["sidebar", "sections", "list"]);
+    assert_eq!(listed["sections"][0]["name"], "Ops");
+    assert_eq!(listed["sections"][1]["name"], "Design");
+
+    // Sort modes: bzz sets one, the CLI lists it.
+    bzz::service::sidebar::write(&http, &signer, &messages, Lane::Sort, |edit, _| {
+        edit.set(&["g", "channels"], serde_json::json!("recent"));
+        Ok(())
+    })
+    .await
+    .unwrap()
+    .expect("a change");
+    let sorts = buzz(&["sidebar", "sort", "list"]);
+    assert!(sorts.to_string().contains("recent"), "{sorts}");
+
+    // A Solo chat: the relay's 39000 carries the label and the creator.
+    let solo = uuid::Uuid::new_v4();
+    let created = messages
+        .publish_builder(bzz::protocol::sidebar::solo_creation(solo, "Plans").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(created.kind.as_u16(), 9007);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let metadata = http
+        .query_raw(&[serde_json::json!({"kinds": [39000], "#d": [solo.to_string()]})])
+        .await
+        .unwrap();
+    let tags = metadata
+        .first()
+        .expect("relay metadata for the Solo chat")
+        .tags
+        .iter()
+        .map(|tag| tag.as_slice().to_vec())
+        .collect::<Vec<_>>();
+    assert!(
+        tags.contains(&vec!["t".into(), "buzz.solo".into()]),
+        "{tags:?}"
+    );
+    assert!(tags.contains(&vec!["P".into(), pubkey.clone()]), "{tags:?}");
+    let parsed = bzz::protocol::events::as_channel(&metadata[0]).unwrap();
+    assert_eq!(parsed.visibility, bzz::domain::Visibility::Private);
+    assert_eq!(parsed.facts.labels, vec!["buzz.solo".to_owned()]);
+}
+
+/// v0.14 M5 (upstream #9382): search loads older pages by moving the time
+/// bound below the oldest message shown; every page is older than the last.
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_search_loads_older_pages() {
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let keys = Keys::generate();
+    let pubkey = keys.public_key().to_hex();
+    let _ = seed_member(&source, &pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let signer = SignerHandle::spawn(keys.clone());
+    let (session, mut events) = session::connect(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(SessionEvent::Authenticated)
+    ));
+    tokio::spawn(async move { while events.recv().await.is_some() {} });
+    let channel = uuid::Uuid::new_v4();
+    let create = signer
+        .sign(
+            buzz_sdk::build_create_channel(
+                channel,
+                &format!("paging-{}", &channel.simple().to_string()[..8]),
+                Some(buzz_sdk::Visibility::Open),
+                Some(buzz_sdk::ChannelKind::Stream),
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(session.publish(create).await.unwrap().accepted);
+    let token = format!(
+        "pagetoken{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
+    let now = Timestamp::now().as_secs();
+    const TOTAL: u64 = 45;
+    for index in 0..TOTAL {
+        let event = signer
+            .sign(
+                buzz_sdk::build_message(
+                    channel,
+                    &format!("{token} note {index}"),
+                    None,
+                    &[],
+                    false,
+                    &[],
+                    &[],
+                )
+                .unwrap()
+                .custom_created_at(Timestamp::from(now - 600 + index * 10)),
+            )
+            .await
+            .unwrap();
+        assert!(session.publish(event).await.unwrap().accepted);
+    }
+    session.shutdown().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let identity = IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "m5-search".into(),
+        pubkey: pubkey.clone(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "m5-search".into(),
+    };
+    let mut config = Config::default();
+    config.identities.push(identity.clone());
+    let community = config
+        .add_community("m5".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    let http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .unwrap();
+    let relay_pubkey = bzz::protocol::http::relay_signing_pubkey(&http.nip11().await.unwrap())
+        .unwrap()
+        .to_owned();
+    let mut store = Store::open_memory().unwrap();
+    store.sync_config(&config).unwrap();
+    store.pin_relay_pubkey(community, &relay_pubkey).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    directory::refresh(community, &pubkey, &http, &store)
+        .await
+        .unwrap();
+    let channels = store
+        .call(move |store| store.channels(community))
+        .await
+        .unwrap();
+    let service = bzz::service::search::SearchService::new(community, http.clone(), store.clone());
+    let profiles = std::collections::HashMap::new();
+    let messages = |output: bzz::service::search::SearchOutput| {
+        output
+            .results
+            .into_iter()
+            .filter(|result| result.kind == bzz::domain::SearchResultKind::Message)
+            .map(|result| (result.stable_id, result.created_at))
+            .collect::<Vec<_>>()
+    };
+    let mut seen = messages(
+        service
+            .execute(&token, &pubkey, &channels, &profiles)
+            .await
+            .unwrap(),
+    );
+    assert!(
+        !seen.is_empty() && (seen.len() as u64) < TOTAL,
+        "first page: {}",
+        seen.len()
+    );
+    let mut pages = 1;
+    loop {
+        let bound = seen.iter().map(|(_, at)| *at).min().unwrap();
+        let page = messages(
+            service
+                .older(&token, bound, &pubkey, &channels, &profiles)
+                .await
+                .unwrap(),
+        );
+        assert!(
+            page.iter().all(|(_, at)| *at < bound),
+            "every older result is older"
+        );
+        let fresh = page
+            .into_iter()
+            .filter(|(id, _)| !seen.iter().any(|(shown, _)| shown == id))
+            .collect::<Vec<_>>();
+        if fresh.is_empty() {
+            break;
+        }
+        seen.extend(fresh);
+        pages += 1;
+        assert!(pages < 10, "paging terminates");
+    }
+    assert_eq!(
+        seen.len() as u64,
+        TOTAL,
+        "every message reached in {pages} pages"
+    );
+    signer.lock().await;
 }

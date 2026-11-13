@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod artifacts;
 pub mod dm;
+pub(crate) mod edits;
 pub mod events;
 pub mod inbox;
 pub mod migrate;
@@ -8,6 +9,7 @@ pub mod models;
 pub mod queries;
 pub mod search;
 pub mod search_queries;
+pub mod sidebar;
 pub mod writer;
 
 use std::path::{Path, PathBuf};

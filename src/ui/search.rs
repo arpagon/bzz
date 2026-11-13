@@ -20,13 +20,41 @@ pub struct SearchState {
     pub loading: bool,
     pub local_only: bool,
     pub notice: Option<String>,
+    /// Loading the next page of older messages (Ctrl-o).
+    pub older_loading: bool,
 }
 
 impl SearchState {
     pub fn changed(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.loading = true;
+        self.older_loading = false;
         self.notice = None;
+    }
+
+    /// The creation time of the oldest message shown: the next page's bound.
+    pub fn oldest_message(&self) -> Option<u64> {
+        self.results
+            .iter()
+            .filter(|result| result.kind == SearchResultKind::Message)
+            .map(|result| result.created_at)
+            .min()
+    }
+
+    /// Append an older page, keeping every row already shown in place.
+    /// Returns how many rows were new.
+    pub fn append_older(&mut self, page: Vec<SearchResult>) -> usize {
+        let before = self.results.len();
+        for result in page {
+            if !self
+                .results
+                .iter()
+                .any(|shown| shown.stable_id == result.stable_id)
+            {
+                self.results.push(result);
+            }
+        }
+        self.results.len() - before
     }
 
     pub fn reconcile(&mut self) {
@@ -69,14 +97,16 @@ impl SearchState {
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &SearchState, theme: &Theme) {
     frame.render_widget(Clear, area);
-    let status = if state.loading {
+    let status = if state.loading || state.older_loading {
         "searching…"
     } else if state.local_only {
         "offline · local results"
     } else {
         "local + relay"
     };
-    let title = format!(" Search · {status} · from: in: after: before: · Enter open · Esc close ");
+    let title = format!(
+        " Search · {status} · from: in: after: before: · Enter open · Ctrl-o older · Esc close "
+    );
     let mut items = vec![ListItem::new(Line::from(vec![
         Span::styled("> ", theme.style(HighlightGroup::SelectionMarker)),
         Span::styled(
@@ -139,5 +169,59 @@ const fn kind_label(kind: SearchResultKind) -> &'static str {
         SearchResultKind::Dm => "DM",
         SearchResultKind::Person => "person",
         SearchResultKind::Message => "message",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SearchState;
+    use crate::domain::{SearchResult, SearchResultKind};
+
+    fn result(id: &str, kind: SearchResultKind, created_at: u64) -> SearchResult {
+        SearchResult {
+            stable_id: id.into(),
+            kind,
+            label: id.into(),
+            detail: String::new(),
+            channel_id: None,
+            event_id: None,
+            thread_root: None,
+            pubkey: None,
+            created_at,
+            remote_rank: None,
+        }
+    }
+
+    /// v0.14 M5: the next page is bounded by the oldest message shown;
+    /// appending keeps every shown row in place and skips duplicates.
+    #[test]
+    fn older_pages_append_below_without_moving_rows() {
+        let mut state = SearchState {
+            results: vec![
+                result("channel:x", SearchResultKind::Channel, 1),
+                result("m1", SearchResultKind::Message, 300),
+                result("m2", SearchResultKind::Message, 200),
+            ],
+            selected_id: Some("m2".into()),
+            ..SearchState::default()
+        };
+        assert_eq!(state.oldest_message(), Some(200), "channels do not count");
+        let added = state.append_older(vec![
+            result("m2", SearchResultKind::Message, 200),
+            result("m3", SearchResultKind::Message, 100),
+        ]);
+        assert_eq!(added, 1);
+        let ids = state
+            .results
+            .iter()
+            .map(|r| r.stable_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["channel:x", "m1", "m2", "m3"]);
+        state.reconcile();
+        assert_eq!(state.selected_id.as_deref(), Some("m2"), "selection stays");
+        assert_eq!(state.oldest_message(), Some(100));
+        state.older_loading = true;
+        state.changed();
+        assert!(!state.older_loading, "a new query cancels the older page");
     }
 }

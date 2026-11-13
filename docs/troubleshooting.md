@@ -246,6 +246,16 @@ message is missing after migration, restart once so the versioned local index
 rebuild/integrity check runs, then use `:resync` in its channel. Do not edit the
 FTS tables manually.
 
+The relay returns at most 40 messages per search, ranked by relevance. Press
+`Ctrl-o` in search to load messages older than the oldest one shown; repeat
+until it says there are no older results.
+
+## "This relay serves no community at this address"
+
+The relay answered the community URL with 404: it hosts other communities,
+or runs in single-community mode for another address. bzz does not retry;
+fix the URL with `bzz community remove`/`add`, then `:reconnect`.
+
 ## Inbox is empty or stale
 
 Inbox is scoped to the active community and combines mentions, relevant
@@ -381,6 +391,17 @@ browser and prints the URL for headless terminals. "access to this community
 was denied" is the adapter's or relay's authorization decision: sign-in again
 will not change it. "session ended" means sign in again. Buzz Desktop
 identities get evidence from Desktop: keep it running and signed in.
+
+## "Buzz does not let other apps do this"
+
+The identity's key lives in Buzz (paired with `bzz identity pair-desktop`).
+Buzz signs everyday work for other apps: messages, edits, reactions, read
+state, status, presence, DM open and hide, artifacts. It does not sign
+deleting, reporting, starting or ending huddles, huddle reactions, creating
+or joining channels, adding people to a DM, or profile changes; Buzz 1.0
+refuses them without asking. Do those in Buzz itself. bzz says so before
+you act, or, for a delete, the first time Buzz refuses it in a session. To
+do everything from bzz, use an identity whose key bzz holds.
 
 ## Channel is read-only
 

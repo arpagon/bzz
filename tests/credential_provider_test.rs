@@ -178,3 +178,94 @@ fn inherited_provider_rejects_non_loopback_urls() {
             .is_inherited()
     );
 }
+
+/// v0.14 M2: Buzz 1.0 signs only ordinary kinds and auth proofs for a local
+/// tool. bzz refuses kinds the contract never signs without asking, and stops
+/// offering a sensitive kind once Buzz refused it.
+#[tokio::test]
+async fn buzz_1_0_refusals_are_known_before_the_person_acts() {
+    let provider = FakeProvider::start(&["wss://team.example"]).await;
+    provider.behavior.lock().unwrap().buzz_1_0 = true;
+    let client = client(&provider, &provider.token);
+    let signer = SignerHandle::spawn_remote(client.clone(), provider.keys.public_key());
+    let channel = uuid::Uuid::new_v4();
+    let target = nostr::EventId::all_zeros();
+    let sign_calls = || {
+        provider
+            .calls()
+            .iter()
+            .filter(|method| *method == "sign_event")
+            .count()
+    };
+
+    // Ordinary work signs.
+    signer
+        .sign(buzz_sdk::build_message(channel, "generated", None, &[], false, &[], &[]).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(signer.refusal(9), None);
+
+    // Never signed for local tools: refused before Buzz is asked.
+    assert_eq!(
+        signer.refusal(1984),
+        Some(bzz::auth::operation_policy::REFUSED)
+    );
+    let before = sign_calls();
+    let report = signer
+        .sign(
+            buzz_sdk::build_report(
+                buzz_sdk::ReportTarget::Pubkey(&provider.keys.public_key().to_hex()),
+                "spam",
+                None,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(report, bzz::error::Error::SignerRefused(_)),
+        "{report:?}"
+    );
+    assert_eq!(sign_calls(), before, "nothing was sent to Buzz");
+
+    // Sensitive: Buzz may ask a person; Buzz 1.0 refuses. Then bzz knows.
+    assert_eq!(signer.refusal(5), None);
+    let delete = signer
+        .sign(buzz_sdk::build_delete_compat(channel, target).unwrap())
+        .await
+        .unwrap_err();
+    assert!(delete.to_string().contains("do it in Buzz"), "{delete}");
+    assert_eq!(
+        signer.refusal(5),
+        Some(bzz::auth::operation_policy::REFUSED)
+    );
+    let before = sign_calls();
+    assert!(
+        signer
+            .sign(buzz_sdk::build_delete_compat(channel, target).unwrap())
+            .await
+            .is_err()
+    );
+    assert_eq!(sign_calls(), before, "a known refusal is not asked again");
+}
+
+#[tokio::test]
+async fn approval_required_keeps_the_kind_available() {
+    let provider = FakeProvider::start(&["wss://team.example"]).await;
+    let client = client(&provider, &provider.token);
+    let signer = SignerHandle::spawn_remote(client.clone(), provider.keys.public_key());
+    let error = signer
+        .sign(nostr::EventBuilder::new(nostr::Kind::Metadata, "{}"))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("approve it in Buzz"), "{error}");
+    assert_eq!(
+        signer.refusal(0),
+        None,
+        "a pending approval is not a refusal"
+    );
+    // Keys bzz holds are never refused.
+    let local = SignerHandle::spawn(nostr::Keys::generate());
+    assert_eq!(local.refusal(1984), None);
+    assert_eq!(local.refusal(5), None);
+}

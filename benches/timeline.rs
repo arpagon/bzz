@@ -31,6 +31,7 @@ fn bench_timeline(c: &mut Criterion) {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         })
         .collect::<Vec<_>>();
     c.bench_function("timeline cursor move in 10k messages", |bench| {

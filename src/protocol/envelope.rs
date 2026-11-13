@@ -98,6 +98,11 @@ pub fn request(subscription: &str, filters: &[Value]) -> Result<String> {
     if subscription.is_empty() || subscription.len() > 64 {
         return Err(Error::Protocol("invalid subscription ID".into()));
     }
+    if filters.iter().any(crate::protocol::types::matches_nothing) {
+        return Err(Error::Protocol(
+            "a filter with an empty set selects nothing and is not sent".into(),
+        ));
+    }
     let mut envelope = vec![json!("REQ"), json!(subscription)];
     envelope.extend(filters.iter().cloned());
     Ok(Value::Array(envelope).to_string())

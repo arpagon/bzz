@@ -305,7 +305,7 @@ impl AdapterClient {
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
-            .user_agent(concat!("bzz/", env!("CARGO_PKG_VERSION")))
+            .user_agent(crate::realtime::session::USER_AGENT)
             .build()
             .map_err(|error| Error::Network(error.to_string()))?;
         Ok(Self { base, client })

@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <link rel="stylesheet" href="lib/xterm.css" />
+    <script src="lib/gsap.min.js"></script>
+    <script src="lib/xterm.js"></script>
+    <script src="lib/addon-image.js"></script>
+    <script src="lib/addon-unicode11.js"></script>
+    <script src="lib/tape-replay.js"></script>
+    <style>
+      @font-face {
+        font-family: "JetBrains Mono";
+        src: url("assets/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+        font-weight: 400;
+      }
+      @font-face {
+        font-family: "JetBrains Mono";
+        src: url("assets/fonts/jetbrains-mono-latin-700-normal.woff2") format("woff2");
+        font-weight: 700;
+      }
+      :root {
+        --ground: #0e0c08;
+        --surface: #14110d;
+        --ink: #ece5d8;
+        --muted: #8a8272;
+        --accent: #ffb000;
+        --font-display: "Inter";
+        --font-mono: "JetBrains Mono";
+      }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--ground); }
+      #root { position: relative; width: 100%; height: 100%; overflow: hidden; }
+      #bg {
+        position: absolute; inset: -15%;
+        background:
+          radial-gradient(38% 48% at 28% 30%, rgba(255, 176, 0, 0.15), transparent 70%),
+          radial-gradient(34% 44% at 76% 72%, rgba(255, 120, 0, 0.09), transparent 70%),
+          var(--ground);
+      }
+
+      #capbg {
+        position: absolute; left: 0; right: 0; top: 0; height: 290px; pointer-events: none;
+        background: linear-gradient(180deg, rgba(14,12,8,0.97) 0%, rgba(14,12,8,0.93) 64%, rgba(14,12,8,0) 100%);
+      }
+      /* Caption band: the narration as kinetic type, readable muted. */
+      .cap {
+        position: absolute; left: 160px; right: 160px; top: 64px; height: 150px;
+        display: flex; align-items: center; justify-content: center; text-align: center;
+        font-family: var(--font-display); font-weight: 700; font-size: 58px; line-height: 1.12;
+        letter-spacing: -0.025em; color: var(--ink);
+      }
+      .cap b { color: var(--accent); font-weight: 700; }
+      .cap .line { display: block; }
+      .cap .w { display: inline-block; }
+
+      /* Product window. Boards are labelled placeholders for terminal tapes. */
+      #camera { position: absolute; inset: 0; transform-origin: 50% 22%; }
+      #window {
+        position: absolute; left: 240px; top: 240px; width: 1440px; height: 800px;
+        border-radius: 18px; overflow: hidden; background: var(--surface);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 60px 140px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 176, 0, 0.06);
+      }
+      #titlebar {
+        height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 20px;
+        font-family: var(--font-mono); font-size: 18px; color: var(--muted);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      #titlebar i { width: 14px; height: 14px; border-radius: 50%; background: #3a342a; display: block; }
+      #titlebar span { flex: 1; text-align: center; margin-right: 66px; }
+      #titlebar span { flex: 1; text-align: center; margin-right: 66px; }
+      .shot { position: absolute; left: 0; top: 48px; width: 1440px; height: 752px; overflow: hidden; background: var(--surface); }
+      .term { position: absolute; left: 0; top: 0; }
+      .term .xterm-viewport { overflow: hidden !important; background: transparent !important; }
+      #cmds { position: absolute; left: 0; right: 0; bottom: 70px; display: flex; justify-content: center; z-index: 6; pointer-events: none; }
+      #cmds .key { position: absolute; bottom: 0; font-size: 34px; height: 64px; padding: 0 22px; }
+      #keys { position: absolute; right: 28px; bottom: 26px; display: flex; gap: 10px; z-index: 5; }
+      .key {
+        min-width: 54px; height: 54px; padding: 0 14px; border-radius: 12px; opacity: 0;
+        display: flex; align-items: center; justify-content: center;
+        font-family: var(--font-mono); font-weight: 700; font-size: 30px; color: var(--ground);
+        background: var(--accent); box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+      }
+
+      /* Logo reveal and end card */
+      .center {
+        position: absolute; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 26px;
+      }
+      .mark { width: 220px; height: 220px; }
+      .mark path { stroke: var(--accent); stroke-width: 4.5; stroke-linejoin: round; fill: none; }
+      .mark rect { fill: var(--accent); }
+      .word { font-family: var(--font-mono); font-weight: 700; font-size: 150px; color: var(--accent); letter-spacing: -0.03em; }
+      .sub { font-family: var(--font-display); font-size: 40px; color: var(--ink); }
+      .install {
+        font-family: var(--font-mono); font-size: 34px; color: var(--ink);
+        background: var(--surface); border: 1px solid rgba(255,255,255,0.10); border-radius: 12px;
+        padding: 20px 30px;
+      }
+      .install .p { color: var(--accent); margin-right: 16px; }
+      .url { font-family: var(--font-mono); font-size: 40px; color: var(--accent); }
+      .fine { font-family: var(--font-display); font-size: 28px; color: var(--muted); max-width: 1300px; text-align: center; line-height: 1.35; }
+      #end .mark { width: 170px; height: 170px; }
+      #end .word { font-size: 120px; }
+      .lockup { display: flex; align-items: center; gap: 36px; }
+      .swatches { display: flex; gap: 18px; justify-content: center; }
+      .swatches i { width: 70px; height: 70px; border-radius: 14px; display: block; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="54.9"
+         data-width="1920" data-height="1080">
+      <div id="bg" class="clip" data-start="0" data-duration="54.9" data-track-index="0"></div>
+
+      <!-- Product window: real bzz v0.14.0 terminal tapes, replayed by xterm.js -->
+      <div id="camera" class="clip" data-start="0" data-duration="44.5" data-track-index="1">
+        <div id="window">
+          <div id="titlebar" data-layout-ignore><i></i><i></i><i></i>
+            <span id="title-tui" class="clip" data-start="0" data-duration="41.9" data-track-index="2">bzz — Studio</span>
+            <span id="title-sh" class="clip" data-start="41.9" data-duration="2.6" data-track-index="2">terminal</span>
+          </div>
+          <div id="s1" class="shot clip" data-start="0" data-duration="6.2" data-track-index="2" data-layout-ignore><div class="term" id="t-s1"></div></div>
+          <div id="s4" class="shot clip" data-start="8" data-duration="5.3" data-track-index="2" data-layout-ignore><div class="term" id="t-s4"></div></div>
+          <div id="sE" class="shot clip" data-start="13.3" data-duration="3.25" data-track-index="2" data-layout-ignore><div class="term" id="t-sE"></div></div>
+          <div id="s5" class="shot clip" data-start="16.55" data-duration="4.8" data-track-index="2" data-layout-ignore><div class="term" id="t-s5"></div></div>
+          <div id="s6" class="shot clip" data-start="21.35" data-duration="4.2" data-track-index="2" data-layout-ignore><div class="term" id="t-s6"></div></div>
+          <div id="s7" class="shot clip" data-start="25.55" data-duration="3.3" data-track-index="2" data-layout-ignore><div class="term" id="t-s7"></div></div>
+          <div id="sS" class="shot clip" data-start="28.85" data-duration="4.65" data-track-index="2" data-layout-ignore><div class="term" id="t-sS"></div></div>
+          <div id="s8" class="shot clip" data-start="33.5" data-duration="3" data-track-index="2" data-layout-ignore><div class="term" id="t-s8"></div></div>
+          <div id="s9" class="shot clip" data-start="36.5" data-duration="5.4" data-track-index="2" data-layout-ignore><div class="term" id="t-s9"></div></div>
+          <div id="s10" class="shot clip" data-start="41.9" data-duration="2.6" data-track-index="2" data-layout-ignore><div class="term" id="t-s10"></div></div>
+          <div id="keys" data-layout-ignore></div>
+        </div>
+      </div>
+
+      <!-- Logo reveal: "This is bzz." -->
+      <div id="reveal" class="center clip" data-start="6.2" data-duration="1.8" data-track-index="3">
+        <svg class="mark" viewBox="0 0 64 64">
+          <path id="hex" d="M32 4 L56 18 V46 L32 60 L8 46 V18 Z" pathLength="1"/>
+          <rect class="l1" x="19" y="23" width="26" height="5" rx="2.5"/>
+          <rect class="l2" x="19" y="33" width="17" height="5" rx="2.5"/>
+          <rect class="l3" x="19" y="43" width="10" height="5" rx="2.5"/>
+          <rect class="cur" x="33" y="43" width="6" height="5" rx="1"/>
+        </svg>
+        <div class="word">bzz</div>
+      </div>
+
+      <!-- End card -->
+      <div id="end" class="center clip" data-start="44.5" data-duration="10.4" data-track-index="3">
+        <div class="lockup">
+          <svg class="mark" viewBox="0 0 64 64">
+            <path id="hex2" d="M32 4 L56 18 V46 L32 60 L8 46 V18 Z" pathLength="1"/>
+            <rect class="l1" x="19" y="23" width="26" height="5" rx="2.5"/>
+            <rect class="l2" x="19" y="33" width="17" height="5" rx="2.5"/>
+            <rect class="l3" x="19" y="43" width="10" height="5" rx="2.5"/>
+            <rect class="cur" x="33" y="43" width="6" height="5" rx="1"/>
+          </svg>
+          <div class="word">bzz</div>
+        </div>
+        <div class="sub">A human-first terminal client for Buzz</div>
+        <div class="install"><span class="p">$</span>curl -fsSL https://getbzz.dev/install.sh | sh</div>
+        <div class="url">getbzz.dev</div>
+        <div class="fine">Independent open-source project. Not affiliated with, endorsed by, or sponsored by Block, Inc.</div>
+      </div>
+
+      <!-- Typed keys and commands for the v0.14 shots, in frame space (the camera pushes away from #keys) -->
+      <div id="cmds" data-layout-ignore></div>
+
+      <!-- Caption backdrop: keeps the narration readable over pushed-in UI -->
+      <div id="capbg" class="clip" data-start="0" data-duration="44.5" data-track-index="4" data-layout-ignore></div>
+
+      <!-- Captions: narration segments, film time = voice time + 0.5 s -->
+      <div id="c1" class="cap clip" data-start="0.3" data-duration="3.8" data-track-index="4">Your team chats in Buzz. You live in the&nbsp;<b>terminal.</b></div>
+      <div id="c2" class="cap clip" data-start="4.1" data-duration="2.1" data-track-index="4">So bring the chat <b>to you.</b></div>
+      <div id="c4" class="cap clip" data-start="8" data-duration="5.3" data-track-index="4">Channels, threads, DMs and reactions — <b>all from the keyboard.</b></div>
+      <div id="cE" class="cap clip" data-start="13.3" data-duration="3.25" data-track-index="4">Made a typo? <b>Just edit it.</b></div>
+      <div id="c5" class="cap clip" data-start="16.55" data-duration="4.8" data-track-index="4">Your history lives on your disk. <b>Search it even offline.</b></div>
+      <div id="c6" class="cap clip" data-start="21.35" data-duration="4.2" data-track-index="4">Mention an agent — <b>its reply lands in the thread.</b></div>
+      <div id="c7" class="cap clip" data-start="25.55" data-duration="3.3" data-track-index="4">You decide what each agent <b>is allowed to do.</b></div>
+      <div id="cS" class="cap clip" data-start="28.85" data-duration="4.65" data-track-index="4">Solo chats and sections — <b>in sync with Buzz.</b></div>
+      <div id="c8" class="cap clip" data-start="33.5" data-duration="3" data-track-index="4">Jump into a huddle, <b>with real audio.</b></div>
+      <div id="c9" class="cap clip" data-start="36.5" data-duration="5.4" data-track-index="4">Images and custom emoji, right in your terminal — <b>in sixty themes.</b></div>
+      <div id="c10" class="cap clip" data-start="41.9" data-duration="2.6" data-track-index="4">Your keys stay in <b>your keychain.</b></div>
+
+      <audio id="mix" src="assets/audio/mix.wav" data-start="0" data-duration="54.9" data-track-index="5" data-volume="1"></audio>
+    </div>
+    <script>
+      // Real bzz v0.14.0 output on the pinned relay with generated people.
+      mountTape({ id: "s1", el: "#t-s1", url: "assets/tapes/overview.jsonl", map: [[0, 7.3]], width: 1440, height: 752 });
+      mountTape({ id: "s4", el: "#t-s4", url: "assets/tapes/keyboard.jsonl", map: [[8, 7.7]], width: 1440, height: 752 });
+      // Edit: the typo is on screen, e opens it, the fix is typed at 2x, then (edited).
+      mountTape({ id: "sE", el: "#t-sE", url: "assets/tapes/edit.jsonl", map: [[13.3, 11.5], [13.8, 12.0], [15.0, 14.5], [16.55, 16.05]], width: 1440, height: 752 });
+      mountTape({ id: "s5", el: "#t-s5", url: "assets/tapes/offline.jsonl", map: [[16.55, 7.0], [17.65, 8.1], [17.75, 9.6], [18.45, 12.7], [21.35, 14.9]], width: 1440, height: 752 });
+      mountTape({ id: "s6", el: "#t-s6", url: "assets/tapes/agent.jsonl", map: [[21.35, 9.9], [22.55, 11.5], [23.45, 13.7], [24.15, 15.4], [25.55, 16.4]], width: 1440, height: 752 });
+      mountTape({ id: "s7", el: "#t-s7", url: "assets/tapes/broker.jsonl", map: [[25.55, 8.6], [28.85, 11.9]], width: 1440, height: 752 });
+      // Sync: :section new (typing at 2x), a cut inside the tape, :solo, then the Solo group.
+      mountTape({ id: "sS", el: "#t-sS", url: "assets/tapes/sync.jsonl", map: [[28.85, 7.5], [29.0, 7.58], [29.8, 9.1], [30.59, 9.89], [30.6, 10.58], [31.1, 11.45], [33.5, 13.85]], width: 1440, height: 752 });
+      mountTape({ id: "s8", el: "#t-s8", url: "assets/tapes/huddle.jsonl", map: [[33.5, 11.4], [34.8, 13.2], [35.2, 13.6], [36.5, 14.8]], width: 1440, height: 752 });
+      mountTape({ id: "s9", el: "#t-s9", url: "assets/tapes/media.jsonl", map: [[36.5, 8.0], [38.5, 10.0], [38.6, 12.3], [41.9, 16.6]], width: 1440, height: 752 });
+      mountTape({ id: "s10", el: "#t-s10", url: "assets/tapes/identity.jsonl", map: [[41.9, 4.9], [42.5, 6.1], [44.5, 7.0]], width: 1440, height: 752, align: "center" });
+
+      const tl = gsap.timeline({ paused: true });
+      const words = (sel) => {
+        const el = document.querySelector(sel);
+        // Wrap in one inline line box: the flex caption band would otherwise
+        // drop the whitespace between word spans.
+        el.innerHTML = '<span class="line">' + el.innerHTML.replace(/(<b>|<\/b>)|([^\s<>]+)(?![^<]*>)/g, (m, tag, w) =>
+          tag ? tag : `<span class="w">${w}</span>`) + '</span>';
+        return el.querySelectorAll(".w");
+      };
+      // Caption entrances: words rise in across the first ~0.6 s of each line.
+      const caps = [["#c1", 0.3], ["#c2", 4.1], ["#c4", 8], ["#cE", 13.3], ["#c5", 16.55], ["#c6", 21.35],
+                    ["#c7", 25.55], ["#cS", 28.85], ["#c8", 33.5], ["#c9", 36.5], ["#c10", 41.9]];
+      for (const [sel, at] of caps) {
+        tl.fromTo(words(sel), { y: 26, opacity: 0 },
+          { y: 0, opacity: 1, duration: 0.35, ease: "power3.out", stagger: 0.04 }, at);
+      }
+      // Camera: push toward the part of the screen that proves each line.
+      // P is a point in frame pixels at scale 1; it lands at (960, 600).
+      const OX = 960, OY = 1080 * 0.22;
+      const look = (at, px, py, s, dur = 0.55) =>
+        tl.to("#camera", { scale: s, x: -s * (px - OX), y: 600 - (OY + s * (py - OY)), duration: dur, ease: "power3.inOut" }, at);
+      const rest = (at, dur = 0.45) => tl.to("#camera", { scale: 1, x: 0, y: 0, duration: dur, ease: "power3.inOut" }, at);
+      tl.fromTo("#camera", { scale: 0.97 }, { scale: 1.0, duration: 1.6, ease: "none" }, 0);
+      look(1.6, 1250, 760, 1.25, 1.2);                      // live messages arrive
+      tl.to("#camera", { opacity: 0.12, scale: 0.92, x: 0, y: 0, duration: 0.4, ease: "power2.in" }, 6);
+      tl.to("#camera", { opacity: 1, scale: 1, duration: 0.6, ease: "power3.out" }, 7.9);
+      look(8.9, 1230, 640, 1.25);                           // j/k, react picker
+      look(11.6, 1420, 520, 1.3);                           // thread opens in context
+      rest(12.9, 0.4);
+      look(13.35, 900, 860, 1.3, 0.5);                      // the typo, the edit box, then (edited)
+      rest(16.2, 0.35);
+      look(16.85, 1380, 990, 1.45, 0.5);                     // status: offline cache
+      look(17.85, 960, 420, 1.15, 0.5);                      // search: offline · local results
+      rest(20.95, 0.4);
+      look(21.55, 960, 900, 1.3);                            // @mention picker
+      look(23.15, 1430, 560, 1.35);                          // the agent replies in the thread
+      rest(25.15, 0.4);
+      look(25.75, 960, 380, 1.3);                            // broker toggles
+      rest(28.45, 0.4);
+      look(28.95, 690, 420, 1.45, 0.5);                     // sidebar: Launch week, then Solo
+      rest(33.15, 0.35);
+      look(33.7, 840, 420, 1.3);                            // roster: in the call, then LIVE
+      rest(36.1, 0.4);
+      look(36.7, 1250, 560, 1.25);                          // inline image and emoji
+      rest(38.45, 0.25);                                    // themes
+      look(42, 600, 560, 1.75, 0.5);                      // bzz identity new
+      look(43.25, 1180, 585, 1.75, 0.6);                    // listed with the Keychain backend
+      tl.to("#camera", { opacity: 0, scale: 0.9, x: 0, y: 0, duration: 0.5, ease: "power2.in" }, 44);
+      // Soft entrance for each shot's terminal.
+      for (const [sel, at] of [["#s4", 8], ["#sE", 13.3], ["#s5", 16.55], ["#s6", 21.35], ["#s7", 25.55], ["#sS", 28.85], ["#s8", 33.5], ["#s9", 36.5], ["#s10", 41.9]]) {
+        tl.fromTo(sel, { opacity: 0 }, { opacity: 1, duration: 0.18, ease: "none" }, at);
+      }
+      // Keystroke chips for the keyboard shot (tape key times + film offset 0.3 s).
+      const keys = document.getElementById("keys");
+      const chips = [["k", 8.22], ["k", 8.54], ["k", 8.86], ["k", 9.18], ["r", 10.0], ["j", 10.7], ["j", 10.95], ["j", 11.2], ["⏎", 11.75], ["⏎", 12.75]];
+      chips.forEach(([label, at], i) => {
+        const chip = document.createElement("div");
+        chip.className = "key"; chip.id = `key-${i}`; chip.textContent = label;
+        keys.appendChild(chip);
+        tl.fromTo(chip, { opacity: 0, y: 12, scale: 0.8 }, { opacity: 1, y: 0, scale: 1, duration: 0.12, ease: "power2.out" }, at);
+        tl.to(chip, { opacity: 0, duration: 0.25 }, Math.min(at + 0.55, 13.2));
+      });
+      // Key chips for the edit shot (film times of the keys). The sync shot needs
+      // none: bzz's own command box shows what is typed.
+      const cmds = document.getElementById("cmds");
+      [["e", 13.67, 14.1], ["⌫ ⌫ ⌫", 14.05, 14.6], ["⏎", 15.0, 15.45]].forEach(([label, at, out], i) => {
+        const chip = document.createElement("div");
+        chip.className = "key"; chip.id = `cmd-${i}`; chip.textContent = label;
+        cmds.appendChild(chip);
+        tl.fromTo(chip, { opacity: 0, y: 12, scale: 0.85 }, { opacity: 1, y: 0, scale: 1, duration: 0.14, ease: "power2.out" }, at);
+        tl.to(chip, { opacity: 0, duration: 0.2 }, out);
+      });
+      // Logo reveal: hexagon draws, lines grow, wordmark wipes in.
+      tl.fromTo("#hex", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.6, ease: "power2.inOut" }, 6.25);
+      tl.fromTo("#reveal rect", { scaleX: 0, transformOrigin: "0% 50%" }, { scaleX: 1, duration: 0.25, stagger: 0.08, ease: "power2.out" }, 6.7);
+      tl.fromTo("#reveal .word", { clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)", duration: 0.45, ease: "power3.out" }, 6.9);
+      tl.to("#reveal", { opacity: 0, duration: 0.25 }, 7.75);
+      // End card.
+      tl.fromTo("#hex2", { strokeDasharray: 1, strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.6, ease: "power2.inOut" }, 44.6);
+      tl.fromTo("#end rect", { scaleX: 0, transformOrigin: "0% 50%" }, { scaleX: 1, duration: 0.25, stagger: 0.08, ease: "power2.out" }, 45);
+      tl.fromTo("#end .word", { clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)", duration: 0.45, ease: "power3.out" }, 45.2);
+      tl.fromTo("#end .sub", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.4 }, 45.5);
+      tl.fromTo("#end .install", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 45.7);
+      tl.fromTo("#end .url", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 46.3);
+      tl.fromTo("#end .fine", { opacity: 0 }, { opacity: 1, duration: 0.6 }, 47.1);
+      // Cursor blink on the end card (finite).
+      tl.to("#end .cur", { opacity: 0, duration: 0.01, repeat: 13, yoyo: true, repeatDelay: 0.5 }, 47.5);
+      tl.fromTo("#bg", { x: 0, y: 0 }, { x: -80, y: 40, duration: 54.9, ease: "none" }, 0);
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

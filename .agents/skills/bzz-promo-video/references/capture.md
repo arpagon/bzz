@@ -51,8 +51,9 @@ at 120×32 cells of 12×26 px. A scene runs `promo_fixture drive` in parallel:
 | `agent-reply` | waits for the viewer's `@Scout` mention, then replies in the thread through the broker |
 | `huddle <s>` | Ada starts a huddle; Ada and Sam join with live audio (Ada sends a tone) |
 
-`capture/shoot-all.sh` runs setup and every v0.13 shot in film order and then
-`tape-expect.py` checks. Offline: the shot kills the relay mid-take and
+`capture/shoot-all.sh` runs setup and every shot and then `tape-expect.py`
+checks. Shots that change state run after the shots that show it as seeded
+(v0.14: `edit` and `sync` before `huddle`). Offline: the shot kills the relay mid-take and
 `restart-relay.sh` brings it back **with the same signing key**; a new key
 breaks the pinned relay identity.
 
@@ -65,11 +66,16 @@ Keys learned the hard way:
 - Mention picker: Tab or Enter accepts. Huddle join asks for `y`; `m` unmutes.
 - Theme picker: `Space o`, `j` previews live, Esc restores.
 - Esc at top level asks to quit; leave ≥ 0.3 s between Esc and the next key.
+  Sending a message (Enter) already closes the composer: no Esc after it.
+- Edit: `G` selects your newest message, `e` opens it, Backspace is `\u007f`.
+- Sidebar commands (`:section …`, `:solo …`) show in bzz's own command box;
+  no key chip is needed.
 
 Known product states seen in takes (honest, but frame around them):
 "restricted: relay denied the subscription" before joining a huddle (bzz
 subscribes to the backing channel before membership); a `#huddle-…` backing
-channel appears in the sidebar after joining, so record the huddle last;
+channel appears in the sidebar after joining, so record the huddle after
+every sidebar shot;
 offline search first shows "searching the relay…" then "offline · local results".
 
 ## Review

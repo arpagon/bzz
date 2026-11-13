@@ -1,9 +1,10 @@
 # Protocol compatibility
 
-The v0.13.0 compatibility baseline is `block/buzz` revision
-`f3b127e3af5c14d2314faa2b63556c3f51ec6743`, with revision-pinned `buzz-core`,
+The v0.14.0 compatibility baseline is `block/buzz` revision
+`bf3bdd0eaefe39289bf9620594f254c7f68897f5`, with revision-pinned `buzz-core`,
 `buzz-sdk` and (feature `huddles-audio`) `buzz-audio-client`, built with Rust
-1.98.1. v0.11.x–v0.12.x artifacts remain pinned to
+1.98.1. v0.13.0 artifacts remain pinned to
+`f3b127e3af5c14d2314faa2b63556c3f51ec6743`; v0.11.x–v0.12.x to
 `9f55bf67456be10ff7c8238bf0d9e12e582848f6`; v0.10.0 to
 `ede26863345a518ec46edd6d7692e0281883491b`. The v0.13.0 surfaces are listed in
 [v0.13.0 additions](#v0130-additions) below.
@@ -151,3 +152,63 @@ contract (see below and
   `nip-fi-agent+jwt` assertions.
 - **Messages:** "send to channel" from a thread and NIP-56 reports (kind
   `1984`).
+- **Buzz 1.0 as credential provider (v0.14.0):** pairing and signing work
+  with Buzz 1.0 (`block/buzz-app`, proven with 1.0.1). The contract's
+  operation policy (`docs/local-credential-provider.md`) decides what Buzz
+  signs for bzz. Kinds outside its ordinary and auth-proof tables are refused
+  before Buzz is asked; a sensitive kind Buzz refuses (Buzz 1.0 refuses all of
+  them) is remembered for the session. Delete, report, huddle start, end and
+  reactions, DM add member and leaving a huddle channel say so in the UI.
+  The same-user socket check retries a missing ownership proof within 5 s
+  (upstream #9270).
+- **Contextual identity names v1 and mention rules v3 (v0.14.0):** the two
+  client contracts of `block/buzz-app`, with their portable fixtures vendored
+  in `tests/fixtures/buzz-app/` (v1.0.1) and passing. Timeline authors and
+  mention choices get distinct labels within the channel (`Honey`,
+  `Honey (agent)`, `Wes’s Honey`, `Honey · 4prr`); a label that names the
+  owner drops the separate "owned by". The mention chooser offers every
+  member, the viewer included, matched with Unicode folding and ordered as the
+  contract says; a query may contain spaces while it starts a known name;
+  Space or closing punctuation selects only an exact, unique name. Messages
+  carry `p` tags for recipients, who must be members (a stale draft is
+  refused). bzz has no community directory search, so the chooser has no
+  outside people, agents from other communities or pending mentions; its
+  member cache stands in for the "known" set.
+- **Sidebar sections, sort and Solo chats (v0.14.0):** the synced
+  `channel-sections` and `channel-sort` documents (kind `30078`, NIP-44 to
+  yourself, per-field last-writer-wins registers under `meta.v` 1), with the
+  `buzz-cli` codec ported unchanged; mobile's meta-less payloads import at the
+  event time; an unknown `meta.v` or a document over the caps leaves bzz's
+  own grouping and is never overwritten. The sidebar shows Solo, your
+  sections in order, Channels, Forums, Direct messages and System, with
+  headings when more than one group has channels; a group's synced sort mode
+  wins, otherwise bzz's own sort applies. Writes read the writer's head
+  (`consistency: strong`), publish once after it through the outbox and
+  confirm the result is the head. `:solo` sends the kind `9007` command Buzz
+  1.0 sends (private stream, `t=buzz.solo`), checked against upstream's
+  captured fixture. Starred, muted and project documents are not read.
+  Private channels now show as private: earlier bzz misread NIP-29's bare
+  `["private"]` tag, and re-ingesting current metadata repairs them.
+- **Small parity (v0.14.0):** WebSocket upgrades (relay and huddle audio)
+  send `User-Agent: bzz/<version>`, as HTTP already did (upstream #9246). A
+  404 on the upgrade or NIP-11 means the relay serves no community at that
+  address (single-community mode, #9149) and is not retried. No filter that
+  constrains `ids`, `authors`, `kinds` or a tag to an empty set is sent:
+  HTTP queries skip it and a subscription of only such filters completes at
+  once (older relays read an empty set as no constraint, #9342). The broker
+  answers a relay `restricted:` refusal, such as agent writes in a DM with
+  anyone but the owner (#9371), as `unauthorized`. Search pages back with
+  `Ctrl-o` by moving the time bound below the oldest message shown, as
+  `buzz messages search --before` (#9382); text results are ranked by
+  relevance, so there is no `before_id` cursor.
+- **Edits (kind `40003`, v0.14.0):** the latest live edit in the original's
+  channel, by its author or the verified owner of the agent that wrote it,
+  governs the text and the complete attachment set, as in upstream
+  `docs/effective-message-edits.md`. An empty `imeta` set means no
+  attachments. The timeline shows "(edited)"; search and Inbox use the edited
+  text. `e` edits an own message: bzz reads the `effective_edit` v1 lookup,
+  keeps the governing attachments and stamps the edit after the observed head.
+  Relays without the lookup are refused, so an edit never drops attachments.
+  Desktop picks the newest edit that carries `imeta` and keeps the original's
+  otherwise; bzz follows the relay, which authorizes media by the latest
+  edit.

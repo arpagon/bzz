@@ -2,6 +2,7 @@ pub mod backup;
 pub mod encrypted_file;
 pub mod federated;
 pub mod keychain;
+pub mod operation_policy;
 pub mod provider;
 pub mod signer;
 

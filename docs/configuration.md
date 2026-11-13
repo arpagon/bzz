@@ -241,7 +241,9 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   for communities whose relay requires federated identity (NIP-FI). Sign in
   with `:signin`; the adapter session is stored NIP-44-sealed to your key. Buzz
   Desktop identities (`bzz identity pair-desktop`) get evidence from Desktop
-  instead.
+  instead. Pairing works with Buzz Desktop 0.X and Buzz 1.0
+  (`block/buzz-app`); Buzz signs only everyday work for bzz (see
+  [troubleshooting](troubleshooting.md#buzz-does-not-let-other-apps-do-this)).
 - **`[ui] publish_presence`** (default `false`): publish your own online/away
   presence (kind 20001). Nothing about activity is published unless enabled.
   `:presence on|off` changes and saves it from the TUI; turning it off sends

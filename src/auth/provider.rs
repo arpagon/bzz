@@ -367,14 +367,12 @@ async fn request(
         .local_addr()
         .map_err(|_| ProviderError::Transport)?
         .port();
-    let confirmed = tokio::time::timeout(
-        Duration::from_secs(1),
-        tokio::task::spawn_blocking(move || same_user_holds(port, peer_port)),
-    )
-    .await
-    .ok()
-    .and_then(std::result::Result::ok)
-    .unwrap_or(false);
+    let confirmed = confirm_same_user(|| async move {
+        tokio::task::spawn_blocking(move || socket_owner(port, peer_port))
+            .await
+            .unwrap_or(Owner::Unknown)
+    })
+    .await;
     if !confirmed {
         return Err(ProviderError::Transport);
     }
@@ -420,23 +418,59 @@ async fn request(
     Ok(response[split + 4..].to_vec())
 }
 
-/// Whether a process of this user holds the server side of the loopback
-/// connection `127.0.0.1:client_port -> 127.0.0.1:server_port`.
-fn same_user_holds(server_port: u16, client_port: u16) -> bool {
+/// `lsof` can take seconds on a busy Mac; Linux answers at once.
+const SAME_USER_TIMEOUT: Duration = Duration::from_secs(5);
+const SAME_USER_RETRY: Duration = Duration::from_millis(50);
+
+/// Who holds the server side of a loopback connection, as far as the OS shows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Owner {
+    /// A process of this user.
+    Mine,
+    /// Another user, or the lookup failed: final.
+    Unknown,
+    /// Not listed yet: the accepted socket may appear shortly.
+    Missing,
+}
+
+/// Confirm, before any byte leaves, that this user's process accepted the
+/// connection. Only missing proof is retried, on the same connection and within
+/// one deadline (upstream #9270); another user or a failed lookup is final.
+async fn confirm_same_user<F, Fut>(mut lookup: F) -> bool
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Owner>,
+{
+    let proof = async {
+        loop {
+            match lookup().await {
+                Owner::Mine => return true,
+                Owner::Unknown => return false,
+                Owner::Missing => tokio::time::sleep(SAME_USER_RETRY).await,
+            }
+        }
+    };
+    tokio::time::timeout(SAME_USER_TIMEOUT, proof)
+        .await
+        .unwrap_or(false)
+}
+
+/// The owner of the server side of `127.0.0.1:client_port ->
+/// 127.0.0.1:server_port`.
+fn socket_owner(server_port: u16, client_port: u16) -> Owner {
     #[cfg(target_os = "linux")]
     {
-        let Some(uid) = own_uid() else { return false };
-        let local = format!("0100007F:{server_port:04X}");
-        let remote = format!("0100007F:{client_port:04X}");
-        std::fs::read_to_string("/proc/net/tcp").is_ok_and(|table| {
-            table.lines().skip(1).any(|line| {
-                let fields = line.split_whitespace().collect::<Vec<_>>();
-                fields.len() > 7
-                    && fields[1] == local
-                    && fields[2] == remote
-                    && fields[7].parse::<u32>().ok() == Some(uid)
-            })
-        })
+        let Some(uid) = own_uid() else {
+            return Owner::Unknown;
+        };
+        match std::fs::read_to_string("/proc/net/tcp") {
+            Ok(table) => match proc_net_tcp_uid(&table, server_port, client_port) {
+                Some(owner) if owner == uid => Owner::Mine,
+                Some(_) => Owner::Unknown,
+                None => Owner::Missing,
+            },
+            Err(_) => Owner::Unknown,
+        }
     }
     #[cfg(target_os = "macos")]
     {
@@ -446,28 +480,51 @@ fn same_user_holds(server_port: u16, client_port: u16) -> bool {
             .ok()
             .and_then(|output| String::from_utf8(output.stdout).ok())
             .and_then(|value| value.trim().parse::<u32>().ok());
-        let Some(uid) = uid else { return false };
+        let Some(uid) = uid else {
+            return Owner::Unknown;
+        };
         let output = std::process::Command::new("lsof")
             .args(["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-Fun"])
             .output();
-        let Ok(output) = output else { return false };
+        let Ok(output) = output else {
+            return Owner::Unknown;
+        };
         let text = String::from_utf8_lossy(&output.stdout);
         let wanted = format!("n127.0.0.1:{server_port}->127.0.0.1:{client_port}");
         let mut current_uid = None;
-        text.lines().any(|line| {
+        let mut owner = None;
+        for line in text.lines() {
             if let Some(value) = line.strip_prefix('u') {
                 current_uid = value.parse::<u32>().ok();
-                false
-            } else {
-                line == wanted && current_uid == Some(uid)
+            } else if line == wanted {
+                owner = current_uid;
+                break;
             }
-        })
+        }
+        match owner {
+            Some(owner) if owner == uid => Owner::Mine,
+            Some(_) => Owner::Unknown,
+            None => Owner::Missing,
+        }
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (server_port, client_port);
-        false
+        Owner::Unknown
     }
+}
+
+/// The UID column of the `/proc/net/tcp` row for this exact connection.
+#[cfg(any(target_os = "linux", test))]
+fn proc_net_tcp_uid(table: &str, server_port: u16, client_port: u16) -> Option<u32> {
+    let local = format!("0100007F:{server_port:04X}");
+    let remote = format!("0100007F:{client_port:04X}");
+    table.lines().skip(1).find_map(|line| {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        (fields.len() > 7 && fields[1] == local && fields[2] == remote)
+            .then(|| fields[7].parse().ok())
+            .flatten()
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -614,6 +671,48 @@ impl crate::auth::federated::EvidenceSource for ProviderEvidence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn missing_ownership_proof_is_retried_but_another_user_is_final() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = AtomicUsize::new(0);
+        let late = confirm_same_user(|| {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move { if n < 3 { Owner::Missing } else { Owner::Mine } }
+        })
+        .await;
+        assert!(late, "the accepted socket appeared on the fourth lookup");
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+
+        let calls = AtomicUsize::new(0);
+        let other = confirm_same_user(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Owner::Unknown }
+        })
+        .await;
+        assert!(!other);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a wrong owner is not retried"
+        );
+
+        let start = tokio::time::Instant::now();
+        assert!(!confirm_same_user(|| async { Owner::Missing }).await);
+        assert_eq!(
+            start.elapsed(),
+            SAME_USER_TIMEOUT,
+            "one deadline bounds the retries"
+        );
+    }
+
+    #[test]
+    fn proc_net_tcp_rows_match_the_exact_connection() {
+        let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 0100007F:1004 0100007F:B5D2 01 00000000:00000000 00:00000000 00000000  1000        0 1 1\n   1: 0100007F:1004 0100007F:B5D3 01 00000000:00000000 00:00000000 00000000  1001        0 2 1\n";
+        assert_eq!(proc_net_tcp_uid(table, 0x1004, 0xB5D2), Some(1000));
+        assert_eq!(proc_net_tcp_uid(table, 0x1004, 0xB5D3), Some(1001));
+        assert_eq!(proc_net_tcp_uid(table, 0x1004, 0xB5D4), None);
+    }
 
     #[test]
     fn endpoints_must_be_ipv4_loopback_http_without_userinfo() {

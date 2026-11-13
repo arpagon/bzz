@@ -433,7 +433,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "buzz-audio-client"
 version = "0.1.0"
-source = "git+https://github.com/block/buzz?rev=f3b127e3af5c14d2314faa2b63556c3f51ec6743#f3b127e3af5c14d2314faa2b63556c3f51ec6743"
+source = "git+https://github.com/block/buzz?rev=bf3bdd0eaefe39289bf9620594f254c7f68897f5#bf3bdd0eaefe39289bf9620594f254c7f68897f5"
 dependencies = [
  "futures-util",
  "neteq",
@@ -446,7 +446,7 @@ dependencies = [
 [[package]]
 name = "buzz-core"
 version = "0.1.0"
-source = "git+https://github.com/block/buzz?rev=f3b127e3af5c14d2314faa2b63556c3f51ec6743#f3b127e3af5c14d2314faa2b63556c3f51ec6743"
+source = "git+https://github.com/block/buzz?rev=bf3bdd0eaefe39289bf9620594f254c7f68897f5#bf3bdd0eaefe39289bf9620594f254c7f68897f5"
 dependencies = [
  "base64",
  "chrono",
@@ -468,7 +468,7 @@ dependencies = [
 [[package]]
 name = "buzz-sdk"
 version = "0.1.0"
-source = "git+https://github.com/block/buzz?rev=f3b127e3af5c14d2314faa2b63556c3f51ec6743#f3b127e3af5c14d2314faa2b63556c3f51ec6743"
+source = "git+https://github.com/block/buzz?rev=bf3bdd0eaefe39289bf9620594f254c7f68897f5#bf3bdd0eaefe39289bf9620594f254c7f68897f5"
 dependencies = [
  "buzz-core",
  "nostr",
@@ -524,7 +524,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "bzz"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "arboard",
  "argon2",
@@ -543,6 +543,7 @@ dependencies = [
  "directories",
  "futures-util",
  "hex",
+ "icu_properties",
  "image",
  "infer",
  "insta",
@@ -575,6 +576,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "unicode-normalization",
  "unicode-segmentation",
  "unicode-width",
  "url",
@@ -3319,16 +3321,16 @@ dependencies = [
 
 [[package]]
 name = "quinn-udp"
-version = "0.5.15"
+version = "0.5.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35a133f956daabe89a61a685c2649f13d82d5aa4bd5d12d1277e1072a21c0694"
+checksum = "af66907df18639dcf4db56ca65490cabc4b27a97dbadd96f2926cca73298f016"
 dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

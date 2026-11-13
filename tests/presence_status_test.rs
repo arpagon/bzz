@@ -119,6 +119,7 @@ fn timeline_shows_presence_marker_and_status() {
         sent_from_thread: None,
         broadcast: false,
         emoji: Vec::new(),
+        edited: false,
     }];
     let theme = bzz::ui::theme::Theme::default();
     let mut state = bzz::ui::timeline::TimelineState::default();

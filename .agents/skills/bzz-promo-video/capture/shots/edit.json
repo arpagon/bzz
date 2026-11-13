@@ -1,0 +1,6 @@
+[{"wait": 1.5}, {"type": "  ", "step": 0.15}, {"wait": 0.4}, {"type": "team", "step": 0.08}, {"wait": 0.3}, {"type": "\r", "step": 0.1}, {"wait": 1.5},
+ {"mark": "compose"}, {"type": "i", "step": 0.1}, {"wait": 0.3}, {"type": "Release notes go live tomorow", "step": 0.05}, {"wait": 0.3},
+ {"mark": "sent"}, {"type": "\r", "step": 0.1}, {"wait": 1.5}, {"type": "G", "step": 0.1}, {"wait": 0.6},
+ {"mark": "edit"}, {"type": "e", "step": 0.1}, {"wait": 0.8},
+ {"type": "\u007f\u007f\u007f\u007f\u007f\u007f\u007f", "step": 0.08}, {"wait": 0.2}, {"type": "tomorrow", "step": 0.07}, {"wait": 0.4},
+ {"mark": "save"}, {"type": "\r", "step": 0.1}, {"wait": 2.5}]

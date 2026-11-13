@@ -23,6 +23,8 @@ pub struct ActionContext {
     pub selected_event_has_media: bool,
     pub context_open: bool,
     pub can_publish: bool,
+    /// Why the signer will not delete (Buzz Desktop policy), if it will not.
+    pub delete_refused: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -198,6 +200,11 @@ pub fn derive(context: ActionContext) -> Vec<ContextAction> {
             add(event_publish_action(context, UiAction::React, "react"));
             add(own_event_action(
                 context,
+                UiAction::Edit,
+                "edit own message",
+            ));
+            add(own_event_action(
+                context,
                 UiAction::Delete,
                 "delete own message",
             ));
@@ -286,9 +293,19 @@ const fn own_event_action(
     if !context.has_selected_event {
         ContextAction::unavailable(action, label, "select a message first")
     } else if !context.selected_event_is_own {
-        ContextAction::unavailable(action, label, "only your own message can be deleted")
+        ContextAction::unavailable(
+            action,
+            label,
+            if matches!(action, UiAction::Edit) {
+                "only your own message can be edited"
+            } else {
+                "only your own message can be deleted"
+            },
+        )
     } else if !context.can_publish {
         ContextAction::unavailable(action, label, "identity is locked or unavailable")
+    } else if let (UiAction::Delete, Some(reason)) = (action, context.delete_refused) {
+        ContextAction::unavailable(action, label, reason)
     } else {
         ContextAction::enabled(action, label)
     }
@@ -375,6 +392,7 @@ mod tests {
             selected_event_has_media: false,
             context_open: false,
             can_publish: true,
+            delete_refused: None,
         }
     }
 
@@ -399,6 +417,22 @@ mod tests {
     }
 
     #[test]
+    fn a_signer_refusal_disables_delete_but_not_edit() {
+        let actions = derive(ActionContext {
+            selected_event_is_own: true,
+            delete_refused: Some("Buzz does not let other apps do this; do it in Buzz"),
+            ..context()
+        });
+        let entry = |action| actions.iter().find(|entry| entry.action == action).unwrap();
+        assert!(!entry(UiAction::Delete).enabled);
+        assert_eq!(
+            entry(UiAction::Delete).reason,
+            Some("Buzz does not let other apps do this; do it in Buzz")
+        );
+        assert!(entry(UiAction::Edit).enabled);
+    }
+
+    #[test]
     fn inbox_actions_keep_read_and_context_explicit() {
         let actions = derive(ActionContext {
             route: Route::Inbox,
@@ -413,6 +447,7 @@ mod tests {
             selected_event_has_media: false,
             context_open: false,
             can_publish: true,
+            delete_refused: None,
         });
         assert!(
             actions

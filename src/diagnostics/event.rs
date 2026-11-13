@@ -82,7 +82,7 @@ impl ErrorClass {
         match error {
             Error::Auth(message) if contains_clock_marker(message) => Self::AuthClock,
             Error::Auth(_) => Self::AuthRejected,
-            Error::Access(_) => Self::AccessDenied,
+            Error::Access(_) | Error::SignerRefused(_) => Self::AccessDenied,
             Error::Protocol(_) | Error::Serialization(_) => Self::Protocol,
             Error::Database(_) => Self::Database,
             Error::Io { .. } => Self::Io,

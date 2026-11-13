@@ -418,6 +418,39 @@ impl Store {
             )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         drop(statement);
+        // Previews show a message's governing edit.
+        let channels = candidates
+            .iter()
+            .map(|candidate| {
+                candidate
+                    .channel_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        let originals = candidates
+            .iter()
+            .zip(&channels)
+            .map(|(candidate, channel)| crate::store::edits::Original {
+                event_id: &candidate.event_id,
+                pubkey: &candidate.pubkey,
+                kind: u16::try_from(candidate.kind).unwrap_or(u16::MAX),
+                channel_id: channel,
+            })
+            .collect::<Vec<_>>();
+        let edits = crate::store::edits::governing(&self.connection, community_id, &originals)?;
+        drop(originals);
+        // Routing keeps the original's tags; only the preview text changes.
+        let preview = |candidate: &Candidate| match edits.get(&candidate.event_id) {
+            Some(edit) => {
+                bounded_event_preview(&edit.content, &edit.tags_json, &candidate.http_base)
+            }
+            None => bounded_event_preview(
+                &candidate.content,
+                &candidate.tags_json,
+                &candidate.http_base,
+            ),
+        };
         if candidates.len() > EVENT_SCAN_CAP {
             return Err(Error::Config(format!(
                 "inbox projection exceeded the {EVENT_SCAN_CAP}-event safety cap"
@@ -489,11 +522,7 @@ impl Store {
                     thread_root: thread_root.clone(),
                     sender_pubkey: Some(candidate.pubkey.clone()),
                     created_at: candidate.created_at,
-                    preview: bounded_event_preview(
-                        &candidate.content,
-                        &candidate.tags_json,
-                        &candidate.http_base,
-                    ),
+                    preview: preview(&candidate),
                     unread_count: 0,
                     first_unread_event_id: None,
                     first_unread_at: None,
@@ -529,11 +558,7 @@ impl Store {
                 entry.thread_root = thread_root;
                 entry.sender_pubkey = Some(candidate.pubkey.clone());
                 entry.created_at = candidate.created_at;
-                entry.preview = bounded_event_preview(
-                    &candidate.content,
-                    &candidate.tags_json,
-                    &candidate.http_base,
-                );
+                entry.preview = preview(&candidate);
             }
             let window = windows.entry(conversation_id).or_default();
             if window.len() < EVENT_WINDOW_CAP

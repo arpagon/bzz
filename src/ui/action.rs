@@ -118,6 +118,7 @@ pub enum WorkspaceEffect {
     OpenMediaPreview,
     OpenReaction,
     ConfirmDelete,
+    OpenEdit,
     MarkUnread,
     OpenProfile,
     Unavailable(UiAction),
@@ -399,6 +400,14 @@ pub fn reduce_workspace(state: &mut WorkspaceState, action: UiAction) -> Workspa
             WorkspaceEffect::OpenReaction
         }
         UiAction::Delete => WorkspaceEffect::ConfirmDelete,
+        UiAction::Edit
+            if matches!(
+                state.presentation.focus,
+                FocusSurface::Timeline | FocusSurface::Context
+            ) =>
+        {
+            WorkspaceEffect::OpenEdit
+        }
         UiAction::MarkUnread => WorkspaceEffect::MarkUnread,
         UiAction::ViewProfile
             if matches!(

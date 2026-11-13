@@ -222,8 +222,14 @@ impl Store {
                 params![community_id.to_string(),reaction.event_id,reaction.target_event_id,reaction.pubkey,reaction.emoji,u64_to_i64(reaction.created_at)?,reaction.emoji_url],
             )?;
         }
+        let mut reprojected = Vec::new();
         if matches!(event.kind.as_u16(), 5 | 9005) {
             for target in event_references(event) {
+                if let Some(original) =
+                    crate::store::edits::target_of(&transaction, community_id, &target)?
+                {
+                    reprojected.push(original);
+                }
                 transaction.execute(
                     "INSERT OR IGNORE INTO deletion_targets(community_id,deletion_event_id,target_event_id,deletion_kind,deletion_pubkey) VALUES(?1,?2,?3,?4,?5)",
                     params![community_id.to_string(),event.id.to_hex(),target,i64::from(event.kind.as_u16()),event.pubkey.to_hex()],
@@ -257,6 +263,14 @@ impl Store {
                 params![community_id.to_string(),event.id.to_hex()],
             )?;
         }
+        if event.kind.as_u16() == crate::protocol::edit::KIND_EDIT
+            && let Some(target) = crate::store::edits::index(&transaction, community_id, event)?
+        {
+            reprojected.push(target);
+        }
+        for target in reprojected {
+            crate::store::search::reproject(&transaction, community_id, &target, &http_base)?;
+        }
         transaction.execute(
             "UPDATE outbox SET state='delivered',updated_at=unixepoch(),last_error_code=NULL WHERE community_id=?1 AND event_id=?2",
             params![community_id.to_string(),event.id.to_hex()],
@@ -288,14 +302,21 @@ impl Store {
             return Ok(false);
         };
         let facts = facts_json(&channel.facts)?;
+        // Before v0.14 the bare `["private"]` tag was misread as public.
+        let visibility = match channel.visibility {
+            Visibility::Public => "public",
+            Visibility::Private => "private",
+        };
         let changed = self.connection.execute(
-            "UPDATE channels SET facts_json=?4
-             WHERE community_id=?1 AND channel_id=?2 AND metadata_event_id=?3 AND facts_json<>?4",
+            "UPDATE channels SET facts_json=?4,visibility=?5
+             WHERE community_id=?1 AND channel_id=?2 AND metadata_event_id=?3
+               AND (facts_json<>?4 OR visibility<>?5)",
             params![
                 community_id.to_string(),
                 channel.id.to_string(),
                 event.id.to_hex(),
-                facts
+                facts,
+                visibility
             ],
         )?;
         Ok(changed > 0)

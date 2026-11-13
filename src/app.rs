@@ -203,6 +203,66 @@ impl Runtime {
     }
 }
 
+/// One `:section` change, applied to the relay's current head.
+type SectionEdit = Box<
+    dyn FnOnce(
+            &mut crate::protocol::sidebar_doc::Edit<'_>,
+            &crate::protocol::sidebar_doc::Tree,
+        ) -> Result<()>
+        + Send,
+>;
+
+/// Recency of explicit mention choices (mention rules v3, section 4, rule
+/// 8.1): in memory, for 100 channels and 100 keys each, as desktop keeps it.
+#[derive(Debug, Default)]
+struct MentionHistory {
+    clock: u64,
+    channels: std::collections::VecDeque<(Uuid, HashMap<String, u64>)>,
+}
+
+impl MentionHistory {
+    const CHANNELS: usize = 100;
+    const KEYS: usize = 100;
+
+    fn get(&self, channel: Uuid) -> HashMap<String, u64> {
+        self.channels
+            .iter()
+            .find(|(id, _)| *id == channel)
+            .map(|(_, keys)| keys.clone())
+            .unwrap_or_default()
+    }
+
+    fn record(&mut self, channel: Uuid, pubkey: &str) {
+        self.clock += 1;
+        let mut keys = self
+            .channels
+            .iter()
+            .position(|(id, _)| *id == channel)
+            .and_then(|index| self.channels.remove(index))
+            .map_or_else(HashMap::new, |(_, keys)| keys);
+        keys.insert(pubkey.to_owned(), self.clock);
+        if keys.len() > Self::KEYS
+            && let Some(oldest) = keys
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(key, _)| key.clone())
+        {
+            keys.remove(&oldest);
+        }
+        self.channels.push_front((channel, keys));
+        self.channels.truncate(Self::CHANNELS);
+    }
+}
+
+/// An own message open in the composer for editing. Its text never enters
+/// the draft store; attachments are kept as the relay last saw them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EditingMessage {
+    channel_id: Uuid,
+    event_id: String,
+    kept_attachments: usize,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct StagingAttachment {
     id: String,
@@ -318,6 +378,12 @@ enum Background {
         generation: u64,
         output: crate::service::search::SearchOutput,
     },
+    /// An older page of message results for the current search.
+    SearchOlder {
+        community: Uuid,
+        generation: u64,
+        output: Result<crate::service::search::SearchOutput>,
+    },
     DmOpened {
         community: Uuid,
         result: crate::service::dms::DmOpenResult,
@@ -358,6 +424,8 @@ pub struct App {
     closed_typing_channel: Option<Uuid>,
     reactions: HashMap<String, Vec<Reaction>>,
     show_system_channels: bool,
+    /// The user's synced sidebar sections and sort modes.
+    sidebar_layout: crate::domain::SidebarLayout,
     /// `(reason, note)` awaiting the report confirmation.
     /// `(reason, note, author only)` awaiting the report confirmation.
     pending_report: Option<(String, Option<String>, bool)>,
@@ -417,7 +485,14 @@ pub struct App {
     /// Revision for the editable draft currently hydrated into `composer`.
     /// Never retain it once the composer is closed or submitted.
     composer_draft_revision: Option<String>,
+    /// The composer is editing this own message instead of drafting.
+    editing: Option<EditingMessage>,
     mention_picker: Option<MentionPicker>,
+    /// The composer channel's complete mention choice set, reloaded when a
+    /// new `@` query starts.
+    mention_choices: Option<(Uuid, Uuid, crate::domain::MentionChoices)>,
+    /// Explicit mention selections per channel, most recent highest.
+    mention_history: MentionHistory,
     finder: String,
     reaction_index: usize,
     /// `Some(query)` while the reaction picker searches custom emoji.
@@ -812,6 +887,7 @@ impl App {
             closed_typing_channel: None,
             reactions: HashMap::new(),
             show_system_channels: false,
+            sidebar_layout: crate::domain::SidebarLayout::default(),
             pending_report: None,
             presence: crate::protocol::presence::PresenceBook::default(),
             emoji_palette: HashMap::new(),
@@ -859,7 +935,10 @@ impl App {
             },
             composer: Composer::default(),
             composer_draft_revision: None,
+            editing: None,
             mention_picker: None,
+            mention_choices: None,
+            mention_history: MentionHistory::default(),
             finder: String::new(),
             reaction_index: 0,
             reaction_query: None,
@@ -1139,6 +1218,21 @@ impl App {
                             self.search_state.local_only=output.local_only;
                             self.search_state.notice=output.notice;
                             self.search_state.loading=false;
+                            self.search_state.reconcile();
+                        }
+                    }
+                    Background::SearchOlder { community, generation, output }=>{
+                        if self.active_community_id()==Some(community)
+                            && self.search_state.generation==generation
+                        {
+                            self.search_state.older_loading=false;
+                            self.search_state.notice=Some(match output {
+                                Ok(output)=>match self.search_state.append_older(output.results) {
+                                    0=>"no older results".into(),
+                                    added=>format!("{added} older result(s) added below"),
+                                },
+                                Err(error)=>format!("older results unavailable ({error})"),
+                            });
                             self.search_state.reconcile();
                         }
                     }
@@ -1706,6 +1800,43 @@ impl App {
         }));
     }
 
+    /// Ctrl-o in search: the next page of messages older than those shown.
+    fn spawn_older_search(&mut self) {
+        if self.search_state.loading || self.search_state.older_loading {
+            return;
+        }
+        let Some(before) = self.search_state.oldest_message() else {
+            self.search_state.notice = Some("no message results to page from".into());
+            return;
+        };
+        let (Some(community), Some(identity_pubkey), Some(service)) = (
+            self.active_community_id(),
+            self.self_pubkey().map(str::to_owned),
+            self.runtime.as_ref().map(|runtime| runtime.search.clone()),
+        ) else {
+            self.search_state.notice = Some("older results need a connected community".into());
+            return;
+        };
+        let generation = self.search_state.generation;
+        let input = self.search_state.query.clone();
+        let channels = self.channels.clone();
+        let profiles = self.profiles.clone();
+        let tx = self.background_tx.clone();
+        self.search_state.older_loading = true;
+        tokio::spawn(async move {
+            let output = service
+                .older(&input, before, &identity_pubkey, &channels, &profiles)
+                .await;
+            let _ = tx
+                .send(Background::SearchOlder {
+                    community,
+                    generation,
+                    output,
+                })
+                .await;
+        });
+    }
+
     fn spawn_dm_profile_search(&mut self) {
         let Some(runtime) = &self.runtime else {
             return;
@@ -1751,6 +1882,14 @@ impl App {
             .store
             .call(move |store| store.channels(community))
             .await?;
+        self.sidebar_layout = match self.self_pubkey().map(str::to_owned) {
+            Some(pubkey) => {
+                self.store
+                    .call(move |store| store.sidebar_layout(community, &pubkey))
+                    .await?
+            }
+            None => crate::domain::SidebarLayout::default(),
+        };
         // Membership removed by the relay (kick, delete, moderation): keep the
         // persisted draft, close the composer and move to a joined channel.
         let removed = selected_was_member
@@ -1830,6 +1969,26 @@ impl App {
                     })
                     .await?;
                 self.thread_timeline.reconcile(&self.thread_messages);
+            }
+            // Contextual author labels (identity names v1): this channel's
+            // members plus the authors shown here.
+            if let Some(viewer) = self.self_pubkey().map(str::to_owned) {
+                let authors = self
+                    .messages
+                    .iter()
+                    .chain(self.thread_messages.iter())
+                    .map(|message| message.pubkey.clone())
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let labels = self
+                    .store
+                    .call(move |store| {
+                        store.channel_identity_labels(community, channel, &viewer, &authors)
+                    })
+                    .await?;
+                self.thread_timeline.labels.clone_from(&labels);
+                self.timeline.labels = labels;
             }
         } else {
             self.messages.clear();
@@ -2280,6 +2439,27 @@ impl App {
                     if let Some(summary) = parsed {
                         return Ok(self.apply_live_thread_summary(summary));
                     }
+                } else if crate::protocol::sidebar::Lane::of(&event).is_some() {
+                    // Synced sidebar sections or sort: keep the newest
+                    // readable head; an unreadable one changes nothing.
+                    let signer = runtime.signer.clone();
+                    if let Ok((lane, tree)) =
+                        crate::protocol::sidebar::decode_event(&event, &signer).await
+                    {
+                        let pubkey = event.pubkey.to_hex();
+                        let id = event.id.to_hex();
+                        let at = event.created_at.as_secs();
+                        let changed = self
+                            .store
+                            .call(move |store| {
+                                store.record_sidebar_document(
+                                    community, &pubkey, lane, &id, at, &tree,
+                                )
+                            })
+                            .await?;
+                        self.cache_dirty |= changed;
+                    }
+                    self.remember_relay_event(community, event_id);
                 } else if event.kind.as_u16() == 30_078 {
                     // Serialize read-state reduction so an echo flood cannot
                     // enqueue concurrent decrypt/write work ahead of input.
@@ -2342,7 +2522,7 @@ impl App {
                                     self.rebuild_thread_summaries();
                                 }
                                 self.cache_dirty = true;
-                                if matches!(kind, 9 | 40_002 | 30_622 | 46_010..=46_012) {
+                                if matches!(kind, 9 | 40_002 | 40_003 | 30_622 | 46_010..=46_012) {
                                     self.spawn_inbox_load(false);
                                 }
                                 if membership_refresh {
@@ -3541,6 +3721,7 @@ impl App {
                     self.presentation.open_overlay(Overlay::Reaction);
                 }
             }
+            WorkspaceEffect::OpenEdit => self.open_edit().await?,
             WorkspaceEffect::ConfirmDelete => {
                 if self.runtime.is_none() {
                     self.status_error = Some(
@@ -3551,7 +3732,8 @@ impl App {
                     self.runtime.as_ref().is_some_and(|runtime| {
                         message.pubkey == runtime.signer.public_key().to_hex()
                     })
-                }) {
+                }) && !self.refused_by_signer("delete", &[5])
+                {
                     self.presentation
                         .open_confirmation(ConfirmationKind::Delete);
                 }
@@ -3609,7 +3791,7 @@ impl App {
                 }
             }
             FocusSurface::Channels => {
-                let ids = self.visible_channel_ids();
+                let ids = self.sidebar_row_ids();
                 match scroll {
                     ViewportScroll::Lines(lines) => {
                         self.channel_viewport.scroll_by(lines, ids.len())
@@ -4050,6 +4232,15 @@ impl App {
             "start" if active.is_some() => {
                 self.status_error = Some("a huddle is already running here; join it".into());
             }
+            "start"
+                if self.refused_by_signer(
+                    "start a huddle",
+                    &[
+                        9007,
+                        crate::protocol::huddle::KIND_STARTED,
+                        crate::protocol::huddle::KIND_ENDED,
+                    ],
+                ) => {}
             "start" => {
                 self.presentation.open_overlay(Overlay::Huddle);
                 self.presentation
@@ -4069,6 +4260,11 @@ impl App {
             }
             "leave" => self.leave_huddle().await,
             "end"
+                if self.refused_by_signer(
+                    "end the huddle",
+                    &[crate::protocol::huddle::KIND_ENDED],
+                ) => {}
+            "end"
                 if active
                     .as_ref()
                     .is_some_and(|active| Some(active.creator.as_str()) == self.self_pubkey()) =>
@@ -4078,6 +4274,11 @@ impl App {
                     .open_confirmation(ConfirmationKind::HuddleEnd);
             }
             "end" => self.status_error = Some("only the huddle's creator can end it".into()),
+            "react"
+                if self.refused_by_signer(
+                    "huddle reactions",
+                    &[crate::protocol::huddle::KIND_REACTION],
+                ) => {}
             "mute" => {
                 #[cfg(feature = "huddles-audio")]
                 if let Some(call) = &self.huddle_call {
@@ -4262,6 +4463,13 @@ impl App {
             self.end_huddle().await;
             return;
         }
+        if let Some(reason) = runtime.signer.refusal(9022) {
+            self.status_error = Some(format!(
+                "left the call; audio devices released. Leaving the huddle channel: {reason}"
+            ));
+            self.huddle_dirty = true;
+            return;
+        }
         if let Ok(builder) = crate::protocol::huddle::leave(active.backing) {
             let signer = runtime.signer.clone();
             let supervisor = runtime.supervisor.clone();
@@ -4282,6 +4490,13 @@ impl App {
         let (Some(active), Some(parent), Some(runtime)) = (active, parent, &self.runtime) else {
             return;
         };
+        if let Some(reason) = runtime.signer.refusal(crate::protocol::huddle::KIND_ENDED) {
+            self.status_error = Some(format!(
+                "left the call; audio devices released. Ending the huddle: {reason}"
+            ));
+            self.huddle_dirty = true;
+            return;
+        }
         let signer = runtime.signer.clone();
         let supervisor = runtime.supervisor.clone();
         tokio::spawn(async move {
@@ -5205,6 +5420,7 @@ impl App {
         root: Option<String>,
         parent: Option<String>,
     ) -> Result<()> {
+        self.editing = None;
         if let Some(reason) = self
             .channels
             .iter()
@@ -5315,13 +5531,22 @@ impl App {
                 self.staging_attachments.clear();
                 self.presentation.composer_target = None;
                 self.composer_draft_revision = None;
+                if self.editing.take().is_some() {
+                    self.composer
+                        .set_draft(String::new(), Vec::new(), Vec::new());
+                }
             }
-            KeyAction::Character(character) => self.composer.insert(character),
+            KeyAction::Character(character) => {
+                if !self.complete_exact_mention(character) {
+                    self.composer.insert(character);
+                }
+            }
             KeyAction::Backspace => self.composer.backspace(),
             KeyAction::ForwardDelete => self.composer.delete(),
             KeyAction::Left => self.composer.move_left(),
             KeyAction::Right => self.composer.move_right(),
             KeyAction::Newline => self.composer.newline(),
+            KeyAction::Submit if self.active_edit().is_some() => self.save_edit().await?,
             KeyAction::Submit => {
                 if !self.staging_attachments.is_empty() {
                     self.status_error = Some("attachment processing is not ready to send".into());
@@ -5425,6 +5650,51 @@ impl App {
                                 outcome: "eligible".into(),
                             });
                         self.cache_dirty = true;
+                    }
+                    // Mention rules v3, section 8: every recipient is a member
+                    // when the message is written, at most 32 of them. bzz
+                    // only offers members, so this catches stale drafts.
+                    if !prepared_mentions.is_empty() {
+                        let mentions = prepared_mentions.clone();
+                        let target = prepared_target.clone();
+                        let sender = self.self_pubkey().map(str::to_owned).unwrap_or_default();
+                        let checked = self
+                            .store
+                            .call(move |store| {
+                                let members = store
+                                    .mention_choices(
+                                        target.community_id,
+                                        target.channel_id,
+                                        &sender,
+                                    )?
+                                    .choices
+                                    .into_iter()
+                                    .map(|choice| choice.pubkey)
+                                    .collect::<Vec<_>>();
+                                Ok(crate::protocol::mention_rules::write_tags(
+                                    &sender,
+                                    &members,
+                                    &mentions,
+                                    &[],
+                                ))
+                            })
+                            .await?;
+                        if let Err(error) = checked {
+                            use crate::protocol::mention_rules::TagError;
+                            self.status_error = Some(
+                                match error {
+                                    TagError::NotMember => {
+                                        "a mentioned person is no longer in this channel; remove the mention (draft kept)"
+                                    }
+                                    TagError::TooMany => {
+                                        "a message can mention at most 32 people (draft kept)"
+                                    }
+                                    TagError::Invalid => "a mention is invalid; remove it (draft kept)",
+                                }
+                                .into(),
+                            );
+                            return Ok(());
+                        }
                     }
                     // Persist the final edit before making its acknowledgement
                     // boundary durable. A send without a revision is refused:
@@ -5572,17 +5842,75 @@ impl App {
             return Ok(());
         };
         let query = self.composer.body[range.start + 1..range.end].to_owned();
-        let lookup = query.clone();
-        let mut candidates = self
-            .store
-            .call(move |store| store.mention_candidates(community, channel, &self_pubkey, &lookup))
-            .await?;
+        let cached =
+            self.mention_choices
+                .as_ref()
+                .is_some_and(|(cached_community, cached_channel, _)| {
+                    (*cached_community, *cached_channel) == (community, channel)
+                });
+        if !cached || query.is_empty() {
+            let choices = self
+                .store
+                .call(move |store| store.mention_choices(community, channel, &self_pubkey))
+                .await?;
+            self.mention_choices = Some((community, channel, choices));
+        }
+        let Some((_, _, choices)) = &self.mention_choices else {
+            return Ok(());
+        };
+        // A multi-word query stays open only while it starts a known name.
+        if !crate::protocol::mention_rules::admitted(&query, &choices.names()) {
+            self.mention_picker = None;
+            return Ok(());
+        }
         let now = crate::clock::SystemClock.now_unix();
+        let presence = |pubkey: &str| match self.presence.get(pubkey, now) {
+            crate::protocol::presence::Presence::Online => {
+                crate::protocol::mention_rules::Presence::Online
+            }
+            crate::protocol::presence::Presence::Away => {
+                crate::protocol::mention_rules::Presence::Away
+            }
+            crate::protocol::presence::Presence::Offline => {
+                crate::protocol::mention_rules::Presence::Unknown
+            }
+        };
+        let mut candidates = choices.ranked(&query, &self.mention_history.get(channel), presence);
         for candidate in &mut candidates {
             candidate.presence = Some(self.presence.get(&candidate.pubkey, now));
         }
         self.mention_picker = Some(MentionPicker::new(range, query, candidates));
         Ok(())
+    }
+
+    /// Space or closing punctuation right after a query selects the one
+    /// exact name, if there is one (mention rules v3, section 5). The typed
+    /// character then follows the mention. Returns whether it selected.
+    fn complete_exact_mention(&mut self, typed: char) -> bool {
+        if typed != ' ' && !crate::protocol::mention_rules::is_closing_punctuation(typed) {
+            return false;
+        }
+        let Some(picker) = &self.mention_picker else {
+            return false;
+        };
+        let Some((_, channel, choices)) = &self.mention_choices else {
+            return false;
+        };
+        let Some(candidate) = choices.exact(&picker.query).cloned() else {
+            return false;
+        };
+        let (range, channel) = (picker.range.clone(), *channel);
+        self.mention_picker = None;
+        if !self
+            .composer
+            .accept_mention(range, &candidate.label, &candidate.pubkey)
+        {
+            self.status_error = Some("could not add that mention".into());
+            return false;
+        }
+        self.mention_history.record(channel, &candidate.pubkey);
+        self.composer.insert(typed);
+        true
     }
 
     fn accept_mention(&mut self) {
@@ -5593,12 +5921,18 @@ impl App {
                 .map(|candidate| (picker.range.clone(), candidate))
         });
         self.mention_picker = None;
-        if let Some((range, candidate)) = selected
-            && !self
+        if let Some((range, candidate)) = selected {
+            if self
                 .composer
                 .accept_mention(range, &candidate.label, &candidate.pubkey)
-        {
-            self.status_error = Some("could not add that mention".into());
+            {
+                if let Some((_, channel, _)) = &self.mention_choices {
+                    let channel = *channel;
+                    self.mention_history.record(channel, &candidate.pubkey);
+                }
+            } else {
+                self.status_error = Some("could not add that mention".into());
+            }
         }
     }
 
@@ -6122,6 +6456,9 @@ impl App {
     }
 
     async fn persist_draft(&mut self) -> Result<()> {
+        if self.active_edit().is_some() {
+            return Ok(());
+        }
         let Some(target) = self.presentation.composer_target.clone() else {
             return Ok(());
         };
@@ -6223,6 +6560,9 @@ impl App {
                 })
                 .map(|reaction| reaction.event_id.clone())
         });
+        if own_reaction.is_some() && self.refused_by_signer("remove a reaction", &[5]) {
+            return;
+        }
         let tx = self.background_tx.clone();
         tokio::spawn(async move {
             let result = if let Some(reaction) = own_reaction {
@@ -6490,6 +6830,341 @@ impl App {
         });
     }
 
+    /// The edit in progress, while the composer is still open on its channel.
+    fn active_edit(&self) -> Option<&EditingMessage> {
+        self.editing.as_ref().filter(|editing| {
+            self.presentation
+                .composer_target
+                .as_ref()
+                .is_some_and(|target| target.channel_id == editing.channel_id)
+        })
+    }
+
+    /// Read the relay's current head of a sidebar document, apply `apply`,
+    /// and publish the result once; then confirm it is the head. A head bzz
+    /// cannot read is never overwritten.
+    async fn sidebar_write(
+        &mut self,
+        lane: crate::protocol::sidebar::Lane,
+        apply: impl FnOnce(
+            &mut crate::protocol::sidebar_doc::Edit<'_>,
+            &crate::protocol::sidebar_doc::Tree,
+        ) -> Result<()>,
+    ) -> Result<()> {
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some(
+                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
+            );
+            return Ok(());
+        };
+        let community = runtime.community_id;
+        let (http, signer, messages) = (
+            runtime.http.clone(),
+            runtime.signer.clone(),
+            runtime.messages.clone(),
+        );
+        let result = crate::service::sidebar::write(&http, &signer, &messages, lane, apply).await;
+        match result {
+            Ok(Some((event, tree))) => {
+                let (pubkey, id, at) = (
+                    event.pubkey.to_hex(),
+                    event.id.to_hex(),
+                    event.created_at.as_secs(),
+                );
+                self.store
+                    .call(move |store| {
+                        store.record_sidebar_document(community, &pubkey, lane, &id, at, &tree)
+                    })
+                    .await?;
+                self.cache_dirty = true;
+                self.status_error = Some("sidebar updated".into());
+            }
+            Ok(None) => self.status_error = Some("sidebar unchanged".into()),
+            Err(error) => self.status_error = Some(format!("sidebar not changed: {error}")),
+        }
+        Ok(())
+    }
+
+    /// `:section new <name> | rename <name> | delete | move <name> | remove |
+    /// up | down`, for the selected channel's section.
+    async fn section_command(&mut self, arguments: &str) -> Result<()> {
+        use crate::protocol::{sidebar::Lane, sidebar_doc};
+        use serde_json::json;
+        let (verb, rest) = arguments.split_once(' ').unwrap_or((arguments, ""));
+        let rest = rest.trim().to_owned();
+        let channel = self
+            .current_channel()
+            .map(|channel| channel.id.hyphenated().to_string());
+        let current = self.current_channel().and_then(|channel| {
+            crate::ui::sidebar::channel_section(channel, &self.sidebar_layout).map(|s| s.id.clone())
+        });
+        let usage = "usage: :section new <name> | rename <name> | delete | move <name> | remove | up | down";
+        let need =
+            |what: Option<String>, why: &str| what.ok_or_else(|| Error::Config(why.to_owned()));
+        let channel_needed = || need(channel.clone(), "select a channel first");
+        let section_needed = || need(current.clone(), "the selected channel is in no section");
+        let resolve = |view: &sidebar_doc::Projection, key: &str| -> Result<String> {
+            let mut named = view
+                .sections
+                .iter()
+                .filter(|section| section.name == key.trim());
+            match (named.next(), named.next()) {
+                (Some(section), None) => Ok(section.id.clone()),
+                (Some(_), Some(_)) => Err(Error::Config(format!(
+                    "more than one section is named \"{key}\""
+                ))),
+                (None, _) => Err(Error::Config(format!("no section is named \"{key}\""))),
+            }
+        };
+        let plan: Result<SectionEdit> = match verb {
+            "new" | "create" if !rest.is_empty() => {
+                let id = Uuid::new_v4().to_string();
+                let channel = channel.clone();
+                Ok(Box::new(move |edit, _| {
+                    edit.create_section(&id, &rest, None);
+                    if let Some(channel) = channel {
+                        edit.set(&["a", &channel], json!(id));
+                    }
+                    Ok(())
+                }))
+            }
+            "rename" if !rest.is_empty() => section_needed().map(|id| {
+                Box::new(
+                    move |edit: &mut sidebar_doc::Edit<'_>, _: &sidebar_doc::Tree| {
+                        edit.set(&["s", &id, "name"], json!(rest));
+                        Ok(())
+                    },
+                ) as Box<_>
+            }),
+            "delete" => section_needed().map(|id| {
+                Box::new(
+                    move |edit: &mut sidebar_doc::Edit<'_>, _: &sidebar_doc::Tree| {
+                        edit.set(&["s", &id, "live"], json!(false));
+                        Ok(())
+                    },
+                ) as Box<_>
+            }),
+            "move" if !rest.is_empty() => channel_needed().map(|channel| {
+                Box::new(
+                    move |edit: &mut sidebar_doc::Edit<'_>, head: &sidebar_doc::Tree| {
+                        let id = resolve(&sidebar_doc::project(head), &rest)?;
+                        edit.set(&["a", &channel], json!(id));
+                        Ok(())
+                    },
+                ) as Box<_>
+            }),
+            "remove" => channel_needed().map(|channel| {
+                Box::new(
+                    move |edit: &mut sidebar_doc::Edit<'_>, _: &sidebar_doc::Tree| {
+                        edit.clear(&["a", &channel]);
+                        Ok(())
+                    },
+                ) as Box<_>
+            }),
+            "up" | "down" => section_needed().map(|id| {
+                let up = verb == "up";
+                Box::new(
+                    move |edit: &mut sidebar_doc::Edit<'_>, head: &sidebar_doc::Tree| {
+                        let mut ids = sidebar_doc::project(head)
+                            .sections
+                            .into_iter()
+                            .map(|section| section.id)
+                            .collect::<Vec<_>>();
+                        if let Some(at) = ids.iter().position(|live| *live == id) {
+                            let to = if up {
+                                at.saturating_sub(1)
+                            } else {
+                                (at + 1).min(ids.len() - 1)
+                            };
+                            ids.swap(at, to);
+                        }
+                        edit.reorder(&ids);
+                        Ok(())
+                    },
+                ) as Box<_>
+            }),
+            _ => Err(Error::Config(usage.into())),
+        };
+        match plan {
+            Ok(apply) => self.sidebar_write(Lane::Sections, apply).await,
+            Err(error) => {
+                self.status_error = Some(match error {
+                    Error::Config(message) => message,
+                    other => other.to_string(),
+                });
+                Ok(())
+            }
+        }
+    }
+
+    /// `:sort alpha | recent | default` for the selected channel's group.
+    async fn sort_command(&mut self, arguments: &str) -> Result<()> {
+        use serde_json::json;
+        let mode = match arguments.trim() {
+            "alpha" => Some("alpha"),
+            "recent" => Some("recent"),
+            "default" | "reset" => None,
+            _ => {
+                self.status_error = Some("usage: :sort alpha | recent | default".into());
+                return Ok(());
+            }
+        };
+        let Some(key) = self.current_channel().and_then(|channel| {
+            crate::ui::sidebar::channel_sort_key(channel, &self.sidebar_layout)
+        }) else {
+            self.status_error = Some("this group has no synced sort mode".into());
+            return Ok(());
+        };
+        self.sidebar_write(crate::protocol::sidebar::Lane::Sort, move |edit, _| {
+            match mode {
+                Some(mode) => edit.set(&["g", &key], json!(mode)),
+                None => edit.clear(&["g", &key]),
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// `:solo <name>`: create a Solo chat as Buzz 1.0 does (kind 9007,
+    /// private stream labeled `buzz.solo`; the relay records the creator).
+    async fn solo_command(&mut self, name: &str) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            self.status_error = Some("usage: :solo <name>".into());
+            return Ok(());
+        }
+        if self.refused_by_signer("create a Solo chat", &[9007]) {
+            return Ok(());
+        }
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some(
+                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
+            );
+            return Ok(());
+        };
+        let builder = match crate::protocol::sidebar::solo_creation(Uuid::new_v4(), name) {
+            Ok(builder) => builder,
+            Err(error) => {
+                self.status_error = Some(error.to_string());
+                return Ok(());
+            }
+        };
+        match runtime.messages.publish_builder(builder).await {
+            Ok(_) => {
+                self.status_error = Some(format!("Solo chat \"{name}\" created"));
+                self.spawn_directory_refresh();
+            }
+            Err(error) => self.status_error = Some(format!("Solo chat not created: {error}")),
+        }
+        Ok(())
+    }
+
+    /// Refuse an action locally when the signer (Buzz Desktop) will not sign
+    /// one of its kinds, so it never fails after the person commits to it.
+    fn refused_by_signer(&mut self, action: &str, kinds: &[u16]) -> bool {
+        let reason = self
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.signer.refusal_any(kinds));
+        if let Some(reason) = reason {
+            self.status_error = Some(format!("{action}: {reason}"));
+        }
+        reason.is_some()
+    }
+
+    /// Open the selected own message in the composer for editing.
+    async fn open_edit(&mut self) -> Result<()> {
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some(
+                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
+            );
+            return Ok(());
+        };
+        let own = runtime.signer.public_key().to_hex();
+        let community = runtime.community_id;
+        let Some(message) = self.selected_message().cloned() else {
+            return Ok(());
+        };
+        let reason = self
+            .channels
+            .iter()
+            .find(|channel| channel.id == message.channel_id)
+            .and_then(Channel::read_only_reason);
+        if message.pubkey != own {
+            self.status_error = Some("only your own message can be edited".into());
+        } else if message.deleted || message.system.is_some() {
+            self.status_error = Some("this message cannot be edited".into());
+        } else if message.delivery != crate::domain::DeliveryState::Delivered {
+            self.status_error = Some("wait until the message is delivered, then edit it".into());
+        } else if let Some(reason) = reason {
+            self.status_error = Some(reason.notice().into());
+        } else {
+            self.mention_picker = None;
+            self.staging_media.clear();
+            self.staging_attachments.clear();
+            self.composer_draft_revision = None;
+            self.composer
+                .set_draft(message.content.clone(), Vec::new(), Vec::new());
+            self.editing = Some(EditingMessage {
+                channel_id: message.channel_id,
+                event_id: message.event_id.clone(),
+                kept_attachments: message.attachments.len(),
+            });
+            self.presentation.composer_target = Some(ComposerTarget {
+                community_id: community,
+                channel_id: message.channel_id,
+                thread_root_id: message.root_event_id.clone(),
+                parent_event_id: None,
+            });
+        }
+        Ok(())
+    }
+
+    /// Publish the composer's text as an edit of the message being edited.
+    /// On failure the text stays in the composer.
+    async fn save_edit(&mut self) -> Result<()> {
+        let Some(editing) = self.active_edit().cloned() else {
+            return Ok(());
+        };
+        if !self.composer.attachments.is_empty() || !self.staging_attachments.is_empty() {
+            self.status_error =
+                Some("an edit keeps the message's attachments; remove the new ones to save".into());
+            return Ok(());
+        }
+        if self.composer.body.trim().is_empty() && editing.kept_attachments == 0 {
+            self.status_error = Some("an edit needs text; delete the message instead".into());
+            return Ok(());
+        }
+        let Some(runtime) = &self.runtime else {
+            return Ok(());
+        };
+        let author = runtime.signer.public_key().to_hex();
+        let body = self.composer.body.clone();
+        match runtime
+            .messages
+            .edit(
+                &runtime.http,
+                editing.channel_id,
+                &editing.event_id,
+                &author,
+                &body,
+            )
+            .await
+        {
+            Ok(_) => {
+                self.editing = None;
+                self.composer
+                    .set_draft(String::new(), Vec::new(), Vec::new());
+                self.presentation.composer_target = None;
+                self.cache_dirty = true;
+            }
+            Err(error) => {
+                self.status_error = Some(format!("edit not saved; your text is kept ({error})"));
+            }
+        }
+        Ok(())
+    }
+
     fn delete_selected(&mut self) {
         let Some(runtime) = &self.runtime else { return };
         let Some(channel) = self.current_channel().map(|channel| channel.id) else {
@@ -6507,7 +7182,7 @@ impl App {
             let _ = tx
                 .send(match result {
                     Ok(_) => Background::Changed,
-                    Err(error) => Background::Failed(error.to_string()),
+                    Err(error) => Background::Failed(format!("delete: {error}")),
                 })
                 .await;
         });
@@ -6869,6 +7544,14 @@ impl App {
             );
             return;
         }
+        if add_to.is_some()
+            && self.refused_by_signer(
+                "add someone to a DM",
+                &[buzz_core::kind::KIND_DM_ADD_MEMBER as u16],
+            )
+        {
+            return;
+        }
         self.dm_picker = DmPickerState {
             add_to,
             ..DmPickerState::default()
@@ -7104,6 +7787,9 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.search_state.move_by(-1)
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.spawn_older_search();
             }
             KeyCode::Down => self.search_state.move_by(1),
             KeyCode::Up => self.search_state.move_by(-1),
@@ -7799,6 +8485,13 @@ impl App {
             crate::ui::command::Command::Artifact(arguments) => {
                 return self.artifact_command(&arguments).await;
             }
+            crate::ui::command::Command::Section(arguments) => {
+                return self.section_command(&arguments).await;
+            }
+            crate::ui::command::Command::Sort(arguments) => {
+                return self.sort_command(&arguments).await;
+            }
+            crate::ui::command::Command::Solo(name) => return self.solo_command(&name).await,
             crate::ui::command::Command::Report(arguments) => {
                 // `:report author <reason> [note]` reports the selected
                 // message's author as a user instead of the message.
@@ -7816,6 +8509,7 @@ impl App {
                     ));
                 } else if self.runtime.is_none() || self.selected_message().is_none() {
                     self.status_error = Some("select a message to report".into());
+                } else if self.refused_by_signer("report", &[buzz_core::kind::KIND_REPORT as u16]) {
                 } else {
                     self.pending_report = Some((reason, note.map(str::to_owned), author_only));
                     self.presentation
@@ -7995,7 +8689,23 @@ impl App {
             &self.unread_channels(),
             self.config.ui.channel_sort,
             self.show_system_channels,
+            &self.sidebar_layout,
         )
+    }
+
+    fn sidebar_rows(&self) -> Vec<crate::ui::sidebar::SidebarRow> {
+        crate::ui::sidebar::rows(
+            &self.channels,
+            &self.unread_channels(),
+            self.config.ui.channel_sort,
+            self.show_system_channels,
+            &self.sidebar_layout,
+        )
+    }
+
+    /// Viewport ids of every sidebar row, headings included.
+    fn sidebar_row_ids(&self) -> Vec<String> {
+        crate::ui::sidebar::row_ids(&self.channels, &self.sidebar_rows())
     }
 
     fn visible_channel_ids(&self) -> Vec<String> {
@@ -8021,8 +8731,19 @@ impl App {
             self.channel_viewport.selected_id = None;
             return;
         }
+        // Selection is a channel; scrolling counts heading rows too.
         let channel_ids = self.visible_channel_ids();
-        self.channel_viewport.reconcile(channel_ids);
+        if !self
+            .channel_viewport
+            .selected_id
+            .as_ref()
+            .is_some_and(|selected| channel_ids.contains(selected))
+        {
+            self.channel_viewport.selected_id = channel_ids.first().cloned();
+            self.channel_viewport.keep_selection_visible = true;
+        }
+        let row_ids = self.sidebar_row_ids();
+        self.channel_viewport.reconcile_scroll(&row_ids);
         if let Some(selected) = self.channel_viewport.selected_id.as_deref()
             && let Some(index) = self
                 .channels
@@ -8104,6 +8825,10 @@ impl App {
                 .is_some_and(|message| !message.attachments.is_empty()),
             context_open: self.thread_root.is_some(),
             can_publish: self.runtime.is_some(),
+            delete_refused: self
+                .runtime
+                .as_ref()
+                .and_then(|runtime| runtime.signer.refusal(5)),
         }
     }
 
@@ -8220,18 +8945,20 @@ impl App {
             }
         }
         if let Some(sidebar) = panes.sidebar {
-            let ids = self.visible_channel_ids();
+            let rows = self.sidebar_rows();
+            let ids = crate::ui::sidebar::row_ids(&self.channels, &rows);
             self.channel_viewport
                 .set_viewport_height(usize::from(inner_rect(sidebar).height), &ids);
             hit_map.push(sidebar, HitTarget::ChannelPane);
-            for (row, index) in self
-                .ordered_channel_indexes()
+            for (row, entry) in rows
                 .into_iter()
                 .skip(self.channel_viewport.scroll)
                 .take(usize::from(inner_rect(sidebar).height))
                 .enumerate()
             {
-                if let Some(area) = list_row(sidebar, row, 1) {
+                if let crate::ui::sidebar::SidebarRow::Channel(index) = entry
+                    && let Some(area) = list_row(sidebar, row, 1)
+                {
                     hit_map.push(area, HitTarget::Channel(index));
                 }
             }
@@ -8244,6 +8971,7 @@ impl App {
                 &self.unread_channels(),
                 self.config.ui.channel_sort,
                 self.show_system_channels,
+                &self.sidebar_layout,
                 &self.dm_presence,
                 self.active_huddle()
                     .and(self.current_channel().map(|channel| channel.id)),
@@ -8610,10 +9338,18 @@ impl App {
                 format!("\n{}", attachment_lines.join("\n"))
             };
             let content = format!("{}{}", sanitize::text(&self.composer.body), attachments);
-            (
-                format!(
+            let title = match self.active_edit() {
+                Some(editing) if editing.kept_attachments > 0 => format!(
+                    " edit message · keeps {} attachment(s) · Enter save · Esc cancel ",
+                    editing.kept_attachments
+                ),
+                Some(_) => " edit message · Enter save · Esc cancel ".into(),
+                None => format!(
                     " {target} · Enter send · Ctrl-v paste · Ctrl-o choose · Alt-o path · Del remove · Ctrl-c clear · Esc close "
                 ),
+            };
+            (
+                title,
                 content,
                 HighlightGroup::ActiveComposerBorder,
                 HighlightGroup::Composer,
@@ -9515,9 +10251,10 @@ fn dm_label(
 
 fn public_media_error(error: &Error) -> String {
     match error {
-        Error::Config(message) | Error::Protocol(message) | Error::Access(message) => {
-            sanitize::single_line(message)
-        }
+        Error::Config(message)
+        | Error::Protocol(message)
+        | Error::Access(message)
+        | Error::SignerRefused(message) => sanitize::single_line(message),
         Error::Io { .. } => "attachment I/O failed".into(),
         Error::Network(_) | Error::Timeout(_) => "attachment network operation failed".into(),
         Error::Locked(_)
@@ -9673,6 +10410,117 @@ mod tests {
         app
     }
 
+    /// v0.14 M3: Space and closing punctuation select only an exact, unique
+    /// name; a longer known name keeps them ordinary; a multi-word query
+    /// stays open only while it starts a known name.
+    #[tokio::test]
+    async fn space_selects_only_an_exact_unique_mention() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let target = app.presentation.composer_target.clone().unwrap();
+        let (community, channel) = (target.community_id, target.channel_id);
+        let relay = Keys::generate();
+        let people = ["Honey", "Wes", "Wes Smith"].map(|name| (Keys::generate(), name));
+        let mut events = vec![
+            EventBuilder::new(Kind::Custom(39_000), "")
+                .tags([
+                    Tag::parse(["d", &channel.to_string()]).unwrap(),
+                    Tag::parse(["name", "general"]).unwrap(),
+                    Tag::parse(["t", "stream"]).unwrap(),
+                    Tag::parse(["public"]).unwrap(),
+                ])
+                .sign_with_keys(&relay)
+                .unwrap(),
+            EventBuilder::new(Kind::Custom(39_002), "")
+                .tags(
+                    std::iter::once(Tag::parse(["d", &channel.to_string()]).unwrap()).chain(
+                        people.iter().map(|(keys, _)| {
+                            Tag::parse(["p", &keys.public_key().to_hex()]).unwrap()
+                        }),
+                    ),
+                )
+                .sign_with_keys(&relay)
+                .unwrap(),
+        ];
+        for (keys, name) in &people {
+            events.push(
+                EventBuilder::new(
+                    Kind::Metadata,
+                    serde_json::json!({ "name": name }).to_string(),
+                )
+                .sign_with_keys(keys)
+                .unwrap(),
+            );
+        }
+        let relay_pubkey = relay.public_key().to_hex();
+        app.store
+            .call(move |store| {
+                store.pin_relay_pubkey(community, &relay_pubkey)?;
+                for event in &events {
+                    store.apply_event(community, event)?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let key = |index: usize| people[index].0.public_key().to_hex();
+        let typed = |text: &str| {
+            text.chars()
+                .map(super::KeyAction::Character)
+                .collect::<Vec<_>>()
+        };
+
+        for action in typed("hi @Hon") {
+            app.insert_action(action).await.unwrap();
+        }
+        assert!(app.mention_picker.is_some());
+        for action in typed("ey ok") {
+            app.insert_action(action).await.unwrap();
+        }
+        assert_eq!(app.composer.body, "hi @Honey ok");
+        assert_eq!(app.composer.mentions().len(), 1);
+        assert_eq!(app.composer.mentions()[0].pubkey, key(0));
+
+        // `Wes Smith` continues `Wes`: Space and `,` stay ordinary text.
+        app.composer.clear();
+        for action in typed("@Wes ") {
+            app.insert_action(action).await.unwrap();
+        }
+        assert!(app.composer.mentions().is_empty());
+        // `Wes ` is a complete name and a space: the chooser closes, and the
+        // next word may still complete `Wes Smith` (section 5).
+        assert!(app.mention_picker.is_none());
+        for action in typed("Smith,") {
+            app.insert_action(action).await.unwrap();
+        }
+        assert_eq!(app.composer.body, "@Wes Smith,");
+        assert_eq!(app.composer.mentions()[0].pubkey, key(2));
+
+        // A multi-word query that starts no name closes the chooser.
+        app.composer.clear();
+        for action in typed("@Honey bee") {
+            app.insert_action(action).await.unwrap();
+        }
+        assert!(app.mention_picker.is_none());
+
+        // A stale draft that mentions someone who left is not sent.
+        app.composer.clear();
+        for action in typed("@") {
+            app.insert_action(action).await.unwrap();
+        }
+        assert!(app.composer.accept_mention(0..1, "Ghost", &"9".repeat(64)));
+        app.mention_picker = None;
+        app.insert_action(super::KeyAction::Submit).await.unwrap();
+        assert!(
+            app.status_error
+                .as_deref()
+                .is_some_and(|error| error.contains("no longer in this channel")),
+            "{:?}",
+            app.status_error
+        );
+        assert_eq!(app.composer.body, "@Ghost");
+    }
+
     #[test]
     fn typing_subscription_switch_replaces_req_without_close() {
         let first = Uuid::new_v4();
@@ -9820,6 +10668,7 @@ mod tests {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         };
         assert!(super::send_to_channel_root(Some(root.clone()), channel).is_ok());
         assert!(super::send_to_channel_root(None, channel).is_err());
@@ -10046,6 +10895,7 @@ mod tests {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         }];
         let screen = screen_text(&mut app);
         assert!(screen.contains("#talk 🎧"), "{screen}");
@@ -10090,6 +10940,7 @@ mod tests {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         }];
         app.local_thread_summaries.insert(
             root.clone(),
@@ -10652,6 +11503,7 @@ mod tests {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         }];
         app.timeline.at_live_bottom = true;
         app.computed_unread.insert(channel);
@@ -10813,6 +11665,7 @@ mod tests {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         };
         let mut timeline = TimelineState {
             at_live_bottom: true,
@@ -11351,6 +12204,7 @@ mod tests {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         }];
         app.timeline.reconcile(&app.messages);
 

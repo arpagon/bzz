@@ -9,7 +9,8 @@ use crate::{
     store::{Store, events::u64_to_i64},
 };
 
-const PROJECTION_VERSION: &str = "1";
+/// "2": message text is the governing edit's (v0.14.0).
+const PROJECTION_VERSION: &str = "2";
 const MAX_SEARCHABLE_BYTES: usize = 64 * 1024;
 
 pub(crate) fn project_event(
@@ -34,7 +35,26 @@ pub(crate) fn project_event(
                 )?;
             }
         }
-        let content = searchable_content(event, http_base);
+        let channel = crate::protocol::events::channel_id(event)
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let event_id = event.id.to_hex();
+        let pubkey = event.pubkey.to_hex();
+        let edit = crate::store::edits::governing(
+            transaction,
+            community_id,
+            &[crate::store::edits::Original {
+                event_id: &event_id,
+                pubkey: &pubkey,
+                kind,
+                channel_id: &channel,
+            }],
+        )?
+        .remove(&event_id);
+        let content = match edit {
+            Some(edit) => searchable_text(&edit.content, &edit.tags_json, http_base),
+            None => searchable_content(event, http_base),
+        };
         if !content.trim().is_empty() {
             transaction.execute(
                 "INSERT INTO search_documents(community_id,event_id,channel_id,pubkey,kind,created_at,content)
@@ -43,13 +63,19 @@ pub(crate) fn project_event(
                  ON CONFLICT(community_id,event_id) DO UPDATE SET channel_id=excluded.channel_id,pubkey=excluded.pubkey,kind=excluded.kind,created_at=excluded.created_at,content=excluded.content",
                 params![
                     community_id.to_string(),
-                    event.id.to_hex(),
-                    crate::protocol::events::channel_id(event).map(|value| value.to_string()).unwrap_or_default(),
-                    event.pubkey.to_hex(),
+                    event_id,
+                    channel,
+                    pubkey,
                     i64::from(kind),
                     u64_to_i64(event.created_at.as_secs())?,
                     content,
                 ],
+            )?;
+        } else {
+            // An edit can empty a message's searchable text.
+            transaction.execute(
+                "DELETE FROM search_documents WHERE community_id=?1 AND event_id=?2",
+                params![community_id.to_string(), event_id],
             )?;
         }
     }
@@ -58,14 +84,42 @@ pub(crate) fn project_event(
 
 fn searchable_content(event: &Event, http_base: &str) -> String {
     let tags_json = serde_json::to_string(&event.tags).unwrap_or_else(|_| "[]".into());
+    searchable_text(&event.content, &tags_json, http_base)
+}
+
+fn searchable_text(content: &str, tags_json: &str, http_base: &str) -> String {
     let stripped = url::Url::parse(http_base)
         .ok()
         .map(|base| {
-            let attachments = crate::media::imeta::parse_tags(&tags_json, &event.content, &base);
-            crate::media::imeta::strip_attachment_lines(&event.content, &attachments)
+            let attachments = crate::media::imeta::parse_tags(tags_json, content, &base);
+            crate::media::imeta::strip_attachment_lines(content, &attachments)
         })
-        .unwrap_or_else(|| event.content.clone());
+        .unwrap_or_else(|| content.to_owned());
     truncate_utf8(sanitize::text(&stripped), MAX_SEARCHABLE_BYTES)
+}
+
+/// Re-project a stored message after an edit of it arrived or was deleted.
+pub(crate) fn reproject(
+    transaction: &Transaction<'_>,
+    community_id: Uuid,
+    event_id: &str,
+    http_base: &str,
+) -> Result<()> {
+    use rusqlite::OptionalExtension as _;
+    let raw = transaction
+        .query_row(
+            "SELECT e.raw_json FROM events e
+             LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
+             WHERE e.community_id=?1 AND e.event_id=?2 AND e.kind IN (9,40002)
+               AND e.deleted_by_event_id IS NULL AND COALESCE(o.state,'')<>'rejected'",
+            params![community_id.to_string(), event_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(raw) = raw else { return Ok(()) };
+    let event = Event::from_json(raw)
+        .map_err(|error| Error::Protocol(format!("invalid stored event: {error}")))?;
+    project_event(transaction, community_id, &event, http_base)
 }
 
 fn truncate_utf8(mut value: String, maximum: usize) -> String {

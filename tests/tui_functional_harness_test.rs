@@ -51,6 +51,7 @@ fn fixture() -> (Vec<InboxItem>, Vec<Message>) {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         }],
     )
 }
