@@ -128,16 +128,20 @@ pub fn resolve(
         .collect();
     loop {
         // Groups by label, in first-seen order.
-        let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        let mut by_label: HashMap<&str, usize> = HashMap::new();
         for (index, row) in rows.iter().enumerate() {
-            match groups.iter_mut().find(|(label, _)| *label == row.label) {
-                Some((_, members)) => members.push(index),
-                None => groups.push((row.label.clone(), vec![index])),
+            match by_label.get(row.label.as_str()) {
+                Some(group) => groups[*group].push(index),
+                None => {
+                    by_label.insert(&row.label, groups.len());
+                    groups.push(vec![index]);
+                }
             }
         }
+        drop(by_label);
         let collisions = groups
             .into_iter()
-            .map(|(_, members)| members)
             .filter(|members| {
                 members
                     .iter()

@@ -66,14 +66,16 @@ pub fn normalize_name(text: &str) -> String {
     js_trim(&fold_name(text)).to_owned()
 }
 
-/// A word character: Unicode general category L, M or N.
+/// A name character: Unicode general category L, M or N.
+pub fn is_name_char(c: char) -> bool {
+    let category = CodePointMapData::<GeneralCategory>::new().get(c);
+    GeneralCategoryGroup::Letter.contains(category)
+        || GeneralCategoryGroup::Mark.contains(category)
+        || GeneralCategoryGroup::Number.contains(category)
+}
+
 fn is_word(c: Option<&char>) -> bool {
-    c.is_some_and(|c| {
-        let category = CodePointMapData::<GeneralCategory>::new().get(*c);
-        GeneralCategoryGroup::Letter.contains(category)
-            || GeneralCategoryGroup::Mark.contains(category)
-            || GeneralCategoryGroup::Number.contains(category)
-    })
+    c.is_some_and(|c| is_name_char(*c))
 }
 
 fn trimmed_bounds(chars: &[char]) -> (usize, usize) {
@@ -527,7 +529,7 @@ fn valid_key(key: &str) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-fn unique<'a>(keys: &'a [String]) -> Vec<&'a str> {
+fn unique(keys: &[String]) -> Vec<&str> {
     let mut seen = HashSet::new();
     keys.iter()
         .map(String::as_str)
@@ -580,15 +582,11 @@ pub fn read_tags(tags: &[Vec<String>]) -> (Vec<String>, Vec<String>) {
     let mut references = Vec::new();
     for tag in tags {
         match tag.as_slice() {
-            [name, key] if name == "mention" && valid_key(key) => {
-                if !references.contains(key) {
-                    references.push(key.clone());
-                }
+            [name, key] if name == "mention" && valid_key(key) && !references.contains(key) => {
+                references.push(key.clone());
             }
-            [name, key, ..] if name == "p" && valid_key(key) => {
-                if !mentions.contains(key) {
-                    mentions.push(key.clone());
-                }
+            [name, key, ..] if name == "p" && valid_key(key) && !mentions.contains(key) => {
+                mentions.push(key.clone());
             }
             _ => {}
         }

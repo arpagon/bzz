@@ -122,18 +122,23 @@ async fn main() {
     let viewer = Keys::generate();
     seed_member(&source, &owner.public_key().to_hex());
     seed_member(&source, &viewer.public_key().to_hex());
+    // Two people named alike, for contextual names in the mention chooser.
+    let namesakes = [Keys::generate(), Keys::generate()];
+    for keys in &namesakes {
+        seed_member(&source, &keys.public_key().to_hex());
+    }
     tokio::time::sleep(Duration::from_secs(2)).await;
     // BZZ_FIXTURE_IDENTITY_ADAPTER: an FI-enforcing relay (`test-relay.sh
     // --nip-fi`) admits nothing without evidence, so write only the viewer's
     // profile with this adapter and no relay content.
     let adapter = std::env::var("BZZ_FIXTURE_IDENTITY_ADAPTER").ok();
     if adapter.is_none() {
-        publish_content(&owner, &viewer, history).await;
+        publish_content(&owner, &viewer, &namesakes, history).await;
     }
     write_profile(&root, viewer, adapter);
 }
 
-async fn publish_content(owner: &Keys, viewer: &Keys, history: u64) {
+async fn publish_content(owner: &Keys, viewer: &Keys, namesakes: &[Keys], history: u64) {
     let owner_signer = SignerHandle::spawn(owner.clone());
     let viewer_signer = SignerHandle::spawn(viewer.clone());
     let owner_session = connect(&owner_signer).await;
@@ -302,6 +307,39 @@ async fn publish_content(owner: &Keys, viewer: &Keys, history: u64) {
             Visibility::Private,
             ChannelKind::System,
         ),
+    )
+    .await;
+    // t14-names: two members both named "Honey" (v0.14 M3).
+    let names = Uuid::new_v4();
+    publish(
+        &owner_session,
+        &owner_signer,
+        create(names, "t14-names", Visibility::Open, ChannelKind::Stream),
+    )
+    .await;
+    publish(
+        &viewer_session,
+        &viewer_signer,
+        buzz_sdk::build_join(names).unwrap(),
+    )
+    .await;
+    for keys in namesakes {
+        let signer = SignerHandle::spawn(keys.clone());
+        let session = connect(&signer).await;
+        publish(
+            &session,
+            &signer,
+            EventBuilder::new(Kind::Metadata, r#"{"name":"Honey"}"#),
+        )
+        .await;
+        publish(&session, &signer, buzz_sdk::build_join(names).unwrap()).await;
+        session.shutdown().await;
+    }
+    publish(
+        &owner_session,
+        &owner_signer,
+        buzz_sdk::build_message(names, "Generated namesakes channel", None, &[], false, &[], &[])
+            .unwrap(),
     )
     .await;
     owner_session.shutdown().await;

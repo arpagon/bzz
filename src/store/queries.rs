@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        Channel, ChannelKind, DraftMention, MentionCandidate, Message, Profile, Reaction,
-        ThreadSummary, Visibility,
+        Channel, ChannelKind, DraftMention, MentionCandidate, MentionChoices, Message, Profile,
+        Reaction, ThreadSummary, Visibility,
     },
     error::{Error, Result},
     store::{
@@ -1139,18 +1139,45 @@ impl Store {
         Ok(())
     }
 
-    pub fn mention_candidates(
+    /// Mention choices for one channel (mention rules v3, section 1): every
+    /// member, the viewer included, with contextual labels (identity names
+    /// v1) resolved against the whole set. bzz has no directory search, so
+    /// members are the complete choice set.
+    pub fn mention_choices(
         &self,
         community_id: Uuid,
         channel_id: Uuid,
         self_pubkey: &str,
-        query: &str,
-    ) -> Result<Vec<MentionCandidate>> {
-        let query = query.trim();
-        if query.len() > 80 || query.chars().any(char::is_control) {
-            return Ok(Vec::new());
-        }
-        let pattern = format!("%{}%", escape_like(&query.to_ascii_lowercase()));
+    ) -> Result<MentionChoices> {
+        self.channel_identities(community_id, channel_id, self_pubkey, &[])
+    }
+
+    /// Contextual labels for a channel view (identity names v1): its members
+    /// plus `authors` who are no longer members. Keys without a known name
+    /// are absent; callers keep their key fallback.
+    pub fn channel_identity_labels(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+        self_pubkey: &str,
+        authors: &[String],
+    ) -> Result<HashMap<String, String>> {
+        let set = self.channel_identities(community_id, channel_id, self_pubkey, authors)?;
+        Ok(set
+            .choices
+            .into_iter()
+            .filter(|choice| !choice.aliases.is_empty())
+            .map(|choice| (choice.pubkey, choice.label))
+            .collect())
+    }
+
+    fn channel_identities(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+        self_pubkey: &str,
+        authors: &[String],
+    ) -> Result<MentionChoices> {
         let is_dm = self
             .connection
             .query_row(
@@ -1161,7 +1188,7 @@ impl Store {
             .optional()?
             .is_none_or(|kind| kind == "dm");
         let mut statement = self.connection.prepare(
-            "SELECT m.pubkey,COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),NULLIF(a.name,''),NULLIF(v.display_name,''),''),
+            "SELECT m.pubkey,p.display_name,p.name,a.name,v.display_name,v.username,
                     a.owner_pubkey,a.respond_to,a.respond_to_allowlist_json,v.pubkey IS NOT NULL
              FROM memberships m
              JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
@@ -1171,71 +1198,201 @@ impl Store {
                   AND (m.role='bot' OR (c.channel_type='dm' AND c.is_member=1
                        AND c.member_count BETWEEN 2 AND 9))
              LEFT JOIN verified_profiles v ON v.community_id=m.community_id AND v.pubkey=m.pubkey AND v.active=1
-             WHERE m.community_id=?1 AND m.channel_id=?2 AND lower(m.pubkey)<>lower(?3)
-               AND (lower(COALESCE(p.display_name,p.name,a.name,v.display_name,m.pubkey)) LIKE ?4 ESCAPE '\\'
-                    OR lower(COALESCE(v.username,'')) LIKE ?4 ESCAPE '\\')
-             ORDER BY a.owner_pubkey IS NULL DESC,
-                      lower(COALESCE(NULLIF(p.display_name,''),NULLIF(p.name,''),a.name,m.pubkey)),m.pubkey
-             LIMIT 32",
+             WHERE m.community_id=?1 AND m.channel_id=?2
+             ORDER BY m.pubkey",
         )?;
-        let rows = statement
+        type Row = (
+            String,
+            [Option<String>; 5],
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            bool,
+        );
+        let mut rows = statement
             .query_map(
-                params![
-                    community_id.to_string(),
-                    channel_id.to_string(),
-                    self_pubkey,
-                    pattern
-                ],
-                |row| {
+                params![community_id.to_string(), channel_id.to_string()],
+                |row| -> rusqlite::Result<Row> {
                     Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, bool>(5)?,
+                        row.get(0)?,
+                        [
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ],
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
                     ))
                 },
             )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        rows.into_iter()
-            .map(|(pubkey, label, owner, respond_to, allowlist, verified)| {
-                let agent_eligibility = owner
-                    .as_deref()
-                    .map(|owner| -> Result<crate::agents::Eligibility> {
-                        let respond_to = respond_to
-                            .as_deref()
-                            .map(super::agents::parse_respond_to)
-                            .transpose()?;
-                        let allowlist = allowlist
-                            .as_deref()
-                            .map(serde_json::from_str::<Vec<String>>)
-                            .transpose()
-                            .map_err(|error| Error::Serialization(error.to_string()))?
-                            .unwrap_or_default();
-                        Ok(crate::agents::policy::evaluate(
-                            respond_to,
-                            &allowlist,
-                            owner,
-                            self_pubkey,
-                            is_dm,
+        drop(statement);
+        let mut members = rows.iter().map(|row| row.0.clone()).collect::<HashSet<_>>();
+        let member_count = rows.len();
+        // Authors who left still need labels in this view.
+        for author in authors {
+            if !members.insert(author.clone()) {
+                continue;
+            }
+            let row = self
+                .connection
+                .query_row(
+                    "SELECT p.display_name,p.name,a.name,v.display_name,v.username,a.owner_pubkey
+                     FROM (SELECT ?2 AS pubkey) k
+                     LEFT JOIN profiles p ON p.community_id=?1 AND p.pubkey=k.pubkey
+                     LEFT JOIN remote_agents a ON a.community_id=?1 AND a.agent_pubkey=k.pubkey
+                          AND a.verification_state='verified'
+                     LEFT JOIN verified_profiles v ON v.community_id=?1 AND v.pubkey=k.pubkey AND v.active=1",
+                    params![community_id.to_string(), author],
+                    |row| {
+                        Ok((
+                            [row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?],
+                            row.get::<_, Option<String>>(5)?,
                         ))
-                    })
-                    .transpose()?;
-                Ok(MentionCandidate {
-                    label: if label.is_empty() {
-                        crate::domain::abbreviated_pubkey(&pubkey)
-                    } else {
-                        label
                     },
-                    pubkey,
+                )
+                .optional()?;
+            if let Some((names, owner)) = row {
+                rows.push((author.clone(), names, owner, None, None, false));
+            }
+        }
+        // Owners' names are lookup facts only, never collision candidates.
+        let mut facts = Vec::new();
+        for owner in rows
+            .iter()
+            .filter_map(|row| row.2.clone())
+            .filter(|owner| !members.contains(owner))
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            if let Some(name) = self
+                .connection
+                .query_row(
+                    "SELECT COALESCE(NULLIF(display_name,''),NULLIF(name,'')) FROM profiles WHERE community_id=?1 AND pubkey=?2",
+                    params![community_id.to_string(), owner],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten()
+            {
+                facts.push(crate::protocol::identity_names::Fact {
+                    pubkey: owner,
+                    name,
+                    is_agent: false,
+                    owner_pubkey: None,
+                });
+            }
+        }
+        let mut named = Vec::new();
+        let mut prepared = Vec::with_capacity(rows.len());
+        for (index, (pubkey, names, owner, respond_to, allowlist, verified)) in
+            rows.into_iter().enumerate()
+        {
+            let member = index < member_count;
+            // display name, name, agent name, verified name; then username.
+            let mut aliases: Vec<String> = Vec::new();
+            for name in names.iter().flatten() {
+                let name = crate::protocol::identity_names::js_trim(name);
+                if !name.is_empty() && !aliases.iter().any(|alias| alias == name) {
+                    aliases.push(name.to_owned());
+                }
+            }
+            let primary = names[..4]
+                .iter()
+                .flatten()
+                .map(|name| crate::protocol::identity_names::js_trim(name))
+                .find(|name| !name.is_empty())
+                .map(str::to_owned);
+            if let Some(name) = &primary {
+                named.push(pubkey.clone());
+                facts.push(crate::protocol::identity_names::Fact {
+                    pubkey: pubkey.clone(),
+                    name: name.clone(),
                     is_agent: owner.is_some(),
-                    agent_eligibility,
-                    verified,
-                    presence: None,
+                    owner_pubkey: owner.clone(),
+                });
+            }
+            let agent_eligibility = owner
+                .as_deref()
+                .map(|owner| -> Result<crate::agents::Eligibility> {
+                    let respond_to = respond_to
+                        .as_deref()
+                        .map(super::agents::parse_respond_to)
+                        .transpose()?;
+                    let allowlist = allowlist
+                        .as_deref()
+                        .map(serde_json::from_str::<Vec<String>>)
+                        .transpose()
+                        .map_err(|error| Error::Serialization(error.to_string()))?
+                        .unwrap_or_default();
+                    Ok(crate::agents::policy::evaluate(
+                        respond_to,
+                        &allowlist,
+                        owner,
+                        self_pubkey,
+                        is_dm,
+                    ))
                 })
-            })
-            .collect()
+                .transpose()?;
+            prepared.push((
+                pubkey,
+                primary,
+                aliases,
+                owner,
+                agent_eligibility,
+                verified,
+                member,
+            ));
+        }
+        let labels =
+            crate::protocol::identity_names::resolve(&facts, Some(self_pubkey), Some(&named));
+        let mut result = MentionChoices::default();
+        for (pubkey, primary, aliases, owner, agent_eligibility, verified, member) in prepared {
+            let resolved = labels.get(&pubkey);
+            let label = resolved
+                .map(|resolved| resolved.name.clone())
+                .unwrap_or_else(|| crate::domain::abbreviated_pubkey(&pubkey));
+            result.choices.push(crate::protocol::mention_rules::Choice {
+                pubkey: pubkey.clone(),
+                name: primary.unwrap_or_default(),
+                label: label.clone(),
+                qualifier: resolved.and_then(|resolved| resolved.qualifier.clone()),
+                aliases,
+                member,
+                elsewhere: None,
+                agent: owner.is_some(),
+                owned: owner
+                    .as_deref()
+                    .is_some_and(|owner| owner.eq_ignore_ascii_case(self_pubkey)),
+                managed: false,
+            });
+            result.candidates.push(MentionCandidate {
+                pubkey,
+                label,
+                is_agent: owner.is_some(),
+                agent_eligibility,
+                verified,
+                presence: None,
+            });
+        }
+        Ok(result)
+    }
+
+    /// The first `MENTION_ROWS` choices for `query`, in mention order.
+    pub fn mention_candidates(
+        &self,
+        community_id: Uuid,
+        channel_id: Uuid,
+        self_pubkey: &str,
+        query: &str,
+    ) -> Result<Vec<MentionCandidate>> {
+        let set = self.mention_choices(community_id, channel_id, self_pubkey)?;
+        Ok(set.ranked(query, &HashMap::new(), |_| {
+            crate::protocol::mention_rules::Presence::Unknown
+        }))
     }
 
     pub fn record_media_cache(
@@ -1606,13 +1763,6 @@ impl Store {
     }
 }
 
-fn escape_like(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
-
 /// Text and attachments from one event's content and `imeta` tags. For an
 /// edit, its `imeta` set replaces the original's; an empty set means none.
 fn set_body(message: &mut Message, content: &str, tags_json: &str, base: Option<&url::Url>) {
@@ -1620,4 +1770,118 @@ fn set_body(message: &mut Message, content: &str, tags_json: &str, base: Option<
         .map(|base| crate::media::imeta::parse_tags(tags_json, content, base))
         .unwrap_or_default();
     message.content = crate::media::imeta::strip_attachment_lines(content, &message.attachments);
+}
+
+#[cfg(test)]
+mod mention_choice_tests {
+    use rusqlite::params;
+
+    use crate::{
+        config::{CommunityConfig, Config, IdentityConfig, KeyBackend},
+        store::Store,
+    };
+
+    /// v0.14 M3: the viewer is a choice, and namesakes get contextual labels
+    /// (identity names v1): a person keeps the plain name, the viewer's agent
+    /// is marked `(agent)`, another owner's agent gets the owner's name.
+    #[test]
+    fn choices_include_the_viewer_and_label_namesakes() {
+        let viewer = "1".repeat(64);
+        let wes = "2".repeat(64);
+        let (human, mine, theirs) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+        let community = uuid::Uuid::new_v4();
+        let identity = uuid::Uuid::new_v4();
+        let config = Config {
+            identities: vec![IdentityConfig {
+                id: identity,
+                label: "m3".into(),
+                pubkey: viewer.clone(),
+                backend: KeyBackend::Keychain,
+                key_ref: "m3".into(),
+            }],
+            communities: vec![CommunityConfig {
+                id: community,
+                label: "m3".into(),
+                relay_url: "wss://buzz.example/".into(),
+                identity_id: identity,
+                allow_insecure_localhost: false,
+                theme: None,
+                identity_adapter: None,
+            }],
+            default_community: Some(community),
+            ..Config::default()
+        };
+        let mut store = Store::open_memory().unwrap();
+        store.sync_config(&config).unwrap();
+        let channel = uuid::Uuid::new_v4();
+        let c = &store.connection;
+        c.execute(
+            "INSERT INTO channels(community_id,channel_id,name,visibility,is_member) VALUES(?1,?2,'general','public',1)",
+            params![community.to_string(), channel.to_string()],
+        )
+        .unwrap();
+        for (key, role) in [
+            (&viewer, "member"),
+            (&human, "member"),
+            (&mine, "bot"),
+            (&theirs, "bot"),
+        ] {
+            c.execute(
+                "INSERT INTO memberships(community_id,channel_id,pubkey,role,source_event_id) VALUES(?1,?2,?3,?4,'x')",
+                params![community.to_string(), channel.to_string(), key, role],
+            )
+            .unwrap();
+        }
+        for (key, name) in [
+            (&viewer, "Logan"),
+            (&wes, "Wes"),
+            (&human, "Honey"),
+            (&mine, "Honey"),
+            (&theirs, "Honey"),
+        ] {
+            c.execute(
+                "INSERT INTO profiles(community_id,pubkey,name,event_id,created_at,raw_json) VALUES(?1,?2,?3,'e',1,'{}')",
+                params![community.to_string(), key, name],
+            )
+            .unwrap();
+        }
+        for (agent, owner) in [(&mine, &viewer), (&theirs, &wes)] {
+            c.execute(
+                "INSERT INTO remote_agents(community_id,agent_pubkey,owner_pubkey,name,verification_state,updated_at)
+                 VALUES(?1,?2,?3,'Honey','verified',unixepoch())",
+                params![community.to_string(), agent, owner],
+            )
+            .unwrap();
+        }
+        let set = store.mention_choices(community, channel, &viewer).unwrap();
+        let label = |key: &str| {
+            set.candidates
+                .iter()
+                .find(|candidate| candidate.pubkey == key)
+                .map(|candidate| candidate.label.clone())
+        };
+        assert_eq!(
+            label(&viewer).as_deref(),
+            Some("Logan"),
+            "the viewer sees themself"
+        );
+        assert_eq!(label(&human).as_deref(), Some("Honey"));
+        assert_eq!(label(&mine).as_deref(), Some("Honey (agent)"));
+        assert_eq!(label(&theirs).as_deref(), Some("Wes\u{2019}s Honey"));
+        // Space: `Honey` names three identities, so it selects none; the
+        // qualified label selects its own identity.
+        assert_eq!(set.exact("honey"), None);
+        assert_eq!(
+            set.exact("wes\u{2019}s honey").map(|c| c.pubkey.clone()),
+            Some(theirs.clone())
+        );
+        let ranked = set.ranked("hon", &Default::default(), |_| {
+            crate::protocol::mention_rules::Presence::Unknown
+        });
+        assert_eq!(
+            ranked.first().map(|c| c.pubkey.clone()),
+            Some(mine),
+            "own agent first"
+        );
+    }
 }

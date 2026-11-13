@@ -161,6 +161,19 @@ contract (see below and
   reactions, DM add member and leaving a huddle channel say so in the UI.
   The same-user socket check retries a missing ownership proof within 5 s
   (upstream #9270).
+- **Contextual identity names v1 and mention rules v3 (v0.14.0):** the two
+  client contracts of `block/buzz-app`, with their portable fixtures vendored
+  in `tests/fixtures/buzz-app/` (v1.0.1) and passing. Timeline authors and
+  mention choices get distinct labels within the channel (`Honey`,
+  `Honey (agent)`, `Wes’s Honey`, `Honey · 4prr`); a label that names the
+  owner drops the separate "owned by". The mention chooser offers every
+  member, the viewer included, matched with Unicode folding and ordered as the
+  contract says; a query may contain spaces while it starts a known name;
+  Space or closing punctuation selects only an exact, unique name. Messages
+  carry `p` tags for recipients, who must be members (a stale draft is
+  refused). bzz has no community directory search, so the chooser has no
+  outside people, agents from other communities or pending mentions; its
+  member cache stands in for the "known" set.
 - **Edits (kind `40003`, v0.14.0):** the latest live edit in the original's
   channel, by its author or the verified owner of the agent that wrote it,
   governs the text and the complete attachment set, as in upstream

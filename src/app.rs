@@ -203,6 +203,48 @@ impl Runtime {
     }
 }
 
+/// Recency of explicit mention choices (mention rules v3, section 4, rule
+/// 8.1): in memory, for 100 channels and 100 keys each, as desktop keeps it.
+#[derive(Debug, Default)]
+struct MentionHistory {
+    clock: u64,
+    channels: std::collections::VecDeque<(Uuid, HashMap<String, u64>)>,
+}
+
+impl MentionHistory {
+    const CHANNELS: usize = 100;
+    const KEYS: usize = 100;
+
+    fn get(&self, channel: Uuid) -> HashMap<String, u64> {
+        self.channels
+            .iter()
+            .find(|(id, _)| *id == channel)
+            .map(|(_, keys)| keys.clone())
+            .unwrap_or_default()
+    }
+
+    fn record(&mut self, channel: Uuid, pubkey: &str) {
+        self.clock += 1;
+        let mut keys = self
+            .channels
+            .iter()
+            .position(|(id, _)| *id == channel)
+            .and_then(|index| self.channels.remove(index))
+            .map_or_else(HashMap::new, |(_, keys)| keys);
+        keys.insert(pubkey.to_owned(), self.clock);
+        if keys.len() > Self::KEYS
+            && let Some(oldest) = keys
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(key, _)| key.clone())
+        {
+            keys.remove(&oldest);
+        }
+        self.channels.push_front((channel, keys));
+        self.channels.truncate(Self::CHANNELS);
+    }
+}
+
 /// An own message open in the composer for editing. Its text never enters
 /// the draft store; attachments are kept as the relay last saw them.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -429,6 +471,11 @@ pub struct App {
     /// The composer is editing this own message instead of drafting.
     editing: Option<EditingMessage>,
     mention_picker: Option<MentionPicker>,
+    /// The composer channel's complete mention choice set, reloaded when a
+    /// new `@` query starts.
+    mention_choices: Option<(Uuid, Uuid, crate::domain::MentionChoices)>,
+    /// Explicit mention selections per channel, most recent highest.
+    mention_history: MentionHistory,
     finder: String,
     reaction_index: usize,
     /// `Some(query)` while the reaction picker searches custom emoji.
@@ -872,6 +919,8 @@ impl App {
             composer_draft_revision: None,
             editing: None,
             mention_picker: None,
+            mention_choices: None,
+            mention_history: MentionHistory::default(),
             finder: String::new(),
             reaction_index: 0,
             reaction_query: None,
@@ -1842,6 +1891,26 @@ impl App {
                     })
                     .await?;
                 self.thread_timeline.reconcile(&self.thread_messages);
+            }
+            // Contextual author labels (identity names v1): this channel's
+            // members plus the authors shown here.
+            if let Some(viewer) = self.self_pubkey().map(str::to_owned) {
+                let authors = self
+                    .messages
+                    .iter()
+                    .chain(self.thread_messages.iter())
+                    .map(|message| message.pubkey.clone())
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let labels = self
+                    .store
+                    .call(move |store| {
+                        store.channel_identity_labels(community, channel, &viewer, &authors)
+                    })
+                    .await?;
+                self.thread_timeline.labels.clone_from(&labels);
+                self.timeline.labels = labels;
             }
         } else {
             self.messages.clear();
@@ -5368,7 +5437,11 @@ impl App {
                         .set_draft(String::new(), Vec::new(), Vec::new());
                 }
             }
-            KeyAction::Character(character) => self.composer.insert(character),
+            KeyAction::Character(character) => {
+                if !self.complete_exact_mention(character) {
+                    self.composer.insert(character);
+                }
+            }
             KeyAction::Backspace => self.composer.backspace(),
             KeyAction::ForwardDelete => self.composer.delete(),
             KeyAction::Left => self.composer.move_left(),
@@ -5478,6 +5551,51 @@ impl App {
                                 outcome: "eligible".into(),
                             });
                         self.cache_dirty = true;
+                    }
+                    // Mention rules v3, section 8: every recipient is a member
+                    // when the message is written, at most 32 of them. bzz
+                    // only offers members, so this catches stale drafts.
+                    if !prepared_mentions.is_empty() {
+                        let mentions = prepared_mentions.clone();
+                        let target = prepared_target.clone();
+                        let sender = self.self_pubkey().map(str::to_owned).unwrap_or_default();
+                        let checked = self
+                            .store
+                            .call(move |store| {
+                                let members = store
+                                    .mention_choices(
+                                        target.community_id,
+                                        target.channel_id,
+                                        &sender,
+                                    )?
+                                    .choices
+                                    .into_iter()
+                                    .map(|choice| choice.pubkey)
+                                    .collect::<Vec<_>>();
+                                Ok(crate::protocol::mention_rules::write_tags(
+                                    &sender,
+                                    &members,
+                                    &mentions,
+                                    &[],
+                                ))
+                            })
+                            .await?;
+                        if let Err(error) = checked {
+                            use crate::protocol::mention_rules::TagError;
+                            self.status_error = Some(
+                                match error {
+                                    TagError::NotMember => {
+                                        "a mentioned person is no longer in this channel; remove the mention (draft kept)"
+                                    }
+                                    TagError::TooMany => {
+                                        "a message can mention at most 32 people (draft kept)"
+                                    }
+                                    TagError::Invalid => "a mention is invalid; remove it (draft kept)",
+                                }
+                                .into(),
+                            );
+                            return Ok(());
+                        }
                     }
                     // Persist the final edit before making its acknowledgement
                     // boundary durable. A send without a revision is refused:
@@ -5625,17 +5743,75 @@ impl App {
             return Ok(());
         };
         let query = self.composer.body[range.start + 1..range.end].to_owned();
-        let lookup = query.clone();
-        let mut candidates = self
-            .store
-            .call(move |store| store.mention_candidates(community, channel, &self_pubkey, &lookup))
-            .await?;
+        let cached =
+            self.mention_choices
+                .as_ref()
+                .is_some_and(|(cached_community, cached_channel, _)| {
+                    (*cached_community, *cached_channel) == (community, channel)
+                });
+        if !cached || query.is_empty() {
+            let choices = self
+                .store
+                .call(move |store| store.mention_choices(community, channel, &self_pubkey))
+                .await?;
+            self.mention_choices = Some((community, channel, choices));
+        }
+        let Some((_, _, choices)) = &self.mention_choices else {
+            return Ok(());
+        };
+        // A multi-word query stays open only while it starts a known name.
+        if !crate::protocol::mention_rules::admitted(&query, &choices.names()) {
+            self.mention_picker = None;
+            return Ok(());
+        }
         let now = crate::clock::SystemClock.now_unix();
+        let presence = |pubkey: &str| match self.presence.get(pubkey, now) {
+            crate::protocol::presence::Presence::Online => {
+                crate::protocol::mention_rules::Presence::Online
+            }
+            crate::protocol::presence::Presence::Away => {
+                crate::protocol::mention_rules::Presence::Away
+            }
+            crate::protocol::presence::Presence::Offline => {
+                crate::protocol::mention_rules::Presence::Unknown
+            }
+        };
+        let mut candidates = choices.ranked(&query, &self.mention_history.get(channel), presence);
         for candidate in &mut candidates {
             candidate.presence = Some(self.presence.get(&candidate.pubkey, now));
         }
         self.mention_picker = Some(MentionPicker::new(range, query, candidates));
         Ok(())
+    }
+
+    /// Space or closing punctuation right after a query selects the one
+    /// exact name, if there is one (mention rules v3, section 5). The typed
+    /// character then follows the mention. Returns whether it selected.
+    fn complete_exact_mention(&mut self, typed: char) -> bool {
+        if typed != ' ' && !crate::protocol::mention_rules::is_closing_punctuation(typed) {
+            return false;
+        }
+        let Some(picker) = &self.mention_picker else {
+            return false;
+        };
+        let Some((_, channel, choices)) = &self.mention_choices else {
+            return false;
+        };
+        let Some(candidate) = choices.exact(&picker.query).cloned() else {
+            return false;
+        };
+        let (range, channel) = (picker.range.clone(), *channel);
+        self.mention_picker = None;
+        if !self
+            .composer
+            .accept_mention(range, &candidate.label, &candidate.pubkey)
+        {
+            self.status_error = Some("could not add that mention".into());
+            return false;
+        }
+        self.mention_history.record(channel, &candidate.pubkey);
+        self.composer.insert(typed);
+        true
     }
 
     fn accept_mention(&mut self) {
@@ -5646,12 +5822,18 @@ impl App {
                 .map(|candidate| (picker.range.clone(), candidate))
         });
         self.mention_picker = None;
-        if let Some((range, candidate)) = selected
-            && !self
+        if let Some((range, candidate)) = selected {
+            if self
                 .composer
                 .accept_mention(range, &candidate.label, &candidate.pubkey)
-        {
-            self.status_error = Some("could not add that mention".into());
+            {
+                if let Some((_, channel, _)) = &self.mention_choices {
+                    let channel = *channel;
+                    self.mention_history.record(channel, &candidate.pubkey);
+                }
+            } else {
+                self.status_error = Some("could not add that mention".into());
+            }
         }
     }
 
@@ -9868,6 +10050,117 @@ mod tests {
             parent_event_id: None,
         });
         app
+    }
+
+    /// v0.14 M3: Space and closing punctuation select only an exact, unique
+    /// name; a longer known name keeps them ordinary; a multi-word query
+    /// stays open only while it starts a known name.
+    #[tokio::test]
+    async fn space_selects_only_an_exact_unique_mention() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let target = app.presentation.composer_target.clone().unwrap();
+        let (community, channel) = (target.community_id, target.channel_id);
+        let relay = Keys::generate();
+        let people = ["Honey", "Wes", "Wes Smith"].map(|name| (Keys::generate(), name));
+        let mut events = vec![
+            EventBuilder::new(Kind::Custom(39_000), "")
+                .tags([
+                    Tag::parse(["d", &channel.to_string()]).unwrap(),
+                    Tag::parse(["name", "general"]).unwrap(),
+                    Tag::parse(["t", "stream"]).unwrap(),
+                    Tag::parse(["public"]).unwrap(),
+                ])
+                .sign_with_keys(&relay)
+                .unwrap(),
+            EventBuilder::new(Kind::Custom(39_002), "")
+                .tags(
+                    std::iter::once(Tag::parse(["d", &channel.to_string()]).unwrap()).chain(
+                        people.iter().map(|(keys, _)| {
+                            Tag::parse(["p", &keys.public_key().to_hex()]).unwrap()
+                        }),
+                    ),
+                )
+                .sign_with_keys(&relay)
+                .unwrap(),
+        ];
+        for (keys, name) in &people {
+            events.push(
+                EventBuilder::new(
+                    Kind::Metadata,
+                    serde_json::json!({ "name": name }).to_string(),
+                )
+                .sign_with_keys(keys)
+                .unwrap(),
+            );
+        }
+        let relay_pubkey = relay.public_key().to_hex();
+        app.store
+            .call(move |store| {
+                store.pin_relay_pubkey(community, &relay_pubkey)?;
+                for event in &events {
+                    store.apply_event(community, event)?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let key = |index: usize| people[index].0.public_key().to_hex();
+        let typed = |text: &str| {
+            text.chars()
+                .map(super::KeyAction::Character)
+                .collect::<Vec<_>>()
+        };
+
+        for action in typed("hi @Hon") {
+            app.insert_action(action).await.unwrap();
+        }
+        assert!(app.mention_picker.is_some());
+        for action in typed("ey ok") {
+            app.insert_action(action).await.unwrap();
+        }
+        assert_eq!(app.composer.body, "hi @Honey ok");
+        assert_eq!(app.composer.mentions().len(), 1);
+        assert_eq!(app.composer.mentions()[0].pubkey, key(0));
+
+        // `Wes Smith` continues `Wes`: Space and `,` stay ordinary text.
+        app.composer.clear();
+        for action in typed("@Wes ") {
+            app.insert_action(action).await.unwrap();
+        }
+        assert!(app.composer.mentions().is_empty());
+        // `Wes ` is a complete name and a space: the chooser closes, and the
+        // next word may still complete `Wes Smith` (section 5).
+        assert!(app.mention_picker.is_none());
+        for action in typed("Smith,") {
+            app.insert_action(action).await.unwrap();
+        }
+        assert_eq!(app.composer.body, "@Wes Smith,");
+        assert_eq!(app.composer.mentions()[0].pubkey, key(2));
+
+        // A multi-word query that starts no name closes the chooser.
+        app.composer.clear();
+        for action in typed("@Honey bee") {
+            app.insert_action(action).await.unwrap();
+        }
+        assert!(app.mention_picker.is_none());
+
+        // A stale draft that mentions someone who left is not sent.
+        app.composer.clear();
+        for action in typed("@") {
+            app.insert_action(action).await.unwrap();
+        }
+        assert!(app.composer.accept_mention(0..1, "Ghost", &"9".repeat(64)));
+        app.mention_picker = None;
+        app.insert_action(super::KeyAction::Submit).await.unwrap();
+        assert!(
+            app.status_error
+                .as_deref()
+                .is_some_and(|error| error.contains("no longer in this channel")),
+            "{:?}",
+            app.status_error
+        );
+        assert_eq!(app.composer.body, "@Ghost");
     }
 
     #[test]

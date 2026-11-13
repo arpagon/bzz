@@ -262,25 +262,22 @@ impl Composer {
         self.cursor = self.body.len();
     }
 
+    /// The mention query at the cursor (mention rules v3, section 2). An `@`
+    /// inside code or inside an already selected mention opens none. A query
+    /// may contain spaces; the caller checks it against known names.
     pub fn active_mention(&self) -> Option<Range<usize>> {
         if !self.body.is_char_boundary(self.cursor) || in_code_region(&self.body, self.cursor) {
             return None;
         }
-        let before = &self.body[..self.cursor];
-        let start = before.rfind('@')?;
-        let prefix = before.get(start + 1..)?;
-        if prefix.len() > 80
-            || prefix
-                .chars()
-                .any(|character| character.is_whitespace() || character.is_control())
+        let query = crate::protocol::mention_rules::mention_query(&self.body, self.cursor)?;
+        if self
+            .mentions
+            .iter()
+            .any(|mention| mention.byte_start <= query.start && query.start < mention.byte_end)
         {
             return None;
         }
-        let boundary = self.body[..start].chars().next_back();
-        if !boundary.is_none_or(mention_start_boundary) {
-            return None;
-        }
-        Some(start..self.cursor)
+        Some(query.start..query.end)
     }
 
     pub fn accept_mention(&mut self, range: Range<usize>, label: &str, pubkey: &str) -> bool {
@@ -431,12 +428,10 @@ fn shift(value: usize, removed: usize, added: usize) -> usize {
     value.saturating_sub(removed).saturating_add(added)
 }
 
-fn mention_start_boundary(character: char) -> bool {
-    character.is_whitespace() || matches!(character, '(' | '[' | '{' | '"' | '\'')
-}
-
+/// A selected mention ends at a name boundary: anything but a letter, mark,
+/// digit or underscore (mention rules v3, section 5).
 fn mention_boundary(character: char) -> bool {
-    character.is_whitespace() || character.is_ascii_punctuation()
+    character != '_' && !crate::protocol::mention_rules::is_name_char(character)
 }
 
 fn in_code_region(value: &str, cursor: usize) -> bool {

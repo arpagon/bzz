@@ -321,3 +321,38 @@ visible = "quit bzz?"
 [[scenario.step]]
 keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t14-mention-namesakes"
+kind = "harness"
+description = "v0.14 M3: two members named Honey get key-qualified labels in the mention chooser; Space does not pick either; Tab picks the highlighted one and the sent message names it."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "1", "4", "-", "n", "a", "m", "e", "s", "enter"]
+visible = "Generated namesakes channel"
+
+[[scenario.step]]
+keys = ["i", "@", "H", "o", "n"]
+visible = "@Honey · "
+
+[[scenario.step]]
+keys = ["e", "y", "space"]
+visible = "@Honey "
+
+[[scenario.step]]
+keys = ["backspace", "tab", "space", "n", "a", "m", "e", "s", "a", "k", "e", "-", "o", "k", "enter"]
+visible = "namesake-ok"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"

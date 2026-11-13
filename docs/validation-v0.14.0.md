@@ -95,8 +95,31 @@ contract lets a provider ask a person, and bzz cannot tell from `describe`
 whether it will. Pairing with no `--relay` (upstream #9417) is not adopted:
 bzz always pairs for the community it is configured with.
 
+## M3 — Identity names and mention rules
+
+| Claim | Proof | Red without the change | Result |
+|---|---|---|---|
+| Identity names v1: all 31 fixture cases | `buzz_app_contracts_test::identity_names_v1_fixtures` | with owner qualification disabled: 10 cases failed | pass |
+| Mention rules v3: matching 23, ranking 35, space 23, query 12, admission 9, tags.write 7, tags.read 6 | `buzz_app_contracts_test::mention_rules_v3_fixtures` | with NFC instead of NFKD folding: 6 matching cases failed | pass |
+| Mention choices include the viewer; a person, the viewer's agent and another owner's agent named alike get `Honey`, `Honey (agent)`, `Wes’s Honey`; `honey` selects none of them, `Wes’s Honey` its own; the viewer's agent ranks first | `store::queries::mention_choice_tests` | n/a | pass |
+| In the composer, Space after `@Honey` selects the one Honey; `Wes ` with `Wes Smith` known stays prose and closes the chooser, `Smith,` then selects Wes Smith; `@Honey bee` closes the chooser; a draft mentioning a non-member is refused and kept | `app::tests::space_selects_only_an_exact_unique_mention` | with Space selection disabled: failed at the first mention; with the member check disabled: the stale draft was sent | pass |
+| Timeline uses the contextual label and drops "owned by" when the label names the owner | `ui::timeline::tests::contextual_labels_name_authors_without_repeating_the_owner` | n/a | pass |
+| The release TUI shows two members both named Honey as `Honey · <suffix>`, Space after `@Honey` does not pick either, Tab does and the message is sent | Herdr `t14-mention-namesakes` (5 harness scenarios passed) | n/a | pass |
+
+Fixtures are vendored unchanged from `block/buzz-app` `dfdb5582e` (v1.0.1);
+see `tests/fixtures/buzz-app/README.md`.
+
+Gates after M3: fmt clean; clippy clean (audio and view-only); 486 tests
+passed.
+
+Deviations, by design for a terminal client without a directory search: no
+outside people, other-community agents, outside-channel prompt or pending
+mentions; the member cache is the "known" set, so a member without a cached
+profile counts as having no name; the NIP-FI username stays a searchable
+alias, as in v0.13.
+
 ## Pending
 
 | Item | Why |
 |---|---|
-| M3–M5 | not started |
+| M4–M5 | not started |
