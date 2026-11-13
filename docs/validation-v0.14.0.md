@@ -53,8 +53,50 @@ passed (audio build).
 Bzz keeps the governing attachments on an edit; adding or removing
 attachments while editing is not supported (the composer says so).
 
+## M2 — Buzz 1.0 as identity provider
+
+Real proof with **Buzz 1.0.1** (`block/buzz-app` `v1.0.1`, source commit
+`dfdb5582e6810e76681e24a33c3489ba2aa77e5c`, Linux x86_64 AppImage checked
+against the release's `SHA256SUMS`), 2026-11-12, in experiment
+`runs/experiments/buzz1/pairing` (local, not tracked):
+
+- **Sandbox.** Bubblewrap with an empty tmpfs over `/home` and the host
+  runtime directory, so the real home, session bus and keyring are not
+  reachable; a disposable home and a private D-Bus session with its own
+  unlocked keyring are bound back; Xvfb `:77`. Verified from
+  `/proc/<pid>/root` and `environ` of the running Buzz. Firejail, as in the
+  host's `buzz-firejail`, could not be used: this shell has NoNewPrivs, and
+  under a systemd user unit Buzz's WebKit process crashed (SIGSEGV, seen with
+  strace) when the welcome screen changed. Driven through AT-SPI and XTest.
+- **Relay.** The pinned relay with `RELAY_URL=wss://<host>`, reached through
+  a Cloudflare quick tunnel, because Buzz 1.0 accepts only `wss`/`https`
+  communities. Generated identity (key typed into Buzz, never shown); its
+  pubkey seeded as a relay member; data generated. Tunnel and relay were torn
+  down after.
+
+| Claim | Proof | Result |
+|---|---|---|
+| bzz pairs with Buzz 1.0; the approval names bzz and the relay; the paired pubkey is the generated one | `bzz identity pair-desktop` → Buzz dialog "bzz wants to use Buzz as you on wss://…", Allow → `paired … pubkey: 7fccc5bd…` (matches) | pass |
+| `describe`: role owner, the bound relay, methods incl. `sign_event`, `nip44_*`, `federated_identity`, `auth_tag` | probe (`_buzz1_probe.rs`) | pass |
+| What Buzz 1.0.1 signs for bzz: 9, 40003, 7, 30315, 20001, 20002, 30078, 41010, 41012, 45010, 30030, 22242, 27235, 24242; refuses 5, 1984, 0, 41011, 9007, 9021, 9022, 9002, 48100, 48103, 24810, 30180 | probe, every kind bzz signs as the human | matches `operation_policy` exactly (`the_tables_match_the_provider_contract`) |
+| The release TUI works end to end through Buzz 1.0: AUTH, history, send, edit, react; Buzz shows the message, "(edited)" and the 👍 | Herdr pane + Buzz screenshot | pass |
+| Red: before M2, delete was offered, confirmed, then failed with "authentication failed: Buzz Desktop refused the request" | Herdr capture at the v0.14 M1 build | observed |
+| After M2: report and huddle start are refused at once with "Buzz does not let other apps do this; do it in Buzz"; the first delete says so after confirming, and the actions menu then shows delete unavailable with that reason | Herdr capture at the M2 build | pass |
+| Signer: refused kinds never reach Buzz; a refused sensitive kind is not asked again; `approval_required` is not a refusal; keys bzz holds are never refused | `buzz_1_0_refusals_are_known_before_the_person_acts`, `approval_required_keeps_the_kind_available` (fake provider in Buzz 1.0 mode) | pass |
+| Delete is shown unavailable with the signer's reason; edit stays available | `a_signer_refusal_disables_delete_but_not_edit` | pass |
+| Missing socket-ownership proof is retried within one 5 s deadline; a wrong owner is final | `missing_ownership_proof_is_retried_but_another_user_is_final`, `proc_net_tcp_rows_match_the_exact_connection` | pass |
+| v0.13 provider behavior unchanged | `credential_provider_test` (7), `real_relay_buzz_desktop_identity_signs_through_the_provider` | pass |
+
+Gates after M2: fmt clean; clippy clean (audio and view-only); 480 tests
+passed; pinned relay 14 passed; FI-enforcing relay 4 passed.
+
+A sensitive kind is offered until Buzz refuses it once per session: the
+contract lets a provider ask a person, and bzz cannot tell from `describe`
+whether it will. Pairing with no `--relay` (upstream #9417) is not adopted:
+bzz always pairs for the community it is configured with.
+
 ## Pending
 
 | Item | Why |
 |---|---|
-| M2–M5 | not started |
+| M3–M5 | not started |

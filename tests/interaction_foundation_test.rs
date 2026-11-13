@@ -88,6 +88,7 @@ fn leader_context_actions_are_derived_before_any_effect_executes() {
         selected_event_has_media: false,
         context_open: false,
         can_publish: true,
+        delete_refused: None,
     }));
     assert!(
         menu.entries()

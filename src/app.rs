@@ -3564,7 +3564,8 @@ impl App {
                     self.runtime.as_ref().is_some_and(|runtime| {
                         message.pubkey == runtime.signer.public_key().to_hex()
                     })
-                }) {
+                }) && !self.refused_by_signer("delete", &[5])
+                {
                     self.presentation
                         .open_confirmation(ConfirmationKind::Delete);
                 }
@@ -4063,6 +4064,15 @@ impl App {
             "start" if active.is_some() => {
                 self.status_error = Some("a huddle is already running here; join it".into());
             }
+            "start"
+                if self.refused_by_signer(
+                    "start a huddle",
+                    &[
+                        9007,
+                        crate::protocol::huddle::KIND_STARTED,
+                        crate::protocol::huddle::KIND_ENDED,
+                    ],
+                ) => {}
             "start" => {
                 self.presentation.open_overlay(Overlay::Huddle);
                 self.presentation
@@ -4082,6 +4092,11 @@ impl App {
             }
             "leave" => self.leave_huddle().await,
             "end"
+                if self.refused_by_signer(
+                    "end the huddle",
+                    &[crate::protocol::huddle::KIND_ENDED],
+                ) => {}
+            "end"
                 if active
                     .as_ref()
                     .is_some_and(|active| Some(active.creator.as_str()) == self.self_pubkey()) =>
@@ -4091,6 +4106,11 @@ impl App {
                     .open_confirmation(ConfirmationKind::HuddleEnd);
             }
             "end" => self.status_error = Some("only the huddle's creator can end it".into()),
+            "react"
+                if self.refused_by_signer(
+                    "huddle reactions",
+                    &[crate::protocol::huddle::KIND_REACTION],
+                ) => {}
             "mute" => {
                 #[cfg(feature = "huddles-audio")]
                 if let Some(call) = &self.huddle_call {
@@ -4275,6 +4295,13 @@ impl App {
             self.end_huddle().await;
             return;
         }
+        if let Some(reason) = runtime.signer.refusal(9022) {
+            self.status_error = Some(format!(
+                "left the call; audio devices released. Leaving the huddle channel: {reason}"
+            ));
+            self.huddle_dirty = true;
+            return;
+        }
         if let Ok(builder) = crate::protocol::huddle::leave(active.backing) {
             let signer = runtime.signer.clone();
             let supervisor = runtime.supervisor.clone();
@@ -4295,6 +4322,13 @@ impl App {
         let (Some(active), Some(parent), Some(runtime)) = (active, parent, &self.runtime) else {
             return;
         };
+        if let Some(reason) = runtime.signer.refusal(crate::protocol::huddle::KIND_ENDED) {
+            self.status_error = Some(format!(
+                "left the call; audio devices released. Ending the huddle: {reason}"
+            ));
+            self.huddle_dirty = true;
+            return;
+        }
         let signer = runtime.signer.clone();
         let supervisor = runtime.supervisor.clone();
         tokio::spawn(async move {
@@ -6245,6 +6279,9 @@ impl App {
                 })
                 .map(|reaction| reaction.event_id.clone())
         });
+        if own_reaction.is_some() && self.refused_by_signer("remove a reaction", &[5]) {
+            return;
+        }
         let tx = self.background_tx.clone();
         tokio::spawn(async move {
             let result = if let Some(reaction) = own_reaction {
@@ -6522,6 +6559,19 @@ impl App {
         })
     }
 
+    /// Refuse an action locally when the signer (Buzz Desktop) will not sign
+    /// one of its kinds, so it never fails after the person commits to it.
+    fn refused_by_signer(&mut self, action: &str, kinds: &[u16]) -> bool {
+        let reason = self
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.signer.refusal_any(kinds));
+        if let Some(reason) = reason {
+            self.status_error = Some(format!("{action}: {reason}"));
+        }
+        reason.is_some()
+    }
+
     /// Open the selected own message in the composer for editing.
     async fn open_edit(&mut self) -> Result<()> {
         let Some(runtime) = &self.runtime else {
@@ -6632,7 +6682,7 @@ impl App {
             let _ = tx
                 .send(match result {
                     Ok(_) => Background::Changed,
-                    Err(error) => Background::Failed(error.to_string()),
+                    Err(error) => Background::Failed(format!("delete: {error}")),
                 })
                 .await;
         });
@@ -6992,6 +7042,14 @@ impl App {
             self.status_error = Some(
                 "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
             );
+            return;
+        }
+        if add_to.is_some()
+            && self.refused_by_signer(
+                "add someone to a DM",
+                &[buzz_core::kind::KIND_DM_ADD_MEMBER as u16],
+            )
+        {
             return;
         }
         self.dm_picker = DmPickerState {
@@ -7941,6 +7999,7 @@ impl App {
                     ));
                 } else if self.runtime.is_none() || self.selected_message().is_none() {
                     self.status_error = Some("select a message to report".into());
+                } else if self.refused_by_signer("report", &[buzz_core::kind::KIND_REPORT as u16]) {
                 } else {
                     self.pending_report = Some((reason, note.map(str::to_owned), author_only));
                     self.presentation
@@ -8229,6 +8288,10 @@ impl App {
                 .is_some_and(|message| !message.attachments.is_empty()),
             context_open: self.thread_root.is_some(),
             can_publish: self.runtime.is_some(),
+            delete_refused: self
+                .runtime
+                .as_ref()
+                .and_then(|runtime| runtime.signer.refusal(5)),
         }
     }
 
@@ -9648,9 +9711,10 @@ fn dm_label(
 
 fn public_media_error(error: &Error) -> String {
     match error {
-        Error::Config(message) | Error::Protocol(message) | Error::Access(message) => {
-            sanitize::single_line(message)
-        }
+        Error::Config(message)
+        | Error::Protocol(message)
+        | Error::Access(message)
+        | Error::SignerRefused(message) => sanitize::single_line(message),
         Error::Io { .. } => "attachment I/O failed".into(),
         Error::Network(_) | Error::Timeout(_) => "attachment network operation failed".into(),
         Error::Locked(_)

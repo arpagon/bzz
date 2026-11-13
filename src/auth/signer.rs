@@ -14,6 +14,24 @@ const QUEUE: usize = 64;
 pub struct SignerHandle {
     public_key: PublicKey,
     sender: mpsc::Sender<Command>,
+    /// Present when Buzz Desktop holds the key: kinds it refused this session.
+    provider: Option<std::sync::Arc<ProviderRefusals>>,
+}
+
+/// Sensitive kinds Buzz Desktop refused, so bzz stops offering them.
+#[derive(Debug, Default)]
+struct ProviderRefusals(std::sync::Mutex<std::collections::HashSet<u16>>);
+
+impl ProviderRefusals {
+    fn record(&self, kind: u16) {
+        if let Ok(mut refused) = self.0.lock() {
+            refused.insert(kind);
+        }
+    }
+
+    fn contains(&self, kind: u16) -> bool {
+        self.0.lock().is_ok_and(|refused| refused.contains(&kind))
+    }
 }
 
 enum Command {
@@ -145,7 +163,11 @@ impl SignerHandle {
                 }
             }
         });
-        Self { public_key, sender }
+        Self {
+            public_key,
+            sender,
+            provider: None,
+        }
     }
 
     /// A signer whose key lives in Buzz Desktop. `pubkey` is the configured
@@ -157,6 +179,8 @@ impl SignerHandle {
         public_key: PublicKey,
     ) -> Self {
         let (sender, mut receiver) = mpsc::channel(QUEUE);
+        let refusals = std::sync::Arc::new(ProviderRefusals::default());
+        let recorder = refusals.clone();
         tokio::spawn(async move {
             while let Some(command) = receiver.recv().await {
                 if let Command::Lock(response) = command {
@@ -164,10 +188,31 @@ impl SignerHandle {
                     break;
                 }
                 let client = client.clone();
-                tokio::spawn(async move { remote_command(&client, public_key, command).await });
+                let recorder = recorder.clone();
+                tokio::spawn(async move {
+                    remote_command(&client, public_key, &recorder, command).await;
+                });
             }
         });
-        Self { public_key, sender }
+        Self {
+            public_key,
+            sender,
+            provider: Some(refusals),
+        }
+    }
+
+    /// Why this signer will not sign `kind`, before anyone tries: Buzz
+    /// Desktop never signs it for local tools, or refused it this session.
+    /// `None` for keys bzz holds.
+    pub fn refusal(&self, kind: u16) -> Option<&'static str> {
+        use crate::auth::operation_policy::{Policy, REFUSED, classify};
+        let provider = self.provider.as_ref()?;
+        (classify(kind) == Policy::Refuses || provider.contains(kind)).then_some(REFUSED)
+    }
+
+    /// The first refusal among `kinds`.
+    pub fn refusal_any(&self, kinds: &[u16]) -> Option<&'static str> {
+        kinds.iter().find_map(|kind| self.refusal(*kind))
     }
 
     pub const fn public_key(&self) -> PublicKey {
@@ -315,6 +360,43 @@ fn sign_nip98(keys: &Keys, method: &str, url: &str, body: Option<&[u8]>) -> Resu
     Ok(format!("Nostr {}", STANDARD.encode(event.as_json())))
 }
 
+/// Sign an action's event through Buzz Desktop. A kind the contract never
+/// signs for local tools is refused without asking; a refused sensitive kind
+/// is remembered, so bzz stops offering it.
+async fn remote_sign_content(
+    client: &crate::auth::provider::ProviderClient,
+    pubkey: PublicKey,
+    refusals: &ProviderRefusals,
+    builder: EventBuilder,
+) -> Result<Event> {
+    use crate::auth::{
+        operation_policy::{Policy, REFUSED, classify},
+        provider::ProviderError,
+    };
+    let unsigned = builder.build(pubkey);
+    let kind = unsigned.kind.as_u16();
+    if classify(kind) == Policy::Refuses || refusals.contains(kind) {
+        return Err(Error::SignerRefused(REFUSED.into()));
+    }
+    match remote_sign_raw(client, pubkey, unsigned).await {
+        Err(RemoteSign::Provider(ProviderError::Denied)) => {
+            refusals.record(kind);
+            Err(Error::SignerRefused(REFUSED.into()))
+        }
+        Err(RemoteSign::Provider(ProviderError::ApprovalRequired)) => Err(Error::SignerRefused(
+            "Buzz is waiting for your approval; approve it in Buzz, then retry".into(),
+        )),
+        Err(RemoteSign::Provider(error)) => Err(error.into()),
+        Err(RemoteSign::Other(error)) => Err(error),
+        Ok(event) => Ok(event),
+    }
+}
+
+enum RemoteSign {
+    Provider(crate::auth::provider::ProviderError),
+    Other(Error),
+}
+
 /// Send a complete unsigned event to Buzz Desktop and accept the result only
 /// if it is a valid signature by `pubkey` over exactly what was sent.
 async fn remote_sign(
@@ -322,7 +404,19 @@ async fn remote_sign(
     pubkey: PublicKey,
     builder: EventBuilder,
 ) -> Result<Event> {
-    let unsigned = builder.build(pubkey);
+    remote_sign_raw(client, pubkey, builder.build(pubkey))
+        .await
+        .map_err(|error| match error {
+            RemoteSign::Provider(error) => error.into(),
+            RemoteSign::Other(error) => error,
+        })
+}
+
+async fn remote_sign_raw(
+    client: &crate::auth::provider::ProviderClient,
+    pubkey: PublicKey,
+    unsigned: nostr::UnsignedEvent,
+) -> std::result::Result<Event, RemoteSign> {
     let request = serde_json::json!({
         "pubkey": pubkey.to_hex(),
         "created_at": unsigned.created_at.as_secs(),
@@ -333,20 +427,21 @@ async fn remote_sign(
     let signed = client
         .call("sign_event", &[request.to_string()])
         .await
-        .map_err(Error::from)?;
-    let event = Event::from_json(signed)
-        .map_err(|_| Error::Auth("Buzz Desktop returned a malformed event".into()))?;
+        .map_err(RemoteSign::Provider)?;
+    let invalid = |message: &str| RemoteSign::Other(Error::Auth(message.into()));
+    let event =
+        Event::from_json(signed).map_err(|_| invalid("Buzz Desktop returned a malformed event"))?;
     event
         .verify()
-        .map_err(|_| Error::Auth("Buzz Desktop returned an invalid signature".into()))?;
+        .map_err(|_| invalid("Buzz Desktop returned an invalid signature"))?;
     if event.pubkey != pubkey
         || event.kind != unsigned.kind
         || event.created_at != unsigned.created_at
         || event.content != unsigned.content
         || event.tags != unsigned.tags
     {
-        return Err(Error::Auth(
-            "Buzz Desktop signed a different event than requested".into(),
+        return Err(invalid(
+            "Buzz Desktop signed a different event than requested",
         ));
     }
     Ok(event)
@@ -355,11 +450,12 @@ async fn remote_sign(
 async fn remote_command(
     client: &crate::auth::provider::ProviderClient,
     pubkey: PublicKey,
+    refusals: &ProviderRefusals,
     command: Command,
 ) {
     match command {
         Command::Sign(builder, response) => {
-            let _ = response.send(remote_sign(client, pubkey, builder).await);
+            let _ = response.send(remote_sign_content(client, pubkey, refusals, builder).await);
         }
         Command::Auth {
             challenge,

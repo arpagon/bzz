@@ -152,6 +152,15 @@ contract (see below and
   `nip-fi-agent+jwt` assertions.
 - **Messages:** "send to channel" from a thread and NIP-56 reports (kind
   `1984`).
+- **Buzz 1.0 as credential provider (v0.14.0):** pairing and signing work
+  with Buzz 1.0 (`block/buzz-app`, proven with 1.0.1). The contract's
+  operation policy (`docs/local-credential-provider.md`) decides what Buzz
+  signs for bzz. Kinds outside its ordinary and auth-proof tables are refused
+  before Buzz is asked; a sensitive kind Buzz refuses (Buzz 1.0 refuses all of
+  them) is remembered for the session. Delete, report, huddle start, end and
+  reactions, DM add member and leaving a huddle channel say so in the UI.
+  The same-user socket check retries a missing ownership proof within 5 s
+  (upstream #9270).
 - **Edits (kind `40003`, v0.14.0):** the latest live edit in the original's
   channel, by its author or the verified owner of the agent that wrote it,
   governs the text and the complete attachment set, as in upstream

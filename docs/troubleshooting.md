@@ -382,6 +382,17 @@ was denied" is the adapter's or relay's authorization decision: sign-in again
 will not change it. "session ended" means sign in again. Buzz Desktop
 identities get evidence from Desktop: keep it running and signed in.
 
+## "Buzz does not let other apps do this"
+
+The identity's key lives in Buzz (paired with `bzz identity pair-desktop`).
+Buzz signs everyday work for other apps: messages, edits, reactions, read
+state, status, presence, DM open and hide, artifacts. It does not sign
+deleting, reporting, starting or ending huddles, huddle reactions, creating
+or joining channels, adding people to a DM, or profile changes; Buzz 1.0
+refuses them without asking. Do those in Buzz itself. bzz says so before
+you act, or, for a delete, the first time Buzz refuses it in a session. To
+do everything from bzz, use an identity whose key bzz holds.
+
 ## Channel is read-only
 
 Announce channels let guests read but not write, System channels are read-only

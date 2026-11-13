@@ -22,6 +22,9 @@ pub struct Behavior {
     /// Return a signature over different content.
     pub tamper: bool,
     pub revoked: bool,
+    /// Buzz 1.0's policy: ordinary kinds and auth proofs are signed, every
+    /// sensitive or unknown kind is `denied`, with no approval prompt.
+    pub buzz_1_0: bool,
 }
 
 pub struct FakeProvider {
@@ -44,6 +47,7 @@ impl FakeProvider {
             assertion: String::new(),
             tamper: false,
             revoked: false,
+            buzz_1_0: false,
         }));
         let calls = Arc::new(Mutex::new(Vec::new()));
         let (server_keys, server_token, server_behavior, server_calls) =
@@ -178,10 +182,17 @@ fn answer(head: &str, request: &Value, keys: &Keys, token: &str, behavior: &Beha
             }
             let kind = unsigned["kind"].as_u64().unwrap_or(u64::MAX);
             // Sensitive (profile) needs approval; unknown kinds are denied.
-            match kind {
-                0 => return failure(id, "approval_required"),
-                9 | 7 | 22_242 | 27_235 | 24_242 | 30_078 | 5 => {}
-                _ => return failure(id, "denied"),
+            if behavior.buzz_1_0 {
+                use bzz::auth::operation_policy::{Policy, classify};
+                if classify(u16::try_from(kind).unwrap_or(u16::MAX)) != Policy::Signs {
+                    return failure(id, "denied");
+                }
+            } else {
+                match kind {
+                    0 => return failure(id, "approval_required"),
+                    9 | 7 | 22_242 | 27_235 | 24_242 | 30_078 | 5 => {}
+                    _ => return failure(id, "denied"),
+                }
             }
             let tags: Vec<nostr::Tag> = serde_json::from_value(unsigned["tags"].clone()).unwrap();
             if kind == 27_235 {
