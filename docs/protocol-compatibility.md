@@ -152,3 +152,14 @@ contract (see below and
   `nip-fi-agent+jwt` assertions.
 - **Messages:** "send to channel" from a thread and NIP-56 reports (kind
   `1984`).
+- **Edits (kind `40003`, v0.14.0):** the latest live edit in the original's
+  channel, by its author or the verified owner of the agent that wrote it,
+  governs the text and the complete attachment set, as in upstream
+  `docs/effective-message-edits.md`. An empty `imeta` set means no
+  attachments. The timeline shows "(edited)"; search and Inbox use the edited
+  text. `e` edits an own message: bzz reads the `effective_edit` v1 lookup,
+  keeps the governing attachments and stamps the edit after the observed head.
+  Relays without the lookup are refused, so an edit never drops attachments.
+  Desktop picks the newest edit that carries `imeta` and keeps the original's
+  otherwise; bzz follows the relay, which authorizes media by the latest
+  edit.

@@ -289,6 +289,45 @@ impl MessageService {
         )
         .await
     }
+    /// Edit an own message. The relay's effective state decides which
+    /// attachments the edit keeps (all of the governing event's), and the edit
+    /// is stamped after the observed head. Old relays are refused.
+    pub async fn edit(
+        &self,
+        http: &crate::protocol::http::HttpClient,
+        channel: Uuid,
+        target: &str,
+        author: &str,
+        content: &str,
+    ) -> Result<Event> {
+        if author != self.signer.public_key().to_hex() {
+            return Err(Error::Access("only your own message can be edited".into()));
+        }
+        let target_id =
+            EventId::from_hex(target).map_err(|error| Error::Protocol(error.to_string()))?;
+        let effective = http.effective_edit(&target_id.to_hex(), channel).await?;
+        let plan = crate::protocol::edit::plan(&effective, nostr::Timestamp::now().as_secs())?;
+        // Keep each kept attachment's markdown line, as bzz writes them on send.
+        let tags_json = serde_json::to_string(&plan.media)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        let mut body = content.trim_end().to_owned();
+        for attachment in crate::media::imeta::parse_tags(&tags_json, &plan.content, http.base()) {
+            if attachment.valid() {
+                if !body.is_empty() {
+                    body.push('\n');
+                }
+                body.push_str(&attachment.markdown_line());
+            }
+        }
+        if body.trim().is_empty() {
+            return Err(Error::Config("an edit needs text or attachments".into()));
+        }
+        let builder = buzz_sdk::build_edit_with_media(channel, target_id, &body, &plan.media)
+            .map_err(|error| Error::Protocol(error.to_string()))?
+            .custom_created_at(nostr::Timestamp::from(plan.created_at));
+        self.send_builder(builder).await
+    }
+
     /// Sign and publish a non-message event (status and similar) through the
     /// acknowledgement-aware outbox.
     pub async fn publish_builder(&self, builder: nostr::EventBuilder) -> Result<Event> {

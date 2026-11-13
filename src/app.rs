@@ -203,6 +203,15 @@ impl Runtime {
     }
 }
 
+/// An own message open in the composer for editing. Its text never enters
+/// the draft store; attachments are kept as the relay last saw them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EditingMessage {
+    channel_id: Uuid,
+    event_id: String,
+    kept_attachments: usize,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct StagingAttachment {
     id: String,
@@ -417,6 +426,8 @@ pub struct App {
     /// Revision for the editable draft currently hydrated into `composer`.
     /// Never retain it once the composer is closed or submitted.
     composer_draft_revision: Option<String>,
+    /// The composer is editing this own message instead of drafting.
+    editing: Option<EditingMessage>,
     mention_picker: Option<MentionPicker>,
     finder: String,
     reaction_index: usize,
@@ -859,6 +870,7 @@ impl App {
             },
             composer: Composer::default(),
             composer_draft_revision: None,
+            editing: None,
             mention_picker: None,
             finder: String::new(),
             reaction_index: 0,
@@ -3541,6 +3553,7 @@ impl App {
                     self.presentation.open_overlay(Overlay::Reaction);
                 }
             }
+            WorkspaceEffect::OpenEdit => self.open_edit().await?,
             WorkspaceEffect::ConfirmDelete => {
                 if self.runtime.is_none() {
                     self.status_error = Some(
@@ -5205,6 +5218,7 @@ impl App {
         root: Option<String>,
         parent: Option<String>,
     ) -> Result<()> {
+        self.editing = None;
         if let Some(reason) = self
             .channels
             .iter()
@@ -5315,6 +5329,10 @@ impl App {
                 self.staging_attachments.clear();
                 self.presentation.composer_target = None;
                 self.composer_draft_revision = None;
+                if self.editing.take().is_some() {
+                    self.composer
+                        .set_draft(String::new(), Vec::new(), Vec::new());
+                }
             }
             KeyAction::Character(character) => self.composer.insert(character),
             KeyAction::Backspace => self.composer.backspace(),
@@ -5322,6 +5340,7 @@ impl App {
             KeyAction::Left => self.composer.move_left(),
             KeyAction::Right => self.composer.move_right(),
             KeyAction::Newline => self.composer.newline(),
+            KeyAction::Submit if self.active_edit().is_some() => self.save_edit().await?,
             KeyAction::Submit => {
                 if !self.staging_attachments.is_empty() {
                     self.status_error = Some("attachment processing is not ready to send".into());
@@ -6122,6 +6141,9 @@ impl App {
     }
 
     async fn persist_draft(&mut self) -> Result<()> {
+        if self.active_edit().is_some() {
+            return Ok(());
+        }
         let Some(target) = self.presentation.composer_target.clone() else {
             return Ok(());
         };
@@ -6488,6 +6510,109 @@ impl App {
                 })
                 .await;
         });
+    }
+
+    /// The edit in progress, while the composer is still open on its channel.
+    fn active_edit(&self) -> Option<&EditingMessage> {
+        self.editing.as_ref().filter(|editing| {
+            self.presentation
+                .composer_target
+                .as_ref()
+                .is_some_and(|target| target.channel_id == editing.channel_id)
+        })
+    }
+
+    /// Open the selected own message in the composer for editing.
+    async fn open_edit(&mut self) -> Result<()> {
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some(
+                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
+            );
+            return Ok(());
+        };
+        let own = runtime.signer.public_key().to_hex();
+        let community = runtime.community_id;
+        let Some(message) = self.selected_message().cloned() else {
+            return Ok(());
+        };
+        let reason = self
+            .channels
+            .iter()
+            .find(|channel| channel.id == message.channel_id)
+            .and_then(Channel::read_only_reason);
+        if message.pubkey != own {
+            self.status_error = Some("only your own message can be edited".into());
+        } else if message.deleted || message.system.is_some() {
+            self.status_error = Some("this message cannot be edited".into());
+        } else if message.delivery != crate::domain::DeliveryState::Delivered {
+            self.status_error = Some("wait until the message is delivered, then edit it".into());
+        } else if let Some(reason) = reason {
+            self.status_error = Some(reason.notice().into());
+        } else {
+            self.mention_picker = None;
+            self.staging_media.clear();
+            self.staging_attachments.clear();
+            self.composer_draft_revision = None;
+            self.composer
+                .set_draft(message.content.clone(), Vec::new(), Vec::new());
+            self.editing = Some(EditingMessage {
+                channel_id: message.channel_id,
+                event_id: message.event_id.clone(),
+                kept_attachments: message.attachments.len(),
+            });
+            self.presentation.composer_target = Some(ComposerTarget {
+                community_id: community,
+                channel_id: message.channel_id,
+                thread_root_id: message.root_event_id.clone(),
+                parent_event_id: None,
+            });
+        }
+        Ok(())
+    }
+
+    /// Publish the composer's text as an edit of the message being edited.
+    /// On failure the text stays in the composer.
+    async fn save_edit(&mut self) -> Result<()> {
+        let Some(editing) = self.active_edit().cloned() else {
+            return Ok(());
+        };
+        if !self.composer.attachments.is_empty() || !self.staging_attachments.is_empty() {
+            self.status_error =
+                Some("an edit keeps the message's attachments; remove the new ones to save".into());
+            return Ok(());
+        }
+        if self.composer.body.trim().is_empty() && editing.kept_attachments == 0 {
+            self.status_error = Some("an edit needs text; delete the message instead".into());
+            return Ok(());
+        }
+        let Some(runtime) = &self.runtime else {
+            return Ok(());
+        };
+        let author = runtime.signer.public_key().to_hex();
+        let body = self.composer.body.clone();
+        match runtime
+            .messages
+            .edit(
+                &runtime.http,
+                editing.channel_id,
+                &editing.event_id,
+                &author,
+                &body,
+            )
+            .await
+        {
+            Ok(_) => {
+                self.editing = None;
+                self.composer
+                    .set_draft(String::new(), Vec::new(), Vec::new());
+                self.presentation.composer_target = None;
+                self.cache_dirty = true;
+            }
+            Err(error) => {
+                self.status_error = Some(format!("edit not saved; your text is kept ({error})"));
+            }
+        }
+        Ok(())
     }
 
     fn delete_selected(&mut self) {
@@ -8610,10 +8735,18 @@ impl App {
                 format!("\n{}", attachment_lines.join("\n"))
             };
             let content = format!("{}{}", sanitize::text(&self.composer.body), attachments);
-            (
-                format!(
+            let title = match self.active_edit() {
+                Some(editing) if editing.kept_attachments > 0 => format!(
+                    " edit message · keeps {} attachment(s) · Enter save · Esc cancel ",
+                    editing.kept_attachments
+                ),
+                Some(_) => " edit message · Enter save · Esc cancel ".into(),
+                None => format!(
                     " {target} · Enter send · Ctrl-v paste · Ctrl-o choose · Alt-o path · Del remove · Ctrl-c clear · Esc close "
                 ),
+            };
+            (
+                title,
                 content,
                 HighlightGroup::ActiveComposerBorder,
                 HighlightGroup::Composer,

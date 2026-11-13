@@ -56,6 +56,7 @@ pub enum UiAction {
     CopyMessages,
     React,
     Delete,
+    Edit,
     MarkUnread,
     ViewProfile,
     MarkRead,
@@ -122,6 +123,7 @@ impl UiAction {
             Self::CopyMessages => "copy selected message(s)",
             Self::React => "react",
             Self::Delete => "delete",
+            Self::Edit => "edit own message",
             Self::MarkUnread => "mark unread",
             Self::ViewProfile => "view author profile",
             Self::MarkRead => "mark read",
@@ -415,6 +417,7 @@ impl KeyMap {
         add(KeyScope::Global, &["v"], UiAction::ToggleCopySelection);
         add(KeyScope::Global, &["y"], UiAction::CopyMessages);
         add(KeyScope::Global, &["r"], UiAction::React);
+        add(KeyScope::Global, &["e"], UiAction::Edit);
         add(
             KeyScope::Global,
             &["space", "space"],

@@ -92,7 +92,8 @@ bounded public profile photograph according to `ui.profile_avatars`. `Space` is 
 leader: `Space Space` opens the channel/DM switcher, `Space n` opens Inbox,
 `Space s` cycles local channel ordering, `Space a` opens contextual actions,
 `Space o` opens theme options, and `?` shows the generated effective-keymap
-help. On a selected conversation message, `r` opens reactions, `y` explicitly
+help. On a selected conversation message, `r` opens reactions, `e` edits your
+own message, `y` explicitly
 copies sanitized text through OSC 52, and `v` starts/cancels a logical
 multi-message copy range. `q` unwinds owned UI state and asks before quitting.
 The visible writing dock activates with `i` or a click; in read-only/locked

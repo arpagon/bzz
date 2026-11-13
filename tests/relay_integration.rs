@@ -3341,3 +3341,115 @@ async fn real_relay_windows_send_fewer_requests_than_backfill() {
         counts[1]
     );
 }
+
+/// v0.14 M1: an edit from bzz keeps the attachments the relay governs, wins
+/// even within the same second, and keeps the media readable.
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_message_edits() {
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let keys = Keys::generate();
+    let pubkey = keys.public_key().to_hex();
+    let channel = seed_member(&source, &pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let signer = SignerHandle::spawn(keys);
+    let identity = IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "m1".into(),
+        pubkey: pubkey.clone(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "m1".into(),
+    };
+    let mut config = Config::default();
+    config.identities.push(identity.clone());
+    let community = config
+        .add_community("m1".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    let mut store = Store::open_memory().unwrap();
+    store.sync_config(&config).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        signer.clone(),
+    );
+    let http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .unwrap();
+    let service = bzz::service::messages::MessageService::new(
+        community,
+        signer.clone(),
+        store.clone(),
+        supervisor.clone(),
+    );
+    let media_client = MediaClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        "localhost:3030".into(),
+        signer.clone(),
+        2,
+    )
+    .unwrap();
+    let media_root = tempfile::TempDir::new().unwrap();
+    let file = media_root.path().join("generated.txt");
+    tokio::fs::write(&file, b"generated edit fixture\n")
+        .await
+        .unwrap();
+    let attachment = media_client
+        .upload(
+            &file,
+            "application/octet-stream",
+            Some("generated.txt".into()),
+        )
+        .await
+        .unwrap();
+    let original = service
+        .send_with_media(channel, "teh attachment", std::slice::from_ref(&attachment))
+        .await
+        .unwrap();
+    let target = original.id.to_hex();
+
+    let first = service
+        .edit(&http, channel, &target, &pubkey, "the attachment")
+        .await
+        .unwrap();
+    let imeta = |event: &nostr::Event| {
+        event
+            .tags
+            .iter()
+            .filter(|tag| tag.as_slice()[0] == "imeta")
+            .map(|tag| tag.as_slice().to_vec())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        imeta(&first),
+        vec![attachment.imeta_tag()],
+        "attachments kept"
+    );
+    assert!(first.content.starts_with("the attachment\n"));
+    assert!(first.content.contains(&attachment.markdown_line()));
+    // Same second: the second edit is stamped after the first.
+    let second = service
+        .edit(&http, channel, &target, &pubkey, "the attachment, again")
+        .await
+        .unwrap();
+    assert!(second.created_at > first.created_at);
+    let effective = http.effective_edit(&target, channel).await.unwrap();
+    assert_eq!(effective.original.id, original.id);
+    assert_eq!(effective.edit.map(|edit| edit.id), Some(second.id));
+    let download = media_root.path().join("downloaded.bin");
+    media_client.fetch(&attachment, &download).await.unwrap();
+    assert_eq!(
+        tokio::fs::read(&download).await.unwrap(),
+        b"generated edit fixture\n",
+        "the latest edit still references the media"
+    );
+    // Someone else's message cannot be edited from bzz.
+    let stranger = Keys::generate().public_key().to_hex();
+    assert!(
+        service
+            .edit(&http, channel, &target, &stranger, "nope")
+            .await
+            .is_err()
+    );
+}

@@ -145,6 +145,21 @@ impl HttpClient {
         Ok(response.into_events())
     }
 
+    /// The relay's current original and latest live edit of `target`
+    /// (`effective_edit` v1), checked against the request.
+    pub async fn effective_edit(
+        &self,
+        target: &str,
+        channel: uuid::Uuid,
+    ) -> Result<crate::protocol::edit::Effective> {
+        let body = serde_json::to_vec(&[crate::protocol::edit::effective_edit_filter(
+            target, channel,
+        )])
+        .map_err(|error| Error::Serialization(error.to_string()))?;
+        let bytes = self.post("query", body).await?;
+        crate::protocol::edit::parse_effective(&bytes, target, channel)
+    }
+
     pub async fn event(&self, event: &Event) -> Result<Value> {
         let body = serde_json::to_vec(&json!({ "event": event }))
             .map_err(|error| Error::Serialization(error.to_string()))?;

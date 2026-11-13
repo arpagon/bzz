@@ -198,6 +198,11 @@ pub fn derive(context: ActionContext) -> Vec<ContextAction> {
             add(event_publish_action(context, UiAction::React, "react"));
             add(own_event_action(
                 context,
+                UiAction::Edit,
+                "edit own message",
+            ));
+            add(own_event_action(
+                context,
                 UiAction::Delete,
                 "delete own message",
             ));
@@ -286,7 +291,15 @@ const fn own_event_action(
     if !context.has_selected_event {
         ContextAction::unavailable(action, label, "select a message first")
     } else if !context.selected_event_is_own {
-        ContextAction::unavailable(action, label, "only your own message can be deleted")
+        ContextAction::unavailable(
+            action,
+            label,
+            if matches!(action, UiAction::Edit) {
+                "only your own message can be edited"
+            } else {
+                "only your own message can be deleted"
+            },
+        )
     } else if !context.can_publish {
         ContextAction::unavailable(action, label, "identity is locked or unavailable")
     } else {
