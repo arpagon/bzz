@@ -52,7 +52,7 @@ impl HttpClient {
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
-            .user_agent(concat!("bzz/", env!("CARGO_PKG_VERSION")))
+            .user_agent(crate::realtime::session::USER_AGENT)
             .build()
             .map_err(|error| Error::Network(error.to_string()))?;
         Ok(Self {
@@ -89,6 +89,9 @@ impl HttpClient {
             .send()
             .await
             .map_err(|error| Error::Network(error.to_string()))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(Error::Access(crate::realtime::session::NO_COMMUNITY.into()));
+        }
         if !response.status().is_success() {
             return Err(Error::Network(format!(
                 "NIP-11 returned {}",
@@ -109,8 +112,15 @@ impl HttpClient {
         for filter in filters {
             filter.validate()?;
         }
-        let body =
-            serde_json::to_vec(filters).map_err(|error| Error::Serialization(error.to_string()))?;
+        let filters = filters
+            .iter()
+            .filter(|filter| !crate::protocol::types::matches_nothing(&filter.value()))
+            .collect::<Vec<_>>();
+        if filters.is_empty() {
+            return Ok(Vec::new());
+        }
+        let body = serde_json::to_vec(&filters)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
         let bytes = self.post("query", body).await?;
         let response: QueryResponse = serde_json::from_slice(&bytes)
             .map_err(|error| Error::Protocol(format!("invalid query response: {error}")))?;
@@ -137,8 +147,15 @@ impl HttpClient {
                 "a raw query takes one to four filters".into(),
             ));
         }
-        let body =
-            serde_json::to_vec(filters).map_err(|error| Error::Serialization(error.to_string()))?;
+        let filters = filters
+            .iter()
+            .filter(|filter| !crate::protocol::types::matches_nothing(filter))
+            .collect::<Vec<_>>();
+        if filters.is_empty() {
+            return Ok(Vec::new());
+        }
+        let body = serde_json::to_vec(&filters)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
         let bytes = self.post("query", body).await?;
         let response: QueryResponse = serde_json::from_slice(&bytes)
             .map_err(|error| Error::Protocol(format!("invalid query response: {error}")))?;

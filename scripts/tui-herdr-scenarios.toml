@@ -387,3 +387,30 @@ visible = "quit bzz?"
 [[scenario.step]]
 keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t14-search-older"
+kind = "harness"
+description = "v0.14 M5: in search, Ctrl-o loads messages older than the oldest shown and says how many it added (or that there are none)."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["/", "f", "i", "x", "t", "u", "r", "e"]
+visible = "local + relay"
+
+[[scenario.step]]
+keys = ["ctrl+o"]
+visible = "older result"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"

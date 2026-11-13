@@ -378,6 +378,12 @@ enum Background {
         generation: u64,
         output: crate::service::search::SearchOutput,
     },
+    /// An older page of message results for the current search.
+    SearchOlder {
+        community: Uuid,
+        generation: u64,
+        output: Result<crate::service::search::SearchOutput>,
+    },
     DmOpened {
         community: Uuid,
         result: crate::service::dms::DmOpenResult,
@@ -1215,6 +1221,21 @@ impl App {
                             self.search_state.reconcile();
                         }
                     }
+                    Background::SearchOlder { community, generation, output }=>{
+                        if self.active_community_id()==Some(community)
+                            && self.search_state.generation==generation
+                        {
+                            self.search_state.older_loading=false;
+                            self.search_state.notice=Some(match output {
+                                Ok(output)=>match self.search_state.append_older(output.results) {
+                                    0=>"no older results".into(),
+                                    added=>format!("{added} older result(s) added below"),
+                                },
+                                Err(error)=>format!("older results unavailable ({error})"),
+                            });
+                            self.search_state.reconcile();
+                        }
+                    }
                     Background::DmOpened { community, result }=>{
                         if self.active_community_id()==Some(community) {
                             self.cache_dirty=true;
@@ -1777,6 +1798,43 @@ impl App {
                     .await;
             }
         }));
+    }
+
+    /// Ctrl-o in search: the next page of messages older than those shown.
+    fn spawn_older_search(&mut self) {
+        if self.search_state.loading || self.search_state.older_loading {
+            return;
+        }
+        let Some(before) = self.search_state.oldest_message() else {
+            self.search_state.notice = Some("no message results to page from".into());
+            return;
+        };
+        let (Some(community), Some(identity_pubkey), Some(service)) = (
+            self.active_community_id(),
+            self.self_pubkey().map(str::to_owned),
+            self.runtime.as_ref().map(|runtime| runtime.search.clone()),
+        ) else {
+            self.search_state.notice = Some("older results need a connected community".into());
+            return;
+        };
+        let generation = self.search_state.generation;
+        let input = self.search_state.query.clone();
+        let channels = self.channels.clone();
+        let profiles = self.profiles.clone();
+        let tx = self.background_tx.clone();
+        self.search_state.older_loading = true;
+        tokio::spawn(async move {
+            let output = service
+                .older(&input, before, &identity_pubkey, &channels, &profiles)
+                .await;
+            let _ = tx
+                .send(Background::SearchOlder {
+                    community,
+                    generation,
+                    output,
+                })
+                .await;
+        });
     }
 
     fn spawn_dm_profile_search(&mut self) {
@@ -7729,6 +7787,9 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.search_state.move_by(-1)
+            }
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.spawn_older_search();
             }
             KeyCode::Down => self.search_state.move_by(1),
             KeyCode::Up => self.search_state.move_by(-1),

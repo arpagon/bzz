@@ -2743,6 +2743,42 @@ async fn real_relay_local_agent_broker() {
     );
     stranger_supervisor.shutdown().await;
 
+    // v0.14 M5 (upstream #9371): an agent cannot write in a DM that has
+    // anyone besides its owner; the broker answers that as `unauthorized`.
+    let stranger_hex = stranger.public_key().to_hex();
+    let open = owner
+        .sign(buzz_sdk::build_dm_open(&[agent.pubkey.as_str(), stranger_hex.as_str()]).unwrap())
+        .await
+        .unwrap();
+    let ack = owner_supervisor.publish(open).await.unwrap();
+    assert!(ack.accepted, "{}", ack.message);
+    let dm: serde_json::Value =
+        serde_json::from_str(ack.message.strip_prefix("response:").unwrap()).unwrap();
+    let dm = uuid::Uuid::parse_str(dm["channel_id"].as_str().unwrap()).unwrap();
+    let agent_supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        agent_signer.clone(),
+    );
+    let in_dm = agent_signer
+        .sign(
+            buzz_sdk::build_message(dm, "agent in a group DM", None, &[], false, &[], &[])
+                .unwrap()
+                .tag(relay::auth_tag(&agent.auth_tag).unwrap()),
+        )
+        .await
+        .unwrap();
+    let refused = agent_supervisor.publish(in_dm).await.unwrap();
+    assert!(!refused.accepted);
+    assert!(
+        refused
+            .message
+            .starts_with("restricted: agents cannot post in direct messages"),
+        "{}",
+        refused.message
+    );
+    assert!(relay::relay_refused_agent(&refused.message));
+    agent_supervisor.shutdown().await;
+
     // The activity log carries no content and no credential.
     let activity = format!("{:?}", host.activity());
     assert!(!activity.contains("hello from the broker") && !activity.contains(&credential));
@@ -3590,4 +3626,155 @@ async fn real_relay_sidebar_documents_and_solo_chats() {
     let parsed = bzz::protocol::events::as_channel(&metadata[0]).unwrap();
     assert_eq!(parsed.visibility, bzz::domain::Visibility::Private);
     assert_eq!(parsed.facts.labels, vec!["buzz.solo".to_owned()]);
+}
+
+/// v0.14 M5 (upstream #9382): search loads older pages by moving the time
+/// bound below the oldest message shown; every page is older than the last.
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_search_loads_older_pages() {
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let keys = Keys::generate();
+    let pubkey = keys.public_key().to_hex();
+    let _ = seed_member(&source, &pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let signer = SignerHandle::spawn(keys.clone());
+    let (session, mut events) = session::connect(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(SessionEvent::Authenticated)
+    ));
+    tokio::spawn(async move { while events.recv().await.is_some() {} });
+    let channel = uuid::Uuid::new_v4();
+    let create = signer
+        .sign(
+            buzz_sdk::build_create_channel(
+                channel,
+                &format!("paging-{}", &channel.simple().to_string()[..8]),
+                Some(buzz_sdk::Visibility::Open),
+                Some(buzz_sdk::ChannelKind::Stream),
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(session.publish(create).await.unwrap().accepted);
+    let token = format!(
+        "pagetoken{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
+    let now = Timestamp::now().as_secs();
+    const TOTAL: u64 = 45;
+    for index in 0..TOTAL {
+        let event = signer
+            .sign(
+                buzz_sdk::build_message(
+                    channel,
+                    &format!("{token} note {index}"),
+                    None,
+                    &[],
+                    false,
+                    &[],
+                    &[],
+                )
+                .unwrap()
+                .custom_created_at(Timestamp::from(now - 600 + index * 10)),
+            )
+            .await
+            .unwrap();
+        assert!(session.publish(event).await.unwrap().accepted);
+    }
+    session.shutdown().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let identity = IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "m5-search".into(),
+        pubkey: pubkey.clone(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "m5-search".into(),
+    };
+    let mut config = Config::default();
+    config.identities.push(identity.clone());
+    let community = config
+        .add_community("m5".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    let http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .unwrap();
+    let relay_pubkey = bzz::protocol::http::relay_signing_pubkey(&http.nip11().await.unwrap())
+        .unwrap()
+        .to_owned();
+    let mut store = Store::open_memory().unwrap();
+    store.sync_config(&config).unwrap();
+    store.pin_relay_pubkey(community, &relay_pubkey).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    directory::refresh(community, &pubkey, &http, &store)
+        .await
+        .unwrap();
+    let channels = store
+        .call(move |store| store.channels(community))
+        .await
+        .unwrap();
+    let service = bzz::service::search::SearchService::new(community, http.clone(), store.clone());
+    let profiles = std::collections::HashMap::new();
+    let messages = |output: bzz::service::search::SearchOutput| {
+        output
+            .results
+            .into_iter()
+            .filter(|result| result.kind == bzz::domain::SearchResultKind::Message)
+            .map(|result| (result.stable_id, result.created_at))
+            .collect::<Vec<_>>()
+    };
+    let mut seen = messages(
+        service
+            .execute(&token, &pubkey, &channels, &profiles)
+            .await
+            .unwrap(),
+    );
+    assert!(
+        !seen.is_empty() && (seen.len() as u64) < TOTAL,
+        "first page: {}",
+        seen.len()
+    );
+    let mut pages = 1;
+    loop {
+        let bound = seen.iter().map(|(_, at)| *at).min().unwrap();
+        let page = messages(
+            service
+                .older(&token, bound, &pubkey, &channels, &profiles)
+                .await
+                .unwrap(),
+        );
+        assert!(
+            page.iter().all(|(_, at)| *at < bound),
+            "every older result is older"
+        );
+        let fresh = page
+            .into_iter()
+            .filter(|(id, _)| !seen.iter().any(|(shown, _)| shown == id))
+            .collect::<Vec<_>>();
+        if fresh.is_empty() {
+            break;
+        }
+        seen.extend(fresh);
+        pages += 1;
+        assert!(pages < 10, "paging terminates");
+    }
+    assert_eq!(
+        seen.len() as u64,
+        TOTAL,
+        "every message reached in {pages} pages"
+    );
+    signer.lock().await;
 }

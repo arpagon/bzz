@@ -246,6 +246,16 @@ message is missing after migration, restart once so the versioned local index
 rebuild/integrity check runs, then use `:resync` in its channel. Do not edit the
 FTS tables manually.
 
+The relay returns at most 40 messages per search, ranked by relevance. Press
+`Ctrl-o` in search to load messages older than the oldest one shown; repeat
+until it says there are no older results.
+
+## "This relay serves no community at this address"
+
+The relay answered the community URL with 404: it hosts other communities,
+or runs in single-community mode for another address. bzz does not retry;
+fix the URL with `bzz community remove`/`add`, then `:reconnect`.
+
 ## Inbox is empty or stale
 
 Inbox is scoped to the active community and combines mentions, relevant

@@ -160,6 +160,12 @@ impl RelayExecutor {
         };
         match tokio::time::timeout(ACK_TIMEOUT, runtime.supervisor.publish(event)).await {
             Ok(Ok(ack)) if ack.accepted => Ok(published),
+            Ok(Ok(ack)) if relay_refused_agent(&ack.message) => {
+                Err(ExecError::unauthorized(format!(
+                    "the relay does not allow this agent here: {}",
+                    crate::protocol::artifact::display(&ack.message, 160)
+                )))
+            }
             Ok(Ok(ack)) => Err(failed(format!(
                 "the relay rejected the event: {}",
                 crate::protocol::artifact::display(&ack.message, 160)
@@ -386,5 +392,28 @@ impl Executor for RelayExecutor {
             "channel {}",
             channel.chars().take(8).collect::<String>()
         ))
+    }
+}
+
+/// A relay refusal of the agent itself, not of the content: `restricted:`
+/// (NIP-01), such as upstream #9371's refusal of agent writes in direct
+/// messages. Nothing was stored, so the broker answers `unauthorized`.
+pub fn relay_refused_agent(message: &str) -> bool {
+    message.starts_with("restricted:")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn restricted_relay_refusals_are_unauthorized() {
+        // Upstream #9371, verbatim.
+        assert!(super::relay_refused_agent(
+            "restricted: agents cannot post in direct messages; start a Solo chat that includes your owner instead"
+        ));
+        assert!(super::relay_refused_agent(
+            "restricted: not a channel member"
+        ));
+        assert!(!super::relay_refused_agent("invalid: event too large"));
+        assert!(!super::relay_refused_agent("rate-limited: slow down"));
     }
 }

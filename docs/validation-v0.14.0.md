@@ -141,6 +141,22 @@ Solo chats (kind `9007` is refused by its provider, and bzz says so). When a
 group has no synced sort mode bzz keeps its own sort; desktop's default is
 alphabetical.
 
+## M5 — Small parity
+
+| Claim | Proof | Red without the change | Result |
+|---|---|---|---|
+| WebSocket upgrades send `User-Agent: bzz/<version>` | `upgrades_send_user_agent_and_a_404_names_the_wrong_community` (scripted relay records the header); the huddle audio socket uses the same request builder | without the header: `left: None` | pass |
+| A 404 upgrade is "this relay serves no community at this address", not a retried network error; NIP-11 404 likewise | same test | before: `Network("relay refused the WebSocket upgrade (HTTP 404)")` | pass |
+| Filters with an empty `ids`/`authors`/`kinds`/tag set are never sent: HTTP skips them (no request at all when none remain), a REQ drops them, and a subscription of only such filters gets EOSE at once without a REQ | `filters_with_empty_sets_are_never_sent` | with the HTTP guard off: "no HTTP request was made" failed; with the session guard off the REQ builder refused the filter (second line of defence) | pass |
+| Against the pinned relay, an agent writing in a DM with a non-owner gets `restricted: agents cannot post in direct messages…`, which the broker maps to `unauthorized` | `real_relay_local_agent_broker` (extended), `restricted_relay_refusals_are_unauthorized` | n/a | pass |
+| Search loads older pages: each page is strictly older than the oldest shown, and repeated pages reach all 45 generated messages | `real_relay_search_loads_older_pages` (16 passed) | with the bound not moved: "every older result is older" failed (15 passed, 1 failed) | pass |
+| `older` keeps an earlier explicit `before:`; appending keeps rows and selection in place; a new query cancels a pending page | `older_pages_tighten_the_before_bound`, `older_pages_append_below_without_moving_rows` | n/a | pass |
+| The release TUI: `/fixture`, then `Ctrl-o` adds older results below | Herdr `t14-search-older` (7 harness scenarios passed; "5 older result(s) added below" observed) | n/a | pass |
+
+Gates after M5: fmt clean; clippy clean (audio and view-only); 506 tests
+passed (audio), 505 (view-only); pinned relay 16 passed; FI-enforcing relay 4
+passed; `cargo audit` and `cargo deny` ok.
+
 ## Supply chain during v0.14
 
 RUSTSEC-2026-0538 (`quinn-udp` 0.5.15, receive loop can spin after a
@@ -154,4 +170,3 @@ changed). `cargo audit`: the 4 recorded allowed warnings, no vulnerability;
 
 | Item | Why |
 |---|---|
-| M5 | not started |

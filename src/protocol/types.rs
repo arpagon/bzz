@@ -45,6 +45,18 @@ pub struct QueryFilter {
     pub tags: BTreeMap<String, Vec<String>>,
 }
 
+/// Whether a NIP-01 filter selects nothing: it constrains `ids`, `authors`,
+/// `kinds` or a `#x` tag to an empty set. Such a filter is never sent; older
+/// relays read an empty set as no constraint (upstream #9342).
+pub fn matches_nothing(filter: &Value) -> bool {
+    filter.as_object().is_some_and(|fields| {
+        fields.iter().any(|(key, value)| {
+            (matches!(key.as_str(), "ids" | "authors" | "kinds") || key.starts_with('#'))
+                && value.as_array().is_some_and(Vec::is_empty)
+        })
+    })
+}
+
 impl QueryFilter {
     pub fn tag(mut self, name: &str, values: impl IntoIterator<Item = String>) -> Self {
         self.tags

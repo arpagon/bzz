@@ -114,3 +114,106 @@ async fn scripted_frames_and_policy_close_are_delivered() {
     signer.lock().await;
     relay.stop();
 }
+
+/// v0.14 M5: upgrades name bzz (upstream #9246), and a relay that serves no
+/// community at this address (single-community mode, #9149) is a clear,
+/// non-retried refusal rather than a network error.
+#[tokio::test]
+async fn upgrades_send_user_agent_and_a_404_names_the_wrong_community() {
+    let relay = ScriptedRelay::start(
+        Script::default().upgrade(|_| Upgrade::Deny(HttpReply::text(404, "not found\n"))),
+    )
+    .await;
+    let signer = SignerHandle::spawn(Keys::generate());
+    let error = session::connect(relay.ws_url.clone(), signer.clone())
+        .await
+        .err()
+        .expect("a 404 upgrade fails");
+    assert!(
+        matches!(&error, bzz::Error::Access(message) if message == session::NO_COMMUNITY),
+        "{error:?}"
+    );
+    let upgrades = relay.upgrades();
+    assert_eq!(
+        upgrades[0].header("user-agent"),
+        Some(concat!("bzz/", env!("CARGO_PKG_VERSION")))
+    );
+    signer.lock().await;
+    relay.stop();
+}
+
+/// v0.14 M5: a filter that constrains ids, authors, kinds or a tag to an
+/// empty set selects nothing. bzz never sends one (older relays read it as no
+/// constraint, upstream #9342): HTTP queries skip it, and a subscription
+/// made only of such filters completes at once without a REQ.
+#[tokio::test]
+async fn filters_with_empty_sets_are_never_sent() {
+    use bzz::protocol::types::{QueryFilter, matches_nothing};
+    for empty in [
+        json!({"ids": []}),
+        json!({"authors": [], "kinds": [9]}),
+        json!({"kinds": []}),
+        json!({"kinds": [9], "#h": []}),
+        json!({"kinds": [9], "#a": []}),
+        json!({"kinds": [9], "#e": []}),
+    ] {
+        assert!(matches_nothing(&empty), "{empty}");
+    }
+    for real in [
+        json!({"kinds": [9]}),
+        json!({"kinds": [9], "#h": ["x"]}),
+        json!({}),
+    ] {
+        assert!(!matches_nothing(&real), "{real}");
+    }
+
+    let relay = ScriptedRelay::start(Script::default()).await;
+    let signer = SignerHandle::spawn(Keys::generate());
+    let http = HttpClient::new(relay.http_url.clone(), signer.clone()).unwrap();
+    let typed = QueryFilter {
+        kinds: vec![9],
+        ..Default::default()
+    }
+    .tag("h", Vec::new());
+    assert!(http.query(&[typed]).await.unwrap().is_empty());
+    assert!(
+        http.query_raw(&[json!({"kinds": [9], "#e": []})])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(relay.http_requests().is_empty(), "no HTTP request was made");
+
+    let (handle, mut events) = session::connect(relay.ws_url.clone(), signer.clone())
+        .await
+        .unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(session::SessionEvent::Authenticated)
+    ));
+    handle
+        .subscribe("empty", vec![json!({"kinds": [9], "authors": []})])
+        .await
+        .unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(session::SessionEvent::Eose(id)) if id == "empty"
+    ));
+    handle
+        .subscribe(
+            "mixed",
+            vec![json!({"ids": []}), json!({"kinds": [9], "limit": 1})],
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let reqs = relay.frames_of("REQ");
+    assert_eq!(reqs.len(), 1, "only the subscription with a real filter");
+    assert_eq!(
+        reqs[0].value.as_array().unwrap().len(),
+        3,
+        "its empty filter dropped"
+    );
+    signer.lock().await;
+    relay.stop();
+}

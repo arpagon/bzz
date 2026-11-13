@@ -189,6 +189,18 @@ contract (see below and
   captured fixture. Starred, muted and project documents are not read.
   Private channels now show as private: earlier bzz misread NIP-29's bare
   `["private"]` tag, and re-ingesting current metadata repairs them.
+- **Small parity (v0.14.0):** WebSocket upgrades (relay and huddle audio)
+  send `User-Agent: bzz/<version>`, as HTTP already did (upstream #9246). A
+  404 on the upgrade or NIP-11 means the relay serves no community at that
+  address (single-community mode, #9149) and is not retried. No filter that
+  constrains `ids`, `authors`, `kinds` or a tag to an empty set is sent:
+  HTTP queries skip it and a subscription of only such filters completes at
+  once (older relays read an empty set as no constraint, #9342). The broker
+  answers a relay `restricted:` refusal, such as agent writes in a DM with
+  anyone but the owner (#9371), as `unauthorized`. Search pages back with
+  `Ctrl-o` by moving the time bound below the oldest message shown, as
+  `buzz messages search --before` (#9382); text results are ranked by
+  relevance, so there is no `before_id` cursor.
 - **Edits (kind `40003`, v0.14.0):** the latest live edit in the original's
   channel, by its author or the verified owner of the agent that wrote it,
   governs the text and the complete attachment set, as in upstream

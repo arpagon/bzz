@@ -98,7 +98,44 @@ impl SearchService {
         channels: &[Channel],
         profiles: &HashMap<String, Profile>,
     ) -> Result<SearchOutput> {
-        let parsed = parse(input)?;
+        self.execute_parsed(parse(input)?, identity_pubkey, channels, profiles)
+            .await
+    }
+
+    /// The next page back: the same search, limited to messages older than
+    /// `before` (the oldest message already shown), as `buzz messages
+    /// search --before` (upstream #9382). Relay text results are ranked by
+    /// relevance, so paging moves the time bound, not a rank cursor. Only
+    /// messages are returned.
+    pub async fn older(
+        &self,
+        input: &str,
+        before: u64,
+        identity_pubkey: &str,
+        channels: &[Channel],
+        profiles: &HashMap<String, Profile>,
+    ) -> Result<SearchOutput> {
+        let mut output = self
+            .execute_parsed(
+                parse_older(input, before)?,
+                identity_pubkey,
+                channels,
+                profiles,
+            )
+            .await?;
+        output
+            .results
+            .retain(|result| result.kind == SearchResultKind::Message);
+        Ok(output)
+    }
+
+    async fn execute_parsed(
+        &self,
+        parsed: ParsedSearch,
+        identity_pubkey: &str,
+        channels: &[Channel],
+        profiles: &HashMap<String, Profile>,
+    ) -> Result<SearchOutput> {
         let mut resolved = resolve(&parsed, channels, profiles);
         if resolved.author_unresolved
             && self
@@ -442,6 +479,13 @@ impl ResolvedSearch {
             None
         }
     }
+}
+
+/// `input` limited to messages created before `before` (exclusive).
+pub fn parse_older(input: &str, before: u64) -> Result<ParsedSearch> {
+    let mut parsed = parse(input)?;
+    parsed.before = Some(parsed.before.map_or(before, |bound| bound.min(before)));
+    Ok(parsed)
 }
 
 pub fn parse(input: &str) -> Result<ParsedSearch> {
@@ -874,6 +918,31 @@ mod tests {
         assert_eq!(
             service.verified_subjects(&events).await.unwrap(),
             vec![person]
+        );
+    }
+
+    #[test]
+    fn older_pages_tighten_the_before_bound() {
+        let page = super::parse_older("deploy from:ada", 1_000).unwrap();
+        assert_eq!(page.before, Some(1_000));
+        assert_eq!(page.text, "deploy");
+        assert_eq!(page.from.as_deref(), Some("ada"));
+        // An explicit earlier `before:` stays; a later one is tightened.
+        let early = super::parse("deploy before:1970-01-02")
+            .unwrap()
+            .before
+            .unwrap();
+        assert_eq!(
+            super::parse_older("deploy before:1970-01-02", u64::MAX)
+                .unwrap()
+                .before,
+            Some(early)
+        );
+        assert_eq!(
+            super::parse_older("deploy before:2999-01-01", 5)
+                .unwrap()
+                .before,
+            Some(5)
         );
     }
 }

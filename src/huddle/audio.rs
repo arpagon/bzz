@@ -48,7 +48,7 @@ pub async fn join(
     let signer = signer.clone();
     let parent = parent.to_string();
     buzz_audio_client::connection::connect(
-        url.as_str(),
+        crate::realtime::session::upgrade_request(url.as_str())?,
         Some(&parent),
         None,
         move |challenge| async move {
