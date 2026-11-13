@@ -1,6 +1,6 @@
 # bzz v0.14.0 validation
 
-**Status:** In progress on branch `v0.14.0`. Plan:
+**Status:** M0–M5 implemented and proven on branch `v0.14.0` (PR #8); release acceptance pending. Plan:
 [`docs/planning/2026-11-12/v0.14.0.md`](planning/2026-11-12/v0.14.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
 
@@ -166,7 +166,15 @@ requirement moved to the 0.59 already in the graph; no other package
 changed). `cargo audit`: the 4 recorded allowed warnings, no vulnerability;
 `cargo deny check`: ok.
 
-## Pending
+## Pending (release acceptance)
+
+M0–M5 are implemented and proven. Before tagging v0.14.0:
 
 | Item | Why |
 |---|---|
+| Version bump to 0.14.0, `docs/release-v0.14.0.md` | not done until the owner approves the release |
+| Upgrade test: a v0.13.0 data directory opened by v0.14.0 (migrations 16–17, FTS projection v2), on three OSes | `scripts/upgrade-test.sh` seeds v0.12.1; needs a v0.13 seed |
+| Benchmarks against v0.13.0 | not run yet |
+| `docs/e2e-manual.md` updated and run | not done |
+| Production acceptance on the real community: edits, mentions, Solo chats and sections as Buzz shows them | owner |
+| Carried from v0.13: instrumented 66-channel frame count, FI community, Windows audio, E2E 4.1/4.2/7/9 | owner / operator |
