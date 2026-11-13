@@ -1,221 +1,219 @@
-# bzz
+<p align="center">
+  <img src="site/public/assets/logo.svg" alt="bzz logo: a hexagonal cell with terminal lines" width="88">
+</p>
 
-`bzz` is a human-first terminal client for [Buzz](https://github.com/block/buzz):
-fast keyboard navigation, local offline history, native Nostr authentication,
-and host-isolated communities.
+<h1 align="center">bzz</h1>
 
-> Status: v0.13.0 (release candidate) catches up with upstream Buzz:
-> federated identity (NIP-FI/NIP-FA), channel types and roles, artifacts, custom
-> emoji, presence and status, channel and thread windows, huddles with audio, a
-> local agent broker, send-to-channel and reports. bzz holds keys only for local
-> agents you create, never runs agent processes, and publishes nothing about
-> your activity unless you opt in. Protocol compatibility is pinned to Buzz
-> `bf3bdd0eaefe39289bf9620594f254c7f68897f5`.
+<p align="center">
+  <strong>A human-first terminal client for <a href="https://github.com/block/buzz">Buzz</a>.</strong><br>
+  Your team chats in Buzz. You live in the terminal.
+</p>
 
-## Build
+<p align="center">
+  <a href="https://github.com/arpagon/bzz/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/arpagon/bzz?color=ffb000&label=release"></a>
+  <a href="https://github.com/arpagon/bzz/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/arpagon/bzz/ci.yml?branch=main&label=ci"></a>
+  <a href="#license"><img alt="License: MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-8a8272"></a>
+  <a href="https://getbzz.dev"><img alt="Website" src="https://img.shields.io/badge/web-getbzz.dev-ffb000"></a>
+</p>
+
+<p align="center">
+  <a href="https://getbzz.dev/assets/promo-v013.mp4" title="Watch the launch film, with sound">
+    <img src="docs/assets/bzz-preview.webp" alt="bzz in action: channels, threads and reactions from the keyboard, offline search, an agent replying in a thread, the agent broker, a huddle, images and themes" width="860">
+  </a>
+  <br>
+  <sub>Real bzz, recorded from the terminal. <a href="https://getbzz.dev/assets/promo-v013.mp4">Watch the 47-second film with sound</a>.</sub>
+</p>
+
+## Why bzz
+
+- **Keyboard first.** Channels, threads, DMs, reactions, edits and search,
+  all without leaving the home row. Vim-style motions, a `Space` leader and
+  a `?` cheat sheet.
+- **Works offline.** History, threads, profiles and drafts live in a local
+  SQLite database. Search it with no connection; it fills in from the relay
+  when you are back.
+- **Feels like Buzz.** Solo chats and your sidebar sections sync with Buzz
+  desktop and mobile. Names, @mentions, edits, custom emoji, presence and
+  status follow the same rules as Buzz 1.0.
+- **Agents, on your terms.** Mention an agent and its reply lands in the
+  thread. bzz can also hold keys for your own local agents and let them act
+  through it, with per-action permissions you set and can pause.
+- **Real media.** Images, avatars and custom emoji render inline in Kitty,
+  Sixel and iTerm2 terminals, with a Unicode fallback everywhere else.
+  Huddles have real audio.
+- **Your keys stay yours.** Keys live in your OS keychain (or an encrypted
+  file), never in arguments or environment variables. Or pair bzz with the
+  Buzz app and let it keep the key.
+- **60 themes**, plus your own in `theme.toml`.
+
+## Install
+
+macOS and Linux:
 
 ```sh
-cargo build --release --locked
-cargo test --locked
+curl -fsSL https://getbzz.dev/install.sh | sh
 ```
 
-Rust 1.95.0 is selected by `rust-toolchain.toml`. The first build fetches the
-revision-pinned `buzz-core` and `buzz-sdk` crates. Debug builds intentionally
-use `bzz-dev` paths and a separate OS-keychain service.
+Windows (PowerShell):
 
-## MVP features
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/arpagon/bzz/releases/latest/download/bzz-installer.ps1 | iex"
+```
 
-- several configured communities with one active authenticated session;
-- cached/offline channel history, profiles, threads, unread markers, and drafts;
-- acknowledged sends with durable ambiguous-outcome recovery, quota-aware
-  outbound admission, recoverable subscriptions, and distinct
-  pending/delivery-unknown/rejected presentation;
-- bounded owner-private connection/outbox diagnostics, metadata-only support
-  reports, and optional default-off OTLP/HTTP protobuf log export;
-- reaction toggles, own-message deletion, and encrypted cross-device read state;
-- Vim-style navigation, fuzzy channel finder, safe Markdown, a coherent
-  message-selection gutter, and responsive narrow layouts;
-- labelled community/channel directories with local smart/recent/A–Z ordering,
-  bounded readable measure, deterministic local author markers, practical safe
-  Markdown, date/group rhythm, and a visible writing dock;
-- 60 built-in themes plus semantic `theme.toml` customization;
-- an active-community Inbox for mentions, relevant threads, workspace DMs,
-  read-only needs-action events, unread rows, and drafts;
-- Buzz Desktop-compatible one-to-one/group workspace DMs with owner-only hide
-  state and explicit non-E2EE labeling;
-- unified channel/DM/person/message search using offline SQLite FTS5 plus
-  authenticated NIP-50 prefix search and `from:`/`in:`/date operators;
-- secure Buzz `imeta`/Blossom attachments with verified offline caching;
-- inline JPEG/PNG/GIF/WebP first-frame rendering through Kitty, Sixel, iTerm2,
-  or a Unicode half-block fallback;
-- image previews, explicit attachment saves, and sanitized image/file uploads;
-- configurable semantic terminal-mouse interaction with safe restoration; and
-- offline channel-member `@` completion with exact Buzz `p` tags; and
-- verified remote managed-agent discovery, owner/policy inspection, distinct
-  timeline/DM/completion presentation, owner-controlled DM compatibility,
-  send-time revalidation, and transient signed typing feedback in a compact
-  animated status segment without local runtime control; and
-- typed relay-authored system rows that never expose raw control JSON as a
-  user-authored message.
+Or download an archive from the
+[latest release](https://github.com/arpagon/bzz/releases/latest). Every
+release ships SHA-256 checksums, a CycloneDX SBOM and GitHub build
+attestations; [`docs/releasing.md`](docs/releasing.md) shows how to verify
+them.
 
-NIP-17 gift-wrap authoring/inbox, general human typing/presence, custom emoji,
-media playback, and message editing remain post-MVP. Workspace DMs are private
-relay channels, not end-to-end encrypted messages.
+From source (Rust 1.98, pinned in `rust-toolchain.toml`):
 
-## First run
+```sh
+cargo install --git https://github.com/arpagon/bzz --locked
+```
+
+## Get started
+
+Create an identity, add your community and open bzz:
 
 ```sh
 bzz identity new --label personal
-bzz identity list
-bzz identity verify <identity-uuid>
-bzz identity backup <identity-uuid> --output ~/identity.ncryptsec
-bzz community add my-team wss://buzz.example <identity-uuid>
+bzz identity list                      # shows the identity's id
+bzz community add my-team wss://my-team.communities.buzz.xyz <identity-id>
 bzz
 ```
 
-The secret key is placed in the operating-system credential store. If no
-credential service is available, use `--backend encrypted-file`; bzz prompts
-on the controlling terminal and never accepts secrets in command arguments or
-ordinary environment variables. Backups are password-encrypted NIP-49
-`ncryptsec` files created atomically with owner-only permissions. Restore a
-missing credential without changing its identity or communities with
-`bzz identity restore-backup`.
-
-Default navigation uses `1`–`4` to focus workspace surfaces, `Tab`/`h`/`l`
-to traverse them, `j`/`k` or `Ctrl-n`/`Ctrl-p` to change selection, and
-`gg`/`G` for edges. The workspace shows labelled communities, channels, the
-conversation, and an on-demand context pane. A top-level message with replies
-shows `↳ N replies · last reply …` before context opens; `Enter` opens that
-exact thread. Each message has a compact textual avatar marker; supported
-graphics terminals may additionally show a
-bounded public profile photograph according to `ui.profile_avatars`. `Space` is the
-leader: `Space Space` opens the channel/DM switcher, `Space n` opens Inbox,
-`Space s` cycles local channel ordering, `Space a` opens contextual actions,
-`Space o` opens theme options, and `?` shows the generated effective-keymap
-help. On a selected conversation message, `r` opens reactions, `e` edits your
-own message, `y` explicitly
-copies sanitized text through OSC 52, and `v` starts/cancels a logical
-multi-message copy range. `q` unwinds owned UI state and asks before quitting.
-The visible writing dock activates with `i` or a click; in read-only/locked
-state it explains why writing is unavailable. In Inbox, `i`
-targets the selected validated channel/thread without silently marking work
-read. Inbox uses `f` to
-cycle filters, `Enter` for detail, `o` for canonical source context, `m`/`U`
-for explicit read/unread state, and `a` for confirmed visible bulk-read. Wide
-terminals retain list/detail together; on narrow terminals `Esc` returns from
-detail to the list. `@` opens cached channel-member completion. In the composer,
-`Ctrl-o` opens the OS file chooser, `Ctrl-v` explicitly pastes copied files, an
-image, or text, and `Alt-o` opens the local-path fallback. `Delete` removes the
-newest attachment and `Ctrl-r` retries failed uploads. Generate shell
-integration with `bzz completions <shell>`. Inside the TUI, `:inbox`, `:search`,
-`:dm`, `:agents`, `:reconnect`, `:resync`, `:theme reload`, `:purge-cache`, and `:lock`
-cover the main conversation, recovery, appearance, and security operations.
-v0.13.0 adds `:signin` (federated identity), `:system`, `:artifacts`, `:tasks`,
-`:artifact rename|delete|restore|move`, `:status`, `:tochannel`, `:report [author]`,
-`:profile` (also `Space p` on a message: verified identity and public channels),
-`:presence [on|off]`,
-`:huddle` (`start`, `join`, `leave`, `end`, `mute`, `react`, `devices`) and
-`:broker`; agents for the local broker are managed with `bzz broker …`.
-v0.14.0 adds `e` to edit your own message, `:solo <name>` (a Solo chat),
-`:section new|rename|delete|move|remove|up|down` (sidebar sections synced
-with Buzz) and `:sort alpha|recent|default` (a group's synced sort).
-In search, `Ctrl-o` loads older messages.
-
-## Media safety
-
-Only descriptor-backed message media on the active Buzz community origin is
-fetched; arbitrary Markdown URLs stay inert. Independently, the default
-`ui.profile_avatars = "trusted"` may retrieve a bounded kind-0 `picture`.
-External pictures use a credential-free public-HTTPS client. A canonical image
-path on the active community relay instead receives a short-lived,
-content-addressed Blossom read authorization, never sent to another origin.
-Set it to `"off"` to keep profile URLs inert. Main blobs are fetched without
-redirects, authenticated with short-lived blob-scoped Blossom events,
-and size/MIME/SHA-256 verified before decode, display, save, or offline reuse.
-Generic files are never auto-downloaded or executed. Local image uploads are
-bounded, orientation-corrected, and stripped of private metadata before their
-exact uploaded bytes are hashed.
-
-Use `bzz media status` to inspect configured limits and `bzz media clear --all
---yes` to remove plaintext owner-only message-media and profile-avatar cache
-files. See
-[`docs/media.md`](docs/media.md) for protocols, configuration, key bindings,
-cache behavior, and terminal compatibility.
-
-## Validation and releases
-
-Run all local protocol-free gates with:
+Back up your key once, to a password-encrypted file:
 
 ```sh
-cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
+bzz identity backup <identity-id> --output ~/bzz-identity.ncryptsec
+```
+
+Already have a Buzz key? `bzz identity import` reads it from the terminal.
+No credential store on this machine? Add `--backend encrypted-file`.
+
+### Using bzz next to the Buzz app
+
+You don't have to choose. To use the identity you already have in Buzz
+(desktop 0.X or Buzz 1.0) without copying its key, pair bzz with the
+running app:
+
+```sh
+bzz identity pair-desktop --label buzz --relay wss://my-team.communities.buzz.xyz
+```
+
+Approve the request in Buzz. The key stays in Buzz, so Buzz must be open
+while you use bzz. Buzz signs everyday work for other apps (messages, edits,
+reactions, status), but not deleting, reporting, huddles, channels or profile
+changes; bzz tells you before you try. To do everything from bzz, import the
+key instead. Pairing is not available on Windows.
+
+## Keys
+
+Press `?` in bzz for the complete, current list.
+
+| Key | Action |
+|---|---|
+| `j` `k` · `gg` `G` | Move down, up · jump to top, bottom |
+| `1`–`4` · `Tab` · `h` `l` | Focus communities, channels, conversation, context |
+| `Space` `Space` | Jump to any channel or DM |
+| `Enter` | Open the selected thread |
+| `i` | Write (`Enter` sends, `Ctrl-j` adds a line) |
+| `@` | Mention someone; `Space` completes a unique name, `Tab` picks |
+| `r` · `e` | React · edit your own message |
+| `/` | Search (`from:` `in:` `after:` `before:`; `Ctrl-o` loads older) |
+| `Space n` | Inbox: mentions, threads, DMs and drafts |
+| `Space a` | Every action for the selected item |
+| `Space o` | Themes |
+| `y` · `v` | Copy a message · select a range to copy |
+| `Ctrl-o` · `Ctrl-v` (writing) | Attach a file · paste a file, image or text |
+| `:` | Commands (below) |
+| `q` | Back, then quit |
+
+## Commands
+
+| Command | Does |
+|---|---|
+| `:solo <name>` | Start a Solo chat |
+| `:section new <name>` | Put the selected channel in a new sidebar section; also `rename`, `delete`, `move <name>`, `remove`, `up`, `down` |
+| `:sort alpha\|recent\|default` | Sort the selected channel's sidebar group |
+| `:dm` · `:dm add` · `:dm hide` | New direct message · add someone · hide it |
+| `:inbox` · `:search` · `:agents` | Inbox · search · agents in this community |
+| `:huddle start\|join\|leave\|end\|mute` | Huddles with audio |
+| `:status <text>` · `:presence on\|off` | Your status · publish your presence (off by default) |
+| `:profile` | The selected author's profile and verified identity |
+| `:artifacts` · `:tasks` | Channel artifacts · tasks assigned to you |
+| `:report <reason>` · `:tochannel` | Report a message · send a thread reply to the channel |
+| `:broker` | Your local agents: permissions, activity, pause |
+| `:signin` | Sign in to a community that requires federated identity |
+| `:system` | Show or hide System channels |
+| `:reconnect` · `:resync` · `:lock` | Recover the connection · reload history · lock the identity |
+
+Outside the TUI, `bzz --help` lists everything: identities, communities,
+themes, media cache, local agents (`bzz broker`), diagnostics and shell
+completions.
+
+## Privacy and security
+
+- Keys are stored in the OS keychain or a passphrase-encrypted file, and
+  never accepted as arguments or environment variables.
+- bzz publishes nothing about your activity (presence, typing) unless you
+  turn it on.
+- Message media is fetched only from your community's relay, verified by
+  size, type and SHA-256, and never executed; links in messages stay inert.
+  Profile pictures load over credential-free HTTPS, and can be turned off
+  (`ui.profile_avatars = "off"`).
+- Diagnostics are local, content-free and owner-only. Telemetry is off unless
+  you configure it.
+- Workspace DMs are private relay channels, **not** end-to-end encrypted.
+
+Details: [`docs/security.md`](docs/security.md).
+
+## Compatibility
+
+bzz follows the Buzz protocol and is tested against a pinned `block/buzz`
+relay revision; the revision and every supported surface are listed in
+[`docs/protocol-compatibility.md`](docs/protocol-compatibility.md). It runs on
+Linux, macOS (Intel and Apple Silicon) and Windows. Huddle audio on Windows
+is experimental.
+
+## Documentation
+
+- [Configuration](docs/configuration.md) · [Themes](docs/themes.md) ·
+  [Media and terminal graphics](docs/media.md) ·
+  [Inbox, DMs and search](docs/inbox-dms-search.md)
+- [Troubleshooting](docs/troubleshooting.md) · [Security](docs/security.md)
+- [All documentation](docs/README.md): release notes, validation records,
+  plans and design decisions for every version.
+
+## Development
+
+```sh
+cargo build --locked
 cargo test --locked
-cargo deny check
-cargo audit
-cargo bench --locked
+cargo fmt --check && cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo deny check && cargo audit
 ```
 
-The pinned real-relay journey is opt-in because it starts Docker services:
+`--no-default-features` builds without huddle audio. Debug builds use
+separate `bzz-dev` paths and keychain entries, so they never touch your real
+identity.
+
+Integration tests against a real Buzz relay start Docker services and are
+opt-in:
 
 ```sh
-BZZ_BUZZ_SOURCE=/path/to/block/buzz ./scripts/test-relay.sh
+BZZ_BUZZ_SOURCE=/path/to/block/buzz ./scripts/test-relay.sh            # also --nip-fi
+BZZ_HERDR_PANE=<pane> ./scripts/test-relay.sh --herdr                  # drives the release TUI
 ```
 
-In a controlled Herdr pane with a disposable shell target, run release-TUI
-acceptance smoke scenarios (they use no identities or secrets):
-
-```sh
-BZZ_BIN="$PWD/target/release/bzz" BZZ_HERDR_PANE=<pane-id> \
-  ./scripts/test-tui-herdr.sh
-```
-
-Tagged releases provide Linux, macOS, and Windows archives, SHA-256 checksums,
-CycloneDX SBOMs, and GitHub build-provenance attestations. Verification steps
-are in `docs/releasing.md`.
-
-See [`docs/configuration.md`](docs/configuration.md),
-[`docs/themes.md`](docs/themes.md),
-[`docs/inbox-dms-search.md`](docs/inbox-dms-search.md),
-[`docs/security.md`](docs/security.md),
-[`docs/protocol-compatibility.md`](docs/protocol-compatibility.md),
-[`docs/troubleshooting.md`](docs/troubleshooting.md),
-[the v0.13.0 release](docs/release-v0.13.0.md),
-[v0.13.0 validation](docs/validation-v0.13.0.md),
-[the v0.13.0 plan](docs/planning/2026-11-07/v0.13.0.md),
-[the v0.12.1 release](docs/release-v0.12.1.md),
-[v0.12.1 validation](docs/validation-v0.12.1.md),
-[the approved v0.12.1 admission plan](docs/planning/2026-08-28/v0.12.1.md),
-[the v0.12.0 release](docs/release-v0.12.0.md),
-[v0.12.0 validation](docs/validation-v0.12.0.md),
-[the approved v0.12.0 presentation plan](docs/planning/2026-08-28/v0.12.0.md),
-[the v0.11.3 release](docs/release-v0.11.3.md),
-[v0.11.3 validation](docs/validation-v0.11.3.md),
-[the approved v0.11.3 typing plan](docs/planning/2026-08-25/v0.11.3.md),
-[the v0.11.2 release](docs/release-v0.11.2.md),
-[v0.11.2 validation](docs/validation-v0.11.2.md),
-[the approved v0.11.2 thread-summary plan](docs/planning/2026-08-25/v0.11.2.md),
-[the v0.11.1 release](docs/release-v0.11.1.md),
-[v0.11.1 validation](docs/validation-v0.11.1.md),
-[the approved v0.11.1 correction plan](docs/planning/2026-08-25/v0.11.1.md),
-[the v0.11.0 release](docs/release-v0.11.0.md),
-[v0.11.0 validation](docs/validation-v0.11.0.md),
-[published v0.11.0 artifact verification](docs/release-v0.11.0-verification.md),
-[the approved v0.11.0 interoperability plan](docs/planning/2026-08-24/v0.11.0.md),
-[the v0.11 remote-agent ADR](docs/adr-v0.11-remote-managed-agent-interoperability.md),
-[the v0.10.0 agent-foundation reset](docs/release-v0.10.0.md),
-[v0.10.0 validation](docs/validation-v0.10.0.md),
-[published v0.10.0 artifact verification](docs/release-v0.10.0-verification.md),
-[the Buzz managed-agent architecture research](docs/how-agents-works-in-buzz.md),
-[the v0.9.0 diagnostics and observability notes](docs/release-v0.9.0.md),
-[the v0.8.0 clipboard-attachment notes](docs/release-v0.8.0.md),
-[v0.8.0 validation](docs/validation-v0.8.0.md),
-[the v0.7.1 relay-avatar release](docs/release-v0.7.1.md), and the
-[basic-first manual E2E plan](docs/e2e-manual.md),
-[v0.7.0 avatar validation evidence](docs/validation-v0.7.md),
-[v0.7.1 relay-avatar validation](docs/validation-v0.7.1.md),
-[published v0.7 artifact verification](docs/release-v0.7-verification.md), and
-the [Herdr-assisted E2E guide](docs/e2e-herdr.md).
+How changes are proven before release: [`.agents/skills/bzz-prove-it-works`](.agents/skills/bzz-prove-it-works/SKILL.md).
 
 ## License
 
-MIT OR Apache-2.0. See `THIRD_PARTY_LICENSES.md`.
+MIT OR Apache-2.0, at your option. See [`LICENSE-MIT`](LICENSE-MIT),
+[`LICENSE-APACHE`](LICENSE-APACHE) and
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+
+bzz is an independent open-source project compatible with the Buzz protocol.
+It is not affiliated with, endorsed by, or sponsored by Block, Inc.
