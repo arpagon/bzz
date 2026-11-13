@@ -33,7 +33,7 @@
     bzz
   </a>
   <div class="links">
-    <a href="#new">new in 0.13</a>
+    <a href="#new">new in 0.14</a>
     <a href="#features">features</a>
     <a href="#keys">keys</a>
     <a href="#install">install</a>
@@ -107,91 +107,52 @@
 
 <section id="new">
 <div class="wrap">
-  <span class="kicker">new in v0.13.0</span>
-  <h2>Upstream parity with Buzz.</h2>
-  <div class="shot">
-  <div class="term">
-    <div class="term-bar">
-      <span></span><span></span><span></span>
-      <div class="title">bzz 0.13.0 — #team · demo</div>
-    </div>
-    <video controls autoplay muted loop playsinline preload="metadata"
-      poster="/assets/poster-v013.png?v=1"
-      aria-label="bzz 0.13 demo: a read-only announce channel, the System channel group, a thread, a profile card with public channels, the artifacts panel, custom emoji reactions, and opt-in presence">
-      <source src="/assets/demo-v013.webm?v=1" type="video/webm">
-      <source src="/assets/demo-v013.mp4?v=1" type="video/mp4">
-      <img src="/assets/poster-v013.png?v=1" alt="bzz 0.13 showing a thread open beside the #team channel">
-    </video>
-    <p class="cap">Announce channels, the System group, threads, profile cards, artifacts, custom emoji and presence — real 0.13.0 binary, generated people and messages on an isolated relay.</p>
-  </div>
-  </div>
-  <div class="grid" style="margin-top:2rem">
+  <span class="kicker">new in v0.14.0</span>
+  <h2>Ready for the Buzz 1.0 era.</h2>
+  <div class="grid">
     <div class="card">
-      <span class="k">/// channels</span>
-      <h3>Channel types and roles</h3>
-      <p>Announce channels where guests read only, unlisted channels kept out
-      of discovery, agent and system channels folded into a System group
-      (<code>:system</code>), and live membership changes that keep your draft.</p>
+      <span class="k">/// edits</span>
+      <h3>Edit messages, see every edit</h3>
+      <p>Press <code>e</code> on your own message to fix it. Edits made in any
+      Buzz app show as Buzz shows them, with a quiet <code>(edited)</code>, in
+      threads, the Inbox and search too.</p>
     </div>
     <div class="card">
-      <span class="k">/// profiles</span>
-      <h3>Profile cards and verified names</h3>
-      <p><code>Space p</code> shows a person's identity, status and listed
-      public channels. Relay-verified identities carry a ✓ in the timeline,
-      mentions and the card.</p>
+      <span class="k">/// sidebar</span>
+      <h3>Solo chats and synced sections</h3>
+      <p><code>:solo</code> starts a private chat just for you. Sidebar
+      sections and sort (<code>:section</code>, <code>:sort</code>) stay in sync
+      with Buzz on desktop and mobile.</p>
     </div>
     <div class="card">
-      <span class="k">/// sign-in</span>
-      <h3>Federated sign-in</h3>
-      <p>Communities that require an identity provider sign you in through
-      the browser with <code>:signin</code>; Buzz Desktop can also act as the
-      credential provider.</p>
+      <span class="k">/// buzz 1.0</span>
+      <h3>Pair with Buzz 1.0</h3>
+      <p>Let the Buzz app keep your key and sign for bzz. bzz knows what Buzz
+      1.0 lets other apps do, and tells you before you try something it
+      refuses.</p>
     </div>
     <div class="card">
-      <span class="k">/// huddles</span>
-      <h3>Huddles with audio</h3>
-      <p>Start, join and leave voice huddles from the terminal. You always join
-      muted; <code>m</code> toggles the mic, push-to-talk is one key, and audio
-      stops when bzz locks or quits.</p>
+      <span class="k">/// mentions</span>
+      <h3>Names and mentions like Buzz 1.0</h3>
+      <p>Same names, the same disambiguation for namesakes, and the same
+      <code>@</code> ranking as Buzz 1.0, checked against all 146 of its
+      conformance cases.</p>
     </div>
     <div class="card">
-      <span class="k">/// agents</span>
-      <h3>An agent broker you control</h3>
-      <p>Host agents whose keys stay sealed by your identity. Each agent gets
-      a local, per-action allowlist you edit in <code>:broker</code>, and can be
-      paused at any time.</p>
-    </div>
-    <div class="card">
-      <span class="k">/// artifacts</span>
-      <h3>Artifacts, tasks and custom emoji</h3>
-      <p><code>:artifacts</code> and <code>:tasks</code> list a channel's shared
-      artifacts and what is assigned to you. Community emoji render inline and
-      in the reaction picker.</p>
-    </div>
-    <div class="card">
-      <span class="k">/// speed</span>
-      <h3>Faster history and startup</h3>
-      <p>Channel and thread windows fetch history and reactions in fewer
-      requests, and verified membership and read-state snapshots replace
-      bursts of startup queries.</p>
-    </div>
-    <div class="card">
-      <span class="k">/// presence</span>
-      <h3>Opt-in presence and status</h3>
-      <p>See who is online or away in DMs, mentions and the agent list.
-      Publishing your own presence is off until you run
-      <code>:presence on</code>.</p>
+      <span class="k">/// search</span>
+      <h3>Older search results</h3>
+      <p><code>Ctrl-o</code> in search keeps going back in time, without moving
+      the results you are reading.</p>
     </div>
     <div class="card">
       <span class="k">/// upgrade</span>
       <h3>Safe upgrade</h3>
-      <p>Your 0.12 data upgrades in place with a backup written first;
-      drafts, unread state and search history are kept.</p>
+      <p>Your 0.13 data upgrades in place with a backup written first, and
+      edits already in your history are applied.</p>
     </div>
   </div>
   <div class="shot"><p class="cap">Full notes:
-  <a href="https://github.com/arpagon/bzz/releases/tag/v0.13.0">bzz v0.13.0 release</a> ·
-  <a href="/assets/demo-v013.mp4" download>Download demo (MP4)</a>.</p></div>
+  <a href="https://github.com/arpagon/bzz/releases/tag/v0.14.0">bzz v0.14.0 release</a>.</p></div>
 </div>
 </section>
 
@@ -343,6 +304,7 @@
       <h3>Messages</h3>
       <dl>
         <dt><kbd>r</kbd></dt><dd>reactions</dd>
+        <dt><kbd>e</kbd></dt><dd>edit your message</dd>
         <dt><kbd>y</kbd></dt><dd>copy sanitized text (OSC 52)</dd>
         <dt><kbd>v</kbd></dt><dd>multi-message copy range</dd>
         <dt><kbd>@</kbd></dt><dd>member completion</dd>
@@ -371,7 +333,6 @@
     <button role="tab" aria-selected="false" data-tab="macos">macOS</button>
     <button role="tab" aria-selected="false" data-tab="linux">Linux</button>
     <button role="tab" aria-selected="false" data-tab="windows">Windows</button>
-    <button role="tab" aria-selected="false" data-tab="brew">Homebrew</button>
     <button role="tab" aria-selected="false" data-tab="cargo">Cargo</button>
   </div>
 
@@ -410,11 +371,6 @@ sudo mv bzz /usr/local/bin/</code></pre>
     and add <code>bzz.exe</code> to your PATH.</p>
   </div>
 
-  <div class="panel" data-panel="brew" hidden>
-<pre><code>brew install arpagon/tap/bzz</code></pre>
-    <p class="note">The formula (<code>bzz.rb</code>) is published with every release.</p>
-  </div>
-
   <div class="panel" data-panel="cargo" hidden>
 <pre><code>cargo install --git https://github.com/arpagon/bzz --locked</code></pre>
     <p class="note">Builds locally with the pinned toolchain
@@ -435,7 +391,7 @@ sudo mv bzz /usr/local/bin/</code></pre>
       <h3>Then get connected</h3>
 <pre><code>bzz identity new --label personal
 bzz community add my-team \
-  wss://buzz.example &lt;identity-uuid&gt;
+  wss://my-team.communities.buzz.xyz &lt;identity-id&gt;
 bzz</code></pre>
     </div>
   </div>

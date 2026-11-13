@@ -25,7 +25,7 @@ debug builds deliberately use separate paths and keychain services.
 
 Expected result:
 
-- candidate version `0.13.0`;
+- candidate version `0.14.0`;
 - config, data, and cache under `BZZ_E2E_ROOT`;
 - `configuration, theme, media, diagnostics, telemetry, and database are valid`;
 - no secrets in `.env` or command output.
@@ -581,6 +581,61 @@ with `--allow-insecure-localhost` and the URL `ws://localhost:3030`.
    prompt says so.
    The relay accepts the kind 1984 report.
 
+## 12. v0.14.0 surfaces
+
+Use the isolated pinned harness from section 11 and two disposable
+identities, A and B, in the same channel. The harness builds the pinned
+`buzz` CLI; use it as the "other Buzz app" where a step needs one.
+
+### Message edits
+
+1. As A, send `edit me`. Select it, press `e`, change it to `edit me please`
+   and press `Enter`. A and B both show `edit me please (edited)`; the
+   message keeps its place and its thread replies.
+2. As B, select A's message and press `e`: the status says only your own
+   message can be edited. Nothing is published.
+3. Edit a message that has an image attachment: the image stays.
+4. Search for a word that only the edited text contains: the message is
+   found. The Inbox preview of an edited mention shows the edited text.
+
+### Names and mentions
+
+1. Give A and B the same display name. In a channel with both, each shows
+   with a short key suffix (`Honey · 1a2b`), in the timeline and in `@`.
+2. Type `@` and a unique exact name, then `Space`: it completes to the
+   member. Send: the message carries that member's `p` tag only.
+3. Mention someone who left the channel in a stale draft and send: bzz
+   refuses with a reason and keeps the draft.
+
+### Solo chats and sidebar sections
+
+1. `:solo Plans` creates a Solo chat. It appears under `Solo` with a lock and
+   only you as member.
+2. Select a channel and run `:section new Ops Team`: the channel moves into an
+   `Ops Team` group. `:section rename Ops`, `:section up`, `:section remove`
+   and `:section delete` do what they say. `:sort alpha` sorts the group.
+3. Restart bzz (or open a second client with the same identity): sections,
+   sort and the Solo chat come back from the relay. Where Buzz desktop or
+   mobile is available with the same identity, the sections match there.
+
+### Buzz 1.0 as the key holder (Linux or macOS, Buzz 1.0 running)
+
+1. `bzz identity pair-desktop --label buzz1 --relay <url>`; approve in Buzz
+   1.0. bzz connects, posts, reacts and edits through Buzz.
+2. Try to delete a message or start a huddle: bzz says `Buzz does not let
+   other apps do this; do it in Buzz` before asking Buzz, and publishes
+   nothing.
+
+### Search paging and connection details
+
+1. In a channel with more than 40 messages containing a common word, search
+   it and press `Ctrl-o` until bzz says `no older results`. Rows already
+   shown never move; newer results stay on top.
+2. Add a community with the right host but a path the relay does not serve
+   (or a relay that hosts another community): bzz reports `this relay serves
+   no community at this address; check the community URL` and stops
+   retrying.
+
 ## Results log
 
 | Section | Result | Evidence/notes |
@@ -598,6 +653,7 @@ with `--allow-insecure-localhost` and the URL `ws://localhost:3030`.
 | 9. Images/attachments | ☐ | |
 | 10. Inbox/DMs/search | ☐ | |
 | 11. v0.13.0 surfaces | ☐ | |
+| 12. v0.14.0 surfaces | ☐ | |
 
 ## Cleanup
 

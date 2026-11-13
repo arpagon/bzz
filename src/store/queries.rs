@@ -23,6 +23,9 @@ use crate::{
 /// Channel-timeline rows: top-level messages plus depth-1 thread replies
 /// their author also sent to the channel (`["broadcast", "1"]`), the relay's
 /// own top-level predicate for channel windows.
+/// Whether a message row has any stored edit (indexed probe); only those
+/// rows go through edit selection.
+const HAS_EDIT: &str = "EXISTS(SELECT 1 FROM edit_targets t WHERE t.community_id=e.community_id AND t.target_event_id=e.event_id)";
 const TOP_LEVEL: &str = "(e.root_event_id IS NULL OR (e.parent_event_id=e.root_event_id AND instr(e.tags_json,'\"broadcast\",\"1\"')>0))";
 
 impl Store {
@@ -199,7 +202,7 @@ impl Store {
     ) -> Result<Vec<Message>> {
         self.message_query(
             community_id,
-            &format!("SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind
+            &format!("SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind,{HAS_EDIT}
              FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
              WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099)
                AND (e.kind<>40099 OR e.pubkey=c.relay_pubkey) AND {TOP_LEVEL}
@@ -332,7 +335,9 @@ impl Store {
         } else {
             TOP_LEVEL
         };
-        let columns = "e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind";
+        let columns = format!(
+            "e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind,{HAS_EDIT}"
+        );
         let older_sql = format!(
             "SELECT {columns} FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
              WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099)
@@ -381,12 +386,12 @@ impl Store {
     pub fn thread(&self, community_id: Uuid, root: &str, limit: usize) -> Result<Vec<Message>> {
         self.message_query(
             community_id,
-            "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind
+            &format!("SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind,{HAS_EDIT}
              FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
              WHERE e.community_id=?1 AND e.kind IN (9,40002,40099)
                AND (e.kind<>40099 OR e.pubkey=c.relay_pubkey)
                AND (e.event_id=?2 OR e.root_event_id=?2)
-             ORDER BY e.created_at,e.event_id LIMIT ?3",
+             ORDER BY e.created_at,e.event_id LIMIT ?3"),
             params![community_id.to_string(),root,i64::try_from(limit).unwrap_or(i64::MAX)],
         )
     }
@@ -405,6 +410,7 @@ impl Store {
                 let tags_json: String = row.get(9)?;
                 let http_base: String = row.get(10)?;
                 let kind = u16::try_from(row.get::<_, i64>(11)?).unwrap_or(u16::MAX);
+                let has_edit: bool = row.get(12)?;
                 let system = (kind == 40_099).then(|| crate::protocol::system::parse(&content));
                 let parsed_tags =
                     serde_json::from_str::<Vec<Vec<String>>>(&tags_json).unwrap_or_default();
@@ -440,20 +446,29 @@ impl Store {
                 if message.system.is_none() {
                     set_body(&mut message, &content, &tags_json, base.as_ref());
                 }
-                Ok((message, kind, base))
+                Ok((message, kind, base, has_edit))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         drop(statement);
+        // Only rows with a stored edit need edit selection.
         let channels = rows
             .iter()
-            .map(|(message, _, _)| message.channel_id.to_string())
+            .map(|(message, _, _, has_edit)| {
+                if *has_edit {
+                    message.channel_id.to_string()
+                } else {
+                    String::new()
+                }
+            })
             .collect::<Vec<_>>();
         let originals = rows
             .iter()
             .zip(&channels)
-            .filter(|((message, _, _), _)| !message.deleted && message.system.is_none())
+            .filter(|((message, _, _, has_edit), _)| {
+                *has_edit && !message.deleted && message.system.is_none()
+            })
             .map(
-                |((message, kind, _), channel)| crate::store::edits::Original {
+                |((message, kind, _, _), channel)| crate::store::edits::Original {
                     event_id: &message.event_id,
                     pubkey: &message.pubkey,
                     kind: *kind,
@@ -464,7 +479,7 @@ impl Store {
         let mut edits = crate::store::edits::governing(&self.connection, community_id, &originals)?;
         Ok(rows
             .into_iter()
-            .map(|(mut message, _, base)| {
+            .map(|(mut message, _, base, _)| {
                 if let Some(edit) = edits.remove(&message.event_id) {
                     set_body(&mut message, &edit.content, &edit.tags_json, base.as_ref());
                     let tags = serde_json::from_str::<Vec<Vec<String>>>(&edit.tags_json)

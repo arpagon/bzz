@@ -5,8 +5,8 @@
 <h1 align="center">bzz</h1>
 
 <p align="center">
-  <strong>A human-first terminal client for <a href="https://github.com/block/buzz">Buzz</a>.</strong><br>
-  Your team chats in Buzz. You live in the terminal.
+  <strong>A fast, keyboard-driven terminal client for <a href="https://github.com/block/buzz">Buzz</a>.</strong><br>
+  Your team chats in Buzz. You live in the terminal. Now you don't have to leave it.
 </p>
 
 <p align="center">
@@ -17,12 +17,37 @@
 </p>
 
 <p align="center">
-  <a href="https://getbzz.dev/assets/promo-v013.mp4" title="Watch the launch film, with sound">
-    <img src="docs/assets/bzz-preview.webp" alt="bzz in action: channels, threads and reactions from the keyboard, offline search, an agent replying in a thread, the agent broker, a huddle, images and themes" width="860">
+  <a href="https://getbzz.dev/assets/promo-v014.mp4" title="Watch the launch film, with sound">
+    <img src="docs/assets/bzz-preview.webp" alt="bzz in action: channels, threads and reactions from the keyboard, editing a message, offline search, an agent replying in a thread, agent permissions, Solo chats and sidebar sections, a huddle, images and themes" width="860">
   </a>
   <br>
-  <sub>Real bzz, recorded from the terminal. <a href="https://getbzz.dev/assets/promo-v013.mp4">Watch the 47-second film with sound</a>.</sub>
+  <sub>The real bzz binary, recorded in a terminal. <a href="https://getbzz.dev/assets/promo-v014.mp4">Watch the film with sound</a>.</sub>
 </p>
+
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#get-started">Get started</a> ·
+  <a href="#keys">Keys</a> ·
+  <a href="docs/release-v0.14.0.md">What's new in 0.14</a> ·
+  <a href="docs/README.md">Docs</a>
+</p>
+
+## Who it's for
+
+You spend your day in a terminal: an editor, a shell, a coding agent or
+three in tmux. Your team, and more and more your agents, talk in Buzz.
+Switching to a desktop app for every mention breaks your flow.
+
+bzz puts Buzz in a pane next to your work. It is a single Rust binary
+that runs in any terminal, over SSH and offline, and is driven entirely from
+the keyboard. It speaks the Buzz protocol directly and is tested against
+the real Buzz relay, so your teammates on Buzz desktop and mobile see exactly
+what you send.
+
+> **New in 0.14 — the Buzz 1.0 era.** Edit your messages with `e` and see
+> everyone's edits. Solo chats and sidebar sections stay in sync with Buzz.
+> Pair with Buzz 1.0 so it keeps your key. Names and @mentions follow Buzz
+> 1.0's rules. [Release notes](docs/release-v0.14.0.md).
 
 ## Why bzz
 
