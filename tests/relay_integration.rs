@@ -16,7 +16,7 @@ use bzz::{
 };
 use nostr::{EventBuilder, Keys, Kind, Timestamp};
 
-const PIN: &str = "f3b127e3af5c14d2314faa2b63556c3f51ec6743";
+const PIN: &str = "bf3bdd0eaefe39289bf9620594f254c7f68897f5";
 
 #[tokio::test]
 #[ignore = "requires scripts/test-relay.sh"]

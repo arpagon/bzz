@@ -1,9 +1,10 @@
 # Protocol compatibility
 
-The v0.13.0 compatibility baseline is `block/buzz` revision
-`f3b127e3af5c14d2314faa2b63556c3f51ec6743`, with revision-pinned `buzz-core`,
+The v0.14.0 compatibility baseline is `block/buzz` revision
+`bf3bdd0eaefe39289bf9620594f254c7f68897f5`, with revision-pinned `buzz-core`,
 `buzz-sdk` and (feature `huddles-audio`) `buzz-audio-client`, built with Rust
-1.98.1. v0.11.x–v0.12.x artifacts remain pinned to
+1.98.1. v0.13.0 artifacts remain pinned to
+`f3b127e3af5c14d2314faa2b63556c3f51ec6743`; v0.11.x–v0.12.x to
 `9f55bf67456be10ff7c8238bf0d9e12e582848f6`; v0.10.0 to
 `ede26863345a518ec46edd6d7692e0281883491b`. The v0.13.0 surfaces are listed in
 [v0.13.0 additions](#v0130-additions) below.

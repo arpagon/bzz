@@ -10,7 +10,7 @@ and host-isolated communities.
 > local agent broker, send-to-channel and reports. bzz holds keys only for local
 > agents you create, never runs agent processes, and publishes nothing about
 > your activity unless you opt in. Protocol compatibility is pinned to Buzz
-> `f3b127e3af5c14d2314faa2b63556c3f51ec6743`.
+> `bf3bdd0eaefe39289bf9620594f254c7f68897f5`.
 
 ## Build
 

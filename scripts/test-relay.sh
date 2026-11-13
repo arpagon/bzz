@@ -12,7 +12,7 @@ set -euo pipefail
 PROFILE=default
 if [[ "${1:-}" == "--nip-fi" ]]; then PROFILE=nip-fi; fi
 if [[ "${1:-}" == "--herdr" ]]; then PROFILE=herdr; fi
-PIN=f3b127e3af5c14d2314faa2b63556c3f51ec6743
+PIN=bf3bdd0eaefe39289bf9620594f254c7f68897f5
 HEAD=$(git -C "$BZZ_BUZZ_SOURCE" rev-parse HEAD)
 if [[ "$HEAD" != "$PIN" && "${BZZ_ALLOW_UNPINNED_RELAY:-}" != 1 ]]; then
   echo "expected Buzz $PIN, found $HEAD" >&2; exit 1

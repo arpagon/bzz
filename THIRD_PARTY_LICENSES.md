@@ -7,7 +7,7 @@ CycloneDX SBOM is attached to releases.
 ## Buzz
 
 `buzz-core` and `buzz-sdk` are used from
-`block/buzz@f3b127e3af5c14d2314faa2b63556c3f51ec6743` under Apache-2.0.
+`block/buzz@bf3bdd0eaefe39289bf9620594f254c7f68897f5` under Apache-2.0.
 `buzz-audio-client` (feature `huddles-audio`) comes from the same revision.
 `src/protocol/huddle_tracker.rs` is ported from
 `crates/buzz-cli/src/commands/huddle_tracker.rs`, and
