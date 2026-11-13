@@ -141,6 +141,15 @@ Solo chats (kind `9007` is refused by its provider, and bzz says so). When a
 group has no synced sort mode bzz keeps its own sort; desktop's default is
 alphabetical.
 
+## Supply chain during v0.14
+
+RUSTSEC-2026-0538 (`quinn-udp` 0.5.15, receive loop can spin after a
+truncated datagram) appeared in the advisory database during M4 and failed
+`cargo audit` in CI. `quinn-udp` moved to 0.5.16 (its own `windows-sys`
+requirement moved to the 0.59 already in the graph; no other package
+changed). `cargo audit`: the 4 recorded allowed warnings, no vulnerability;
+`cargo deny check`: ok.
+
 ## Pending
 
 | Item | Why |
