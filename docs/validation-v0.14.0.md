@@ -1,6 +1,6 @@
 # bzz v0.14.0 validation
 
-**Status:** M0–M5 implemented and proven on branch `v0.14.0` (PR #8); release acceptance pending. Plan:
+**Status:** M0–M5 implemented and proven on branch `v0.14.0` (PR #8); release acceptance recorded below (2026-11-13). Plan:
 [`docs/planning/2026-11-12/v0.14.0.md`](planning/2026-11-12/v0.14.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
 
@@ -166,15 +166,83 @@ requirement moved to the 0.59 already in the graph; no other package
 changed). `cargo audit`: the 4 recorded allowed warnings, no vulnerability;
 `cargo deny check`: ok.
 
-## Pending (release acceptance)
+## Release acceptance (2026-11-13)
 
-M0–M5 are implemented and proven. Before tagging v0.14.0:
+Version 0.14.0 (`Cargo.toml`, `Cargo.lock`). Release notes:
+[`release-v0.14.0.md`](release-v0.14.0.md).
 
-| Item | Why |
+| Gate | Command / evidence | Result |
+|---|---|---|
+| Tests (audio) | `cargo test --locked --all-features` | 506 passed, 0 failed |
+| Lint, format | `cargo fmt --check`; `cargo clippy --locked --all-targets --all-features -- -D warnings` | clean |
+| Upgrade from v0.13.0 | `./scripts/upgrade-test.sh` (new default: `tests/upgrade/seed_v0130.rs`, `tests/upgrade_from_v0130_test.rs`) | pass locally and in CI (below) |
+| Release TUI (Herdr) | `BZZ_HERDR_PANE=w5:p5 ./scripts/test-relay.sh --herdr`, release build of the final code | 8 harness scenarios passed, including the four `t14-*` |
+| Release TUI (film capture) | `.agents/skills/bzz-promo-video/capture/shoot-all.sh` with the release build on the pinned relay | 19 of 19 on-screen expectations, including the new `edit` and `sync` shots |
+| Benchmarks | `cargo bench --bench timeline --bench store --bench media` with `--save-baseline v0130` on `v0.13.0` and `--baseline v0130` here | two accepted regressions (below) |
+
+### Upgrade from v0.13.0
+
+`scripts/upgrade-test.sh` now builds the `v0.13.0` tag (`2b3429f`) in a
+worktree, lets it write a database with disposable keys (schema 15) and
+record what it reads back, then opens a copy with v0.14.0. Besides what the
+v0.12.1 test checked (migrations, a readable pre-migration backup at the old
+version, `PRAGMA integrity_check`, identical Inbox, FTS hits, history and
+draft), it now checks what v0.13.0 held but misread:
+
+- an edit (kind 40003) that v0.13.0 stored but showed as the stale
+  `plain history row`: after the upgrade the row shows the edited text with
+  `edited`, and search finds the original message by a word only the edit
+  contains (search projection v2);
+- a channel with the bare `private` tag that v0.13.0 listed as `Public`: the
+  next metadata event from the relay repairs it to `Private`.
+
+**Red:** with the backfill in migration 0016 removed, the test fails
+(`left: "plain history row"`, `right: "plain history row, editedneedle"`).
+`BZZ_UPGRADE_FROM_VERSION=0121` still selects the v0.12.1 seed; it was not
+re-run here because building v0.12.1 needs a system `libdbus-1-dev` this
+machine lacks (v0.13.0 vendors DBus).
+
+### Benchmarks against v0.13.0
+
+Same machine, sequential, nothing else building. Improved: FTS search
+−13.7 %, sanitize −15.0 %, hit map −12.5 %, composer −9.4 %, timeline render
+−6.8 %, `parse bounded imeta` −6.1 %, Inbox rebuild −5.1 %. No change: PNG
+decode, Inbox first page, timeline cursor, redraw gate.
+
+The first run found **query latest 500 of 100k: +62 %** (1.33 → 2.15 ms).
+Cause: M1 ran edit selection over every loaded message. Fixed in this
+release: each row now carries an indexed `EXISTS` probe of `edit_targets`,
+and only rows with a stored edit go through selection. Measured: +62 % →
++17.5 % (≈1.56 ms); with the probe replaced by a constant the query is at
++10 %, so the probe costs ≈0.14 ms per 500 rows. Proven needed: with the
+probe forced to "no edit", `tests/message_edits_test.rs` fails 6 of 6.
+
+Accepted regressions, both well under one frame (16 ms):
+
+| Benchmark | v0.13.0 | v0.14.0 | Why |
+|---|---|---|---|
+| query latest 500 of 100k | 1.33 ms | 1.56 ms (+17.5 %) | message edits (M1) |
+| mention candidates over 1k members | 1.23 ms | 1.62 ms (+31 %) | Buzz 1.0 identity names and mention rules (M3), per `@` keystroke |
+| Inbox cursor page | 0.17 ms | 0.20 ms (+17 %) | edit-aware previews (M1) |
+
+### Manual E2E
+
+`docs/e2e-manual.md` has a new section 12 for v0.14.0 (edits, namesakes and
+mentions, Solo and sections, Buzz 1.0 as key holder, search paging, wrong
+community address). On the release build its steps are covered by the Herdr
+scenarios above (edit, namesakes, sections and Solo, older search results),
+the film capture (edit and sidebar on the pinned relay), the Buzz 1.0.1
+pairing proof (M2) and the scripted-relay 404 test (M5). The multi-client
+and Buzz-desktop comparison steps are left to production acceptance.
+
+## Still pending after release
+
+The owner approved publishing v0.14.0 on 2026-11-13 with these items open:
+
+| Item | Owner |
 |---|---|
-| Version bump to 0.14.0, `docs/release-v0.14.0.md` | not done until the owner approves the release |
-| Upgrade test: a v0.13.0 data directory opened by v0.14.0 (migrations 16–17, FTS projection v2), on three OSes | `scripts/upgrade-test.sh` seeds v0.12.1; needs a v0.13 seed |
-| Benchmarks against v0.13.0 | not run yet |
-| `docs/e2e-manual.md` updated and run | not done |
-| Production acceptance on the real community: edits, mentions, Solo chats and sections as Buzz shows them | owner |
+| Production check on the real community: an edited message, mentions, a Solo chat and sections as Buzz desktop and mobile show them | owner |
+| E2E section 12 multi-client steps (a second client, Buzz desktop showing the same sections) | owner |
+| Upgrade from v0.12.1 straight to v0.14.0 (needs `libdbus-1-dev` to build v0.12.1) | operator |
 | Carried from v0.13: instrumented 66-channel frame count, FI community, Windows audio, E2E 4.1/4.2/7/9 | owner / operator |
+| A huddle's backing channel (`🔒huddle-…`) stays in bzz's sidebar after the huddle; Buzz desktop hides it locally | next release |

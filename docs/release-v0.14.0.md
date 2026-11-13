@@ -1,6 +1,6 @@
 # bzz v0.14.0 — Buzz 1.0 era
 
-**Status:** Release candidate. See
+**Status:** Released 2026-11-13. See
 [`validation-v0.14.0.md`](validation-v0.14.0.md) for verification and the
 items still recorded as pending.
 
@@ -89,3 +89,5 @@ v0.14.0 terminal on an isolated relay with generated people.
 - Agents cannot be invited into a Solo chat from bzz.
 - With Buzz 1.0 as the provider, the refused actions above must be done in
   Buzz, or by importing the key into bzz.
+- After a huddle, its backing channel (`🔒huddle-…`) stays in the sidebar;
+  Buzz desktop hides it.
