@@ -25,6 +25,7 @@ fn message(id: &str) -> Message {
         sent_from_thread: None,
         broadcast: false,
         emoji: Vec::new(),
+        edited: false,
     }
 }
 #[test]
@@ -123,4 +124,60 @@ fn live_bottom_tracks_latest() {
     let messages = vec![message("a"), message("b")];
     state.reconcile(&messages);
     assert_eq!(state.selected_event.as_deref(), Some("b"));
+}
+
+fn rendered(message: Message) -> String {
+    let mut state = TimelineState {
+        at_live_bottom: true,
+        ..TimelineState::default()
+    };
+    let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+    terminal
+        .draw(|frame| {
+            timeline::render(
+                frame,
+                frame.area(),
+                &[message],
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut state,
+                "timeline",
+                &Theme::default(),
+                true,
+                None,
+            );
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn an_edited_message_shows_the_marker_after_its_body() {
+    let edited = rendered(Message {
+        content: "fixed typo".into(),
+        edited: true,
+        ..message("a")
+    });
+    assert!(edited.contains("fixed typo (edited)"), "{edited}");
+    let plain = rendered(Message {
+        content: "fixed typo".into(),
+        ..message("a")
+    });
+    assert!(!plain.contains("(edited)"), "{plain}");
+    let deleted = rendered(Message {
+        deleted: true,
+        edited: true,
+        ..message("a")
+    });
+    assert!(!deleted.contains("(edited)"), "{deleted}");
 }

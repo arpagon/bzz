@@ -379,6 +379,57 @@ fn local_fts_is_tenant_authorized_and_tracks_deletion() {
 }
 
 #[test]
+fn search_and_inbox_previews_follow_the_governing_edit() {
+    let mut fixture = Fixture::new();
+    let dm = Uuid::new_v4();
+    let author = Keys::generate();
+    fixture.channel(dm, true, &[&author]);
+    let original = fixture.message(&author, dm, "teh_typo_token", None, false, 500);
+    let edit = EventBuilder::new(Kind::Custom(40_003), "fixed_spelling_token")
+        .tags([
+            Tag::parse(["h", &dm.to_string()]).unwrap(),
+            Tag::parse(["e", &original.id.to_hex()]).unwrap(),
+        ])
+        .custom_created_at(Timestamp::from(501))
+        .sign_with_keys(&author)
+        .unwrap();
+    fixture.store.apply_event(fixture.community, &edit).unwrap();
+    let own = fixture.own.public_key().to_hex();
+    let search = |fixture: &Fixture, token: &str| {
+        let query = MessageSearchQuery {
+            fts_query: format!(r#""{token}"*"#),
+            author: None,
+            channel_id: None,
+            since: None,
+            until: None,
+            limit: 20,
+        };
+        fixture
+            .store
+            .search_messages(fixture.community, &own, &query)
+            .unwrap()
+            .len()
+    };
+    assert_eq!(search(&fixture, "fixed_spelling_token"), 1);
+    assert_eq!(
+        search(&fixture, "teh_typo_token"),
+        0,
+        "the old text is gone"
+    );
+    let items = fixture.store.inbox_items(fixture.community, &own).unwrap();
+    let item = items
+        .iter()
+        .find(|item| item.conversation_id == format!("dm:{dm}"))
+        .unwrap();
+    assert!(
+        item.preview.contains("fixed_spelling_token"),
+        "{}",
+        item.preview
+    );
+    fixture.store.search_integrity().unwrap();
+}
+
+#[test]
 fn inbox_groups_mentions_threads_dms_actions_and_drafts() {
     let mut fixture = Fixture::new();
     let stream = Uuid::new_v4();

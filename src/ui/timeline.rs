@@ -903,6 +903,19 @@ fn message_block(
                 .into_iter()
         }
     };
+    if message.edited && !message.deleted {
+        // As mobile: the marker follows the body.
+        let mut lines = body_lines.collect::<Vec<_>>();
+        let marker = Span::styled("(edited)", theme.style(HighlightGroup::MessageTimestamp));
+        match lines.last_mut() {
+            Some(last) if !last.spans.is_empty() => {
+                last.spans.push(Span::raw(" "));
+                last.spans.push(marker);
+            }
+            _ => lines.push(Line::from(marker)),
+        }
+        body_lines = lines.into_iter();
+    }
     let grouped_body = grouped.then(|| body_lines.next()).flatten();
     let mut header = vec![];
     if grouped {
@@ -1531,6 +1544,7 @@ mod tests {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         }
     }
 

@@ -2342,7 +2342,7 @@ impl App {
                                     self.rebuild_thread_summaries();
                                 }
                                 self.cache_dirty = true;
-                                if matches!(kind, 9 | 40_002 | 30_622 | 46_010..=46_012) {
+                                if matches!(kind, 9 | 40_002 | 40_003 | 30_622 | 46_010..=46_012) {
                                     self.spawn_inbox_load(false);
                                 }
                                 if membership_refresh {
@@ -9820,6 +9820,7 @@ mod tests {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         };
         assert!(super::send_to_channel_root(Some(root.clone()), channel).is_ok());
         assert!(super::send_to_channel_root(None, channel).is_err());
@@ -10046,6 +10047,7 @@ mod tests {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         }];
         let screen = screen_text(&mut app);
         assert!(screen.contains("#talk 🎧"), "{screen}");
@@ -10090,6 +10092,7 @@ mod tests {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         }];
         app.local_thread_summaries.insert(
             root.clone(),
@@ -10652,6 +10655,7 @@ mod tests {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         }];
         app.timeline.at_live_bottom = true;
         app.computed_unread.insert(channel);
@@ -10813,6 +10817,7 @@ mod tests {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         };
         let mut timeline = TimelineState {
             at_live_bottom: true,
@@ -11351,6 +11356,7 @@ mod tests {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         }];
         app.timeline.reconcile(&app.messages);
 

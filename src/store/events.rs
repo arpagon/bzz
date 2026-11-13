@@ -222,8 +222,14 @@ impl Store {
                 params![community_id.to_string(),reaction.event_id,reaction.target_event_id,reaction.pubkey,reaction.emoji,u64_to_i64(reaction.created_at)?,reaction.emoji_url],
             )?;
         }
+        let mut reprojected = Vec::new();
         if matches!(event.kind.as_u16(), 5 | 9005) {
             for target in event_references(event) {
+                if let Some(original) =
+                    crate::store::edits::target_of(&transaction, community_id, &target)?
+                {
+                    reprojected.push(original);
+                }
                 transaction.execute(
                     "INSERT OR IGNORE INTO deletion_targets(community_id,deletion_event_id,target_event_id,deletion_kind,deletion_pubkey) VALUES(?1,?2,?3,?4,?5)",
                     params![community_id.to_string(),event.id.to_hex(),target,i64::from(event.kind.as_u16()),event.pubkey.to_hex()],
@@ -256,6 +262,14 @@ impl Store {
                  AND EXISTS(SELECT 1 FROM events WHERE community_id=?1 AND event_id=?2 AND deleted_by_event_id IS NOT NULL)",
                 params![community_id.to_string(),event.id.to_hex()],
             )?;
+        }
+        if event.kind.as_u16() == crate::protocol::edit::KIND_EDIT
+            && let Some(target) = crate::store::edits::index(&transaction, community_id, event)?
+        {
+            reprojected.push(target);
+        }
+        for target in reprojected {
+            crate::store::search::reproject(&transaction, community_id, &target, &http_base)?;
         }
         transaction.execute(
             "UPDATE outbox SET state='delivered',updated_at=unixepoch(),last_error_code=NULL WHERE community_id=?1 AND event_id=?2",

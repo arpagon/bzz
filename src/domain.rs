@@ -429,6 +429,9 @@ pub struct Message {
     /// NIP-30 custom emoji carried by this message's own tags.
     #[serde(skip)]
     pub emoji: Vec<crate::protocol::emoji::Emoji>,
+    /// A live edit (kind `40003`) governs this message's text and attachments.
+    #[serde(default)]
+    pub edited: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

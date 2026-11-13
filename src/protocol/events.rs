@@ -99,6 +99,7 @@ pub fn as_message(event: &Event) -> Option<Message> {
                 && tag.get(1).map(String::as_str) == Some("1")
         }),
         emoji: crate::protocol::emoji::tags_of(&tags),
+        edited: false,
     })
 }
 

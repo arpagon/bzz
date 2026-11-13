@@ -1,4 +1,5 @@
 pub mod artifact;
+pub mod edit;
 pub mod emoji;
 pub mod envelope;
 pub mod events;

@@ -198,6 +198,7 @@ impl Store {
         limit: usize,
     ) -> Result<Vec<Message>> {
         self.message_query(
+            community_id,
             &format!("SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind
              FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
              WHERE e.community_id=?1 AND e.channel_id=?2 AND e.kind IN (9,40002,40099)
@@ -348,6 +349,7 @@ impl Store {
         );
         let scope_value = root.unwrap_or("");
         let mut values = self.message_query(
+            community_id,
             &older_sql,
             params![
                 community_id.to_string(),
@@ -361,6 +363,7 @@ impl Store {
         values.reverse();
         if newer_limit > 0 {
             values.extend(self.message_query(
+                community_id,
                 &newer_sql,
                 params![
                     community_id.to_string(),
@@ -377,6 +380,7 @@ impl Store {
 
     pub fn thread(&self, community_id: Uuid, root: &str, limit: usize) -> Result<Vec<Message>> {
         self.message_query(
+            community_id,
             "SELECT e.event_id,e.channel_id,e.pubkey,e.created_at,e.content,e.root_event_id,e.parent_event_id,e.deleted_by_event_id,o.state,e.tags_json,c.http_base_url,e.kind
              FROM events e JOIN communities c ON c.id=e.community_id LEFT JOIN outbox o ON o.community_id=e.community_id AND o.event_id=e.event_id
              WHERE e.community_id=?1 AND e.kind IN (9,40002,40099)
@@ -387,9 +391,14 @@ impl Store {
         )
     }
 
-    fn message_query<P: rusqlite::Params>(&self, sql: &str, parameters: P) -> Result<Vec<Message>> {
+    fn message_query<P: rusqlite::Params>(
+        &self,
+        community_id: Uuid,
+        sql: &str,
+        parameters: P,
+    ) -> Result<Vec<Message>> {
         let mut statement = self.connection.prepare(sql)?;
-        let values = statement
+        let rows = statement
             .query_map(parameters, |row| {
                 let state: Option<String> = row.get(8)?;
                 let content: String = row.get(4)?;
@@ -397,24 +406,12 @@ impl Store {
                 let http_base: String = row.get(10)?;
                 let kind = u16::try_from(row.get::<_, i64>(11)?).unwrap_or(u16::MAX);
                 let system = (kind == 40_099).then(|| crate::protocol::system::parse(&content));
-                let attachments = if system.is_some() {
-                    Vec::new()
-                } else {
-                    url::Url::parse(&http_base)
-                        .ok()
-                        .map(|base| crate::media::imeta::parse_tags(&tags_json, &content, &base))
-                        .unwrap_or_default()
-                };
                 let parsed_tags =
                     serde_json::from_str::<Vec<Vec<String>>>(&tags_json).unwrap_or_default();
                 let sent_from_thread = crate::protocol::sent_from_thread::parse_tag(&parsed_tags);
                 let emoji = crate::protocol::emoji::tags_of(&parsed_tags);
-                let visible_content = if system.is_some() {
-                    String::new()
-                } else {
-                    crate::media::imeta::strip_attachment_lines(&content, &attachments)
-                };
-                Ok(Message {
+                let base = url::Url::parse(&http_base).ok();
+                let mut message = Message {
                     event_id: row.get(0)?,
                     channel_id: Uuid::parse_str(&row.get::<_, String>(1)?).map_err(|error| {
                         rusqlite::Error::FromSqlConversionFailure(
@@ -425,8 +422,8 @@ impl Store {
                     })?,
                     pubkey: row.get(2)?,
                     created_at: u64::try_from(row.get::<_, i64>(3)?).unwrap_or(0),
-                    content: visible_content,
-                    attachments,
+                    content: String::new(),
+                    attachments: Vec::new(),
                     root_event_id: row.get(5)?,
                     parent_event_id: row.get(6)?,
                     deleted: row.get::<_, Option<String>>(7)?.is_some(),
@@ -438,10 +435,50 @@ impl Store {
                             && tag.get(1).map(String::as_str) == Some("1")
                     }),
                     emoji,
-                })
+                    edited: false,
+                };
+                if message.system.is_none() {
+                    set_body(&mut message, &content, &tags_json, base.as_ref());
+                }
+                Ok((message, kind, base))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(values)
+        drop(statement);
+        let channels = rows
+            .iter()
+            .map(|(message, _, _)| message.channel_id.to_string())
+            .collect::<Vec<_>>();
+        let originals = rows
+            .iter()
+            .zip(&channels)
+            .filter(|((message, _, _), _)| !message.deleted && message.system.is_none())
+            .map(
+                |((message, kind, _), channel)| crate::store::edits::Original {
+                    event_id: &message.event_id,
+                    pubkey: &message.pubkey,
+                    kind: *kind,
+                    channel_id: channel,
+                },
+            )
+            .collect::<Vec<_>>();
+        let mut edits = crate::store::edits::governing(&self.connection, community_id, &originals)?;
+        Ok(rows
+            .into_iter()
+            .map(|(mut message, _, base)| {
+                if let Some(edit) = edits.remove(&message.event_id) {
+                    set_body(&mut message, &edit.content, &edit.tags_json, base.as_ref());
+                    let tags = serde_json::from_str::<Vec<Vec<String>>>(&edit.tags_json)
+                        .unwrap_or_default();
+                    // As desktop: the edit's custom emoji when it carries any.
+                    let emoji = crate::protocol::emoji::tags_of(&tags);
+                    if !emoji.is_empty() {
+                        message.emoji = emoji;
+                    }
+                    message.edited = true;
+                }
+                message
+            })
+            .collect())
     }
 
     pub fn reactions(&self, community_id: Uuid, target: &str) -> Result<Vec<Reaction>> {
@@ -1574,4 +1611,13 @@ fn escape_like(value: &str) -> String {
         .replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
+}
+
+/// Text and attachments from one event's content and `imeta` tags. For an
+/// edit, its `imeta` set replaces the original's; an empty set means none.
+fn set_body(message: &mut Message, content: &str, tags_json: &str, base: Option<&url::Url>) {
+    message.attachments = base
+        .map(|base| crate::media::imeta::parse_tags(tags_json, content, base))
+        .unwrap_or_default();
+    message.content = crate::media::imeta::strip_attachment_lines(content, &message.attachments);
 }

@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod artifacts;
 pub mod dm;
+pub(crate) mod edits;
 pub mod events;
 pub mod inbox;
 pub mod migrate;

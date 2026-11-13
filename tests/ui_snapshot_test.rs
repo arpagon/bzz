@@ -65,6 +65,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
         sent_from_thread: None,
         broadcast: false,
         emoji: Vec::new(),
+        edited: false,
     }];
     let reactions = HashMap::from([(
         "a".repeat(64),
@@ -174,6 +175,7 @@ fn timeline_roots_show_compact_thread_activity() {
         sent_from_thread: None,
         broadcast: false,
         emoji: Vec::new(),
+        edited: false,
     };
     let summaries = HashMap::from([(
         root_id,
@@ -297,6 +299,7 @@ fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         },
         Message {
             event_id: "1".repeat(64),
@@ -313,6 +316,7 @@ fn timeline_renders_verified_owner_and_system_semantics_without_raw_json() {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         },
     ];
     let mut state = TimelineState {
@@ -378,6 +382,7 @@ fn timeline_distinguishes_pending_unknown_and_rejected_delivery() {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         })
         .collect::<Vec<_>>();
     let mut state = TimelineState {
@@ -437,6 +442,7 @@ fn nearby_same_author_messages_share_a_compact_header_and_keep_date_context() {
             sent_from_thread: None,
             broadcast: false,
             emoji: Vec::new(),
+            edited: false,
         })
         .collect::<Vec<_>>();
     let mut state = TimelineState {
@@ -511,6 +517,7 @@ fn attachment_cards_remain_visible_without_a_graphics_protocol() {
         sent_from_thread: None,
         broadcast: false,
         emoji: Vec::new(),
+        edited: false,
     };
     let backend = TestBackend::new(80, 12);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -631,6 +638,7 @@ fn inbox_search_and_dm_picker_render_safe_wide_and_narrow_states() {
         sent_from_thread: None,
         broadcast: false,
         emoji: Vec::new(),
+        edited: false,
     }];
     let mut inbox_state = InboxState::default();
     inbox_state.reconcile(&items);

@@ -42,6 +42,7 @@ const MIGRATIONS: &[(u32, &str)] = &[
     (13, include_str!("../../migrations/0013_user_statuses.sql")),
     (14, include_str!("../../migrations/0014_custom_emoji.sql")),
     (15, include_str!("../../migrations/0015_artifacts.sql")),
+    (16, include_str!("../../migrations/0016_message_edits.sql")),
 ];
 
 pub fn configure(connection: &Connection) -> Result<()> {
