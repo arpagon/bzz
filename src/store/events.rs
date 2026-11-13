@@ -302,14 +302,21 @@ impl Store {
             return Ok(false);
         };
         let facts = facts_json(&channel.facts)?;
+        // Before v0.14 the bare `["private"]` tag was misread as public.
+        let visibility = match channel.visibility {
+            Visibility::Public => "public",
+            Visibility::Private => "private",
+        };
         let changed = self.connection.execute(
-            "UPDATE channels SET facts_json=?4
-             WHERE community_id=?1 AND channel_id=?2 AND metadata_event_id=?3 AND facts_json<>?4",
+            "UPDATE channels SET facts_json=?4,visibility=?5
+             WHERE community_id=?1 AND channel_id=?2 AND metadata_event_id=?3
+               AND (facts_json<>?4 OR visibility<>?5)",
             params![
                 community_id.to_string(),
                 channel.id.to_string(),
                 event.id.to_hex(),
-                facts
+                facts,
+                visibility
             ],
         )?;
         Ok(changed > 0)

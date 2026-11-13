@@ -174,6 +174,21 @@ contract (see below and
   refused). bzz has no community directory search, so the chooser has no
   outside people, agents from other communities or pending mentions; its
   member cache stands in for the "known" set.
+- **Sidebar sections, sort and Solo chats (v0.14.0):** the synced
+  `channel-sections` and `channel-sort` documents (kind `30078`, NIP-44 to
+  yourself, per-field last-writer-wins registers under `meta.v` 1), with the
+  `buzz-cli` codec ported unchanged; mobile's meta-less payloads import at the
+  event time; an unknown `meta.v` or a document over the caps leaves bzz's
+  own grouping and is never overwritten. The sidebar shows Solo, your
+  sections in order, Channels, Forums, Direct messages and System, with
+  headings when more than one group has channels; a group's synced sort mode
+  wins, otherwise bzz's own sort applies. Writes read the writer's head
+  (`consistency: strong`), publish once after it through the outbox and
+  confirm the result is the head. `:solo` sends the kind `9007` command Buzz
+  1.0 sends (private stream, `t=buzz.solo`), checked against upstream's
+  captured fixture. Starred, muted and project documents are not read.
+  Private channels now show as private: earlier bzz misread NIP-29's bare
+  `["private"]` tag, and re-ingesting current metadata repairs them.
 - **Edits (kind `40003`, v0.14.0):** the latest live edit in the original's
   channel, by its author or the verified owner of the agent that wrote it,
   governs the text and the complete attachment set, as in upstream

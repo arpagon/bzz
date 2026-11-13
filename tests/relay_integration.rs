@@ -3453,3 +3453,141 @@ async fn real_relay_message_edits() {
             .is_err()
     );
 }
+
+/// v0.14 M4: sections and sort written by bzz read back through the `buzz`
+/// CLI and the other way round; a Solo chat bzz creates carries the relay's
+/// `buzz.solo` label and its creator.
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_sidebar_documents_and_solo_chats() {
+    use bzz::protocol::{sidebar::Lane, sidebar_doc};
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let cli = std::env::var("BZZ_BUZZ_CLI").expect("relay wrapper builds the buzz CLI");
+    let keys = Keys::generate();
+    let pubkey = keys.public_key().to_hex();
+    let channel = seed_member(&source, &pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let signer = SignerHandle::spawn(keys.clone());
+    let mut config = Config::default();
+    let identity = IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "m4".into(),
+        pubkey: pubkey.clone(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "m4".into(),
+    };
+    config.identities.push(identity.clone());
+    let community = config
+        .add_community("m4".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    let mut store = Store::open_memory().unwrap();
+    store.sync_config(&config).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        signer.clone(),
+    );
+    let http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        signer.clone(),
+    )
+    .unwrap();
+    let messages =
+        bzz::service::messages::MessageService::new(community, signer.clone(), store, supervisor);
+    use nostr::nips::nip19::ToBech32 as _;
+    let nsec = keys.secret_key().to_bech32().unwrap();
+    let buzz = |args: &[&str]| -> serde_json::Value {
+        let output = Command::new(&cli)
+            .args(args)
+            .env("BUZZ_RELAY_URL", "http://localhost:3030")
+            .env("BUZZ_PRIVATE_KEY", &nsec)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "buzz {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+
+    // bzz creates a section and puts #general in it; the CLI sees both.
+    let design = uuid::Uuid::new_v4().to_string();
+    let general = channel.to_string();
+    bzz::service::sidebar::write(&http, &signer, &messages, Lane::Sections, |edit, _| {
+        edit.create_section(&design, "Design", None);
+        edit.set(&["a", &general], serde_json::json!(design));
+        Ok(())
+    })
+    .await
+    .unwrap()
+    .expect("a change");
+    let listed = buzz(&["sidebar", "sections", "list"]);
+    assert_eq!(listed["sections"][0]["name"], "Design");
+    assert_eq!(listed["assignments"][&general], serde_json::json!(design));
+
+    // The CLI adds a section after it; bzz reads both, in order.
+    buzz(&["sidebar", "sections", "create", "--name", "Ops"]);
+    let (_, tree) = bzz::service::sidebar::read_head(&http, &signer, Lane::Sections)
+        .await
+        .unwrap()
+        .expect("a head");
+    let names = sidebar_doc::project(&tree)
+        .sections
+        .into_iter()
+        .map(|section| section.name)
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Design", "Ops"]);
+
+    // bzz reorders on top of the CLI's write; the CLI sees the new order.
+    bzz::service::sidebar::write(&http, &signer, &messages, Lane::Sections, |edit, head| {
+        let ops = sidebar_doc::project(head).sections[1].id.clone();
+        edit.reorder(&[ops]);
+        Ok(())
+    })
+    .await
+    .unwrap()
+    .expect("a change");
+    let listed = buzz(&["sidebar", "sections", "list"]);
+    assert_eq!(listed["sections"][0]["name"], "Ops");
+    assert_eq!(listed["sections"][1]["name"], "Design");
+
+    // Sort modes: bzz sets one, the CLI lists it.
+    bzz::service::sidebar::write(&http, &signer, &messages, Lane::Sort, |edit, _| {
+        edit.set(&["g", "channels"], serde_json::json!("recent"));
+        Ok(())
+    })
+    .await
+    .unwrap()
+    .expect("a change");
+    let sorts = buzz(&["sidebar", "sort", "list"]);
+    assert!(sorts.to_string().contains("recent"), "{sorts}");
+
+    // A Solo chat: the relay's 39000 carries the label and the creator.
+    let solo = uuid::Uuid::new_v4();
+    let created = messages
+        .publish_builder(bzz::protocol::sidebar::solo_creation(solo, "Plans").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(created.kind.as_u16(), 9007);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let metadata = http
+        .query_raw(&[serde_json::json!({"kinds": [39000], "#d": [solo.to_string()]})])
+        .await
+        .unwrap();
+    let tags = metadata
+        .first()
+        .expect("relay metadata for the Solo chat")
+        .tags
+        .iter()
+        .map(|tag| tag.as_slice().to_vec())
+        .collect::<Vec<_>>();
+    assert!(
+        tags.contains(&vec!["t".into(), "buzz.solo".into()]),
+        "{tags:?}"
+    );
+    assert!(tags.contains(&vec!["P".into(), pubkey.clone()]), "{tags:?}");
+    let parsed = bzz::protocol::events::as_channel(&metadata[0]).unwrap();
+    assert_eq!(parsed.visibility, bzz::domain::Visibility::Private);
+    assert_eq!(parsed.facts.labels, vec!["buzz.solo".to_owned()]);
+}

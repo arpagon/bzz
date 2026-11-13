@@ -9,6 +9,7 @@ pub mod models;
 pub mod queries;
 pub mod search;
 pub mod search_queries;
+pub mod sidebar;
 pub mod writer;
 
 use std::path::{Path, PathBuf};

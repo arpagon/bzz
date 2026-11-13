@@ -116,6 +116,9 @@ v0.13.0 adds `:signin` (federated identity), `:system`, `:artifacts`, `:tasks`,
 `:presence [on|off]`,
 `:huddle` (`start`, `join`, `leave`, `end`, `mute`, `react`, `devices`) and
 `:broker`; agents for the local broker are managed with `bzz broker …`.
+v0.14.0 adds `e` to edit your own message, `:solo <name>` (a Solo chat),
+`:section new|rename|delete|move|remove|up|down` (sidebar sections synced
+with Buzz) and `:sort alpha|recent|default` (a group's synced sort).
 
 ## Media safety
 

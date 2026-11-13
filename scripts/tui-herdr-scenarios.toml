@@ -356,3 +356,34 @@ visible = "quit bzz?"
 [[scenario.step]]
 keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t14-sections-and-solo"
+kind = "harness"
+description = "v0.14 M4: :section new puts the selected channel in a synced section shown as its own sidebar group; :solo creates a Solo chat that appears under Solo."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = [":", "s", "e", "c", "t", "i", "o", "n", "space", "n", "e", "w", "space", "O", "p", "s", "space", "T", "e", "a", "m", "enter"]
+visible = "  Ops Team"
+
+[[scenario.step]]
+keys = [":", "s", "o", "l", "o", "space", "P", "l", "a", "n", "s", "enter"]
+visible = "🔒Plans"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"

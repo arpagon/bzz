@@ -106,6 +106,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
                         &HashSet::from([channel_id]),
                         ChannelSort::Smart,
                         false,
+                        &Default::default(),
                         &HashMap::new(),
                         None,
                         &theme,

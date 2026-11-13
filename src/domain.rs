@@ -599,3 +599,23 @@ impl MentionChoices {
             .find(|candidate| candidate.pubkey == key)
     }
 }
+
+/// One live user section of the synced sidebar.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SidebarSection {
+    pub id: String,
+    pub name: String,
+    pub icon: Option<String>,
+}
+
+/// The user's synced sidebar (channel sections and per-group sort modes),
+/// as Buzz desktop and mobile show it. Empty when none is synced.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SidebarLayout {
+    pub sections: Vec<SidebarSection>,
+    /// Channel → live section id.
+    pub assignments: std::collections::HashMap<Uuid, String>,
+    /// Group key (`channels`, `forums`, `dms`, `section:<id>`) → `alpha` or
+    /// `recent`.
+    pub sort: std::collections::BTreeMap<String, String>,
+}

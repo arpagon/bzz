@@ -96,5 +96,8 @@ elif [[ "$PROFILE" == herdr ]]; then
   rm -rf -- "$fixture"
   exit "$status"
 else
+  # The `buzz` CLI at the pin, for sidebar interop (v0.14 M4).
+  (cd "$BZZ_BUZZ_SOURCE" && cargo build -p buzz-cli)
+  BZZ_BUZZ_CLI="$BZZ_BUZZ_SOURCE/target/debug/buzz" \
   BZZ_E2E_RELAY_URL=ws://localhost:3030 cargo test --locked --test relay_integration -- --ignored --test-threads=1
 fi

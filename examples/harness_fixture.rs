@@ -338,8 +338,16 @@ async fn publish_content(owner: &Keys, viewer: &Keys, namesakes: &[Keys], histor
     publish(
         &owner_session,
         &owner_signer,
-        buzz_sdk::build_message(names, "Generated namesakes channel", None, &[], false, &[], &[])
-            .unwrap(),
+        buzz_sdk::build_message(
+            names,
+            "Generated namesakes channel",
+            None,
+            &[],
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
     )
     .await;
     owner_session.shutdown().await;

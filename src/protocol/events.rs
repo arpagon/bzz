@@ -165,7 +165,12 @@ pub fn as_channel(event: &Event) -> Option<Channel> {
         return None;
     }
     let id = first_tag(event, "d").and_then(|value| Uuid::parse_str(&value).ok())?;
-    let visibility = if first_tag(event, "private").is_some() {
+    // NIP-29 marks a private group with a bare `["private"]` tag.
+    let visibility = if event
+        .tags
+        .iter()
+        .any(|tag| tag.as_slice().first().map(String::as_str) == Some("private"))
+    {
         Visibility::Private
     } else {
         Visibility::Public

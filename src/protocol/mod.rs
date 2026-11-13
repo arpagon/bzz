@@ -13,6 +13,8 @@ pub mod mention_rules;
 pub mod presence;
 pub mod read_state_snapshot;
 pub mod sent_from_thread;
+pub mod sidebar;
+pub mod sidebar_doc;
 pub mod system;
 pub mod thread_summary;
 pub mod types;

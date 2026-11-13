@@ -118,8 +118,31 @@ mentions; the member cache is the "known" set, so a member without a cached
 profile counts as having no name; the NIP-FI username stays a searchable
 alias, as in v0.13.
 
+## M4 — Solo chats and sidebar sections
+
+| Claim | Proof | Red without the change | Result |
+|---|---|---|---|
+| The register-tree codec decodes desktop and mobile documents, refuses unknown versions, round-trips and stamps edits after the newest register | `protocol::sidebar_doc` tests (8, ported with the codec from `buzz-cli`) | n/a | pass |
+| A mobile head decodes; an edit publishes one second after it, encrypted to yourself; an unchanged edit publishes nothing; foreign or newer-format heads are refused | `protocol::sidebar` tests | n/a | pass |
+| `:solo` sends exactly Buzz 1.0's captured creation command | `solo_creation_matches_the_buzz_1_0_command` against upstream `test-fixtures/solo-creation.json` | n/a | pass |
+| The newest head wins (same second: smaller id); the layout projects sections, icons, assignments and sort modes | `store::sidebar::tests::newest_sidebar_head_wins_and_projects_the_layout` | n/a | pass |
+| Sidebar groups: Solo, sections in order, Channels, Forums, DMs; synced sort per group; headings only with more than one group | `ui::sidebar::tests::channels_group_like_buzz_with_synced_sections_and_sort` | n/a | pass |
+| Against the pinned relay: a section bzz writes is listed by the `buzz` CLI; a section the CLI adds is read by bzz; a bzz reorder keeps the CLI's section; a sort mode bzz sets is listed by the CLI; a Solo chat bzz creates comes back as a private stream labeled `buzz.solo` with bzz's key as creator | `real_relay_sidebar_documents_and_solo_chats` (15 passed) | when the write ignored the relay's head, the reorder found no CLI section and the test failed (14 passed, 1 failed) | pass |
+| NIP-29's bare `["private"]` tag is read; stored channels are repaired on re-ingest | `bare_private_tag_and_solo_label_are_read_from_group_metadata`, `current_metadata_repairs_a_misread_private_channel` | the first test failed before the fix (`Public`) | pass |
+| The release TUI: `:section new Ops Team` shows an `Ops Team` group holding the channel; `:solo Plans` shows `🔒Plans` under Solo | Herdr `t14-sections-and-solo` (6 harness scenarios passed) | the first run showed `#Plans`, which exposed the private-tag bug | pass |
+
+Gates after M4: fmt clean; clippy clean (audio and view-only); 501 tests
+passed; pinned relay 15 passed. `scripts/test-relay.sh` now builds the
+`buzz` CLI at the pin for the interop test.
+
+Not covered: starred, muted and project documents; section icons from the
+TUI; inviting agents into a Solo chat; Buzz Desktop identities cannot create
+Solo chats (kind `9007` is refused by its provider, and bzz says so). When a
+group has no synced sort mode bzz keeps its own sort; desktop's default is
+alphabetical.
+
 ## Pending
 
 | Item | Why |
 |---|---|
-| M4–M5 | not started |
+| M5 | not started |

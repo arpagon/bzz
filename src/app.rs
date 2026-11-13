@@ -203,6 +203,15 @@ impl Runtime {
     }
 }
 
+/// One `:section` change, applied to the relay's current head.
+type SectionEdit = Box<
+    dyn FnOnce(
+            &mut crate::protocol::sidebar_doc::Edit<'_>,
+            &crate::protocol::sidebar_doc::Tree,
+        ) -> Result<()>
+        + Send,
+>;
+
 /// Recency of explicit mention choices (mention rules v3, section 4, rule
 /// 8.1): in memory, for 100 channels and 100 keys each, as desktop keeps it.
 #[derive(Debug, Default)]
@@ -409,6 +418,8 @@ pub struct App {
     closed_typing_channel: Option<Uuid>,
     reactions: HashMap<String, Vec<Reaction>>,
     show_system_channels: bool,
+    /// The user's synced sidebar sections and sort modes.
+    sidebar_layout: crate::domain::SidebarLayout,
     /// `(reason, note)` awaiting the report confirmation.
     /// `(reason, note, author only)` awaiting the report confirmation.
     pending_report: Option<(String, Option<String>, bool)>,
@@ -870,6 +881,7 @@ impl App {
             closed_typing_channel: None,
             reactions: HashMap::new(),
             show_system_channels: false,
+            sidebar_layout: crate::domain::SidebarLayout::default(),
             pending_report: None,
             presence: crate::protocol::presence::PresenceBook::default(),
             emoji_palette: HashMap::new(),
@@ -1812,6 +1824,14 @@ impl App {
             .store
             .call(move |store| store.channels(community))
             .await?;
+        self.sidebar_layout = match self.self_pubkey().map(str::to_owned) {
+            Some(pubkey) => {
+                self.store
+                    .call(move |store| store.sidebar_layout(community, &pubkey))
+                    .await?
+            }
+            None => crate::domain::SidebarLayout::default(),
+        };
         // Membership removed by the relay (kick, delete, moderation): keep the
         // persisted draft, close the composer and move to a joined channel.
         let removed = selected_was_member
@@ -2361,6 +2381,27 @@ impl App {
                     if let Some(summary) = parsed {
                         return Ok(self.apply_live_thread_summary(summary));
                     }
+                } else if crate::protocol::sidebar::Lane::of(&event).is_some() {
+                    // Synced sidebar sections or sort: keep the newest
+                    // readable head; an unreadable one changes nothing.
+                    let signer = runtime.signer.clone();
+                    if let Ok((lane, tree)) =
+                        crate::protocol::sidebar::decode_event(&event, &signer).await
+                    {
+                        let pubkey = event.pubkey.to_hex();
+                        let id = event.id.to_hex();
+                        let at = event.created_at.as_secs();
+                        let changed = self
+                            .store
+                            .call(move |store| {
+                                store.record_sidebar_document(
+                                    community, &pubkey, lane, &id, at, &tree,
+                                )
+                            })
+                            .await?;
+                        self.cache_dirty |= changed;
+                    }
+                    self.remember_relay_event(community, event_id);
                 } else if event.kind.as_u16() == 30_078 {
                     // Serialize read-state reduction so an echo flood cannot
                     // enqueue concurrent decrypt/write work ahead of input.
@@ -3692,7 +3733,7 @@ impl App {
                 }
             }
             FocusSurface::Channels => {
-                let ids = self.visible_channel_ids();
+                let ids = self.sidebar_row_ids();
                 match scroll {
                     ViewportScroll::Lines(lines) => {
                         self.channel_viewport.scroll_by(lines, ids.len())
@@ -6741,6 +6782,225 @@ impl App {
         })
     }
 
+    /// Read the relay's current head of a sidebar document, apply `apply`,
+    /// and publish the result once; then confirm it is the head. A head bzz
+    /// cannot read is never overwritten.
+    async fn sidebar_write(
+        &mut self,
+        lane: crate::protocol::sidebar::Lane,
+        apply: impl FnOnce(
+            &mut crate::protocol::sidebar_doc::Edit<'_>,
+            &crate::protocol::sidebar_doc::Tree,
+        ) -> Result<()>,
+    ) -> Result<()> {
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some(
+                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
+            );
+            return Ok(());
+        };
+        let community = runtime.community_id;
+        let (http, signer, messages) = (
+            runtime.http.clone(),
+            runtime.signer.clone(),
+            runtime.messages.clone(),
+        );
+        let result = crate::service::sidebar::write(&http, &signer, &messages, lane, apply).await;
+        match result {
+            Ok(Some((event, tree))) => {
+                let (pubkey, id, at) = (
+                    event.pubkey.to_hex(),
+                    event.id.to_hex(),
+                    event.created_at.as_secs(),
+                );
+                self.store
+                    .call(move |store| {
+                        store.record_sidebar_document(community, &pubkey, lane, &id, at, &tree)
+                    })
+                    .await?;
+                self.cache_dirty = true;
+                self.status_error = Some("sidebar updated".into());
+            }
+            Ok(None) => self.status_error = Some("sidebar unchanged".into()),
+            Err(error) => self.status_error = Some(format!("sidebar not changed: {error}")),
+        }
+        Ok(())
+    }
+
+    /// `:section new <name> | rename <name> | delete | move <name> | remove |
+    /// up | down`, for the selected channel's section.
+    async fn section_command(&mut self, arguments: &str) -> Result<()> {
+        use crate::protocol::{sidebar::Lane, sidebar_doc};
+        use serde_json::json;
+        let (verb, rest) = arguments.split_once(' ').unwrap_or((arguments, ""));
+        let rest = rest.trim().to_owned();
+        let channel = self
+            .current_channel()
+            .map(|channel| channel.id.hyphenated().to_string());
+        let current = self.current_channel().and_then(|channel| {
+            crate::ui::sidebar::channel_section(channel, &self.sidebar_layout).map(|s| s.id.clone())
+        });
+        let usage = "usage: :section new <name> | rename <name> | delete | move <name> | remove | up | down";
+        let need =
+            |what: Option<String>, why: &str| what.ok_or_else(|| Error::Config(why.to_owned()));
+        let channel_needed = || need(channel.clone(), "select a channel first");
+        let section_needed = || need(current.clone(), "the selected channel is in no section");
+        let resolve = |view: &sidebar_doc::Projection, key: &str| -> Result<String> {
+            let mut named = view
+                .sections
+                .iter()
+                .filter(|section| section.name == key.trim());
+            match (named.next(), named.next()) {
+                (Some(section), None) => Ok(section.id.clone()),
+                (Some(_), Some(_)) => Err(Error::Config(format!(
+                    "more than one section is named \"{key}\""
+                ))),
+                (None, _) => Err(Error::Config(format!("no section is named \"{key}\""))),
+            }
+        };
+        let plan: Result<SectionEdit> = match verb {
+            "new" | "create" if !rest.is_empty() => {
+                let id = Uuid::new_v4().to_string();
+                let channel = channel.clone();
+                Ok(Box::new(move |edit, _| {
+                    edit.create_section(&id, &rest, None);
+                    if let Some(channel) = channel {
+                        edit.set(&["a", &channel], json!(id));
+                    }
+                    Ok(())
+                }))
+            }
+            "rename" if !rest.is_empty() => section_needed().map(|id| {
+                Box::new(
+                    move |edit: &mut sidebar_doc::Edit<'_>, _: &sidebar_doc::Tree| {
+                        edit.set(&["s", &id, "name"], json!(rest));
+                        Ok(())
+                    },
+                ) as Box<_>
+            }),
+            "delete" => section_needed().map(|id| {
+                Box::new(
+                    move |edit: &mut sidebar_doc::Edit<'_>, _: &sidebar_doc::Tree| {
+                        edit.set(&["s", &id, "live"], json!(false));
+                        Ok(())
+                    },
+                ) as Box<_>
+            }),
+            "move" if !rest.is_empty() => channel_needed().map(|channel| {
+                Box::new(
+                    move |edit: &mut sidebar_doc::Edit<'_>, head: &sidebar_doc::Tree| {
+                        let id = resolve(&sidebar_doc::project(head), &rest)?;
+                        edit.set(&["a", &channel], json!(id));
+                        Ok(())
+                    },
+                ) as Box<_>
+            }),
+            "remove" => channel_needed().map(|channel| {
+                Box::new(
+                    move |edit: &mut sidebar_doc::Edit<'_>, _: &sidebar_doc::Tree| {
+                        edit.clear(&["a", &channel]);
+                        Ok(())
+                    },
+                ) as Box<_>
+            }),
+            "up" | "down" => section_needed().map(|id| {
+                let up = verb == "up";
+                Box::new(
+                    move |edit: &mut sidebar_doc::Edit<'_>, head: &sidebar_doc::Tree| {
+                        let mut ids = sidebar_doc::project(head)
+                            .sections
+                            .into_iter()
+                            .map(|section| section.id)
+                            .collect::<Vec<_>>();
+                        if let Some(at) = ids.iter().position(|live| *live == id) {
+                            let to = if up {
+                                at.saturating_sub(1)
+                            } else {
+                                (at + 1).min(ids.len() - 1)
+                            };
+                            ids.swap(at, to);
+                        }
+                        edit.reorder(&ids);
+                        Ok(())
+                    },
+                ) as Box<_>
+            }),
+            _ => Err(Error::Config(usage.into())),
+        };
+        match plan {
+            Ok(apply) => self.sidebar_write(Lane::Sections, apply).await,
+            Err(error) => {
+                self.status_error = Some(match error {
+                    Error::Config(message) => message,
+                    other => other.to_string(),
+                });
+                Ok(())
+            }
+        }
+    }
+
+    /// `:sort alpha | recent | default` for the selected channel's group.
+    async fn sort_command(&mut self, arguments: &str) -> Result<()> {
+        use serde_json::json;
+        let mode = match arguments.trim() {
+            "alpha" => Some("alpha"),
+            "recent" => Some("recent"),
+            "default" | "reset" => None,
+            _ => {
+                self.status_error = Some("usage: :sort alpha | recent | default".into());
+                return Ok(());
+            }
+        };
+        let Some(key) = self.current_channel().and_then(|channel| {
+            crate::ui::sidebar::channel_sort_key(channel, &self.sidebar_layout)
+        }) else {
+            self.status_error = Some("this group has no synced sort mode".into());
+            return Ok(());
+        };
+        self.sidebar_write(crate::protocol::sidebar::Lane::Sort, move |edit, _| {
+            match mode {
+                Some(mode) => edit.set(&["g", &key], json!(mode)),
+                None => edit.clear(&["g", &key]),
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// `:solo <name>`: create a Solo chat as Buzz 1.0 does (kind 9007,
+    /// private stream labeled `buzz.solo`; the relay records the creator).
+    async fn solo_command(&mut self, name: &str) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            self.status_error = Some("usage: :solo <name>".into());
+            return Ok(());
+        }
+        if self.refused_by_signer("create a Solo chat", &[9007]) {
+            return Ok(());
+        }
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some(
+                "cached read-only mode: restore or unlock the identity, then restart bzz".into(),
+            );
+            return Ok(());
+        };
+        let builder = match crate::protocol::sidebar::solo_creation(Uuid::new_v4(), name) {
+            Ok(builder) => builder,
+            Err(error) => {
+                self.status_error = Some(error.to_string());
+                return Ok(());
+            }
+        };
+        match runtime.messages.publish_builder(builder).await {
+            Ok(_) => {
+                self.status_error = Some(format!("Solo chat \"{name}\" created"));
+                self.spawn_directory_refresh();
+            }
+            Err(error) => self.status_error = Some(format!("Solo chat not created: {error}")),
+        }
+        Ok(())
+    }
+
     /// Refuse an action locally when the signer (Buzz Desktop) will not sign
     /// one of its kinds, so it never fails after the person commits to it.
     fn refused_by_signer(&mut self, action: &str, kinds: &[u16]) -> bool {
@@ -8164,6 +8424,13 @@ impl App {
             crate::ui::command::Command::Artifact(arguments) => {
                 return self.artifact_command(&arguments).await;
             }
+            crate::ui::command::Command::Section(arguments) => {
+                return self.section_command(&arguments).await;
+            }
+            crate::ui::command::Command::Sort(arguments) => {
+                return self.sort_command(&arguments).await;
+            }
+            crate::ui::command::Command::Solo(name) => return self.solo_command(&name).await,
             crate::ui::command::Command::Report(arguments) => {
                 // `:report author <reason> [note]` reports the selected
                 // message's author as a user instead of the message.
@@ -8361,7 +8628,23 @@ impl App {
             &self.unread_channels(),
             self.config.ui.channel_sort,
             self.show_system_channels,
+            &self.sidebar_layout,
         )
+    }
+
+    fn sidebar_rows(&self) -> Vec<crate::ui::sidebar::SidebarRow> {
+        crate::ui::sidebar::rows(
+            &self.channels,
+            &self.unread_channels(),
+            self.config.ui.channel_sort,
+            self.show_system_channels,
+            &self.sidebar_layout,
+        )
+    }
+
+    /// Viewport ids of every sidebar row, headings included.
+    fn sidebar_row_ids(&self) -> Vec<String> {
+        crate::ui::sidebar::row_ids(&self.channels, &self.sidebar_rows())
     }
 
     fn visible_channel_ids(&self) -> Vec<String> {
@@ -8387,8 +8670,19 @@ impl App {
             self.channel_viewport.selected_id = None;
             return;
         }
+        // Selection is a channel; scrolling counts heading rows too.
         let channel_ids = self.visible_channel_ids();
-        self.channel_viewport.reconcile(channel_ids);
+        if !self
+            .channel_viewport
+            .selected_id
+            .as_ref()
+            .is_some_and(|selected| channel_ids.contains(selected))
+        {
+            self.channel_viewport.selected_id = channel_ids.first().cloned();
+            self.channel_viewport.keep_selection_visible = true;
+        }
+        let row_ids = self.sidebar_row_ids();
+        self.channel_viewport.reconcile_scroll(&row_ids);
         if let Some(selected) = self.channel_viewport.selected_id.as_deref()
             && let Some(index) = self
                 .channels
@@ -8590,18 +8884,20 @@ impl App {
             }
         }
         if let Some(sidebar) = panes.sidebar {
-            let ids = self.visible_channel_ids();
+            let rows = self.sidebar_rows();
+            let ids = crate::ui::sidebar::row_ids(&self.channels, &rows);
             self.channel_viewport
                 .set_viewport_height(usize::from(inner_rect(sidebar).height), &ids);
             hit_map.push(sidebar, HitTarget::ChannelPane);
-            for (row, index) in self
-                .ordered_channel_indexes()
+            for (row, entry) in rows
                 .into_iter()
                 .skip(self.channel_viewport.scroll)
                 .take(usize::from(inner_rect(sidebar).height))
                 .enumerate()
             {
-                if let Some(area) = list_row(sidebar, row, 1) {
+                if let crate::ui::sidebar::SidebarRow::Channel(index) = entry
+                    && let Some(area) = list_row(sidebar, row, 1)
+                {
                     hit_map.push(area, HitTarget::Channel(index));
                 }
             }
@@ -8614,6 +8910,7 @@ impl App {
                 &self.unread_channels(),
                 self.config.ui.channel_sort,
                 self.show_system_channels,
+                &self.sidebar_layout,
                 &self.dm_presence,
                 self.active_huddle()
                     .and(self.current_channel().map(|channel| channel.id)),

@@ -13,6 +13,14 @@ CycloneDX SBOM is attached to releases.
 `crates/buzz-cli/src/commands/huddle_tracker.rs`, and
 `tests/fixtures/huddle_sequences.json` is copied from
 `crates/buzz-cli/tests/fixtures/huddle_sequences.json`, at that revision.
+`src/protocol/sidebar_doc.rs` is ported from
+`crates/buzz-cli/src/commands/sidebar_doc.rs`, and
+`tests/fixtures/buzz/solo-creation.json` is copied from
+`test-fixtures/solo-creation.json`, at the same revision.
+`tests/fixtures/buzz-app/*.fixtures.json` are copied unchanged from
+`block/buzz-app@dfdb5582e6810e76681e24a33c3489ba2aa77e5c` (Apache-2.0), and
+`src/protocol/identity_names.rs` and `src/protocol/mention_rules.rs`
+implement the contracts specified there.
 Copyright belongs to the Buzz contributors. See `LICENSE-APACHE` for the
 Apache License 2.0 text.
 
