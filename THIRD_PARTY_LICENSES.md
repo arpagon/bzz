@@ -21,8 +21,42 @@ CycloneDX SBOM is attached to releases.
 `block/buzz-app@dfdb5582e6810e76681e24a33c3489ba2aa77e5c` (Apache-2.0), and
 `src/protocol/identity_names.rs` and `src/protocol/mention_rules.rs`
 implement the contracts specified there.
+`agent-host/src/model.mjs` adapts the `AuthFile` class and the reading of
+Pi's default model from `src/bundled/pi/host.mjs` at
+`block/buzz-app@095df3f0f6f858b16c6d7c5e94c9cfbcd8c2360e` (Apache-2.0); the
+changes are listed at the top of that file. The rest of the agent host is
+independently written; Buzz's host was studied for its ideas (the event id as
+the request id, one conversation per channel or thread, a final send that ends
+the turn).
+`tests/fixtures/agents/buzz-acp-prompts/*.txt` are prompts produced by
+`buzz-acp` at `block/buzz@bf3bdd0eaefe39289bf9620594f254c7f68897f5`
+(`crates/buzz-acp/src/queue.rs`), recorded with disposable identities.
 Copyright belongs to the Buzz contributors. See `LICENSE-APACHE` for the
 Apache License 2.0 text.
+
+## Agent host (Node)
+
+The Pi Durable agent host in `agent-host/` is not part of the bzz binary's
+Rust dependency tree. Its packages are installed from npm on the owner's
+machine, from `agent-host/package-lock.json`, with install scripts off; bzz
+ships none of them. Direct dependencies, all pinned to exact versions:
+
+| Package | Version | License |
+|---|---|---|
+| `@earendil-works/pi-durable`, `chord`, `pi-ai`, `pi-schema` | 1.5.0 | MIT |
+| `just-bash` | 3.6.0 | Apache-2.0 |
+| `isomorphic-git` | 1.44.11 | MIT |
+| `proper-lockfile` | 4.1.2 | MIT |
+| `diff` | 8.0.4 | BSD-3-Clause |
+
+`agent-host/src/disk.mjs`, `adapters.mjs`, `env.mjs` and `git.mjs` use the
+public interfaces of those packages and copy none of their source. The lock
+file lists 204 packages under MIT, Apache-2.0, BSD, ISC, 0BSD, Zlib and
+Unlicense terms, and one under LGPL-3.0: `node-liblzma` 2.2.0, an optional
+dependency of `just-bash` for `xz` archives. It is native code that only an
+install script would build, so it never runs; installing with
+`--omit=optional` leaves it and 27 other optional packages out, and the
+host's tests pass without them.
 
 ## slk
 

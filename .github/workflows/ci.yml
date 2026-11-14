@@ -128,3 +128,33 @@ jobs:
       - name: Tone round trip and device release through a virtual device
         shell: bash
         run: ./scripts/test-audio-loopback.sh
+  agent-host:
+    # v0.15.0 M2 and M3: the Pi Durable agent host (agent-host/). Node only:
+    # no Rust, no relay, no model and no network beyond this machine.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: agent-host
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --version && git --version
+      # As bzz installs it on first use: from the lock file, with install scripts off.
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - name: Audit the packages an agent runs with
+        if: runner.os == 'Linux'
+        run: npm audit --omit=dev
+      - name: The same tests without optional packages (no native builds, no LGPL xz binding)
+        if: runner.os == 'Linux'
+        run: |
+          rm -rf node_modules
+          npm ci --ignore-scripts --omit=dev --omit=optional
+          npm test
