@@ -18,12 +18,15 @@ if (!folder) {
 	process.exit(2);
 }
 
-// Standard output carries the protocol and nothing else: what a package prints there would break it.
+// Standard output carries the protocol and nothing else. A Pi package runs in this process and may print: only the
+// protocol keeps the real stream, and whatever else writes to standard output lands in the log.
+const protocol = { write: process.stdout.write.bind(process.stdout) };
+process.stdout.write = (...args) => process.stderr.write(...args);
 console.log = console.info = console.debug = (...args) => console.error(...args);
 // Prompts and messages are never logged: the log names what happened, not what was said.
 const log = (line) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
 const { serve, VERSION } = await import("./src/host.mjs");
-const host = serve({ folder: resolve(folder), input: process.stdin, output: process.stdout, log });
+const host = serve({ folder: resolve(folder), input: process.stdin, output: protocol, log });
 
 /**
  * The host must not outlive bzz. The end of input covers it when the pipe closes. It does not when something else

@@ -21,9 +21,11 @@ export function gitMissing() {
 }
 
 /**
- * @returns `origin` (the URL), `host` (for the allow-list), `bare` (the repository on disk), `ownerPush(file, text)`
+ * @param options.auth `{ username, password }`: the remote is private. A request without exactly these is answered 401.
+ * @returns `origin` (the URL), `host` (for the allow-list), `bare` (the repository on disk), `ownerPush(file, text)`,
+ *   and `requests`: every request that arrived, as `{ method, url, authorization }`
  */
-export async function startGitServer(t, root) {
+export async function startGitServer(t, root, { auth } = {}) {
 	mkdirSync(root, { recursive: true });
 	git(root, "init", "-q", "--bare", "-b", "main", "project.git");
 	const bare = join(root, "project.git");
@@ -37,8 +39,15 @@ export async function startGitServer(t, root) {
 		git(seed, "push", "-q", bare, "main");
 	};
 	ownerPush("notes.txt", "alpha\nbeta\ngamma\n", "add notes");
+	const expected = auth && `Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString("base64")}`;
+	const requests = [];
 	const server = createServer((request, response) => {
 		const url = new URL(request.url, "http://localhost");
+		requests.push({ method: request.method, url: request.url, authorization: request.headers.authorization });
+		if (expected && request.headers.authorization !== expected) {
+			request.resume();
+			return void response.writeHead(401, { "www-authenticate": 'Basic realm="private"', "content-type": "text/plain" }).end("Authentication required\n");
+		}
 		const cgi = spawn("git", ["http-backend"], { env: { ...process.env, GIT_PROJECT_ROOT: root, GIT_HTTP_EXPORT_ALL: "1", PATH_INFO: url.pathname,
 			QUERY_STRING: url.search.slice(1), REQUEST_METHOD: request.method, CONTENT_TYPE: request.headers["content-type"] ?? "", REMOTE_ADDR: "127.0.0.1" } });
 		request.pipe(cgi.stdin);
@@ -64,5 +73,5 @@ export async function startGitServer(t, root) {
 		server.close(done);
 	}));
 	const host = `127.0.0.1:${server.address().port}`;
-	return { origin: `http://${host}/project.git`, host, bare, seed, ownerPush, pullSeed: () => git(seed, "pull", "-q", bare, "main") };
+	return { origin: `http://${host}/project.git`, host, bare, seed, ownerPush, requests, pullSeed: () => git(seed, "pull", "-q", bare, "main") };
 }

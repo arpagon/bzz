@@ -16,9 +16,15 @@ const READ_ONLY = "this folder was granted read-only";
 const WINDOWS = process.platform === "win32";
 
 export class Granted {
-	constructor({ name, path, write }) {
+	/**
+	 * @param grant.write the agent's file tools may change the folder
+	 * @param grant.exec the agent may start real commands in the folder (run.mjs). It is a separate leave: a command
+	 *   that runs is a program of the machine, and `write` does not bind it
+	 */
+	constructor({ name, path, write, exec }) {
 		this.name = name;
 		this.write = write === true;
+		this.exec = exec === true;
 		this.prefix = `/${MOUNTS}/${name}`;
 		try {
 			// The owner may name a link: what it points to is the folder he granted.

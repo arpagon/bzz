@@ -1,6 +1,7 @@
 // The agent's file tree and shell as a Pi Durable execution environment: what
 // Pi's own `read`, `write`, `edit` and `bash` tools run on. Commands run in
 // just-bash, an interpreter inside this process: no real process starts.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import { err, ExecutionError, FileError, LineScanner, ok } from "@earendil-works/pi-durable/env";
@@ -10,6 +11,11 @@ import { DIR, FILE, FsError, LINK, normalize } from "./disk.mjs";
 import { gitCommand } from "./git.mjs";
 
 export const HOME = "/home/agent";
+/**
+ * Who is running the shell command in progress: `{ conversation, signal }`. The shell is one for the whole agent, so
+ * a command of the shell that must ask bzz something, as `git` does for credentials, finds its conversation here.
+ */
+export const calling = new AsyncLocalStorage();
 const KIND = { [FILE]: "file", [DIR]: "directory", [LINK]: "symlink" };
 const CODE = { ENOENT: "not_found", ENOTDIR: "not_directory", EISDIR: "is_directory", EINVAL: "invalid", EPERM: "permission_denied", EACCES: "permission_denied", EROFS: "permission_denied" };
 const fileError = (error, path) =>
@@ -22,8 +28,9 @@ const info = (path, node) => ({ name: posix.basename(path), path, kind: KIND[nod
 /**
  * The agent's shell. Its environment is its own: nothing of this process's environment is visible in it, which
  * matters most in a remote copy, where Buzz puts the agent's key there.
+ * @param options.credential asks bzz for the credentials of a host, for `git`. Absent in a remote copy
  */
-export function createShell(vfs, { net, author }) {
+export function createShell(vfs, { net, author, credential }) {
 	for (const dir of [HOME, "/tmp"]) vfs.mkdir(dir, { recursive: true });
 	return new Bash({
 		fs: shellFs(vfs),
@@ -32,7 +39,7 @@ export function createShell(vfs, { net, author }) {
 		// just-bash blocks parts of the runtime while a script runs, and Node's TLS is among what then breaks. The
 		// request is the host's code, not the script's: the allow-list is inside it.
 		fetch: (url, options) => DefenseInDepthBox.runTrustedAsync(() => net.shell(url, options)),
-		customCommands: [gitCommand(vfs, { http: net.git, author })],
+		customCommands: [gitCommand(vfs, { http: net.git, check: net.check, author, credential })],
 	});
 }
 
@@ -41,12 +48,14 @@ export class BzzVfsEnv {
 	 * @param vfs the agent's file tree
 	 * @param bash the shell of `createShell`
 	 * @param options.agent names the file namespace: equal ids see the same files
+	 * @param options.conversation the conversation whose tools run here, for `calling`
 	 */
-	constructor(vfs, bash, { agent, cwd = HOME }) {
+	constructor(vfs, bash, { agent, cwd = HOME, conversation }) {
 		this.vfs = vfs;
 		this.bash = bash;
 		this.id = `bzz-vfs:${agent}`;
 		this.cwd = cwd;
+		this.conversation = conversation;
 	}
 
 	#abs(path) {
@@ -299,7 +308,8 @@ export class BzzVfsEnv {
 		const timer = timeout === undefined ? undefined : setTimeout(() => { timedOut = true; controller.abort(); }, timeout * 1000);
 		let result;
 		try {
-			result = await this.bash.exec(script, { cwd, signal: controller.signal, ...(options?.env && { env: options.env }) });
+			result = await calling.run({ conversation: this.conversation, signal: controller.signal }, () =>
+				this.bash.exec(script, { cwd, signal: controller.signal, ...(options?.env && { env: options.env }) }));
 		} catch (error) {
 			// just-bash lets a refused write of a redirection escape the whole script. The command failed; nothing more.
 			if (!(error instanceof FsError)) return err(new ExecutionError("spawn_error", String(error?.message ?? error), error instanceof Error ? error : undefined));

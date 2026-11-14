@@ -14,6 +14,7 @@ import { pathToFileURL } from "node:url";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import lockfile from "proper-lockfile";
+import { noPackages, packagesNaming } from "./packages.mjs";
 
 /** A lock left by a `pi` that was killed is taken over after this long. */
 const STALE_MS = 30_000;
@@ -115,20 +116,40 @@ export async function piDefaults(dir) {
 /** Pi's folder when bzz did not name it: where the `pi` command keeps it. */
 export const defaultPiDir = (env) => (env.PI_CODING_AGENT_DIR ? env.PI_CODING_AGENT_DIR.replace(/^~(?=$|[\\/])/, homedir()) : join(homedir(), ".pi", "agent"));
 
-/** A turn that cannot start because of the model. `kind` lets bzz name the failure. */
+/** A turn that cannot start because of the model. `kind` lets bzz name the failure; `data` is what else bzz is told. */
 export class ModelUnavailable extends Error {
-	constructor(kind, message) {
+	constructor(kind, message, data = {}) {
 		super(message);
 		this.kind = kind;
+		this.data = { kind, ...data };
 	}
 }
 
 /**
- * Pi's built-in providers with Pi's own login.
+ * Why a provider that neither Pi nor a loaded package has cannot run: with each package that did not load, and
+ * whether a package without a Pi Durable entry names that provider.
+ */
+async function unknownProvider(provider, packages) {
+	const naming = await packagesNaming(provider, packages.withoutEntry);
+	const entry = '("pi": {"durable": [...]} in its package.json)';
+	const lines = [`The provider "${provider}" is not available: it is not one of Pi's built-in providers, and no Pi package loaded for this agent adds it.`];
+	if (packages.off) lines.push("Pi packages are switched off for this agent.");
+	for (const source of naming) lines.push(`The package ${source} in Pi's settings names "${provider}" but has no Pi Durable entry ${entry}, so this host can load nothing from it.`);
+	const failed = packages.report.filter((entry) => !entry.loaded && !packages.withoutEntry.some((without) => without.source === entry.source));
+	for (const { source, error } of failed) lines.push(`The package ${source} did not load: ${error.replace(/\.?$/, ".")}`);
+	if (!packages.off && naming.length === 0) lines.push(`No package in Pi's settings without a Pi Durable entry names "${provider}".`);
+	lines.push("Choose another model for this agent.");
+	return new ModelUnavailable("provider_unavailable", lines.join(" "), naming.length ? { package: naming[0] } : {});
+}
+
+/**
+ * Pi's built-in providers and those of the loaded Pi packages, with Pi's own login.
+ * @param packages what `loadPackages` returned. Its providers join Pi's; one takes the place of any with the same id
  * @returns `models` for the Harness, and `choose(wanted)` for the model of one turn
  */
-export async function openModels({ piDir, env = process.env }) {
+export async function openModels({ piDir, env = process.env, packages = noPackages() }) {
 	const models = builtinModels({ credentials: new AuthFile(join(piDir, "auth.json")) });
+	for (const provider of packages.providers) models.setProvider(provider);
 	if (env[SCRIPTED]) await addScripted(models, env[SCRIPTED]);
 
 	/** The model for a turn: the one bzz names, or else Pi's default. Throws `ModelUnavailable` with the reason. */
@@ -138,8 +159,7 @@ export async function openModels({ piDir, env = process.env }) {
 		const modelId = wanted.modelId || (provider === defaults.provider ? defaults.modelId : undefined);
 		if (!provider || !modelId)
 			throw new ModelUnavailable("no_model", "This agent has no model: none is set for it in bzz, and Pi's settings name no default provider and model.");
-		if (!models.getProvider(provider))
-			throw new ModelUnavailable("provider_unavailable", `The provider "${provider}" is not available: it is not one of Pi's built-in providers, and this host does not load the providers of Pi extensions. Choose another model for this agent.`);
+		if (!models.getProvider(provider)) throw await unknownProvider(provider, packages);
 		const found = models.getModel(provider, modelId);
 		if (!found) throw new ModelUnavailable("model_unavailable", `The provider "${provider}" has no model "${modelId}". Choose another model for this agent.`);
 		let auth;
@@ -164,7 +184,7 @@ async function addScripted(models, path) {
 	const { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } = await import("@earendil-works/pi-ai/providers/faux");
 	const { default: respond } = await import(pathToFileURL(path).href);
 	const faux = fauxProvider({ provider: "scripted", models: [{ id: "scripted" }] });
-	const helpers = { message: fauxAssistantMessage, text: fauxText, call: (name, args) => fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" }) };
+	const helpers = { message: fauxAssistantMessage, text: fauxText, toolCall: fauxToolCall, call: (name, args) => fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" }) };
 	const step = (context, options) => {
 		if (faux.getPendingResponseCount() < 8) faux.appendResponses(Array(64).fill(step));
 		return respond(context, helpers, options);

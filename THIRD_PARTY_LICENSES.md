@@ -24,7 +24,11 @@ implement the contracts specified there.
 `agent-host/src/model.mjs` adapts the `AuthFile` class and the reading of
 Pi's default model from `src/bundled/pi/host.mjs` at
 `block/buzz-app@095df3f0f6f858b16c6d7c5e94c9cfbcd8c2360e` (Apache-2.0); the
-changes are listed at the top of that file. The rest of the agent host is
+changes are listed at the top of that file. `agent-host/src/packages.mjs`
+adapts `loadPackages`, `loadPackage`, `isProvider` and the import hook for
+Pi packages from the same file at the same revision, with its changes listed
+at its top; the package rules it follows are those of
+`src/bundled/pi/EXTENSIONS.md` there. The rest of the agent host is
 independently written; Buzz's host was studied for its ideas (the event id as
 the request id, one conversation per channel or thread, a final send that ends
 the turn).
