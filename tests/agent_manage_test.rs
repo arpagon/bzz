@@ -552,3 +552,90 @@ async fn the_checks_before_a_creation_say_what_to_do() {
     }
     assert!(!data.exists(), "nothing was installed or made");
 }
+
+/// v0.15 M3: deleting an agent removes the git credentials stored for it,
+/// with its key, its folder and its settings, and leaves another agent's.
+#[tokio::test]
+async fn deleting_an_agent_removes_its_git_credentials() {
+    use bzz::{
+        agents::git_credentials,
+        store::{Store, writer::StoreHandle},
+    };
+    let (world, mut config) = World::new();
+    let relay = RecordedRelay::answering(&[]);
+    let context = world.context();
+    let scout = manage::create(
+        &context,
+        &mut config,
+        &NewAgent::named("Scout"),
+        relay.as_ref(),
+    )
+    .await
+    .unwrap()
+    .agent;
+    let ranger = manage::create(
+        &context,
+        &mut config,
+        &NewAgent::named("Ranger"),
+        relay.as_ref(),
+    )
+    .await
+    .unwrap()
+    .agent;
+    let keys = world.paths.keys_dir();
+    for (agent, host) in [
+        (scout.id, "github.com"),
+        (scout.id, "gitlab.com"),
+        (ranger.id, "github.com"),
+    ] {
+        git_credentials::set(&keys, &world.owner, agent, host, "bot", "a-token-marker")
+            .await
+            .unwrap();
+    }
+    assert_eq!(git_credentials::hosts(&keys, scout.id).len(), 2);
+    // `agent show` lists the hosts, and says which is never given.
+    let lines = manage::credential_lines(
+        scout.local.as_ref().unwrap(),
+        &git_credentials::hosts(&keys, scout.id),
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| line.contains("never given until you allow the host"))
+    );
+
+    let store = StoreHandle::spawn(Store::open(world.paths.database_file()).unwrap()).unwrap();
+    let removal = manage::remove_local(&world.paths, &mut config, &store, scout.id)
+        .await
+        .unwrap();
+    assert!(
+        removal
+            .removed
+            .contains(&"its 2 stored git credential(s)".to_owned()),
+        "{removal:?}"
+    );
+    assert!(removal.left.is_empty(), "{removal:?}");
+    assert!(!git_credentials::folder(&keys, scout.id).exists());
+    assert!(git_credentials::hosts(&keys, scout.id).is_empty());
+    assert_eq!(
+        git_credentials::get(&keys, &world.owner, scout.id, "github.com")
+            .await
+            .unwrap(),
+        None
+    );
+    // Ranger's is untouched.
+    assert!(
+        git_credentials::get(&keys, &world.owner, ranger.id, "github.com")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    // Nothing of Scout is left in the keys folder.
+    let left = std::fs::read_dir(&keys)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(&scout.id.to_string()))
+        .collect::<Vec<_>>();
+    assert!(left.is_empty(), "{left:?}");
+}

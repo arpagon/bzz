@@ -98,3 +98,146 @@ pub fn environment(
             .or_else(|| real_environment(name))
     }
 }
+
+/// A private git remote for a test: the host's own test server
+/// (`agent-host/test/support/git-server.mjs`), which serves a bare
+/// repository through the real `git http-backend` on this machine and
+/// answers 401 without exactly `username` and `token`. It ends when this is
+/// dropped.
+pub struct GitRemote {
+    _server: std::process::Child,
+    /// The URL to clone.
+    pub origin: String,
+    /// As an allow-list names it: `127.0.0.1:<port>`.
+    pub host: String,
+}
+
+/// Why the git tests cannot run on this machine, or `None`.
+pub fn git_missing() -> Option<String> {
+    let exec = std::process::Command::new("git")
+        .arg("--exec-path")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let folder = PathBuf::from(String::from_utf8_lossy(&exec.stdout).trim());
+    (!folder.join("git-http-backend").is_file()).then(|| "this git has no http-backend".to_owned())
+}
+
+/// Starts the private remote under `root`, or says why it cannot and
+/// returns `None` (a failure under `BZZ_TEST_REQUIRE_NODE`).
+pub fn git_remote(
+    test: &str,
+    node: &Node,
+    root: &Path,
+    username: &str,
+    token: &str,
+) -> Option<GitRemote> {
+    use std::io::{BufRead as _, Write as _};
+    let missing = match std::process::Command::new("git").arg("--version").output() {
+        Ok(output) if output.status.success() => git_missing(),
+        _ => Some("git is not installed".to_owned()),
+    };
+    if let Some(missing) = missing {
+        let message = format!(
+            "SKIPPED {test}: it needs a real git remote that asks for credentials ({missing})"
+        );
+        assert!(
+            std::env::var_os("BZZ_TEST_REQUIRE_NODE").is_none(),
+            "{message}"
+        );
+        let _ = writeln!(std::io::stderr(), "{message}");
+        return None;
+    }
+    std::fs::create_dir_all(root).unwrap();
+    let support =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("agent-host/test/support/git-server.mjs");
+    let launcher = root.join("serve.mjs");
+    // The server is written for the host's own tests, which hand it the
+    // test to clean up after; here it runs until its input ends.
+    std::fs::write(
+        &launcher,
+        format!(
+            "import {{ startGitServer }} from {support:?};\n\
+             const [root, username, password] = process.argv.slice(2);\n\
+             const server = await startGitServer({{ after() {{}} }}, root, {{ auth: {{ username, password }} }});\n\
+             console.log(JSON.stringify({{ origin: server.origin, host: server.host }}));\n\
+             process.stdin.resume();\n\
+             process.stdin.on('end', () => process.exit(0));\n",
+            support = support.display().to_string()
+        ),
+    )
+    .unwrap();
+    let mut server = std::process::Command::new(&node.program)
+        .arg(&launcher)
+        .arg(root.join("served"))
+        .arg(username)
+        .arg(token)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(server.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let said = serde_json::from_str::<serde_json::Value>(&line)
+        .unwrap_or_else(|_| panic!("the git server did not start: {line:?}"));
+    Some(GitRemote {
+        origin: said["origin"].as_str().unwrap().to_owned(),
+        host: said["host"].as_str().unwrap().to_owned(),
+        _server: server,
+    })
+}
+
+impl Drop for GitRemote {
+    fn drop(&mut self) {
+        let _ = self._server.kill();
+        let _ = self._server.wait();
+    }
+}
+
+/// Every form a user name and a token travel or could be kept in, as the
+/// host's own tests search for them.
+pub fn secret_forms(username: &str, token: &str) -> Vec<(String, String)> {
+    use base64::Engine as _;
+    let base64 = |text: String| base64::engine::general_purpose::STANDARD.encode(text);
+    vec![
+        ("the token".to_owned(), token.to_owned()),
+        (
+            "the Basic header".to_owned(),
+            base64(format!("{username}:{token}")),
+        ),
+        (
+            "the token alone, as Basic".to_owned(),
+            base64(format!(":{token}")),
+        ),
+        ("the token in base64".to_owned(), base64(token.to_owned())),
+    ]
+}
+
+/// Every file under `root`, by path.
+pub fn files_under(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut folders = vec![root.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() && !path.is_symlink() {
+                folders.push(path);
+            } else if path.is_file() {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// Whether `needle` is anywhere in the file's bytes.
+pub fn file_holds(path: &Path, needle: &str) -> bool {
+    std::fs::read(path).is_ok_and(|bytes| {
+        !needle.is_empty()
+            && bytes
+                .windows(needle.len())
+                .any(|window| window == needle.as_bytes())
+    })
+}

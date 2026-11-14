@@ -511,3 +511,325 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
     );
     owner.lock().await;
 }
+
+/// v0.15 M3: a git credential the owner stores for an agent, with the bzz
+/// binary and without it ever being an argument, is afterwards in no file
+/// bzz wrote (the settings, the database, the agent's activity, its
+/// harness's log), in nothing a command prints, and reaches a harness only
+/// as the answer to its own request for it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_stored_git_credential_is_in_no_log_no_database_and_no_activity_line() {
+    use base64::Engine as _;
+    use bzz::{
+        agents::{
+            git_credentials::SealedGitCredentials,
+            runtime::{
+                Limits,
+                admission::{ChannelFacts, PlaceKind},
+                agent::AgentSpec,
+                host::{AgentHost, HostOptions, Offer},
+            },
+        },
+        auth::IdentityManager,
+        config::{Config as Settings, Harness, LocalAgentConfig},
+        store::{Store, writer::StoreHandle},
+    };
+    use serde_json::json;
+    use std::io::Write as _;
+    use support::agent_harness::{RecordedRelay, Script, until};
+
+    const USER: &str = "scout-bot-user-marker";
+    const TOKEN: &str = "ghp_NotARealTokenOnlyAMarkerForTheSecretScan00";
+    let temporary = tempfile::TempDir::new().unwrap();
+    let dirs = temporary.path();
+    let passphrase_text = "sentinel passphrase for the credential scan";
+    let passphrase = dirs.join("pass");
+    std::fs::write(&passphrase, format!("{passphrase_text}\n")).unwrap();
+    let run = |args: &[&str]| {
+        let output = bzz(dirs, args, &passphrase);
+        assert!(
+            output.status.success(),
+            "bzz {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    };
+    let mut printed = Vec::new();
+    printed.push((
+        "identity new".to_owned(),
+        run(&[
+            "identity",
+            "new",
+            "--label",
+            "owner",
+            "--backend",
+            "encrypted-file",
+        ]),
+    ));
+    let paths = Paths {
+        config_dir: dirs.join("c"),
+        data_dir: dirs.join("d"),
+        cache_dir: dirs.join("k"),
+    };
+    let mut settings = Settings::load(&paths).unwrap();
+    let identity = settings.identities[0].clone();
+    let community = settings
+        .add_community(
+            "scan".into(),
+            "ws://localhost:3030".into(),
+            identity.id,
+            true,
+        )
+        .unwrap();
+    settings.save(&paths).unwrap();
+    // An agent whose key bzz holds, made local by its settings.
+    printed.push((
+        "broker create".to_owned(),
+        run(&["broker", "create", "Scout", "--yes"]),
+    ));
+    let mut settings = Settings::load(&paths).unwrap();
+    let script = Script::new(&dirs.join("harness"));
+    let mut local = LocalAgentConfig::new(Harness::PiDurable);
+    local.command = script.command();
+    local.network = vec!["github.com".into()];
+    settings.hosted_agents[0].local = Some(local.clone());
+    settings.save(&paths).unwrap();
+    let agent = settings.hosted_agents[0].clone();
+
+    // Stored with the binary: the user name and the token arrive on its
+    // standard input, the passphrase on a descriptor, nothing as an argument.
+    let set = {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("exec \"$0\" \"$@\" 3<\"$BZZ_T8_PASSPHRASE\"")
+            .arg(env!("CARGO_BIN_EXE_bzz"))
+            .args(["agent", "credential", "set", "Scout", "GitHub.com"])
+            .env("BZZ_T8_PASSPHRASE", &passphrase)
+            .env("BZZ_CONFIG_DIR", dirs.join("c"))
+            .env("BZZ_DATA_DIR", dirs.join("d"))
+            .env("BZZ_CACHE_DIR", dirs.join("k"))
+            .env("BZZ_PASSPHRASE_FD", "3")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(format!("{USER}\n{TOKEN}\n").as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    assert!(
+        set.status.success(),
+        "{}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&set.stdout),
+        String::from_utf8_lossy(&set.stderr)
+    );
+    assert!(
+        said.contains("stored a git credential for Scout at github.com, sealed to your key"),
+        "{said}"
+    );
+    printed.push(("credential set".to_owned(), said));
+    let listed = run(&["agent", "credential", "list", "Scout"]);
+    assert_eq!(listed.trim(), "github.com", "hosts only");
+    printed.push(("credential list".to_owned(), listed));
+
+    // The runtime, with the owner unlocked as the TUI has him: the harness
+    // asks for the credential and is given it.
+    let secret = secrecy::SecretString::from(passphrase_text.to_owned());
+    let owner = IdentityManager::new(&paths)
+        .signer(&identity, Some(&secret))
+        .unwrap();
+    let sealed =
+        std::fs::read_to_string(paths.keys_dir().join(format!("agent-{}.nip44", agent.id)))
+            .unwrap();
+    let agent_keys = Keys::parse(&owner.decrypt_self(sealed).await.unwrap()).unwrap();
+    let relay = RecordedRelay::new(
+        agent_keys,
+        bzz::broker::relay::auth_tag(&agent.auth_tag).unwrap(),
+    );
+    let channel = uuid::Uuid::new_v4();
+    let facts = ChannelFacts {
+        id: channel,
+        name: "general".into(),
+        kind: PlaceKind::Channel,
+        members: vec![identity.pubkey.clone(), agent.pubkey.clone()],
+    };
+    relay.set_channel(facts.clone());
+    script.write(
+        json!({"own_host": true}),
+        json!([{"steps": [
+            {"request": {"method": "_bzz/credential", "params": {"sessionId": "$session", "host": "github.com"}}},
+            {"request": {"method": "_bzz/credential", "params": {"sessionId": "$session", "host": "gitlab.com"}}},
+            {"tool": "send", "arguments": {"text": "cloned", "final": true}},
+        ]}]),
+    );
+    let mut store = Store::open(paths.database_file()).unwrap();
+    store.sync_config(&settings).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let mut options = HostOptions::new(paths.data_dir.clone(), store);
+    options.limits = Limits {
+        stop_grace: std::time::Duration::from_millis(400),
+        ..Limits::default()
+    };
+    options.pi_dir = Some(dirs.join("pi"));
+    options.git_credentials = Some(std::sync::Arc::new(SealedGitCredentials {
+        keys_dir: paths.keys_dir(),
+        owner: owner.clone(),
+    }));
+    let host = AgentHost::start(options).await.unwrap();
+    host.add(
+        AgentSpec {
+            id: agent.id,
+            name: agent.label.clone(),
+            pubkey: agent.pubkey.clone(),
+            owner: identity.pubkey.clone(),
+            community,
+            local,
+        },
+        relay.clone(),
+    )
+    .await;
+    let owner_keys_event = owner
+        .sign(
+            buzz_sdk::build_message(
+                channel,
+                "clone the private one",
+                None,
+                &[agent.pubkey.as_str()],
+                false,
+                &[],
+                &[],
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    relay.seed(&owner_keys_event);
+    assert_eq!(
+        host.offer(agent.id, &owner_keys_event, &facts).await,
+        Offer::Queued
+    );
+    until(
+        "the turn to end",
+        std::time::Duration::from_secs(30),
+        || (!relay.replies_to(&owner_keys_event).is_empty()).then_some(()),
+    )
+    .await;
+    host.shutdown().await;
+    owner.lock().await;
+
+    // What the harness was answered: the stored value, for the listed host.
+    let answers = script
+        .log()
+        .into_iter()
+        .filter(|entry| entry["to"] == "_bzz/credential")
+        .map(|entry| entry["response"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        answers[0]["result"],
+        json!({"username": USER, "password": TOKEN})
+    );
+    assert!(answers[1].get("error").is_some(), "{}", answers[1]);
+
+    // What the commands print about the agent afterwards.
+    for args in [
+        &["agent", "show", "Scout"][..],
+        &["agent", "credential", "list", "Scout"][..],
+        &["agent", "list"][..],
+    ] {
+        printed.push((args.join(" "), run(args)));
+    }
+    let shown = &printed
+        .iter()
+        .find(|(name, _)| name == "agent show Scout")
+        .unwrap()
+        .1;
+    for expected in [
+        "git credentials stored for (the host only is shown):",
+        "  github.com",
+        "git credential for github.com · given",
+        "git credential for gitlab.com · refused: the host is not on its list of allowed hosts",
+    ] {
+        assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
+    }
+
+    // Everything on disk, but the harness's own script log.
+    let mut files = Vec::new();
+    for folder in ["c", "d", "k"] {
+        all_files(&dirs.join(folder), &mut files);
+    }
+    for expected in ["config.toml", "bzz.db", "activity.jsonl", "harness.log"] {
+        assert!(
+            files.iter().any(|file| file.ends_with(expected)),
+            "{expected} was searched: {files:?}"
+        );
+    }
+    assert!(
+        files.iter().any(|file| file
+            .to_string_lossy()
+            .contains(&format!("agent-{}.git/", agent.id))),
+        "the sealed credential is among the files searched"
+    );
+    let mut haystacks = files
+        .iter()
+        .map(|file| {
+            (
+                file.display().to_string(),
+                String::from_utf8_lossy(&std::fs::read(file).unwrap()).into_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    haystacks.extend(printed);
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!("{USER}:{TOKEN}"));
+    let token_base64 = base64::engine::general_purpose::STANDARD.encode(TOKEN);
+    assert_absent(
+        &haystacks,
+        &[
+            ("the token", TOKEN),
+            ("the user name", USER),
+            ("the Basic header", &basic),
+            ("the token in base64", &token_base64),
+            ("the passphrase", passphrase_text),
+        ],
+    );
+    // The one place it may be: the harness's own record of the answer to
+    // its request, and nowhere else in what the harness saw.
+    let harness_log = std::fs::read_to_string(script.log_path()).unwrap();
+    let lines = harness_log
+        .lines()
+        .filter(|line| line.contains(TOKEN))
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains("\"to\":\"_bzz/credential\""),
+        "{}",
+        lines[0]
+    );
+
+    // Deleting what the machine holds of the agent removes its credentials.
+    let removed = run(&["agent", "credential", "remove", "Scout", "github.com"]);
+    assert!(removed.contains("removed the git credential of Scout for github.com"));
+    assert_eq!(
+        run(&["agent", "credential", "list", "Scout"]).trim(),
+        "no git credential is stored for Scout"
+    );
+    assert!(
+        !paths
+            .keys_dir()
+            .join(format!("agent-{}.git", agent.id))
+            .exists()
+    );
+}

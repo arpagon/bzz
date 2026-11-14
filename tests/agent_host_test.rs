@@ -106,6 +106,16 @@ impl World {
     }
 
     async fn host_with(&self, local: LocalAgentConfig) -> AgentHost {
+        self.host_configured(local, |_| {}).await
+    }
+
+    /// A host whose options `configure` may change: whether the owner is
+    /// there to be asked, and what he stored for git.
+    async fn host_configured(
+        &self,
+        local: LocalAgentConfig,
+        configure: impl FnOnce(&mut HostOptions),
+    ) -> AgentHost {
         let mut options = HostOptions::new(self.data_dir(), self.store.clone());
         options.limits = Limits {
             stop_grace: Duration::from_millis(500),
@@ -116,6 +126,7 @@ impl World {
         options.pi_dir = Some(self.pi_dir());
         let environment = pi_host::environment(&self.node, &self.pi_dir());
         options.environment = Arc::new(environment);
+        configure(&mut options);
         let host = AgentHost::start(options).await.unwrap();
         host.add(
             AgentSpec {
@@ -589,4 +600,451 @@ async fn without_node_the_agent_says_what_to_do() {
         "nothing was installed"
     );
     host.shutdown().await;
+}
+
+/// One step of the stand-in model that starts a real command and one that
+/// reports what came back, as the text of a mention.
+fn run_and_report(folder: &str, command: &str) -> String {
+    format!(
+        "do: {}",
+        serde_json::json!([["run", {"folder": folder, "command": command}], ["report"]])
+    )
+}
+
+/// The agent's activity without the time each line starts with.
+fn activity_of(world: &World) -> Vec<String> {
+    bzz::agents::activity::recent(&world.data_dir(), world.agent, 50)
+        .iter()
+        .map(|entry| {
+            entry
+                .line()
+                .split_once(" · ")
+                .map(|(_, rest)| rest.to_owned())
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+/// The plan's M7 exit, on bzz's side, with the real host: a real command in
+/// a folder granted for commands runs after the owner allows it, exactly as
+/// he saw it, and its output reaches the chat; a refused one does not run,
+/// and the agent is told why; a folder allowed without asking is not asked
+/// about; without the TUI a command that needs approval is refused with a
+/// reason for the people in the chat.
+#[tokio::test]
+async fn the_real_host_runs_a_command_only_with_the_owners_yes() {
+    use bzz::{
+        agents::runtime::{approval::Answer, install::StartReport},
+        config::{ExecGrant, FolderGrant},
+    };
+    let Some(node) = pi_host::node_or_skip("agent_host_test").await else {
+        return;
+    };
+    let world = World::new(&node).await;
+    let grant = |name: &str, exec| {
+        let path = world.temporary.path().join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        FolderGrant {
+            name: name.into(),
+            path,
+            write: false,
+            exec,
+        }
+    };
+    let mut local = world.settings();
+    local.folders = vec![
+        grant("work", ExecGrant::Ask),
+        grant("ops", ExecGrant::WithoutAsking),
+        grant("docs", ExecGrant::No),
+    ];
+    let (work, ops, docs) = (
+        local.folders[0].path.clone(),
+        local.folders[1].path.clone(),
+        local.folders[2].path.clone(),
+    );
+    let host = world
+        .host_configured(local.clone(), |options| options.owner_present = true)
+        .await;
+    let one_question = |host: &AgentHost| {
+        let host = host.clone();
+        async move {
+            until("a command to wait for the owner", WAIT, move || {
+                let mut waiting = host.approvals();
+                (waiting.len() == 1).then(|| waiting.remove(0))
+            })
+            .await
+        }
+    };
+
+    // ---- allowed --------------------------------------------------------
+    // Two lines, a quote and a redirection: what the owner sees is what the
+    // shell gets.
+    let command = "printf 'made by a real %s\\n' command > made.txt &&\n  cat made.txt && pwd";
+    let request = world
+        .ask(&host, &run_and_report("work", command), None)
+        .await;
+    let asked = one_question(&host).await;
+    assert_eq!(asked.command, command, "the command, untouched");
+    assert_eq!((asked.folder.as_str(), &asked.path), ("work", &work));
+    assert_eq!(asked.agent_name, "Scout");
+    assert!(
+        !work.join("made.txt").exists(),
+        "nothing ran while it waited"
+    );
+    assert!(host.answer_approval(asked.id, Answer::Allow));
+    world.settled(&host, &request).await;
+    let reply = world.replies(&request);
+    assert_eq!(reply.len(), 1, "{reply:?}\n{}", world.log());
+    assert!(
+        reply[0].contains("made by a real command")
+            && reply[0].contains(&work.display().to_string()),
+        "its output reached the chat: {reply:?}\n{}",
+        world.log()
+    );
+    assert_eq!(
+        std::fs::read_to_string(work.join("made.txt")).unwrap(),
+        "made by a real command\n",
+        "it ran on this machine, in the granted folder"
+    );
+    // What the host reported at its start, kept for `agent show`.
+    let report = StartReport::read(&world.data_dir(), world.agent).expect("the start report");
+    assert_eq!(report.run, ["work", "ops"]);
+    let package =
+        serde_json::from_str::<serde_json::Value>(include_str!("../agent-host/package.json"))
+            .unwrap();
+    assert_eq!(Some(report.host.as_str()), package["version"].as_str());
+
+    // ---- refused, with a reason -------------------------------------------
+    let request = world
+        .ask(&host, &run_and_report("work", "touch refused.txt"), None)
+        .await;
+    let asked = one_question(&host).await;
+    assert!(host.answer_approval(asked.id, Answer::Refuse(Some("not in this folder".into()))));
+    world.settled(&host, &request).await;
+    let reply = world.replies(&request);
+    assert!(
+        reply.len() == 1
+            && reply[0].contains("Your owner refused this command, and says: not in this folder"),
+        "the agent was told why: {reply:?}\n{}",
+        world.log()
+    );
+    assert!(
+        !work.join("refused.txt").exists(),
+        "a refused command does not run"
+    );
+
+    // ---- allowed without asking, and a folder with no commands -------------
+    let request = world
+        .ask(
+            &host,
+            &run_and_report("ops", "echo restarted > done.txt && cat done.txt"),
+            None,
+        )
+        .await;
+    world.settled(&host, &request).await;
+    assert!(host.approvals().is_empty(), "the owner was not asked");
+    assert!(world.replies(&request)[0].contains("restarted"));
+    assert!(ops.join("done.txt").exists());
+    let request = world
+        .ask(&host, &run_and_report("docs", "touch never.txt"), None)
+        .await;
+    world.settled(&host, &request).await;
+    assert!(!docs.join("never.txt").exists());
+    assert!(host.approvals().is_empty());
+
+    assert_eq!(
+        activity_of(&world),
+        [
+            "command in /mnt/work · printf 'made by a real %s\\n' command > made.txt && (and 1 more line(s)) · asked of you",
+            "command in /mnt/work · printf 'made by a real %s\\n' command > made.txt && (and 1 more line(s)) · allowed by you",
+            "command in /mnt/work · touch refused.txt · asked of you",
+            "command in /mnt/work · touch refused.txt · refused by you: not in this folder",
+            "command in /mnt/ops · echo restarted > done.txt && cat done.txt · allowed without asking",
+        ],
+        "the host does not even ask about a folder without `exec`"
+    );
+    host.shutdown().await;
+
+    // ---- without the TUI ---------------------------------------------------
+    let host = world.host_with(local).await;
+    let request = world
+        .ask(&host, &run_and_report("work", "touch headless.txt"), None)
+        .await;
+    world.settled(&host, &request).await;
+    let reply = world.replies(&request);
+    assert!(
+        reply.len() == 1
+            && reply[0].contains("needs your owner's approval")
+            && reply[0].contains("your owner must open bzz to approve the command"),
+        "the people in the chat can be told what to do: {reply:?}\n{}",
+        world.log()
+    );
+    assert!(!work.join("headless.txt").exists());
+    // The folder allowed without asking still works with nobody there.
+    let request = world
+        .ask(
+            &host,
+            &run_and_report("ops", "echo again >> done.txt && cat done.txt"),
+            None,
+        )
+        .await;
+    world.settled(&host, &request).await;
+    assert!(world.replies(&request)[0].contains("again"));
+    host.shutdown().await;
+}
+
+/// The plan's M3 line on credentials, on bzz's side, with the real host and
+/// a private remote that demands one (`git http-backend` behind a server
+/// that answers 401): without a stored credential the clone fails with a
+/// message that says what the owner can do; with one it works; and the
+/// secret is in no log, no SQLite file and no activity line.
+#[tokio::test]
+async fn the_real_host_clones_a_private_remote_with_a_stored_credential_and_not_without() {
+    use bzz::agents::git_credentials::{self, SealedGitCredentials};
+    const USER: &str = "scout-bot";
+    const TOKEN: &str = "ghp_NotARealTokenOnlyAMarkerForThisTest0000";
+    let Some(node) = pi_host::node_or_skip("agent_host_test").await else {
+        return;
+    };
+    let world = World::new(&node).await;
+    let Some(remote) = pi_host::git_remote(
+        "agent_host_test",
+        &node,
+        &world.temporary.path().join("remote"),
+        USER,
+        TOKEN,
+    ) else {
+        return;
+    };
+    let owner = bzz::auth::signer::SignerHandle::spawn(world.owner.clone());
+    let keys = world.data_dir().join("keys");
+    let mut local = world.settings();
+    local.network = vec![remote.host.clone()];
+    let stored = |options: &mut HostOptions| {
+        options.git_credentials = Some(Arc::new(SealedGitCredentials {
+            keys_dir: keys.clone(),
+            owner: owner.clone(),
+        }));
+    };
+    let host = world.host_configured(local.clone(), stored).await;
+    let clone = |into: &str| {
+        format!(
+            "do: {}",
+            serde_json::json!([
+                ["bash", {"command": format!("{{ git clone {} {into} && cat {into}/notes.txt; }} 2>&1; echo \"exit $?\"", remote.origin)}],
+                ["report"],
+            ])
+        )
+    };
+
+    // Nothing stored: the clone fails, and the agent is told what its
+    // owner can do.
+    let request = world.ask(&host, &clone("first"), None).await;
+    world.settled(&host, &request).await;
+    let reply = world.replies(&request);
+    assert_eq!(reply.len(), 1, "{reply:?}\n{}", world.log());
+    assert!(
+        reply[0].contains(&format!(
+            "No credential is stored for {host}. Your owner can store one with `bzz agent credential set Scout {host}`.",
+            host = remote.host
+        )) && reply[0].contains("exit 128"),
+        "a clear message without a credential: {reply:?}"
+    );
+
+    // Stored for another agent only: still none for this one.
+    git_credentials::set(&keys, &owner, Uuid::new_v4(), &remote.host, USER, TOKEN)
+        .await
+        .unwrap();
+    let request = world.ask(&host, &clone("second"), None).await;
+    world.settled(&host, &request).await;
+    assert!(
+        world.replies(&request)[0].contains("No credential is stored for"),
+        "another agent's credential is not this agent's"
+    );
+
+    // Stored for this agent: bzz answers at the moment git asks, with no
+    // restart, and the clone works.
+    git_credentials::set(&keys, &owner, world.agent, &remote.host, USER, TOKEN)
+        .await
+        .unwrap();
+    let request = world.ask(&host, &clone("third"), None).await;
+    world.settled(&host, &request).await;
+    let reply = world.replies(&request);
+    assert!(
+        reply.len() == 1
+            && reply[0].contains("Cloned into")
+            && reply[0].contains("alpha\nbeta\ngamma")
+            && reply[0].contains("exit 0"),
+        "the clone works with the stored credential: {reply:?}\n{}",
+        world.log()
+    );
+    assert_eq!(
+        activity_of(&world),
+        [
+            format!("git credential for {} · none is stored", remote.host),
+            format!("git credential for {} · none is stored", remote.host),
+            format!("git credential for {} · given", remote.host),
+        ]
+    );
+    host.shutdown().await;
+
+    // A host that is no longer on the agent's list: the host itself refuses
+    // before any request leaves, and bzz is not even asked.
+    local.network.clear();
+    let host = world.host_configured(local, stored).await;
+    let request = world.ask(&host, &clone("fourth"), None).await;
+    world.settled(&host, &request).await;
+    assert!(
+        world.replies(&request)[0].contains("allow-list"),
+        "{:?}",
+        world.replies(&request)
+    );
+    assert_eq!(activity_of(&world).len(), 3, "bzz was not asked");
+    host.shutdown().await;
+
+    // The secret scan: every file bzz and the host wrote, the database, both
+    // SQLite files of the agent with what they had not yet merged, the
+    // host's log and the agent's activity.
+    let files = pi_host::files_under(&world.data_dir());
+    let named = |end: &str| {
+        files
+            .iter()
+            .any(|file| file.to_string_lossy().ends_with(end))
+    };
+    for expected in [
+        "bzz.db",
+        "memory.sqlite",
+        "files.sqlite",
+        "harness.log",
+        "activity.jsonl",
+        "started.json",
+    ] {
+        assert!(named(expected), "{expected} was searched: {files:?}");
+    }
+    for file in &files {
+        for (form, secret) in pi_host::secret_forms(USER, TOKEN) {
+            assert!(
+                !pi_host::file_holds(file, &secret),
+                "{} holds {form}",
+                file.display()
+            );
+        }
+    }
+    // The search sees what is there: what the clone brought is on the
+    // agent's disk, and what git printed is in its memory.
+    let agent_folder = process::agent_dir(&world.data_dir(), world.agent);
+    assert!(pi_host::file_holds(
+        &agent_folder.join("files.sqlite"),
+        "alpha\nbeta\ngamma"
+    ));
+    assert!(pi_host::file_holds(
+        &agent_folder.join("memory.sqlite"),
+        "Cloned into"
+    ));
+    // The stored credential is on disk only sealed.
+    assert!(
+        files
+            .iter()
+            .any(|file| file.to_string_lossy().contains(".git/"))
+    );
+    owner.lock().await;
+}
+
+/// The plan's M2 line for `agent new`: when the chosen model's provider is
+/// missing, bzz says whether a Pi package of Pi's settings names it without
+/// a Pi Durable entry. The host reports it, through its own entry for this
+/// question (`main.mjs --check-model`), with the packages loaded as an
+/// agent's start would load them, or left alone when they are off.
+#[tokio::test]
+async fn agent_new_says_which_pi_package_names_a_missing_provider() {
+    use bzz::agents::manage::{self, NewAgent};
+    let Some(node) = pi_host::node_or_skip("agent_host_test").await else {
+        return;
+    };
+    let world = World::new(&node).await;
+    // Pi's settings name two packages: one written for the `pi` command
+    // only, which registers a provider there, and one for this host too,
+    // which brings a provider of its own.
+    let pi = world.pi_dir();
+    let package = |name: &str, manifest: serde_json::Value, file: &str, text: &str| {
+        let folder = world.temporary.path().join("packages").join(name);
+        std::fs::create_dir_all(folder.join("src")).unwrap();
+        std::fs::write(folder.join("package.json"), manifest.to_string()).unwrap();
+        std::fs::write(folder.join(file), text).unwrap();
+        folder
+    };
+    let pi_only = package(
+        "pi-acme-cloud",
+        serde_json::json!({"name": "pi-acme-cloud", "type": "module", "pi": {"extensions": ["./src/index.ts"]}}),
+        "src/index.ts",
+        "export default (pi) => { pi.registerProvider(\"acme-cloud\", { baseUrl: \"https://llm.example.invalid/v1\", models: [] }); };\n",
+    );
+    let durable = package(
+        "acme",
+        serde_json::json!({"name": "acme", "type": "module", "pi": {"durable": ["./src/durable.mjs"]}}),
+        "src/durable.mjs",
+        "import { fauxProvider } from \"@earendil-works/pi-ai/providers/faux\";\n\
+         const faux = fauxProvider({ provider: \"acme\", models: [{ id: \"acme-1\" }] });\n\
+         export default async () => ({ providers: [faux.provider] });\n",
+    );
+    std::fs::create_dir_all(&pi).unwrap();
+    std::fs::write(
+        pi.join("settings.json"),
+        serde_json::json!({"packages": [pi_only, durable]}).to_string(),
+    )
+    .unwrap();
+    let environment: bzz::agents::runtime::agent::Environment =
+        Arc::new(pi_host::environment(&world.node, &pi));
+    let check = async |model: &str, packages: bool| {
+        let mut new = NewAgent::named("Scout");
+        new.model = manage::parse_model(model, None).unwrap();
+        new.packages = packages;
+        manage::preflight(&world.data_dir(), &new, Some(&pi), &environment, &|_| {})
+            .await
+            .map(|preflight| preflight.notes.join("\n"))
+            .map_err(|error| error.to_string())
+    };
+
+    // The provider a package names without an entry for this host.
+    let missing = check("acme-cloud/big", true).await.unwrap_err();
+    for said in [
+        "the model acme-cloud/big cannot be used (provider_unavailable)",
+        &format!(
+            "bzz found the Pi package {} in Pi's settings",
+            pi_only.display()
+        ),
+        "names this provider but has no Pi Durable entry",
+        "the `pi` command can use it, bzz's host cannot",
+    ] {
+        assert!(missing.contains(said), "`{said}` in: {missing}");
+    }
+    // A provider nothing names.
+    let nobody = check("nobody-has-this/big", true).await.unwrap_err();
+    assert!(
+        nobody.contains("bzz found no Pi package in Pi's settings that names this provider"),
+        "{nobody}"
+    );
+    // A provider that a package with an entry brings: it can be used, which
+    // the check did not know before it loaded the packages.
+    let found = check("acme/acme-1", true).await.unwrap();
+    assert!(found.contains("model acme/acme-1"), "{found}");
+    // With packages off for the agent, no package is looked at, and bzz
+    // says so.
+    let off = check("acme/acme-1", false).await.unwrap_err();
+    assert!(
+        off.contains("(provider_unavailable)")
+            && off.contains("Pi packages are switched off for this agent"),
+        "{off}"
+    );
+    assert!(
+        !off.contains("bzz found the Pi package"),
+        "nothing was looked for: {off}"
+    );
+    // The stand-in model, whatever the packages.
+    assert!(
+        check("scripted/scripted", false)
+            .await
+            .unwrap()
+            .contains("model scripted/scripted")
+    );
 }
