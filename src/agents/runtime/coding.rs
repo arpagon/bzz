@@ -1181,7 +1181,15 @@ pub async fn report(
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Report {
     let program = match find_program(spec, &lookup).await {
-        Ok(program) => check_range(spec, &program).map(|()| program),
+        Ok(program) => check_range(spec, &program)
+            .and_then(|()| {
+                if needs_bubblewrap(spec.harness) && install::on_path("bwrap", &lookup).is_empty() {
+                    Err(Problem::BubblewrapMissing)
+                } else {
+                    Ok(())
+                }
+            })
+            .map(|()| program),
         Err(problem) => Err(problem),
     };
     Report {
@@ -1651,12 +1659,19 @@ mod tests {
                 &quiet,
             )
             .await;
+            let only = alone.to_string_lossy().into_owned();
+            let reported = report(&data, &GROK, move |name: &str| {
+                (name == "PATH").then(|| only.clone())
+            })
+            .await;
             if cfg!(target_os = "linux") {
                 let problem = without.unwrap_err();
                 assert_eq!(problem, Problem::BubblewrapMissing);
                 assert!(problem.to_string().contains("`bubblewrap`"), "{problem}");
+                // `agent doctor` says the same, without starting anything.
+                assert_eq!(reported.program.unwrap_err(), Problem::BubblewrapMissing);
             } else {
-                assert!(without.is_ok());
+                assert!(without.is_ok() && reported.program.is_ok());
             }
             program(&bin, "bwrap", "exit 0");
             // The tested version, behind a link as an installer leaves it.
