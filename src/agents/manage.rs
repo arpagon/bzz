@@ -1023,6 +1023,10 @@ pub async fn preflight(
     } else {
         notes.push("model: Pi's own default, read when the agent is first asked".into());
     }
+    // What the answers give the agent beyond its own disk, said before the
+    // owner confirms: where it may run real commands and whether he is
+    // asked, and whether Pi packages are loaded.
+    notes.extend(capability::record_for(&new.settings()).notes);
     Ok(Preflight { notes })
 }
 

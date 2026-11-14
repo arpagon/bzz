@@ -623,6 +623,20 @@ async fn edit(paths: &Paths, config: &mut Config, args: EditArgs) -> Result<()> 
     }
     config.save(paths)?;
     println!("{} saved", agent.label);
+    // A change to what the agent may do on this machine is said back.
+    if (change.folders.is_some() || change.packages.is_some())
+        && let Some(settings) = &agent.local
+    {
+        for line in manage::settings_lines(settings)
+            .into_iter()
+            .filter(|line| line.starts_with("folder") || line.starts_with("Pi packages"))
+        {
+            println!("{line}");
+        }
+        for note in capability::record_for(settings).notes {
+            println!("{note}");
+        }
+    }
     if republish.any() {
         let (owner, relay) = owner_relay(paths, config, &agent).await?;
         let federated = adapter_of(config, agent.community);

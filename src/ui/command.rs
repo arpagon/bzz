@@ -125,6 +125,8 @@ mod tests {
         assert_eq!(parse(":theme reload"), Command::ThemeReload);
         assert_eq!(parse(":media reload"), Command::MediaReload);
         assert_eq!(parse(":agents"), Command::Agents(String::new()));
+        assert_eq!(parse(":approvals"), Command::Approvals);
+        assert_eq!(parse(":approve"), Command::Approvals);
         assert_eq!(
             parse(":agents directory"),
             Command::Agents("directory".into())

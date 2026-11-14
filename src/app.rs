@@ -8051,6 +8051,10 @@ impl App {
         };
         let mut changed = ids(&waiting) != ids(&self.approvals);
         self.approvals = waiting;
+        // A notice that nothing waits is no longer true.
+        if !self.approvals.is_empty() && self.status_error.as_deref() == Some(NOTHING_WAITS) {
+            self.status_error = None;
+        }
         // The time left is on screen: it is drawn again each second.
         let clock = self.approvals.first().map(seconds_left);
         changed |= clock != self.approval_clock;
@@ -8105,7 +8109,7 @@ impl App {
     fn open_approval(&mut self) {
         self.refresh_approvals();
         let Some(first) = self.approvals.first() else {
-            self.status_error = Some("no command waits for your answer".into());
+            self.status_error = Some(NOTHING_WAITS.into());
             return;
         };
         self.approval.show(first.id);
@@ -11308,6 +11312,9 @@ fn read_tail(path: &std::path::Path, bytes: u64) -> String {
     let _ = file.take(bytes).read_to_end(&mut tail);
     String::from_utf8_lossy(&tail).into_owned()
 }
+
+/// What `:approvals` says when no agent asks for anything.
+const NOTHING_WAITS: &str = "no command waits for your answer";
 
 /// The whole seconds before a command that waits counts as refused.
 fn seconds_left(asked: &crate::agents::runtime::approval::Asked) -> u64 {
