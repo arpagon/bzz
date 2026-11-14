@@ -18,6 +18,7 @@ Start with the [README](../README.md). Everything here is plain Markdown.
 
 | Version | Notes | Validation | Plan |
 |---|---|---|---|
+| v0.15.0 | in planning | — | [plan (draft)](planning/2026-11-13/v0.15.0.md) |
 | v0.14.0 | [notes](release-v0.14.0.md) | [validation](validation-v0.14.0.md) | [plan](planning/2026-11-12/v0.14.0.md) |
 | v0.13.0 | [notes](release-v0.13.0.md) | [validation](validation-v0.13.0.md) | [plan](planning/2026-11-07/v0.13.0.md) |
 | v0.12.1 | [notes](release-v0.12.1.md) | [validation](validation-v0.12.1.md) | [plan](planning/2026-08-28/v0.12.1.md) |
