@@ -107,7 +107,7 @@ pub fn pi_dir(lookup: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
     let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
     match lookup("PI_CODING_AGENT_DIR").filter(|value| !value.trim().is_empty()) {
         Some(value) => Some(match (value.strip_prefix('~'), &home) {
-            (Some(rest), Some(home)) if rest.is_empty() => home.clone(),
+            (Some(""), Some(home)) => home.clone(),
             (Some(rest), Some(home)) if rest.starts_with(['/', '\\']) => home.join(&rest[1..]),
             _ => PathBuf::from(value),
         }),
@@ -643,9 +643,7 @@ pub enum ModelCheck {
     Unknown(String),
 }
 
-/// Asks the installed host's own code whether `model` can be used with Pi's
-/// login in `pi_dir`: the same check a turn makes, before anything exists.
-/// It reads Pi's login as the host does and starts no agent.
+/// The question of [`check_model`], asked in the host's own Node.
 const MODEL_PROBE: &str = r#"
 import { pathToFileURL } from "node:url";
 const [modelFile, piDir, wanted] = process.argv.slice(-3);
@@ -660,6 +658,9 @@ try {
 }
 "#;
 
+/// Asks the installed host's own code whether `model` can be used with Pi's
+/// login in `pi_dir`: the same check a turn makes, before anything exists.
+/// It reads Pi's login as the host does and starts no agent.
 pub async fn check_model(
     node: &Node,
     host: &Path,
@@ -1149,7 +1150,7 @@ mod tests {
             assert!(old.exists());
             // None is running: the other version goes, this one stays.
             std::fs::remove_dir_all(&run).unwrap();
-            assert_eq!(remove_unused_installs(&data), [old.clone()]);
+            assert_eq!(remove_unused_installs(&data), std::slice::from_ref(&old));
             assert!(!old.exists() && host_dir(&data).exists());
             assert!(root.join("install.log").exists());
         }

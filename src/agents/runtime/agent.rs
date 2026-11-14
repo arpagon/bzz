@@ -37,6 +37,7 @@ use crate::{
         acp::{CallError, Connection, Incoming, RpcError},
         admission::{self, ChannelFacts, PlaceKind, Refusal, ReplyTarget, Rule},
         credentials::Credentials,
+        install,
         process::{self, Harness, Launch},
         prompt::{self, PromptContext},
         relay::{self, AgentRelay, Published},
@@ -78,6 +79,17 @@ impl AgentSpec {
     }
 }
 
+/// Reads one variable of bzz's own environment.
+pub type Environment = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+/// bzz's own host, ready to be started: the Node that runs it and the
+/// folder it is installed in.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PiHost {
+    pub node: PathBuf,
+    pub directory: PathBuf,
+}
+
 /// What every agent of a host shares.
 pub struct Shared {
     pub data_dir: PathBuf,
@@ -89,6 +101,31 @@ pub struct Shared {
     /// Pi's own configuration folder, passed on to bzz's host (D11).
     pub pi_dir: Option<PathBuf>,
     pub limits: Limits,
+    pub environment: Environment,
+    /// Found and installed once, at the first start that needs it.
+    pub pi_host: tokio::sync::Mutex<Option<PiHost>>,
+}
+
+impl Shared {
+    /// bzz's own host, installed now when this is its first use. One caller
+    /// installs; the others wait for it.
+    pub async fn pi_host(&self) -> std::result::Result<PiHost, install::Problem> {
+        let mut known = self.pi_host.lock().await;
+        if let Some(host) = known.as_ref()
+            && install::is_installed(&self.data_dir)
+        {
+            return Ok(host.clone());
+        }
+        let lookup = |name: &str| (self.environment)(name);
+        let node = install::find_node(lookup).await?;
+        let directory = install::ensure_installed(&self.data_dir, &node, lookup).await?;
+        let host = PiHost {
+            node: node.program,
+            directory,
+        };
+        *known = Some(host.clone());
+        Ok(host)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -505,21 +542,39 @@ impl Agent {
         open
     }
 
-    fn launch(&self) -> Result<Launch> {
+    /// What to start for this agent. bzz's own host is `node <host
+    /// folder>/main.mjs <agent folder>`, installed first when this is its
+    /// first use; `command` in the settings replaces the program, for a
+    /// harness run from a checkout.
+    async fn launch(&self) -> std::result::Result<Launch, String> {
         let directory = process::agent_dir(&self.shared.data_dir, self.spec.id);
-        process::create_private_dir(&directory)?;
+        process::create_private_dir(&directory).map_err(|error| error.to_string())?;
         let local = &self.spec.local;
         let own_host = local.harness == HarnessKind::PiDurable;
-        let Some((program, arguments)) = local.command.split_first() else {
-            return Err(Error::Config(match local.harness {
-                HarnessKind::PiDurable => "the Pi Durable host is not installed".into(),
-                other => format!(
-                    "the {} harness is not available in this bzz",
-                    other.as_str()
-                ),
-            }));
+        let (program, mut args) = match local.command.split_first() {
+            Some((program, arguments)) => (program.clone(), arguments.to_vec()),
+            None if own_host => {
+                if !install::is_installed(&self.shared.data_dir) {
+                    self.state().problem =
+                        Some("installing the Pi Durable host (first use)".into());
+                }
+                let host = self
+                    .shared
+                    .pi_host()
+                    .await
+                    .map_err(|problem| problem.to_string())?;
+                (
+                    host.node.display().to_string(),
+                    vec![host.directory.join("main.mjs").display().to_string()],
+                )
+            }
+            None => {
+                return Err(format!(
+                    "the {} harness is not available in this version yet",
+                    local.harness.as_str()
+                ));
+            }
         };
-        let mut args = arguments.to_vec();
         // bzz's own host works in the agent's folder and nowhere else; a
         // coding harness gets a working folder inside it and the owner's
         // home, where its own sign-in is.
@@ -532,9 +587,9 @@ impl Agent {
             (directory.join("workspace"), home)
         };
         Ok(Launch {
-            program: program.clone(),
+            program,
             args,
-            env: process::base_environment(&home, |name| std::env::var(name).ok()),
+            env: process::base_environment(&home, |name| (self.shared.environment)(name)),
             cwd,
             log: directory.join("harness.log"),
         })
@@ -570,7 +625,7 @@ impl Agent {
     }
 
     async fn start_run(self: &Arc<Self>) -> std::result::Result<Arc<Run>, String> {
-        let launch = self.launch().map_err(|error| error.to_string())?;
+        let launch = self.launch().await?;
         let run_dir = process::run_dir(&self.shared.data_dir);
         let (harness, stdin, stdout) =
             Harness::spawn(&launch, &run_dir, self.spec.id).map_err(|error| error.to_string())?;

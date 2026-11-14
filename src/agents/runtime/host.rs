@@ -21,9 +21,10 @@ use crate::{
     agents::runtime::{
         Limits,
         admission::{ChannelFacts, Refusal},
-        agent::{Agent, AgentSpec, AgentStatus, Phase, Shared},
+        agent::{Agent, AgentSpec, AgentStatus, Environment, Phase, Shared},
         credentials::{Credentials, Refused},
         endpoint::{self, Denied, ToolsServer},
+        install,
         process::{self, Leftover},
         relay::{AgentRelay, RelayPort},
         tools::ToolReply,
@@ -42,6 +43,9 @@ pub struct HostOptions {
     pub tools_program: Option<PathBuf>,
     /// Pi's own configuration folder, told to bzz's host; never read here.
     pub pi_dir: Option<PathBuf>,
+    /// How bzz's own environment is read, to find Node and to build a
+    /// harness's environment. Tests give their own.
+    pub environment: Environment,
 }
 
 impl HostOptions {
@@ -51,8 +55,8 @@ impl HostOptions {
             store,
             limits: Limits::default(),
             tools_program: None,
-            pi_dir: directories::BaseDirs::new()
-                .map(|dirs| dirs.home_dir().join(".pi").join("agent")),
+            pi_dir: install::pi_dir(|name| std::env::var(name).ok()),
+            environment: Arc::new(|name| std::env::var(name).ok()),
         }
     }
 }
@@ -102,6 +106,9 @@ impl AgentHost {
     pub async fn start(options: HostOptions) -> Result<Self> {
         let run_dir = process::run_dir(&options.data_dir);
         let leftovers = process::sweep_with_grace(&run_dir, options.limits.stop_grace).await;
+        // Installs of the host that an older bzz made, once nothing runs
+        // from them.
+        install::remove_unused_installs(&options.data_dir);
         let credentials = Arc::new(Credentials::default());
         let agents = Agents::default();
         let denied = |refused| match refused {
@@ -148,6 +155,8 @@ impl AgentHost {
                 tools_address: server.address,
                 tools_program,
                 pi_dir: options.pi_dir,
+                environment: options.environment,
+                pi_host: tokio::sync::Mutex::new(None),
                 limits: options.limits,
             }),
             agents,
