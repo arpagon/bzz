@@ -117,6 +117,19 @@ pub struct StoredReply {
     pub published: bool,
 }
 
+/// One request as `bzz agent show` and the agents panel list it: where its
+/// turn stands and how it ended. No content.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecentTurn {
+    pub request_id: String,
+    pub channel_id: Uuid,
+    /// `queued`, `delivered`, `replied`, `ended` or `failed`.
+    pub state: String,
+    pub failure: Option<String>,
+    pub attempts: u32,
+    pub updated_at: u64,
+}
+
 /// The outcome of claiming a request's one final reply.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Claim {
@@ -396,6 +409,176 @@ impl Store {
     }
 }
 
+/// How long a request that is over is kept, with its stored reply: for
+/// `bzz agent show`, and so that an event the relay sends again is known.
+pub const SETTLED_RETENTION_SECONDS: u64 = 30 * 24 * 3600;
+/// The most finished requests kept for one agent, whatever their age.
+pub const SETTLED_KEPT: usize = 1000;
+/// A stored session id not used for this long is forgotten: the harness
+/// then opens a new session for that conversation.
+pub const SESSION_RETENTION_SECONDS: u64 = 30 * 24 * 3600;
+
+/// What [`Store::agent_prune`] removed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Pruned {
+    pub requests: usize,
+    pub sessions: usize,
+}
+
+impl Store {
+    /// Removes what one agent no longer needs, by this rule:
+    ///
+    /// - a request that is over (replied, ended or failed) goes, with its
+    ///   stored reply, when it last changed more than
+    ///   [`SETTLED_RETENTION_SECONDS`] ago, or when [`SETTLED_KEPT`] newer
+    ///   finished requests exist;
+    /// - never a request that is queued or being answered, and never one
+    ///   whose stored reply the relay has not acknowledged;
+    /// - a stored session id goes when it was last used more than
+    ///   [`SESSION_RETENTION_SECONDS`] ago.
+    ///
+    /// The intake never admits an event older than a day, so a request that
+    /// was removed cannot come back as a new one.
+    pub fn agent_prune(&mut self, agent: Uuid, now: u64) -> Result<Pruned> {
+        const OVER: &str = "state IN ('replied','ended','failed')
+               AND NOT EXISTS(SELECT 1 FROM agent_replies r
+                 WHERE r.agent_id=agent_inbox.agent_id AND r.request_id=agent_inbox.request_id
+                   AND r.published_at IS NULL)";
+        let transaction = self.connection.transaction()?;
+        let id = agent.to_string();
+        let doomed = format!(
+            "SELECT request_id FROM agent_inbox WHERE agent_id=?1 AND {OVER}
+               AND (updated_at<?2 OR request_id NOT IN (
+                 SELECT request_id FROM agent_inbox WHERE agent_id=?1 AND {OVER}
+                 ORDER BY updated_at DESC,request_id LIMIT ?3))"
+        );
+        let before = u64_to_i64(now.saturating_sub(SETTLED_RETENTION_SECONDS))?;
+        let kept = i64::try_from(SETTLED_KEPT).unwrap_or(i64::MAX);
+        // The replies first: they refer to their requests.
+        transaction.execute(
+            &format!("DELETE FROM agent_replies WHERE agent_id=?1 AND request_id IN ({doomed})"),
+            params![id, before, kept],
+        )?;
+        let requests = transaction.execute(
+            &format!("DELETE FROM agent_inbox WHERE agent_id=?1 AND request_id IN ({doomed})"),
+            params![id, before, kept],
+        )?;
+        let sessions = transaction.execute(
+            "DELETE FROM agent_sessions WHERE agent_id=?1 AND updated_at<?2",
+            params![
+                id,
+                u64_to_i64(now.saturating_sub(SESSION_RETENTION_SECONDS))?
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(Pruned { requests, sessions })
+    }
+
+    /// How many requests of `author` the agent admitted in `place` since
+    /// `since` (when bzz received them).
+    pub fn agent_inbox_recent_from(
+        &self,
+        agent: Uuid,
+        place: &str,
+        author: &str,
+        since: u64,
+    ) -> Result<u32> {
+        Ok(self.connection.query_row(
+            "SELECT COUNT(*) FROM agent_inbox WHERE agent_id=?1 AND place=?2 AND author=?3 AND received_at>=?4",
+            params![agent.to_string(), place, author, u64_to_i64(since)?],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// The newest requests of one agent, newest first.
+    pub fn agent_recent_turns(&self, agent: Uuid, limit: usize) -> Result<Vec<RecentTurn>> {
+        let mut statement = self.connection.prepare(
+            "SELECT request_id,channel_id,state,failure,attempts,updated_at FROM agent_inbox
+             WHERE agent_id=?1 ORDER BY updated_at DESC,created_at DESC,request_id LIMIT ?2",
+        )?;
+        Ok(statement
+            .query_map(
+                params![agent.to_string(), i64::try_from(limit).unwrap_or(10)],
+                |row| {
+                    Ok(RecentTurn {
+                        request_id: row.get(0)?,
+                        channel_id: Uuid::parse_str(&row.get::<_, String>(1)?)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        state: row.get(2)?,
+                        failure: row.get(3)?,
+                        attempts: row.get(4)?,
+                        updated_at: u64::try_from(row.get::<_, i64>(5)?).unwrap_or_default(),
+                    })
+                },
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// `(id, name, role)` of every channel the relay's member lists, as last
+    /// seen here, hold `pubkey` in.
+    pub fn agent_channels(
+        &self,
+        community: Uuid,
+        pubkey: &str,
+    ) -> Result<Vec<(Uuid, String, String)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT m.channel_id,c.name,m.role FROM memberships m
+             JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
+             WHERE m.community_id=?1 AND m.pubkey=?2 ORDER BY c.name COLLATE NOCASE,m.channel_id LIMIT 500",
+        )?;
+        Ok(statement
+            .query_map(
+                params![community.to_string(), pubkey.to_ascii_lowercase()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )?
+            .filter_map(|row| match row {
+                Ok((id, name, role)) => Uuid::parse_str(&id).ok().map(|id| Ok((id, name, role))),
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<std::result::Result<Vec<_>, rusqlite::Error>>()?)
+    }
+
+    /// The channels of a community called `name`, whatever the case.
+    pub fn channels_named(&self, community: Uuid, name: &str) -> Result<Vec<Uuid>> {
+        let mut statement = self.connection.prepare(
+            "SELECT channel_id FROM channels WHERE community_id=?1 AND name=?2 COLLATE NOCASE ORDER BY channel_id LIMIT 10",
+        )?;
+        Ok(statement
+            .query_map(params![community.to_string(), name], |row| {
+                row.get::<_, String>(0)
+            })?
+            .filter_map(|row| row.ok().and_then(|id| Uuid::parse_str(&id).ok()))
+            .collect())
+    }
+
+    /// Removes every row bzz keeps for one agent: its requests with their
+    /// stored replies, its sessions and its cursor. Returns how many.
+    pub fn agent_forget(&mut self, agent: Uuid) -> Result<usize> {
+        let transaction = self.connection.transaction()?;
+        let id = agent.to_string();
+        let mut rows = 0;
+        for table in [
+            "agent_replies",
+            "agent_inbox",
+            "agent_sessions",
+            "agent_cursors",
+        ] {
+            rows += transaction.execute(
+                &format!("DELETE FROM {table} WHERE agent_id=?1"),
+                [id.as_str()],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(rows)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,5 +792,208 @@ mod tests {
             Some(50),
             "never moves back"
         );
+    }
+
+    /// Sets when a request last changed, as time would.
+    fn age(store: &Store, agent: Uuid, request: &str, at: u64) {
+        store
+            .connection
+            .execute(
+                "UPDATE agent_inbox SET updated_at=?3,received_at=?3 WHERE agent_id=?1 AND request_id=?2",
+                params![agent.to_string(), request, at as i64],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn finished_requests_and_idle_sessions_are_pruned_by_the_stated_rule() {
+        let mut store = Store::open_memory().unwrap();
+        let (agent, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let now = 10_000_000;
+        let old = now - SETTLED_RETENTION_SECONDS - 1;
+        let recent = now - SETTLED_RETENTION_SECONDS + 60;
+        let settle = |store: &mut Store, agent: Uuid, id: &str, published: bool, at: u64| {
+            store.agent_inbox_offer(&request(agent, id, 1)).unwrap();
+            store
+                .agent_reply_claim(agent, id, &format!("r-{id}"), "{}", ReplyOrigin::Send, None)
+                .unwrap();
+            if published {
+                store.agent_reply_published(agent, id).unwrap();
+            }
+            age(store, agent, id, at);
+        };
+        settle(&mut store, agent, "old-answered", true, old);
+        settle(&mut store, agent, "old-unacknowledged", false, old);
+        settle(&mut store, agent, "recent-answered", true, recent);
+        settle(&mut store, other, "old-answered", true, old);
+        // Old and still open: queued, and handed to a harness.
+        store
+            .agent_inbox_offer(&request(agent, "old-queued", 1))
+            .unwrap();
+        age(&store, agent, "old-queued", old);
+        store
+            .agent_inbox_offer(&request(agent, "old-delivered", 1))
+            .unwrap();
+        store.agent_inbox_delivered(agent, "old-delivered").unwrap();
+        age(&store, agent, "old-delivered", old);
+        // Old and over without a stored reply.
+        store
+            .agent_inbox_offer(&request(agent, "old-ended", 1))
+            .unwrap();
+        store
+            .agent_inbox_settle(agent, "old-ended", RequestState::Ended, None)
+            .unwrap();
+        age(&store, agent, "old-ended", old);
+        store.set_agent_session(agent, "idle", "s1").unwrap();
+        store.set_agent_session(agent, "used", "s2").unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE agent_sessions SET updated_at=?2 WHERE agent_id=?1 AND place='idle'",
+                params![
+                    agent.to_string(),
+                    (now - SESSION_RETENTION_SECONDS - 1) as i64
+                ],
+            )
+            .unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE agent_sessions SET updated_at=?2 WHERE agent_id=?1 AND place='used'",
+                params![agent.to_string(), now as i64],
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.agent_prune(agent, now).unwrap(),
+            Pruned {
+                requests: 2,
+                sessions: 1
+            }
+        );
+        let left = |store: &Store, agent: Uuid| {
+            let mut statement = store
+                .connection
+                .prepare("SELECT request_id FROM agent_inbox WHERE agent_id=?1 ORDER BY request_id")
+                .unwrap();
+            statement
+                .query_map([agent.to_string()], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(
+            left(&store, agent),
+            [
+                "old-delivered",
+                "old-queued",
+                "old-unacknowledged",
+                "recent-answered"
+            ],
+            "what is open, unacknowledged or recent stays"
+        );
+        assert!(
+            store
+                .agent_reply_get(agent, "old-answered")
+                .unwrap()
+                .is_none(),
+            "the stored reply goes with its request"
+        );
+        assert!(
+            store
+                .agent_reply_get(agent, "old-unacknowledged")
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(store.agent_session(agent, "idle").unwrap(), None);
+        assert_eq!(
+            store.agent_session(agent, "used").unwrap().as_deref(),
+            Some("s2")
+        );
+        assert_eq!(
+            left(&store, other),
+            ["old-answered"],
+            "another agent is not touched"
+        );
+        assert_eq!(store.agent_prune(agent, now).unwrap(), Pruned::default());
+
+        // Whatever their age, only so many finished requests are kept.
+        let many = Uuid::new_v4();
+        for index in 0..SETTLED_KEPT + 3 {
+            let id = format!("m{index:05}");
+            store.agent_inbox_offer(&request(many, &id, 1)).unwrap();
+            store
+                .agent_inbox_settle(many, &id, RequestState::Ended, None)
+                .unwrap();
+            age(&store, many, &id, now - 5000 + index as u64);
+        }
+        assert_eq!(store.agent_prune(many, now).unwrap().requests, 3);
+        let kept = left(&store, many);
+        assert_eq!(kept.len(), SETTLED_KEPT);
+        assert_eq!(kept[0], "m00003", "the oldest went");
+    }
+
+    #[test]
+    fn requests_of_one_author_in_one_place_are_counted_and_an_agent_is_forgotten_whole() {
+        let mut store = Store::open_memory().unwrap();
+        let agent = Uuid::new_v4();
+        let (place, author) = (Uuid::nil().to_string(), "a".repeat(64));
+        for id in ["m1", "m2", "m3"] {
+            store.agent_inbox_offer(&request(agent, id, 1)).unwrap();
+        }
+        let mut elsewhere = request(agent, "m4", 1);
+        elsewhere.place = "another".into();
+        store.agent_inbox_offer(&elsewhere).unwrap();
+        let mut by_another = request(agent, "m5", 1);
+        by_another.author = "b".repeat(64);
+        store.agent_inbox_offer(&by_another).unwrap();
+        age(&store, agent, "m1", 100);
+        age(&store, agent, "m2", 200);
+        age(&store, agent, "m3", 300);
+        age(&store, agent, "m4", 50);
+        age(&store, agent, "m5", 60);
+        let count = |since| {
+            store
+                .agent_inbox_recent_from(agent, &place, &author, since)
+                .unwrap()
+        };
+        assert_eq!((count(0), count(200), count(301)), (3, 2, 0));
+
+        // The newest turns first, with how each ended and no content.
+        store
+            .agent_reply_claim(
+                agent,
+                "m3",
+                "r3",
+                "{}",
+                ReplyOrigin::Failure,
+                Some("timeout"),
+            )
+            .unwrap();
+        age(&store, agent, "m3", 300);
+        let turns = store.agent_recent_turns(agent, 2).unwrap();
+        assert_eq!(
+            turns
+                .iter()
+                .map(|turn| (
+                    turn.request_id.as_str(),
+                    turn.state.as_str(),
+                    turn.failure.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            [("m3", "failed", Some("timeout")), ("m2", "queued", None)]
+        );
+
+        // `agent delete`: nothing of the agent is left, and nothing of
+        // another agent goes.
+        let other = Uuid::new_v4();
+        store.agent_inbox_offer(&request(other, "m1", 1)).unwrap();
+        store.set_agent_session(agent, "place", "s").unwrap();
+        store.advance_agent_cursor(agent, 5).unwrap();
+        assert_eq!(store.agent_forget(agent).unwrap(), 8);
+        assert!(store.agent_recent_turns(agent, 10).unwrap().is_empty());
+        assert_eq!(store.agent_session(agent, "place").unwrap(), None);
+        assert_eq!(store.agent_cursor(agent).unwrap(), None);
+        assert!(store.agent_inbox_get(other, "m1").unwrap().is_some());
     }
 }

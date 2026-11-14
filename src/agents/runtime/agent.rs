@@ -211,6 +211,8 @@ struct LiveTurn {
     /// A message of this turn other than its final reply was posted.
     sent_any: bool,
     final_sent: bool,
+    /// The owner stopped this turn from the agents panel.
+    stopped: bool,
     effects: u32,
     /// Tool calls of this turn still at work.
     in_flight: usize,
@@ -285,6 +287,8 @@ pub struct Agent {
     turn_changed: Notify,
     stopping: AtomicBool,
     paused: AtomicBool,
+    /// When this agent's rows were last pruned.
+    pruned: Mutex<Option<Instant>>,
 }
 
 /// What became of a reply offered to the ledger.
@@ -366,6 +370,7 @@ impl Agent {
             turn_changed: Notify::new(),
             stopping: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            pruned: Mutex::new(None),
         })
     }
 
@@ -432,6 +437,28 @@ impl Agent {
             },
             channel,
         )?;
+        // Another agent's message wakes this one only so often in one
+        // conversation: two agents that may wake each other cannot answer
+        // each other for ever. Its owner and other people are not counted.
+        if admission::written_by_an_agent(event)
+            && !admitted.author.eq_ignore_ascii_case(&self.spec.owner)
+        {
+            let (place, author) = (admitted.place.clone(), admitted.author.clone());
+            let since = unix_now().saturating_sub(self.limits().agent_exchange_window.as_secs());
+            let woken = self
+                .store(move |store, agent| {
+                    store.agent_inbox_recent_from(agent, &place, &author, since)
+                })
+                .await
+                // In doubt it is not admitted: a person can always ask again.
+                .unwrap_or(u32::MAX);
+            if woken >= self.limits().agent_exchanges {
+                self.state().problem = Some(
+                    "it stopped answering another agent in one conversation for now: they may be answering each other in a loop".into(),
+                );
+                return Err(Refusal::AgentExchangeLimit);
+            }
+        }
         let request = NewRequest {
             agent_id: self.spec.id,
             request_id: admitted.request_id,
@@ -458,6 +485,7 @@ impl Agent {
     /// before any harness is started.
     pub async fn recover(&self) {
         self.republish(0).await;
+        self.prune().await;
         let Ok(open) = self
             .store(|store, agent| store.agent_inbox_in_state(agent, RequestState::Delivered))
             .await
@@ -470,6 +498,25 @@ impl Agent {
             }
             self.after_crash(&row).await;
         }
+    }
+
+    /// Removes this agent's finished requests and idle sessions by the rule
+    /// of [`crate::store::Store::agent_prune`], at most once per interval.
+    async fn prune(&self) {
+        {
+            let mut pruned = self
+                .pruned
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if pruned.is_some_and(|at| at.elapsed() < self.limits().prune_interval) {
+                return;
+            }
+            *pruned = Some(Instant::now());
+        }
+        let now = unix_now();
+        let _ = self
+            .store(move |store, agent| store.agent_prune(agent, now))
+            .await;
     }
 
     /// Starts handing queued requests to the harness.
@@ -493,6 +540,7 @@ impl Agent {
                 continue;
             }
             self.republish(REPUBLISH_AFTER_SECONDS).await;
+            self.prune().await;
             let Ok(queued) = self
                 .store(|store, agent| store.agent_inbox_in_state(agent, RequestState::Queued))
                 .await
@@ -859,6 +907,52 @@ impl Agent {
         }
     }
 
+    /// Stops every turn that is running now, as the owner asks from the
+    /// agents panel: each is cancelled, and ends with a notice that says so.
+    /// A harness that does not honour the cancel is stopped. Returns how
+    /// many turns were running.
+    pub async fn stop_turns(self: &Arc<Self>) -> usize {
+        let sessions = {
+            let mut state = self.state();
+            state
+                .turns
+                .iter_mut()
+                .map(|(session, turn)| {
+                    turn.stopped = true;
+                    (session.clone(), turn.run)
+                })
+                .collect::<Vec<_>>()
+        };
+        if sessions.is_empty() {
+            return 0;
+        }
+        let Some(run) = self.run.lock().await.clone() else {
+            return sessions.len();
+        };
+        for (session, _) in sessions.iter().filter(|(_, id)| *id == run.id) {
+            let _ = run
+                .connection
+                .notify("session/cancel", json!({"sessionId": session}));
+        }
+        let (agent, stopped) = (self.clone(), sessions.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(agent.limits().cancel_grace).await;
+            let still_running = {
+                let state = agent.state();
+                stopped.iter().any(|(session, id)| {
+                    state
+                        .turns
+                        .get(session)
+                        .is_some_and(|turn| turn.run == *id && turn.stopped)
+                })
+            };
+            if still_running {
+                agent.stop_run(&run, true).await;
+            }
+        });
+        sessions.len()
+    }
+
     /// Pauses or resumes the agent. A paused agent has no process.
     pub async fn set_paused(self: &Arc<Self>, paused: bool) {
         if self.paused.swap(paused, Ordering::AcqRel) == paused {
@@ -1064,6 +1158,7 @@ impl Agent {
                 request: request.clone(),
                 sent_any: false,
                 final_sent: false,
+                stopped: false,
                 effects: 0,
                 in_flight: 0,
                 text: String::new(),
@@ -1147,6 +1242,9 @@ impl Agent {
             return;
         }
         match result {
+            // The owner stopped it: that is how it ends, whatever the harness
+            // answered or however it went away.
+            _ if turn.stopped => self.fail(row, FailureKind::Stopped).await,
             _ if timed_out || waited.is_err() => self.fail(row, FailureKind::Timeout).await,
             Ok(response) => {
                 // Plain text is never published when a `send` happened.
@@ -1652,6 +1750,12 @@ impl Agent {
     }
 }
 
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
 fn session_id(opened: &Value) -> std::result::Result<String, CallError> {
     opened
         .get("sessionId")
@@ -1751,6 +1855,7 @@ mod tests {
             ),
             sent_any: false,
             final_sent: false,
+            stopped: false,
             effects: 0,
             in_flight: 0,
             text: String::new(),

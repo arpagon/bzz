@@ -62,6 +62,9 @@ pub enum Refusal {
     DmNotOwnerOnly,
     /// The author does not pass the agent's rule.
     AuthorNotAllowed,
+    /// Another agent has woken this one as often as one conversation allows
+    /// for now: two agents that may wake each other must not go on for ever.
+    AgentExchangeLimit,
 }
 
 impl Refusal {
@@ -73,6 +76,7 @@ impl Refusal {
             Self::NotMentioned => "not-mentioned",
             Self::DmNotOwnerOnly => "dm-not-owner-only",
             Self::AuthorNotAllowed => "author-not-allowed",
+            Self::AgentExchangeLimit => "agent-exchange-limit",
         }
     }
 }
@@ -131,6 +135,16 @@ pub fn reply_target(request: &Event, place: &str, channel: Uuid) -> ReplyTarget 
         root.map(|root| (root, request_id))
     };
     ReplyTarget { channel, thread }
+}
+
+/// Whether an agent wrote `event`: it carries an owner's authorization
+/// (NIP-OA), as every message of a bzz or Buzz agent does. Not verified
+/// here: the tag only makes admission stricter.
+pub fn written_by_an_agent(event: &Event) -> bool {
+    event
+        .tags
+        .iter()
+        .any(|tag| tag.as_slice().first().map(String::as_str) == Some("auth"))
 }
 
 /// Decides whether `event` wakes the agent, and in which place.

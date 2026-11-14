@@ -37,6 +37,10 @@ pub const AUTH_REQUIRED: i64 = -32000;
 pub struct RpcError {
     pub code: i64,
     pub message: String,
+    /// `error.data.kind`, when the harness names its failure. bzz's own host
+    /// does: `provider_unavailable`, `model_unavailable`, `sign_in_needed`,
+    /// `no_model`, or Pi's reason for a turn that failed.
+    pub kind: Option<String>,
 }
 
 impl RpcError {
@@ -44,7 +48,14 @@ impl RpcError {
         Self {
             code,
             message: message.into(),
+            kind: None,
         }
+    }
+
+    /// The same error with the failure kind a harness gave it.
+    pub fn with_kind(mut self, kind: &str) -> Self {
+        self.kind = Some(kind.to_owned());
+        self
     }
 
     pub fn method_not_found(method: &str) -> Self {
@@ -100,6 +111,18 @@ pub fn parse_frame(line: &str) -> Option<Frame> {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned(),
+                // A short name, never a text: it reaches logs and `agent show`.
+                kind: error
+                    .pointer("/data/kind")
+                    .and_then(Value::as_str)
+                    .filter(|kind| {
+                        !kind.is_empty()
+                            && kind.len() <= 64
+                            && kind
+                                .bytes()
+                                .all(|byte| byte.is_ascii_alphanumeric() || b"_-.".contains(&byte))
+                    })
+                    .map(str::to_owned),
             }),
         });
     }
@@ -456,6 +479,29 @@ mod tests {
                 result: Err(RpcError::new(AUTH_REQUIRED, "sign in")),
             })
         );
+        // bzz's own host names its failure; only a short plain name is kept.
+        assert_eq!(
+            parse_frame(
+                r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"no","data":{"kind":"model_unavailable"}}}"#
+            ),
+            Some(Frame::Response {
+                id: 3.into(),
+                result: Err(RpcError::new(-32000, "no").with_kind("model_unavailable")),
+            })
+        );
+        for kind in ["\"a text with spaces\"", "7", "\"\""] {
+            let line = format!(
+                r#"{{"jsonrpc":"2.0","id":3,"error":{{"code":-32000,"message":"no","data":{{"kind":{kind}}}}}}}"#
+            );
+            assert_eq!(
+                parse_frame(&line),
+                Some(Frame::Response {
+                    id: 3.into(),
+                    result: Err(RpcError::new(-32000, "no")),
+                }),
+                "{kind}"
+            );
+        }
         for noise in [
             "",
             "npm warn deprecated",

@@ -181,12 +181,35 @@ pub fn channel_facts(channel: Uuid, relay_pubkey: &str, records: &[Event]) -> Op
     })
 }
 
+/// Hands `event` to the relay on `supervisor` and says what became of it. A
+/// relay that already has the event has accepted it.
+pub async fn publish_on(supervisor: &SupervisorHandle, event: Event, limit: Duration) -> Published {
+    match tokio::time::timeout(limit, supervisor.publish(event)).await {
+        Ok(Ok(ack)) if ack.accepted || ack.message.starts_with("duplicate:") => Published::Accepted,
+        Ok(Ok(ack)) => Published::Refused(crate::protocol::artifact::display(&ack.message, 160)),
+        // Refused by bzz's own queue: it was never sent.
+        Ok(Err(error)) if is_local_admission_error(&error) => {
+            Published::Refused("bzz could not send it now; try again shortly".into())
+        }
+        Ok(Err(_)) | Err(_) => Published::Unknown,
+    }
+}
+
 const CHANNEL_CACHE: Duration = Duration::from_secs(60);
 /// How far back a start looks for requests it missed while bzz was closed.
 /// Short on purpose: it covers a restart or a crash, and an agent does not
 /// answer what was asked hours before it was started.
 pub const CATCH_UP: Duration = Duration::from_secs(600);
+/// A message older than this is never a request, whoever sends it. Far more
+/// than a start catches up, and far less than a finished request is kept
+/// (`SETTLED_RETENTION_SECONDS`): a request that was pruned cannot come back
+/// as a new one.
+pub const MAX_REQUEST_AGE: Duration = Duration::from_secs(24 * 3600);
 const INTAKE: &str = "agent-intake";
+
+fn too_old(created_at: u64, now: u64) -> bool {
+    created_at.saturating_add(MAX_REQUEST_AGE.as_secs()) < now
+}
 /// The least time between two subscriptions of one intake, whatever asks.
 const RESUBSCRIBE_INTERVAL: Duration = Duration::from_secs(2);
 /// How long a reason to subscribe again waits for others to join it.
@@ -296,19 +319,7 @@ impl AgentRelay for RelayPort {
     }
 
     async fn publish(&self, event: Event) -> Published {
-        match tokio::time::timeout(self.publish_timeout, self.supervisor.publish(event)).await {
-            Ok(Ok(ack)) if ack.accepted || ack.message.starts_with("duplicate:") => {
-                Published::Accepted
-            }
-            Ok(Ok(ack)) => {
-                Published::Refused(crate::protocol::artifact::display(&ack.message, 160))
-            }
-            // Refused by bzz's own queue: it was never sent.
-            Ok(Err(error)) if is_local_admission_error(&error) => {
-                Published::Refused("bzz could not send it now; try again shortly".into())
-            }
-            Ok(Err(_)) | Err(_) => Published::Unknown,
-        }
+        publish_on(&self.supervisor, event, self.publish_timeout).await
     }
 
     async fn query(&self, filters: Vec<Value>) -> Result<Vec<Event>> {
@@ -461,6 +472,9 @@ pub async fn intake(
                     continue;
                 };
                 let seen = event.created_at.as_secs();
+                if too_old(seen, unix_now()) {
+                    continue;
+                }
                 let _ = host.offer(agent, &event, &facts).await;
                 // Only after the request is in the inbox (or refused).
                 since = since.max(seen.saturating_sub(30));
@@ -637,5 +651,20 @@ mod tests {
         assert_eq!(filters[2]["#h"], json!([dm.id.to_string()]));
         assert!(filters[2].get("#p").is_none());
         assert_eq!(intake_filters(&agent, &owner, &[], 100).len(), 1);
+    }
+
+    #[test]
+    fn a_message_older_than_a_day_is_never_a_request() {
+        let now = 1_800_000_000;
+        assert!(!too_old(now, now));
+        assert!(!too_old(now - CATCH_UP.as_secs(), now));
+        assert!(!too_old(now - MAX_REQUEST_AGE.as_secs(), now));
+        assert!(too_old(now - MAX_REQUEST_AGE.as_secs() - 1, now));
+        assert!(too_old(0, now));
+        // A finished request is kept far longer than a message can be a
+        // request, so one that was pruned cannot be admitted again.
+        assert!(
+            MAX_REQUEST_AGE.as_secs() * 7 < crate::store::agent_runtime::SETTLED_RETENTION_SECONDS
+        );
     }
 }

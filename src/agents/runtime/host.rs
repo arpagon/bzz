@@ -301,6 +301,15 @@ impl AgentHost {
         }
     }
 
+    /// Stops the turns an agent is running now (the owner's key in the
+    /// agents panel). Returns how many there were.
+    pub async fn stop_turns(&self, agent: Uuid) -> usize {
+        match agent_of(&self.0.agents, agent) {
+            Some(agent) => agent.stop_turns().await,
+            None => 0,
+        }
+    }
+
     /// One tool call as `bzz agent-tools` makes it, without the socket.
     pub async fn tool_call(
         &self,

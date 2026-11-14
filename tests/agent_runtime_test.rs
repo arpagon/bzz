@@ -51,6 +51,9 @@ fn limits() -> Limits {
         effects_per_turn: 3,
         // Longer than any test, but for the one that waits for it.
         checkpoint_idle: Duration::from_secs(600),
+        agent_exchanges: 3,
+        agent_exchange_window: Duration::from_secs(3600),
+        prune_interval: Duration::from_secs(24 * 3600),
     }
 }
 
@@ -2107,4 +2110,332 @@ async fn bzzs_own_host_is_asked_to_checkpoint_when_idle() {
         }
         host.shutdown().await;
     }
+}
+
+// ---- what M1 left open (v0.15 M4) ------------------------------------------
+
+/// bzz's own host answers a failed turn with one code, -32000, and names the
+/// failure in `error.data.kind`. That code is also ACP's "sign in", so the
+/// kind decides.
+#[tokio::test]
+async fn a_failure_bzzs_own_host_names_is_read_from_its_kind() {
+    let world = World::new().await;
+    let failed = |kind: &str, message: &str| json!({"error": {"code": -32000, "message": message, "data": {"kind": kind}}});
+    world.script.write(
+        json!({"own_host": true}),
+        json!([
+            {"match": "provider", "steps": [failed("error", "The turn failed: upstream exploded at 10.1.2.3")]},
+            {"match": "no such model", "steps": [failed("model_unavailable", "openai-codex has no model gpt-0")]},
+            {"match": "extension", "steps": [failed("provider_unavailable", "cursor is not one of Pi's providers")]},
+            {"match": "signed out", "steps": [failed("sign_in_needed", "run pi and sign in to openai-codex")]},
+            {"match": "busy", "steps": [failed("error", "The turn failed: 429 rate limit")]},
+        ]),
+    );
+    let host = world.host(Harness::PiDurable).await;
+    let unavailable = "I could not answer: the model my owner chose for me is not available.";
+    for (word, kind, notice) in [
+        (
+            "provider",
+            "provider-error",
+            "I could not answer: my model returned an error.",
+        ),
+        ("no such model", "model-unavailable", unavailable),
+        ("extension", "model-unavailable", unavailable),
+        (
+            "signed out",
+            "sign-in-needed",
+            "I could not answer: my owner needs to sign in to my model again.",
+        ),
+        (
+            "busy",
+            "limit-reached",
+            "I could not answer: my model's usage limit was reached. Try again later.",
+        ),
+    ] {
+        let request = world.ask(&host, &format!("please test {word}")).await;
+        let row = world.settled(&request).await;
+        assert_eq!(
+            (row.state, row.failure.as_deref()),
+            (RequestState::Failed, Some(kind)),
+            "{word}"
+        );
+        assert_eq!(
+            world.contents(&world.relay.replies_to(&request)),
+            [notice],
+            "{word}"
+        );
+    }
+    let published = world.contents(&world.relay.by_agent(9)).join("\n");
+    assert!(!published.contains("10.1.2.3") && !published.contains("gpt-0"));
+    host.shutdown().await;
+}
+
+/// The agents panel's key: the owner stops a running turn. It ends once,
+/// with a notice that says so; a harness that honours the cancel keeps its
+/// process, and one that does not is stopped and the turn is not run again.
+#[tokio::test]
+async fn the_owner_stops_a_running_turn_and_it_ends_once() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([
+            {"match": "long", "steps": [{"text": "thinking"}, {"stall": true}, send("too late", true)]},
+            {"match": "deaf", "steps": [{"stall": true, "deaf": true}]},
+            {"match": "deaf", "resume": true, "steps": [send("ran again", true)]},
+            {"match": "after", "steps": [send("back again", true)]},
+        ]),
+    );
+    let host = world.host(Harness::PiDurable).await;
+    assert_eq!(host.stop_turns(world.agent).await, 0, "nothing runs yet");
+    let running_turn = |host: &AgentHost| {
+        let host = host.clone();
+        async move {
+            until("the turn to be running", WAIT, || {
+                (host.status()[0].turns == 1).then_some(())
+            })
+            .await;
+        }
+    };
+    let long = world.ask(&host, "a long question").await;
+    running_turn(&host).await;
+    until("the harness to be thinking", WAIT, || {
+        (!world.script.received("session/prompt").is_empty()).then_some(())
+    })
+    .await;
+    assert_eq!(host.stop_turns(world.agent).await, 1);
+    let row = world.settled(&long).await;
+    assert_eq!(
+        (row.state, row.failure.as_deref(), row.attempts),
+        (RequestState::Failed, Some("stopped"), 1)
+    );
+    assert_eq!(
+        world.contents(&world.relay.replies_to(&long)),
+        ["My owner stopped this answer."],
+        "neither the text so far nor what the harness would have sent"
+    );
+    assert_eq!(world.script.received("session/cancel").len(), 1);
+    assert_eq!(host.status()[0].phase, Phase::Running, "its process stays");
+
+    // A harness deaf to the cancel is stopped; the turn is not run again.
+    let deaf = world.ask(&host, "a deaf question").await;
+    until("the second prompt to reach the harness", WAIT, || {
+        (world.script.received("session/prompt").len() == 2).then_some(())
+    })
+    .await;
+    running_turn(&host).await;
+    assert_eq!(host.stop_turns(world.agent).await, 1);
+    let row = world.settled(&deaf).await;
+    assert_eq!(
+        (row.state, row.failure.as_deref(), row.attempts),
+        (RequestState::Failed, Some("stopped"), 1)
+    );
+    let first_pid = world.script.starts()[0];
+    until("the deaf harness to be stopped", WAIT, || {
+        (!running(first_pid)).then_some(())
+    })
+    .await;
+    let after = world.ask(&host, "after that").await;
+    world.settled(&after).await;
+    assert_eq!(
+        world.contents(&world.relay.replies_to(&after)),
+        ["back again"]
+    );
+    assert_eq!(
+        world.contents(&world.relay.replies_to(&deaf)),
+        ["My owner stopped this answer."]
+    );
+    assert_eq!(world.script.starts().len(), 2);
+    host.shutdown().await;
+}
+
+/// Two agents that may wake each other cannot go on for ever: another
+/// agent's message wakes this one only so often in one conversation. People
+/// are not counted, and neither is another conversation.
+#[tokio::test]
+async fn two_agents_that_wake_each_other_stop_after_a_few_exchanges() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        // Whatever it is asked, it answers and mentions the other agent.
+        json!(
+            (0..12)
+                .map(|index| json!({"steps": [
+                    {"tool": "send", "arguments": {
+                        "text": format!("answer {index}"), "final": true,
+                        "mentions": [world.stranger.public_key().to_hex()],
+                    }},
+                ]}))
+                .collect::<Vec<_>>()
+        ),
+    );
+    let mut open = world.settings(Harness::PiDurable);
+    open.wake = WakeRule::Anyone;
+    let host = world.host_with(open, limits()).await;
+    // The other agent: its messages carry its owner's authorization, as
+    // every agent's do.
+    let other_owner = Keys::generate();
+    let other_tag = bzz::broker::relay::auth_tag(
+        &bzz::auth::signer::SignerHandle::spawn(other_owner)
+            .owner_auth_tag(world.stranger.public_key(), "")
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let from_the_other = |text: &str, thread: Option<&Event>| {
+        let agent = world.agent_pubkey();
+        let thread = thread.map(|root| buzz_sdk::ThreadRef {
+            root_event_id: root.id,
+            parent_event_id: root.id,
+        });
+        let event = buzz_sdk::build_message(
+            world.channel,
+            text,
+            thread.as_ref(),
+            &[agent.as_str()],
+            false,
+            &[],
+            &[],
+        )
+        .unwrap()
+        .tag(other_tag.clone())
+        .sign_with_keys(&world.stranger)
+        .unwrap();
+        world.relay.seed(&event);
+        event
+    };
+    // The owner starts a thread; from then on the two answer each other:
+    // every answer of this agent mentions the other, which "answers" back.
+    let root = world.ask(&host, "you two, talk").await;
+    world.settled(&root).await;
+    let mut exchanges = 0;
+    let refused = loop {
+        let back = from_the_other(&format!("reply {exchanges}"), Some(&root));
+        match world.offer(&host, &back).await {
+            Offer::Queued => {
+                world.settled(&back).await;
+                exchanges += 1;
+                assert!(exchanges < 10, "they never stop");
+            }
+            other => break other,
+        }
+    };
+    assert_eq!(refused, Offer::Refused(Refusal::AgentExchangeLimit));
+    assert_eq!(exchanges, 3, "as many as one conversation allows");
+    assert_eq!(
+        world.relay.by_agent(9).len(),
+        4,
+        "one answer to the owner, three to the other agent, and no more"
+    );
+    assert!(
+        host.status()[0]
+            .problem
+            .as_deref()
+            .is_some_and(|problem| problem.contains("loop")),
+        "{:?}",
+        host.status()
+    );
+    // A person in the same conversation still wakes it, as often as he asks.
+    for index in 0..4 {
+        let person = world.message_in(
+            world.channel,
+            &world.stranger,
+            &format!("a person asks {index}"),
+            true,
+            Some(&root),
+        );
+        assert_eq!(world.offer(&host, &person).await, Offer::Queued, "{index}");
+        world.settled(&person).await;
+    }
+    // So does the other agent in another conversation, and the owner here.
+    let elsewhere = from_the_other("somewhere else", None);
+    assert_eq!(world.offer(&host, &elsewhere).await, Offer::Queued);
+    world.settled(&elsewhere).await;
+    let owner = world.message_in(world.channel, &world.owner, "go on", true, Some(&root));
+    assert_eq!(world.offer(&host, &owner).await, Offer::Queued);
+    world.settled(&owner).await;
+    host.shutdown().await;
+}
+
+/// Finished requests and idle sessions are pruned when an agent starts, by
+/// the rule of `Store::agent_prune`: what is over and older than the
+/// retention goes with its stored reply; what is open, unacknowledged or
+/// recent stays.
+#[tokio::test]
+async fn an_agents_finished_requests_are_pruned_when_it_starts() {
+    use bzz::store::agent_runtime::{SESSION_RETENTION_SECONDS, SETTLED_RETENTION_SECONDS};
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([{"steps": [send("answered", true)]}, {"steps": [send("answered", true)]}]),
+    );
+    let host = world.host(Harness::PiDurable).await;
+    let old = world.ask(&host, "long ago").await;
+    world.settled(&old).await;
+    let recent = world.ask(&host, "just now").await;
+    world.settled(&recent).await;
+    host.shutdown().await;
+    let (agent, place) = (
+        world.agent,
+        format!("{}/{}", world.channel, old.id.to_hex()),
+    );
+    world
+        .store
+        .call(move |store| store.set_agent_session(agent, &place, "s1"))
+        .await
+        .unwrap();
+    // Time passes for the first request and for the stored session.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let database = rusqlite::Connection::open(world.data_dir().join("bzz.db")).unwrap();
+    database.busy_timeout(Duration::from_secs(5)).unwrap();
+    database
+        .execute(
+            "UPDATE agent_inbox SET updated_at=?2 WHERE request_id=?1",
+            rusqlite::params![
+                old.id.to_hex(),
+                (now - SETTLED_RETENTION_SECONDS - 60) as i64
+            ],
+        )
+        .unwrap();
+    database
+        .execute(
+            "UPDATE agent_sessions SET updated_at=?1",
+            [(now - SESSION_RETENTION_SECONDS - 60) as i64],
+        )
+        .unwrap();
+    drop(database);
+
+    let host = world.host(Harness::PiDurable).await;
+    assert!(world.row(&old).await.is_none(), "the old request is gone");
+    let (agent, id) = (world.agent, old.id.to_hex());
+    assert!(
+        world
+            .store
+            .call(move |store| store.agent_reply_get(agent, &id))
+            .await
+            .unwrap()
+            .is_none(),
+        "with its stored reply"
+    );
+    assert_eq!(
+        world.row(&recent).await.map(|row| row.state),
+        Some(RequestState::Replied)
+    );
+    let (agent, place) = (
+        world.agent,
+        format!("{}/{}", world.channel, old.id.to_hex()),
+    );
+    assert_eq!(
+        world
+            .store
+            .call(move |store| store.agent_session(agent, &place))
+            .await
+            .unwrap(),
+        None
+    );
+    // What the relay holds is untouched: pruning is bzz's own bookkeeping.
+    assert_eq!(world.relay.by_agent(9).len(), 2);
+    host.shutdown().await;
 }
