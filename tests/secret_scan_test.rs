@@ -273,6 +273,329 @@ async fn adapter_session_grant_and_assertions_never_print_or_journal() {
 /// ownership record, the database). No agent key, owner key or broker
 /// credential may appear. The session credential of `bzz agent-tools` appears
 /// in one place only: the server entry of `session/new`.
+/// v0.15 M5: an agent's key leaves bzz only as the owner asked. `bzz agent
+/// move` seals it in a file, `bzz agent receive` takes it into custody,
+/// sealed to the owner, and `bzz agent launch-kit` writes it in the clear into one
+/// file of mode 600, after saying so and asking. Every command is the `bzz`
+/// binary, with the scripted harness as the agent's host; then everything
+/// bzz printed and every file it wrote is searched for the key, for both
+/// passphrases and for what the agent remembers.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_moved_agents_key_is_sealed_in_its_file_and_in_the_clear_in_one_file_of_a_kit() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use bzz::{
+        agents::runtime::process,
+        auth::IdentityManager,
+        broker::custody,
+        config::{Config, Harness, LocalAgentConfig, LocalAgentState},
+    };
+    use nostr::ToBech32 as _;
+    use serde_json::json;
+    use support::agent_harness::Script;
+
+    let temporary = tempfile::TempDir::new().unwrap();
+    let work = temporary.path();
+    let owner_passphrase = "the owner's disposable passphrase";
+    let file_passphrase = "the moved file's own passphrase";
+    std::fs::write(work.join("pass"), format!("{owner_passphrase}\n")).unwrap();
+    std::fs::write(work.join("file-pass"), format!("{file_passphrase}\n")).unwrap();
+    // The owner's passphrase on descriptor 3, the file's on descriptor 4:
+    // neither is ever an argument or a variable's value.
+    let run = |dirs: &Path, args: &[&str]| {
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg("exec \"$0\" \"$@\" 3<\"$BZZ_T8_PASSPHRASE\" 4<\"$BZZ_T8_FILE_PASSPHRASE\"")
+            .arg(env!("CARGO_BIN_EXE_bzz"))
+            .args(args)
+            .env("BZZ_T8_PASSPHRASE", work.join("pass"))
+            .env("BZZ_T8_FILE_PASSPHRASE", work.join("file-pass"))
+            .env("BZZ_CONFIG_DIR", dirs.join("c"))
+            .env("BZZ_DATA_DIR", dirs.join("d"))
+            .env("BZZ_CACHE_DIR", dirs.join("k"))
+            .env("BZZ_PASSPHRASE_FD", "3")
+            .env("BZZ_MOVE_PASSPHRASE_FD", "4")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    };
+    let paths_of = |dirs: &Path| Paths {
+        config_dir: dirs.join("c"),
+        data_dir: dirs.join("d"),
+        cache_dir: dirs.join("k"),
+    };
+    let mut said = Vec::<(String, String)>::new();
+    let mut ok = |dirs: &Path, args: &[&str]| {
+        let (success, text) = run(dirs, args);
+        assert!(success, "bzz {args:?}: {text}");
+        said.push((
+            format!("what `bzz {}` printed", args.join(" ")),
+            text.clone(),
+        ));
+        text
+    };
+
+    // The owner's first bzz, with two agents: one goes to another bzz, one
+    // to a machine with buzz-acp.
+    let first = work.join("first");
+    ok(
+        &first,
+        &[
+            "identity",
+            "new",
+            "--label",
+            "owner",
+            "--backend",
+            "encrypted-file",
+        ],
+    );
+    let paths = paths_of(&first);
+    let mut config = Config::load(&paths).unwrap();
+    let identity = config.identities[0].clone();
+    let community = config
+        .add_community(
+            "c1".into(),
+            "wss://relay.example".into(),
+            identity.id,
+            false,
+        )
+        .unwrap();
+    let secret = secrecy::SecretString::from(owner_passphrase.to_owned());
+    let owner_keys = IdentityManager::new(&paths)
+        .unlock(&identity, Some(&secret))
+        .unwrap();
+    let owner = SignerHandle::spawn(owner_keys.clone());
+    let script = Script::new(&work.join("harness"));
+    script.write(json!({"own_host": true}), json!([]));
+    let remembered = "what the agent remembers and nobody else should read";
+    let mut keys = Vec::new();
+    for name in ["Scout", "Courier"] {
+        let (mut agent, _) =
+            custody::create(&paths.keys_dir(), &owner, identity.id, community, name)
+                .await
+                .unwrap();
+        agent.allowed.clear();
+        agent.local = Some(LocalAgentConfig {
+            instructions: format!("Private instructions of {name}."),
+            // The agent's host is run from a checkout: here, the scripted one.
+            command: script.command(),
+            ..LocalAgentConfig::new(Harness::PiDurable)
+        });
+        let folder = process::agent_dir(&paths.data_dir, agent.id);
+        process::create_private_dir(&folder).unwrap();
+        for file in ["memory.sqlite", "files.sqlite"] {
+            std::fs::write(folder.join(file), format!("SQLite format 3 {remembered} ")).unwrap();
+        }
+        let sealed =
+            std::fs::read_to_string(paths.keys_dir().join(format!("agent-{}.nip44", agent.id)))
+                .unwrap();
+        keys.push(Keys::parse(&owner.decrypt_self(sealed).await.unwrap()).unwrap());
+        config.hosted_agents.push(agent);
+    }
+    config.save(&paths).unwrap();
+    owner.lock().await;
+
+    // ---- bzz agent move ----------------------------------------------------
+    let file = work.join("scout.bzzagent");
+    let text = ok(
+        &first,
+        &["agent", "move", "Scout", "--to", file.to_str().unwrap()],
+    );
+    assert!(text.contains("sealed with your passphrase"), "{text}");
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    // ---- bzz agent receive ---------------------------------------------------
+    // Here, where it was moved away from: it is taken back. (Another bzz of
+    // the owner's receiving it is `tests/agent_move_test.rs`.)
+    let text = ok(&first, &["agent", "receive", file.to_str().unwrap()]);
+    assert!(
+        text.contains("taken back") && text.contains("its key is in bzz's custody"),
+        "{text}"
+    );
+    assert!(
+        Config::load(&paths)
+            .unwrap()
+            .hosted_agents
+            .iter()
+            .find(|agent| agent.label == "Scout")
+            .unwrap()
+            .runs_locally()
+    );
+
+    // ---- bzz agent launch-kit ----------------------------------------------
+    let kit = work.join("courier-kit");
+    // Not without the owner's yes: asked, and with no answer nothing is
+    // written.
+    let (written, text) = run(
+        &first,
+        &[
+            "agent",
+            "launch-kit",
+            "Courier",
+            "--to",
+            kit.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        !written
+            && text.contains("holds the key of Courier in the clear")
+            && text.contains("no launch kit was written"),
+        "{text}"
+    );
+    assert!(!kit.exists());
+    said.push(("what a refused `bzz agent launch-kit` printed".into(), text));
+    let mut ok = |dirs: &Path, args: &[&str]| {
+        let (success, text) = run(dirs, args);
+        assert!(success, "bzz {args:?}: {text}");
+        said.push((
+            format!("what `bzz {}` printed", args.join(" ")),
+            text.clone(),
+        ));
+        text
+    };
+    let text = ok(
+        &first,
+        &[
+            "agent",
+            "launch-kit",
+            "Courier",
+            "--to",
+            kit.to_str().unwrap(),
+            "--yes",
+        ],
+    );
+    assert!(
+        text.contains("A launch kit holds the key of Courier in the clear")
+            && text.contains("THE AGENT'S KEY IS IN THE CLEAR in"),
+        "{text}"
+    );
+    assert_eq!(
+        Config::load(&paths)
+            .unwrap()
+            .hosted_agents
+            .iter()
+            .find(|agent| agent.label == "Courier")
+            .and_then(|agent| agent.local.as_ref().map(|local| local.state)),
+        Some(LocalAgentState::MovedAway)
+    );
+    let listed = ok(&first, &["agent", "list"]);
+    assert!(
+        listed.contains("Scout\tactive") && listed.contains("Courier\tmoved away"),
+        "{listed}"
+    );
+
+    // ---- the scan ----------------------------------------------------------
+    let (scout, courier) = (&keys[0], &keys[1]);
+    let forms = |keys: &Keys| {
+        [
+            keys.secret_key().to_secret_hex(),
+            keys.secret_key().to_bech32().unwrap(),
+        ]
+    };
+    let (scout_forms, courier_forms, owner_forms) =
+        (forms(scout), forms(courier), forms(&owner_keys));
+    let secrets = [
+        ("Scout's key (hex)", scout_forms[0].as_str()),
+        ("Scout's key (nsec)", scout_forms[1].as_str()),
+        ("Courier's key (hex)", courier_forms[0].as_str()),
+        ("Courier's key (nsec)", courier_forms[1].as_str()),
+        ("the owner's key (hex)", owner_forms[0].as_str()),
+        ("the owner's key (nsec)", owner_forms[1].as_str()),
+        ("the owner's passphrase", owner_passphrase),
+        ("the file's passphrase", file_passphrase),
+    ];
+    // The one file that may hold a key, and holds exactly one.
+    let key_file = kit.join("buzz-acp.env");
+    assert_eq!(
+        std::fs::metadata(&key_file).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "the kit's key file is its owner's alone"
+    );
+    let environment = std::fs::read_to_string(&key_file).unwrap();
+    assert!(
+        environment.contains(&format!("BUZZ_PRIVATE_KEY='{}'", courier_forms[0])),
+        "the kit holds the key of the agent it is for"
+    );
+    assert_absent(
+        &[("the kit's key file".into(), environment)],
+        &secrets
+            .iter()
+            .filter(|(what, _)| *what != "Courier's key (hex)")
+            .copied()
+            .collect::<Vec<_>>(),
+    );
+    // Everything else: what bzz printed, every file bzz keeps, the sealed
+    // file, and the other files of the kit.
+    let mut files = Vec::new();
+    for root in [&first, &kit] {
+        all_files(root, &mut files);
+    }
+    files.push(file.clone());
+    let mut haystacks = said;
+    let mut scanned = Vec::new();
+    for path in files.iter().filter(|path| **path != key_file) {
+        let name = path.strip_prefix(work).unwrap().display().to_string();
+        haystacks.push((
+            name.clone(),
+            String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned(),
+        ));
+        scanned.push(name);
+    }
+    // The scan sees what is there: the settings, the database, both sealed
+    // keys, the sealed file and the kit's files are all among what it read.
+    for seen in [
+        "first/c/config.toml",
+        "first/d/bzz.db",
+        "scout.bzzagent",
+        "courier-kit/bzz-agent.json",
+        "courier-kit/agent/agent.json",
+        "courier-kit/README.md",
+        "courier-kit/start.sh",
+    ] {
+        assert!(
+            scanned.iter().any(|name| name == seen),
+            "{seen}: {scanned:?}"
+        );
+    }
+    assert_eq!(
+        scanned
+            .iter()
+            .filter(|name| name.contains("/d/keys/agent-"))
+            .count(),
+        2,
+        "both agents' sealed keys: {scanned:?}"
+    );
+    assert_absent(&haystacks, &secrets);
+    // What the agent remembers is sealed in the file too. In the kit it is
+    // not: the two files are there as they are.
+    let sealed = std::fs::read(&file).unwrap();
+    for plain in [remembered, "Private instructions of Scout.", "Scout"] {
+        assert!(
+            !sealed
+                .windows(plain.len())
+                .any(|window| window == plain.as_bytes()),
+            "{plain:?} is readable in the sealed file"
+        );
+    }
+    assert!(
+        std::fs::read_to_string(kit.join("agent/memory.sqlite"))
+            .unwrap()
+            .contains(remembered)
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn no_key_reaches_a_harness_environment_arguments_or_logs() {

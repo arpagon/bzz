@@ -937,14 +937,19 @@ mod tests {
         .unwrap();
         fixture.receive("same.bzzagent", PASSPHRASE).unwrap();
 
+        // Each of these is found by the sealing itself, not by a checksum of
+        // the files inside.
+        let unopened = |refusal: Refusal| {
+            assert!(
+                matches!(refusal, Refusal::Changed("a sealed piece does not open")),
+                "{refusal}"
+            );
+        };
         // A byte of a file's piece.
         let mut changed = whole.clone();
         let at = whole.len() - DIGEST - 40;
         changed[at] ^= 0x80;
-        assert!(matches!(
-            attempt(with_checksums_made_right(changed)),
-            Refusal::Changed(_)
-        ));
+        unopened(attempt(with_checksums_made_right(changed)));
         // The last piece dropped. The file's length is in the head and the
         // head is bound to every piece, so a head that says the shorter
         // length opens nothing: not even the first piece.
@@ -962,10 +967,7 @@ mod tests {
         swapped.extend_from_slice(&whole[third..end]);
         swapped.extend_from_slice(&whole[second..third]);
         swapped.extend_from_slice(&[0_u8; DIGEST]);
-        assert!(matches!(
-            attempt(with_checksums_made_right(swapped)),
-            Refusal::Changed(_)
-        ));
+        unopened(attempt(with_checksums_made_right(swapped)));
         // A piece of another file sealed with the same passphrase.
         fixture
             .seal("other.bzzagent", b"{\"name\":\"Other\"}")
@@ -973,10 +975,25 @@ mod tests {
         let other = std::fs::read(fixture.path("other.bzzagent")).unwrap();
         let mut grafted = whole[..second].to_vec();
         grafted.extend_from_slice(&other[second..]);
-        assert!(matches!(
-            attempt(with_checksums_made_right(grafted)),
-            Refusal::Changed(_)
-        ));
+        unopened(attempt(with_checksums_made_right(grafted)));
+        // Two pieces of equal length in each other's place: only their
+        // numbers tell them apart.
+        let equal = Fixture::new(2 * PIECE, 0);
+        equal.seal("equal.bzzagent", b"{}").unwrap();
+        let bytes = std::fs::read(equal.path("equal.bzzagent")).unwrap();
+        let first_len = u32::from_be_bytes(bytes[HEAD..HEAD + 4].try_into().unwrap()) as usize;
+        let (one, piece) = (HEAD + 4 + first_len, 4 + PIECE + TAG);
+        let mut crossed = bytes[..one].to_vec();
+        crossed.extend_from_slice(&bytes[one + piece..one + 2 * piece]);
+        crossed.extend_from_slice(&bytes[one..one + piece]);
+        crossed.extend_from_slice(&bytes[one + 2 * piece..]);
+        assert_eq!(crossed.len(), bytes.len());
+        std::fs::write(
+            equal.path("crossed.bzzagent"),
+            with_checksums_made_right(crossed),
+        )
+        .unwrap();
+        unopened(equal.receive("crossed.bzzagent", PASSPHRASE).unwrap_err());
         // A changed head (weaker key parameters) no longer yields the key.
         let mut weaker = whole.clone();
         weaker[24..28].copy_from_slice(&2_u32.to_be_bytes());

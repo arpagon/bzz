@@ -4815,7 +4815,7 @@ async fn real_relay_agent_moves_to_another_bzz_and_to_buzz_acp() {
             (modified, number, std::fs::read_to_string(path).unwrap())
         })
         .collect::<Vec<_>>();
-    prompts.sort_by(|left, right| (left.0, left.1).cmp(&(right.0, right.1)));
+    prompts.sort_by_key(|prompt| (prompt.0, prompt.1));
     let asks_about = |text: &str, event: &nostr::Event| {
         text.lines()
             .filter_map(|line| line.strip_prefix("Event ID: "))

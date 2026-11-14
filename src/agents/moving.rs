@@ -423,7 +423,12 @@ pub struct Prepared {
 /// custody, the agent stopped wherever it runs, its files made whole.
 pub async fn prepare(mover: &Mover<'_>, config: &Config, id: Uuid) -> Result<Prepared> {
     check_movable(config, id)?;
-    let (agent, _) = local_agent(config, id)?;
+    let (agent, local) = local_agent(config, id)?;
+    // An agent whose host is run from a checkout is made whole by that host.
+    let mut host = mover.host.clone();
+    if host.command.is_none() && !local.command.is_empty() {
+        host.command = Some(local.command.clone());
+    }
     let community = config
         .communities
         .iter()
@@ -462,7 +467,7 @@ pub async fn prepare(mover: &Mover<'_>, config: &Config, id: Uuid) -> Result<Pre
     if open > 0 {
         return Err(still_answering(&agent.label, open));
     }
-    settle::settle(data_dir, id, &agent.label, &mover.host).await?;
+    settle::settle(data_dir, id, &agent.label, &host).await?;
     Ok(Prepared {
         held,
         carried,

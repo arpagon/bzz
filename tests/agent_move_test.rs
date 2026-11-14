@@ -53,7 +53,7 @@ use nostr::{Event, JsonUtil as _, Keys, ToBech32 as _};
 use secrecy::SecretString;
 use serde_json::{Value, json};
 use support::{
-    agent_harness::{RecordedRelay, Script, running, until},
+    agent_harness::{RecordedRelay, Script, kill, running, until},
     pi_host,
 };
 use tempfile::TempDir;
@@ -1623,15 +1623,24 @@ async fn the_real_host_continues_a_conversation_in_another_bzz_after_a_move() {
         "made before the move"
     );
     let pid = live.pid().expect("the host is running");
-    // While the host runs its files are not whole by themselves: a
-    // write-ahead file is beside at least one of them.
+    // The host is killed outright, as when the machine loses power. What it
+    // had not yet folded into its two files is in the write-ahead files
+    // beside them: the two files alone are not the agent's memory and disk.
+    kill(pid);
+    until("the host to be gone", WAIT, || {
+        (!running(pid)).then_some(())
+    })
+    .await;
     let write_ahead = || bzz::agents::runtime::settle::write_ahead_files(&folder);
     assert!(
-        !write_ahead().is_empty(),
-        "the running host keeps write-ahead files; a copy made now would be torn"
+        write_ahead()
+            .iter()
+            .any(|file| std::fs::metadata(file).is_ok_and(|file| file.len() > 0)),
+        "a killed host leaves write-ahead files with content: {:?}",
+        write_ahead()
     );
 
-    // The move, while that bzz is open.
+    // The move, while that bzz is open. It makes the files whole first.
     let file = here.temporary.path().join("scout.bzzagent");
     let real_host = HostAccess {
         environment: Arc::new(pi_host::environment(&scripted, &pi_dir)),
@@ -1647,11 +1656,14 @@ async fn the_real_host_continues_a_conversation_in_another_bzz_after_a_move() {
         .await
         .unwrap();
     drop(mover);
-    assert!(!running(pid), "its process was stopped for the move");
     assert_eq!(
         write_ahead(),
         Vec::<PathBuf>::new(),
         "the files were made whole"
+    );
+    assert!(
+        !folder.join("move.log").exists(),
+        "the log of a checkpoint that worked is not kept"
     );
     assert_eq!(
         here.state_on_disk(agent.id),
