@@ -23,9 +23,17 @@ const alive = (pid) => {
 
 /** An agent with `site` granted for commands and `docs` granted without, and a client that says yes unless told otherwise. */
 async function world(t, { mounts } = {}) {
+	// What a failing test leaves running is killed. Set up before the temporary folder is, because the hooks run in
+	// that order and this one reads the process ids from a file in the folder.
+	let site;
+	t.after(() => {
+		try {
+			for (const pid of readFileSync(join(site, "pids"), "utf8").trim().split("\n")) try { process.kill(Number(pid), "SIGKILL"); } catch {}
+		} catch {}
+	});
 	const root = tempDir(t, "run");
 	const folder = join(root, "agent");
-	const site = join(root, "site");
+	site = join(root, "site");
 	for (const dir of [site, join(root, "docs")]) mkdirSync(dir);
 	const grants = mounts ?? [{ name: "site", path: site, write: false, exec: true }, { name: "docs", path: join(root, "docs"), write: true }];
 	const state = { n: 0 };
@@ -49,12 +57,11 @@ async function world(t, { mounts } = {}) {
 		await within(10_000, (async () => { while (!existsSync(file) || readFileSync(file, "utf8").trim().split("\n").length < count) await sleep(20); })(), `${count} process ids in ${file}`);
 		return readFileSync(file, "utf8").trim().split("\n").map(Number);
 	};
-	const gone = (ids, ms = 6_000) => within(ms, (async () => { while (ids.some(alive)) await sleep(25); })(), `the processes ${ids.filter(alive).join(", ")} to end`);
-	t.after(() => {
-		try {
-			for (const pid of readFileSync(join(site, "pids"), "utf8").trim().split("\n")) try { process.kill(Number(pid), "SIGKILL"); } catch {}
-		} catch {}
-	});
+	const gone = async (ids, ms = 6_000) => {
+		const until = Date.now() + ms;
+		while (ids.some(alive) && Date.now() < until) await sleep(25);
+		assert.deepEqual(ids.filter(alive), [], `these processes are still there after ${ms} ms`);
+	};
 	return { root, folder, site, start, pids, gone };
 }
 
@@ -329,6 +336,8 @@ test("a command does not outlive the host, however the host goes, and is not sta
 
 	// The next process continues the turn. The command that was cut off is not started a second time: the model is told it was interrupted.
 	host = await start();
+	// Should it be put to bzz again, bzz says no here, so that such a fault shows at once and starts nothing.
+	host.on["_bzz/approve"] = () => ({ allow: false, reason: "not a second time" });
 	assert.deepEqual(await host.prompt(host.sessionId, "k1", script(["run", { folder: "site", command }], ["report"])), { stopReason: "end_turn" });
 	assert.match(host.tools.at(-1).arguments.text, /Tool run was interrupted/);
 	assert.deepEqual(host.asked, []);
@@ -336,6 +345,7 @@ test("a command does not outlive the host, however the host goes, and is not sta
 
 	// The host is stopped as bzz stops it, by the end of its input: it leaves in time, and the command with it.
 	writeFileSync(join(site, "pids"), "");
+	host.on["_bzz/approve"] = () => ({ allow: true });
 	host.prompt(host.sessionId, "k2", script(["run", { folder: "site", command: TREE }], ["report"])).catch(() => undefined);
 	ids = await pids(3);
 	assert.deepEqual(await host.stop(2_000), { code: 0, signal: null });
