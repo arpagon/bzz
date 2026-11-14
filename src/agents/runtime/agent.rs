@@ -14,6 +14,16 @@
 //!   with a notice.
 //! - **A harness is not trusted and not waited for.** Every wait on it has a
 //!   limit, and a harness that keeps dying is left alone for a while.
+//! - **A real command needs a yes.** bzz's own host asks before it starts one
+//!   (`_bzz/approve`). bzz answers yes only for a folder the settings grant
+//!   for commands, in a turn that is live, and, unless the folder is allowed
+//!   without asking, only after the owner said so in the TUI. Anything else
+//!   is a no with its reason: nobody to ask, no answer in time, a turn that
+//!   was stopped.
+//! - **A git credential is given to the host that asks, and to nothing
+//!   else** (`_bzz/credential`): for a host on the agent's own allow-list,
+//!   from what the owner stored for that agent. It is in no log and no
+//!   record.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -32,18 +42,23 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::{
-    agents::runtime::{
-        FailureKind, Limits,
-        acp::{CallError, Connection, Incoming, RpcError},
-        admission::{self, ChannelFacts, PlaceKind, Refusal, ReplyTarget, Rule},
-        credentials::Credentials,
-        install,
-        process::{self, Harness, Launch},
-        prompt::{self, PromptContext},
-        relay::{self, AgentRelay, Published},
-        tools::{self, ToolCall, ToolReply},
+    agents::{
+        activity,
+        git_credentials::GitCredentials,
+        runtime::{
+            FailureKind, Limits,
+            acp::{self, CallError, Connection, Incoming, RpcError},
+            admission::{self, ChannelFacts, PlaceKind, Refusal, ReplyTarget, Rule},
+            approval::{self, Approvals, Asked, NotAsked, Outcome},
+            credentials::Credentials,
+            install::{self, StartReport},
+            process::{self, Harness, Launch},
+            prompt::{self, PromptContext},
+            relay::{self, AgentRelay, Published},
+            tools::{self, ToolCall, ToolReply},
+        },
     },
-    config::{Harness as HarnessKind, LocalAgentConfig},
+    config::{ExecGrant, Harness as HarnessKind, LocalAgentConfig},
     error::{Error, Result},
     store::{
         agent_runtime::{InboxRow, NewRequest, ReplyOrigin, RequestState},
@@ -57,6 +72,9 @@ const MAX_PLAIN_TEXT_CHARS: usize = 16_000;
 const CONCURRENT_TOOL_CALLS: usize = 8;
 /// A stored reply this old and still unacknowledged is published again.
 const REPUBLISH_AFTER_SECONDS: u64 = 30;
+/// Git credentials of one harness that bzz looks up at once. A git command
+/// asks once, so more than a few at a time is a harness gone wrong.
+const CONCURRENT_CREDENTIALS: usize = 4;
 
 /// What the runtime needs to know of one agent. Never its key.
 #[derive(Clone, Debug)]
@@ -104,6 +122,11 @@ pub struct Shared {
     pub environment: Environment,
     /// Found and installed once, at the first start that needs it.
     pub pi_host: tokio::sync::Mutex<Option<PiHost>>,
+    /// The real commands that wait for the owner's answer.
+    pub approvals: Arc<Approvals>,
+    /// What the owner stored for private git remotes. `None`: nothing can
+    /// be given.
+    pub git_credentials: Option<Arc<dyn GitCredentials>>,
 }
 
 impl Shared {
@@ -275,6 +298,7 @@ struct Run {
     deliberate: AtomicBool,
     dead: AtomicBool,
     tool_calls: Arc<tokio::sync::Semaphore>,
+    credentials: Arc<tokio::sync::Semaphore>,
 }
 
 struct State {
@@ -613,6 +637,14 @@ impl Agent {
         process::create_private_dir(&directory).map_err(|error| error.to_string())?;
         let local = &self.spec.local;
         let own_host = local.harness == HarnessKind::PiDurable;
+        // bzz's own host is told where Pi's folder is at every start: its
+        // own home is the agent's folder, where Pi has nothing.
+        if own_host && self.shared.pi_dir.is_none() {
+            return Err(
+                "Pi's folder could not be found, so its host would have no sign-in: set PI_CODING_AGENT_DIR"
+                    .into(),
+            );
+        }
         let (program, mut args) = match local.command.split_first() {
             Some((program, arguments)) => (program.clone(), arguments.to_vec()),
             None if own_host => {
@@ -666,8 +698,12 @@ impl Agent {
                 "name": folder.name,
                 "path": folder.path,
                 "write": folder.write,
+                // Whether the host offers its `run` tool there. Whether the
+                // owner is asked about a command is bzz's alone to know.
+                "exec": folder.exec.granted(),
             })).collect::<Vec<_>>(),
             "network": local.network,
+            "packages": local.packages,
         });
         if let Some(model) = &local.model {
             bzz["model"] = json!({"provider": model.provider, "modelId": model.model_id});
@@ -699,26 +735,44 @@ impl Agent {
         .await;
         let problem = match &answer {
             Ok(Ok(response)) if response.get("protocolVersion") == Some(&json!(1)) => None,
-            Ok(Ok(_)) => Some("its harness speaks another version of the protocol"),
-            Ok(Err(CallError::Rpc(_))) => Some("its harness refused to start"),
-            Ok(Err(_)) => Some("its harness exited while starting"),
-            Err(_) => Some("its harness did not answer in time"),
+            Ok(Ok(_)) => Some("its harness speaks another version of the protocol".to_owned()),
+            // bzz's own host says what it refused, such as a granted
+            // folder it cannot take. Its words stay on this machine.
+            Ok(Err(CallError::Rpc(error)))
+                if self.spec.local.harness == HarnessKind::PiDurable
+                    && error.code == acp::INVALID_PARAMS =>
+            {
+                Some(format!(
+                    "its harness refused its settings: {}",
+                    crate::protocol::artifact::display(&error.message, 200)
+                ))
+            }
+            Ok(Err(CallError::Rpc(_))) => Some("its harness refused to start".to_owned()),
+            Ok(Err(_)) => Some("its harness exited while starting".to_owned()),
+            Err(_) => Some("its harness did not answer in time".to_owned()),
         };
         if let Some(problem) = problem {
             let closing = connection.clone();
             harness
                 .stop(move || closing.close_input(), self.limits().stop_grace)
                 .await;
-            return Err(problem.to_owned());
+            return Err(problem);
         }
         let response = answer
             .ok()
             .and_then(std::result::Result::ok)
             .unwrap_or_default();
+        let pipe_tools =
+            response.pointer("/_meta/bzz/tools").and_then(Value::as_str) == Some("pipe");
+        if pipe_tools {
+            // What the host says it loaded and where it offers `run`, kept
+            // for `agent show` and `agent doctor`.
+            StartReport::from_initialize(&response, self.spec.local.packages)
+                .write(&self.shared.data_dir, self.spec.id);
+        }
         let run = Arc::new(Run {
             id: self.next_run.fetch_add(1, Ordering::Relaxed),
-            pipe_tools: response.pointer("/_meta/bzz/tools").and_then(Value::as_str)
-                == Some("pipe"),
+            pipe_tools,
             load_session: response.pointer("/agentCapabilities/loadSession") == Some(&json!(true)),
             pid: harness.pid(),
             connection,
@@ -727,6 +781,7 @@ impl Agent {
             deliberate: AtomicBool::new(false),
             dead: AtomicBool::new(false),
             tool_calls: Arc::new(tokio::sync::Semaphore::new(CONCURRENT_TOOL_CALLS)),
+            credentials: Arc::new(tokio::sync::Semaphore::new(CONCURRENT_CREDENTIALS)),
         });
         tokio::spawn(self.clone().listen(run.clone(), incoming));
         Ok(run)
@@ -822,6 +877,35 @@ impl Agent {
                             drop(permit);
                         });
                     }
+                    // A real command, put to bzz before it starts. Each waits
+                    // in a task of its own, for as long as the owner takes:
+                    // the host's other requests are answered meanwhile, in
+                    // whatever order they end.
+                    "_bzz/approve" if run.pipe_tools => {
+                        let (agent, run) = (self.clone(), run.clone());
+                        tokio::spawn(async move {
+                            let answer = agent.approve(run.id, &params).await;
+                            let _ = run.connection.respond(id, Ok(answer));
+                        });
+                    }
+                    "_bzz/credential" if run.pipe_tools => {
+                        let Ok(permit) = run.credentials.clone().try_acquire_owned() else {
+                            let _ = run.connection.respond(
+                                id,
+                                Err(RpcError::new(
+                                    acp::REFUSED,
+                                    "bzz is already looking up credentials for this agent. Try the git command again.",
+                                )),
+                            );
+                            continue;
+                        };
+                        let (agent, run) = (self.clone(), run.clone());
+                        tokio::spawn(async move {
+                            let answer = agent.credential(run.id, &params).await;
+                            let _ = run.connection.respond(id, answer);
+                            drop(permit);
+                        });
+                    }
                     "session/request_permission" => {
                         let _ = run.connection.respond(id, Ok(permission(&params)));
                     }
@@ -836,6 +920,10 @@ impl Agent {
         }
         // The harness is gone, or as good as: its output is closed.
         run.dead.store(true, Ordering::Release);
+        // Nobody waits for the owner's answer any more.
+        self.shared
+            .approvals
+            .void_agent(self.spec.id, "the agent's process stopped");
         // Its credentials stop resolving before anything else happens.
         self.shared.credentials.revoke_agent(self.spec.id);
         let deliberate = run.deliberate.load(Ordering::Acquire) || self.halted();
@@ -914,6 +1002,16 @@ impl Agent {
                 turn.typing = None;
             }
         }
+        // A command that waits for the owner's answer is not started by an
+        // agent that is paused, stopped, or whose bzz is closing.
+        self.shared.approvals.void_agent(
+            self.spec.id,
+            if phase == Phase::Paused {
+                "the agent was paused"
+            } else {
+                "the agent was stopped, or bzz is closing"
+            },
+        );
         self.wake.notify_one();
         let run = self.run.lock().await.clone();
         if let Some(run) = run {
@@ -939,6 +1037,11 @@ impl Agent {
         };
         if sessions.is_empty() {
             return 0;
+        }
+        for (session, _) in &sessions {
+            self.shared
+                .approvals
+                .void_session(self.spec.id, session, "its owner stopped the turn");
         }
         let Some(run) = self.run.lock().await.clone() else {
             return sessions.len();
@@ -1195,7 +1298,13 @@ impl Agent {
             result = &mut prompt => (result, false),
             () = tokio::time::sleep(self.limits().turn) => {
                 // The time limit: ask the harness to stop the turn, and stop
-                // the harness itself when it does not.
+                // the harness itself when it does not. A command that still
+                // waits for the owner's answer is not started.
+                self.shared.approvals.void_session(
+                    self.spec.id,
+                    &session,
+                    "the turn's time limit passed",
+                );
                 let _ = run.connection.notify("session/cancel", json!({"sessionId": session}));
                 match tokio::time::timeout(self.limits().cancel_grace, &mut prompt).await {
                     Ok(result) => (result, true),
@@ -1220,6 +1329,11 @@ impl Agent {
         result: std::result::Result<Value, CallError>,
         timed_out: bool,
     ) {
+        // The turn is over, however it ended: a question of it that is
+        // still open has nobody to answer to.
+        self.shared
+            .approvals
+            .void_session(self.spec.id, session, "the turn ended");
         // Tool calls of this turn that are still publishing finish first.
         let waited =
             tokio::time::timeout(self.limits().publish * 2 + Duration::from_secs(5), async {
@@ -1631,6 +1745,308 @@ impl Agent {
         }
         self.turn_changed.notify_waiters();
         reply
+    }
+
+    // ---- a real command, and a git credential ---------------------------
+
+    fn record(&self, entry: &activity::Entry) {
+        activity::record(&self.shared.data_dir, self.spec.id, entry);
+    }
+
+    /// Answers `_bzz/approve`: whether the real command the host is about
+    /// to start may start. `{"allow": true}` is the only yes; everything
+    /// else is a no whose reason the model reads.
+    ///
+    /// What bzz says yes to is the string the host sent, and bzz sends
+    /// nothing of it back: the host runs what it asked about.
+    pub async fn approve(self: &Arc<Self>, run: u64, params: &Value) -> Value {
+        let refuse = |reason: String| json!({"allow": false, "reason": reason});
+        let text = |name: &str| params.get(name).and_then(Value::as_str);
+        let (Some(session), Some("exec"), Some(mount), Some(command)) = (
+            text("sessionId"),
+            text("kind"),
+            text("mount"),
+            text("command"),
+        ) else {
+            return refuse(
+                "`_bzz/approve` needs `sessionId`, `kind` \"exec\", `mount` and `command`. Nothing was started.".into(),
+            );
+        };
+        // What can never run. The host does not ask about these; a harness
+        // that does is told no.
+        if command.is_empty()
+            || command.contains('\0')
+            || command.len() > approval::MAX_COMMAND_BYTES
+        {
+            return refuse(format!(
+                "A command is not empty, holds no NUL character and is at most {} bytes. Nothing was started.",
+                approval::MAX_COMMAND_BYTES
+            ));
+        }
+        // The folder, by bzz's own settings and not by what the host was
+        // told at its start.
+        let folder = self
+            .spec
+            .local
+            .folders
+            .iter()
+            .find(|folder| folder.name == mount)
+            .filter(|folder| folder.exec.granted());
+        let Some(folder) = folder else {
+            let shown = crate::render::sanitize::visible(mount)
+                .chars()
+                .take(64)
+                .collect::<String>();
+            self.record(&activity::Entry::command(
+                &shown,
+                command,
+                "refused: the folder is not granted for commands",
+            ));
+            return refuse(format!(
+                "No real command may run in /mnt/{shown}: your owner has not granted that folder for commands. Nothing was started."
+            ));
+        };
+        let refused = |agent: &Self, why: &str, reason: String| {
+            agent.record(&activity::Entry::command(&folder.name, command, why));
+            refuse(reason)
+        };
+        // The turn the command belongs to: live, in this process, and not
+        // stopped.
+        let live = |agent: &Self| {
+            let state = agent.state();
+            state
+                .turns
+                .get(session)
+                .filter(|turn| turn.run == run && !turn.stopped)
+                .map(|turn| {
+                    (
+                        turn.row.channel_id,
+                        turn.row.place.clone(),
+                        turn.row.author.clone(),
+                    )
+                })
+        };
+        let Some((channel, place, requester)) = live(self).filter(|_| !self.halted()) else {
+            return refused(
+                self,
+                "refused: no turn is running for it",
+                "No message is being answered in this session right now, so no command is started."
+                    .into(),
+            );
+        };
+        if folder.exec == ExecGrant::WithoutAsking {
+            self.record(&activity::Entry::command(
+                &folder.name,
+                command,
+                "allowed without asking",
+            ));
+            return json!({"allow": true});
+        }
+        let limit = self.limits().approval;
+        let asked = Asked {
+            id: 0,
+            agent: self.spec.id,
+            agent_name: self.spec.name.clone(),
+            channel,
+            place,
+            requester,
+            folder: folder.name.clone(),
+            path: folder.path.clone(),
+            command: command.to_owned(),
+            asked_at: unix_now(),
+            expires: Instant::now() + limit,
+        };
+        let (id, outcome) = match self.shared.approvals.ask(asked, session) {
+            Ok(opened) => opened,
+            Err(NotAsked::NobodyToAsk) => {
+                return refused(
+                    self,
+                    "refused: nobody was at bzz to ask",
+                    format!(
+                        "Nothing was started: a command in /mnt/{} needs your owner's approval, and your owner is not at bzz to give it (bzz is running without its window). Tell the people in this conversation that your owner must open bzz to approve the command, and do not try it again until someone asks.",
+                        folder.name
+                    ),
+                );
+            }
+            Err(NotAsked::OneAtATime) => {
+                return refuse(
+                    "Another command of this conversation is waiting for your owner's answer. One at a time: nothing was started.".into(),
+                );
+            }
+        };
+        self.record(&activity::Entry::command(
+            &folder.name,
+            command,
+            "asked of you",
+        ));
+        let first_line = command.split('\n').next().unwrap_or_default();
+        let waiting = format!(
+            "waiting for your answer: run in /mnt/{}: {}",
+            folder.name,
+            crate::render::sanitize::visible(first_line)
+        )
+        .chars()
+        .take(120)
+        .collect::<String>();
+        if let Some(turn) = self.state().turns.get_mut(session) {
+            turn.activity = Some(waiting);
+        }
+        // The turn may have ended between the look and the question.
+        if live(self).is_none() || self.halted() {
+            self.shared.approvals.close(id);
+            return refused(
+                self,
+                "void: the turn ended",
+                "The turn ended before your owner could be asked. Nothing was started.".into(),
+            );
+        }
+        tokio::pin!(outcome);
+        let ended = tokio::select! {
+            biased;
+            ended = &mut outcome => ended.ok(),
+            () = tokio::time::sleep(limit) => {
+                if self.shared.approvals.close(id) {
+                    None
+                } else {
+                    // Answered at that very moment: the answer counts.
+                    (&mut outcome).await.ok()
+                }
+            }
+        };
+        if let Some(turn) = self.state().turns.get_mut(session) {
+            turn.activity = Some(format!(
+                "run in /mnt/{}: {}",
+                folder.name,
+                crate::render::sanitize::visible(first_line)
+                    .chars()
+                    .take(80)
+                    .collect::<String>()
+            ));
+        }
+        match ended {
+            // A yes for a turn that has gone meanwhile starts nothing.
+            Some(Outcome::Allowed) if live(self).is_some() && !self.halted() => {
+                self.record(&activity::Entry::command(
+                    &folder.name,
+                    command,
+                    "allowed by you",
+                ));
+                json!({"allow": true})
+            }
+            Some(Outcome::Allowed) => refused(
+                self,
+                "void: the turn ended before your answer",
+                "The turn ended before your owner's answer. Nothing was started.".into(),
+            ),
+            Some(Outcome::Refused(reason)) => refused(
+                self,
+                &match &reason {
+                    Some(reason) => format!("refused by you: {reason}"),
+                    None => "refused by you".to_owned(),
+                },
+                format!(
+                    "Your owner refused this command{}. Nothing was started. Do not try it again in another form; say in the conversation that it was refused.",
+                    reason
+                        .map(|reason| format!(", and says: {reason}"))
+                        .unwrap_or_default()
+                ),
+            ),
+            Some(Outcome::Void(why)) => refused(
+                self,
+                &format!("void: {why}"),
+                format!("The question to your owner was withdrawn: {why}. Nothing was started."),
+            ),
+            None => refused(
+                self,
+                &format!("refused: no answer in {} s", limit.as_secs()),
+                format!(
+                    "Your owner did not answer within {} seconds, which counts as a refusal. Nothing was started. Say so in the conversation, and try again only when someone asks you to.",
+                    limit.as_secs()
+                ),
+            ),
+        }
+    }
+
+    /// Answers `_bzz/credential`: the user name and token the owner stored
+    /// for this agent and `host`, when the host is on this agent's list of
+    /// allowed hosts and the asking session has a turn running. Otherwise
+    /// an error whose message tells the model what its owner can do.
+    ///
+    /// The agent is the one this process was started for: no parameter
+    /// names it. The answer is written to the pipe and nowhere else.
+    pub async fn credential(
+        &self,
+        run: u64,
+        params: &Value,
+    ) -> std::result::Result<Value, RpcError> {
+        let no = |message: String| Err(RpcError::new(acp::REFUSED, message));
+        let (Some(session), Some(host)) = (
+            params.get("sessionId").and_then(Value::as_str),
+            params.get("host").and_then(Value::as_str),
+        ) else {
+            return no("`_bzz/credential` needs `sessionId` and `host`.".into());
+        };
+        let name = crate::protocol::artifact::display(&self.spec.name, 64);
+        let live = self
+            .state()
+            .turns
+            .get(session)
+            .is_some_and(|turn| turn.run == run && !turn.stopped);
+        if !live || self.halted() {
+            return no(
+                "No message is being answered in this session right now, so bzz gives no credential."
+                    .into(),
+            );
+        }
+        // As the allow-list names a host: lower case, with its port when
+        // that is not the scheme's own. Compared exactly.
+        let host = host.to_ascii_lowercase();
+        let shown = crate::render::sanitize::visible(&host)
+            .chars()
+            .take(260)
+            .collect::<String>();
+        if !self.spec.local.network.contains(&host) {
+            self.record(&activity::Entry::credential(
+                &shown,
+                "refused: the host is not on its list of allowed hosts",
+            ));
+            return no(format!(
+                "bzz gives no credential for {shown}: it is not on this agent's list of allowed hosts. Your owner can allow it with `bzz agent edit {name} --allow-host {shown}` and store a credential with `bzz agent credential set {name} {shown}`."
+            ));
+        }
+        let Some(store) = &self.shared.git_credentials else {
+            self.record(&activity::Entry::credential(
+                &shown,
+                "refused: none can be opened",
+            ));
+            return no(format!(
+                "bzz cannot open stored credentials now, so it has none for {shown}."
+            ));
+        };
+        match store.get(self.spec.id, &host).await {
+            Ok(Some(credential)) => {
+                self.record(&activity::Entry::credential(&shown, "given"));
+                Ok(json!({
+                    "username": credential.username.as_str(),
+                    "password": credential.password.as_str(),
+                }))
+            }
+            Ok(None) => {
+                self.record(&activity::Entry::credential(&shown, "none is stored"));
+                no(format!(
+                    "No credential is stored for {shown}. Your owner can store one with `bzz agent credential set {name} {shown}`."
+                ))
+            }
+            Err(_) => {
+                self.record(&activity::Entry::credential(
+                    &shown,
+                    "refused: the stored one could not be opened",
+                ));
+                no(format!(
+                    "The credential stored for {shown} could not be opened. Your owner can store it again with `bzz agent credential set {name} {shown}`."
+                ))
+            }
+        }
     }
 
     /// Counts something about to be published for a request besides its

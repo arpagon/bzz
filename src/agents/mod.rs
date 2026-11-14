@@ -7,7 +7,9 @@
 //! starts the process; [`manage`] creates and manages them, and
 //! [`capability`] says what each harness can do.
 
+pub mod activity;
 pub mod capability;
+pub mod git_credentials;
 pub mod manage;
 pub mod policy;
 pub mod protocol;

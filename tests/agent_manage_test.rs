@@ -242,6 +242,7 @@ async fn a_created_agent_has_its_key_folder_settings_profile_and_owners_record()
         name: "site".into(),
         path: granted.clone(),
         write: false,
+        exec: bzz::config::ExecGrant::No,
     }];
     new.network = vec!["github.com".into()];
     new.picture = Some("https://example.org/scout.png".into());

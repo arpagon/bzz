@@ -32,6 +32,13 @@ pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
 /// ACP: the agent needs the user to sign in.
 pub const AUTH_REQUIRED: i64 = -32000;
+/// bzz's own host: a turn failed, and `error.data.kind` says why. A code of
+/// that host's own, so that it is not read as ACP's "sign in". (The host
+/// used -32000 for it before; with a kind, the code never decided.)
+pub const TURN_FAILED: i64 = -32010;
+/// bzz's answer to a request of its own host that it refuses, or has
+/// nothing for: no credential stored, a host that is not allowed.
+pub const REFUSED: i64 = -32011;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RpcError {

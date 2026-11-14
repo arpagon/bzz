@@ -38,6 +38,11 @@ pub struct ServeOptions<'a> {
     /// carries federated-identity evidence.
     pub federated: Option<url::Url>,
     pub limits: Limits,
+    /// Whether someone is there to answer when an agent asks to run a real
+    /// command: the TUI is, `bzz agent run` is not.
+    pub owner_present: bool,
+    /// How bzz's own environment is read. `None`: as it is.
+    pub environment: Option<crate::agents::runtime::agent::Environment>,
 }
 
 /// The local agents of one community, running.
@@ -122,6 +127,19 @@ pub async fn serve(options: ServeOptions<'_>) -> Result<Option<CommunityAgents>>
     )?;
     let mut host_options = HostOptions::new(options.paths.data_dir.clone(), options.store.clone());
     host_options.limits = options.limits;
+    host_options.owner_present = options.owner_present;
+    if let Some(environment) = options.environment {
+        host_options.pi_dir = crate::agents::runtime::install::pi_dir(|name| environment(name));
+        host_options.environment = environment;
+    }
+    // What the owner stored for private git remotes opens with his key,
+    // which this runtime holds for as long as it runs.
+    host_options.git_credentials = Some(Arc::new(
+        crate::agents::git_credentials::SealedGitCredentials {
+            keys_dir: options.paths.keys_dir(),
+            owner: options.owner.clone(),
+        },
+    ));
     let host = AgentHost::start(host_options).await?;
     let keys_dir = options.paths.keys_dir();
     let owner_pubkey = options.owner.public_key().to_hex();

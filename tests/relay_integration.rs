@@ -4055,6 +4055,8 @@ async fn real_relay_local_agent_answers_a_mention_exactly_once() {
                 owner_identity: identity.id,
                 federated: None,
                 limits,
+                owner_present: false,
+                environment: None,
             })
             .await
             .unwrap()

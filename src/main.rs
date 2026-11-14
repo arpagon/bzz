@@ -951,6 +951,10 @@ async fn agent_run(paths: &Paths, config: &Config, community: Option<Uuid>) -> R
         owner_identity: identity.id,
         federated,
         limits: Limits::default(),
+        // Nobody is here to be asked: a command that needs the owner's
+        // approval is refused, and the agent says so.
+        owner_present: false,
+        environment: None,
     })
     .await;
     let running = match running {

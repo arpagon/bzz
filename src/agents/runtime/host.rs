@@ -18,10 +18,12 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 use crate::{
+    agents::git_credentials::GitCredentials,
     agents::runtime::{
         Limits,
         admission::{ChannelFacts, Refusal},
         agent::{Agent, AgentSpec, AgentStatus, Environment, Phase, Shared},
+        approval::{Answer, Approvals, Asked},
         credentials::{Credentials, Refused},
         endpoint::{self, Denied, ToolsServer},
         install,
@@ -46,6 +48,12 @@ pub struct HostOptions {
     /// How bzz's own environment is read, to find Node and to build a
     /// harness's environment. Tests give their own.
     pub environment: Environment,
+    /// What the owner stored for private git remotes, opened with his key.
+    /// `None`: an agent that asks for a credential is told bzz has none.
+    pub git_credentials: Option<Arc<dyn GitCredentials>>,
+    /// Whether someone is there to answer when an agent asks to run a real
+    /// command: the TUI is, `bzz agent run` is not.
+    pub owner_present: bool,
 }
 
 impl HostOptions {
@@ -57,6 +65,8 @@ impl HostOptions {
             tools_program: None,
             pi_dir: install::pi_dir(|name| std::env::var(name).ok()),
             environment: Arc::new(|name| std::env::var(name).ok()),
+            git_credentials: None,
+            owner_present: false,
         }
     }
 }
@@ -147,8 +157,12 @@ impl AgentHost {
             Some(program) => program,
             None => std::env::current_exe().map_err(|error| Error::io("bzz executable", error))?,
         };
+        let approvals = Arc::new(Approvals::default());
+        approvals.set_owner_present(options.owner_present);
         Ok(Self(Arc::new(Inner {
             shared: Arc::new(Shared {
+                approvals,
+                git_credentials: options.git_credentials,
                 data_dir: options.data_dir,
                 store: options.store,
                 credentials,
@@ -279,6 +293,23 @@ impl AgentHost {
         }
     }
 
+    /// The real commands that wait for the owner's answer, oldest first.
+    pub fn approvals(&self) -> Vec<Asked> {
+        self.0.shared.approvals.waiting()
+    }
+
+    /// The owner's answer to the question `id`. `false`: it no longer
+    /// waits (answered, timed out, or void), and nothing happens.
+    pub fn answer_approval(&self, id: u64, answer: Answer) -> bool {
+        self.0.shared.approvals.answer(id, answer)
+    }
+
+    /// Says whether someone is at bzz to answer a question. When the owner
+    /// leaves, every question that is open becomes void.
+    pub fn set_owner_present(&self, present: bool) {
+        self.0.shared.approvals.set_owner_present(present);
+    }
+
     /// Whether this host has started serving `agent`.
     pub fn runs(&self, agent: Uuid) -> bool {
         lock(&self.0.agents).contains_key(&agent)
@@ -328,6 +359,8 @@ impl AgentHost {
         self.0
             .closed
             .store(true, std::sync::atomic::Ordering::Release);
+        // bzz is closing: nobody answers any more, and nothing is asked.
+        self.0.shared.approvals.set_owner_present(false);
         for (stop, task) in lock(&self.0.intakes).drain(..) {
             stop.notify_one();
             // The intake holds a clone of this host; it must not outlive it.

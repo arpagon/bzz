@@ -408,6 +408,7 @@ async fn the_real_host_keeps_to_the_grants_and_names_its_failures() {
         name: "site".into(),
         path: site.clone(),
         write: false,
+        exec: bzz::config::ExecGrant::No,
     }];
     let host = world.host_with(local).await;
 
@@ -486,6 +487,7 @@ async fn the_real_host_keeps_to_the_grants_and_names_its_failures() {
             &installed,
             &world.pi_dir(),
             wanted.as_ref(),
+            true,
             environment.clone(),
         )
         .await
@@ -511,6 +513,7 @@ async fn the_real_host_keeps_to_the_grants_and_names_its_failures() {
             ModelCheck::Unavailable {
                 kind: found,
                 message,
+                ..
             } => {
                 assert_eq!(found, kind, "{wanted:?}: {message}");
                 assert!(!message.is_empty());
