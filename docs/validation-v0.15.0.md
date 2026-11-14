@@ -2,8 +2,9 @@
 
 **Status:** M0 in progress on branch `v0.15.0` (PR #9). Implemented and proven
 below (2026-11-14): M1, the agent runtime in bzz; M2, the Pi Durable host,
-on both sides; M3, the agent's disk; M4, creating and managing an agent. Not
-started: M5 (move), M6 (the other harnesses), M7. Plan:
+on both sides; M3, the agent's disk, with credentials for a private remote on
+both sides; M4, creating and managing an agent; M7, hands on this machine, on
+both sides. Not in this document yet: M5 (move), M6 (the other harnesses). Plan:
 [`docs/planning/2026-11-13/v0.15.0.md`](planning/2026-11-13/v0.15.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
 
@@ -605,11 +606,90 @@ pass's "credentials given for one host…" in `network.test.mjs`, above.
   place of 401, and a forge that answers 404 for a private repository (bzz
   is then never asked) did not run.
 - bzz's side of `_bzz/credential`: where the credentials are kept, and the
-  owner being asked. A scripted client answered.
+  owner being asked. A scripted client answered. Built and proven since:
+  "Credentials for a private remote, bzz's side", below.
 - The answer stays in this process's memory until Node frees it. Nothing
   wipes it. "Passes through memory only" is what is shown, not "is erased".
 - macOS and Windows: the CI job has not run with these tests. They need
   `git` with `http-backend` and say so when they are skipped.
+
+### Credentials for a private remote, bzz's side
+
+Linux x86_64, Rust 1.98.1, Node 26.5.0, git 2.x with `http-backend`, Buzz pin
+`bf3bdd0eaefe`, 2026-11-14. Commits `30d65a5..@@HEAD@@` on `v0.15.0`.
+
+**Where it is.** `src/agents/git_credentials.rs` (the store, sealed to the
+owner's key), `Agent::credential` in `src/agents/runtime/agent.rs` (the
+answer to `_bzz/credential`), `bzz agent credential set|list|remove` in
+`src/cli_agent.rs`, `src/agents/activity.rs` (the record of each request).
+
+**How to repeat.**
+
+```sh
+. runs/env.sh
+cargo build --locked --example scripted_harness
+cargo test --locked --all-features --lib -- agents::git_credentials agents::activity
+cargo test --locked --all-features --test agent_runtime_test a_git_credential what_the_owner_takes_away several_requests
+cargo test --locked --all-features --test agent_manage_test deleting_an_agent
+cargo test --locked --all-features --test secret_scan_test a_stored_git_credential
+cargo test --locked --all-features --test agent_host_test the_real_host_clones    # real host; needs Node and a git with http-backend
+BZZ_RELAY_TEST_FILTER=real_relay_agent_runs_a_real_command BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh
+```
+
+**Red runs.** Each is the named test with the one fault in the cell planted,
+seen failing as quoted, then removed. 50 ran in a clone of the repository
+with a build folder of its own, on `eccb009` and `1bf8764`
+(`runs/v015/c4-red.py` plants and restores each; local, untracked). Six ran
+before that in the main checkout, while the code was written: the host's
+two, the descriptors, and the three of the settings file.
+`U:` is a unit test in the named module; `T:` a test of
+`tests/agent_runtime_test.rs` (scripted harness); `H:` of
+`tests/agent_host_test.rs` (the real host on its stand-in model, a recorded
+relay); `S:` of `tests/secret_scan_test.rs`.
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| A credential is sealed with NIP-44 to the owner's key, one file per agent and host, for the owner only. Nothing on disk holds the user name or the token; the hosts are listed without opening anything; another owner cannot open it; storing again replaces; what cannot be a credential is refused | `U: git_credentials::a_credential_is_sealed_for_one_agent_and_one_host` | next row | pass |
+| What is sealed names the agent and the host: a file copied to another agent's folder, or under another host's name, opens for nobody | same | the check of the agent and the host removed: `assertion failed: get(keys, &owner, ranger, "github.com").await.is_err()` | pass |
+| bzz answers `_bzz/credential` from the stored value for a host on that agent's allow-list, in any case of letters | `T: a_git_credential_is_given_for_a_listed_host_of_this_agent_only` | next rows | pass |
+| A host that is not on the allow-list gets none, although one is stored, and the message says what the owner can do | same | the allow-list not looked at: `{"id":"h2",…"result":{"password":"tok-unlisted-marker","username":"scout-bot"}}` where an error was expected | pass |
+| A credential stored for another agent only is not this agent's | same; `H:` below | covered by the row on the seal, and by the store's path, which is the agent's | pass |
+| A session with no turn running gets none | same | the session not looked at: the token is answered to `not-a-session` (`{"id":"h5",…"result":{"password":"ghp_NotARealToken…`) | pass |
+| Only bzz's own host may ask: from another harness the request is one bzz does not know | `T: only_bzzs_own_host_may_ask_for_a_command_or_a_credential` | any harness answered: `left: Null right: Number(-32601)` | pass |
+| A host the owner takes off the list while bzz runs gets no credential from then on; a settings file that cannot be read, and an agent paused or gone from the settings, get none | `T: what_the_owner_takes_away_is_refused_at_once_by_a_running_bzz` | the settings file not read again: round 2 is given the credential (`assert!(!allowed && !given)`); an unreadable file counted as no file: round 5 is given it | pass |
+| Each request is a line in the agent's activity: the host and what happened. Never the user name or the token | `T: a_git_credential…`; `U: activity::a_question_and_its_answer_are_kept_as_one_line_each` | the token written into the line: `left: ["git credential for github.com · given ghp_NotARealToken…` | pass |
+| The activity file is for the owner only, one line per entry, and is cut when it grows | `U: activity::the_file_does_not_grow_without_bound` | never cut: `1232000` bytes | pass |
+| `bzz agent credential set` takes the user name and the token from standard input when it is no terminal, never as arguments, and prints neither; `list` prints hosts only; `remove` removes; `agent show` lists the hosts and the activity | `S: a_stored_git_credential_is_in_no_log_no_database_and_no_activity_line` (the bzz binary) | `credential set` printing the token it read: `the token leaked into credential set` | pass |
+| **The secret scan:** a stored credential is in no file of the profile (settings, database, activity, the harness's log, the sealed file itself), in four forms, nor in anything a command prints. It reaches a harness on one line only: the answer to its request | same; `H:` below | bzz writing the token it gave to a file of its data folder: `the token leaked into …/d/debug-trace.txt`; with the real host: `…/data/debug-trace.txt holds the token` | pass |
+| `agent delete` removes the agent's credentials with its key, and leaves another agent's | `agent_manage_test::deleting_an_agent_removes_its_git_credentials`; relay test below | the removal skipped: `Removal { removed: ["its settings", "its key", …] }` without the credentials | pass |
+| **With the real host and a private remote** (`git http-backend` behind a server that answers 401): with nothing stored the clone fails and the agent is told what its owner can do | `H: the_real_host_clones_a_private_remote_with_a_stored_credential_and_not_without` | an error that says nothing: `["git: 127.0.0.1:43935 asks for credentials, and bzz gave none: refused\nexit 128\n"]` | pass |
+| …stored for this agent while its host runs, the next clone works: `Cloned into`, the file's content, `exit 0` | same | bzz answering "none is stored" whatever is stored: `the clone works with the stored credential: ["git: 127.0.0.1:38931 asks for credentials, and bzz gave none: …` | pass |
+| …a host taken off the list is refused by the host before any request leaves, and bzz is not asked | same | not run | pass |
+
+**On the pinned relay** (`real_relay_agent_runs_a_real_command_and_clones_a_private_remote`,
+with M7 below): the agent is made by `bzz agent new --allow-host <remote>`;
+the first clone is answered in the chat with `No credential is stored for
+127.0.0.1:<port>. Your owner can store one with …` and `exit 128`; the bzz
+binary then stores one (`agent credential set`, standard input) while the
+agent runs; the second clone is answered with `Cloned into`, `alpha beta
+gamma` and `exit 0`. Every file of the profile is searched for the token in
+four forms, and for the passphrase; `agent delete` reports `removed: its 1
+stored git credential(s)` and leaves no `agent-*` file in the keys folder.
+
+**Not proven here:**
+
+- A real forge. The remote is plain HTTP on this machine. GitHub, GitLab and
+  the 203 of Azure DevOps did not run; no real token was used.
+- macOS and Windows: not compiled or run here (only the Linux target is
+  installed). The store has no Unix-only code but the file mode.
+- A Buzz Desktop identity as the owner: sealing goes through the same signer
+  call as an agent's key does, and was run with an encrypted-file identity
+  and with keys held in memory only.
+- The token stays in bzz's memory until the answer is written and freed: the
+  stored value is wiped when dropped, the JSON that carries it is not.
+- `credential set` on a terminal (the prompts without echo): the test feeds
+  standard input. `rpassword` reads the terminal as it does for a
+  passphrase.
 
 ## M4 — Creating and managing an agent
 
@@ -776,7 +856,7 @@ disposable sandbox, and from bzz."
 | The interactive questions of `bzz agent new` on a terminal | every question is tested as a flag and in the form; the prompts themselves were not driven by a test |
 | A community with federated identity (NIP-FI) | `agent new`, `add`, `edit` and `delete` enroll and revoke the agent as `broker create` and `broker delete` do, by the same code; no test ran them against the adapter |
 | `agent delete --force` with the relay unreachable, and a deletion the relay refuses | written; not run |
-| Editing while a bzz TUI is open | the TUI holds its own copy of the settings; a command's change can be written over. Stated in the guide, not prevented |
+| Editing while a bzz TUI is open | prevented since: "One writer for the settings", under "M7 — Hands on this machine (bzz's side)" |
 | The refresh of the directory in a community of thousands | it now asks for the profiles of members without a stored profile, at most 2000 a refresh. Not measured |
 | Benchmarks against v0.14.0 for a profile without agents | not run in this task |
 
@@ -863,9 +943,11 @@ its result is on the agent's disk; a refused one does not run"):
   agent's disk by the agent's own `cp` and read back from `files.sqlite`. A
   short result is in the conversation, which is `memory.sqlite`, not on the
   disk.
-- [ ] Against bzz itself: pending bzz's side of `_bzz/approve` and of `exec`
-  on a grant.
-- [ ] Approve and refuse in the TUI, on the release binary: pending.
+- [x] Against bzz itself: "M7 — Hands on this machine (bzz's side)", below.
+  An approved command runs in the granted folder and its output reaches the
+  chat, on the pinned relay; a refused one does not run.
+- [ ] Approve and refuse in the TUI, **on the release binary**: not run. The
+  TUI is proven with the real App on a test terminal (below).
 
 **Not proven here:**
 
@@ -918,6 +1000,271 @@ its result is on the agent's disk; a refused one does not run"):
 - `replay` was not set on the tool. Pi Durable's default is "not safe to run
   again", which is what kept a cut-off command from starting twice. It is
   now set by name.
+
+## M7 — Hands on this machine (bzz's side)
+
+**Scope:** what bzz does with a folder granted for commands, with
+`_bzz/approve`, and with what the host reports; the question in the TUI; Pi
+packages; how the host is started; and the two things M4 left: a key in the
+agents panel, and one writer for the settings. The host's own half is the
+section above.
+
+Linux x86_64, Rust 1.98.1, Node 26.5.0, Buzz pin `bf3bdd0eaefe`, 2026-11-14.
+Commits `f76bfc3..@@HEAD@@` on `v0.15.0`.
+
+**Where it is.**
+
+| What | Where |
+|---|---|
+| `exec` on a folder grant, `packages` on an agent, one writer for the file | `src/config.rs` |
+| The open questions: answered once, void, nobody to ask | `src/agents/runtime/approval.rs` |
+| The answers to `_bzz/approve` and `_bzz/credential`; `initialize`; the settings read again | `src/agents/runtime/agent.rs` |
+| The agent's activity | `src/agents/activity.rs` |
+| What the host reports at `initialize`; the model check through the host's entry | `src/agents/runtime/install.rs` |
+| No inherited descriptors | `src/agents/runtime/process.rs` |
+| The dialog and the line at the top; the command made visible | `src/ui/approval.rs`, `src/render/sanitize.rs`, `src/app.rs` |
+| `--folder …:exec`, `--no-packages`, `agent credential`, `agent show`, `agent doctor` | `src/agents/manage.rs`, `src/cli_agent.rs` |
+| The capability record of one agent | `src/agents/capability.rs` |
+
+**How to repeat.**
+
+```sh
+. runs/env.sh
+cargo build --locked --example scripted_harness
+cargo test --locked --all-features --lib -- agents::runtime::approval agents::activity agents::capability \
+  ui::approval render::sanitize a_command_waits a_question_is_void a_commands_edit a_harness_inherits the_limits_fit
+cargo test --locked --all-features --test agent_runtime_test     # scripted harness, a recorded relay
+cargo test --locked --all-features --test config_test
+cargo test --locked --all-features --test agent_host_test        # the real host; needs Node and git
+BZZ_RELAY_TEST_FILTER=real_relay_agent_runs_a_real_command BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh
+cd agent-host && npm ci --ignore-scripts --omit=optional && npm test
+```
+
+Red runs as in "Credentials for a private remote, bzz's side": one fault
+planted, the named test seen failing as quoted, the fault removed. `A:` is a
+test of `app::tests`, which drives the real App on a test terminal
+(`TestBackend`) with the real agent runtime and, as the harness, a shell
+script that speaks just enough of the protocol to ask.
+
+### Folders granted for commands
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| A folder grant carries `exec`: absent (no command), `ask` or `without-asking`. A file written before it existed means no command. Any other value is refused when the file is read, never read as a yes. It is written back as it was read | `config_test::a_folder_grant_carries_exec_and_an_agent_its_packages_switch` | `exec` never written: `left: false right: true` (the saved file lost it) | pass |
+| `--folder name=/path[:rw][:exec\|:exec-without-asking]` is read from the end, apart from `:rw`; what `agent show` prints can be given back to `--folder`; a word bzz does not know is no grant | `U: manage::the_answers_are_read_as_written` | not run | pass |
+| `agent edit` sets the folders and the switch for Pi packages, publishes nothing for them, and `agent show` says for each folder what it grants | `U: manage::an_edit_says_which_records_changed` | not run | pass |
+| `initialize` sends `exec` for each folder, apart from `write`, and nothing that says whether the owner is asked | `T: the_host_is_told_which_folders_take_commands_and_what_it_reports_is_kept` | every folder sent with `exec: false`: `left: […"exec": Bool(false), "name": String("work")…] right: […"exec": Bool(true)…]` | pass |
+| What the host answers (its version, where it offers `run`, each package loaded or left out and why) is kept in the agent's folder and printed by `agent show` and `agent doctor`; only a simple name is taken as a folder and a package's words are made safe; a grant the host does not offer is said | same; relay test below | the report not written: `a report` (`expect` on a missing file) | pass |
+| The capability record of an agent says where it may run real commands, in which folders the owner is asked, that a command is not held in its folder, and whether Pi packages are loaded. An agent with no such folder has the record it had | `U: capability::an_agents_record_says_where_it_may_run_commands_and_whether_you_are_asked`, `every_harness_states…`, `the_records_say…` | the record taken from the harness alone: `assertion failed: plain.runs.contains("no folder is granted for commands")` | pass |
+| The checks before a creation end with what the answers give the agent on this machine, so that it is read before the owner confirms | `H: agent_new_says_which_pi_package_names_a_missing_provider` | the notes left out: `` `In /mnt/work each command waits for your yes in the TUI.` in: `` (nothing) | pass |
+
+### Approvals: the rules, with the scripted harness
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| A command in a folder that asks waits for the owner. He is given the agent, the conversation, who it is answering, the folder with its real path, and the command untouched, with its lines, its tab and its terminal escape. Nothing starts while it waits; the agent's line says what it waits for | `T: a_command_runs_only_after_the_owner_allows_it` | every folder for commands treated as allowed without asking: `timed out waiting for a command to wait for the owner` | pass |
+| His yes starts it: the harness is answered `{"allow": true}` and nothing of the command | same | covered by the rows on a refusal and on the TUI's yes | pass |
+| His no starts nothing, and his reason reaches the agent | same | a refusal passed on as a yes: `left: Bool(true) right: Bool(false)` | pass |
+| A question waits a stated time (300 s; 1 s in the test) and then counts as refused, with a reason that says so | `T: an_unanswered_command_counts_as_refused_and_a_late_answer_starts_nothing` | no time limit: the harness is answered only when the turn's own limit passes (`…was withdrawn: the turn's time limit passed…` where the refusal was expected) | pass |
+| A late answer starts nothing: the question is closed when its time is up… | same; `U: approval::a_question_is_answered_once_and_a_late_answer_does_nothing` | closing leaves it in the list: `assertion failed: !approvals.close(timed)` | pass |
+| …and an answer whose asker has gone is not taken | `U: approval::an_answer_whose_asker_has_gone_starts_nothing` | an answer counted as taken whoever waits: `assertion failed: !approvals.answer(id, Answer::Allow)` | pass |
+| A question is void when its turn is stopped: it leaves the list at once, the harness is told it was withdrawn, a yes afterwards finds nothing, the command does not start | `T: a_waiting_command_is_void_when_its_turn_is_stopped_the_agent_paused_or_bzz_quits` | stopping a turn leaves its question open: `stop: it no longer waits` | pass |
+| …when the agent is paused | same | no void at a pause nor at the end of the process: the reason recorded is `void: the turn ended` where `the agent was paused` was expected | pass |
+| …and when bzz quits | same | no void at shutdown, at a stop, nor at the end of the process: `quit: […"void: the turn ended"]` | pass |
+| Without the TUI nobody is asked: a command in a folder that asks is refused at once, with a reason that tells the agent to say in the conversation that its owner must open bzz | `T: without_the_tui_a_command_is_refused_and_one_allowed_without_asking_runs` | a question opened although nobody is there: it waits until the turn's limit (`` `needs your owner's approval` in: The question to your owner was withdrawn… ``) | pass |
+| A folder allowed without asking runs, with the owner there or not, and is never put to him | same | treated as one that asks: `left: {"allow": false, "reason": "Nothing was started: a command in /mnt/ops needs your owner's approval…"} right: {"allow": true}` | pass |
+| bzz refuses a command in a folder its own settings do not grant for commands, in one that is not granted at all, an empty one and one with a NUL, whatever the host was told | same | any granted folder taking commands: `docs` is allowed (`left: Bool(true) right: Bool(false)`) | pass |
+| What the owner takes away while bzz runs holds at once: a folder that now asks is refused with nobody there; a grant taken away, and the same name for another folder, are refused; a settings file that cannot be read is a no; so is an agent paused in the settings | `T: what_the_owner_takes_away_is_refused_at_once_by_a_running_bzz` | the settings file not read again: round 2 is allowed; an unreadable file counted as no file: round 5 is allowed | pass |
+| Several requests of the host are open at once and answered in whatever order they end: while a command waits, a credential and a chat tool of the same turn are answered, and a second conversation has a question of its own. The ids are strings (`h1`…), each answered under its own. One conversation has one question open | `T: several_requests_of_the_host_are_open_at_once_and_answered_in_any_order` | `_bzz/approve` answered in the loop that reads the host: `timed out waiting for both questions to wait` | pass |
+| Two agents each have one open; an answer for one does nothing to the other; each has its own activity | `T: two_agents_may_each_have_a_command_waiting`; `A:` below | one question for the whole host: `timed out waiting for both agents to ask` | pass |
+| Every question and its answer goes to the agent's activity: when, the folder, the command's first line with what would not show written out, the answer | `T: a_command_runs_only_after…` and the others; `U: activity` (2) | nothing recorded: `left: [] right: ["command in /mnt/work · cd app && (and 1 more line(s)) · asked of you", …]` | pass |
+| Only bzz's own host may ask | `T: only_bzzs_own_host_may_ask_for_a_command_or_a_credential` | any harness answered: `left: Null right: Number(-32601)` | pass |
+
+A red run that did not go red: with "a question whose time is up stays in
+the list" planted in the runtime, `an_unanswered_command_counts_as_refused…`
+still passed. Two things each keep a late answer from starting anything: the
+question is closed, and the task that asked is gone, so an answer has nobody
+to reach. The runtime test cannot tell one from the other; the two unit rows
+above show each alone. The same holds for a pause: with the void at the pause
+removed, the question is still void a moment later, when its turn ends, and
+the test fails only on the reason that is recorded.
+
+### Approvals: the TUI
+
+`A: a_command_waits_for_the_owner_on_every_screen_and_runs_only_on_his_yes`,
+unless another test is named.
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| A waiting approval is visible from anywhere: a line at the top of the workspace, with the agents directory, a search, the broker panel, the agents panel or the help open, and in the Inbox. It names the agent, the folder, the conversation, how many more wait, the key, and the time left | the test; `U: ui::approval::the_banner_says_who_asks_where_and_how_to_answer` | the line drawn only when no panel is open: `` `:agents directory`: … `` (the first row has no such line) | pass |
+| The dialog never opens by itself, and a plain `y` or `a` typed anywhere answers nothing: only `Ctrl-Y` or `:approvals` opens it | the test | `y` without Ctrl opening it: `assertion failed: !world.app.global_key(key(KeyCode::Char('y')))` | pass |
+| The dialog shows the agent, the conversation and who is being answered, the folder with its real path, that the command runs as the owner, the time left, and the command whole: each line numbered, the rest of a long line without a number | the test; `U: ui::approval::a_command_is_shown_whole_with_its_lines_and_what_would_not_show`, `the_dialog_shows_who_asks…` | only the first line shown: `left: [Some(1)] right: [Some(1), Some(2), None, Some(3), None, None, Some(4)]`, and `` ` 2 │   npm test -- --watch=false\t# \x1b[2K` `` is not on the screen | pass |
+| Anything unprintable is made visible: a terminal escape, a carriage return, a tab, a right-to-left override, a zero-width and a no-break space are written out; an escape is never cut in two by a row's end; nothing of the command is lost | same; `U: render::sanitize::what_would_not_show_is_written_out` | the command drawn as it is: `left: "  npm test\t# \u{1b}[2K\rrm -rf ~" right: "  npm test\\t# \\x1b[2K\\rrm -rf ~"`; only control characters written out: `left: "a\u{202e}b\u{200b}c…"` | pass |
+| His yes starts the command: the harness reads `{"allow":true}` under its own id and the command starts; the dialog closes on what was open before | the test | the dialog's yes passed on as a refusal: `left: Some("refused: Scout was told no, and nothing was started") right: Some("allowed: Scout runs its command in /mnt/work")` | pass |
+| A yes is taken only after the end of the command has been on screen: for one of 60 lines, `a` answers nothing and says to scroll | the test; `U: ui::approval::the_dialog_shows_who_asks…` | a yes taken at once: the dialog closed (`left: None right: Some(Approval)`) | pass |
+| His no, with a reason he writes, starts nothing: the harness reads `Your owner refused this command, and says: not on a Friday`. While he writes, every key is a letter of the reason | the test | covered at the runtime (a refusal passed on as a yes) | pass |
+| A question that goes away while it is looked at says so, and a yes then starts nothing and says that nothing was started | the test | not run | pass |
+| Two agents each have one open, and the second is the one shown after the first is answered | the test | covered at the runtime | pass |
+| Locking bzz leaves no question behind: it is void, a yes afterwards finds nothing, the command does not start, the line is gone | `A: a_question_is_void_when_bzz_locks_and_the_panel_adds_an_agent_to_the_open_channel` | covered at the runtime (void at shutdown) | pass |
+
+### With the real host, and on the pinned relay
+
+`H: the_real_host_runs_a_command_only_with_the_owners_yes`: bzz's real Pi
+Durable host on its stand-in model, a recorded relay, the owner's answers
+given through `AgentHost::answer_approval`, which is what the TUI's keys
+call.
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| An approved command runs in the granted folder exactly as the owner saw it (two lines, a quote, a redirection) and its output reaches the chat; the file it made is on the machine. The host reports `run` in the two folders granted for commands | `H:` | bzz answering every command with a refusal: `its output reached the chat: ["The command was not allowed: no\nIt was not started."]` | pass |
+| A refused command does not run, and the agent tells why | `H:` | a refusal passed on as a yes: `the agent was told why: ["done"]` (the command ran) | pass |
+| A folder allowed without asking is not put to the owner; the host does not even ask about a folder without `exec` | `H:` | covered with the scripted harness | pass |
+| Without the TUI a command that needs approval is refused, and the reply in the chat says the owner must open bzz; the folder allowed without asking still works | `H:` | a question opened with nobody there: `the request never settled`, the agent's status `waiting for your answer: run in /mnt/work: touch headless.txt` | pass |
+
+**On the pinned relay**
+(`real_relay_agent_runs_a_real_command_and_clones_a_private_remote` in
+`tests/relay_integration.rs`, 2026-11-14, 88 s alone). The agent is made by
+`bzz agent new Scout --folder work=…:exec --folder ops=…:exec-without-asking
+--allow-host <remote>` and added by `bzz agent add`; its requests come from
+its own relay connection; the host is the real one.
+
+| Claim | Observed | Result |
+|---|---|---|
+| `agent new` prints, with the capability record, where the agent has hands | `real commands of this machine, as your user, started in /mnt/work, /mnt/ops`, `In /mnt/work each command waits for your yes in the TUI.`, `Warning: in /mnt/ops commands run WITHOUT asking you`, `The folder is where it starts, not a wall` | pass |
+| `agent show` before any start | both folders with their rights, `git credentials: none stored`, `its host: not started yet`, no activity | pass |
+| With the owner there (the runtime as the TUI runs it, `owner_present`): a mention asks for a command of two lines; it waits; the owner is given that command, the agent, the folder, the channel and himself as the one answered; nothing has run; after his yes the reply on the relay holds the command's output and the folder's path, and the file it made is in the folder | `made by a real command` and the path, in the agent's one reply | pass |
+| A refused command does not run, and the reply says why | `Your owner refused this command, and says: not in this folder`; no `refused.txt` | pass |
+| A clone from the private remote, without and with a stored credential | see "Credentials for a private remote, bzz's side" | pass |
+| Without the owner (`bzz agent run`, the binary): a command in the folder that asks is refused, and the reply tells the people in the chat | `needs your owner's approval`, `your owner must open bzz to approve the command`; no `headless.txt` | pass |
+| …and one in the folder allowed without asking runs | `restarted`; `done.txt` in the folder | pass |
+| `agent show` beside the running bzz: the host a credential is stored for, what the host reported, every question with its answer; `agent doctor` likewise | `real commands: the `run` tool, in /mnt/work, /mnt/ops`, `Pi packages: none named in Pi's settings`, eight activity lines from `asked of you` to `allowed without asking` | pass |
+| The secret scan over the whole profile; `agent delete` | no file holds the token or the passphrase; `removed: its 1 stored git credential(s)` | pass |
+
+Red on the relay, one run, the same test in a clone of the repository with
+"a refusal is passed on as a yes" planted: @@RELAYRED@@
+
+### Pi packages, and the model check
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| An agent carries `packages`, on unless it says `false`; `agent new --no-packages` and the form's tenth question set it, `agent edit --packages on\|off` changes it; `initialize` sends it, `true` or `false` | `config_test::a_folder_grant_carries_exec…`; `U: manage::the_answers_are_read_as_written`, `an_edit_says…`; `T: the_host_is_told…` (`"packages": false`) | not run for the switch alone; the `initialize` row above fails on the same assertion block | pass |
+| The model check is the host's own entry, `node main.mjs --check-model`: one line of JSON, whatever a package prints; a model of a provider that only a package brings can be used; the four reasons are told apart; asking creates nothing in Pi's folder | `agent-host/test/packages.test.mjs` "`main.mjs --check-model` answers…"; `H: the_real_host_keeps_to_the_grants_and_names_its_failures` | the entry never loading the packages: `actual: { ok: true, … packages: [] } expected: { … packages: [ [Object], …5 ] }` | pass |
+| `agent new` says, when the chosen model's provider is missing, which Pi package names it without a Pi Durable entry; or that none does | `H: agent_new_says_which_pi_package_names_a_missing_provider` (packages written by the test) | what the host reports of the package dropped: `` `bzz found the Pi package …/pi-acme-cloud in Pi's settings` in: … `` | pass |
+| With packages off for the agent, the check loads none, and bzz says they are off | same | the switch not passed on: the model of a package's provider is found (`unwrap_err() on an Ok value: "…model acme/acme-1…"`) | pass |
+| A failed turn has a code of the host's own, `-32010`, which bzz does not read as ACP's "sign in"; with a kind, the kind decides for either code | `agent-host/test/acp.test.mjs` "a provider that fails during the turn…"; `U: runtime::failures_are_named_by_kind_from_code_and_wording` | the host still answering `-32000`: `-32000 !== -32010`; bzz reading `-32010` as a missing sign-in: `left: SignInNeeded right: ProviderError` | pass |
+
+**Found on the way:** the check of a model before an agent exists never
+loaded the Pi packages. It imported `src/model.mjs` and asked with Pi's own
+providers only, so a model whose provider a package brings was always
+reported as missing by `agent new --model`, although an agent would have run
+on it. Moving the question to the host's entry showed it.
+
+### Starting the host
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| A harness gets its three streams and no other open descriptor, also none bzz itself was born with: a descriptor left open and unmarked in bzz, number 200 or above, is not open in the harness, and stays open in bzz | `U: process::a_harness_inherits_no_descriptor_but_its_three_streams` | the marking not done before the start: `left: "0 open,1 open,2 open,200 open," right: "0 open,1 open,2 open,200 closed,"` | pass |
+| `initialize` has a time limit of bzz's own, 30 s, longer than the 10 s the host gives its packages; a harness that does not answer is stopped and counted | `U: runtime::the_limits_fit_what_the_host_and_the_owner_need`; `T: a_harness_that_stalls_at_start_is_stopped_and_counted` (M1) | the limit set to 10 s: `10s` | pass |
+| Requests of the host with string ids, several open, answered in any order | `T: several_requests_of_the_host…`, above | above | pass |
+| `HOME`, `PATH`, `LANG` and `TMPDIR` and no `NODE_*` variable | `H: the_real_host_is_installed_started_and_answers_once…` (M2, unchanged: the host's environment read from `/proc`) | M2 | pass |
+
+On descriptors, what was and was not done:
+
+- **Linux and macOS:** before a harness, `npm` or a probe of `node` is
+  started, bzz marks every descriptor it holds above 2 as not to be handed on
+  (`close_fds::set_fds_cloexec_threadsafe(3, &[])`). That covers what bzz
+  inherited and what a C library opened. The test above ran on Linux only.
+  macOS is the same call and has not run.
+- **What it leaves:** a descriptor another thread opens without the mark
+  between that call and the start of the child.
+- **Windows:** nothing is done. A handle is handed on only when it is
+  inheritable, and Rust makes none that way; one bzz itself inherited as
+  inheritable cannot be named in safe Rust. The host offers no `run` there.
+- `unsafe` stays forbidden: safe Rust cannot name a descriptor it did not
+  open, so one dependency was added for this, `close_fds` 0.3.
+
+### What M4 left: a key in the panel, and one writer for the settings
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| `i` in `:agents` adds the selected agent to the channel that is open, by the call `bzz agent add` makes; with no channel open it says so; the owner is told how it ended | `A: a_question_is_void_when_bzz_locks_and_the_panel_adds_an_agent_to_the_open_channel` (no relay answers there: the notice is the failure, named) | the key doing nothing: `left: [] right: [(<agent>, <channel>)]` | pass |
+| **One writer for the settings.** A copy that saves writes only what it changed since it last read or wrote the file, over what the file holds then. A command's edit of an agent, and an agent it created, survive a later save by a copy that was open all along, also when that copy changed the same agent; and the reverse | `config_test::a_save_does_not_write_over_what_another_bzz_saved_meanwhile` | a save writing its own copy whole: `the command's edit of an agent survived the TUI's save… left: ([], Paused) right: (["github.com"], Paused)` | pass |
+| …in the running App: `bzz agent edit Scout --allow-host … --packages off` from another terminal, then `Space` on two agents in the TUI's panel, leave the edit and both pauses in the file; and the TUI's change survives a command that had read the file before it | `A: a_commands_edit_survives_a_save_by_the_running_tui_and_the_reverse` | the same fault: `left: ([], true, Paused) right: (["github.com"], false, Paused)` | pass |
+| An agent either side deleted stays deleted, whatever the other changed in it; a setting both changed takes the later save's value, and only that setting; two changes that do not fit together are not saved; a copy that never read the file writes itself whole | `config_test::a_save_does_not…` | same test | pass |
+| Two saves at the same moment both land | `config_test::two_saves_at_once_both_land` (20 rounds, two threads) | no lock taken: `round 0: neither save wrote over the other left: (20, 44) right: (20, 31)`, or the file missing for the reader | pass |
+
+The command in these tests is the code the command runs (`Config::load`, the
+edit, `Config::save`), in the test's own process. The bzz binary beside a
+running TUI was not run.
+
+### The plan's exit gate for M7
+
+"An approved command runs in a granted folder and its result is on the
+agent's disk; a refused one does not run."
+
+- [x] An approved command runs in a granted folder, with the real host, on
+  the pinned relay, and its output reaches the chat; a refused one does not
+  run.
+- [x] Its result is with the agent: a short output is in its conversation, a
+  long one on its disk, and a file is brought there by the agent's own `cp`.
+  That half is the host's (`run.test.mjs`, the section above).
+- [x] The approval rules, with the scripted harness; the question in the TUI,
+  with the real App on a test terminal.
+- [ ] **Approve and refuse in the TUI on the release binary** (the plan's
+  Herdr column): not run.
+
+### Not proven for bzz's side of M7
+
+| Item | State |
+|---|---|
+| One journey with everything real: the release TUI, a key pressed by a person, the real host, the relay | not run. The TUI is proven with a shell script as the harness; the real host and the relay with the answer given through the call the TUI's keys make |
+| macOS and Windows | not compiled or run here. The tests that start processes are Unix only. On Windows the host offers no `run`; the grant is kept and `agent show` says it is not offered |
+| Descriptors on macOS | the same call as on Linux; not run |
+| A real Pi package, a real model, a real forge | none ran: packages are written by the tests, the model is the stand-in, the remote is on this machine |
+| A real workload | the commands in the tests take milliseconds. A build of minutes with the owner away, and a turn that reaches its ten minutes while a command runs, did not run |
+| A letter that looks like another one | not made visible; the dialog only says when a command holds characters outside ASCII |
+| A very wide or very small terminal | the dialog was drawn at 110×20 and 150×40. On a terminal too small for the head of the dialog the end of a command is never "seen", so it cannot be allowed there |
+| The bzz binary editing the settings beside a running TUI | the same code, in one process; see above |
+| A settings file edited by hand while bzz runs | read again before each command and each credential; a file that does not parse is a no until it does |
+| `Ctrl-Y` bound by a user's keymap | it is taken by bzz only while a command waits |
+| The owner's answer from another machine, or from the chat | not built, by decision (ADR, "Rejected") |
+
+### Found on the way
+
+- **The model check never loaded Pi packages** (above).
+- **Two relay harness runs started in the same second**, mine and another
+  agent's, each having waited for the harness to be free. Both failed while
+  the database was set up (`duplicate key value violates unique constraint
+  "pg_extension_name_index"`, `connection refused`), and the cleanup of mine
+  removed the containers of both. No test had run. `scripts/test-relay.sh`
+  has no lock: two runs on one machine must be kept apart by hand.
+- **A test that is started while another writes a program** failed once in
+  seven runs of the unit tests: `NodeMissing` for a stand-in `node` that had
+  just been written. A program that is open for writing in any process
+  cannot be started ("text file busy"), and a test thread that starts a
+  process holds, for a moment, the descriptors of every other thread. bzz
+  now tries such a start again (`install::run_to_end`); twelve runs in a row
+  passed afterwards. The cause was not seen directly, only that the failures
+  stopped.
+- A red run for "a clone works with the stored credential" did not compile
+  (a `match` left without an arm), which is no red run. It was planted again
+  another way.
+- The first red run for the secret scan with the real host failed on the
+  activity line, before the files were searched. A second fault, the token
+  written to a file of the data folder, shows the search itself.
+
+### Gates after M7 (bzz's side)
+
+Run on `@@HEAD@@`, 2026-11-14, Linux x86_64, Node 26.5.0.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | @@FMT@@ |
+| Lint | `cargo clippy --locked --all-targets --all-features -- -D warnings` | @@CLIPPY@@ |
+| Tests | `cargo test --locked --all-features` | @@TESTS@@ |
+| Pinned relay | `BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh` | @@RELAY@@ |
+| Agent host | `cd agent-host && npm ci --ignore-scripts --omit=optional && npm test` | @@NPM@@ |
+| Supply chain | `cargo deny check`; `cargo audit` | @@SUPPLY@@ |
 
 ## Evidence gathered before the plan (2026-11-13)
 
