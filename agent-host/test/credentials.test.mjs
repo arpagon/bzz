@@ -85,6 +85,9 @@ test("a private remote: bzz is asked when the remote asks, once per git command,
 	assert.match(await run(`git clone ${unlisted.origin} third`), /is not on this agent's allow-list/);
 	assert.equal(host.asked.length, asked);
 	assert.deepEqual(unlisted.requests, []);
+	// The last answer bzz gives before the search below is a whole one: a host that kept only the latest would hold it.
+	assert.match(await run("cd project && git fetch origin"), /Fetched origin\nexit 0\n/);
+	assert.equal(host.asked.length, asked + 1);
 
 	// The model can make a file that is found in the search below: the search sees what is on the disk.
 	await run("echo CONTROL-MARKER-ON-THE-DISK > project/control.txt && cat project/.git/config");
