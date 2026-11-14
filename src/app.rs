@@ -4795,6 +4795,9 @@ impl App {
                 owner_identity: runtime.identity_id,
                 federated,
                 limits: crate::agents::runtime::Limits::default(),
+                // The owner is here to be asked before a real command runs.
+                owner_present: true,
+                environment: Some(self.agent_environment.clone()),
             })
             .await;
         match served {
@@ -7878,6 +7881,7 @@ impl App {
                         )
                     }),
                     settings: crate::agents::manage::settings_lines(local),
+                    record: crate::agents::capability::record_for(local).lines(),
                 })
             })
             .collect()
@@ -8202,7 +8206,17 @@ impl App {
                     "agent {} ({}) created in {}",
                     created.agent.label, created.agent.pubkey, community.label
                 )];
-                lines.extend(crate::agents::capability::record(new.harness).lines());
+                lines.extend(
+                    created
+                        .agent
+                        .local
+                        .as_ref()
+                        .map_or_else(
+                            || crate::agents::capability::record(new.harness),
+                            crate::agents::capability::record_for,
+                        )
+                        .lines(),
+                );
                 lines.push(String::new());
                 lines.push(format!(
                     "Next: add it to a channel with `bzz agent add {} <channel>`, then mention it there. It answers while bzz is open.",

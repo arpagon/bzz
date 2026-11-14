@@ -37,8 +37,8 @@ use crate::{
     auth::{federated::EvidenceSlot, signer::SignerHandle},
     broker::custody,
     config::{
-        AgentModelConfig, CommunityConfig, Config, FolderGrant, Harness, HostedAgentConfig,
-        IdentityConfig, KeyBackend, LocalAgentConfig, LocalAgentState, WakeRule,
+        AgentModelConfig, CommunityConfig, Config, ExecGrant, FolderGrant, Harness,
+        HostedAgentConfig, IdentityConfig, KeyBackend, LocalAgentConfig, LocalAgentState, WakeRule,
         validate_relay_url,
     },
     diagnostics::DiagnosticHandle,
@@ -84,6 +84,8 @@ pub struct NewAgent {
     pub folders: Vec<FolderGrant>,
     pub network: Vec<String>,
     pub picture: Option<String>,
+    /// Whether its host loads the Pi packages of Pi's settings.
+    pub packages: bool,
 }
 
 impl NewAgent {
@@ -98,6 +100,7 @@ impl NewAgent {
             folders: Vec::new(),
             network: Vec::new(),
             picture: None,
+            packages: true,
         }
     }
 
@@ -113,6 +116,7 @@ impl NewAgent {
             state: LocalAgentState::Active,
             command: Vec::new(),
             picture: self.picture.clone(),
+            packages: self.packages,
         }
     }
 }
@@ -136,12 +140,14 @@ pub struct Answers {
     pub hosts: Vec<String>,
     /// Empty: none.
     pub picture: String,
+    /// `on` or `off`. Empty: on.
+    pub packages: String,
 }
 
 /// The questions, in the order they are asked, each with what to answer.
 /// The community comes first and is not in the list: a command asks for it,
 /// and the TUI creates an agent in the community that is open.
-pub const QUESTIONS: [(&str, &str); 9] = [
+pub const QUESTIONS: [(&str, &str); 10] = [
     ("Name", "as Buzz will show it"),
     (
         "Harness",
@@ -165,13 +171,17 @@ pub const QUESTIONS: [(&str, &str); 9] = [
     ),
     (
         "Folders it may read",
-        "name=/path, or name=/path:rw to let it write; with commas; empty: none",
+        "name=/path; add :rw to let it write, :exec to let it run real commands there, each asked of you first (:exec-without-asking: never asked); with commas; empty: none",
     ),
     (
         "Hosts it may reach",
         "for example github.com; with commas; empty: none",
     ),
     ("Picture", "an HTTPS address; empty: none"),
+    (
+        "Pi packages",
+        "on or off: a package named in Pi's settings runs inside the agent's host, with your rights; empty: on",
+    ),
 ];
 
 impl Answers {
@@ -210,6 +220,7 @@ impl Answers {
         new.network.sort();
         new.network.dedup();
         new.picture = parse_picture(&self.picture)?;
+        new.packages = parse_switch(&self.packages)?.unwrap_or(true);
         validate_settings(&new.name, new.wake, &new.wake_allowlist, &new.folders)?;
         Ok(new)
     }
@@ -235,6 +246,16 @@ pub fn parse_wake(text: &str) -> Result<WakeRule> {
         other => Err(Error::Config(format!(
             "unknown rule {other:?}: choose owner-only, allowlist or anyone"
         ))),
+    }
+}
+
+/// `on` or `off`. Empty: no answer.
+pub fn parse_switch(text: &str) -> Result<Option<bool>> {
+    match text.trim().to_ascii_lowercase().as_str() {
+        "" => Ok(None),
+        "on" | "yes" | "true" => Ok(Some(true)),
+        "off" | "no" | "false" => Ok(Some(false)),
+        other => Err(Error::Config(format!("{other:?} is neither on nor off"))),
     }
 }
 
@@ -300,21 +321,32 @@ pub fn split_commas(text: &str) -> Vec<String> {
 fn simple_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
+        && name.as_bytes()[0].is_ascii_alphanumeric()
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
 }
 
-/// A folder grant: `name=/path`, `name=/path:rw`, or a path alone, whose
-/// last part is then the name. Read-only unless it ends in `:rw`. The agent
-/// sees it as `/mnt/<name>`.
+/// A folder grant: `name=/path`, or a path alone, whose last part is then
+/// the name. After it, any of `:rw` (the agent's file tools may write
+/// there; `:ro` says they may not), `:exec` (real commands may run there,
+/// each asked of the owner first) and `:exec-without-asking` (they run
+/// without the owner being asked). The agent sees the folder as
+/// `/mnt/<name>`.
 pub fn parse_folder(text: &str) -> Result<FolderGrant> {
     let text = text.trim();
-    let (rest, write) = match (text.strip_suffix(":rw"), text.strip_suffix(":ro")) {
-        (Some(rest), _) => (rest, true),
-        (_, Some(rest)) => (rest, false),
-        _ => (text, false),
-    };
+    let (mut rest, mut write, mut exec) = (text, false, ExecGrant::No);
+    // The words are read from the end, so a path may hold a colon.
+    while let Some((before, word)) = rest.rsplit_once(':') {
+        match word {
+            "rw" => write = true,
+            "ro" => write = false,
+            "exec" => exec = ExecGrant::Ask,
+            "exec-without-asking" => exec = ExecGrant::WithoutAsking,
+            _ => break,
+        }
+        rest = before;
+    }
     let (name, path) = match rest.split_once('=') {
         Some((name, path)) => (name.trim().to_owned(), path.trim()),
         None => (
@@ -328,7 +360,7 @@ pub fn parse_folder(text: &str) -> Result<FolderGrant> {
     let path = Path::new(path);
     if !simple_name(&name) {
         return Err(Error::Config(format!(
-            "the folder {text:?} needs a simple name (letters, digits, - and _): write name=/path"
+            "the folder {text:?} needs a simple name (letters, digits, - and _, starting with a letter or a digit): write name=/path"
         )));
     }
     if !path.is_absolute() {
@@ -347,7 +379,40 @@ pub fn parse_folder(text: &str) -> Result<FolderGrant> {
         name,
         path: path.to_path_buf(),
         write,
+        exec,
     })
+}
+
+/// A folder grant as the owner would write it, for `--folder`.
+pub fn folder_text(folder: &FolderGrant) -> String {
+    format!(
+        "{}={}{}{}",
+        folder.name,
+        folder.path.display(),
+        if folder.write { ":rw" } else { "" },
+        match folder.exec {
+            ExecGrant::No => "",
+            ExecGrant::Ask => ":exec",
+            ExecGrant::WithoutAsking => ":exec-without-asking",
+        }
+    )
+}
+
+/// What a grant lets the agent do in the folder, in the owner's words.
+pub fn folder_rights(folder: &FolderGrant) -> String {
+    format!(
+        "{}{}",
+        if folder.write {
+            "read and write"
+        } else {
+            "read-only"
+        },
+        match folder.exec {
+            ExecGrant::No => "",
+            ExecGrant::Ask => "; real commands, each asked of you first",
+            ExecGrant::WithoutAsking => "; real commands, WITHOUT asking you",
+        }
+    )
 }
 
 /// A host the agent may reach: `host` or `host:port`. Never a URL or a
@@ -925,7 +990,7 @@ pub async fn preflight(
                 "Pi's folder could not be found, so the model cannot be checked".into(),
             ));
         };
-        match install::check_model(&node, &host, pi_dir, Some(model), lookup).await {
+        match install::check_model(&node, &host, pi_dir, Some(model), new.packages, lookup).await {
             ModelCheck::Available {
                 provider,
                 model_id,
@@ -936,16 +1001,16 @@ pub async fn preflight(
                     .map(|level| format!(" (thinking: {level})"))
                     .unwrap_or_default()
             )),
-            ModelCheck::Unavailable { kind, message } => {
+            ModelCheck::Unavailable {
+                kind,
+                message,
+                package,
+            } => {
                 return Err(Error::Config(format!(
                     "the model {}/{} cannot be used ({kind}): {message}{}",
                     model.provider,
                     model.model_id,
-                    if kind == "provider_unavailable" {
-                        " A provider that comes from a Pi extension needs a Pi Durable entry in that package."
-                    } else {
-                        ""
-                    }
+                    missing_provider_note(&kind, package.as_deref(), new.packages)
                 )));
             }
             ModelCheck::Unknown(why) => {
@@ -959,6 +1024,22 @@ pub async fn preflight(
         notes.push("model: Pi's own default, read when the agent is first asked".into());
     }
     Ok(Preflight { notes })
+}
+
+/// What an owner can do about a provider that is missing: the host says
+/// whether a Pi package of Pi's settings names it without a Pi Durable
+/// entry (`package`), and bzz says what that means.
+pub fn missing_provider_note(kind: &str, package: Option<&str>, packages: bool) -> String {
+    if kind != "provider_unavailable" {
+        return String::new();
+    }
+    match (package, packages) {
+        (Some(package), _) => format!(
+            " bzz found the Pi package {package} in Pi's settings, which names this provider but has no Pi Durable entry (\"pi\": {{\"durable\": [...]}} in its package.json): the `pi` command can use it, bzz's host cannot, until the package adds one."
+        ),
+        (None, true) => " bzz found no Pi package in Pi's settings that names this provider. A provider that comes from a Pi extension needs a Pi Durable entry in that package.".into(),
+        (None, false) => " Pi packages are switched off for this agent, so no package's provider was looked for.".into(),
+    }
 }
 
 // ---- creation ---------------------------------------------------------------
@@ -1104,6 +1185,10 @@ impl Undo<'_> {
         if custody::delete(&self.context.paths.keys_dir(), &self.agent).is_err() {
             left.push("the agent's sealed key".into());
         }
+        let _ = crate::agents::git_credentials::remove_all(
+            &self.context.paths.keys_dir(),
+            self.agent.id,
+        );
         left
     }
 }
@@ -1254,6 +1339,7 @@ pub struct Edit {
     pub folders: Option<Vec<FolderGrant>>,
     pub network: Option<Vec<String>>,
     pub picture: Option<Option<String>>,
+    pub packages: Option<bool>,
 }
 
 /// Which records an edit must publish again.
@@ -1332,6 +1418,9 @@ pub fn apply_edit(config: &mut Config, id: Uuid, edit: &Edit) -> Result<Republis
     }
     if let Some(network) = &edit.network {
         local.network = network.clone();
+    }
+    if let Some(packages) = edit.packages {
+        local.packages = packages;
     }
     validate_settings(&label, local.wake, &local.wake_allowlist, &local.folders)?;
     agent.label = label;
@@ -1602,6 +1691,15 @@ pub async fn remove_local(
         Ok(()) => removal.removed.push("its key".into()),
         Err(error) => removal.left.push(format!("its sealed key ({error})")),
     }
+    match crate::agents::git_credentials::remove_all(&paths.keys_dir(), id) {
+        Ok(0) => {}
+        Ok(count) => removal
+            .removed
+            .push(format!("its {count} stored git credential(s)")),
+        Err(error) => removal
+            .left
+            .push(format!("its stored git credentials ({error})")),
+    }
     let folder = process::agent_dir(&paths.data_dir, id);
     if folder.exists() {
         match std::fs::remove_dir_all(&folder) {
@@ -1662,12 +1760,50 @@ pub fn outcome(turn: &RecentTurn) -> String {
     }
 }
 
+/// How many lines of an agent's activity `bzz agent show` prints.
+pub const SHOWN_ACTIVITY: usize = 20;
+
+/// The folders an agent's settings grant for commands, by name.
+pub fn exec_folders(local: &LocalAgentConfig) -> Vec<String> {
+    local
+        .folders
+        .iter()
+        .filter(|folder| folder.exec.granted())
+        .map(|folder| folder.name.clone())
+        .collect()
+}
+
+/// The hosts a git credential is stored for, each with whether the agent
+/// may reach it: a credential for a host that is not allowed is never given.
+pub fn credential_lines(local: &LocalAgentConfig, hosts: &[String]) -> Vec<String> {
+    hosts
+        .iter()
+        .map(|host| {
+            if local.network.contains(host) {
+                host.clone()
+            } else {
+                format!(
+                    "{host} (not on its list of allowed hosts: never given until you allow the host)"
+                )
+            }
+        })
+        .collect()
+}
+
 /// Everything `bzz agent show` prints for one agent.
 pub struct Details {
     pub running: Option<u32>,
     /// `(id, name, role)` of the channels bzz last saw it in.
     pub channels: Vec<(Uuid, String, String)>,
     pub turns: Vec<RecentTurn>,
+    /// What its host said when it last started: where it offers `run`,
+    /// and the Pi packages it loaded or left out.
+    pub started: Option<install::StartReport>,
+    /// The commands it asked to run and the credentials it asked for,
+    /// with what it was answered; oldest first.
+    pub activity: Vec<crate::agents::activity::Entry>,
+    /// The hosts a git credential is stored for. Never the credentials.
+    pub credential_hosts: Vec<String>,
 }
 
 pub async fn details(
@@ -1688,6 +1824,9 @@ pub async fn details(
         running: running_pid(&paths.data_dir, agent.id),
         channels,
         turns,
+        started: install::StartReport::read(&paths.data_dir, agent.id),
+        activity: crate::agents::activity::recent(&paths.data_dir, agent.id, SHOWN_ACTIVITY),
+        credential_hosts: crate::agents::git_credentials::hosts(&paths.keys_dir(), agent.id),
     })
 }
 
@@ -1747,11 +1886,7 @@ pub fn settings_lines(local: &LocalAgentConfig) -> Vec<String> {
             "folder:      /mnt/{} = {} ({})",
             folder.name,
             folder.path.display(),
-            if folder.write {
-                "read and write"
-            } else {
-                "read-only"
-            }
+            folder_rights(folder)
         ));
     }
     lines.push(format!(
@@ -1764,6 +1899,16 @@ pub fn settings_lines(local: &LocalAgentConfig) -> Vec<String> {
     ));
     if let Some(picture) = &local.picture {
         lines.push(format!("picture:     {picture}"));
+    }
+    if local.harness == Harness::PiDurable {
+        lines.push(format!(
+            "Pi packages: {}",
+            if local.packages {
+                "on: a package named in Pi's settings runs inside its host, with your rights"
+            } else {
+                "off"
+            }
+        ));
     }
     if !local.command.is_empty() {
         lines.push(format!(
@@ -1821,7 +1966,40 @@ pub fn show_lines(agent: &HostedAgentConfig, community: &str, details: &Details)
             &turn.request_id[..turn.request_id.len().min(12)]
         ));
     }
-    lines.extend(capability::record(local.harness).lines());
+    if local.harness == Harness::PiDurable {
+        if details.credential_hosts.is_empty() {
+            lines.push(
+                "git credentials: none stored; `bzz agent credential set <name> <host>` stores one"
+                    .into(),
+            );
+        } else {
+            lines.push("git credentials stored for (the host only is shown):".into());
+        }
+        lines.extend(
+            credential_lines(local, &details.credential_hosts)
+                .into_iter()
+                .map(|line| format!("  {line}")),
+        );
+        match &details.started {
+            Some(started) => lines.extend(started.lines(&exec_folders(local))),
+            None => lines.push("its host: not started yet on this machine".into()),
+        }
+        if details.activity.is_empty() {
+            lines.push("activity:    no command asked for and no credential asked for yet".into());
+        } else {
+            lines.push(
+                "activity (commands it asked to run, credentials it asked for, and the answer):"
+                    .into(),
+            );
+        }
+        lines.extend(
+            details
+                .activity
+                .iter()
+                .map(|entry| format!("  {}", entry.line())),
+        );
+    }
+    lines.extend(capability::record_for(local).lines());
     lines
 }
 
@@ -2076,21 +2254,42 @@ mod tests {
         let text = site.display().to_string();
         assert_eq!(
             parse_folder(&text).unwrap(),
-            FolderGrant {
-                name: "site".into(),
-                path: site.clone(),
-                write: false
-            }
+            FolderGrant::read_only("site", &site)
         );
         assert_eq!(
             parse_folder(&format!("docs={text}:rw")).unwrap(),
             FolderGrant {
                 name: "docs".into(),
                 path: site.clone(),
-                write: true
+                write: true,
+                exec: ExecGrant::No,
             }
         );
         assert!(!parse_folder(&format!("docs={text}:ro")).unwrap().write);
+        // Real commands are granted by a word of their own, apart from
+        // writes, and never by default; asking is the default of the two.
+        for (words, write, exec) in [
+            ("", false, ExecGrant::No),
+            (":exec", false, ExecGrant::Ask),
+            (":rw:exec", true, ExecGrant::Ask),
+            (":exec:rw", true, ExecGrant::Ask),
+            (":ro:exec-without-asking", false, ExecGrant::WithoutAsking),
+            (":rw:exec-without-asking", true, ExecGrant::WithoutAsking),
+        ] {
+            let grant = parse_folder(&format!("docs={text}{words}")).unwrap();
+            assert_eq!((grant.write, grant.exec), (write, exec), "{words}");
+            assert_eq!(grant.path, site, "{words}");
+            // What `agent show` prints can be given back to `--folder`.
+            assert_eq!(parse_folder(&folder_text(&grant)).unwrap(), grant);
+        }
+        assert!(folder_rights(&parse_folder(&format!("{text}:exec")).unwrap()).contains("asked"));
+        assert!(
+            folder_rights(&parse_folder(&format!("{text}:exec-without-asking")).unwrap())
+                .contains("WITHOUT asking")
+        );
+        // A word bzz does not know is part of the path, which then is not there.
+        assert!(parse_folder(&format!("docs={text}:run")).is_err());
+        assert!(parse_folder(&format!("-docs={text}")).is_err());
         assert!(parse_folder(&format!("my docs={text}")).is_err());
         assert!(parse_folder("docs=relative/path").is_err());
         assert!(parse_folder(&format!("docs={text}/missing")).is_err());
@@ -2153,7 +2352,20 @@ mod tests {
             assert!(wrong.read().is_err(), "{wrong:?}");
         }
         assert_eq!(split_commas("a=/x y, b=/z ,"), ["a=/x y", "b=/z"]);
-        assert_eq!(QUESTIONS.len(), 9);
+        assert_eq!(QUESTIONS.len(), 10);
+        // Pi packages are on unless the owner says off.
+        let packages = |answer: &str| {
+            Answers {
+                name: "Scout".into(),
+                packages: answer.into(),
+                ..Answers::default()
+            }
+            .read()
+            .map(|new| new.packages)
+        };
+        assert!(packages("").unwrap() && packages("on").unwrap());
+        assert!(!packages("off").unwrap() && !packages("No").unwrap());
+        assert!(packages("maybe").is_err());
 
         // Settings that contradict each other are refused.
         let friend = vec![key.to_hex()];
@@ -2195,6 +2407,36 @@ mod tests {
         let local = config.hosted_agents[0].local.clone().unwrap();
         assert_eq!(local.instructions, "Be brief.");
         assert_eq!(local.network, ["github.com"]);
+        // So are a folder granted for commands and the switch for Pi
+        // packages.
+        let granted = FolderGrant {
+            name: "site".into(),
+            path: std::env::temp_dir(),
+            write: false,
+            exec: ExecGrant::Ask,
+        };
+        let hands = apply_edit(
+            &mut config,
+            id,
+            &Edit {
+                folders: Some(vec![granted.clone()]),
+                packages: Some(false),
+                ..Edit::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hands, Republish::default());
+        let local = config.hosted_agents[0].local.clone().unwrap();
+        assert_eq!(
+            (local.folders.clone(), local.packages),
+            (vec![granted], false)
+        );
+        let shown = settings_lines(&local).join("\n");
+        assert!(
+            shown.contains("(read-only; real commands, each asked of you first)")
+                && shown.contains("Pi packages: off"),
+            "{shown}"
+        );
         // A name is in both records; who may wake it only in the owner's.
         let renamed = apply_edit(
             &mut config,
