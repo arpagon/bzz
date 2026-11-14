@@ -79,6 +79,13 @@ ashpd = { version = "=0.13.13", default-features = false, features = ["file_choo
 # runtime signals a harness's process group through it (safe `kill`).
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "stdio", "process"] }
+# Before bzz starts an agent's harness it marks every descriptor it holds
+# beyond the three standard streams as not to be handed on, also those bzz
+# itself inherited from the terminal it was started in: a real command an
+# agent runs would get them (docs/agent-host-protocol.md, section 2). Safe
+# Rust cannot name a descriptor it did not open; `set_fds_cloexec` is a safe
+# function that does. Its only dependencies, cfg-if and libc, are here already.
+close_fds = "0.3"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 rfd = { version = "=0.17.2", default-features = false }
