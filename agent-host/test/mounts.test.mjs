@@ -184,7 +184,8 @@ test("an error names the virtual path, never the real one", async (t) => {
 	}
 	const shell = await sh("cat /mnt/site/absent; ls /mnt/site/none; echo x > /mnt/drop/a/b/c 2>&1; stat /mnt/site/zz");
 	seen.push(shell.out, shell.err, JSON.stringify(await env.readTextFile("/mnt/site/absent", ctx)));
-	for (const message of seen) assert.equal(message.includes(root), false, message);
+	// The folder's own name is looked for as well: on Windows and macOS the real path is spelled differently from `root`.
+	for (const message of seen) assert.equal(message.includes(root) || message.includes("bzz-agent-host-mounts-"), false, message);
 	assert.match(seen[0], /ENOENT.*'\/mnt\/site\/absent'/);
 });
 

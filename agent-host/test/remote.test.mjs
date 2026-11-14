@@ -116,7 +116,7 @@ test("under buzz-acp: one conversation per thread, a replayed mention answered o
 	// The text travels on standard input, not in the arguments, where every process of the machine could read it.
 	assert.deepEqual(posts()[0].args, ["messages", "send", "--channel", first.channel, "--reply-to", first.request, "--content", "-"]);
 	// buzz-acp's working directory is a path of that machine: it is not kept.
-	for (const name of ["memory.sqlite", "files.sqlite"]) assert.equal(readFileSync(join(folder, name)).includes(root), false, name);
+	for (const name of ["memory.sqlite", "files.sqlite"]) for (const real of [root, "bzz-agent-host-remote-", "a-folder-of-that-machine"]) assert.equal(readFileSync(join(folder, name)).includes(real), false, `${name} holds ${real}`);
 	assert.deepEqual(readdirSync(folder).sort(), ["agent.json", "files.sqlite", "memory.sqlite"]);
 });
 
