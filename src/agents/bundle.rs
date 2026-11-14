@@ -976,9 +976,9 @@ mod tests {
         let mut grafted = whole[..second].to_vec();
         grafted.extend_from_slice(&other[second..]);
         unopened(attempt(with_checksums_made_right(grafted)));
-        // Two pieces of equal length in each other's place: only their
-        // numbers tell them apart.
-        let equal = Fixture::new(2 * PIECE, 0);
+        // Two whole pieces in each other's place, neither of them the last:
+        // only their numbers tell them apart.
+        let equal = Fixture::new(3 * PIECE, 0);
         equal.seal("equal.bzzagent", b"{}").unwrap();
         let bytes = std::fs::read(equal.path("equal.bzzagent")).unwrap();
         let first_len = u32::from_be_bytes(bytes[HEAD..HEAD + 4].try_into().unwrap()) as usize;
