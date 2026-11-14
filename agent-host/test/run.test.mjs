@@ -106,6 +106,9 @@ test("an approved command runs in the granted folder, exactly as approved, in an
 	// bzz is told what the agent is doing, with the folder.
 	const calls = host.updates.map(({ update }) => update).filter((update) => update.title?.startsWith("run"));
 	assert.deepEqual(calls.map(({ title, kind }) => [title, kind])[0], [`run in /mnt/site: ${command}`, "execute"]);
+	// And is told before it is asked: the call is on bzz's screen when the question about it arrives.
+	const line = (text) => host.lines.findIndex((entry) => entry.includes(text));
+	assert.ok(line('"sessionUpdate":"tool_call"') < line('"_bzz/approve"'), "the tool call is announced before the question");
 	assert.deepEqual(host.updates.map(({ update }) => update.status).filter((status) => status === "failed").length, 3);
 
 
@@ -335,4 +338,14 @@ test("a command does not outlive the host, however the host goes, and is not sta
 	assert.deepEqual(await host.stop(2_000), { code: 0, signal: null });
 	await gone(ids, 5_000);
 
+	// A command that ignores TERM, children included, under a host that is killed: the keeper outlives the host, gives
+	// the group its grace, and kills what is left. Nothing but the keeper could.
+	const other = await world(t);
+	host = await other.start();
+	host.prompt(host.sessionId, "k3", script(["run", { folder: "site", command: `trap '' TERM; ${TREE}` }], ["report"])).catch(() => undefined);
+	ids = await other.pids(3);
+	await host.kill();
+	await sleep(300);
+	assert.equal(ids.filter(alive).length, 3, "TERM was ignored: only KILL ends this group");
+	await other.gone(ids, 5_000);
 });

@@ -137,6 +137,9 @@ export function createRun({ folders, approve, save, env, log = () => undefined }
 		},
 		// One at a time within a round: the owner is asked about one command, then the next.
 		executionMode: "sequential",
+		// Said, not left to Pi Durable's default: a call that a restart cut off is never made again. The command may have
+		// run in part, and the approval it had was for the process that is gone.
+		replay: "unsafe",
 		outputLimits: { retain: "tail" },
 		// A model may give the folder as it sees it in its file tools.
 		prepareArguments(args) {
