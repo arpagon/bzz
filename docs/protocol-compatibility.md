@@ -28,9 +28,16 @@ Implemented MVP protocol surface:
   `search_mode`, author, channel, and UTC-time filters;
 - p-gated mention and read-only workflow status (`46010`–`46012`) Inbox
   projection;
-- relay-authored kind `39002` bot membership, agent-authored kind `0` NIP-OA
-  ownership profiles and kind `10100` declarations, and owner-authored kind
-  `30177` public policy for verified remote managed-agent discovery;
+- relay-authored kind `39002` membership (any role since v0.15; the `bot`
+  role until v0.14), agent-authored kind `0` NIP-OA ownership profiles and
+  kind `10100` declarations, and owner-authored kind `30177` public policy for
+  verified remote managed-agent discovery;
+- for a local agent (v0.15), what Buzz 1.0 itself publishes for one: the
+  agent's kind `0` profile with `"bot": true` and the owner's NIP-OA tag, the
+  owner's kind `30177` record with `runtime` `bzz/<harness>`, `name`,
+  `picture`, `respond_to` and `parallelism`, its NIP-09 removal by coordinate,
+  and the owner's kind `9000` addition of the agent to a channel, with the
+  `bot` role only in a Solo chat;
 - relay-authored kind `40099` control events through a bounded semantic parser,
   never raw authored-message rendering;
 - transient relay-authored kind `39005` thread summaries for the selected
@@ -76,8 +83,10 @@ DM participants operational role `member`; bzz therefore permits an exact
 current participant to enter bounded agent verification only when NIP-OA ownership plus
 either exact bot authority elsewhere in the community or signed kind 10100
 validate. DM-only members require the declaration. DM invocation remains
-verified-owner-only; an absent public policy never enables a non-owner. Every
-non-DM destination continues to require exact relay-signed `bot` role.
+verified-owner-only; an absent public policy never enables a non-owner. Until
+v0.14 every non-DM destination required the exact relay-signed `bot` role;
+since v0.15 a member of the channel whose profile carries its owner's valid
+NIP-OA proof is an agent there, as Buzz 1.0 adds agents as plain members.
 
 Inbox is a composed local projection rather than a new relay object. It groups
 p-tagged mentions, relevant NIP-10 replies, workspace DM activity, local

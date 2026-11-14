@@ -1,7 +1,9 @@
 # bzz v0.15.0 validation
 
-**Status:** M0 in progress on branch `v0.15.0` (PR #9). M1, the agent runtime
-in bzz, is implemented and proven below (2026-11-14); nothing else is. Plan:
+**Status:** M0 in progress on branch `v0.15.0` (PR #9). Implemented and proven
+below (2026-11-14): M1, the agent runtime in bzz; M2, the Pi Durable host,
+on both sides; M3, the agent's disk; M4, creating and managing an agent. Not
+started: M5 (move), M6 (the other harnesses), M7. Plan:
 [`docs/planning/2026-11-13/v0.15.0.md`](planning/2026-11-13/v0.15.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
 
@@ -48,7 +50,7 @@ a harness's saved session, a cancelled turn, macOS, Windows.
 |---|---|
 | Experiment 2: how Buzz 1.0 shows an agent whose `runtime` it does not know | not run |
 | Experiment 3: the role Buzz 1.0 gives an agent it adds to a channel, and whether bzz v0.14 lists that agent | not run |
-| Baselines fixed in the repository: the host's `package.json` and lock file, Node detection | `agent-host/package.json` and `package-lock.json` added 2026-11-14 (see M2); Node detection in bzz not done |
+| Baselines fixed in the repository: the host's `package.json` and lock file, Node detection | `agent-host/package.json` and `package-lock.json` added 2026-11-14 (see M2); Node detection in bzz done 2026-11-14 (see "bzz's side of M2") |
 | ADR "local agents" and the agent host protocol | written 2026-11-14: `adr-v0.15-local-agents.md`, `agent-host-protocol.md` |
 
 ## M1 — The agent runtime in bzz
@@ -213,13 +215,13 @@ Red on the relay, two runs:
 | Item | State |
 |---|---|
 | macOS and Windows | not compiled or run here (only the Linux target is installed). The Windows path (`taskkill /T`, a start time read through PowerShell) and the macOS path (start time from `ps`) are written and untested |
-| A real harness | none exists in this tree yet: the Pi Durable host is M2, the coding harnesses M6. Everything above is the scripted harness |
+| A real harness | when M1 was written none existed in this tree. The Pi Durable host has since been joined to the runtime ("bzz's side of M2"); the coding harnesses are M6 |
 | The release TUI through Herdr ("the agent panel shows a turn") | not run. The TUI path is proven by the two `app::tests` above, and what it calls (`service::serve`) on the relay |
 | A federated-identity community | the agents enroll as the broker's do (same code); `./scripts/test-relay.sh --nip-fi` has no local agent in it |
 | Which permission titles the real adapters use for bzz's tools | the rule is tested with `mcp__buzz__send` and three other spellings; a harness that asks under another name is refused, and its turn then ends as plain text |
 | `session/load` with a real adapter | scripted only |
 | The pause toggle and community switch in the running TUI | the toggle is covered by the `app` test; a switch of community with agents running is not |
-| Growth over time | inbox rows and stored sessions are never pruned, and a harness keeps every session it opened |
+| Growth over time | closed in M4 for inbox rows and stored sessions ("What M1 left open"). A harness process still keeps every session it opened until it is restarted |
 
 ## M2 — The Pi Durable host
 
@@ -286,9 +288,11 @@ after a kill, one reply, memory across turns and restarts"):
 
 - [x] The host's half, against a scripted client: resume after a kill, the
   same request once, memory across turns and restarts.
-- [ ] Against bzz itself, on the pinned relay: pending bzz's runtime (M1).
-- [ ] "One reply per mention" is bzz's rule, not the host's. The host only
-  makes it cheap: a request handed over again starts nothing.
+- [x] Against bzz itself, on the pinned relay: see "bzz's side of M2" below
+  (2026-11-14).
+- [x] "One reply per mention" is bzz's rule, not the host's. The host only
+  makes it cheap: a request handed over again starts nothing. Shown with the
+  real host under a kill, below.
 - [ ] S12 with a real model through this host: not run. It needs the owner's
   Pi login, which no test may read.
 
@@ -310,6 +314,91 @@ after a kill, one reply, memory across turns and restarts"):
   whole event header can make the remote copy take another event of the same
   channel as the request (the test above shows it). The channel cannot be
   moved that way.
+
+### bzz's side of M2: the host inside the binary, its install, the default launch
+
+Linux x86_64, Rust 1.98.1, Node 26.5.0, Buzz pin `bf3bdd0eaefe`, 2026-11-14.
+Commits `fc1ac6e` and `54652aa` (written by one agent and checked, red runs
+included, by the next), with `41b5f6d` and `0e82b34`.
+
+**Where it is.** `src/agents/runtime/install.rs` (the embedded files, Node and
+npm, the install), `Shared::pi_host` and `Agent::launch` in
+`src/agents/runtime/agent.rs` (the default launch), `tests/agent_host_test.rs`
+and `tests/support/pi_host.rs`.
+
+**How the stand-in model is switched on.** The host adds its scripted model
+only when `BZZ_AGENT_HOST_SCRIPTED_MODEL` is in its environment, and bzz
+builds that environment from nothing. So a test gives bzz, as `BZZ_NODE`, a
+two-line program that sets the variable and runs the real Node. bzz never sets
+it: the test reads the running host's environment from `/proc` and finds
+`HOME`, `LANG`, `PATH`, `TMPDIR` and the one variable the stand-in added.
+
+**How to repeat.**
+
+```sh
+. runs/env.sh
+cargo test --locked --all-features --lib -- agents::runtime::install   # stand-ins for node and npm; no Node needed
+cargo test --locked --all-features --test agent_host_test              # the real host, a recorded relay
+BZZ_RELAY_TEST_FILTER=real_relay_agent_new BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh
+```
+
+`agent_host_test` and the relay test need Node.js 22.19 or newer and, the
+first time, the npm registry (npm's cache is then kept under `target/tmp`).
+Without Node they print `SKIPPED …: it runs bzz's real agent host, which needs
+Node.js 22.19 or newer` and pass; with `BZZ_TEST_REQUIRE_NODE=1`, which the
+relay job in CI sets after installing Node, they fail instead.
+
+`U:` is a unit test of `agents::runtime::install`; `H:` is a test of
+`tests/agent_host_test.rs`. Each red is the named test with the one fault in
+the cell planted, seen failing as quoted, then removed.
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| Every file the host reads at run time is inside the bzz binary. A file of `agent-host/` that is neither embedded nor on the short list of files not needed at run time fails the test | `U: every_file_of_the_host_is_embedded_or_named_as_not_needed` | `src/vfs.mjs` taken out of the embedded list: `left: [… "src/rpc.mjs", "src/vfs.mjs"] right: [… "src/rpc.mjs"]`. First seen without planting anything: `.gitattributes` and `.gitignore` were in the folder and on neither list | pass |
+| Node is the first on `PATH` that is 22.19 or newer, or the one `BZZ_NODE` names; a missing, too old or unusable one is named with what to do | `U: node_is_the_first_on_path_that_is_new_enough`, `versions_are_read_as_node_prints_them` | any version accepted: `unwrap_err() on an Ok value: Node { program: "…/old/node", version: (20, 11, 1) }` | pass |
+| The install writes the embedded files and runs `npm ci --ignore-scripts --omit=optional --omit=dev`, with nothing of bzz's in npm's environment; two bzz processes installing at once both end with one whole install; an installed host is not installed again | `U: the_host_is_installed_once_and_only_a_whole_install_counts` | without `--ignore-scripts`: `left: "ci --omit=optional --omit=dev --no-audit --no-fund"`; the loser of the rename not tolerated: `Io { … why: "Directory not empty (os error 39)" }`; npm started without a cleared environment: the test prints npm's environment, with `CARGO_PKG_REPOSITORY=…` in it | pass |
+| A half install is never used: `npm` failing, `npm` never finishing, and what a killed bzz leaves are each not an install, and leave nothing behind; the error names the log and says to try again | `U: a_failed_or_interrupted_install_is_never_used` | a folder counts without its marker: `a folder without its marker is no install` | pass |
+| Installs of other versions are removed once no agent of the data folder runs, and not before | `U: installs_of_other_versions_go_once_no_agent_runs` | removed while one runs: `assertion failed: remove_unused_installs(&data).is_empty()` | pass |
+| Pi's folder is found as Pi finds it (`PI_CODING_AGENT_DIR`, `~`) | `U: pis_folder_is_found_as_pi_finds_it` | not run | pass |
+| The default launch of `pi-durable`: nothing is installed before an agent needs it; the first mention installs the host and starts `node <host>/main.mjs <agent folder>` with a built environment; it is answered once | `H: the_real_host_is_installed_started_and_answers_once_across_kills_and_restarts` | no default launch (the state of M1): `left: (Failed, 0) right: (Replied, 1)` | pass |
+| The host is killed in the middle of a turn: the request is handed over again to a new host and the turn ends with one reply | same | never handed over again: `handed over again to the new process left: (Failed, 1) right: (Replied, 2)` | pass |
+| After bzz and the host have both restarted, a second message in the same thread shows the conversation's memory | same | `memory.sqlite` removed at each start: `left: ["pong: this conversation holds 1 message(s) from people"] right: ["pong: … 2 …"]` | pass |
+| A file the agent wrote on its disk is still there after that restart, and never was on the machine | same | `files.sqlite` removed at each start: `["cat: /home/agent/note.txt: No such file or directory …"]` | pass |
+| Without a Node that is new enough the agent is not started, its status says what to do, whoever asked is told once, and nothing is installed | `H: without_node_the_agent_says_what_to_do` | the reason dropped: `the status says what to do: installing the Pi Durable host (first use)` | pass |
+| `initialize` carries the grants as the host expects them: a granted folder is read under `/mnt/<name>`, and one granted read-only is not written | `H: the_real_host_keeps_to_the_grants_and_names_its_failures` | the grants not sent: `["cat: /mnt/site/hello.txt: No such file or directory …"]`; every grant sent as writable: `a folder granted read-only is not written left: "changed\n" right: "hello from the machine\n"` | pass |
+| A failure the host names is posted by its kind: a provider's error as that, a model that cannot be used as that, with none of the provider's words | same; `agent_runtime_test::a_failure_bzzs_own_host_names_is_read_from_its_kind`; `U: runtime::failures_are_named_by_kind_from_code_and_wording`, `acp::frames_are_told_apart…` | the kind ignored: `left: (Failed, Some("sign-in-needed")) right: (Failed, Some("provider-error"))`, with the real host and with the scripted one. **This was a bug found by joining the two parts**: the host uses -32000 for every failed turn, which is ACP's code for "sign in", so every failure of the real host was posted as "my owner needs to sign in" | pass |
+| The check of a model before an agent exists is the installed host's own: available, a provider Pi does not have, a model it does not have, and no sign-in are told apart, and Pi's folder is not even created | same | the check always says yes: `Some(AgentModelConfig { provider: "nope", … }): Available { … }` | pass |
+
+**On the pinned relay** (`real_relay_agent_new_to_delete_on_the_pi_durable_host`
+in `tests/relay_integration.rs`, 2026-11-14, 103 s alone and green in the full
+suite). The agent is made by `bzz agent new` and added by `bzz agent add`; bzz
+is the binary, run as `bzz agent run`; the host is the real one, installed by
+that binary on first use, on the stand-in model.
+
+| Claim | Observed | Result |
+|---|---|---|
+| A mention is answered once by the real host, with the owner's tag | `pong: this conversation holds 1 message(s) from people`, one reply; the host's command line is `node <data>/agent-host/<id>/main.mjs <agent folder>` | pass |
+| The host is killed (SIGKILL) while its turn is running: the turn ends once | the request is `delivered`, the host is killed, one reply `answered after the host was killed`, the request `replied` at attempt 2, a new process | pass |
+| bzz and the host both restart; a second message in the same thread shows the memory | `pong: this conversation holds 2 message(s) from people` | pass |
+| A file the agent wrote on its disk is still there after the restart, and is not on the machine | `kept across restarts` read back; no `note.txt` in the agent's folder | pass |
+| In a Solo chat the answer is flat, in the chat | one message, no thread reference | pass |
+| Nothing the host saw or wrote holds the agent's key, the owner's key, the passphrase or the relay's address | scan of `harness.log`, `memory.sqlite`, `files.sqlite` and every other file of the agent's folder | pass |
+
+Red on the relay: a turn cut off by the kill never handed over again
+(`RR3` below, under M4).
+
+**Not proven for bzz's side of M2:**
+
+- macOS and Windows: not compiled or run here. `agent_host_test` and the relay
+  test are Unix only (they kill processes and write a shell stand-in for
+  `node`). On Windows the install looks for `node.exe` and `npm.cmd`; that
+  path is written and has never run.
+- A real model (S12 as a test). No test may read the owner's Pi login.
+- The install against the real npm registry behind a proxy, offline, or with a
+  full disk. The failure paths are tested with a stand-in `npm`.
+- The relay job in CI with Node mounted into its container: the workflow is
+  written (`.github/workflows/integration.yml`) and has not run yet.
+- `_bzz/checkpoint` with the real host after 60 s idle: scripted only (M1).
 
 ## M3 — The agent's disk
 
@@ -402,6 +491,200 @@ allow-list, in `agent-host/src/`. Same commit, machine and command as M2.
   with 18 advisories. `package.json` overrides it to 7.30.2.
 - The lock file holds one LGPL-3.0 package, `node-liblzma`, optional and
   never built. `--omit=optional` leaves it out; the tests pass without it.
+
+## M4 — Creating and managing an agent
+
+Linux x86_64, Rust 1.98.1, Node 26.5.0, Buzz pin `bf3bdd0eaefe`, 2026-11-14.
+Commits `8b78d05..fa9b07b` on `v0.15.0`. Buzz 1.0's own code was read at
+`block/buzz-app@095df3f0f6f8` for the records an agent needs: the profile
+(`crates/agent-controller/src/app_agent.rs`, `profile_event`), the owner's
+record and its removal (`src/features/agents/relay-removal.ts`), how the
+record is read (`src/features/agents/service.ts`, `listingsOf`), and adding to
+a channel (`src/features/relay/channel-writes.ts`, `addAgents`).
+
+**Where it is.**
+
+| What | Where |
+|---|---|
+| The records, creation and its undo, add, edit, pause, delete, the questions and how they are read | `src/agents/manage.rs` |
+| The capability records | `src/agents/capability.rs` |
+| `bzz agent new\|list\|show\|add\|edit\|pause\|resume\|delete\|doctor\|run` | `src/cli_agent.rs` |
+| `:agents`, `:agent new` | `src/ui/local_agents.rs`, `src/app.rs` |
+| The directory without the `bot` role | `src/store/agents.rs`, `src/store/queries.rs`, `src/sync/directory.rs` |
+| What M1 left open | `src/agents/runtime/{agent,relay,acp,mod}.rs`, `src/store/agent_runtime.rs` |
+| The owner's guide | [`agents.md`](agents.md) |
+
+**How to repeat.**
+
+```sh
+. runs/env.sh
+cargo test --locked --all-features --lib -- agents::capability agents::manage store::agents store::agent_runtime ui::local_agents agent_new_in_the_tui
+cargo test --locked --all-features --test agent_manage_test      # creation against a recorded relay that fails at each step
+cargo test --locked --all-features --test agent_runtime_test     # scripted harness
+BZZ_RELAY_TEST_FILTER=real_relay_agent_new BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh
+```
+
+Each red is the named test with the one fault in the cell planted, seen
+failing as quoted, then removed. `U:` is a unit test in the named module;
+`C:` is a test of `tests/agent_manage_test.rs`; `T:` of
+`tests/agent_runtime_test.rs`.
+
+### The capability record (design point 3, rule 12, D18, D19)
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| Every harness states what survives a restart, its own disk, git with no real process, real folders, a move with memory, what runs on the machine, its sandbox, and for each rule who enforces it; a capability it lacks is stated with what takes its place | `U: capability::every_harness_states_each_capability_and_who_enforces_each_rule` | no warning where there is no sandbox: `left: false right: true` | pass |
+| Pi Durable's record says what its tests show. Grok, Codex and Claude Code say what the M6 groundwork saw: Grok's and Codex's own sandbox hold the folder, Claude Code is held by bzz's answers only, Grok on Windows by nothing. D19's wording is on all three, D18's warning exactly where there is no sandbox, and all three are marked "not available in this version yet" | `U: capability::the_records_say_what_the_tests_and_the_groundwork_showed` | a coding harness marked as offered: `assertion failed: !record.available` | pass |
+| The record is printed at creation and by `agent show` | relay test below (`capability record: pi-durable`, `one final reply per mention: bzz`, `its own disk:        yes`) | not run | pass |
+
+### The records, and creation all or nothing
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| The profile is a kind 0 with the name, `"bot": true` and the picture when there is one | `U: manage::the_profile_is_a_bot_with_its_name_and_picture` | see next row | pass |
+| The owner's record is kind 30177 with `d` the agent's key, `runtime` `bzz/<harness>` (which passes Buzz's own test of a runtime for all four harnesses), and content `parallelism`, `respond_to` in Buzz's words, `name`, `picture`. bzz's own reader of v0.11 takes profile and record as a verified agent of that owner. An edit keeps what another client put in the record that is not bzz's to set, as Buzz does, and the removal names the record by its coordinate | `U: manage::the_owners_record_is_what_buzz_reads` | not run for the unit test; on the relay the same content is read back from the relay | pass |
+| An agent is added as a member, with the `bot` role only in a Solo chat (D13) | `U: manage::an_agent_joins_as_a_member_and_as_a_bot_only_in_a_solo_chat`; relay test | on the relay: `RR1` below | pass |
+| The answers of the command and of the form are read the same way; contradictions are refused with what to write | `U: manage::the_answers_are_read_as_written`; `U: ui::local_agents::the_form_asks_what_the_command_asks_and_reads_it_the_same_way` | not run for the first | pass |
+| A created agent has its sealed key, its folder, its settings saved, its profile signed by the agent with the owner's authorization, and the owner's record; the broker serves it nothing | `C: a_created_agent_has_its_key_folder_settings_profile_and_owners_record` | a profile not marked as a bot: `left: Object {"name": …, "picture": …} right: Object {"bot": Bool(true), …}` | pass |
+| **A creation that fails at any step leaves nothing**: the profile refused, lost, or landed and unconfirmed; the owner's record refused, lost, or landed and unconfirmed. After each: no key, no folder, no settings in memory or on disk, and the recorded relay holds nothing of the agent. What was published is removed first, by the agent's own key while bzz still holds it | `C: a_creation_that_fails_at_any_step_leaves_nothing` (six cases) | the undo keeps the key: `the profile is refused left: (1, 0, 0) right: (0, 0, 0)`; the undo leaves the profile: `the profile is lost left: [("agent", 0)] right: [("agent", 0), ("agent", 5)]` | pass |
+| A failure on this machine (the folder cannot be made, the settings cannot be saved) publishes nothing and leaves nothing; a harness of another task, a name that is no name and an empty allowlist are refused before anything is made | `C: a_creation_that_fails_on_this_machine_publishes_nothing` | a coding harness not refused: `unwrap_err()` on a created Grok agent | pass |
+| When the relay will not take back what it holds, the key, the folder and the settings still go and the failure names each record left | `C: what_an_undo_cannot_take_back_is_named` | what the relay kept is not reported: `left: 1 right: 2` | pass |
+| The checks before a creation: Grok, Codex and Claude Code are refused with "not available in this version yet"; a machine without Node is told what to install; nothing is installed or made | `C: the_checks_before_a_creation_say_what_to_do` | the harness not looked at: `Grok: … needs Node.js 22.19 or newer, and no node was found …` where "not available" was expected | pass |
+| An edit says which records changed: a name or a picture both, who may wake it the owner's record, the rest nothing; a contradiction changes nothing; a moved agent is not resumed | `U: manage::an_edit_says_which_records_changed` | not run | pass |
+
+### The agent directory without the `bot` role (D13)
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| A plain member of a channel with the records bzz and Buzz 1.0 publish is listed as an agent, is a mention candidate, is validated by its owner's rule, and is gone from the list when it leaves | `U: store::agents::a_plain_member_with_its_owners_proof_is_an_agent` | the `bot` role required again in the reconciliation: `left: 0 right: 1`; in the list: `left: 0 right: 1` | pass |
+| The proof requirements are unchanged: a member with no proof, with a profile that only says it is a bot, or with an authorization made for another key is a person. It has no row in the directory in any state, and mentioning it needs no validation | `U: store::agents::a_member_without_a_valid_owners_proof_is_not_an_agent` | every member with a profile taken as a candidate: `none of them is in the directory, in any state left: 1 right: 0` | pass |
+| A v0.11 test asserted that a plain member of a channel has no authority. It now asserts the opposite | `U: store::agents::owner_controlled_dm_member_verifies_without_relaxing_channel_bot_authority` | the test as it was, against the change: `assertion failed: matches!(store.validate_agent_mentions(…), Err(Error::Access(_)))` | pass |
+| The other v0.11 requirements still hold (wrong-owner record, DM owner only, removal, unknown policy) | the six older tests of `store::agents` and `agents::protocol`, unchanged | not run | pass |
+
+Places that assumed the role and were changed: the reconciliation and its
+candidates, the list, an agent's channels, mention candidates
+(`store/queries.rs`), mention validation, the refresh
+(`sync/directory.rs`, which now also asks for the profiles of members that
+may carry a proof), and one message of the TUI. The v0.13 broker's write rule
+(`broker/relay.rs`) keeps the role on purpose.
+
+### The TUI
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| The panel shows, for each local agent, its state, what it is doing now, its last outcome, its settings and its capability record; with bzz locked it says so; `l` shows the end of the log, made safe to print, in place of the record | `U: ui::local_agents::the_panel_shows_each_agents_state_doing_last_outcome_and_record` (TestBackend) | the record left out: `capability record: pi-durable (everything in v0.15.0)` is not on the screen | pass |
+| The form asks every question of the command, takes typed and pasted text on one line into the answer in focus, takes none while it is confirming, and says what will be signed | `U: ui::local_agents::the_form_asks_what_the_command_asks_and_reads_it_the_same_way` | text taken while confirming: `ignored while confirming` is on the screen | pass |
+| `:agent new` in the running App: refused while locked; an answer that cannot be read is refused in place; the checks run in the background and install the host on first use; nothing exists until Enter; Enter creates the agent (key, settings on disk, two records published) and shows its capability record | `app::tests::agent_new_in_the_tui_creates_an_agent_and_the_panel_manages_it` (TestBackend, stand-ins for `node` and `npm`, a recorded relay) | the answer of the checks dropped: the confirmation never shows; an entry written before Enter: `assertion failed: app.config.hosted_agents.is_empty()` | pass |
+| The first local agent of a community is started by the next tick, without a restart of bzz | same | the retry removed: `the agent never became Idle: None` | pass |
+| `:agents` then shows it; its last outcome comes from bzz's record of the turn; Space pauses and resumes its process; `x` with nothing running says so; `l` shows its log; Tab goes to the directory and back; `:agents` is the panel when the community has a local agent and the directory when it has none | same | the last turn not read: `last outcome: failed: timeout` is not on the screen; a pause that does not reach the process: `the agent never became Paused: Some(Idle)` | pass |
+| A creation that fails in the TUI goes back to the answers with the reason, and leaves no agent, no key and no settings | same | covered by the reds of `C:` above (same code) | pass |
+| The `:broker` panel still shows agents whose process the user runs, and a status line per local agent | `app::tests::local_agents_run_while_the_owner_is_unlocked_and_stop_on_lock`, `broker_panel_shows_a_status_line_per_local_agent` (unchanged since M1) | M1 | pass |
+
+### What M1 left open
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| Finished requests and idle stored sessions are pruned by a stated rule: over and older than 30 days, or beyond the newest 1000 of an agent, with their stored replies; never what is queued, being answered or unacknowledged; another agent's rows are not touched | `U: store::agent_runtime::finished_requests_and_idle_sessions_are_pruned_by_the_stated_rule` | an unacknowledged reply pruned: `left: Pruned { requests: 3, sessions: 1 } right: Pruned { requests: 2, sessions: 1 }` | pass |
+| The rule runs when an agent starts | `T: an_agents_finished_requests_are_pruned_when_it_starts` | no pruning at the start: `the old request is gone` | pass |
+| A message older than a day is never a request, so a pruned request cannot come back as a new one | `U: runtime::relay::a_message_older_than_a_day_is_never_a_request` | off by one second: `assertion failed: !too_old(now - MAX_REQUEST_AGE.as_secs(), now)` | pass |
+| Two agents that may wake each other stop: another agent's message wakes this one only so often in one conversation (six times an hour; three in the test). A person in the same conversation, the owner, and the other agent in another conversation still wake it | `T: two_agents_that_wake_each_other_stop_after_a_few_exchanges`; `U: store::agent_runtime::requests_of_one_author_in_one_place_are_counted_and_an_agent_is_forgotten_whole` | the limit off: `they never stop` | pass |
+| The owner stops a running turn: it ends once with a notice that says so; a harness that honours the cancel keeps its process, one that does not is stopped and the turn is not run again | `T: the_owner_stops_a_running_turn_and_it_ends_once` | the stopped turn treated as any cancelled turn: `left: (Failed, Some("no-reply"), 1) right: (Failed, Some("stopped"), 1)` | pass |
+| `agent delete` forgets every row of the agent and no row of another | `U: store::agent_runtime::requests_of_one_author…` | the sessions left: `left: 7 right: 8` | pass |
+
+### On the pinned relay
+
+`real_relay_agent_new_to_delete_on_the_pi_durable_host`, in
+`tests/relay_integration.rs`: every step is the `bzz` binary run as a command
+on a disposable profile, with the owner's passphrase on a file descriptor.
+
+| Claim | Observed | Result |
+|---|---|---|
+| `agent doctor` reports Node, npm and the install, and installs nothing | `Node.js:`, `not installed yet`; no install afterwards | pass |
+| `agent new --harness grok` is refused; a model Pi does not have is refused by the host's own check after the install of first use; neither leaves a key, a folder, settings or a record | `not available in this version yet`; `cannot be used (provider_unavailable)`; `(0, 0, 0)` on the machine; no kind 30177 by the owner on the relay | pass |
+| `agent new` creates the agent and prints its capability record and the next step | `model scripted/scripted`, `created in c1`, `capability record: pi-durable`, `bzz agent add Scout <channel>`; `(1, 1, 1)` on the machine | pass |
+| The relay holds what Buzz reads: the agent's profile `{"name": "Scout", "bot": true}` with the owner's tag, and the owner's record with `runtime` `bzz/pi-durable` and `{"parallelism": 1, "respond_to": "owner-only", "name": "Scout"}` | read back from the relay; bzz's v0.11 reader verifies the owner | pass |
+| `agent add` by the channel's name (never synced: bzz asks the relay) adds a plain member; in a Solo chat, the `bot` role; an unknown channel is refused | the relay's own member list: role `member`, and `bot` in the Solo chat | pass |
+| bzz's own directory lists the agent although it is a plain member (D13) | `agents refresh`: `verified=1`; `agents list --json`: name, owner, `eligible`, `owner-only`, both channels | pass |
+| **A mention written by Buzz's own CLI at the pin, by the agent's name, wakes it** | `buzz messages send --content "@Scout are you there?"`: the event carries the agent's key as a mention (Buzz resolved the name from the profile bzz published), and is answered once | pass |
+| `agent show` while it runs | state and process, harness, model, who may wake it, hosts, both channels with their roles, `answered · attempt 2`, the capability record | pass |
+| `agent delete` of a running agent is refused | `is running` | pass |
+| `pause` and `resume` | the settings; `agent list`; under `bzz agent run` the status line `Scout · pi-durable · paused` | pass |
+| `edit --name --wake --picture` publishes the profile and the owner's record again, each replacing the one before; instructions and hosts publish nothing; a model that cannot be used is not saved | one profile `{"name": "Ranger", "bot": true, "picture": …}`; one record with `respond_to` `anyone`; the model unchanged | pass |
+| `agent delete` removes the owner's record from the relay, the agent from its channels, and its key, folder, settings and rows | no kind 30177 for the agent, no membership in either channel, `(0, 0, 0)`, no row | pass |
+
+Red on the relay, four runs, each the same test with one fault planted:
+
+- **RR1, an agent added with the `bot` role everywhere:**
+  `a plain member, as Buzz 1.0 adds an agent (D13) left: Some("bot") right: Some("member")`.
+- **RR2, the directory asking for the `bot` role again:**
+  `remote agent directory refreshed: candidates=1 verified=0 …`. The first
+  version of this check ran after the agent had the `bot` role in the Solo
+  chat, and its red run **passed**: the role made the agent a candidate
+  whatever the change. The check now runs while the agent is only a plain
+  member of a channel.
+- **RR3, a turn cut off by the kill never handed over again:**
+  `left: "I could not answer: my process stopped unexpectedly." right: "answered after the host was killed"`.
+- **RR4, `agent delete` reporting the owner's record as removed without
+  removing it:** `the owner's record is gone from the relay, so Buzz lists no agent nobody runs`.
+
+Two more runs failed before the test began, with `psql: … the database system
+is shutting down` and `database "buzz" does not exist`: the relay harness was
+started again too soon after its own teardown. They were repeated.
+
+### The plan's exit gate for M4
+
+"An agent made by bzz is listed, mentioned and answered from Buzz 1.0 in a
+disposable sandbox, and from bzz."
+
+- [x] From bzz: created, listed in bzz's own directory, mentioned and answered
+  on the pinned relay.
+- [x] From Buzz's side as far as the pin goes: Buzz's own CLI at the pin
+  resolves the agent's name and its mention is answered; the records are the
+  ones Buzz 1.0's code writes and reads, compared field by field with its
+  source and checked against its own test of a `runtime` value.
+- [ ] **From the Buzz 1.0 desktop app: not run.** No Buzz 1.0 was started
+  against a disposable relay. Whether its agent list shows a `bzz/pi-durable`
+  agent, and what it shows for a `runtime` it does not know, is M0's
+  experiment 2 and is still open.
+
+### Not proven in M4
+
+| Item | State |
+|---|---|
+| macOS and Windows | not compiled or run here. The agent commands have no Unix-only code; the tests that run processes are Unix only |
+| The release binary in a terminal ("`agent new` end to end" in Herdr) | not run. The TUI is proven with TestBackend and stand-ins for `node` and `npm`; the same creation code ran on the pinned relay through the commands |
+| `x` in the panel with a turn running | the stop itself is proven at the runtime (`T:` above); in the TUI the key was pressed only with nothing running |
+| The interactive questions of `bzz agent new` on a terminal | every question is tested as a flag and in the form; the prompts themselves were not driven by a test |
+| A community with federated identity (NIP-FI) | `agent new`, `add`, `edit` and `delete` enroll and revoke the agent as `broker create` and `broker delete` do, by the same code; no test ran them against the adapter |
+| `agent delete --force` with the relay unreachable, and a deletion the relay refuses | written; not run |
+| Editing while a bzz TUI is open | the TUI holds its own copy of the settings; a command's change can be written over. Stated in the guide, not prevented |
+| The refresh of the directory in a community of thousands | it now asks for the profiles of members without a stored profile, at most 2000 a refresh. Not measured |
+| Benchmarks against v0.14.0 for a profile without agents | not run in this task |
+
+### Gates after M2 (bzz's side) and M4
+
+Run on `fa9b07b`, 2026-11-14, Linux x86_64, Node 26.5.0.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets --all-features -- -D warnings` | clean (also `--no-default-features`) |
+| Tests | `cargo test --locked --all-features` | 610 passed, 0 failed, 25 ignored. 34 passing tests are new since M1: 22 unit (7 install, 5 manage, 2 capability, 2 `store::agents`, 2 `store::agent_runtime`, 2 `ui::local_agents`, 1 relay intake, 1 App), 5 creation, 4 scripted harness, 3 real host |
+| Pinned relay | `BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh` | 18 passed (the 17 of M1 and the journey above) in 328 s, then `agent_host_test`, 3 passed |
+| Agent host | `cd agent-host && npm ci --ignore-scripts --omit=optional && npm test` | 78 tests, 78 pass, 0 skipped; `npm ci` reports 0 vulnerabilities. `agent-host/` is unchanged by this work |
+| Supply chain | none run | `Cargo.toml` and `Cargo.lock` are unchanged since `5791420`: no new dependency |
+
+Two faults CI found on `5791420`, both in tests, are fixed in `8b78d05`:
+
+- The Linux `test` job runs `cargo test --locked --all-targets`, which builds
+  the examples as tests and leaves no `target/debug/examples/scripted_harness`.
+  The job now builds that example first. Repeated here: with the example's
+  binary removed, `cargo test --locked --all-targets` fails with
+  `…/target/debug/examples/scripted_harness is missing`; after
+  `cargo build --locked --example scripted_harness` it passes.
+- On Windows the folder grant `/home/ann/site` of `config_test` is not an
+  absolute path. The test now grants a path that is absolute where it runs.
+  Not run on Windows here; CI will show it.
 
 ## Evidence gathered before the plan (2026-11-13)
 

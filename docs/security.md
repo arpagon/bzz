@@ -146,7 +146,12 @@ search is local-only. See [`inbox-dms-search.md`](inbox-dms-search.md).
 
 A v0.11 remote agent is never trusted from its name, avatar, declaration,
 reply, `p` tag, or self-asserted type. Outside DMs, candidate identity begins
-with a current relay-signed kind 39002 membership carrying the exact `bot` role.
+with a current relay-signed kind 39002 membership: carrying the exact `bot`
+role, or, since v0.15, any role when the member's kind 0 profile carries its
+owner's valid NIP-OA proof (Buzz 1.0 and bzz add an agent as a plain member).
+A member without that proof is a person: it never enters the directory, and a
+profile that only says `"bot": true`, or carries an authorization made for
+another key, proves nothing.
 Buzz represents DM participants with operational role `member`; in that one
 bounded case bzz considers only an exact participant in a current 2–9-person DM
 and permits invocation only by the cryptographically verified owner. bzz then
@@ -168,8 +173,8 @@ runtime is online, safe, or willing to answer.
 Selecting a verified eligible agent inserts visible composer text and a
 structured exact-pubkey mention. It never sends. Before the existing human key
 signs, bzz refreshes and revalidates the community, destination authority
-(exact channel bot role or exact owner-controlled DM participation), ownership,
-and policy. Failure preserves the draft; successful events use the
+(current membership of the channel, or exact owner-controlled DM
+participation), ownership, and policy. Failure preserves the draft; successful events use the
 same acknowledgement-aware human outbox. A remote response has its own agent
 signature.
 
@@ -252,7 +257,38 @@ trusted with anything of bzz's:
 - **Processes.** Each agent runs in its own process group and is stopped as a
   group. A coding harness (Grok, Codex, Claude Code) is the owner's own
   program: it runs a real shell as the owner's user, and bzz cannot promise
-  the key is out of its reach, only that bzz never gives it.
+  the key is out of its reach, only that bzz never gives it. bzz does not
+  start those three in this version; `bzz agent show` prints each harness's
+  capability record, with who enforces each rule.
+- **bzz's own agent host (`pi-durable`).** A Node program inside the bzz
+  binary, run with the owner's Node. bzz installs it on first use from the
+  lock file inside the binary with `npm ci --ignore-scripts --omit=optional
+  --omit=dev`: no package runs an install script, and npm gets a small
+  environment with nothing of bzz's in it. The install is built in a folder
+  of its own and renamed into place only when whole. The host process itself
+  is trusted code: it reads the owner's Pi sign-in to call the model, and it
+  is what keeps the agent to its own disk, its granted folders and its
+  allowed hosts. The model's shell runs inside that process with an
+  environment of its own, starts no program of the machine, and cannot read
+  the sign-in. A granted folder is checked, then used: another program of
+  the machine that swaps a link in between can win that race; the agent
+  cannot.
+- **Creating and deleting.** `bzz agent new` publishes two records: the
+  agent's profile, signed by the agent, and the owner's record of it, signed
+  by the owner after a confirmation. Creation is all or nothing; a failure
+  removes what was published while bzz still holds the key, and names what
+  the relay would not take back. `bzz agent delete` removes the owner's
+  record first and refuses to go on without it, so that no client lists an
+  agent whose key is gone. The agent's messages and profile stay.
+- **Agents that wake each other.** With `wake = "anyone"`, another agent's
+  message wakes a local agent at most six times an hour in one conversation,
+  so two agents cannot answer each other for ever. An agent's message is
+  known by the owner's authorization it carries; an agent that signs without
+  one is counted as a person.
+- **What bzz keeps.** The text of each request and of each signed reply stays
+  in bzz's database for 30 days after the turn (at most 1000 per agent), then
+  is removed. An agent's memory and disk are its two files; `bzz agent
+  delete` removes them with its key and its rows.
 
 ## Media
 

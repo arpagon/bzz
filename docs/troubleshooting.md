@@ -97,10 +97,11 @@ bzz agents list --community <community-uuid>
 bzz agents show <agent-pubkey> --community <community-uuid>
 ```
 
-A normal Agents-directory entry requires current relay-signed bot membership,
-an agent-signed kind 0 profile with one valid NIP-OA owner, an agent-signed kind
-10100 declaration, and a matching owner-signed kind 30177 policy when policy is
-published. Missing, malformed, conflicting, removed, cross-community, or stale
+A normal Agents-directory entry requires current relay-signed membership of a
+channel (with any role since v0.15; with the `bot` role until v0.14), an
+agent-signed kind 0 profile with one valid NIP-OA owner, an agent-signed kind
+10100 declaration when the agent is known only from a DM, and a matching
+owner-signed kind 30177 policy when policy is published. Missing, malformed, conflicting, removed, cross-community, or stale
 records fail closed. A display-name match alone is intentionally insufficient.
 
 If the status bar says `agent typing unavailable for this channel`, the main
@@ -136,8 +137,9 @@ readiness; bzz does not control the remote process.
 If send-time refresh or validation fails, the exact draft remains in the
 composer and nothing is automatically retried. Do not edit SQLite to add an
 agent badge or policy. Ask the owner/community operator to repair public records
-or membership. There is no local ACP/process log, model setup, start, stop, or
-restart command in v0.11.
+or membership. A remote agent has no local process log, model setup, start,
+stop or restart command: its owner runs it. For an agent this bzz runs, see
+[`agents.md`](agents.md).
 
 ## Message remains pending or delivery is uncertain
 
@@ -428,7 +430,15 @@ with `:huddle devices`, choose one with `:huddle input <name>` /
 - "agent unavailable" in the status bar: its sealed key did not open with your
   identity, or (FI communities) you are not signed in to the adapter; run
   `:signin`.
-- `unsupported` for `agents.*`: bzz does not run managed agents.
+- `unsupported` for `agents.*`: the broker does not create or run agents.
+  bzz itself does, since v0.15: see below.
+
+## A local agent does not start or does not answer
+
+`bzz agent doctor` reports Node.js, npm, the agent host and each agent's
+readiness, and `:agents` shows what each agent is doing and why it is not
+running. The symptoms and what to do are in
+[`agents.md`](agents.md#when-something-is-wrong).
 
 ## Development relay
 

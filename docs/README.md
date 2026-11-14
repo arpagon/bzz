@@ -10,6 +10,7 @@ Start with the [README](../README.md). Everything here is plain Markdown.
 | [themes.md](themes.md) | The 60 built-in themes and `theme.toml` |
 | [media.md](media.md) | Images, avatars, attachments, terminal graphics and the media cache |
 | [inbox-dms-search.md](inbox-dms-search.md) | Inbox, direct messages and search |
+| [agents.md](agents.md) | Local agents: create one, add it to a channel, what it can touch, pause and delete it |
 | [troubleshooting.md](troubleshooting.md) | Symptoms and fixes |
 | [security.md](security.md) | Keys, trust boundaries, diagnostics and telemetry |
 | [protocol-compatibility.md](protocol-compatibility.md) | The Buzz revision bzz is pinned to and every protocol surface it supports |

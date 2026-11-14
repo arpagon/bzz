@@ -88,11 +88,16 @@ relay-signed kind 39002 source event so the exact four-field `bot` role converge
 without clearing the database. Duplicate current snapshots can repair the same
 projection drift and are true no-ops afterward.
 
-Outside DMs, exact current `bot` membership remains mandatory. Buzz represents
+Until v0.14, exact current `bot` membership was mandatory outside DMs. Since
+v0.15 it is not: Buzz 1.0 adds an agent to a channel as a plain member, and so
+does bzz, so a member of a channel is listed as an agent when its kind 0
+profile carries its owner's valid NIP-OA proof, whatever its role. A member
+without that proof is a person and never enters the directory. Buzz represents
 DM participants with operational role `member`, so a bounded current DM
 participant can be recognized only after kind 0 NIP-OA ownership plus either
-exact bot authority elsewhere in the community or a signed kind 10100
-declaration validate; only the exact verified owner may invoke it in a DM.
+exact bot authority or proven channel membership elsewhere in the community,
+or a signed kind 10100 declaration, validate; only the exact verified owner
+may invoke it in a DM.
 Any present public owner policy must validate. When no policy is published,
 non-owners remain policy-unknown. This adds no manual trust setting. It does not add
 an agent key to `[[identities]]` or revive retired `[[local_agents]]` values.
@@ -267,7 +272,9 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   broker listens on `127.0.0.1` and writes its port to `<data>/broker.port`.
 - **`[hosted_agents.local]`** (v0.15): present on a **local agent**, one
   whose process bzz itself starts; absent on an agent you run yourself, which
-  stays what v0.13 made it. Never secrets. Fields:
+  stays what v0.13 made it. Written by `bzz agent new` and changed by
+  `bzz agent edit|pause|resume` and `:agents`; the owner's guide is
+  [`agents.md`](agents.md). Never secrets. Fields:
   - `harness`: `pi-durable`, `grok`, `codex` or `claude-code`.
   - `wake`: who may wake the agent. `owner-only` (default), `allowlist` (the
     public keys in `wake_allowlist`) or `anyone`. A DM is always owner only.
@@ -278,14 +285,33 @@ Cache/concurrency settings are validated against hard safety ceilings. See
     agent, read-only unless said.
   - `state`: `active` (default), `paused` or `moved-away`. Only an active,
     unpaused agent is ever started.
+  - `picture`: the HTTPS address of the agent's picture, kept so that an edit
+    can publish its profile and the owner's record again.
   - `command`: program and arguments to start instead of the harness's own
-    launch command, for a harness run from a checkout.
+    launch command, for a harness run from a checkout. Empty for an agent
+    made by `bzz agent new`: a `pi-durable` agent is then started as
+    `node <data>/agent-host/<id>/main.mjs <agent folder>`.
 
   bzz runs local agents while your identity is unlocked in the TUI
-  (`:broker` shows one status line each) and under `bzz agent run`. Their
-  processes are recorded in `<data>/agents/run/`, their folders are
-  `<data>/agents/<id>/`, and each harness's standard error goes to
-  `harness.log` there. See
+  (`:agents` shows each one; `:broker` keeps one status line each) and under
+  `bzz agent run`. Their processes are recorded in `<data>/agents/run/`,
+  their folders are `<data>/agents/<id>/`, and each harness's standard error
+  goes to `harness.log` there. See
   [`adr-v0.15-local-agents.md`](adr-v0.15-local-agents.md).
+
+  Two variables of bzz's own environment matter to agents, and neither is a
+  setting: `BZZ_NODE` names the Node.js to run the agent host with (default:
+  the first `node` on `PATH` that is 22.19 or newer), and
+  `PI_CODING_AGENT_DIR` names Pi's folder (default `~/.pi/agent`), where the
+  host reads the model's sign-in. The host and its packages are installed on
+  first use in `<data>/agent-host/<id>/`, where `<id>` names the exact host
+  files inside this bzz.
+
+  bzz's database keeps each request a local agent was woken by, with the
+  reply it signed, for 30 days after its turn is over and at most 1000 per
+  agent; a stored session id of a harness, for 30 days after its last use.
+  They are removed when the agent starts and once a day while it runs. A
+  request that is queued, being answered, or whose reply the relay has not
+  acknowledged is never removed.
 - **Cargo feature `huddles-audio`** (default on): microphone capture, playback
   and Opus. Builds with `--no-default-features` show huddles view-only.
