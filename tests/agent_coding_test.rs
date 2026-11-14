@@ -118,8 +118,9 @@ impl World {
         std::fs::canonicalize(self.temporary.path()).unwrap()
     }
 
+    /// As it really is: a program names its working folder that way.
     fn data_dir(&self) -> PathBuf {
-        self.temporary.path().join("data")
+        self.root().join("data")
     }
 
     /// The agent's working folder, as bzz makes it.
@@ -474,7 +475,9 @@ async fn the_mode_is_set_before_the_first_prompt_on_a_new_and_on_a_loaded_sessio
         json!(std::fs::canonicalize(world.workspace()).unwrap())
     );
     let profile = std::fs::read_to_string(world.workspace().join(".grok/sandbox.toml")).unwrap();
-    assert_eq!(profile, coding::grok_profile(&local));
+    // Its folders for writing, and bzz's keys hidden from it.
+    let hidden = coding::hidden_from_grok(&world.data_dir());
+    assert_eq!(profile, coding::grok_profile(&local, &hidden));
     assert!(profile.contains(&world.folder("work").display().to_string()));
     assert!(!profile.contains(&world.folder("docs").display().to_string()));
     host.shutdown().await;
@@ -929,6 +932,87 @@ async fn each_thing_a_coding_harness_asks_leave_for_is_answered_by_rule() {
     host.shutdown().await;
 }
 
+/// Plan M6, point 3, as Codex 0.166 asks: a request that names only the id
+/// of a call is read from what the harness reported under that id. bzz's
+/// own chat tool is allowed, a tool of another server is not, and a file
+/// change is held to the files of the diffs that were reported.
+#[tokio::test]
+async fn a_request_that_names_only_its_call_is_answered_from_what_was_reported() {
+    let world = World::new().await;
+    let (work, outside) = (world.folder("work"), world.folder("not-granted"));
+    // As Codex names its options.
+    let options = json!([
+        {"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
+        {"optionId": "allow_session", "name": "Allow for this session", "kind": "allow_always"},
+        {"optionId": "allow_always", "name": "Always allow", "kind": "allow_always"},
+        {"optionId": "cancel", "name": "Cancel", "kind": "reject_once"},
+    ]);
+    let by_id = |id: &str| {
+        json!({"request": {"method": "session/request_permission", "params": {
+            "_meta": {"is_mcp_tool_approval": true}, "sessionId": "$session",
+            "toolCall": {"kind": "execute", "status": "pending", "toolCallId": id},
+            "options": options,
+        }}})
+    };
+    let tool = |id: &str, server: &str, name: &str| {
+        json!({"update": {
+            "sessionUpdate": "tool_call", "toolCallId": id, "status": "in_progress",
+            "_meta": {"is_mcp_tool_call": true}, "kind": "execute",
+            "title": format!("mcp.{server}.{name}"),
+            "rawInput": {"server": server, "tool": name, "arguments": {"text": "hi", "final": true}},
+        }})
+    };
+    let change = |id: &str, path: &Path| {
+        json!({"update": {
+            "sessionUpdate": "tool_call", "toolCallId": id, "status": "in_progress",
+            "kind": "edit", "title": "Editing files",
+            "content": [{"type": "diff", "path": path, "oldText": null, "newText": "hi\n"}],
+        }})
+    };
+    let edit_by_id = |id: &str| {
+        json!({"request": {"method": "session/request_permission", "params": {
+            "sessionId": "$session",
+            "toolCall": {"status": "pending", "toolCallId": id},
+            "options": options,
+        }}})
+    };
+    world.script.write(
+        json!({"own_host": false}),
+        json!([{"steps": [
+            tool("exec-1", "buzz", "send"),
+            by_id("exec-1"),
+            tool("exec-2", "postgres", "query"),
+            by_id("exec-2"),
+            // A call that was never reported.
+            by_id("exec-unknown"),
+            change("exec-3", &work.join("a.txt")),
+            edit_by_id("exec-3"),
+            change("exec-4", &outside.join("a.txt")),
+            edit_by_id("exec-4"),
+            send("done"),
+        ]}]),
+    );
+    let mut local = world.settings(Harness::Codex);
+    local.folders = vec![world.grant("work", true, ExecGrant::No)];
+    let host = world.host(local).await;
+    let request = world.ask(&host, "work").await;
+    world.settled(&request).await;
+    assert_eq!(
+        world.leave(5).await,
+        ["allow_once", "cancel", "cancel", "allow_once", "cancel"]
+    );
+    let activity = world.activity().join("\n");
+    assert!(
+        activity.contains("a tool of another server: postgres.query · refused"),
+        "{activity}"
+    );
+    assert!(
+        activity.contains(&format!("a file edit: {}", outside.join("a.txt").display())),
+        "{activity}"
+    );
+    host.shutdown().await;
+}
+
 /// Plan M6, point 3: a shell command follows the folders granted for
 /// commands and the owner's answer, as a Pi Durable agent's `run` does.
 /// The owner is shown the command and where it would start; his yes allows
@@ -1282,7 +1366,9 @@ async fn bzz_starts_the_owners_own_grok_and_only_a_version_it_knows() {
     host.shutdown().await;
 
     // The tested version: started as Grok is, in its working folder, with
-    // its sandbox profile and nothing of bzz's.
+    // its sandbox profile and nothing of bzz's. (On Linux Grok's sandbox
+    // needs bubblewrap, which a machine that runs this test may lack.)
+    stand_in(&bin, "bwrap", "bubblewrap 0.9.0", &world.script);
     let grok = stand_in(
         &bin,
         "grok",
@@ -1432,6 +1518,161 @@ async fn an_adapter_is_installed_at_the_first_start_and_pointed_at_the_owners_pr
         assert!(!started.to_string().contains("must not pass"), "{started}");
         // And its guard, on the session.
         assert_eq!(world.script.received("session/set_mode")[0]["modeId"], mode);
+        host.shutdown().await;
+    }
+}
+
+// ---- what the real programs sent --------------------------------------------
+
+/// Where the transcripts recorded from the real programs are kept.
+fn transcript(harness: Harness, name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/agents/transcripts")
+        .join(harness.as_str())
+        .join(format!("{name}.ndjson"))
+}
+
+/// The final messages a program sent through bzz's tool, in a transcript.
+fn sent_in(transcript: &Path) -> Vec<String> {
+    std::fs::read_to_string(transcript)
+        .unwrap_or_else(|error| panic!("{}: {error}", transcript.display()))
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|entry| {
+            entry["tool"]["name"] == "send" && entry["tool"]["arguments"]["final"] == true
+        })
+        .filter_map(|entry| {
+            entry["tool"]["arguments"]["text"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// Plan M6, "recorded transcripts": bzz's real runtime against what Grok,
+/// Codex and Claude Code really sent over ACP, with only the pipe replaced.
+/// For each program: a mention answered, what it asked leave for when it
+/// was told to write inside and outside its folders, and, in a second
+/// process, the session it saved loaded again.
+///
+/// The transcripts were recorded on the pinned relay with the owner's own
+/// programs (`docs/validation-v0.15.0.md`, M6, says how to record them
+/// again). The scripted harness plays the program's side: it sends what the
+/// program sent, calls bzz's tools where the program did, and ends with
+/// status 4 at the first message of bzz that is not what bzz sent then.
+#[tokio::test]
+async fn bzz_answers_what_each_real_program_sent_as_it_did_when_recorded() {
+    for (harness, model, thinking) in [
+        (Harness::Grok, "grok-4.5", Some("low")),
+        (Harness::Codex, "gpt-5.6-luna", Some("low")),
+        (Harness::ClaudeCode, "haiku", None),
+    ] {
+        let world = World::new().await;
+        let (work, outside) = (world.folder("work"), world.folder("not-granted"));
+        let (first, second) = (
+            transcript(harness, "first-run"),
+            transcript(harness, "after-restart"),
+        );
+        let replaying = |transcript: &Path| {
+            world.script.write(
+                json!({
+                    "own_host": false,
+                    "replay": transcript,
+                    "folders": {"work": work},
+                    "places": {"<not-granted>": outside},
+                }),
+                json!([]),
+            );
+        };
+        // The settings the recorded agent had.
+        let mut local = world.settings(harness);
+        local.instructions = "Answer in one short sentence.".into();
+        local.model = Some(AgentModelConfig {
+            provider: harness.as_str().into(),
+            model_id: model.into(),
+            thinking_level: thinking.map(str::to_owned),
+        });
+        local.folders = vec![world.grant("work", true, ExecGrant::No)];
+        let replayed = |what: &str| {
+            let log = world.script.log();
+            let mismatch = log.iter().find(|entry| entry["replay"] == "mismatch");
+            assert!(
+                mismatch.is_none(),
+                "{harness:?}, {what}: bzz did not send what it sent when this was recorded:\n{:#}",
+                mismatch.unwrap()
+            );
+        };
+        let complete = |count: usize| {
+            world
+                .script
+                .log()
+                .iter()
+                .filter(|entry| entry["replay"] == "complete")
+                .count()
+                == count
+        };
+
+        // ---- the first process: a mention, then the two writes ------------
+        replaying(&first);
+        let said = sent_in(&first);
+        assert!(
+            !said.is_empty(),
+            "{harness:?}: the transcript holds no answer"
+        );
+        let host = world.host(local.clone()).await;
+        let remember = world.ask(&host, "Remember the word heron.").await;
+        world.settled(&remember).await;
+        replayed("a mention");
+        // Exactly the answer the program sent, once.
+        assert_eq!(world.replies(&remember), [said[0].clone()], "{harness:?}");
+        let write = world
+            .ask(&host, "Create one file inside and one outside.")
+            .await;
+        let row = world.settled(&write).await;
+        replayed("the two writes");
+        let replies = world.replies(&write);
+        assert_eq!(replies.len(), 1, "{harness:?}: {replies:?}");
+        match said.get(1) {
+            Some(text) => assert_eq!(&replies[0], text, "{harness:?}"),
+            // The program ended its turn when it was refused (Codex).
+            None => assert_eq!(row.failure.as_deref(), Some("not-allowed"), "{harness:?}"),
+        }
+        until("the first transcript to be played to its end", WAIT, || {
+            complete(1).then_some(())
+        })
+        .await;
+        host.shutdown().await;
+
+        // ---- a second process: the saved session, loaded -------------------
+        replaying(&second);
+        let said = sent_in(&second);
+        let host = world.host(local).await;
+        let recall = world.message("Which word?", Some(&remember));
+        world.offer(&host, &recall).await;
+        world.settled(&recall).await;
+        replayed("after a restart");
+        assert_eq!(world.replies(&recall), [said[0].clone()], "{harness:?}");
+        assert!(
+            said[0].to_lowercase().contains("heron"),
+            "{harness:?}: {said:?}"
+        );
+        // The session bzz kept for the conversation, not a new one.
+        let loads = world.script.received("session/load");
+        assert_eq!(loads.len(), 1, "{harness:?}");
+        assert_eq!(
+            loads[0]["sessionId"],
+            world.script.received("session/prompt")[0]["sessionId"],
+            "{harness:?}"
+        );
+        until(
+            "the second transcript to be played to its end",
+            WAIT,
+            || complete(2).then_some(()),
+        )
+        .await;
+        // Still one reply to each of the earlier two.
+        assert_eq!(world.replies(&remember).len(), 1);
+        assert_eq!(world.replies(&write).len(), 1);
         host.shutdown().await;
     }
 }

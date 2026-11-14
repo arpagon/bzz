@@ -119,6 +119,9 @@ impl AgentHost {
     /// Stops the leftovers of a bzz that is gone, then opens the loopback
     /// endpoint of `bzz agent-tools`. No agent runs yet.
     pub async fn start(options: HostOptions) -> Result<Self> {
+        // From here bzz may hold an agent's key and start programs that
+        // run as the same user: they must not read it out of bzz's memory.
+        process::keep_memory_to_ourselves();
         let run_dir = process::run_dir(&options.data_dir);
         let leftovers = process::sweep_with_grace(&run_dir, options.limits.stop_grace).await;
         // Installs of the host that an older bzz made, once nothing runs

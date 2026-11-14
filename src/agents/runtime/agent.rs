@@ -266,6 +266,9 @@ struct LiveTurn {
     stopped: bool,
     /// bzz refused something the harness asked leave for in this turn.
     refused: bool,
+    /// The tool calls a coding harness reported in this turn, by their id:
+    /// what a request names when it names only its call.
+    calls: HashMap<String, Value>,
     effects: u32,
     /// Tool calls of this turn still at work.
     in_flight: usize,
@@ -289,6 +292,22 @@ impl LiveTurn {
     fn push_text(&mut self, chunk: &str) {
         let room = MAX_PLAIN_TEXT_CHARS.saturating_sub(self.text.chars().count());
         self.text.extend(chunk.chars().take(room));
+    }
+
+    /// Keeps what a harness reported of one of its tool calls, for the
+    /// request that may ask leave for it by its id alone.
+    fn remember_call(&mut self, update: &Value) {
+        let Some(id) = update
+            .get("toolCallId")
+            .and_then(Value::as_str)
+            .filter(|id| id.len() <= 256)
+        else {
+            return;
+        };
+        if self.calls.len() >= permission_rule::MAX_CALLS && !self.calls.contains_key(id) {
+            return;
+        }
+        permission_rule::remember(self.calls.entry(id.to_owned()).or_default(), update);
     }
 
     /// A tool call starts: what follows is a new message.
@@ -699,9 +718,13 @@ impl Agent {
             process::create_private_dir(&cwd).map_err(|error| error.to_string())?;
             env.extend(launch_env);
             env.extend(
-                coding::environment(local.harness, local, &cwd, |name: &str| {
-                    (self.shared.environment)(name)
-                })
+                coding::environment(
+                    local.harness,
+                    local,
+                    &cwd,
+                    &self.shared.data_dir,
+                    |name: &str| (self.shared.environment)(name),
+                )
                 .map_err(|problem| problem.to_string())?,
             );
         }
@@ -1018,11 +1041,13 @@ impl Agent {
                     .get("title")
                     .and_then(Value::as_str)
                     .map(|title| title.chars().take(80).collect());
+                turn.remember_call(update);
             }
             Some("tool_call_update") => {
                 if let Some(title) = update.get("title").and_then(Value::as_str) {
                     turn.activity = Some(title.chars().take(80).collect());
                 }
+                turn.remember_call(update);
             }
             // Kinds bzz does not know are ignored.
             _ => {}
@@ -1343,6 +1368,7 @@ impl Agent {
                 final_sent: false,
                 stopped: false,
                 refused: false,
+                calls: HashMap::new(),
                 effects: 0,
                 in_flight: 0,
                 text: String::new(),
@@ -2443,6 +2469,7 @@ mod tests {
             final_sent: false,
             stopped: false,
             refused: false,
+            calls: HashMap::new(),
             effects: 0,
             in_flight: 0,
             text: String::new(),

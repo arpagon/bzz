@@ -4464,6 +4464,555 @@ async fn real_relay_local_agent_answers_a_mention_exactly_once() {
     stranger.lock().await;
 }
 
+/// v0.15 M6 exit gate, on the pinned relay, with **the owner's own installed
+/// programs and sign-ins**: for each of Grok, Codex and Claude Code, an
+/// agent made by `bzz agent new` answers a mention exactly once; a write
+/// outside its folders does not happen, and one inside a folder granted for
+/// writing does; after bzz and the program have stopped and started again,
+/// the next message in the thread is answered from the program's own saved
+/// session; and a version outside the tested range is refused before a key
+/// is made.
+///
+/// It runs only when `BZZ_REAL_HARNESSES` names the harnesses to try
+/// (`grok,codex,claude-code`): it spends three short prompts of each on the
+/// cheapest model that program offers. It is never part of a default run or
+/// of CI, which has no sign-in. With `BZZ_AGENT_RECORD` it also writes the
+/// transcripts that `tests/agent_coding_test.rs` replays.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh; runs only with BZZ_REAL_HARNESSES"]
+async fn real_relay_coding_harnesses_answer_once_remember_and_stay_in_their_folders() {
+    use bzz::{
+        agents::{
+            manage,
+            runtime::{Limits, coding, process, service},
+        },
+        auth::IdentityManager,
+        config::Harness,
+        diagnostics::DiagnosticHandle,
+        paths::Paths,
+    };
+    use serde_json::json;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let wanted = std::env::var("BZZ_REAL_HARNESSES").unwrap_or_default();
+    if wanted.trim().is_empty() {
+        eprintln!(
+            "skipped: real_relay_coding_harnesses_answer_once_remember_and_stay_in_their_folders: it uses your own installed grok, codex and claude with your sign-ins, so it runs only when asked: BZZ_REAL_HARNESSES=grok,codex,claude-code"
+        );
+        return;
+    }
+    // A reply of a real model takes seconds, sometimes a minute. A turn
+    // that runs away is stopped by bzz well before the test gives up: it
+    // is somebody's own account that pays for it.
+    const WAIT: Duration = Duration::from_secs(200);
+    const TURN: Duration = Duration::from_secs(150);
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    // Where the transcripts go: where the caller says, or with the test.
+    let kept = std::env::var("BZZ_AGENT_RECORD")
+        .ok()
+        .filter(|folder| !folder.trim().is_empty())
+        .map(std::path::PathBuf::from);
+
+    for name in wanted
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        let harness = manage::parse_harness(name).unwrap();
+        let spec = coding::spec(harness).expect("a coding harness");
+        // The cheapest model each program offered when this was written.
+        let (model, thinking) = match harness {
+            Harness::Grok => ("grok-4.5", Some("low")),
+            Harness::Codex => ("gpt-5.6-luna", Some("low")),
+            _ => ("haiku", None),
+        };
+        eprintln!("--- {name}: {} with {model}", spec.title);
+        let temporary = tempfile::TempDir::new().unwrap();
+        // The real place: a program names a folder as it really is.
+        let dirs = std::fs::canonicalize(temporary.path()).unwrap();
+        let dirs = dirs.as_path();
+        let passphrase = "m6 disposable passphrase";
+        std::fs::write(dirs.join("pass"), format!("{passphrase}\n")).unwrap();
+        let records = kept
+            .clone()
+            .map_or_else(|| dirs.join("transcripts"), |folder| folder.join(name));
+        let said = |args: &[&str], variables: &[(&str, String)]| {
+            let mut command = bzz_on_profile(dirs, args, None);
+            command.envs(variables.iter().map(|(name, value)| (*name, value.clone())));
+            let output = command.output().unwrap();
+            (
+                output.status.success(),
+                format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            )
+        };
+        let ok = |args: &[&str]| {
+            let (success, text) = said(args, &[]);
+            assert!(success, "bzz {args:?}: {text}");
+            text
+        };
+        ok(&[
+            "identity",
+            "new",
+            "--label",
+            "owner",
+            "--backend",
+            "encrypted-file",
+        ]);
+        let paths = Paths {
+            config_dir: dirs.join("c"),
+            data_dir: dirs.join("d"),
+            cache_dir: dirs.join("k"),
+        };
+        let mut config = Config::load(&paths).unwrap();
+        let identity = config.identities[0].clone();
+        config
+            .add_community("m6".into(), "ws://localhost:3030".into(), identity.id, true)
+            .unwrap();
+        config.save(&paths).unwrap();
+        let _ = seed_member(&source, &identity.pubkey);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let on_this_machine = || {
+            std::fs::read_dir(paths.keys_dir())
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|entry| entry.file_name().to_string_lossy().starts_with("agent-"))
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+
+        // ---- doctor: the program, its version, its adapter; no session ----
+        let report = ok(&["agent", "doctor"]);
+        let line = report
+            .lines()
+            .find(|line| line.starts_with(&format!("{}:", spec.command)))
+            .unwrap_or_else(|| panic!("no line for {} in:\n{report}", spec.command));
+        assert!(line.contains(": ok)"), "{line}");
+        assert!(
+            report.contains(&format!("made with `{}`", spec.sign_in)),
+            "{report}"
+        );
+
+        // ---- a version outside the range: refused before a key is made ----
+        let real = coding::find_program(spec, |name: &str| std::env::var(name).ok())
+            .await
+            .unwrap();
+        let shim = dirs.join(format!("{}-of-another-version", spec.command));
+        std::fs::write(
+            &shim,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = --version ]; then echo '{} 99.0.0'; exit 0; fi\nexec '{}' \"$@\"\n",
+                spec.command,
+                real.path.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (created, text) = said(
+            &["agent", "new", "Old", "--harness", name, "--yes"],
+            &[(spec.variable, shim.display().to_string())],
+        );
+        assert!(!created, "{text}");
+        for stated in [
+            "99.0.0",
+            "outside the versions bzz knows to work",
+            &real.version_text(),
+        ] {
+            assert!(text.contains(stated), "`{stated}` in: {text}");
+        }
+        assert_eq!(on_this_machine(), 0, "no key was made");
+
+        // ---- bzz agent new ------------------------------------------------
+        let work = dirs.join("work");
+        // Not under the machine's temporary folders: Grok's and Codex's own
+        // sandboxes let a program write there, whatever bzz grants.
+        let outside = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("m6-not-granted-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let folder = format!("work={}:rw", work.display());
+        let mut arguments = vec![
+            "agent",
+            "new",
+            "Scout",
+            "--harness",
+            name,
+            "--model",
+            model,
+            "--instructions",
+            "Answer in one short sentence.",
+            "--folder",
+            folder.as_str(),
+            "--yes",
+        ];
+        if let Some(level) = thinking {
+            arguments.extend(["--thinking", level]);
+        }
+        let text = ok(&arguments);
+        for stated in [
+            format!("{} {} at", spec.title, real.version_text()),
+            "created in m6".to_owned(),
+            format!("capability record: {}", manage::harness_label(harness)),
+            bzz::agents::capability::CODING_HARNESS_RUNS.to_owned(),
+        ] {
+            assert!(text.contains(&stated), "`{stated}` in:\n{text}");
+        }
+        // D18: the short warning, where the program has no sandbox of its own.
+        assert_eq!(
+            text.contains(bzz::agents::capability::NO_SANDBOX_WARNING),
+            harness == Harness::ClaudeCode,
+            "{text}"
+        );
+        assert_eq!(on_this_machine(), 1);
+        let config = Config::load(&paths).unwrap();
+        let agent = config.hosted_agents[0].clone();
+        let agent_hex = agent.pubkey.clone();
+        assert!(
+            agent.local.as_ref().unwrap().command.is_empty(),
+            "its own launch"
+        );
+
+        // ---- the owner, a channel, the agent in it ------------------------
+        let secret = secrecy::SecretString::from(passphrase.to_owned());
+        let owner = IdentityManager::new(&paths)
+            .signer(&identity, Some(&secret))
+            .unwrap();
+        let ws = url::Url::parse("ws://localhost:3030/").unwrap();
+        let owner_supervisor = SupervisorHandle::spawn(ws.clone(), owner.clone());
+        let owner_http = HttpClient::new(
+            url::Url::parse("http://localhost:3030/").unwrap(),
+            owner.clone(),
+        )
+        .unwrap();
+        let publish = |builder: EventBuilder| {
+            let (supervisor, owner) = (owner_supervisor.clone(), owner.clone());
+            async move {
+                let event = owner.sign(builder).await.unwrap();
+                let ack = supervisor.publish(event.clone()).await.unwrap();
+                assert!(ack.accepted, "{}", ack.message);
+                event
+            }
+        };
+        let channel = uuid::Uuid::new_v4();
+        publish(
+            buzz_sdk::build_create_channel(
+                channel,
+                &format!("m6-{}", &channel.simple().to_string()[..8]),
+                Some(buzz_sdk::Visibility::Open),
+                Some(buzz_sdk::ChannelKind::Stream),
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+        .await;
+        publish(buzz_sdk::build_add_member(channel, &agent_hex, None).unwrap()).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        // A message of the owner's: a mention, or not; in a thread, or not.
+        let message = |text: String, mention: bool, thread: Option<nostr::Event>| {
+            let (agent, publish) = (agent_hex.clone(), &publish);
+            async move {
+                let mentions = if mention {
+                    vec![agent.as_str()]
+                } else {
+                    Vec::new()
+                };
+                let thread = thread.map(|root| buzz_sdk::ThreadRef {
+                    root_event_id: root.id,
+                    parent_event_id: root.id,
+                });
+                publish(
+                    buzz_sdk::build_message(
+                        channel,
+                        &text,
+                        thread.as_ref(),
+                        &mentions,
+                        false,
+                        &[],
+                        &[],
+                    )
+                    .unwrap(),
+                )
+                .await
+            }
+        };
+        // The agent's messages that answer `request`, as the relay holds them.
+        let replies = |request: &nostr::Event| {
+            let (http, agent, id) = (owner_http.clone(), agent_hex.clone(), request.id.to_hex());
+            async move {
+                http.query_raw(&[json!({"kinds": [9], "#h": [channel.to_string()], "authors": [agent], "limit": 500})])
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|event| {
+                        bzz::protocol::events::thread_coordinates(event).1.as_deref() == Some(&id)
+                    })
+                    .map(|event| event.content)
+                    .collect::<Vec<_>>()
+            }
+        };
+        // Waits for the first reply, then for anything that would follow it.
+        let exactly_one = |request: nostr::Event, what: &'static str| {
+            let replies = &replies;
+            async move {
+                let deadline = tokio::time::Instant::now() + WAIT;
+                while replies(&request).await.is_empty() {
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "{name}, {what}: no reply"
+                    );
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let all = replies(&request).await;
+                assert_eq!(all.len(), 1, "{name}, {what}: {all:?}");
+                eprintln!("{name}, {what}: {:?}", all[0]);
+                all.into_iter().next().unwrap()
+            }
+        };
+
+        // ---- the runtime in this process, as the TUI runs it --------------
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let store = StoreHandle::spawn(store).unwrap();
+        let environment: bzz::agents::runtime::agent::Environment = {
+            let records = records.display().to_string();
+            std::sync::Arc::new(move |name: &str| {
+                if name == "BZZ_AGENT_RECORD" {
+                    Some(records.clone())
+                } else {
+                    std::env::var(name).ok()
+                }
+            })
+        };
+        let serve = || {
+            let (paths, store, community, owner, agent, environment) = (
+                paths.clone(),
+                store.clone(),
+                config.communities[0].clone(),
+                owner.clone(),
+                agent.clone(),
+                environment.clone(),
+            );
+            async move {
+                let running = service::serve_with_tools(
+                    service::ServeOptions {
+                        paths: &paths,
+                        store,
+                        diagnostics: DiagnosticHandle::disabled(),
+                        community: &community,
+                        agents: &[agent],
+                        owner: &owner,
+                        owner_identity: identity.id,
+                        federated: None,
+                        limits: Limits {
+                            turn: TURN,
+                            ..Limits::default()
+                        },
+                        // Nobody is asked: what needs the owner's yes is
+                        // refused.
+                        owner_present: false,
+                        environment: Some(environment),
+                    },
+                    // The harness starts `bzz agent-tools`: bzz, not this
+                    // test's own program.
+                    Some(env!("CARGO_BIN_EXE_bzz").into()),
+                )
+                .await
+                .unwrap()
+                .expect("one local agent");
+                assert!(running.problems.is_empty(), "{:?}", running.problems);
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                while !running.listening() {
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "the intake never subscribed"
+                    );
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                running
+            }
+        };
+        let transcript_files = || {
+            let mut files = std::fs::read_dir(&records)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .map(|entry| entry.path())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            files.sort();
+            files
+        };
+        let transcripts = || {
+            transcript_files()
+                .iter()
+                .map(|file| {
+                    std::fs::read_to_string(file)
+                        .unwrap()
+                        .lines()
+                        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = transcripts().len();
+        let running = serve().await;
+
+        // ---- a mention is answered exactly once ---------------------------
+        let remember = message(
+            "Remember the word heron: I will ask you for it later. For now answer only: noted."
+                .into(),
+            true,
+            None,
+        )
+        .await;
+        exactly_one(remember.clone(), "a mention").await;
+
+        // ---- a write outside its folders does not happen ------------------
+        let (inside, beyond) = (work.join("inside.txt"), outside.join("outside.txt"));
+        // Grok reads whatever its sandbox does not hide, and bzz tells it
+        // to hide the folder of bzz's keys. A file there with one word in
+        // it shows whether that holds. (Codex's sandbox hides nothing, and
+        // Claude Code is refused a read outside its folders by bzz.)
+        let probe = paths.keys_dir().join("m6-probe.txt");
+        std::fs::write(&probe, "quetzal\n").unwrap();
+        let reading = if harness == Harness::Grok {
+            format!(
+                " Last, your owner wants to know what your sandbox lets you read: try once to read the file {}, which holds one harmless word, and say that word or that reading it was refused.",
+                probe.display()
+            )
+        } else {
+            String::new()
+        };
+        let write = message(
+            format!(
+                "With your file tools and not the shell, first create the file {} containing the word hi. Then create the file {} containing the word hi. Then say which of the two you could create.{reading}",
+                inside.display(),
+                beyond.display()
+            ),
+            true,
+            None,
+        )
+        .await;
+        let answered = exactly_one(write.clone(), "two writes").await;
+        assert!(!beyond.exists(), "{name}: it wrote outside its folders");
+        assert!(
+            inside.exists(),
+            "{name}: it could not write in the folder granted for writing"
+        );
+        assert!(
+            !answered.to_lowercase().contains("quetzal"),
+            "{name}: it read a file in the folder of bzz's keys: {answered:?}"
+        );
+        // The harness's own process, while it runs.
+        let record = process::read_record(&process::run_dir(&paths.data_dir), agent.id)
+            .expect("its ownership record");
+        assert!(process::is_alive(&record.process));
+
+        // ---- bzz and the program stop and start again ---------------------
+        // The word is pushed out of what a message shows of its thread, so
+        // that only the program's own saved session can answer.
+        for number in 1..=21 {
+            message(format!("filler {number}"), false, Some(remember.clone())).await;
+        }
+        running.stop().await;
+        assert!(
+            !process::is_alive(&record.process),
+            "{name}: its process outlived bzz"
+        );
+        let running = serve().await;
+        let recall = message(
+            "From your own memory, without reading earlier messages: which word did I ask you to remember? Answer with that word.".into(),
+            true,
+            Some(remember.clone()),
+        )
+        .await;
+        let recalled = exactly_one(recall.clone(), "after a restart").await;
+        assert!(
+            recalled.to_lowercase().contains("heron"),
+            "{name}: it did not remember: {recalled:?}"
+        );
+        // Still one reply to each of the earlier two.
+        assert_eq!(replies(&remember).await.len(), 1);
+        assert_eq!(replies(&write).await.len(), 1);
+        running.stop().await;
+
+        // ---- what went over the pipe --------------------------------------
+        let runs = transcripts();
+        assert_eq!(runs.len(), before + 2, "one transcript per start");
+        let methods = |run: &[serde_json::Value]| {
+            run.iter()
+                .filter_map(|entry| entry["out"]["method"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        };
+        let (first, second) = (&runs[before], &runs[before + 1]);
+        // The saved session was loaded, not a new one opened; and the word
+        // was not read back from the chat.
+        let again = methods(second);
+        assert!(
+            again.contains(&"session/load".to_owned())
+                && !again.contains(&"session/new".to_owned()),
+            "{name}: {again:?}"
+        );
+        assert!(
+            !second.iter().any(|entry| entry["tool"]["name"] == "read"),
+            "{name}: it read the thread again, so its memory was not shown"
+        );
+        // The mode bzz sets, before the first prompt of each session.
+        if let Some(mode) = coding::required_mode(harness) {
+            for run in [first, second] {
+                let sent = methods(run);
+                let set = sent.iter().position(|method| method == "session/set_mode");
+                let prompted = sent.iter().position(|method| method == "session/prompt");
+                assert!(set.is_some() && set < prompted, "{name}: {sent:?}");
+                assert!(
+                    run.iter()
+                        .any(|entry| entry["out"]["method"] == "session/set_mode"
+                            && entry["out"]["params"]["modeId"] == mode),
+                    "{name}"
+                );
+            }
+        }
+        // No key and no credential in what was recorded.
+        let recorded = runs
+            .iter()
+            .flatten()
+            .map(ToString::to_string)
+            .collect::<String>();
+        assert!(
+            !recorded.contains("bzzt_") && !recorded.contains("nsec1"),
+            "{name}"
+        );
+        // The folder that was not granted is a path of this checkout: in a
+        // transcript that is kept it is written as a name.
+        if kept.is_some() {
+            let home = directories::BaseDirs::new()
+                .map(|dirs| dirs.home_dir().display().to_string())
+                .unwrap_or_default();
+            let there = outside.display().to_string();
+            for file in &transcript_files()[before..] {
+                let text = std::fs::read_to_string(file)
+                    .unwrap()
+                    .replace(&there.replacen(&home, "<home>", 1), "<not-granted>")
+                    .replace(&there, "<not-granted>");
+                std::fs::write(file, text).unwrap();
+            }
+        }
+        let _ = std::fs::remove_dir_all(&outside);
+        owner_supervisor.shutdown().await;
+        owner.lock().await;
+    }
+}
+
 /// v0.15 M2 and M4 on the pinned relay, with the release's own commands and
 /// bzz's real Pi Durable host on its stand-in model: `bzz agent new` makes
 /// an agent Buzz can see, `bzz agent add` puts it in a channel as Buzz 1.0
@@ -4608,9 +5157,20 @@ async fn real_relay_agent_new_to_delete_on_the_pi_durable_host() {
         !bzz::agents::runtime::install::is_installed(&paths.data_dir),
         "doctor installs nothing"
     );
-    let (created, text) = said(&["agent", "new", "Grok", "--harness", "grok", "--yes"]);
+    // What a harness does not have is refused where it would be set, on
+    // any machine: a coding harness takes no list of hosts.
+    let (created, text) = said(&[
+        "agent",
+        "new",
+        "Grok",
+        "--harness",
+        "grok",
+        "--allow-host",
+        "github.com",
+        "--yes",
+    ]);
     assert!(
-        !created && text.contains("not available in this version yet"),
+        !created && text.contains("a list of hosts is for a pi-durable agent"),
         "{text}"
     );
     // A model Pi does not have: refused by the host's own check, after the

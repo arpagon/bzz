@@ -92,6 +92,22 @@ tmux new-session -d -s "$BZZ_TMUX_KEEPALIVE" "sleep 3600"
 for name in "${RELAY_ENV[@]}"; do
   if [[ -n "${!name:-}" ]]; then tmux set-environment -g "$name" "${!name}"; fi
 done
+# Buzz's script takes Postgres as ready as soon as it accepts a connection,
+# which on its first start is before its database exists: on a busy machine
+# the next step then fails with `database "buzz" does not exist`. Bring
+# Postgres up here and wait for the database itself, twice in a row, because
+# the first start stops and starts the server once more.
+harness_compose=(docker compose -p buzz-harness -f "$BZZ_BUZZ_SOURCE/docker-compose.harness.yml")
+"${harness_compose[@]}" up -d postgres
+ready=0
+for _ in $(seq 1 90); do
+  if "${harness_compose[@]}" exec -T postgres psql -U buzz -d buzz -c 'select 1' >/dev/null 2>&1; then
+    ready=$((ready + 1)); [[ $ready -ge 2 ]] && break
+  else
+    ready=0
+  fi
+  sleep 2
+done
 (cd "$BZZ_BUZZ_SOURCE" && ./scripts/start-isolated-test-relay.sh --profile dev)
 for _ in $(seq 1 60); do curl -fsS http://localhost:3030/ >/dev/null && break; sleep 1; done
 if [[ "$PROFILE" == nip-fi ]]; then

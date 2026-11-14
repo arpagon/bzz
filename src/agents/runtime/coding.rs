@@ -250,6 +250,9 @@ pub enum Problem {
         log: PathBuf,
         why: String,
     },
+    /// Grok's sandbox on Linux hides bzz's keys with bubblewrap, and
+    /// refuses to start without it.
+    BubblewrapMissing,
     Io {
         what: &'static str,
         path: PathBuf,
@@ -299,6 +302,10 @@ impl std::fmt::Display for Problem {
                 adapter.package,
                 adapter.version,
                 log.display()
+            ),
+            Self::BubblewrapMissing => write!(
+                formatter,
+                "an agent on the grok harness needs bubblewrap (`bwrap`) on Linux, and none was found on PATH: Grok's sandbox uses it to keep bzz's keys from being read, and does not start without it. Install it (the package is `bubblewrap`), then run `bzz agent doctor`"
             ),
             Self::Io { what, path, why } => write!(
                 formatter,
@@ -677,6 +684,9 @@ pub async fn prepare(
 ) -> Result<Ready, Problem> {
     let program = find_program(spec, &lookup).await?;
     check_range(spec, &program)?;
+    if needs_bubblewrap(spec.harness) && install::on_path("bwrap", &lookup).is_empty() {
+        return Err(Problem::BubblewrapMissing);
+    }
     let adapter = match spec.adapter {
         None => None,
         Some(adapter) => {
@@ -709,6 +719,12 @@ pub async fn prepare(
         program,
         adapter,
     })
+}
+
+/// Whether the harness's sandbox needs bubblewrap here: Grok's, on Linux,
+/// for the folders bzz tells it to hide.
+pub const fn needs_bubblewrap(harness: Harness) -> bool {
+    cfg!(target_os = "linux") && matches!(harness, Harness::Grok)
 }
 
 /// What is wrong with Node, without the words that are about bzz's own
@@ -796,6 +812,7 @@ pub fn environment(
     harness: Harness,
     local: &LocalAgentConfig,
     workspace: &Path,
+    data_dir: &Path,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<Vec<(String, String)>, Problem> {
     let Some(spec) = spec(harness) else {
@@ -809,7 +826,7 @@ pub fn environment(
         .collect::<Vec<_>>();
     match harness {
         Harness::Grok if has_own_sandbox(harness, cfg!(windows)) => {
-            write_grok_profile(local, workspace)?;
+            write_grok_profile(local, workspace, &hidden_from_grok(data_dir))?;
             env.push(("GROK_SANDBOX".into(), GROK_PROFILE.into()));
         }
         // The adapter starts every session in this mode; bzz sets it again
@@ -831,15 +848,38 @@ pub const fn has_own_sandbox(harness: Harness, windows: bool) -> bool {
     }
 }
 
+/// What Grok's sandbox is told to hide, for reading as for writing: the
+/// folder of bzz's keys, where every agent's sealed key is, the owner's
+/// own when it is kept in a file, and the git credentials. Only what is
+/// there: a path that is not cannot be hidden, and stops Grok at its start.
+pub fn hidden_from_grok(data_dir: &Path) -> Vec<PathBuf> {
+    let keys = data_dir.join("keys");
+    std::fs::canonicalize(&keys)
+        .ok()
+        .filter(|keys| keys.is_dir())
+        .into_iter()
+        .collect()
+}
+
 /// Grok's sandbox profile for one agent: Grok's `workspace` profile (it
 /// reads everything the owner can, and writes in its working folder, its
 /// own `~/.grok` and the temporary folders), with the folders the owner
-/// granted for writing. A profile of the owner's own cannot be applied by
-/// halves: Grok refuses to start when a custom profile cannot be enforced,
-/// where it only warns for a built-in one.
-pub fn grok_profile(local: &LocalAgentConfig) -> String {
+/// granted for writing, and without `hidden`, which it may neither read
+/// nor write. A profile of this kind cannot be applied by halves: Grok
+/// refuses to start when a custom profile cannot be enforced, where it
+/// only warns for a built-in one.
+pub fn grok_profile(local: &LocalAgentConfig, hidden: &[PathBuf]) -> String {
     let mut profile = toml::Table::new();
     profile.insert("extends".into(), "workspace".into());
+    profile.insert(
+        "deny".into(),
+        toml::Value::Array(
+            hidden
+                .iter()
+                .map(|path| toml::Value::String(path.display().to_string()))
+                .collect(),
+        ),
+    );
     profile.insert(
         "read_write".into(),
         toml::Value::Array(
@@ -861,7 +901,11 @@ pub fn grok_profile(local: &LocalAgentConfig) -> String {
     )
 }
 
-fn write_grok_profile(local: &LocalAgentConfig, workspace: &Path) -> Result<(), Problem> {
+fn write_grok_profile(
+    local: &LocalAgentConfig,
+    workspace: &Path,
+    hidden: &[PathBuf],
+) -> Result<(), Problem> {
     let folder = workspace.join(".grok");
     let file = folder.join("sandbox.toml");
     let io = |path: &Path, why: String| Problem::Io {
@@ -872,7 +916,7 @@ fn write_grok_profile(local: &LocalAgentConfig, workspace: &Path) -> Result<(), 
     process::create_private_dir(&folder).map_err(|error| io(&folder, error.to_string()))?;
     // By rename over whatever is there, also a link the agent left.
     let temporary = folder.join(format!(".sandbox-{:016x}.tmp", rand::random::<u64>()));
-    std::fs::write(&temporary, grok_profile(local))
+    std::fs::write(&temporary, grok_profile(local, hidden))
         .map_err(|error| io(&temporary, error.to_string()))?;
     std::fs::rename(&temporary, &file).map_err(|error| {
         let _ = std::fs::remove_file(&temporary);
@@ -992,6 +1036,11 @@ pub fn system_prompt(
         " Writing anywhere else is refused. {} When something is refused, say so in your answer and do not try it another way.",
         commands_line(harness, local)
     ));
+    // A model that cannot post looks for another way to, with a real shell
+    // (seen with Grok: it went through bzz's own files for a key).
+    text.push_str(
+        " If the `send` tool is missing or fails, stop: write one line that says so and end your turn. Never look for another way to post, and never read or search for keys, credentials or bzz's own files.",
+    );
     if !local.instructions.trim().is_empty() {
         text.push_str(&format!(
             "\n\nYour instructions:\n{}",
@@ -1328,7 +1377,8 @@ mod tests {
 
     #[test]
     fn groks_profile_extends_workspace_with_the_folders_granted_for_writing() {
-        let text = grok_profile(&grants());
+        let hidden = [PathBuf::from("/data/keys")];
+        let text = grok_profile(&grants(), &hidden);
         let read = toml::from_str::<toml::Table>(&text).unwrap();
         let profile = &read["profiles"][GROK_PROFILE];
         assert_eq!(profile["extends"].as_str(), Some("workspace"));
@@ -1338,20 +1388,27 @@ mod tests {
             profile["read_write"].as_array().unwrap(),
             &[toml::Value::String("/srv/my \"work\"".into())]
         );
-        let none = grok_profile(&LocalAgentConfig::new(Harness::Grok));
-        let read = toml::from_str::<toml::Table>(&none).unwrap();
-        assert!(
-            read["profiles"][GROK_PROFILE]["read_write"]
-                .as_array()
-                .unwrap()
-                .is_empty()
+        // bzz's keys are hidden from it, for reading as for writing.
+        assert_eq!(
+            profile["deny"].as_array().unwrap(),
+            &[toml::Value::String("/data/keys".into())]
         );
+        let none = grok_profile(&LocalAgentConfig::new(Harness::Grok), &[]);
+        let read = toml::from_str::<toml::Table>(&none).unwrap();
+        let profile = &read["profiles"][GROK_PROFILE];
+        assert!(profile["read_write"].as_array().unwrap().is_empty());
+        assert!(profile["deny"].as_array().unwrap().is_empty());
     }
 
     #[test]
     fn the_guard_is_in_the_environment_and_the_profile_replaces_what_was_there() {
         let temporary = tempfile::TempDir::new().unwrap();
         let workspace = temporary.path().join("workspace");
+        let data = temporary.path().join("data");
+        std::fs::create_dir_all(data.join("keys")).unwrap();
+        let hidden = hidden_from_grok(&data);
+        assert_eq!(hidden, [std::fs::canonicalize(data.join("keys")).unwrap()]);
+        assert!(hidden_from_grok(&temporary.path().join("no-data")).is_empty());
         // What an agent left in its own folder for its next start.
         std::fs::create_dir_all(workspace.join(".grok")).unwrap();
         std::fs::write(
@@ -1370,7 +1427,7 @@ mod tests {
         let names = |harness| {
             let mut local = grants();
             local.harness = harness;
-            let env = environment(harness, &local, &workspace, lookup).unwrap();
+            let env = environment(harness, &local, &workspace, &data, lookup).unwrap();
             assert!(
                 env.iter().all(|(_, value)| value != "must not pass"),
                 "{env:?}"
@@ -1383,8 +1440,9 @@ mod tests {
         } else {
             assert!(grok.contains(&("GROK_SANDBOX".into(), GROK_PROFILE.into())));
             let written = std::fs::read_to_string(workspace.join(".grok/sandbox.toml")).unwrap();
-            assert_eq!(written, grok_profile(&grants()));
+            assert_eq!(written, grok_profile(&grants(), &hidden));
             assert!(!written.contains("devbox"));
+            assert!(written.contains(&hidden[0].display().to_string()));
         }
         assert!(grok.contains(&("GROK_HOME".into(), "/srv/grok".into())));
         assert!(grok.contains(&("HTTPS_PROXY".into(), "http://proxy:3128".into())));
@@ -1471,6 +1529,8 @@ mod tests {
             "read and write in: /srv/my \"work\" (work).",
             "read, and not change: /srv/docs (docs).",
             "Writing anywhere else is refused.",
+            "If the `send` tool is missing or fails, stop",
+            "never read or search for keys, credentials or bzz's own files",
             "A shell command: your owner has granted no folder for commands, so it is refused.",
             "Your instructions:\nBe brief.",
         ] {
@@ -1579,6 +1639,26 @@ mod tests {
             for stated in ["`grok`", "grok login", "BZZ_GROK", "bzz agent doctor"] {
                 assert!(text.contains(stated), "`{stated}` in: {text}");
             }
+            // On Linux Grok's sandbox needs bubblewrap, and bzz says so
+            // rather than start a Grok that would stop at once.
+            let alone = temporary.path().join("alone");
+            program(&alone, "grok", "echo 'grok 1.0.77 (50ca579fa996) [stable]'");
+            let only = alone.to_string_lossy().into_owned();
+            let without = prepare(
+                &data,
+                &GROK,
+                move |name: &str| (name == "PATH").then(|| only.clone()),
+                &quiet,
+            )
+            .await;
+            if cfg!(target_os = "linux") {
+                let problem = without.unwrap_err();
+                assert_eq!(problem, Problem::BubblewrapMissing);
+                assert!(problem.to_string().contains("`bubblewrap`"), "{problem}");
+            } else {
+                assert!(without.is_ok());
+            }
+            program(&bin, "bwrap", "exit 0");
             // The tested version, behind a link as an installer leaves it.
             let real = program(
                 &temporary.path().join("downloads"),

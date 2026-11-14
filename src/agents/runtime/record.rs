@@ -15,7 +15,11 @@
 //!   settings hold: every notification but `session/update` is kept by its
 //!   name alone;
 //! - what an answer holds beyond what bzz reads: account, usage, the
-//!   machine's name.
+//!   machine's name;
+//! - what a tool gave back. A program lists the owner's files, searches his
+//!   tools and prints what its commands print: of a tool call only what was
+//!   asked is kept (its title, its kind, its input, the files it names),
+//!   never its output, and of a diff only which file.
 //!
 //! One line is one JSON object: `{"transcript": …}` first, then
 //! `{"out": <message>}` for what bzz sent, `{"in": <message>}` for what the
@@ -146,15 +150,31 @@ fn keep(value: &mut Value, names: &[&str]) {
 fn scrub_in(message: &mut Value, answered: Option<&str>) {
     match message.get("method").and_then(Value::as_str) {
         Some("session/update") => {
-            // Usage is the owner's account; the commands on offer are the
-            // owner's own skills and settings.
-            if let Some(update) = message.pointer_mut("/params/update")
-                && matches!(
-                    update.get("sessionUpdate").and_then(Value::as_str),
-                    Some("usage_update" | "available_commands_update")
-                )
-            {
-                keep(update, &["sessionUpdate"]);
+            let Some(update) = message.pointer_mut("/params/update") else {
+                return;
+            };
+            match update.get("sessionUpdate").and_then(Value::as_str) {
+                // Usage is the owner's account; the commands on offer are
+                // the owner's own skills and settings.
+                Some("usage_update" | "available_commands_update") => {
+                    keep(update, &["sessionUpdate"]);
+                }
+                // What a tool gave back is the owner's machine: his files,
+                // his own tools, what a command printed.
+                Some("tool_call" | "tool_call_update") => {
+                    if let Some(object) = update.as_object_mut() {
+                        object.remove("rawOutput");
+                    }
+                    if let Some(content) = update.get_mut("content").and_then(Value::as_array_mut) {
+                        content.retain(|entry| {
+                            entry.get("type").and_then(Value::as_str) == Some("diff")
+                        });
+                        for entry in content {
+                            keep(entry, &["type", "path"]);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         Some("session/request_permission") => {}
@@ -334,6 +354,15 @@ mod tests {
             json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1",
             "update": {"sessionUpdate": "usage_update", "cost": {"amount": 3}}}}),
         );
+        received(
+            json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1",
+            "update": {"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed",
+                "title": "Search tools", "kind": "other", "rawInput": {"query": "buzz send"},
+                "rawOutput": {"stdout": "Account: ann-private"},
+                "content": [
+                    {"type": "content", "content": {"type": "text", "text": "tools of ann-private"}},
+                    {"type": "diff", "path": "/srv/work/a.txt", "oldText": "ann-private", "newText": "x"}]}}}),
+        );
         out(
             json!({"jsonrpc": "2.0", "id": 3, "method": "session/prompt", "params": {
             "sessionId": "s1", "prompt": [{"type": "text", "text": "From: ann…"}],
@@ -372,6 +401,7 @@ mod tests {
             "cost",
             "auth.json",
             "abc",
+            "ann-private",
         ] {
             assert!(!text.contains(absent), "`{absent}` in:\n{text}");
         }
@@ -410,15 +440,22 @@ mod tests {
             lines[6]["in"]["params"]["update"],
             json!({"sessionUpdate": "usage_update"})
         );
-        assert_eq!(lines[7]["out"]["params"]["prompt"][0]["text"], "<any>");
+        // Of a tool call: what was asked, and which file a diff names.
         assert_eq!(
-            lines[8]["in"]["params"]["toolCall"]["locations"][0]["path"],
+            lines[7]["in"]["params"]["update"],
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed",
+                "title": "Search tools", "kind": "other", "rawInput": {"query": "buzz send"},
+                "content": [{"type": "diff", "path": "<folder:work>/a.txt"}]})
+        );
+        assert_eq!(lines[8]["out"]["params"]["prompt"][0]["text"], "<any>");
+        assert_eq!(
+            lines[9]["in"]["params"]["toolCall"]["locations"][0]["path"],
             "<home>/.ssh/config"
         );
         assert_eq!(
-            lines[9],
+            lines[10],
             json!({"tool": {"session": "s1", "name": "send", "arguments": {"text": "hi", "final": true}}})
         );
-        assert_eq!(lines[10]["in"]["result"], json!({"stopReason": "end_turn"}));
+        assert_eq!(lines[11]["in"]["result"], json!({"stopReason": "end_turn"}));
     }
 }

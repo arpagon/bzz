@@ -412,6 +412,8 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
             let (major, minor, patch) = spec.range.from;
             stand_in(spec.command, &format!("{major}.{minor}.{patch}"));
             stand_in("node", "v22.19.0");
+            // On Linux Grok's sandbox needs bubblewrap.
+            executable(&bin.join("bwrap"), "exit 0");
             if let Some(adapter) = spec.adapter {
                 let package = format!("node_modules/{}", adapter.package);
                 executable(

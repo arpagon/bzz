@@ -309,7 +309,20 @@ impl Agent {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let wanted = permission_rule::read(params);
+        // What the harness reported of the call it asks leave for: a
+        // request may name only the call's id.
+        let reported = params
+            .pointer("/toolCall/toolCallId")
+            .and_then(Value::as_str)
+            .and_then(|id| {
+                let state = self.state();
+                state
+                    .turns
+                    .get(&session)
+                    .filter(|turn| turn.run == run.id)
+                    .and_then(|turn| turn.calls.get(id).cloned())
+            });
+        let wanted = permission_rule::read(params, reported.as_ref());
         // bzz's own chat tools: what they may do is decided where the call
         // arrives.
         if wanted == Wanted::ChatTool {

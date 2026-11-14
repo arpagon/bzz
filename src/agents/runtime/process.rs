@@ -105,6 +105,21 @@ pub fn keep_descriptors_to_ourselves() {
 #[cfg(not(unix))]
 pub fn keep_descriptors_to_ourselves() {}
 
+/// Marks this process as one whose memory other processes of the same user
+/// may not read or attach to (`PR_SET_DUMPABLE` 0): `/proc/<pid>/mem`, its
+/// maps and its environment then belong to root. Called when bzz starts to
+/// run agents: bzz holds their keys and the owner's, and a coding harness
+/// runs real commands as that user (D19). It also means bzz leaves no core
+/// dump. Linux only: other systems do not let one process of a user read
+/// another's memory without more rights. Best effort.
+#[cfg(target_os = "linux")]
+pub fn keep_memory_to_ourselves() {
+    let _ = rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable);
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn keep_memory_to_ourselves() {}
+
 /// What tells one process from every other, now and after a restart.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProcessIdentity {

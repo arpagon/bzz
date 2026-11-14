@@ -704,6 +704,8 @@ async fn an_agent_on_a_coding_harness_is_checked_before_its_key_is_made() {
     // The tested one: the notes say which program, which sign-in is in
     // use, and where its sessions also appear.
     program("grok", "echo 'grok 1.0.77 (50ca579fa996) [stable]'");
+    // On Linux Grok's sandbox needs bubblewrap.
+    program("bwrap", "exit 0");
     let notes = check(&on(Harness::Grok)).await.unwrap();
     for stated in [
         "Grok Build 1.0.77 at",

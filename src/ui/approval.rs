@@ -563,6 +563,31 @@ mod tests {
         );
     }
 
+    /// v0.15 M6: a command of a coding harness is shown as what it is. The
+    /// folder is a real one of this machine, the command is the program's
+    /// own account of it, and bzz does not start it.
+    #[test]
+    fn a_coding_harness_command_is_shown_with_its_real_folder_and_whose_word_it_is() {
+        let mut coding = asked("make test");
+        coding.coding = true;
+        coding.folder = "work, ops".into();
+        coding.path = "/home/ann/.local/share/bzz/agents/a/workspace".into();
+        let mut state = ApprovalState::default();
+        state.show(coding.id);
+        let shown = screen(110, 20, Some(&coding), &mut state).join("\n");
+        for expected in [
+            "folder:       /home/ann/.local/share/bzz/agents/a/workspace (commands granted by: work, ops)",
+            "It runs as your user, starting in that folder, and can reach whatever you can.",
+            "the command, as its program reports it (1 line(s), 9 bytes):",
+            "Its own program starts it, not bzz: what runs is that program's to keep to.",
+            " 1 │ make test",
+        ] {
+            assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
+        }
+        assert!(!shown.contains("/mnt/"), "{shown}");
+        assert!(!shown.contains("exactly as /bin/sh will get it"), "{shown}");
+    }
+
     #[test]
     fn the_banner_says_who_asks_where_and_how_to_answer() {
         let first = asked("npm test");

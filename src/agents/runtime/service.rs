@@ -108,6 +108,16 @@ pub(crate) async fn relay_pubkey(
 /// `owner_identity`. `None`: there are none. Leftovers of a dead bzz are
 /// stopped first, and each agent's open requests are settled before it runs.
 pub async fn serve(options: ServeOptions<'_>) -> Result<Option<CommunityAgents>> {
+    serve_with_tools(options, None).await
+}
+
+/// As [`serve`], with the bzz a coding harness starts as `bzz agent-tools`
+/// named. `None`: this program, which is right for bzz itself and wrong for
+/// a test, whose own program is not bzz.
+pub async fn serve_with_tools(
+    options: ServeOptions<'_>,
+    tools_program: Option<std::path::PathBuf>,
+) -> Result<Option<CommunityAgents>> {
     let community = options.community.id;
     let local = options
         .agents
@@ -127,6 +137,7 @@ pub async fn serve(options: ServeOptions<'_>) -> Result<Option<CommunityAgents>>
     )?;
     let mut host_options = HostOptions::new(options.paths.data_dir.clone(), options.store.clone());
     host_options.limits = options.limits;
+    host_options.tools_program = tools_program;
     host_options.owner_present = options.owner_present;
     host_options.settings_file = Some(options.paths.config_file());
     if let Some(environment) = options.environment {

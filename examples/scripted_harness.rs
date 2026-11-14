@@ -36,7 +36,8 @@
 //!   (`tests/fixtures/agents/transcripts/`). The harness then expects each
 //!   message bzz sent to that program and sends what the program sent, in
 //!   the transcript's order, and calls bzz's tools where it did. `folders`
-//!   maps the names of granted folders to their paths in this run. A
+//!   maps the names of granted folders to their paths in this run, and
+//!   `places` any other name a transcript holds (`<not-granted>`). A
 //!   message of bzz that differs is logged as a mismatch and ends the
 //!   harness with status 4.
 //! - `log`: every message received, every tool result and the process's own
@@ -752,6 +753,16 @@ impl Harness {
                 format!("<folder:{name}>"),
                 path.as_str().unwrap_or_default().to_owned(),
             ));
+        }
+        // Any other folder the transcript names: `{"<not-granted>": …}`.
+        for (name, path) in self
+            .script
+            .get("places")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            places.push((name.clone(), path.as_str().unwrap_or_default().to_owned()));
         }
         // `<data>/agents/<id>/workspace`.
         if let Some(data) = workspace.ancestors().nth(3) {
