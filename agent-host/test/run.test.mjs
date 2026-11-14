@@ -3,6 +3,7 @@
 // `exec`, after bzz said yes. The commands here are real ones, run in
 // temporary folders; the client that stands in for bzz answers the question.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
@@ -88,6 +89,13 @@ test("an approved command runs in the granted folder, exactly as approved, in an
 	assert.equal(host.approvals().at(-1).mount, "site");
 	// Also a line that begins like an option of the shell: it is the command, not an option.
 	assert.match(await host.run({ folder: "site", command: "-x; echo after the dash" }), /-x: (command )?not found\nafter the dash\n/);
+
+	// A process group of its own: the shell leads it, and it is neither the host's group nor this test's.
+	const [pid, pgid] = (await host.run({ folder: "site", command: "ps -o pid= -o pgid= -p $$" })).trim().split(/\s+/).map(Number);
+	const groupOf = (id) => Number(execFileSync("ps", ["-o", "pgid=", "-p", String(id)], { encoding: "utf8" }).trim());
+	assert.equal(pgid, pid);
+	assert.notEqual(pgid, groupOf(host.child.pid));
+	assert.notEqual(pgid, groupOf(process.pid));
 
 	// A command that fails: its output, and how it ended.
 	assert.equal(await host.run({ folder: "site", command: "echo out; echo err >&2; exit 3" }), "out\nerr\n<harness>\n[error] Command exited with code 3\n</harness>");
