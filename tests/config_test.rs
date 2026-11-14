@@ -266,11 +266,17 @@ fn hosted_agents_of_v013_load_unchanged_and_local_agents_add_settings() {
         "saving it again adds nothing"
     );
 
+    // A granted folder needs a path that is absolute where the test runs.
+    let granted = if cfg!(windows) {
+        r"C:\Users\ann\site"
+    } else {
+        "/home/ann/site"
+    };
     let local = format!(
         "{v013}\n[hosted_agents.local]\nharness = \"pi-durable\"\nwake = \"allowlist\"\nwake_allowlist = [\"{key}\"]\n\
          instructions = \"Be brief.\"\nnetwork = [\"github.com\"]\n\n\
          [hosted_agents.local.model]\nprovider = \"openai-codex\"\nmodel_id = \"gpt-6-luna\"\nthinking_level = \"low\"\n\n\
-         [[hosted_agents.local.folders]]\nname = \"site\"\npath = \"/home/ann/site\"\n"
+         [[hosted_agents.local.folders]]\nname = \"site\"\npath = '{granted}'\n"
     );
     let config = toml::from_str::<Config>(&local).unwrap();
     config.validate().unwrap();
@@ -284,6 +290,7 @@ fn hosted_agents_of_v013_load_unchanged_and_local_agents_add_settings() {
             LocalAgentState::Active
         )
     );
+    assert_eq!(settings.folders[0].path, std::path::Path::new(granted));
     assert!(
         !settings.folders[0].write,
         "a granted folder is read-only unless said"
