@@ -99,6 +99,126 @@ pub struct HostedAgentConfig {
     pub allowed: Vec<String>,
     #[serde(default)]
     pub paused: bool,
+    /// Present when bzz itself starts this agent's process (v0.15, a local
+    /// agent). Absent for a v0.13 hosted agent, whose process the user runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<LocalAgentConfig>,
+}
+
+impl HostedAgentConfig {
+    /// Whether bzz may start this agent's process now.
+    pub fn runs_locally(&self) -> bool {
+        !self.paused
+            && self
+                .local
+                .as_ref()
+                .is_some_and(|local| local.state == LocalAgentState::Active)
+    }
+}
+
+/// The program that runs a local agent (ADR v0.15, D14).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Harness {
+    PiDurable,
+    Grok,
+    Codex,
+    ClaudeCode,
+}
+
+impl Harness {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PiDurable => "pi-durable",
+            Self::Grok => "grok",
+            Self::Codex => "codex",
+            Self::ClaudeCode => "claude-code",
+        }
+    }
+}
+
+/// Who may wake a local agent (D3). DMs are owner only whatever this says.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WakeRule {
+    #[default]
+    OwnerOnly,
+    Allowlist,
+    Anyone,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LocalAgentState {
+    #[default]
+    Active,
+    Paused,
+    /// `agent move` took it to another machine; bzz refuses to run it.
+    MovedAway,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentModelConfig {
+    pub provider: String,
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<String>,
+}
+
+/// A real folder the owner grants to an agent; read-only unless `write`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FolderGrant {
+    pub name: String,
+    pub path: std::path::PathBuf,
+    #[serde(default)]
+    pub write: bool,
+}
+
+/// Settings of a local agent. Never secrets: the key stays sealed in
+/// `keys/`, and no provider key is stored (D11).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalAgentConfig {
+    pub harness: Harness,
+    #[serde(default)]
+    pub wake: WakeRule,
+    /// Public keys (hex) that may wake the agent under `wake = "allowlist"`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wake_allowlist: Vec<String>,
+    /// Absent: the harness uses its own default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<AgentModelConfig>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub instructions: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<FolderGrant>,
+    /// Hosts the agent may reach.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub network: Vec<String>,
+    #[serde(default)]
+    pub state: LocalAgentState,
+    /// Program and arguments to start instead of the harness's own launch
+    /// command, for a harness run from a checkout. Empty: the default.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command: Vec<String>,
+}
+
+impl LocalAgentConfig {
+    pub fn new(harness: Harness) -> Self {
+        Self {
+            harness,
+            wake: WakeRule::default(),
+            wake_allowlist: Vec::new(),
+            model: None,
+            instructions: String::new(),
+            folders: Vec::new(),
+            network: Vec::new(),
+            state: LocalAgentState::default(),
+            command: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -406,6 +526,34 @@ impl Config {
             return Err(Error::Config(format!(
                 "default community {default} does not exist"
             )));
+        }
+        for agent in &self.hosted_agents {
+            let Some(local) = &agent.local else { continue };
+            let is_key = |value: &String| {
+                value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            };
+            if !local.wake_allowlist.iter().all(is_key) {
+                return Err(Error::Config(format!(
+                    "agent {} has an invalid public key in wake_allowlist",
+                    agent.label
+                )));
+            }
+            // A folder appears to the agent as /mnt/<name>.
+            let mut names = std::collections::HashSet::new();
+            for folder in &local.folders {
+                let simple = !folder.name.is_empty()
+                    && folder.name.len() <= 64
+                    && folder
+                        .name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte));
+                if !simple || !names.insert(folder.name.as_str()) || !folder.path.is_absolute() {
+                    return Err(Error::Config(format!(
+                        "agent {} has an invalid folder grant {:?}",
+                        agent.label, folder.name
+                    )));
+                }
+            }
         }
         validate_theme_name(&self.ui.theme, "ui.theme")?;
         for community in &self.communities {

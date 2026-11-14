@@ -10587,6 +10587,7 @@ mod tests {
                     credential_hash: "c".repeat(64),
                     allowed: vec!["channel.read".into()],
                     paused: false,
+                    local: None,
                 });
         }
         app.command = "broker".into();
