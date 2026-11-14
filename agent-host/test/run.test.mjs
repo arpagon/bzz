@@ -243,10 +243,14 @@ test("a long output comes back bounded, and the whole of it is on the agent's di
 	assert.ok(huge.length < 60_000, `${huge.length} characters`);
 	const saved = /The output was 8\.6 MB\. Its first 8\.0 MB: (\/tmp\/run-[0-9a-f]{8}\.log)/.exec(huge)?.[1];
 	assert.ok(saved, huge.slice(-300));
+	// What a command made in the folder comes to the agent's disk by a copy with the agent's own tools.
+	assert.equal(await host.run({ folder: "site", command: "echo built by a real command > artifact.txt" }), "");
+	await host.prompt(host.sessionId, "o2", script(["bash", { command: "cp /mnt/site/artifact.txt /home/agent/artifact.txt" }], ["report"]));
 	await host.stop();
 	const disk = new SqliteFs(join(folder, "files.sqlite"));
 	t.after(() => disk.close());
 	assert.equal(disk.stat(saved).size, 8 * 1024 * 1024);
+	assert.equal(Buffer.from(disk.readFile("/home/agent/artifact.txt")).toString(), "built by a real command\n");
 	assert.equal(Buffer.from(disk.readFile(path)).toString(), `${Array.from({ length: 5000 }, (_, n) => n + 1).join("\n")}\n`);
 	assert.deepEqual(disk.readdir("/tmp").map((entry) => entry.name).filter((name) => name.startsWith("run-")).length, 2);
 });
