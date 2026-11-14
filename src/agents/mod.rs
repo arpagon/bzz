@@ -1,11 +1,14 @@
-//! Verified, relay-only managed-agent interoperability.
+//! Agents as bzz sees them.
 //!
-//! This module deliberately has no process, ACP, key-custody, memory, or
-//! observer surface. A remote agent is only a set of signed public relay
-//! records scoped later by community membership.
+//! [`policy`], [`protocol`] and [`typing`] are verified, relay-only
+//! interoperability with agents that something else runs: a remote agent is
+//! only a set of signed public relay records, scoped later by community
+//! membership. [`runtime`] (v0.15) runs local agents: bzz holds the key and
+//! starts the process.
 
 pub mod policy;
 pub mod protocol;
+pub mod runtime;
 pub mod typing;
 
 use serde::{Deserialize, Serialize};

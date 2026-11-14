@@ -3778,3 +3778,686 @@ async fn real_relay_search_loads_older_pages() {
     );
     signer.lock().await;
 }
+
+/// Runs the bzz binary on a disposable profile; the passphrase reaches it
+/// only as fd 3. Output goes to `output` when given.
+#[cfg(unix)]
+fn bzz_on_profile(
+    dirs: &std::path::Path,
+    args: &[&str],
+    output: Option<&std::path::Path>,
+) -> Command {
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg("exec \"$0\" \"$@\" 3<\"$BZZ_M1_PASSPHRASE\"")
+        .arg(env!("CARGO_BIN_EXE_bzz"))
+        .args(args)
+        .env("BZZ_M1_PASSPHRASE", dirs.join("pass"))
+        .env("BZZ_CONFIG_DIR", dirs.join("c"))
+        .env("BZZ_DATA_DIR", dirs.join("d"))
+        .env("BZZ_CACHE_DIR", dirs.join("k"))
+        .env("BZZ_PASSPHRASE_FD", "3");
+    if let Some(output) = output {
+        let file = std::fs::File::create(output).unwrap();
+        command
+            .stdout(file.try_clone().unwrap())
+            .stderr(file)
+            .stdin(std::process::Stdio::null());
+    }
+    command
+}
+
+/// v0.15 M1 exit gate, on the pinned relay: a mention of a local agent is
+/// answered exactly once through a scripted harness, with the harness killed
+/// before, during and after the publish, with a harness that sends twice,
+/// and with bzz itself killed. The agent is a plain channel member (no `bot`
+/// role), its requests come from its own relay connection, and no key
+/// reaches the harness.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_local_agent_answers_a_mention_exactly_once() {
+    use bzz::{
+        agents::runtime::{Limits, process, service},
+        auth::IdentityManager,
+        broker::{custody, relay as broker_relay},
+        config::{Harness, LocalAgentConfig},
+        diagnostics::DiagnosticHandle,
+        paths::Paths,
+        store::agent_runtime::{NewRequest, ReplyOrigin},
+    };
+    use nostr::JsonUtil as _;
+    use serde_json::json;
+    use support::agent_harness::{Script, kill, running as running_pid, until};
+
+    const WAIT: Duration = Duration::from_secs(30);
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let temporary = tempfile::TempDir::new().unwrap();
+    let dirs = temporary.path();
+    let passphrase = "m1 disposable passphrase";
+    std::fs::write(dirs.join("pass"), format!("{passphrase}\n")).unwrap();
+    let cli = |args: &[&str]| {
+        let output = bzz_on_profile(dirs, args, None).output().unwrap();
+        assert!(
+            output.status.success(),
+            "bzz {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    // The profile, made by bzz itself: an owner, a community, an agent whose
+    // key bzz holds sealed.
+    cli(&[
+        "identity",
+        "new",
+        "--label",
+        "owner",
+        "--backend",
+        "encrypted-file",
+    ]);
+    let paths = Paths {
+        config_dir: dirs.join("c"),
+        data_dir: dirs.join("d"),
+        cache_dir: dirs.join("k"),
+    };
+    let mut config = Config::load(&paths).unwrap();
+    let identity = config.identities[0].clone();
+    let community = config
+        .add_community("m1".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    config.save(&paths).unwrap();
+    cli(&["broker", "create", "Scout", "--yes"]);
+    let mut config = Config::load(&paths).unwrap();
+    let mut agent = config.hosted_agents[0].clone();
+    assert_eq!(
+        agent.local, None,
+        "`broker create` still makes a v0.13 hosted agent"
+    );
+    let agent_hex = agent.pubkey.clone();
+
+    let _ = seed_member(&source, &identity.pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let secret = secrecy::SecretString::from(passphrase.to_owned());
+    let manager = IdentityManager::new(&paths);
+    let owner = manager.signer(&identity, Some(&secret)).unwrap();
+    let ws = url::Url::parse("ws://localhost:3030/").unwrap();
+    let http_base = url::Url::parse("http://localhost:3030/").unwrap();
+    let owner_supervisor = SupervisorHandle::spawn(ws.clone(), owner.clone());
+    let owner_http = HttpClient::new(http_base.clone(), owner.clone()).unwrap();
+    let publish = |event: nostr::Event| {
+        let supervisor = owner_supervisor.clone();
+        async move {
+            let ack = supervisor.publish(event).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+            ack
+        }
+    };
+
+    // A channel where the agent is a plain member: no `bot` role (ADR v0.15,
+    // decision 11), which the v0.13 broker would have required.
+    let channel = uuid::Uuid::new_v4();
+    publish(
+        owner
+            .sign(
+                buzz_sdk::build_create_channel(
+                    channel,
+                    &format!("m1-{}", &channel.simple().to_string()[..8]),
+                    Some(buzz_sdk::Visibility::Open),
+                    Some(buzz_sdk::ChannelKind::Stream),
+                    None,
+                    None,
+                    false,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    publish(
+        owner
+            .sign(buzz_sdk::build_add_member(channel, &agent_hex, None).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    // The owner's DM with the agent, and someone else in the channel.
+    let opened = publish(
+        owner
+            .sign(buzz_sdk::build_dm_open(&[agent_hex.as_str()]).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    let dm = command_channel_id(&opened.message);
+    let stranger_keys = Keys::generate();
+    let _ = seed_member(&source, &stranger_keys.public_key().to_hex());
+    let stranger = SignerHandle::spawn(stranger_keys.clone());
+    let stranger_supervisor = SupervisorHandle::spawn(ws.clone(), stranger.clone());
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let message = |signer: SignerHandle,
+                   supervisor: SupervisorHandle,
+                   channel,
+                   text: String,
+                   mention: bool| {
+        let agent = agent_hex.clone();
+        async move {
+            let mentions = if mention {
+                vec![agent.as_str()]
+            } else {
+                Vec::new()
+            };
+            let event = signer
+                .sign(
+                    buzz_sdk::build_message(channel, &text, None, &mentions, false, &[], &[])
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let ack = supervisor.publish(event.clone()).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+            event
+        }
+    };
+    let mention = |text: &str| {
+        message(
+            owner.clone(),
+            owner_supervisor.clone(),
+            channel,
+            text.to_owned(),
+            true,
+        )
+    };
+    // Every message the relay holds from the agent in `channel`.
+    let by_agent = |channel: uuid::Uuid| {
+        let (http, agent) = (owner_http.clone(), agent_hex.clone());
+        async move {
+            http.query_raw(&[json!({"kinds": [9], "#h": [channel.to_string()], "authors": [agent], "limit": 500})])
+                .await
+                .unwrap()
+        }
+    };
+    // The agent's replies to `request`, as the relay holds them.
+    let replies = |request: &nostr::Event| {
+        let id = request.id.to_hex();
+        let all = by_agent(channel);
+        async move {
+            all.await
+                .into_iter()
+                .filter(|event| bzz::protocol::events::event_references(event).contains(&id))
+                .map(|event| event.content)
+                .collect::<Vec<_>>()
+        }
+    };
+    // Waits for the first reply, then for anything that would follow it.
+    let exactly_one = |request: nostr::Event, what: &'static str| {
+        let replies = &replies;
+        async move {
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while replies(&request).await.is_empty() {
+                assert!(tokio::time::Instant::now() < deadline, "{what}: no reply");
+                // The relay allows a person 300 HTTP calls a minute.
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let all = replies(&request).await;
+            assert_eq!(all.len(), 1, "{what}: {all:?}");
+            all.into_iter().next().unwrap()
+        }
+    };
+
+    // ---- the runtime in this process, as the TUI runs it ------------------
+    let script = Script::new(&dirs.join("harness-a"));
+    let send = |text: &str| json!({"tool": "send", "arguments": {"text": text, "final": true}});
+    script.write(
+        json!({"own_host": true}),
+        json!([
+            {"match": "plain question", "steps": [{"sleep_ms": 1500}, send("plain answer")]},
+            {"match": "kill before", "steps": [{"exit": 1}]},
+            {"match": "kill before", "resume": true, "steps": [send("answered after a kill before the publish")]},
+            {"match": "kill during", "steps": [{"tool": "send", "arguments": {"text": "answered while being killed", "final": true}, "nowait": true}, {"exit": 1}]},
+            {"match": "kill during", "resume": true, "steps": [send("answered again after a kill during the publish")]},
+            {"match": "kill after", "steps": [send("answered, then killed"), {"exit": 1}]},
+            {"match": "kill after", "resume": true, "steps": [send("answered a second time")]},
+            {"match": "send twice", "steps": [send("the first wording"), send("the second wording")]},
+            {"match": "dm question", "steps": [send("dm answer")]},
+        ]),
+    );
+    let mut local = LocalAgentConfig::new(Harness::PiDurable);
+    local.command = script.command();
+    agent.local = Some(local);
+    let mut store = Store::open(paths.database_file()).unwrap();
+    store.sync_config(&config).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let limits = Limits {
+        max_crashes: 10,
+        stop_grace: Duration::from_millis(500),
+        typing_interval: Duration::from_millis(400),
+        ..Limits::default()
+    };
+    let serve = |agent: bzz::config::HostedAgentConfig| {
+        let (paths, store, community, owner) = (
+            paths.clone(),
+            store.clone(),
+            config.communities[0].clone(),
+            owner.clone(),
+        );
+        async move {
+            let running = service::serve(service::ServeOptions {
+                paths: &paths,
+                store,
+                diagnostics: DiagnosticHandle::disabled(),
+                community: &community,
+                agents: &[agent],
+                owner: &owner,
+                owner_identity: identity.id,
+                federated: None,
+                limits,
+            })
+            .await
+            .unwrap()
+            .expect("one local agent");
+            assert!(running.problems.is_empty(), "{:?}", running.problems);
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while !running.listening() {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the agent's intake never subscribed"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            running
+        }
+    };
+    let running = serve(agent.clone()).await;
+    assert!(script.starts().is_empty(), "no process before a request");
+
+    // A mention is answered once; the agent's typing indicator shows first.
+    let mut owner_events = owner_supervisor.subscribe_events();
+    owner_supervisor
+        .subscribe(
+            "m1-typing",
+            bzz::realtime::subscriptions::agent_typing(channel, Timestamp::now().as_secs()),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let plain = mention("plain question").await;
+    assert_eq!(exactly_one(plain.clone(), "plain").await, "plain answer");
+    let mut typing = Vec::new();
+    while let Ok(event) = owner_events.try_recv() {
+        if let bzz::realtime::supervisor::SupervisorEvent::Session(SessionEvent::Event {
+            event,
+            ..
+        }) = event
+            && event.kind.as_u16() == 20_002
+        {
+            typing.push(event);
+        }
+    }
+    assert!(
+        !typing.is_empty(),
+        "the relay delivered the agent's typing indicator"
+    );
+    assert_eq!(typing[0].pubkey.to_hex(), agent_hex);
+    assert!(
+        bzz::agents::typing::parse(&typing[0], channel, typing[0].created_at.as_secs()).is_some(),
+        "{:?}",
+        typing[0].tags
+    );
+    // The reply is the agent's, in the mention's thread, with the owner's tag.
+    let stored = by_agent(channel)
+        .await
+        .into_iter()
+        .find(|event| event.content == "plain answer")
+        .unwrap();
+    let auth = stored
+        .tags
+        .iter()
+        .find(|tag| tag.as_slice().first().map(String::as_str) == Some("auth"))
+        .expect("NIP-OA tag");
+    assert_eq!(
+        buzz_sdk::nip_oa::verify_auth_tag(
+            &serde_json::to_string(auth.as_slice()).unwrap(),
+            &stored.pubkey
+        )
+        .unwrap(),
+        owner.public_key()
+    );
+    assert_eq!(
+        bzz::protocol::events::thread_coordinates(&stored).0,
+        Some(plain.id.to_hex())
+    );
+
+    // Killed before the publish: handed over again, answered once.
+    let before = mention("kill before the publish").await;
+    assert_eq!(
+        exactly_one(before, "killed before").await,
+        "answered after a kill before the publish"
+    );
+    // Killed during the publish: the harness sends and dies without waiting.
+    let during = mention("kill during the publish").await;
+    let answer = exactly_one(during, "killed during").await;
+    assert!(
+        [
+            "answered while being killed",
+            "answered again after a kill during the publish"
+        ]
+        .contains(&answer.as_str()),
+        "{answer}"
+    );
+    // Killed after the publish: nothing is handed over or published again.
+    let after = mention("kill after the publish").await;
+    assert_eq!(
+        exactly_one(after, "killed after").await,
+        "answered, then killed"
+    );
+    // A harness that sends twice.
+    let twice = mention("send twice please").await;
+    assert_eq!(exactly_one(twice, "sent twice").await, "the first wording");
+    assert!(
+        script.starts().len() >= 4,
+        "the harness died three times: {:?}",
+        script.starts()
+    );
+
+    // The owner's DM needs no mention and is answered flat; someone else's
+    // mention in the channel is not answered at all (owner only).
+    let in_dm = message(
+        owner.clone(),
+        owner_supervisor.clone(),
+        dm,
+        "dm question".into(),
+        false,
+    )
+    .await;
+    let ignored = message(
+        stranger.clone(),
+        stranger_supervisor.clone(),
+        channel,
+        "plain question from a stranger".into(),
+        true,
+    )
+    .await;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while by_agent(dm).await.is_empty() {
+        assert!(tokio::time::Instant::now() < deadline, "no reply in the DM");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let in_the_dm = by_agent(dm).await;
+    assert_eq!(in_the_dm.len(), 1);
+    assert_eq!(in_the_dm[0].content, "dm answer");
+    assert!(bzz::protocol::events::event_references(&in_the_dm[0]).is_empty());
+    let _ = in_dm;
+    assert!(
+        replies(&ignored).await.is_empty(),
+        "a stranger does not wake an owner-only agent"
+    );
+    let unanswered = store
+        .call({
+            let (agent, id) = (agent.id, ignored.id.to_hex());
+            move |store| store.agent_inbox_get(agent, &id)
+        })
+        .await
+        .unwrap();
+    assert!(unanswered.is_none());
+    assert_eq!(
+        by_agent(channel).await.len(),
+        5,
+        "five mentions, five replies"
+    );
+    // The relay's own log (written by scripts/test-relay.sh): the agent's
+    // intake subscribed a few times, not twice a second. A stored membership
+    // notice comes back with every subscription and is acted on once.
+    if let Ok(log) = std::fs::read_to_string("/tmp/dawn-relay-run.log") {
+        let subscriptions = log
+            .lines()
+            .filter(|line| line.contains(&agent_hex) && line.contains("\"event\":\"req\""))
+            .count();
+        assert!(
+            (1..=4).contains(&subscriptions),
+            "the agent sent {subscriptions} REQ frames"
+        );
+    }
+    running.stop().await;
+    for pid in script.starts() {
+        assert!(!running_pid(pid), "no harness outlives the runtime");
+    }
+
+    // ---- a crash of bzz around the publish --------------------------------
+    // What a bzz that died leaves in its ledger: a reply stored and already
+    // on the relay but not recorded as published, and one stored and never
+    // sent. The next start publishes both again, unchanged.
+    let agent_signer = custody::unlock(&paths.keys_dir(), &owner, &agent)
+        .await
+        .unwrap();
+    let agent_supervisor = SupervisorHandle::spawn(ws.clone(), agent_signer.clone());
+    let auth_tag = broker_relay::auth_tag(&agent.auth_tag).unwrap();
+    let mut stored_replies = Vec::new();
+    for (text, already_on_the_relay) in [
+        ("stored and sent before the crash", true),
+        ("stored before the crash, never sent", false),
+    ] {
+        let request = mention(&format!("asked: {text}")).await;
+        let thread = buzz_sdk::ThreadRef {
+            root_event_id: request.id,
+            parent_event_id: request.id,
+        };
+        let reply = agent_signer
+            .sign(
+                buzz_sdk::build_message(channel, text, Some(&thread), &[], false, &[], &[])
+                    .unwrap()
+                    .tag(auth_tag.clone()),
+            )
+            .await
+            .unwrap();
+        if already_on_the_relay {
+            let ack = agent_supervisor.publish(reply.clone()).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+        }
+        store
+            .call({
+                let new = NewRequest {
+                    agent_id: agent.id,
+                    request_id: request.id.to_hex(),
+                    community_id: community,
+                    channel_id: channel,
+                    place: format!("{channel}/{}", request.id.to_hex()),
+                    author: request.pubkey.to_hex(),
+                    created_at: request.created_at.as_secs(),
+                    event_json: request.as_json(),
+                };
+                let (reply_id, reply_json) = (reply.id.to_hex(), reply.as_json());
+                move |store| {
+                    store.agent_inbox_offer(&new)?;
+                    store.agent_inbox_delivered(new.agent_id, &new.request_id)?;
+                    store.agent_reply_claim(
+                        new.agent_id,
+                        &new.request_id,
+                        &reply_id,
+                        &reply_json,
+                        ReplyOrigin::Send,
+                        None,
+                    )
+                }
+            })
+            .await
+            .unwrap();
+        stored_replies.push((request, reply));
+    }
+    agent_supervisor.shutdown().await;
+    agent_signer.lock().await;
+    let starts_before = script.starts().len();
+    let running = serve(agent.clone()).await;
+    for (request, reply) in &stored_replies {
+        let held = owner_http
+            .query_raw(&[json!({"ids": [reply.id.to_hex()], "limit": 2})])
+            .await
+            .unwrap();
+        assert_eq!(held.len(), 1, "the relay holds the stored reply once");
+        assert_eq!(held[0].as_json(), reply.as_json(), "unchanged");
+        let ledger = store
+            .call({
+                let (agent, id) = (agent.id, request.id.to_hex());
+                move |store| store.agent_reply_get(agent, &id)
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            ledger.published,
+            "recorded as published after the relay took it"
+        );
+    }
+    // The two requests reach the intake again (they are newer than its
+    // cursor): they are known, so nothing answers them a second time.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for (request, reply) in &stored_replies {
+        assert_eq!(replies(request).await, std::slice::from_ref(&reply.content));
+    }
+    assert_eq!(
+        script.starts().len(),
+        starts_before,
+        "recovery started no harness"
+    );
+    running.stop().await;
+
+    // ---- without the TUI: `bzz agent run`, and bzz itself killed ----------
+    let script_b = Script::new(&dirs.join("harness-b"));
+    let live = script_b.marker("live");
+    script_b.write(
+        json!({"own_host": true, "ignore_eof": true}),
+        json!([
+            {"match": "agent run question", "steps": [send("answered by bzz agent run")]},
+            {"match": "bzz dies", "steps": [{"touch": live}, {"stall": true, "deaf": true}]},
+            {"match": "bzz dies", "resume": true, "steps": [send("answered after bzz itself was killed")]},
+        ]),
+    );
+    agent.local.as_mut().unwrap().command = script_b.command();
+    config.hosted_agents[0] = agent.clone();
+    config.save(&paths).unwrap();
+    let output = dirs.join("agent-run.log");
+    let said = |text: &str| {
+        std::fs::read_to_string(&output)
+            .unwrap_or_default()
+            .contains(text)
+    };
+    let mut first_bzz = bzz_on_profile(dirs, &["agent", "run"], Some(&output))
+        .spawn()
+        .unwrap();
+    until("bzz agent run to be running", WAIT, || {
+        said("running in m1").then_some(())
+    })
+    .await;
+    // One status line per agent, printed when its state changes.
+    until("the agent's status line", WAIT, || {
+        said("Scout · pi-durable · idle").then_some(())
+    })
+    .await;
+    let asked = mention("agent run question").await;
+    assert_eq!(
+        exactly_one(asked, "agent run").await,
+        "answered by bzz agent run"
+    );
+
+    let doomed = mention("bzz dies now").await;
+    until("the turn to be live", WAIT, || live.exists().then_some(())).await;
+    let harness_pid = *script_b.starts().last().unwrap();
+    let record = process::read_record(&process::run_dir(&paths.data_dir), agent.id).unwrap();
+    assert_eq!(
+        (record.process.pid, record.owner.pid),
+        (harness_pid, first_bzz.id())
+    );
+    kill(first_bzz.id());
+    first_bzz.wait().unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        running_pid(harness_pid),
+        "the harness outlived the bzz that was killed"
+    );
+    assert!(replies(&doomed).await.is_empty());
+
+    let output = dirs.join("agent-run-2.log");
+    let said = |text: &str| {
+        std::fs::read_to_string(&output)
+            .unwrap_or_default()
+            .contains(text)
+    };
+    let mut second_bzz = bzz_on_profile(dirs, &["agent", "run"], Some(&output))
+        .spawn()
+        .unwrap();
+    let swept = format!("stopped a harness left by an earlier bzz (process {harness_pid})");
+    until("the leftover to be swept", WAIT, || {
+        said(&swept).then_some(())
+    })
+    .await;
+    assert!(!running_pid(harness_pid), "stopped before anything else");
+    assert_eq!(
+        exactly_one(doomed, "bzz killed").await,
+        "answered after bzz itself was killed"
+    );
+    // Interrupted, bzz stops its harness (deaf to its closed input: TERM).
+    let stop = Command::new("kill")
+        .args(["-TERM", &second_bzz.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(stop.success());
+    assert!(
+        second_bzz.wait().unwrap().success(),
+        "{}",
+        std::fs::read_to_string(&output).unwrap()
+    );
+    for pid in script_b.starts() {
+        assert!(!running_pid(pid), "no harness outlives bzz agent run");
+    }
+    assert!(process::read_record(&process::run_dir(&paths.data_dir), agent.id).is_none());
+
+    // ---- rule 10: nothing a harness saw holds a key -----------------------
+    let owner_keys = manager.unlock(&identity, Some(&secret)).unwrap();
+    let sealed =
+        std::fs::read_to_string(paths.keys_dir().join(format!("agent-{}.nip44", agent.id)))
+            .unwrap();
+    let agent_secret = owner.decrypt_self(sealed).await.unwrap();
+    let agent_keys = Keys::parse(&agent_secret).unwrap();
+    use nostr::ToBech32 as _;
+    let secrets = [
+        ("agent key (hex)", agent_keys.secret_key().to_secret_hex()),
+        (
+            "agent key (nsec)",
+            agent_keys.secret_key().to_bech32().unwrap(),
+        ),
+        ("owner key (hex)", owner_keys.secret_key().to_secret_hex()),
+        (
+            "owner key (nsec)",
+            owner_keys.secret_key().to_bech32().unwrap(),
+        ),
+        ("owner passphrase", passphrase.to_owned()),
+        ("relay address", "localhost:3030".to_owned()),
+    ];
+    let folder = process::agent_dir(&paths.data_dir, agent.id);
+    let mut seen = vec![
+        std::fs::read_to_string(script.log_path()).unwrap(),
+        std::fs::read_to_string(script_b.log_path()).unwrap(),
+    ];
+    for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+        if entry.path().is_file() {
+            seen.push(String::from_utf8_lossy(&std::fs::read(entry.path()).unwrap()).into_owned());
+        }
+    }
+    assert!(seen.len() >= 3 && seen[0].contains("\"start\"") && seen[1].contains("\"env\""));
+    for text in &seen {
+        for (what, secret) in &secrets {
+            assert!(
+                !secret.is_empty() && !text.contains(secret.as_str()),
+                "{what} reached a harness"
+            );
+        }
+    }
+    owner_supervisor.shutdown().await;
+    stranger_supervisor.shutdown().await;
+    owner.lock().await;
+    stranger.lock().await;
+}

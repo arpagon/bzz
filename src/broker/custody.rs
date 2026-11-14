@@ -100,6 +100,7 @@ pub async fn create(
             // Reads and memory addressing by default; writes are opt-in.
             allowed: vec!["channel.read".into(), "storage.address".into()],
             paused: false,
+            local: None,
         },
         credential,
     ))

@@ -98,6 +98,9 @@ elif [[ "$PROFILE" == herdr ]]; then
 else
   # The `buzz` CLI at the pin, for sidebar interop (v0.14 M4).
   (cd "$BZZ_BUZZ_SOURCE" && cargo build -p buzz-cli)
+  # The scripted agent harness (v0.15 M1); `cargo test --test` does not build examples.
+  cargo build --locked --example scripted_harness
+  # BZZ_RELAY_TEST_FILTER runs only the tests whose name contains it.
   BZZ_BUZZ_CLI="$BZZ_BUZZ_SOURCE/target/debug/buzz" \
-  BZZ_E2E_RELAY_URL=ws://localhost:3030 cargo test --locked --test relay_integration -- --ignored --test-threads=1
+  BZZ_E2E_RELAY_URL=ws://localhost:3030 cargo test --locked --test relay_integration ${BZZ_RELAY_TEST_FILTER:+"$BZZ_RELAY_TEST_FILTER"} -- --ignored --test-threads=1
 fi

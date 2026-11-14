@@ -13,7 +13,7 @@ categories = ["command-line-utilities"]
 [features]
 default = ["huddles-audio"]
 # Live huddle audio: microphone capture, playback and Opus (ADR v0.13 huddle audio).
-huddles-audio = ["dep:buzz-audio-client", "dep:cpal", "dep:rustix"]
+huddles-audio = ["dep:buzz-audio-client", "dep:cpal"]
 
 [[bin]]
 name = "bzz"
@@ -58,7 +58,7 @@ serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "local-offset", "parsing"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "signal", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "signal", "fs", "process", "io-std"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 tokio-util = { version = "0.7", features = ["io"] }
 toml = "0.9"
@@ -75,9 +75,10 @@ zeroize = "1"
 ashpd = { version = "=0.13.13", default-features = false, features = ["file_chooser", "tokio"] }
 
 # ALSA writes plugin errors straight to fd 2; huddle device setup silences
-# it so the full-screen TUI is never corrupted (safe `dup2`).
+# it so the full-screen TUI is never corrupted (safe `dup2`). The agent
+# runtime signals a harness's process group through it (safe `kill`).
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1", default-features = false, features = ["std", "stdio"], optional = true }
+rustix = { version = "1", default-features = false, features = ["std", "stdio", "process"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 rfd = { version = "=0.17.2", default-features = false }

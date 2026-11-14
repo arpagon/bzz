@@ -224,6 +224,36 @@ device names never enter logs, diagnostics or telemetry; device names are
 stored only in `config.toml`. On macOS the microphone permission belongs to
 your terminal app. See [`adr-v0.13-huddle-audio.md`](adr-v0.13-huddle-audio.md).
 
+## v0.15.0 trust boundaries
+
+**Local agents.** bzz now starts agent processes
+([`adr-v0.15-local-agents.md`](adr-v0.15-local-agents.md)). A harness is not
+trusted with anything of bzz's:
+
+- **Keys.** An agent's key is unsealed only inside its signer, as for a v0.13
+  hosted agent. A harness is started with an environment of `PATH`, `HOME`,
+  `LANG` and `TMPDIR` and nothing else, and is told the agent's public key,
+  name and settings. No agent key, owner key, passphrase or relay address is
+  in its environment, arguments, messages or tool results
+  (`tests/secret_scan_test.rs`).
+- **What it may do.** Only the tools `send`, `read` and `react`, served by
+  bzz. The message answered comes from the calling session's live turn, never
+  from an argument; one final reply per message is kept in bzz's database
+  before anything is published. A permission request for anything but those
+  tools is refused.
+- **`bzz agent-tools`.** A harness that is not bzz's own host reaches the
+  tools through this MCP server and a loopback endpoint, with a credential
+  made for one session, held in memory as a hash and revoked when the agent's
+  process exits. The credential is in the harness's own hands, so a harness
+  can do through it exactly what its tools allow and nothing more.
+- **Who wakes it.** bzz decides before anything reaches a harness: the owner
+  by default, listed people or anyone when the owner says so, and only the
+  owner in a DM.
+- **Processes.** Each agent runs in its own process group and is stopped as a
+  group. A coding harness (Grok, Codex, Claude Code) is the owner's own
+  program: it runs a real shell as the owner's user, and bzz cannot promise
+  the key is out of its reach, only that bzz never gives it.
+
 ## Media
 
 Message media is fetched only from a complete `imeta` descriptor bound to the

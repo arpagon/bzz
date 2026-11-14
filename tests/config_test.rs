@@ -238,3 +238,100 @@ fn empty_config_round_trips_with_private_paths() {
     assert_eq!(Config::load(&paths).unwrap(), config);
     assert!(!paths.config_file().with_extension("toml.tmp").exists());
 }
+
+/// v0.15 M1: a hosted agent made by v0.13 loads unchanged and stays an agent
+/// whose process the user runs; a local agent is the same record with more
+/// settings.
+#[test]
+fn hosted_agents_of_v013_load_unchanged_and_local_agents_add_settings() {
+    use bzz::config::{Harness, LocalAgentState, WakeRule};
+    let identity = uuid::Uuid::new_v4();
+    let community = uuid::Uuid::new_v4();
+    let key = "b".repeat(64);
+    // Exactly what v0.13 and v0.14 wrote.
+    let v013 = format!(
+        "[[identities]]\nid = \"{identity}\"\nlabel = \"owner\"\npubkey = \"{key}\"\nbackend = \"encrypted-file\"\nkey_ref = \"k\"\n\n\
+         [[hosted_agents]]\nid = \"{community}\"\nlabel = \"helper\"\npubkey = \"{key}\"\ncommunity = \"{community}\"\n\
+         owner_identity = \"{identity}\"\nauth_tag = \"[]\"\ncredential_hash = \"{}\"\nallowed = [\"channel.read\"]\npaused = false\n",
+        "c".repeat(64)
+    );
+    let old = toml::from_str::<Config>(&v013).unwrap();
+    old.validate().unwrap();
+    assert_eq!(old.hosted_agents[0].local, None);
+    assert!(!old.hosted_agents[0].runs_locally());
+    assert!(
+        !toml::to_string_pretty(&old)
+            .unwrap()
+            .contains("hosted_agents.local"),
+        "saving it again adds nothing"
+    );
+
+    let local = format!(
+        "{v013}\n[hosted_agents.local]\nharness = \"pi-durable\"\nwake = \"allowlist\"\nwake_allowlist = [\"{key}\"]\n\
+         instructions = \"Be brief.\"\nnetwork = [\"github.com\"]\n\n\
+         [hosted_agents.local.model]\nprovider = \"openai-codex\"\nmodel_id = \"gpt-6-luna\"\nthinking_level = \"low\"\n\n\
+         [[hosted_agents.local.folders]]\nname = \"site\"\npath = \"/home/ann/site\"\n"
+    );
+    let config = toml::from_str::<Config>(&local).unwrap();
+    config.validate().unwrap();
+    let agent = &config.hosted_agents[0];
+    let settings = agent.local.as_ref().unwrap();
+    assert_eq!(
+        (settings.harness, settings.wake, settings.state),
+        (
+            Harness::PiDurable,
+            WakeRule::Allowlist,
+            LocalAgentState::Active
+        )
+    );
+    assert!(
+        !settings.folders[0].write,
+        "a granted folder is read-only unless said"
+    );
+    assert!(agent.runs_locally());
+    let again = toml::from_str::<Config>(&toml::to_string_pretty(&config).unwrap()).unwrap();
+    assert_eq!(again, config);
+
+    // The defaults: owner only, active. Paused and moved-away agents never run.
+    let minimal = format!("{v013}\n[hosted_agents.local]\nharness = \"claude-code\"\n");
+    let mut config = toml::from_str::<Config>(&minimal).unwrap();
+    assert_eq!(
+        config.hosted_agents[0].local.as_ref().unwrap().wake,
+        WakeRule::OwnerOnly
+    );
+    for state in [LocalAgentState::Paused, LocalAgentState::MovedAway] {
+        config.hosted_agents[0].local.as_mut().unwrap().state = state;
+        assert!(!config.hosted_agents[0].runs_locally(), "{state:?}");
+    }
+    config.hosted_agents[0].local.as_mut().unwrap().state = LocalAgentState::Active;
+    config.hosted_agents[0].paused = true;
+    assert!(!config.hosted_agents[0].runs_locally());
+    let moved = toml::to_string_pretty(&{
+        let mut config = config.clone();
+        config.hosted_agents[0].local.as_mut().unwrap().state = LocalAgentState::MovedAway;
+        config
+    })
+    .unwrap();
+    assert!(moved.contains("state = \"moved-away\""), "{moved}");
+
+    // Strict as the rest of the file: unknown harnesses and settings fail.
+    for wrong in [
+        "harness = \"gemini\"\n",
+        "harness = \"grok\"\nsecret_key = \"x\"\n",
+        "wake = \"anyone\"\n",
+    ] {
+        let text = format!("{v013}\n[hosted_agents.local]\n{wrong}");
+        assert!(toml::from_str::<Config>(&text).is_err(), "{wrong}");
+    }
+    for wrong in [
+        "harness = \"grok\"\nwake_allowlist = [\"npub1x\"]\n",
+        "harness = \"grok\"\n[[hosted_agents.local.folders]]\nname = \"../etc\"\npath = \"/etc\"\n",
+        "harness = \"grok\"\n[[hosted_agents.local.folders]]\nname = \"site\"\npath = \"relative\"\n",
+    ] {
+        let text = format!("{v013}\n[hosted_agents.local]\n{wrong}");
+        assert!(
+            toml::from_str::<Config>(&text).unwrap().validate().is_err(),
+            "{wrong}"
+        );
+    }
+}

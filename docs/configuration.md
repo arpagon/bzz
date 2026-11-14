@@ -265,5 +265,27 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   never stored. Manage agents with `bzz broker
   create|list|allow|rotate|pause|resume|delete`. While bzz is unlocked the
   broker listens on `127.0.0.1` and writes its port to `<data>/broker.port`.
+- **`[hosted_agents.local]`** (v0.15): present on a **local agent**, one
+  whose process bzz itself starts; absent on an agent you run yourself, which
+  stays what v0.13 made it. Never secrets. Fields:
+  - `harness`: `pi-durable`, `grok`, `codex` or `claude-code`.
+  - `wake`: who may wake the agent. `owner-only` (default), `allowlist` (the
+    public keys in `wake_allowlist`) or `anyone`. A DM is always owner only.
+  - `model` (`provider`, `model_id`, `thinking_level`): absent means the
+    harness's own default. bzz stores no provider key.
+  - `instructions`, `network` (hosts the agent may reach) and `folders`
+    (`name`, absolute `path`, `write = false`): real folders granted to the
+    agent, read-only unless said.
+  - `state`: `active` (default), `paused` or `moved-away`. Only an active,
+    unpaused agent is ever started.
+  - `command`: program and arguments to start instead of the harness's own
+    launch command, for a harness run from a checkout.
+
+  bzz runs local agents while your identity is unlocked in the TUI
+  (`:broker` shows one status line each) and under `bzz agent run`. Their
+  processes are recorded in `<data>/agents/run/`, their folders are
+  `<data>/agents/<id>/`, and each harness's standard error goes to
+  `harness.log` there. See
+  [`adr-v0.15-local-agents.md`](adr-v0.15-local-agents.md).
 - **Cargo feature `huddles-audio`** (default on): microphone capture, playback
   and Opus. Builds with `--no-default-features` show huddles view-only.
