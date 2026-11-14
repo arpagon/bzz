@@ -21,7 +21,7 @@ Node 22.19 or newer. No package runs an install script.
 
 ```sh
 npm ci --ignore-scripts          # from package-lock.json
-npm test                         # about 45 s; no network, model, relay or Buzz
+npm test                         # about 50 s; no network, model, relay or Buzz
 node main.mjs <agent folder>     # what bzz runs; the protocol is on stdin and stdout
 ```
 
