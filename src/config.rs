@@ -30,6 +30,53 @@ pub struct Config {
     /// keys live NIP-44-sealed to the owner, credentials only as hashes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosted_agents: Vec<HostedAgentConfig>,
+    /// What this copy last read from the settings file or wrote to it. A
+    /// save writes only what changed since, over what the file holds now
+    /// (see [`Config::save`]). Not a setting, and never written.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub synced: Synced,
+}
+
+/// A copy's own record of the settings file as it last saw it. Two copies
+/// of the settings are equal whatever each last saw.
+#[derive(Default)]
+pub struct Synced(std::sync::Mutex<Option<toml::Value>>);
+
+impl Synced {
+    fn get(&self) -> Option<toml::Value> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn set(&self, value: toml::Value) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(value);
+    }
+}
+
+impl Clone for Synced {
+    fn clone(&self) -> Self {
+        Self(std::sync::Mutex::new(self.get()))
+    }
+}
+
+impl PartialEq for Synced {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Synced {}
+
+impl std::fmt::Debug for Synced {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Synced")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -166,7 +213,34 @@ pub struct AgentModelConfig {
     pub thinking_level: Option<String>,
 }
 
-/// A real folder the owner grants to an agent; read-only unless `write`.
+/// Whether real commands of this machine may run in a granted folder
+/// (plan v0.15.0, M7). A command has the owner's rights, whatever `write`
+/// says: `write` binds the agent's file tools only.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecGrant {
+    /// None: the agent has its file tools there and nothing else.
+    #[default]
+    No,
+    /// Each command waits for the owner's answer in the TUI.
+    Ask,
+    /// Commands run there without the owner being asked.
+    WithoutAsking,
+}
+
+impl ExecGrant {
+    pub const fn is_no(&self) -> bool {
+        matches!(self, Self::No)
+    }
+
+    /// Whether any command may run in the folder.
+    pub const fn granted(self) -> bool {
+        !self.is_no()
+    }
+}
+
+/// A real folder the owner grants to an agent; read-only unless `write`,
+/// and no real command runs there unless `exec` says so.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FolderGrant {
@@ -174,6 +248,29 @@ pub struct FolderGrant {
     pub path: std::path::PathBuf,
     #[serde(default)]
     pub write: bool,
+    #[serde(default, skip_serializing_if = "ExecGrant::is_no")]
+    pub exec: ExecGrant,
+}
+
+impl FolderGrant {
+    /// A folder the agent may read, and nothing more.
+    pub fn read_only(name: &str, path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            name: name.to_owned(),
+            path: path.into(),
+            write: false,
+            exec: ExecGrant::No,
+        }
+    }
+}
+
+const fn yes() -> bool {
+    true
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_yes(value: &bool) -> bool {
+    *value
 }
 
 /// Settings of a local agent. Never secrets: the key stays sealed in
@@ -207,6 +304,11 @@ pub struct LocalAgentConfig {
     /// HTTPS address. Kept so that an edit can publish both again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture: Option<String>,
+    /// Whether bzz's own host loads the Pi packages named in Pi's settings.
+    /// A package's code runs inside the host with the owner's rights, so an
+    /// owner can switch them off for one agent. On unless it says `false`.
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub packages: bool,
 }
 
 impl LocalAgentConfig {
@@ -222,6 +324,7 @@ impl LocalAgentConfig {
             state: LocalAgentState::default(),
             command: Vec::new(),
             picture: None,
+            packages: true,
         }
     }
 }
@@ -439,17 +542,57 @@ impl Config {
         let text = fs::read_to_string(&path).map_err(|error| Error::io(&path, error))?;
         let (config, removed_local_agents) = parse_config(&text, &path)?;
         config.validate()?;
+        config.synced.set(as_value(&config)?);
         if removed_local_agents {
             config.save(paths)?;
         }
         Ok(config)
     }
 
+    /// Writes the settings, **without writing over what another bzz saved
+    /// meanwhile**. A TUI and a command each hold a copy of the settings;
+    /// whichever saves last used to win whole, so a command's edit could be
+    /// lost to a TUI that was open.
+    ///
+    /// A save takes the settings lock, reads the file as it is now, and
+    /// writes that with only what this copy changed since it last read or
+    /// wrote the file:
+    ///
+    /// - a setting this copy did not change keeps the file's value;
+    /// - a setting only this copy changed gets this copy's value;
+    /// - identities, communities and agents are matched by their id, and
+    ///   one that either side removed stays removed;
+    /// - a setting both changed gets this copy's value: it is the later act.
+    ///
+    /// This copy itself is not changed: a bzz that is running keeps using
+    /// the settings it started with. A copy that never read the file writes
+    /// itself whole, and so does any copy when the file cannot be read.
     pub fn save(&self, paths: &Paths) -> Result<()> {
         self.validate()?;
         paths.ensure()?;
         let path = paths.config_file();
-        let text = toml::to_string_pretty(self)
+        let _lock = SettingsLock::take(&path)?;
+        let mine = as_value(self)?;
+        let on_disk = fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| parse_config(&text, &path).ok())
+            .and_then(|(config, _)| as_value(&config).ok());
+        let merged = match (self.synced.get(), on_disk) {
+            (Some(base), Some(theirs)) if theirs != base && theirs != mine => {
+                let merged = merge(&base, &mine, &theirs)
+                    .try_into::<Self>()
+                    .map_err(|error| Error::Serialization(error.to_string()))?;
+                // What the two changes make together must still hold.
+                merged.validate().map_err(|error| {
+                    Error::Config(format!(
+                        "the settings were changed by another bzz meanwhile, and the two changes do not fit together ({error}); nothing was saved"
+                    ))
+                })?;
+                Some(merged)
+            }
+            _ => None,
+        };
+        let text = toml::to_string_pretty(merged.as_ref().unwrap_or(self))
             .map_err(|error| Error::Serialization(error.to_string()))?;
         let temporary = path.with_extension("toml.tmp");
         let mut file =
@@ -459,7 +602,10 @@ impl Config {
         file.sync_all()
             .map_err(|error| Error::io(&temporary, error))?;
         set_private_permissions(&temporary)?;
-        replace_file(&temporary, &path)
+        replace_file(&temporary, &path)?;
+        // From here, what this copy changes is measured against itself.
+        self.synced.set(mine);
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -551,7 +697,8 @@ impl Config {
                     && folder
                         .name
                         .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte));
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
+                    && folder.name.as_bytes()[0].is_ascii_alphanumeric();
                 if !simple || !names.insert(folder.name.as_str()) || !folder.path.is_absolute() {
                     return Err(Error::Config(format!(
                         "agent {} has an invalid folder grant {:?}",
@@ -682,6 +829,152 @@ impl Config {
         }
         original != self.communities.len()
     }
+}
+
+fn as_value(config: &Config) -> Result<toml::Value> {
+    toml::Value::try_from(config).map_err(|error| Error::Serialization(error.to_string()))
+}
+
+/// The lock a save holds while it reads the settings file and writes it:
+/// an exclusive lock on `config.toml.lock`, released when this is dropped
+/// or the process ends, however it ends.
+struct SettingsLock(#[allow(dead_code)] fs::File);
+
+impl SettingsLock {
+    /// How long a save waits for another bzz that is saving.
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    fn take(config_file: &Path) -> Result<Self> {
+        let path = config_file.with_extension("toml.lock");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|error| Error::io(&path, error))?;
+        let _ = set_private_permissions(&path);
+        let started = std::time::Instant::now();
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Self(file)),
+                Err(fs::TryLockError::WouldBlock) if started.elapsed() < Self::WAIT => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(fs::TryLockError::WouldBlock) => {
+                    return Err(Error::Config(format!(
+                        "another bzz has been writing the settings for {} seconds; nothing was saved",
+                        Self::WAIT.as_secs()
+                    )));
+                }
+                Err(fs::TryLockError::Error(error)) => return Err(Error::io(&path, error)),
+            }
+        }
+    }
+}
+
+/// Whether `value` is a list whose entries are told apart by an `id`:
+/// identities, communities and agents.
+fn keyed(value: &toml::Value) -> bool {
+    value.as_array().is_some_and(|entries| {
+        entries
+            .iter()
+            .all(|entry| entry.get("id").is_some_and(toml::Value::is_str))
+    })
+}
+
+/// What `mine` changed since `base`, applied to `theirs`. See
+/// [`Config::save`] for the rule.
+fn merge(base: &toml::Value, mine: &toml::Value, theirs: &toml::Value) -> toml::Value {
+    use toml::Value;
+    if mine == base {
+        return theirs.clone();
+    }
+    if theirs == base || mine == theirs {
+        return mine.clone();
+    }
+    match (base, mine, theirs) {
+        (Value::Table(base), Value::Table(mine), Value::Table(theirs)) => {
+            let mut merged = toml::Table::new();
+            // The file's order, then what only this copy has.
+            for key in theirs.keys().chain(mine.keys()) {
+                if merged.contains_key(key) {
+                    continue;
+                }
+                let (base, mine, theirs) = (base.get(key), mine.get(key), theirs.get(key));
+                let empty = Value::Array(Vec::new());
+                let lists = [base, mine, theirs]
+                    .iter()
+                    .all(|value| value.is_none_or(keyed));
+                let value = if lists {
+                    // A list that is empty is not written at all.
+                    Some(merge_keyed(
+                        base.unwrap_or(&empty),
+                        mine.unwrap_or(&empty),
+                        theirs.unwrap_or(&empty),
+                    ))
+                } else if mine == base {
+                    theirs.cloned()
+                } else if theirs == base {
+                    mine.cloned()
+                } else {
+                    match (base, mine, theirs) {
+                        (Some(base), Some(mine), Some(theirs)) => Some(merge(base, mine, theirs)),
+                        // Both changed it and at least one of the three
+                        // has none: this copy's is the later act.
+                        _ => mine.cloned(),
+                    }
+                };
+                if let Some(value) = value {
+                    merged.insert(key.clone(), value);
+                }
+            }
+            Value::Table(merged)
+        }
+        // Both changed one value: this copy's is the later act.
+        _ => mine.clone(),
+    }
+}
+
+fn merge_keyed(base: &toml::Value, mine: &toml::Value, theirs: &toml::Value) -> toml::Value {
+    let entries = |value: &toml::Value| value.as_array().cloned().unwrap_or_default();
+    let id = |entry: &toml::Value| {
+        entry
+            .get("id")
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
+    };
+    let find = |list: &[toml::Value], wanted: &str| {
+        list.iter()
+            .find(|entry| id(entry).as_deref() == Some(wanted))
+            .cloned()
+    };
+    let (base, mine, theirs) = (entries(base), entries(mine), entries(theirs));
+    let mut ids = Vec::new();
+    for entry in theirs.iter().chain(&mine) {
+        if let Some(id) = id(entry)
+            && !ids.contains(&id)
+        {
+            ids.push(id);
+        }
+    }
+    let mut merged = Vec::new();
+    for id in ids {
+        let (was, here, there) = (find(&base, &id), find(&mine, &id), find(&theirs, &id));
+        let entry = match (was, here, there) {
+            // Removed by either side since: it stays removed, whatever the
+            // other changed in it. Its key may be gone already.
+            (Some(_), None, _) | (Some(_), _, None) => None,
+            (Some(was), Some(here), Some(there)) => Some(merge(&was, &here, &there)),
+            // New on one side.
+            (None, Some(here), None) => Some(here),
+            (None, None, Some(there)) => Some(there),
+            // New on both, with one id: this copy's is the later act.
+            (None, Some(here), Some(_)) => Some(here),
+            (None, None, None) => None,
+        };
+        merged.extend(entry);
+    }
+    toml::Value::Array(merged)
 }
 
 pub fn validate_relay_url(input: &str, allow_insecure_localhost: bool) -> Result<RelayEndpoint> {
