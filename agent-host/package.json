@@ -1,0 +1,28 @@
+{
+  "name": "bzz-agent-host",
+  "version": "0.15.0",
+  "private": true,
+  "description": "bzz's Pi Durable agent host: one process per agent, ACP over stdio",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "main": "main.mjs",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-durable": "1.5.0",
+    "@earendil-works/pi-schema": "1.5.0",
+    "diff": "8.0.4",
+    "isomorphic-git": "1.44.11",
+    "just-bash": "3.6.0",
+    "proper-lockfile": "4.1.2"
+  },
+  "overrides": {
+    "undici": "7.30.2"
+  }
+}

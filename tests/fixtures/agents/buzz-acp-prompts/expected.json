@@ -1,0 +1,33 @@
+{
+  "buzz": "bf3bdd0eaefe39289bf9620594f254c7f68897f5",
+  "prompts": [
+    {
+      "file": "01-top-level-mention.txt",
+      "what": "a top-level mention in a channel: it starts a thread, so its place is the channel and its own event id",
+      "channel": "bf7b4122-206d-45a8-bbe2-f80f99fa2f1c",
+      "request": "b4f7dd1bb76edde7383e06177d2e180d4451d157e12779639f68af4c3c03ee01",
+      "place": "bf7b4122-206d-45a8-bbe2-f80f99fa2f1c/b4f7dd1bb76edde7383e06177d2e180d4451d157e12779639f68af4c3c03ee01"
+    },
+    {
+      "file": "02-same-mention-after-restart.txt",
+      "what": "the same mention handed over again after buzz-acp was killed and restarted, now with the thread's context: same place, same request",
+      "channel": "bf7b4122-206d-45a8-bbe2-f80f99fa2f1c",
+      "request": "b4f7dd1bb76edde7383e06177d2e180d4451d157e12779639f68af4c3c03ee01",
+      "place": "bf7b4122-206d-45a8-bbe2-f80f99fa2f1c/b4f7dd1bb76edde7383e06177d2e180d4451d157e12779639f68af4c3c03ee01"
+    },
+    {
+      "file": "03-reply-in-thread.txt",
+      "what": "a second mention, written as a reply in that thread: same place, another request",
+      "channel": "bf7b4122-206d-45a8-bbe2-f80f99fa2f1c",
+      "request": "464b7e378ca186ed1e9908ca806bbdf331fe862cb224d567d319070b426be47d",
+      "place": "bf7b4122-206d-45a8-bbe2-f80f99fa2f1c/b4f7dd1bb76edde7383e06177d2e180d4451d157e12779639f68af4c3c03ee01"
+    },
+    {
+      "file": "04-new-top-level-mention.txt",
+      "what": "another top-level mention in the same channel: another place",
+      "channel": "bf7b4122-206d-45a8-bbe2-f80f99fa2f1c",
+      "request": "b8dd5604c12e2fe50dbceaaf42072f752e73fb2c15679a28197c0fefe7e81dfd",
+      "place": "bf7b4122-206d-45a8-bbe2-f80f99fa2f1c/b8dd5604c12e2fe50dbceaaf42072f752e73fb2c15679a28197c0fefe7e81dfd"
+    }
+  ]
+}
