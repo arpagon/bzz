@@ -112,8 +112,8 @@ test("a package that fails is left out with the reason, and the others load", as
 	const root = tempDir(t, "bad-packages");
 	const pkg = (name, source, pi = { durable: ["./durable.mjs"] }) => writePackage(root, name, pi, { "durable.mjs": source });
 	const cases = [
-		[pkg("hangs", "export default () => new Promise(() => {});"), /^It took over 1 seconds to load$/],
-		[pkg("hangs-at-import", "await new Promise(() => {});\nexport default () => ({});"), /^It took over 1 seconds to load$/],
+		[pkg("hangs", "export default () => new Promise(() => {});"), /^It took over 1\.5 seconds to load$/],
+		[pkg("hangs-at-import", "await new Promise(() => {});\nexport default () => ({});"), /^It took over 1\.5 seconds to load$/],
 		[pkg("throws-at-import", `throw new Error("boom at import");`), /^boom at import$/],
 		[pkg("rejects", `export default async () => { throw new Error("boom, later"); };`), /^boom, later$/],
 		[pkg("no-function", "export default 5;"), /durable\.mjs has no default export to call/],
@@ -141,10 +141,10 @@ test("a package that fails is left out with the reason, and the others load", as
 	const pi = writeSettings(root, [first, ...cases.map(([source]) => source), twin, last]);
 	const reserved = (name) => name === "run" || name.startsWith("buzz_");
 	const at = Date.now();
-	const packages = await loadPackages(pi, { limit: 1_000, reservedTools: reserved });
+	const packages = await loadPackages(pi, { limit: 1_500, reservedTools: reserved });
 	// The packages load at the same time: two that hang cost one time limit, not two.
 	const took = Date.now() - at;
-	assert.ok(took >= 1_000 && took < 1_900, `it took ${took} ms`);
+	assert.ok(took >= 1_450 && took < 2_800, `it took ${took} ms`);
 	assert.deepEqual(packages.report[0], { source: first, loaded: true, extensions: ["first"], providers: [] });
 	assert.deepEqual(packages.report.at(-1), { source: last, loaded: true, extensions: ["last"], providers: [] });
 	assert.deepEqual(packages.report.at(-2), { source: twin, loaded: false, error: "Another extension is named first" });

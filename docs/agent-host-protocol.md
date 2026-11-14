@@ -373,7 +373,8 @@ reaches the model, so it should say what the owner can do.
   refusal, the host stars it out.
 - A remote that refuses the answer ends the command. bzz is not asked a
   second time for it.
-- A cancelled turn does not wait for the answer.
+- A cancelled turn does not wait for the answer, and a question that was
+  open when the host exited is void.
 - Only `git` asks. The shell's `curl` does not.
 - Credentials are for the host in the remote's URL. They do not follow a
   redirect to another host.
@@ -410,6 +411,9 @@ bzz answers `{"allow": true}` or `{"allow": false, "reason": "…"}`.
   conversations may each have a question open.
 - bzz decides whether the owner is asked. The host knows nothing of
   "allowed without asking".
+- A question that was open when the host exited is void. The next process
+  does not act on an answer to it: the model is told that the call was
+  interrupted, and a new call asks again.
 
 The command:
 

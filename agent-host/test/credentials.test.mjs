@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { Bash } from "just-bash";
 import { shellFs } from "../src/adapters.mjs";
 import { SqliteFs } from "../src/disk.mjs";
@@ -127,7 +128,7 @@ test("under buzz-acp there is nobody to ask: git says that this copy has no cred
 	mkdirSync(folder);
 	writeFileSync(join(folder, "agent.json"), JSON.stringify({ name: "Scout", model: MODEL, network: [remote.host] }));
 	const ledger = join(root, "ledger.jsonl");
-	const fakeBuzz = new URL("./support/fake-buzz.mjs", import.meta.url).pathname;
+	const fakeBuzz = fileURLToPath(new URL("./support/fake-buzz.mjs", import.meta.url));
 	const host = startHost(t, folder, { home: root, env: bareEnv(root, { PI_CODING_AGENT_DIR: join(root, "pi"), BZZ_AGENT_HOST_BUZZ: JSON.stringify([process.execPath, fakeBuzz]), FAKE_BUZZ_LEDGER: ledger }) });
 	await host.rpc("initialize", { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "buzz-acp", version: "1.0.0" } });
 	const session = (await host.rpc("session/new", { cwd: root, mcpServers: [] })).sessionId;

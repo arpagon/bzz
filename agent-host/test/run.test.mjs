@@ -73,7 +73,9 @@ test("an approved command runs in the granted folder, exactly as approved, in an
 	assert.equal(readFileSync(join(site, "made.txt"), "utf8"), "made by run\n");
 	// The environment: the four names, and what the shell itself adds. Nothing of the host's own.
 	const env = Object.fromEntries(lines.slice(1).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
-	assert.deepEqual(Object.keys(env).filter((name) => !["PWD", "OLDPWD", "SHLVL", "_"].includes(name)).sort(), ["HOME", "LANG", "PATH", "TMPDIR"].filter((name) => process.env[name] !== undefined || name === "HOME" || name === "PATH").sort());
+	// (`__CF_USER_TEXT_ENCODING` is what macOS gives every process.)
+	const own = ["PWD", "OLDPWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING"];
+	assert.deepEqual(Object.keys(env).filter((name) => !own.includes(name)).sort(), ["HOME", "LANG", "PATH", "TMPDIR"].filter((name) => process.env[name] !== undefined || name === "HOME" || name === "PATH").sort());
 	assert.equal(env.HOME, root);
 	assert.equal(env.PATH, process.env.PATH);
 	assert.equal(out.includes("must-not-reach-a-command"), false);
