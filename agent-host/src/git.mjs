@@ -15,12 +15,54 @@ const MISSING = {
 	reset: "Use `git checkout <ref>`, or write the file again.",
 };
 
+/** A remote asked who is calling, and there is no answer to give. The message is ours: nothing of the exchange is in it. */
+class NoCredentials extends Error {}
+
+/**
+ * How one git command answers a remote that asks who is calling (HTTP 401). The credentials come from bzz at that
+ * moment, go into that command's requests, and are kept nowhere: not in the repository's configuration, not in what
+ * the command prints. A command asks once; a remote that refuses the answer ends it.
+ * @param check throws unless the agent may send to a URL
+ * @param credential `(host) => { username, password }`, or absent where there is nobody to ask
+ * @returns `callbacks` for isomorphic-git, and `scrub(text)`, which stars the secret out of a text
+ */
+function asker(check, credential) {
+	const secrets = [];
+	const host = (url) => new URL(url).host;
+	return {
+		callbacks: {
+			async onAuth(url) {
+				// The request that was answered 401 passed the allow-list already. Checked again here, where a secret is asked for.
+				check(url);
+				if (!credential) throw new NoCredentials(`${host(url)} asks for credentials, and this copy of the agent has none: it runs without bzz, which is where they are kept.`);
+				let answer;
+				try {
+					answer = await credential(host(url));
+				} catch (error) {
+					throw new NoCredentials(`${host(url)} asks for credentials, and bzz gave none: ${error?.message ?? error}`);
+				}
+				if (typeof answer?.username !== "string" || typeof answer.password !== "string" || !(answer.username || answer.password))
+					throw new NoCredentials(`${host(url)} asks for credentials, and bzz's answer held none.`);
+				// What must never be printed: the password, and the header it travels in.
+				secrets.push(answer.password, Buffer.from(`${answer.username}:${answer.password}`).toString("base64"));
+				return { username: answer.username, password: answer.password };
+			},
+			onAuthFailure(url) {
+				throw new NoCredentials(`${host(url)} refused the credentials bzz has for it.`);
+			},
+		},
+		scrub: (text) => secrets.reduce((clean, secret) => (secret ? clean.replaceAll(secret, "***") : clean), text),
+	};
+}
+
 /**
  * @param vfs the agent's file tree
  * @param options.http the allow-listed client of network.mjs
+ * @param options.check the allow-list itself: throws unless the agent may send to a URL
  * @param options.author who commits when the repository's configuration does not say
+ * @param options.credential asks bzz for the credentials of a host; absent in a remote copy
  */
-export function gitCommand(vfs, { http, author }) {
+export function gitCommand(vfs, { http, check, author, credential }) {
 	const fs = nodeFs(vfs);
 	const ok = (stdout = "") => ({ stdout, stderr: "", exitCode: 0 });
 	const fail = (message, exitCode = 1) => ({ stdout: "", stderr: `git: ${message}\n`, exitCode });
@@ -55,7 +97,7 @@ export function gitCommand(vfs, { http, author }) {
 			await git.init({ fs, dir, defaultBranch: branch });
 			return ok(`Initialized empty Git repository in ${dir}/.git/\n`);
 		},
-		async clone(args, cwd) {
+		async clone(args, cwd, _dir, remote) {
 			const depth = flag(args, "--depth");
 			const ref = flag(args, "-b", "--branch");
 			const [url, name = url?.replace(/\/$/, "").split("/").pop().replace(/\.git$/, "")] = positional(args);
@@ -63,7 +105,7 @@ export function gitCommand(vfs, { http, author }) {
 			const dir = normalize(name.startsWith("/") ? name : `${cwd}/${name}`);
 			const existed = vfs.exists(dir);
 			try {
-				await git.clone({ fs, http, dir, url, singleBranch: true, ...(ref && { ref }), ...(depth && { depth: Number(depth) }) });
+				await git.clone({ fs, ...remote, dir, url, singleBranch: true, ...(ref && { ref }), ...(depth && { depth: Number(depth) }) });
 			} catch (error) {
 				// A refused or failed clone leaves no half-made repository behind.
 				if (!existed) vfs.rm(dir, { recursive: true, force: true });
@@ -159,10 +201,10 @@ export function gitCommand(vfs, { http, author }) {
 			await git.setConfig({ fs, dir, path, value });
 			return ok();
 		},
-		async fetch(args, _cwd, dir) {
-			const [remote = "origin", ref] = positional(args);
-			await git.fetch({ fs, http, dir, remote, ...(ref && { ref, singleBranch: true }) });
-			return ok(`Fetched ${remote}\n`);
+		async fetch(args, _cwd, dir, remote) {
+			const [name = "origin", ref] = positional(args);
+			await git.fetch({ fs, ...remote, dir, remote: name, ...(ref && { ref, singleBranch: true }) });
+			return ok(`Fetched ${name}\n`);
 		},
 		async merge(args, _cwd, dir) {
 			const [theirs] = positional(args);
@@ -172,17 +214,17 @@ export function gitCommand(vfs, { http, author }) {
 			if (!result.alreadyMerged) await git.checkout({ fs, dir, ref: (await git.currentBranch({ fs, dir })) ?? "HEAD" });
 			return ok(result.alreadyMerged ? "Already up to date.\n" : `Merged ${theirs}${result.fastForward ? " (fast-forward)" : ""}\n`);
 		},
-		async push(args, _cwd, dir) {
+		async push(args, _cwd, dir, remote) {
 			const force = has(args, "-f", "--force");
 			has(args, "-u", "--set-upstream");
-			const [remote = "origin", ref = await git.currentBranch({ fs, dir })] = positional(args);
-			const result = await git.push({ fs, http, dir, remote, ref, force });
-			return result.ok ? ok(`To ${remote}\n   ${ref} -> ${ref}\n`) : fail(`push rejected: ${JSON.stringify(result.refs)}`);
+			const [name = "origin", ref = await git.currentBranch({ fs, dir })] = positional(args);
+			const result = await git.push({ fs, ...remote, dir, remote: name, ref, force });
+			return result.ok ? ok(`To ${name}\n   ${ref} -> ${ref}\n`) : fail(`push rejected: ${JSON.stringify(result.refs)}`);
 		},
-		async pull(args, _cwd, dir) {
-			const [remote = "origin", ref = await git.currentBranch({ fs, dir })] = positional(args);
-			await git.pull({ fs, http, dir, remote, ref, singleBranch: true, fastForwardOnly: true, author: await who(dir) });
-			return ok(`Updated ${ref} from ${remote}\n`);
+		async pull(args, _cwd, dir, remote) {
+			const [name = "origin", ref = await git.currentBranch({ fs, dir })] = positional(args);
+			await git.pull({ fs, ...remote, dir, remote: name, ref, singleBranch: true, fastForwardOnly: true, author: await who(dir) });
+			return ok(`Updated ${ref} from ${name}\n`);
 		},
 		async "rev-parse"(args, _cwd, dir) {
 			if (has(args, "--show-toplevel")) return ok(`${dir}\n`);
@@ -202,15 +244,19 @@ export function gitCommand(vfs, { http, author }) {
 			return fail(`'${name ?? ""}' is not supported in this sandbox.${hint} Supported: ${Object.keys(commands).join(", ")}`, 129);
 		}
 		const quiet = has(args, "-q", "--quiet");
+		const auth = asker(check, credential);
 		try {
 			const dir = name === "init" || name === "clone" ? undefined : await git.findRoot({ fs, filepath: cwd });
-			const result = (await run(args, cwd, dir)) ?? ok();
-			return quiet && result.exitCode === 0 ? ok() : result;
+			const result = (await run(args, cwd, dir, { http, ...auth.callbacks })) ?? ok();
+			if (quiet && result.exitCode === 0) return ok();
+			return { ...result, stdout: auth.scrub(result.stdout), stderr: auth.scrub(result.stderr) };
 		} catch (error) {
+			if (error instanceof NoCredentials) return fail(error.message, 128);
 			if (error.code === "NotFoundError" && /\.git|git root/.test(error.message)) return fail("not a git repository (or any of the parent directories)", 128);
 			if (error.code === "MergeConflictError" || error.code === "MergeNotSupportedError") return fail(`${error.message} Conflicts cannot be resolved in this sandbox: nothing was changed.`);
 			if (error.code === "UnknownTransportError") return fail("only https remotes work in this sandbox: SSH remotes are not supported");
-			return fail(error.message);
+			// A remote chooses the words of its refusal. Should it repeat what it was sent, the secret is not passed on.
+			return fail(auth.scrub(String(error?.message ?? error)));
 		}
 	});
 }

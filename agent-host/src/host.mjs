@@ -9,7 +9,7 @@ import { createRegistry, defineDoc, defineExtension, defineTool, GenerationTask,
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { normalize, SqliteFs } from "./disk.mjs";
-import { BzzVfsEnv, createShell, HOME } from "./env.mjs";
+import { BzzVfsEnv, calling, createShell, HOME } from "./env.mjs";
 import { defaultPiDir, ModelUnavailable, openModels } from "./model.mjs";
 import { network } from "./network.mjs";
 import { buzzTool, readAgentFile, readBuzzPrompt } from "./remote.mjs";
@@ -169,6 +169,18 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 	}
 
 	/**
+	 * Asked by the agent's `git` when a host on the allow-list wants to know who is calling. bzz answers for the
+	 * session, as for a tool. The answer goes to that one git command and is kept nowhere: it is not logged, and it
+	 * never enters what the model sees.
+	 */
+	async function credential(host) {
+		const call = calling.getStore();
+		if (!call?.conversation) throw new Error("git was not started from a conversation");
+		const sessionId = await sessionOf(call.conversation, call.signal);
+		return stoppable(peer.request("_bzz/credential", { sessionId, host }), call.signal);
+	}
+
+	/**
 	 * Off unless BZZ_AGENT_HOST_RECORD names a folder: then a remote copy saves each prompt of buzz-acp there. It is
 	 * how tests/fixtures/agents/buzz-acp-prompts is recorded again at a new Buzz pin, with disposable identities.
 	 */
@@ -229,7 +241,7 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 				models: models.models,
 				registry,
 				// One agent, one disk: every conversation sees the same files.
-				env: ({ cwd }) => new BzzVfsEnv(vfs, shell, { agent: "disk", cwd: cwd ?? HOME }),
+				env: ({ cwd, conversationId }) => new BzzVfsEnv(vfs, shell, { agent: "disk", cwd: cwd ?? HOME, conversation: conversationId }),
 				// A message that arrives while a turn runs joins it. A failed turn does not leave later ones waiting for ever.
 				settings: { steeringMode: "all", afterFailedRun: "withdraw" },
 				onReport: (report) => log(`pi reported ${report.kind}: ${String(report.error?.message ?? "").slice(0, 300)}`),
@@ -318,7 +330,8 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 			net = network(settings.network);
 			disk = new SqliteFs(join(folder, "files.sqlite"));
 			vfs = new Vfs(disk, settings.mounts);
-			shell = createShell(vfs, { net, author: { name: settings.agent.name ?? "agent", email: "agent@bzz.invalid" } });
+			// Under buzz-acp there is nobody to ask for credentials: git then says that this copy has none.
+			shell = createShell(vfs, { net, author: { name: settings.agent.name ?? "agent", email: "agent@bzz.invalid" }, ...(settings.local && { credential }) });
 		} catch (error) {
 			throw new RpcError(INVALID, error.message);
 		}
