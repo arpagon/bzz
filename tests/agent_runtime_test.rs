@@ -1454,11 +1454,12 @@ async fn killed_during_the_publish_the_reply_is_published_once() {
     world.relay.release();
     let row = world.settled(&request).await;
     assert_eq!(row.state, RequestState::Replied);
-    until("the reply to be acknowledged", WAIT, || {
-        (world.relay.replies_to(&request).len() == 1).then_some(())
+    until("a reply to reach the relay", WAIT, || {
+        (!world.relay.replies_to(&request).is_empty()).then_some(())
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    // And then whatever a second attempt would add.
+    tokio::time::sleep(Duration::from_millis(600)).await;
     assert_eq!(
         world.contents(&world.relay.replies_to(&request)),
         ["the answer"]
