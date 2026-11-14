@@ -249,6 +249,11 @@ impl AgentHost {
         }
     }
 
+    /// Whether this host has started serving `agent`.
+    pub fn runs(&self, agent: Uuid) -> bool {
+        lock(&self.0.agents).contains_key(&agent)
+    }
+
     /// One line of state per agent, running or not.
     pub fn status(&self) -> Vec<AgentStatus> {
         let mut all = lock(&self.0.agents)
