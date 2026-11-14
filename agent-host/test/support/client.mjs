@@ -43,9 +43,16 @@ export function within(ms, promise, what) {
  * Starts `node main.mjs <folder>`.
  * @param options.onTool answers `_bzz/tool`: `(params) => result`. Default: "sent as <n>", final as asked.
  * @param options.command another command line, for a host started through something else
+ * @param options.descriptors open files the host is born with beside its three streams, as `number -> descriptor of
+ *   this process`: what a careless parent leaves open to its children
  */
-export function startHost(t, folder, { env, onTool, command = [process.execPath, MAIN, folder], home = folder } = {}) {
-	const child = spawn(command[0], command.slice(1), { stdio: ["pipe", "pipe", "pipe"], env: env ?? bareEnv(home) });
+export function startHost(t, folder, { env, onTool, command = [process.execPath, MAIN, folder], home = folder, descriptors = {} } = {}) {
+	const stdio = ["pipe", "pipe", "pipe"];
+	for (const [number, descriptor] of Object.entries(descriptors)) {
+		while (stdio.length < Number(number)) stdio.push("ignore");
+		stdio[Number(number)] = descriptor;
+	}
+	const child = spawn(command[0], command.slice(1), { stdio, env: env ?? bareEnv(home) });
 	let stderr = "";
 	child.stderr.on("data", (chunk) => { stderr += chunk; });
 	const pending = new Map();

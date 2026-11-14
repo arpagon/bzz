@@ -8,6 +8,8 @@
 //     to it: the string bzz approved is the string `/bin/sh -c` receives.
 //   - It starts in the granted folder, with an environment built from
 //     nothing: PATH, HOME, LANG and TMPDIR, and nothing else of this process.
+//     On Linux that includes open files: the command has its three streams
+//     and no descriptor this process inherited (run-child.mjs).
 //   - It has a time limit, and its process group is ended on cancel, on
 //     time-out, when the command returns, and when the host goes
 //     (run-child.mjs).

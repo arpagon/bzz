@@ -14,7 +14,7 @@
 //
 // POSIX only. Windows has no process groups; the host does not offer `run` there.
 import { spawn } from "node:child_process";
-import { writeSync } from "node:fs";
+import { closeSync, readdirSync, readFileSync, writeSync } from "node:fs";
 
 /** How long the group has between TERM and KILL when it is told to stop. */
 const GRACE_MS = 2_000;
@@ -24,6 +24,37 @@ const say = (message) => {
 		writeSync(3, `${JSON.stringify(message)}\n`);
 	} catch {}
 };
+
+/**
+ * The command gets its three streams and no other open file. Node marks what it opens itself as not to be passed on,
+ * but a descriptor this process was born with goes through it to the command: one that whoever started bzz, a
+ * terminal or an editor, left open, such as a file of its own or its end of a socket. Linux tells which those are
+ * (the ones without `O_CLOEXEC`, 0o2000000 on every architecture Node runs on); they are closed here, before the
+ * command starts. Other systems do not tell, and there the command inherits them: bzz is asked to start the host
+ * with none (docs/agent-host-protocol.md, section 2).
+ */
+function closeInherited() {
+	if (process.platform !== "linux") return;
+	let open;
+	try {
+		open = readdirSync("/proc/self/fd");
+	} catch {
+		return;
+	}
+	for (const name of open) {
+		const fd = Number(name);
+		// 0 to 2 are the streams, 3 is the report to the host.
+		if (!(fd > 3)) continue;
+		try {
+			const flags = Number.parseInt(/^flags:\s*([0-7]+)$/m.exec(readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"))[1], 8);
+			if ((flags & 0o2000000) === 0) closeSync(fd);
+		} catch {
+			// Closed meanwhile, as the descriptor that listed the folder is.
+		}
+	}
+}
+closeInherited();
+
 // This process is not in the command's group, and whoever signals it by hand does not thereby free the command.
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, () => stop());
 

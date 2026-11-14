@@ -4,7 +4,7 @@
 // temporary folders; the client that stands in for bzz answers the question.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { SqliteFs } from "../src/disk.mjs";
@@ -29,9 +29,9 @@ async function world(t, { mounts } = {}) {
 	for (const dir of [site, join(root, "docs")]) mkdirSync(dir);
 	const grants = mounts ?? [{ name: "site", path: site, write: false, exec: true }, { name: "docs", path: join(root, "docs"), write: true }];
 	const state = { n: 0 };
-	const start = async () => {
+	const start = async (options = {}) => {
 		// The host's own environment holds things a command must not get.
-		const host = startHost(t, folder, { home: root, env: bareEnv(root, { A_SECRET_OF_THE_HOST: "must-not-reach-a-command" }) });
+		const host = startHost(t, folder, { home: root, env: bareEnv(root, { A_SECRET_OF_THE_HOST: "must-not-reach-a-command" }), ...options });
 		host.on["_bzz/approve"] = () => ({ allow: true });
 		host.answer = await host.initialize({ mounts: grants });
 		host.sessionId = await host.session(THREAD);
@@ -119,6 +119,27 @@ test("an approved command runs in the granted folder, exactly as approved, in an
 	assert.match(host.stderr(), /run in \/mnt\/site: exit 0, \d+ bytes of output\n/);
 	// The log names what happened, not what was run.
 	assert.equal(host.stderr().includes("made by run"), false);
+});
+
+test("a command gets its three streams and no other open file of the host", { skip }, async (t) => {
+	const { root, start } = await world(t);
+	// A file of whoever started bzz, left open to its children: the host is born with it, as number 200.
+	const theirs = join(root, "a-file-of-the-parent.txt");
+	const descriptor = openSync(theirs, "a");
+	t.after(() => closeSync(descriptor));
+	const host = await start({ descriptors: { 200: descriptor } });
+	// The command tries to write through that number, and lists what it has open.
+	const probe = `${JSON.stringify(process.execPath)} -e 'try { require("fs").writeSync(200, "written by a command\\n"); console.log("200 is open") } catch (error) { console.log("200:", error.code) }'`;
+	const out = await host.run({ folder: "site", command: probe });
+	if (process.platform !== "linux") {
+		// Only Linux tells the host which descriptors it inherited. Elsewhere the command has them, and bzz must hand the host none.
+		t.diagnostic(`not Linux: the command inherits the host's descriptors here (${out.trim()})`);
+		return;
+	}
+	assert.equal(out, "200: EBADF\n");
+	assert.equal(readFileSync(theirs, "utf8"), "");
+	// The shell itself: the three streams, and the descriptor `ls` reads the list with.
+	assert.equal(await host.run({ folder: "site", command: "ls /proc/self/fd | tr '\\n' ' '" }), "0 1 2 3 ");
 });
 
 test("a refused command does not start, and the model is told why", { skip }, async (t) => {
@@ -313,4 +334,5 @@ test("a command does not outlive the host, however the host goes, and is not sta
 	ids = await pids(3);
 	assert.deepEqual(await host.stop(2_000), { code: 0, signal: null });
 	await gone(ids, 5_000);
+
 });
