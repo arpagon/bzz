@@ -1,0 +1,18 @@
+<context>
+Scope: thread
+Session scope: thread
+Channel: s10-bf7b4122 (#bf7b4122-206d-45a8-bbe2-f80f99fa2f1c)
+Thread root: b4f7dd1bb76edde7383e06177d2e180d4451d157e12779639f68af4c3c03ee01
+Earlier thread context is already available in this session. Use `buzz messages thread --channel <UUID> --event <ID>` to re-read it.
+IMPORTANT: For ordinary replies in this turn, use `--reply-to b4f7dd1bb76edde7383e06177d2e180d4451d157e12779639f68af4c3c03ee01` on `buzz messages send` so the conversation stays threaded. If the human explicitly asks for a channel-root, top-level, or broadcast post, send that message without `--reply-to`. If the requested destination is ambiguous, ask before sending.
+</context>
+<buzz-event type="@mention">
+Event ID: 464b7e378ca186ed1e9908ca806bbdf331fe862cb224d567d319070b426be47d
+Channel: s10-bf7b4122 (#bf7b4122-206d-45a8-bbe2-f80f99fa2f1c)
+Kind: 9
+From: npub1qn24m53g46kmj83dmfg44up3crnhj0y9s8p3j0sk09xzl4qqzxvqm07el3 (hex: 04d55dd228aeadb91e2dda515af031c0e7793c8581c3193e16794c2fd4001198)
+Time: 2026-11-14T02:11:54+00:00
+Content: @agent ping two, same thread
+Tags: [["h","bf7b4122-206d-45a8-bbe2-f80f99fa2f1c"],["e","b4f7dd1bb76edde7383e06177d2e180d4451d157e12779639f68af4c3c03ee01","","reply"],["p","fc183c4036b502191f696acd4a40c8cf85a83d4f624c862bdec5129ee569af83"]]
+Parsed: root=b4f7dd1bb76edde7383e06177d2e180d4451d157e12779639f68af4c3c03ee01, mentions=[fc183c4036b502191f696acd4a40c8cf85a83d4f624c862bdec5129ee569af83]
+</buzz-event>

@@ -1,0 +1,18 @@
+<context>
+Scope: thread
+Session scope: thread
+Channel: s10-bf7b4122 (#bf7b4122-206d-45a8-bbe2-f80f99fa2f1c)
+Thread root: b8dd5604c12e2fe50dbceaaf42072f752e73fb2c15679a28197c0fefe7e81dfd
+Use `buzz messages thread --channel <UUID> --event <ID>` to fetch thread context.
+IMPORTANT: This is a new top-level message. For ordinary replies in this turn, use `--reply-to b8dd5604c12e2fe50dbceaaf42072f752e73fb2c15679a28197c0fefe7e81dfd` on `buzz messages send` — the triggering message is the thread root. Do NOT reply into any other (older) thread. If the human explicitly asks for a channel-root, top-level, or broadcast post, send that message without `--reply-to`.
+</context>
+<buzz-event type="@mention">
+Event ID: b8dd5604c12e2fe50dbceaaf42072f752e73fb2c15679a28197c0fefe7e81dfd
+Channel: s10-bf7b4122 (#bf7b4122-206d-45a8-bbe2-f80f99fa2f1c)
+Kind: 9
+From: npub1qn24m53g46kmj83dmfg44up3crnhj0y9s8p3j0sk09xzl4qqzxvqm07el3 (hex: 04d55dd228aeadb91e2dda515af031c0e7793c8581c3193e16794c2fd4001198)
+Time: 2026-11-14T02:11:55+00:00
+Content: @agent ping three, a new thread
+Tags: [["h","bf7b4122-206d-45a8-bbe2-f80f99fa2f1c"],["p","fc183c4036b502191f696acd4a40c8cf85a83d4f624c862bdec5129ee569af83"]]
+Parsed: mentions=[fc183c4036b502191f696acd4a40c8cf85a83d4f624c862bdec5129ee569af83]
+</buzz-event>
