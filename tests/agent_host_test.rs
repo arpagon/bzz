@@ -1047,4 +1047,26 @@ async fn agent_new_says_which_pi_package_names_a_missing_provider() {
             .unwrap()
             .contains("model scripted/scripted")
     );
+    // What the answers give the agent on this machine is said before the
+    // owner confirms: a folder for commands, with whether he is asked, and
+    // Pi packages.
+    let mut hands = NewAgent::named("Scout");
+    hands.folders = vec![bzz::config::FolderGrant {
+        name: "work".into(),
+        path: world.temporary.path().to_path_buf(),
+        write: false,
+        exec: bzz::config::ExecGrant::Ask,
+    }];
+    let said = manage::preflight(&world.data_dir(), &hands, Some(&pi), &environment, &|_| {})
+        .await
+        .unwrap()
+        .notes
+        .join("\n");
+    for expected in [
+        "In /mnt/work each command waits for your yes in the TUI.",
+        "The folder is where it starts, not a wall",
+        "Pi packages: on. A package named in Pi's settings runs inside its host, with your rights",
+    ] {
+        assert!(said.contains(expected), "`{expected}` in:\n{said}");
+    }
 }
