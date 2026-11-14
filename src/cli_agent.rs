@@ -650,7 +650,14 @@ async fn edit(paths: &Paths, config: &mut Config, args: EditArgs) -> Result<()> 
             }
         );
     }
-    println!("a bzz that is running uses the new settings at its next start");
+    if manage::state_of(&agent) == "moved away" {
+        println!(
+            "{} was moved away: this changes nothing where it runs. When it is taken back, its settings are the ones that arrive with it; the folders granted here stay as you set them",
+            agent.label
+        );
+    } else {
+        println!("a bzz that is running uses the new settings at its next start");
+    }
     Ok(())
 }
 
@@ -667,6 +674,13 @@ async fn delete(
             "{} is running (process {pid}): close bzz or pause the agent first",
             agent.label
         )));
+    }
+    let moved_away = manage::state_of(&agent) == "moved away";
+    if moved_away {
+        eprintln!(
+            "{} was moved away: a copy of it may be running elsewhere. Deleting it here also removes your record of it from the relay and its place in its channels, so that copy stops being listed and heard. The copy keeps its key",
+            agent.label
+        );
     }
     if !yes
         && !confirm(&format!(
