@@ -10,6 +10,7 @@
 //! - [`agent`]: one agent's turns, with the reply ledger of
 //!   [`crate::store::agent_runtime`].
 //! - [`host`]: every local agent of one community.
+//! - [`install`]: bzz's own Pi Durable host, its Node and its install.
 //! - [`relay`]: the agent's own relay connection, and its intake.
 //! - [`service`]: all of it on the real relay, for the TUI and `agent run`.
 
@@ -19,6 +20,7 @@ pub mod agent;
 pub mod credentials;
 pub mod endpoint;
 pub mod host;
+pub mod install;
 pub mod mcp;
 pub mod process;
 pub mod prompt;
