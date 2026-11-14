@@ -156,26 +156,40 @@ pub struct AgentStatus {
 }
 
 impl AgentStatus {
-    pub fn line(&self) -> String {
-        let state = match self.phase {
+    /// Its state in a few words: idle, starting, ready, answering N,
+    /// unavailable, paused, stopped.
+    pub fn state_text(&self) -> String {
+        match self.phase {
             Phase::Idle => "idle".to_owned(),
             Phase::Starting => "starting".to_owned(),
             Phase::Running if self.turns == 0 => "ready".to_owned(),
-            Phase::Running => format!(
-                "answering {}{}",
-                self.turns,
-                self.activity
-                    .as_deref()
-                    .map(|activity| format!(
-                        " ({})",
-                        crate::protocol::artifact::display(activity, 40)
-                    ))
-                    .unwrap_or_default()
-            ),
+            Phase::Running => format!("answering {}", self.turns),
             Phase::Unavailable => "unavailable".to_owned(),
             Phase::Paused => "paused".to_owned(),
             Phase::Stopped => "stopped".to_owned(),
-        };
+        }
+    }
+
+    /// What it is doing now: the last tool call of a running turn, or what
+    /// is wrong while no turn runs.
+    pub fn doing(&self) -> Option<String> {
+        if self.turns > 0 {
+            self.activity.clone()
+        } else {
+            self.problem.clone()
+        }
+    }
+
+    pub fn line(&self) -> String {
+        let mut state = self.state_text();
+        if self.turns > 0
+            && let Some(activity) = &self.activity
+        {
+            state.push_str(&format!(
+                " ({})",
+                crate::protocol::artifact::display(activity, 40)
+            ));
+        }
         let mut line = format!(
             "{} · {} · {state}",
             crate::protocol::artifact::display(&self.name, 32),

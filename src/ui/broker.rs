@@ -120,11 +120,12 @@ pub fn render(
                 .join("  "),
         ));
     }
-    // v0.15 M1: what each local agent's process is doing. The agent panel
-    // of a later milestone replaces these lines.
+    // What each local agent's process is doing. `:agents` is their own
+    // panel (v0.15 M4); this one stays for agents whose process the user
+    // runs himself.
     if !local.is_empty() {
         lines.push(Line::from(Span::styled(
-            "local agents",
+            "local agents · manage them with :agents",
             theme.style(HighlightGroup::Muted),
         )));
         lines.extend(

@@ -398,6 +398,17 @@ enum Background {
         agents: Vec<crate::store::agents::RemoteAgentView>,
         notice: Option<String>,
     },
+    /// How each local agent's last turn ended, for the agents panel.
+    LocalAgentTurns {
+        community: Uuid,
+        turns: Vec<(Uuid, Option<crate::store::agent_runtime::RecentTurn>)>,
+    },
+    /// The checks before a creation finished (`:agent new`): the lines for
+    /// the owner, or why nothing can be created.
+    AgentPreflight {
+        new: Box<crate::agents::manage::NewAgent>,
+        result: std::result::Result<Vec<String>, String>,
+    },
 }
 
 pub struct App {
@@ -523,6 +534,17 @@ pub struct App {
     dm_search_task: Option<tokio::task::JoinHandle<()>>,
     agent_directory: AgentDirectoryState,
     agent_directory_task: Option<tokio::task::JoinHandle<()>>,
+    /// `:agents`: the panel of local agents, and what it last read.
+    local_agent_panel: crate::ui::local_agents::PanelState,
+    local_agent_turns: HashMap<Uuid, crate::store::agent_runtime::RecentTurn>,
+    local_agent_refreshed: Option<Instant>,
+    /// `:agent new`: the form, while it is open.
+    agent_form: Option<crate::ui::local_agents::NewAgentForm>,
+    /// How bzz's own environment is read to find Node for an agent's host.
+    agent_environment: crate::agents::runtime::agent::Environment,
+    /// Tests publish an agent's records to a recorded relay.
+    #[cfg(test)]
+    agent_publisher: Option<std::sync::Arc<dyn crate::agents::manage::Publisher>>,
     preview_index: usize,
     preview_revealed: bool,
     clipboard: Arc<dyn ClipboardReader>,
@@ -971,6 +993,13 @@ impl App {
             dm_search_task: None,
             agent_directory: AgentDirectoryState::default(),
             agent_directory_task: None,
+            local_agent_panel: crate::ui::local_agents::PanelState::default(),
+            local_agent_turns: HashMap::new(),
+            local_agent_refreshed: None,
+            agent_form: None,
+            agent_environment: std::sync::Arc::new(|name| std::env::var(name).ok()),
+            #[cfg(test)]
+            agent_publisher: None,
             preview_index: 0,
             preview_revealed: false,
             clipboard: Arc::new(NativeClipboard),
@@ -1290,6 +1319,15 @@ impl App {
                             self.status_error=notice;
                         }
                     }
+                    Background::LocalAgentTurns { community, turns }=>{
+                        if self.active_community_id()==Some(community) {
+                            self.local_agent_turns = turns
+                                .into_iter()
+                                .filter_map(|(agent, turn)| turn.map(|turn| (agent, turn)))
+                                .collect();
+                        }
+                    }
+                    Background::AgentPreflight { new, result }=>self.agent_preflight_done(*new, result),
                     }
                     redraw.request();
                 },
@@ -2709,6 +2747,16 @@ impl App {
             self.spawn_search();
             changed = true;
         }
+        // The agents panel shows what runs now: it is read again every
+        // second while it is open.
+        if self.presentation.overlay == Some(Overlay::LocalAgents)
+            && self
+                .local_agent_refreshed
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(1))
+        {
+            self.refresh_local_agent_panel();
+            changed = true;
+        }
         if self
             .dm_dirty_since
             .is_some_and(|since| since.elapsed() >= Duration::from_millis(300))
@@ -3102,6 +3150,13 @@ impl App {
     }
 
     async fn handle_terminal_paste(&mut self, text: String) -> Result<()> {
+        // The form of `:agent new` takes a paste into the answer in focus.
+        if self.presentation.overlay == Some(Overlay::AgentNew) {
+            if let (Ok(text), Some(form)) = (sanitize_pasted_text(&text), &mut self.agent_form) {
+                form.insert(&text);
+            }
+            return Ok(());
+        }
         if self.presentation.overlay.is_some() || self.presentation.composer_target.is_none() {
             return Ok(());
         }
@@ -3307,6 +3362,8 @@ impl App {
             Some(Overlay::Search) => self.search_key(key).await?,
             Some(Overlay::DmPicker) => self.dm_picker_key(key),
             Some(Overlay::Agents) => self.agent_directory_key(key).await?,
+            Some(Overlay::LocalAgents) => self.local_agents_key(key).await?,
+            Some(Overlay::AgentNew) => self.agent_form_key(key).await?,
             Some(Overlay::Artifacts) => self.artifact_panel_key(key).await?,
             Some(Overlay::Huddle) => self.huddle_key(key).await?,
             Some(Overlay::Profile) => self.profile_key(key),
@@ -4672,9 +4729,12 @@ impl App {
             return;
         };
         let community = runtime.community_id;
-        if std::mem::take(&mut self.local_agents_dirty)
-            && let Some(agents) = &self.local_agents
-        {
+        let dirty = std::mem::take(&mut self.local_agents_dirty);
+        if dirty && self.local_agents.is_none() {
+            // The first local agent of this community was just created.
+            self.local_agents_attempted = None;
+        }
+        if dirty && let Some(agents) = &self.local_agents {
             // Pause and resume apply to a running agent at once. One that
             // was never started needs the runtime started again.
             let mut restart = false;
@@ -7674,7 +7734,14 @@ impl App {
             task.abort();
         }
         self.agent_directory = AgentDirectoryState::default();
-        if self.presentation.overlay == Some(Overlay::Agents) {
+        // The panel and the form belong to the community that was open.
+        self.local_agent_panel = crate::ui::local_agents::PanelState::default();
+        self.local_agent_turns.clear();
+        self.agent_form = None;
+        if matches!(
+            self.presentation.overlay,
+            Some(Overlay::Agents | Overlay::LocalAgents | Overlay::AgentNew)
+        ) {
             self.presentation.close_overlay();
         }
     }
@@ -7762,6 +7829,394 @@ impl App {
         }));
     }
 
+    // ---- `:agents` and `:agent new` (v0.15 M4) ----------------------------
+
+    /// The local agents of the open community that its identity owns, in
+    /// the order of the settings.
+    fn local_agent_configs(&self) -> Vec<&crate::config::HostedAgentConfig> {
+        let Some(community) = self.config.communities.get(self.selected_community) else {
+            return Vec::new();
+        };
+        self.config
+            .hosted_agents
+            .iter()
+            .filter(|agent| {
+                agent.local.is_some()
+                    && agent.community == community.id
+                    && agent.owner_identity == community.identity_id
+            })
+            .collect()
+    }
+
+    /// One row per local agent: what its settings say, what its process is
+    /// doing, and how its last turn ended.
+    fn local_agent_rows(&self) -> Vec<crate::ui::local_agents::AgentRow> {
+        let running = self
+            .local_agents
+            .as_ref()
+            .map(|agents| agents.host.status())
+            .unwrap_or_default();
+        self.local_agent_configs()
+            .into_iter()
+            .filter_map(|agent| {
+                let local = agent.local.as_ref()?;
+                let status = running.iter().find(|status| status.id == agent.id);
+                Some(crate::ui::local_agents::AgentRow {
+                    id: agent.id,
+                    name: agent.label.clone(),
+                    harness: local.harness,
+                    state: match status {
+                        Some(status) => status.state_text(),
+                        None => format!("{} · not running", crate::agents::manage::state_of(agent)),
+                    },
+                    doing: status.and_then(crate::agents::runtime::agent::AgentStatus::doing),
+                    last: self.local_agent_turns.get(&agent.id).map(|turn| {
+                        format!(
+                            "{} · {}",
+                            crate::agents::manage::outcome(turn),
+                            crate::agents::manage::when(turn.updated_at)
+                        )
+                    }),
+                    settings: crate::agents::manage::settings_lines(local),
+                })
+            })
+            .collect()
+    }
+
+    fn open_local_agents(&mut self) {
+        if self.active_community_id().is_none() {
+            self.status_error = Some("configure a community before opening agents".into());
+            return;
+        }
+        let rows = self.local_agent_configs().len();
+        self.local_agent_panel.move_by(0, rows);
+        self.presentation.open_overlay(Overlay::LocalAgents);
+        self.refresh_local_agent_panel();
+    }
+
+    /// Reads again what the panel shows that is not in memory: how each
+    /// agent's last turn ended, and the end of the selected agent's log.
+    fn refresh_local_agent_panel(&mut self) {
+        self.local_agent_refreshed = Some(Instant::now());
+        let Some(community) = self.active_community_id() else {
+            return;
+        };
+        let agents = self
+            .local_agent_configs()
+            .into_iter()
+            .map(|agent| agent.id)
+            .collect::<Vec<_>>();
+        if self.local_agent_panel.show_log
+            && let Some(agent) = agents.get(self.local_agent_panel.selected)
+        {
+            let log = crate::agents::runtime::process::agent_dir(&self.paths.data_dir, *agent)
+                .join("harness.log");
+            self.local_agent_panel.log =
+                crate::ui::local_agents::log_tail(&read_tail(&log, 32 * 1024), 200, 400);
+        }
+        let (store, tx) = (self.store.clone(), self.background_tx.clone());
+        tokio::spawn(async move {
+            let turns = store
+                .call(move |store| {
+                    agents
+                        .into_iter()
+                        .map(|agent| {
+                            Ok((
+                                agent,
+                                store.agent_recent_turns(agent, 1)?.into_iter().next(),
+                            ))
+                        })
+                        .collect::<Result<Vec<_>>>()
+                })
+                .await;
+            if let Ok(turns) = turns {
+                let _ = tx
+                    .send(Background::LocalAgentTurns { community, turns })
+                    .await;
+            }
+        });
+    }
+
+    async fn local_agents_key(&mut self, key: KeyEvent) -> Result<()> {
+        let agents = self
+            .local_agent_configs()
+            .into_iter()
+            .map(|agent| (agent.id, agent.label.clone(), agent.runs_locally()))
+            .collect::<Vec<_>>();
+        let selected = agents.get(self.local_agent_panel.selected).cloned();
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.local_agent_panel.move_by(1, agents.len());
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.local_agent_panel.move_by(-1, agents.len());
+            }
+            // The other half of `:agents`: the verified agents others run.
+            KeyCode::Tab => self.open_agents(false),
+            KeyCode::Char('n') => self.open_agent_form(""),
+            KeyCode::Char('l') => {
+                self.local_agent_panel.show_log = !self.local_agent_panel.show_log;
+                self.refresh_local_agent_panel();
+            }
+            // Pause, or resume: its process follows on the next tick.
+            KeyCode::Char(' ') => {
+                if let Some((id, name, runs)) = selected {
+                    match crate::agents::manage::set_paused(&mut self.config, id, runs)
+                        .and_then(|()| self.config.save(&self.paths))
+                    {
+                        Ok(()) => {
+                            self.local_agents_dirty = true;
+                            self.status_error = Some(format!(
+                                "{name} {}",
+                                if runs { "paused" } else { "resumed" }
+                            ));
+                        }
+                        Err(error) => self.status_error = Some(error.to_string()),
+                    }
+                }
+            }
+            // Stop what it is answering now; the agent itself stays.
+            KeyCode::Char('x') => {
+                if let Some((id, name, _)) = selected {
+                    let stopped = match &self.local_agents {
+                        Some(agents) => agents.host.stop_turns(id).await,
+                        None => 0,
+                    };
+                    self.status_error = Some(match stopped {
+                        0 => format!("{name} is not answering anything now"),
+                        1 => format!("{name}: its running turn was stopped"),
+                        turns => format!("{name}: its {turns} running turns were stopped"),
+                    });
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn open_agent_form(&mut self, name: &str) {
+        if self.active_community_id().is_none() {
+            self.status_error = Some("configure a community before creating an agent".into());
+            return;
+        }
+        if self.runtime.is_none() {
+            self.status_error = Some(
+                "creating an agent needs your identity unlocked: restart bzz and unlock it".into(),
+            );
+            return;
+        }
+        self.agent_form = Some(crate::ui::local_agents::NewAgentForm::new(name));
+        self.presentation.open_overlay(Overlay::AgentNew);
+    }
+
+    async fn agent_form_key(&mut self, key: KeyEvent) -> Result<()> {
+        use crate::ui::local_agents::FormStage;
+        let Some(form) = &mut self.agent_form else {
+            self.presentation.close_overlay();
+            return Ok(());
+        };
+        let control = key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        match (&form.stage, key.code) {
+            (_, KeyCode::Esc) => {
+                // A check that is still running finds no form and is dropped.
+                self.agent_form = None;
+                self.presentation.close_overlay();
+            }
+            (FormStage::Editing, KeyCode::Char('s')) if control => self.check_agent_form(),
+            (FormStage::Editing, KeyCode::Enter) if form.focus + 1 == form.fields.len() => {
+                self.check_agent_form();
+            }
+            (FormStage::Editing, KeyCode::Enter | KeyCode::Tab | KeyCode::Down) => {
+                form.move_by(1);
+            }
+            (FormStage::Editing, KeyCode::BackTab | KeyCode::Up) => form.move_by(-1),
+            (FormStage::Editing, KeyCode::Backspace) => form.backspace(),
+            (FormStage::Editing, KeyCode::Char(character)) if !control => {
+                form.insert(character.encode_utf8(&mut [0; 4]));
+            }
+            (FormStage::Confirm { .. }, KeyCode::Char('e')) => form.stage = FormStage::Editing,
+            (FormStage::Confirm { .. }, KeyCode::Enter) => self.create_agent_from_form().await,
+            (FormStage::Done(_), KeyCode::Enter | KeyCode::Char('q')) => {
+                self.agent_form = None;
+                self.presentation.close_overlay();
+                self.open_local_agents();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Reads the answers and, when they can be read, starts the checks that
+    /// can fail before anything exists: Node, the install of the host (made
+    /// now when this is its first use) and the model.
+    fn check_agent_form(&mut self) {
+        use crate::ui::local_agents::FormStage;
+        let Some(form) = &mut self.agent_form else {
+            return;
+        };
+        let new = match form.answers().read() {
+            Ok(new) => new,
+            Err(error) => {
+                form.error = Some(error.to_string());
+                return;
+            }
+        };
+        if crate::agents::manage::name_taken(&self.config, &new.name, None) {
+            form.error = Some(format!("an agent named {} exists", new.name));
+            return;
+        }
+        form.error = None;
+        form.stage = FormStage::Checking;
+        let (data_dir, environment, tx) = (
+            self.paths.data_dir.clone(),
+            self.agent_environment.clone(),
+            self.background_tx.clone(),
+        );
+        tokio::spawn(async move {
+            let pi_dir = crate::agents::runtime::install::pi_dir(|name| environment(name));
+            let result = crate::agents::manage::preflight(
+                &data_dir,
+                &new,
+                pi_dir.as_deref(),
+                &environment,
+                &|_| {},
+            )
+            .await
+            .map(|preflight| preflight.notes)
+            .map_err(|error| error.to_string());
+            let _ = tx
+                .send(Background::AgentPreflight {
+                    new: Box::new(new),
+                    result,
+                })
+                .await;
+        });
+    }
+
+    fn agent_preflight_done(
+        &mut self,
+        new: crate::agents::manage::NewAgent,
+        result: std::result::Result<Vec<String>, String>,
+    ) {
+        use crate::ui::local_agents::FormStage;
+        // Only the form that asked: one cancelled or edited since is left alone.
+        let Some(form) = self
+            .agent_form
+            .as_mut()
+            .filter(|form| form.stage == FormStage::Checking)
+        else {
+            return;
+        };
+        match result {
+            Ok(notes) => {
+                form.stage = FormStage::Confirm {
+                    new: Box::new(new),
+                    notes,
+                }
+            }
+            Err(error) => {
+                form.stage = FormStage::Editing;
+                form.error = Some(error);
+            }
+        }
+    }
+
+    /// The owner confirmed: creates the agent, all or nothing, with the
+    /// connection and the signer this bzz already holds.
+    async fn create_agent_from_form(&mut self) {
+        use crate::agents::manage;
+        use crate::ui::local_agents::FormStage;
+        let Some(FormStage::Confirm { new, .. }) =
+            self.agent_form.as_ref().map(|form| form.stage.clone())
+        else {
+            return;
+        };
+        let fail = |app: &mut Self, error: String| {
+            if let Some(form) = &mut app.agent_form {
+                form.stage = FormStage::Editing;
+                form.error = Some(error);
+            }
+        };
+        let Some(runtime) = &self.runtime else {
+            fail(
+                self,
+                "your identity is locked: restart bzz and unlock it".into(),
+            );
+            return;
+        };
+        let Some(community) = self
+            .config
+            .communities
+            .iter()
+            .find(|entry| entry.id == runtime.community_id)
+            .cloned()
+        else {
+            fail(self, "the community is no longer configured".into());
+            return;
+        };
+        let federated = runtime
+            .evidence
+            .is_set()
+            .then(|| runtime.identity_adapter.clone())
+            .flatten();
+        let relay = match manage::OwnerRelay::from_runtime(
+            &self.paths,
+            &community,
+            runtime.identity_id,
+            runtime.signer.clone(),
+            runtime.http.clone(),
+            runtime.supervisor.clone(),
+            federated.clone(),
+            self.diagnostics.clone(),
+        ) {
+            Ok(relay) => relay,
+            Err(error) => {
+                fail(self, error.to_string());
+                return;
+            }
+        };
+        let context = manage::OwnerContext {
+            paths: &self.paths,
+            owner: &runtime.signer,
+            owner_identity: runtime.identity_id,
+            community: runtime.community_id,
+            federated: federated.as_ref(),
+        };
+        #[cfg(test)]
+        let publisher: &dyn manage::Publisher = match &self.agent_publisher {
+            Some(publisher) => publisher.as_ref(),
+            None => &relay,
+        };
+        #[cfg(not(test))]
+        let publisher: &dyn manage::Publisher = &relay;
+        let created = manage::create(&context, &mut self.config, &new, publisher).await;
+        relay.close().await;
+        match created {
+            Ok(created) => {
+                // Its process is started by the next tick.
+                self.local_agents_dirty = true;
+                let mut lines = vec![format!(
+                    "agent {} ({}) created in {}",
+                    created.agent.label, created.agent.pubkey, community.label
+                )];
+                lines.extend(crate::agents::capability::record(new.harness).lines());
+                lines.push(String::new());
+                lines.push(format!(
+                    "Next: add it to a channel with `bzz agent add {} <channel>`, then mention it there. It answers while bzz is open.",
+                    created.agent.label
+                ));
+                if let Some(form) = &mut self.agent_form {
+                    form.stage = FormStage::Done(lines);
+                    form.error = None;
+                }
+            }
+            Err(failure) => fail(self, failure.to_string()),
+        }
+    }
+
     async fn agent_directory_key(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -7773,6 +8228,13 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.agent_directory.move_by(-1),
             KeyCode::Down | KeyCode::Char('j') => self.agent_directory.move_by(1),
             KeyCode::Char('r') => self.open_agents(true),
+            // The other half of `:agents`: the ones this bzz runs.
+            KeyCode::Tab => {
+                if let Some(task) = self.agent_directory_task.take() {
+                    task.abort();
+                }
+                self.open_local_agents();
+            }
             KeyCode::Char('m') | KeyCode::Enter => self.mention_selected_agent().await?,
             _ => {}
         }
@@ -8634,7 +9096,30 @@ impl App {
             crate::ui::command::Command::Inbox => self.open_inbox(),
             crate::ui::command::Command::Search => self.open_search(),
             crate::ui::command::Command::Dm => self.open_dm_picker(None),
-            crate::ui::command::Command::Agents => self.open_agents(false),
+            crate::ui::command::Command::Agents(which) => match which.as_str() {
+                "" if !self.local_agent_configs().is_empty() => self.open_local_agents(),
+                "" | "directory" | "remote" => self.open_agents(false),
+                "local" => self.open_local_agents(),
+                _ => {
+                    self.status_error = Some(
+                        "usage: :agents (yours, when this community has any), :agents local, :agents directory"
+                            .into(),
+                    );
+                }
+            },
+            crate::ui::command::Command::Agent(arguments) => {
+                match arguments
+                    .strip_prefix("new")
+                    .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+                {
+                    Some(name) => self.open_agent_form(name),
+                    None => {
+                        self.status_error = Some(
+                            "usage: :agent new [name]; :agents shows the ones you have".into(),
+                        );
+                    }
+                }
+            }
             crate::ui::command::Command::DmHide => self.hide_current_dm(),
             crate::ui::command::Command::DmAdd => {
                 let channel = self
@@ -9564,7 +10049,8 @@ impl App {
             },
             Some(Overlay::Search) => "SEARCH",
             Some(Overlay::DmPicker) => "DM",
-            Some(Overlay::Agents) => "AGENTS",
+            Some(Overlay::Agents | Overlay::LocalAgents) => "AGENTS",
+            Some(Overlay::AgentNew) => "NEW AGENT",
             Some(Overlay::Artifacts) => "ARTIFACTS",
             Some(Overlay::Broker) => "BROKER",
             Some(Overlay::Profile) => "PROFILE",
@@ -9932,6 +10418,42 @@ impl App {
                     &self.profiles,
                     &self.theme,
                 );
+            }
+            Some(Overlay::LocalAgents) => {
+                let popup = centered(area, 98, area.height.saturating_sub(2).min(44));
+                let rows = self.local_agent_rows();
+                crate::ui::local_agents::render(
+                    frame,
+                    popup,
+                    &rows,
+                    &self.local_agent_panel,
+                    self.local_agents.is_some(),
+                    &self.theme,
+                );
+            }
+            Some(Overlay::AgentNew) => {
+                if let Some(form) = &self.agent_form {
+                    let popup = centered(area, 92, area.height.saturating_sub(2).min(40));
+                    let community = self
+                        .config
+                        .communities
+                        .get(self.selected_community)
+                        .map_or("", |entry| entry.label.as_str());
+                    let owner = self
+                        .config
+                        .communities
+                        .get(self.selected_community)
+                        .and_then(|entry| {
+                            self.config
+                                .identities
+                                .iter()
+                                .find(|identity| identity.id == entry.identity_id)
+                        })
+                        .map_or("you", |identity| identity.label.as_str());
+                    crate::ui::local_agents::render_form(
+                        frame, popup, form, community, owner, &self.theme,
+                    );
+                }
             }
             Some(Overlay::Agents) => {
                 let popup = centered(area, 96, area.height.saturating_sub(2).min(34));
@@ -10392,6 +10914,24 @@ fn public_media_error(error: &Error) -> String {
             "attachment operation failed".into()
         }
     }
+}
+
+/// The last `bytes` of a file as text; empty when it cannot be read.
+fn read_tail(path: &std::path::Path, bytes: u64) -> String {
+    use std::io::{Read as _, Seek as _};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let length = file.metadata().map_or(0, |metadata| metadata.len());
+    if file
+        .seek(std::io::SeekFrom::Start(length.saturating_sub(bytes)))
+        .is_err()
+    {
+        return String::new();
+    }
+    let mut tail = Vec::new();
+    let _ = file.take(bytes).read_to_end(&mut tail);
+    String::from_utf8_lossy(&tail).into_owned()
 }
 
 fn centered(area: Rect, percent: u16, height: u16) -> Rect {
@@ -10947,6 +11487,463 @@ mod tests {
         app.reconcile_local_agents().await;
         assert!(app.local_agents.is_none());
         assert_eq!(app.local_agents_attempted, None);
+        owner.lock().await;
+    }
+
+    /// v0.15 M4: `:agent new` asks what the command asks, checks before it
+    /// makes anything, creates the agent all or nothing with the owner's
+    /// confirmation, and `:agents` then shows it with its state, its last
+    /// outcome and its capability record, and pauses, resumes, stops and
+    /// shows the log of the one selected.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agent_new_in_the_tui_creates_an_agent_and_the_panel_manages_it() {
+        use crate::agents::runtime::{agent::Phase, relay::Published};
+        use crate::config::{Harness, LocalAgentState, WakeRule};
+        use crate::ui::local_agents::FormStage;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        /// The relay, recorded: who published which kind, and whether the
+        /// next publish is refused.
+        #[derive(Default)]
+        struct Recorded {
+            calls: std::sync::Mutex<Vec<(&'static str, u16)>>,
+            refuse: std::sync::atomic::AtomicBool,
+        }
+        impl Recorded {
+            fn publish(&self, who: &'static str, event: &nostr::Event) -> Published {
+                self.calls.lock().unwrap().push((who, event.kind.as_u16()));
+                if self.refuse.load(std::sync::atomic::Ordering::Acquire) {
+                    Published::Refused("blocked: not today".into())
+                } else {
+                    Published::Accepted
+                }
+            }
+        }
+        #[async_trait::async_trait]
+        impl crate::agents::manage::Publisher for Recorded {
+            async fn as_owner(&self, event: nostr::Event) -> Published {
+                self.publish("owner", &event)
+            }
+            async fn as_agent(
+                &self,
+                _: &crate::config::HostedAgentConfig,
+                _: &crate::auth::signer::SignerHandle,
+                event: nostr::Event,
+            ) -> Published {
+                self.publish("agent", &event)
+            }
+        }
+
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        // Stand-ins for the owner's Node and npm: the checks and the install
+        // of first use run for real, with nothing downloaded.
+        let bin = temporary.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for (name, script) in [
+            ("node", "echo v22.19.0"),
+            (
+                "npm",
+                "if [ \"$1\" = --version ]; then echo 11.0.0; exit 0; fi\nmkdir -p node_modules/pkg",
+            ),
+        ] {
+            let program = bin.join(name);
+            std::fs::write(&program, format!("#!/bin/sh\n{script}\n")).unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = format!("{}:/usr/bin:/bin", bin.display());
+
+        let owner_keys = nostr::Keys::generate();
+        let owner = crate::auth::signer::SignerHandle::spawn(owner_keys.clone());
+        let mut config = Config::default();
+        let identity = crate::config::IdentityConfig {
+            id: Uuid::new_v4(),
+            label: "ann".into(),
+            pubkey: owner_keys.public_key().to_hex(),
+            backend: crate::config::KeyBackend::EncryptedFile,
+            key_ref: "owner".into(),
+        };
+        config.identities.push(identity.clone());
+        // A loopback port nothing listens on: no relay is needed.
+        let community = config
+            .add_community("rikuy".into(), "ws://127.0.0.1:9".into(), identity.id, true)
+            .unwrap();
+        config.save(&paths).unwrap();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        store.pin_relay_pubkey(community, &"d".repeat(64)).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        let mut app = super::App::new(Config::default(), paths.clone(), handle.clone())
+            .await
+            .unwrap();
+        app.config = config;
+        let recorded = Arc::new(Recorded::default());
+        app.agent_publisher = Some(recorded.clone());
+        app.agent_environment = Arc::new(move |name| (name == "PATH").then(|| path.clone()));
+        let screen = |app: &mut super::App| {
+            let mut terminal = Terminal::new(TestBackend::new(150, 46)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+        };
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let check = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        // The answer of the checks, as the event loop hands it over.
+        let checked = async |app: &mut super::App| loop {
+            match tokio::time::timeout(Duration::from_secs(30), app.background_rx.recv())
+                .await
+                .expect("the checks answer")
+            {
+                Some(super::Background::AgentPreflight { new, result }) => {
+                    app.agent_preflight_done(*new, result);
+                    break;
+                }
+                Some(_) => {}
+                None => panic!("the background channel closed"),
+            }
+        };
+
+        // Locked: nothing can be signed, so the form does not open.
+        app.command = "agent new Scout".into();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.presentation.overlay, None);
+        assert!(
+            app.status_error
+                .as_deref()
+                .is_some_and(|notice| notice.contains("unlocked")),
+            "{:?}",
+            app.status_error
+        );
+        app.runtime = Some(
+            super::Runtime::build(
+                &app.config,
+                0,
+                &paths,
+                handle,
+                Some(owner.clone()),
+                crate::diagnostics::DiagnosticHandle::disabled(),
+            )
+            .unwrap(),
+        );
+        // As every tick does: with no local agent, nothing is started.
+        app.reconcile_local_agents().await;
+        assert!(app.local_agents.is_none());
+        // No local agent yet: `:agents` is the directory, as before v0.15.
+        app.command = "agents".into();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.presentation.overlay, Some(Overlay::Agents));
+        app.presentation.close_overlay();
+
+        // ---- :agent new ----------------------------------------------------
+        app.command = "agent new Scout".into();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.presentation.overlay, Some(Overlay::AgentNew));
+        let shown = screen(&mut app);
+        for (label, _) in crate::agents::manage::QUESTIONS {
+            assert!(shown.contains(&format!("{label}:")), "`{label}`: {shown}");
+        }
+        assert!(shown.contains("Community: rikuy"), "{shown}");
+        assert!(shown.contains("Name: Scout"), "{shown}");
+        // Instructions, then who may wake it, with a word it does not know.
+        app.agent_form_key(key(KeyCode::Tab)).await.unwrap();
+        for character in "Be brief.".chars() {
+            app.agent_form_key(key(KeyCode::Char(character)))
+                .await
+                .unwrap();
+        }
+        app.agent_form_key(key(KeyCode::Enter)).await.unwrap();
+        for character in "everyone".chars() {
+            app.agent_form_key(key(KeyCode::Char(character)))
+                .await
+                .unwrap();
+        }
+        app.agent_form_key(check).await.unwrap();
+        let form = app.agent_form.as_ref().unwrap();
+        assert_eq!(form.stage, FormStage::Editing);
+        assert!(
+            form.error
+                .as_deref()
+                .is_some_and(|error| error.contains("choose owner-only, allowlist or anyone")),
+            "refused where it was written: {:?}",
+            form.error
+        );
+        for _ in 0.."everyone".len() {
+            app.agent_form_key(key(KeyCode::Backspace)).await.unwrap();
+        }
+        for character in "anyone".chars() {
+            app.agent_form_key(key(KeyCode::Char(character)))
+                .await
+                .unwrap();
+        }
+        // The checks: Node, and the install of the host on first use.
+        assert!(!crate::agents::runtime::install::is_installed(
+            &paths.data_dir
+        ));
+        app.agent_form_key(check).await.unwrap();
+        assert_eq!(app.agent_form.as_ref().unwrap().stage, FormStage::Checking);
+        assert!(screen(&mut app).contains("Checking Node.js"));
+        checked(&mut app).await;
+        assert!(crate::agents::runtime::install::is_installed(
+            &paths.data_dir
+        ));
+        let shown = screen(&mut app);
+        for expected in [
+            "Node.js 22.19.0 at",
+            "model: Pi's own default",
+            "Enter signs an owner authorization (NIP-OA) letting agent \"Scout\" act for ann",
+            "in rikuy",
+        ] {
+            assert!(shown.contains(expected), "`{expected}`: {shown}");
+        }
+        // Until the owner confirms, nothing exists anywhere.
+        assert!(app.config.hosted_agents.is_empty());
+        assert!(recorded.calls.lock().unwrap().is_empty());
+        assert!(
+            std::fs::read_dir(paths.keys_dir())
+                .map(|entries| entries.count())
+                .unwrap_or(0)
+                == 0
+        );
+
+        app.agent_form_key(key(KeyCode::Enter)).await.unwrap();
+        let shown = screen(&mut app);
+        assert!(
+            matches!(app.agent_form.as_ref().unwrap().stage, FormStage::Done(_)),
+            "{:?}",
+            app.agent_form.as_ref().unwrap().error
+        );
+        for expected in [
+            "agent Scout (",
+            "created in rikuy",
+            "capability record: pi-durable",
+            "bzz agent add Scout <channel>",
+        ] {
+            assert!(shown.contains(expected), "`{expected}`: {shown}");
+        }
+        assert_eq!(
+            *recorded.calls.lock().unwrap(),
+            [("agent", 0), ("owner", 30_177)]
+        );
+        let saved = Config::load(&paths).unwrap();
+        assert_eq!(saved.hosted_agents, app.config.hosted_agents);
+        let scout = saved.hosted_agents[0].clone();
+        let local = scout.local.clone().unwrap();
+        assert_eq!(
+            (scout.label.as_str(), local.harness, local.wake),
+            ("Scout", Harness::PiDurable, WakeRule::Anyone)
+        );
+        assert_eq!(local.instructions, "Be brief.");
+        assert!(crate::broker::custody::has_key(&paths.keys_dir(), &scout));
+
+        // ---- :agents -------------------------------------------------------
+        app.agent_form_key(key(KeyCode::Enter)).await.unwrap();
+        assert_eq!(app.presentation.overlay, Some(Overlay::LocalAgents));
+        assert!(app.agent_form.is_none());
+        // Its process is bzz's to start: the next tick takes the new agent in.
+        assert!(app.local_agents.is_none());
+        app.reconcile_local_agents().await;
+        let phase = |app: &super::App| {
+            app.local_agents
+                .as_ref()
+                .and_then(|agents| agents.host.status().first().map(|status| status.phase))
+        };
+        let wait_for = async |app: &super::App, expected: Phase| {
+            for _ in 0..500 {
+                if phase(app) == Some(expected) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("the agent never became {expected:?}: {:?}", phase(app));
+        };
+        wait_for(&app, Phase::Idle).await;
+        let shown = screen(&mut app);
+        for expected in [
+            "local agents · j/k select · space pause/resume · x stop the running turn · l log",
+            "› Scout · pi-durable · idle",
+            "state:        idle",
+            "doing now:    nothing",
+            "last outcome: no turn yet",
+            "wakes for:   anyone in its channels",
+            "capability record: pi-durable",
+            "one final reply per mention: bzz",
+        ] {
+            assert!(shown.contains(expected), "`{expected}`: {shown}");
+        }
+        // How its last turn ended comes from bzz's own record of it.
+        let request = crate::store::agent_runtime::NewRequest {
+            agent_id: scout.id,
+            request_id: "a".repeat(64),
+            community_id: community,
+            channel_id: Uuid::new_v4(),
+            place: "place".into(),
+            author: owner_keys.public_key().to_hex(),
+            created_at: 1,
+            event_json: "{}".into(),
+        };
+        app.store
+            .call(move |store| {
+                store.agent_inbox_offer(&request)?;
+                store.agent_reply_claim(
+                    request.agent_id,
+                    &request.request_id,
+                    &"b".repeat(64),
+                    "{}",
+                    crate::store::agent_runtime::ReplyOrigin::Failure,
+                    Some("timeout"),
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        app.refresh_local_agent_panel();
+        loop {
+            if let Some(super::Background::LocalAgentTurns { turns, .. }) =
+                app.background_rx.recv().await
+            {
+                app.local_agent_turns = turns
+                    .into_iter()
+                    .filter_map(|(agent, turn)| turn.map(|turn| (agent, turn)))
+                    .collect();
+                if !app.local_agent_turns.is_empty() {
+                    break;
+                }
+            }
+        }
+        assert!(
+            screen(&mut app).contains("last outcome: failed: timeout · "),
+            "{}",
+            screen(&mut app)
+        );
+
+        // Space pauses the selected agent, and resumes it.
+        app.local_agents_key(key(KeyCode::Char(' '))).await.unwrap();
+        assert_eq!(app.status_error.as_deref(), Some("Scout paused"));
+        assert_eq!(
+            Config::load(&paths).unwrap().hosted_agents[0]
+                .local
+                .as_ref()
+                .unwrap()
+                .state,
+            LocalAgentState::Paused
+        );
+        app.reconcile_local_agents().await;
+        wait_for(&app, Phase::Paused).await;
+        assert!(screen(&mut app).contains("› Scout · pi-durable · paused"));
+        app.local_agents_key(key(KeyCode::Char(' '))).await.unwrap();
+        assert_eq!(app.status_error.as_deref(), Some("Scout resumed"));
+        app.reconcile_local_agents().await;
+        wait_for(&app, Phase::Idle).await;
+        // x stops the running turn; with none, it says so.
+        app.local_agents_key(key(KeyCode::Char('x'))).await.unwrap();
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("Scout is not answering anything now")
+        );
+        // l shows its log in place of its record, and l again its record.
+        let log = crate::agents::runtime::process::agent_dir(&paths.data_dir, scout.id)
+            .join("harness.log");
+        std::fs::write(
+            &log,
+            "host started\nturn \u{1b}[31mfailed\u{1b}[0m: timeout\n",
+        )
+        .unwrap();
+        app.local_agents_key(key(KeyCode::Char('l'))).await.unwrap();
+        let shown = screen(&mut app);
+        assert!(
+            shown.contains("log (what its harness wrote") && shown.contains("host started"),
+            "{shown}"
+        );
+        assert!(!shown.contains("capability record"), "{shown}");
+        app.local_agents_key(key(KeyCode::Char('l'))).await.unwrap();
+        assert!(screen(&mut app).contains("capability record: pi-durable"));
+        // Tab is the directory of agents others run, and Tab there is back.
+        app.local_agents_key(key(KeyCode::Tab)).await.unwrap();
+        assert_eq!(app.presentation.overlay, Some(Overlay::Agents));
+        app.agent_directory_key(key(KeyCode::Tab)).await.unwrap();
+        assert_eq!(app.presentation.overlay, Some(Overlay::LocalAgents));
+        app.presentation.close_overlay();
+        // With a local agent, `:agents` is the panel.
+        app.command = "agents".into();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.presentation.overlay, Some(Overlay::LocalAgents));
+        app.command = "agents directory".into();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.presentation.overlay, Some(Overlay::Agents));
+        app.presentation.close_overlay();
+
+        // ---- a creation that fails leaves nothing --------------------------
+        // n in the panel opens the form; a name that is taken is refused.
+        app.command = "agents".into();
+        app.execute_command().await.unwrap();
+        app.local_agents_key(key(KeyCode::Char('n'))).await.unwrap();
+        assert_eq!(app.presentation.overlay, Some(Overlay::AgentNew));
+        for character in "scout".chars() {
+            app.agent_form_key(key(KeyCode::Char(character)))
+                .await
+                .unwrap();
+        }
+        app.agent_form_key(check).await.unwrap();
+        assert!(
+            app.agent_form
+                .as_ref()
+                .unwrap()
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("exists"))
+        );
+        for _ in 0.."scout".len() {
+            app.agent_form_key(key(KeyCode::Backspace)).await.unwrap();
+        }
+        for character in "Ranger".chars() {
+            app.agent_form_key(key(KeyCode::Char(character)))
+                .await
+                .unwrap();
+        }
+        app.agent_form_key(check).await.unwrap();
+        checked(&mut app).await;
+        recorded
+            .refuse
+            .store(true, std::sync::atomic::Ordering::Release);
+        app.agent_form_key(key(KeyCode::Enter)).await.unwrap();
+        let form = app.agent_form.as_ref().unwrap();
+        assert_eq!(form.stage, FormStage::Editing, "back to the answers");
+        let error = form.error.clone().unwrap_or_default();
+        assert!(
+            error.contains("the agent was not created")
+                && error.contains("refused the agent's profile")
+                && error.contains("Nothing was left"),
+            "{error}"
+        );
+        assert!(screen(&mut app).contains("the agent was not created"));
+        assert_eq!(app.config.hosted_agents.len(), 1, "only Scout");
+        assert_eq!(Config::load(&paths).unwrap().hosted_agents.len(), 1);
+        assert_eq!(
+            std::fs::read_dir(paths.keys_dir())
+                .unwrap()
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with("agent-"))
+                .count(),
+            1,
+            "no key of the agent that was not created"
+        );
+        // Esc leaves the form; nothing more was published than the refusal.
+        app.agent_form_key(key(KeyCode::Esc)).await.unwrap();
+        assert!(app.agent_form.is_none() && app.presentation.overlay.is_none());
+        if let Some(agents) = app.local_agents.take() {
+            agents.stop().await;
+        }
         owner.lock().await;
     }
 

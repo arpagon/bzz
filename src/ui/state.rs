@@ -39,6 +39,10 @@ pub enum Overlay {
     Attachment,
     DmPicker,
     Agents,
+    /// The local agents of the open community (`:agents`, v0.15).
+    LocalAgents,
+    /// The form of `:agent new`.
+    AgentNew,
     Artifacts,
     Broker,
     Huddle,

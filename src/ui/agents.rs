@@ -69,7 +69,7 @@ pub fn render(
 ) {
     frame.render_widget(Clear, area);
     let title = format!(
-        " verified remote agents · ↑/↓ select · m mention · r refresh · Esc close{} ",
+        " verified remote agents · ↑/↓ select · m mention · r refresh · Tab yours · Esc close{} ",
         if state.loading {
             " · refreshing…"
         } else {
