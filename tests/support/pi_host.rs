@@ -36,7 +36,10 @@ pub async fn node_or_skip(test: &str) -> Option<Node> {
                 std::env::var_os("BZZ_TEST_REQUIRE_NODE").is_none(),
                 "{message}"
             );
-            eprintln!("{message}");
+            // Written to the terminal itself: the test harness hides what a
+            // passing test prints, and a skip must be seen.
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), "{message}");
             None
         }
     }
