@@ -1713,8 +1713,15 @@ mod tests {
         turn.end_message();
         turn.end_message();
         assert_eq!(turn.last_text(), "391.");
-        // A flood of text is kept only up to the limit.
-        turn.push_text(&"y".repeat(MAX_PLAIN_TEXT_CHARS * 3));
+        // A flood of text is kept only up to the limit, however it arrives.
+        for _ in 0..3 {
+            turn.push_text(&"y".repeat(MAX_PLAIN_TEXT_CHARS));
+        }
+        assert_eq!(
+            turn.text.chars().count(),
+            MAX_PLAIN_TEXT_CHARS,
+            "held in memory"
+        );
         assert_eq!(turn.last_text().chars().count(), MAX_PLAIN_TEXT_CHARS);
     }
 }
