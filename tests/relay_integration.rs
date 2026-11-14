@@ -4352,11 +4352,11 @@ async fn real_relay_local_agent_answers_a_mention_exactly_once() {
         said("running in m1").then_some(())
     })
     .await;
-    assert!(
-        said("Scout · pi-durable · idle"),
-        "{}",
-        std::fs::read_to_string(&output).unwrap()
-    );
+    // One status line per agent, printed when its state changes.
+    until("the agent's status line", WAIT, || {
+        said("Scout · pi-durable · idle").then_some(())
+    })
+    .await;
     let asked = mention("agent run question").await;
     assert_eq!(
         exactly_one(asked, "agent run").await,

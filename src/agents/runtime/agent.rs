@@ -241,6 +241,9 @@ pub struct Agent {
     state: Mutex<State>,
     run: tokio::sync::Mutex<Option<Arc<Run>>>,
     next_run: AtomicU64,
+    /// Counts turns started and ended: an idle checkpoint is sent only if
+    /// nothing happened since it was planned.
+    activity: AtomicU64,
     wake: Notify,
     turn_changed: Notify,
     stopping: AtomicBool,
@@ -321,6 +324,7 @@ impl Agent {
             }),
             run: tokio::sync::Mutex::new(None),
             next_run: AtomicU64::new(1),
+            activity: AtomicU64::new(0),
             wake: Notify::new(),
             turn_changed: Notify::new(),
             stopping: AtomicBool::new(false),
@@ -912,9 +916,42 @@ impl Agent {
 
     async fn run_turn(self: Arc<Self>, row: InboxRow) {
         let place = row.place.clone();
+        self.activity.fetch_add(1, Ordering::AcqRel);
         self.turn(row).await;
         self.state().busy_places.remove(&place);
         self.wake.notify_one();
+        // When nothing else happens for a while, bzz's own host is asked to
+        // checkpoint its files.
+        let planned = self.activity.fetch_add(1, Ordering::AcqRel) + 1;
+        let idle = self.limits().checkpoint_idle;
+        tokio::spawn(async move {
+            tokio::time::sleep(idle).await;
+            if self.activity.load(Ordering::Acquire) == planned {
+                self.checkpoint().await;
+            }
+        });
+    }
+
+    /// Asks bzz's own host to finish its writes and checkpoint both of its
+    /// files (`_bzz/checkpoint`), when it runs and no turn does. `true`: it
+    /// answered. Sent when the agent has been idle, and before a move.
+    pub async fn checkpoint(&self) -> bool {
+        let run = self.run.lock().await.clone();
+        let Some(run) = run.filter(|run| run.pipe_tools && !run.dead.load(Ordering::Acquire))
+        else {
+            return false;
+        };
+        if self.halted() || !self.state().busy_places.is_empty() {
+            return false;
+        }
+        matches!(
+            tokio::time::timeout(
+                self.limits().session,
+                run.connection.request("_bzz/checkpoint", json!({})),
+            )
+            .await,
+            Ok(Ok(_))
+        )
     }
 
     async fn turn(self: &Arc<Self>, row: InboxRow) {

@@ -78,6 +78,8 @@ struct Inner {
     idle: Mutex<Vec<AgentStatus>>,
     leftovers: Vec<Leftover>,
     intakes: Mutex<Vec<(Arc<Notify>, tokio::task::JoinHandle<()>)>>,
+    /// Set by `shutdown`: nothing is added or listened to after it.
+    closed: std::sync::atomic::AtomicBool,
     _server: ToolsServer,
 }
 
@@ -152,6 +154,7 @@ impl AgentHost {
             idle: Mutex::new(Vec::new()),
             leftovers,
             intakes: Mutex::new(Vec::new()),
+            closed: std::sync::atomic::AtomicBool::new(false),
             _server: server,
         })))
     }
@@ -217,12 +220,30 @@ impl AgentHost {
     pub async fn add(&self, spec: AgentSpec, relay: Arc<dyn AgentRelay>) {
         let agent = Agent::new(spec, relay, self.0.shared.clone());
         agent.recover().await;
+        if self.closed() {
+            return;
+        }
         lock(&self.0.agents).insert(agent.spec.id, agent.clone());
         agent.start();
     }
 
+    fn closed(&self) -> bool {
+        self.0.closed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Asks an agent's own host to checkpoint its files now (before a move).
+    pub async fn checkpoint(&self, agent: Uuid) -> bool {
+        match agent_of(&self.0.agents, agent) {
+            Some(agent) => agent.checkpoint().await,
+            None => false,
+        }
+    }
+
     /// Brings the agent its requests from its own relay connection.
     pub fn listen(&self, port: Arc<RelayPort>, agent: Uuid, owner: String) {
+        if self.closed() {
+            return;
+        }
         let stop = Arc::new(Notify::new());
         let task = tokio::spawn(crate::agents::runtime::relay::intake(
             port,
@@ -286,6 +307,9 @@ impl AgentHost {
     /// Stops every harness: end of input, TERM, KILL. Requests in flight
     /// stay in the inbox for the next start.
     pub async fn shutdown(&self) {
+        self.0
+            .closed
+            .store(true, std::sync::atomic::Ordering::Release);
         for (stop, task) in lock(&self.0.intakes).drain(..) {
             stop.notify_one();
             // The intake holds a clone of this host; it must not outlive it.

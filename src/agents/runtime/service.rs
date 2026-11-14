@@ -45,6 +45,8 @@ pub struct CommunityAgents {
     pub community: Uuid,
     pub host: AgentHost,
     ports: Vec<Arc<RelayPort>>,
+    /// One per agent: its recovery, then its intake.
+    starting: Vec<tokio::task::JoinHandle<()>>,
     /// Agents that could not be started, each with its reason.
     pub problems: Vec<String>,
 }
@@ -53,13 +55,19 @@ impl CommunityAgents {
     /// Whether every agent's intake is subscribed: a request published from
     /// now on reaches its agent.
     pub fn listening(&self) -> bool {
-        self.ports.iter().all(|port| port.listening())
+        self.starting
+            .iter()
+            .all(tokio::task::JoinHandle::is_finished)
+            && self.ports.iter().all(|port| port.listening())
     }
 
     /// Stops every harness, closes every agent connection and forgets every
     /// agent key.
     pub async fn stop(self) {
         self.host.shutdown().await;
+        for task in &self.starting {
+            task.abort();
+        }
         for port in &self.ports {
             port.supervisor.shutdown().await;
             port.signer.lock().await;
@@ -115,6 +123,7 @@ pub async fn serve(options: ServeOptions<'_>) -> Result<Option<CommunityAgents>>
         community,
         host: host.clone(),
         ports: Vec::new(),
+        starting: Vec::new(),
         problems: Vec::new(),
     };
     for agent in local {
@@ -172,19 +181,24 @@ pub async fn serve(options: ServeOptions<'_>) -> Result<Option<CommunityAgents>>
         match built {
             Ok(port) => {
                 running.ports.push(port.clone());
-                host.add(
-                    AgentSpec {
-                        id: agent.id,
-                        name: agent.label.clone(),
-                        pubkey: agent.pubkey.clone(),
-                        owner: owner_pubkey.clone(),
-                        community,
-                        local: settings,
-                    },
-                    port.clone(),
-                )
-                .await;
-                host.listen(port, agent.id, owner_pubkey.clone());
+                let spec = AgentSpec {
+                    id: agent.id,
+                    name: agent.label.clone(),
+                    pubkey: agent.pubkey.clone(),
+                    owner: owner_pubkey.clone(),
+                    community,
+                    local: settings,
+                };
+                // Recovery publishes what a crash left unsent, which waits
+                // on the relay: it does not hold up the caller (the TUI).
+                // The order holds all the same: an agent's requests are
+                // settled before it may start, and it listens only then.
+                let (host, owner) = (host.clone(), owner_pubkey.clone());
+                running.starting.push(tokio::spawn(async move {
+                    let id = spec.id;
+                    host.add(spec, port.clone()).await;
+                    host.listen(port, id, owner);
+                }));
             }
             Err(error) => running
                 .problems

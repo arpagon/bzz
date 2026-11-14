@@ -147,8 +147,13 @@ impl Harness {
     fn save(&self, change: impl FnOnce(&mut Value)) {
         let mut state = self.state.lock().unwrap();
         change(&mut state);
+        // By rename: the harness may be killed at any moment, and half a
+        // state file would make the next start forget what it did.
         if let Some(path) = &self.state_file {
-            let _ = std::fs::write(path, state.to_string());
+            let temporary = path.with_extension("json.tmp");
+            if std::fs::write(&temporary, state.to_string()).is_ok() {
+                let _ = std::fs::rename(&temporary, path);
+            }
         }
     }
 
@@ -470,6 +475,8 @@ impl Harness {
                 let (harness, id) = (self.clone(), id.unwrap_or(Value::Null));
                 std::thread::spawn(move || harness.prompt(id, params));
             }
+            // bzz's own host checkpoints its files; this one only says so.
+            "_bzz/checkpoint" if self.own_host() => answer(json!({})),
             "session/cancel" => {
                 if let Some(flag) = self
                     .cancelled

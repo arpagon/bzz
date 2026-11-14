@@ -147,6 +147,9 @@ pub struct Limits {
     pub concurrent_turns: usize,
     /// Messages and reactions one turn may publish besides its final reply.
     pub effects_per_turn: u32,
+    /// How long bzz's own host is idle before it is asked to checkpoint its
+    /// files (`_bzz/checkpoint`).
+    pub checkpoint_idle: Duration,
 }
 
 impl Default for Limits {
@@ -165,6 +168,7 @@ impl Default for Limits {
             publish: Duration::from_secs(15),
             concurrent_turns: 4,
             effects_per_turn: 20,
+            checkpoint_idle: Duration::from_secs(60),
         }
     }
 }

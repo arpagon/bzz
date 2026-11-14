@@ -32,6 +32,19 @@ pub fn program() -> PathBuf {
         "{} is missing: run `cargo build --example scripted_harness` (a plain `cargo test` builds it)",
         path.display()
     );
+    // `cargo test --test <name>` does not rebuild examples: a harness older
+    // than its source would test yesterday's script language.
+    let modified = |path: &Path| {
+        std::fs::metadata(path)
+            .and_then(|file| file.modified())
+            .ok()
+    };
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/scripted_harness.rs");
+    assert!(
+        modified(&source) <= modified(&path),
+        "{} is older than its source: run `cargo build --example scripted_harness`",
+        path.display()
+    );
     path
 }
 

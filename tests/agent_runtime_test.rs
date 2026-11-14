@@ -49,6 +49,8 @@ fn limits() -> Limits {
         publish: Duration::from_secs(3),
         concurrent_turns: 4,
         effects_per_turn: 3,
+        // Longer than any test, but for the one that waits for it.
+        checkpoint_idle: Duration::from_secs(600),
     }
 }
 
@@ -203,14 +205,24 @@ impl World {
             .unwrap()
     }
 
-    /// Waits until the request has left the queue and its turn is over.
+    /// Waits until the request has left the queue, its turn is over, and
+    /// the relay has acknowledged its reply if it has one. (A request counts
+    /// as replied from the moment its reply is stored, before the publish.)
     async fn settled(&self, request: &Event) -> InboxRow {
         let deadline = tokio::time::Instant::now() + WAIT;
         loop {
             if let Some(row) = self.row(request).await
                 && !matches!(row.state, RequestState::Queued | RequestState::Delivered)
             {
-                return row;
+                let (agent, id) = (self.agent, request.id.to_hex());
+                let reply = self
+                    .store
+                    .call(move |store| store.agent_reply_get(agent, &id))
+                    .await
+                    .unwrap();
+                if reply.is_none_or(|reply| reply.published) {
+                    return row;
+                }
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
@@ -232,6 +244,16 @@ impl World {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+
+    /// The results of the tool `name`, once the harness has logged `count`
+    /// of them. A request is settled when its reply is stored, which is
+    /// before the harness reads the tool's answer.
+    async fn results(&self, name: &str, count: usize) -> Vec<Value> {
+        until(&format!("{count} results of `{name}`"), WAIT, || {
+            Some(self.script.tool_results(name)).filter(|results| results.len() >= count)
+        })
+        .await
     }
 
     fn contents(&self, events: &[Event]) -> Vec<String> {
@@ -327,7 +349,7 @@ async fn a_mention_is_answered_once_through_the_tool_over_the_pipe() {
         (reply.id.to_hex().as_str(), ReplyOrigin::Send, true)
     );
     assert_eq!(
-        world.script.tool_results("send"),
+        world.results("send", 1).await,
         [json!({"text": format!("sent as {}", reply.id.to_hex()), "final": true})]
     );
 
@@ -587,8 +609,12 @@ async fn several_sessions_run_at_once_in_one_process() {
         sessions[0]["_meta"]["bzz/place"],
         sessions[1]["_meta"]["bzz/place"]
     );
-    let status = &host.status()[0];
-    assert_eq!((status.phase, status.turns), (Phase::Running, 0));
+    // The replies are out; the harness ends its two turns a moment later.
+    let status = until("both turns to end", WAIT, || {
+        Some(host.status().remove(0)).filter(|status| status.turns == 0)
+    })
+    .await;
+    assert_eq!(status.phase, Phase::Running);
     assert!(
         status.line().contains("Scout · pi-durable · ready"),
         "{}",
@@ -769,7 +795,7 @@ async fn tools_check_their_arguments_and_act_only_in_the_place() {
     assert_eq!(world.offer(&host, &request).await, Offer::Queued);
     world.settled(&request).await;
 
-    let sends = world.script.tool_results("send");
+    let sends = world.results("send", 3).await;
     let text = |result: &Value| result["text"].as_str().unwrap().to_owned();
     assert!(sends[0]["isError"] == true && text(&sends[0]).contains("no argument `msg`"));
     assert!(
@@ -846,7 +872,7 @@ async fn a_harness_that_sends_twice_yields_one_reply() {
         "the second was never published"
     );
     assert!(world.relay.by_agent(7).is_empty());
-    let results = world.script.tool_results("send");
+    let results = world.results("send", 3).await;
     let id = replies[0].id.to_hex();
     assert_eq!(
         results[0],
@@ -862,7 +888,7 @@ async fn a_harness_that_sends_twice_yields_one_reply() {
         results[1]
     );
     assert_eq!(results[2]["isError"], true, "{}", results[2]);
-    assert_eq!(world.script.tool_results("react")[0]["isError"], true);
+    assert_eq!(world.results("react", 1).await[0]["isError"], true);
     host.shutdown().await;
 }
 
@@ -1973,4 +1999,111 @@ async fn an_agent_run_by_another_live_bzz_is_not_started() {
     host.shutdown().await;
     let _ = (other_bzz.kill(), its_harness.kill());
     let _ = (other_bzz.wait(), its_harness.wait());
+}
+
+// ---- sessions across restarts, and the idle checkpoint --------------------
+
+/// Protocol, `session/new`: for a harness that is not bzz's own, bzz keeps
+/// the session id it returned for a place and uses `session/load` after a
+/// restart when the harness offers it; a harness that refuses the load gets
+/// a new session.
+#[tokio::test]
+async fn a_stored_session_is_loaded_after_a_restart_when_the_harness_offers_it() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": false, "load_session": true}),
+        json!([
+            {"steps": [send("first answer", true)]},
+            {"steps": [send("second answer", true)]},
+            {"steps": [send("third answer", true)]},
+        ]),
+    );
+    let host = world.host(Harness::ClaudeCode).await;
+    let first = world.ask(&host, "first").await;
+    world.settled(&first).await;
+    let session = world.script.received("session/prompt")[0]["sessionId"].clone();
+    host.shutdown().await;
+
+    // A new process: the same conversation is loaded, not opened anew, and
+    // its tools work with the credential made for this start.
+    let host = world.host(Harness::ClaudeCode).await;
+    let second = world.message_in(world.channel, &world.owner, "second", true, Some(&first));
+    assert_eq!(world.offer(&host, &second).await, Offer::Queued);
+    world.settled(&second).await;
+    assert_eq!(
+        world.contents(&world.relay.replies_to(&second)),
+        ["second answer"]
+    );
+    assert_eq!(world.script.received("session/new").len(), 1);
+    let loads = world.script.received("session/load");
+    assert_eq!(loads.len(), 1);
+    assert_eq!(loads[0]["sessionId"], session);
+    assert_eq!(loads[0]["mcpServers"][0]["name"], "buzz");
+    assert_eq!(
+        world.script.received("session/prompt")[1]["sessionId"],
+        session
+    );
+    assert_ne!(
+        loads[0]["mcpServers"][0]["env"][0]["value"],
+        world.script.received("session/new")[0]["mcpServers"][0]["env"][0]["value"],
+        "a credential is never reused across starts"
+    );
+    host.shutdown().await;
+
+    // The harness no longer knows the session: bzz opens a new one.
+    let mut state =
+        serde_json::from_str::<Value>(&std::fs::read_to_string(world.script.state_path()).unwrap())
+            .unwrap();
+    state["sessions"] = json!([]);
+    std::fs::write(world.script.state_path(), state.to_string()).unwrap();
+    let host = world.host(Harness::ClaudeCode).await;
+    let third = world.message_in(world.channel, &world.owner, "third", true, Some(&first));
+    assert_eq!(world.offer(&host, &third).await, Offer::Queued);
+    world.settled(&third).await;
+    assert_eq!(
+        world.contents(&world.relay.replies_to(&third)),
+        ["third answer"]
+    );
+    assert_eq!(world.script.received("session/load").len(), 2);
+    assert_eq!(world.script.received("session/new").len(), 2);
+    host.shutdown().await;
+}
+
+/// Protocol, `_bzz/checkpoint`: bzz's own host is asked to checkpoint its
+/// files when the agent has been idle for a while, never during a turn, and
+/// on request (before a move). Another harness is never asked.
+#[tokio::test]
+async fn bzzs_own_host_is_asked_to_checkpoint_when_idle() {
+    for harness in [Harness::PiDurable, Harness::Grok] {
+        let world = World::new().await;
+        let gate = world.script.marker("gate");
+        world.script.write(
+            json!({"own_host": harness == Harness::PiDurable}),
+            json!([
+                {"steps": [{"touch": world.script.marker("live")}, {"wait_for": gate}, send("answer", true)]},
+            ]),
+        );
+        let mut idle = limits();
+        idle.checkpoint_idle = Duration::from_millis(300);
+        let host = world.host_with(world.settings(harness), idle).await;
+        let request = world.ask(&host, "hello").await;
+        let live = world.script.marker("live");
+        until("the turn to be live", WAIT, || live.exists().then_some(())).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(!host.checkpoint(world.agent).await, "not while a turn runs");
+        assert!(world.script.received("_bzz/checkpoint").is_empty());
+        std::fs::write(&gate, "open").unwrap();
+        world.settled(&request).await;
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        let asked = world.script.received("_bzz/checkpoint").len();
+        if harness == Harness::PiDurable {
+            assert_eq!(asked, 1, "once, after it went idle");
+            assert!(host.checkpoint(world.agent).await, "and on request");
+            assert_eq!(world.script.received("_bzz/checkpoint").len(), 2);
+        } else {
+            assert_eq!(asked, 0);
+            assert!(!host.checkpoint(world.agent).await);
+        }
+        host.shutdown().await;
+    }
 }
