@@ -4,7 +4,7 @@
 // temporary folders; the client that stands in for bzz answers the question.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { SqliteFs } from "../src/disk.mjs";
@@ -323,7 +323,7 @@ test("without a folder granted for it there is no `run`, and a grant without `ex
 	assert.deepEqual(lost.asked, []);
 });
 
-test("a command does not outlive the host, however the host goes, and is not started again after a restart", { skip }, async (t) => {
+test("a command does not outlive a host that is killed, and is not started again after a restart", { skip }, async (t) => {
 	const { site, start, pids, gone } = await world(t);
 	const command = `echo started >> starts.txt; ${TREE}`;
 	// The host is killed outright: it can do nothing, and the keeper of the command sees it go.
@@ -343,14 +343,6 @@ test("a command does not outlive the host, however the host goes, and is not sta
 	assert.deepEqual(host.asked, []);
 	assert.equal(readFileSync(join(site, "starts.txt"), "utf8"), "started\n");
 
-	// The host is stopped as bzz stops it, by the end of its input: it leaves in time, and the command with it.
-	writeFileSync(join(site, "pids"), "");
-	host.on["_bzz/approve"] = () => ({ allow: true });
-	host.prompt(host.sessionId, "k2", script(["run", { folder: "site", command: TREE }], ["report"])).catch(() => undefined);
-	ids = await pids(3);
-	assert.deepEqual(await host.stop(2_000), { code: 0, signal: null });
-	await gone(ids, 5_000);
-
 	// A command that ignores TERM, children included, under a host that is killed: the keeper outlives the host, gives
 	// the group its grace, and kills what is left. Nothing but the keeper could.
 	const other = await world(t);
@@ -361,4 +353,15 @@ test("a command does not outlive the host, however the host goes, and is not sta
 	await sleep(300);
 	assert.equal(ids.filter(alive).length, 3, "TERM was ignored: only KILL ends this group");
 	await other.gone(ids, 5_000);
+});
+
+test("a host stopped by the end of its input leaves in time, and its command ends with it", { skip }, async (t) => {
+	const { start, pids, gone } = await world(t);
+	const host = await start();
+	host.prompt(host.sessionId, "s1", script(["run", { folder: "site", command: TREE }], ["report"])).catch(() => undefined);
+	const ids = await pids(3);
+	assert.equal(ids.filter(alive).length, 3);
+	// As bzz stops it. The host has 2 s; the command's group gets TERM at once and is gone soon after.
+	assert.deepEqual(await host.stop(2_000), { code: 0, signal: null });
+	await gone(ids, 5_000);
 });
