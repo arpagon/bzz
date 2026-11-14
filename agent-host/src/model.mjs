@@ -184,7 +184,7 @@ async function addScripted(models, path) {
 	const { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } = await import("@earendil-works/pi-ai/providers/faux");
 	const { default: respond } = await import(pathToFileURL(path).href);
 	const faux = fauxProvider({ provider: "scripted", models: [{ id: "scripted" }] });
-	const helpers = { message: fauxAssistantMessage, text: fauxText, call: (name, args) => fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" }) };
+	const helpers = { message: fauxAssistantMessage, text: fauxText, toolCall: fauxToolCall, call: (name, args) => fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" }) };
 	const step = (context, options) => {
 		if (faux.getPendingResponseCount() < 8) faux.appendResponses(Array(64).fill(step));
 		return respond(context, helpers, options);

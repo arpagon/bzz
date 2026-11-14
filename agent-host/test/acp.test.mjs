@@ -313,6 +313,11 @@ test("a provider that fails during the turn fails the prompt with its reason", a
 	const failure = await host.prompt(session, "e1", script(["error", "401 the key was refused"])).catch((error) => error);
 	assert.equal(failure.code, -32000);
 	assert.match(failure.message, /The turn failed: .*401 the key was refused/);
+	assert.deepEqual(failure.data, { kind: "model_error" });
+	// The turn is settled: the same request handed over again gets the same error and starts no work. Only a new request is a new try.
+	const again = await host.prompt(session, "e1", script(["buzz_send", { text: "a second try", final: true }])).catch((error) => error);
+	assert.deepEqual([again.code, again.message, again.data], [failure.code, failure.message, failure.data]);
+	assert.equal(host.tools.length, 0);
 	// The next mention in the same place is answered.
 	assert.deepEqual(await host.prompt(session, "e2", script(["buzz_send", { text: "back", final: true }])), { stopReason: "end_turn" });
 });

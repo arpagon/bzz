@@ -8,10 +8,11 @@
 // text; ["sleep", ms] waits, then runs `true`; ["report"] sends the last tool
 // result as the final message; ["error", "why"] fails as a provider would;
 // ["describe"] sends what the model was given, as JSON: `{ system, tools }`,
-// the text of its system prompt and the names of the tools it was offered.
+// the text of its system prompt and the names of the tools it was offered;
+// ["calls", [[name, {arguments}], ...]] calls several tools in one answer.
 const textOf = (message) => (typeof message.content === "string" ? message.content : message.content.map((part) => part.text ?? "").join(""));
 
-export default async function respond(context, { call, message }, options) {
+export default async function respond(context, { call, message, toolCall }, options) {
 	const messages = context.messages;
 	const lastUser = messages.findLastIndex((entry) => entry.role === "user");
 	const people = messages.filter((entry) => entry.role === "user").length;
@@ -44,6 +45,7 @@ export default async function respond(context, { call, message }, options) {
 		}
 		return call("buzz_send", { text: JSON.stringify({ system: Object.values(sections).join("\n"), tools: [...tools] }), final: true });
 	}
+	if (name === "calls") return message(argument.map(([tool, args]) => toolCall(tool, args)), { stopReason: "toolUse" });
 	if (name === "error") return message("", { stopReason: "error", errorMessage: argument });
 	return call(name, argument);
 }

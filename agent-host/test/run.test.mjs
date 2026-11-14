@@ -129,13 +129,24 @@ test("a refused command does not start, and the model is told why", { skip }, as
 	assert.equal(host.approvals().length, 10);
 	assert.equal(existsSync(join(site, "ran.txt")), false);
 
+	// Two commands asked for in one answer of the model: the owner is asked about the second when the first is over.
+	const order = [];
+	host.on["_bzz/approve"] = ({ command: asked }) => {
+		order.push(`asked: ${asked}`, `first has run: ${existsSync(join(site, "first.txt"))}`);
+		return { allow: !asked.includes("second") };
+	};
+	await host.prompt(host.sessionId, "two", script(["calls", [["run", { folder: "site", command: "sleep 0.4; echo 1 > first.txt" }], ["run", { folder: "site", command: "echo second > second.txt" }]]], ["report"]));
+	assert.deepEqual(order, ["asked: sleep 0.4; echo 1 > first.txt", "first has run: false", "asked: echo second > second.txt", "first has run: true"]);
+	assert.equal(existsSync(join(site, "second.txt")), false);
+	assert.equal(host.approvals().length, 12);
+
 	// What can never run is refused before the owner is troubled with it.
 	host.on["_bzz/approve"] = () => ({ allow: true });
 	for (const [args, pattern] of [
 		[{ folder: "site", command: "  " }, /run needs `command`/], [{ folder: "site", command: "echo a\0b" }, /NUL character/], [{ folder: "site", command, timeout: 0 }, /`timeout` must be a number of seconds, above 0 and at most 3600/],
 		[{ folder: "site", command, timeout: 99_999 }, /at most 3600/], [{ folder: "site", command: `echo ${"x".repeat(100_001)}` }, /longer than 100000 bytes/],
 	]) assert.match(await host.run(args), pattern);
-	assert.equal(host.approvals().length, 10);
+	assert.equal(host.approvals().length, 12);
 	assert.equal(existsSync(join(site, "ran.txt")), false);
 	// And then a yes: it runs.
 	assert.equal(await host.run({ folder: "site", command }), "");
