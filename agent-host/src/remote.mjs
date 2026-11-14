@@ -11,7 +11,11 @@ import { join } from "node:path";
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const EVENT = "[0-9a-f]{64}";
 
-/** Name, model and instructions of a moved agent, written by `agent move` and `agent launch-kit`. */
+/**
+ * What a moved agent carries beside its two SQLite files, written by `agent move` and `agent launch-kit`: name, model,
+ * instructions, and the hosts it may reach. Granted folders are not read from it, whatever the file says: they belong
+ * to the machine the owner granted them on.
+ */
 export async function readAgentFile(folder) {
 	let text;
 	try {
@@ -26,6 +30,8 @@ export async function readAgentFile(folder) {
 		agent: { name: typeof parsed.name === "string" && parsed.name ? parsed.name : "agent" },
 		model: parsed.model && typeof parsed.model === "object" ? parsed.model : undefined,
 		instructions: typeof parsed.instructions === "string" ? parsed.instructions : "",
+		// Checked like bzz's own list, where the host reads it: a bad entry stops the start instead of opening the network.
+		network: parsed.network === undefined ? [] : parsed.network,
 	};
 }
 

@@ -311,9 +311,10 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 		// Without bzz's fields this is a remote copy under buzz-acp: the settings moved with the agent.
 		const settings = bzz
 			? { local: true, agent: bzz.agent ?? {}, model: bzz.model, instructions: bzz.instructions ?? "", mounts: bzz.mounts ?? [], network: bzz.network ?? [], piDir: bzz.piDir }
-			: { local: false, ...(await readAgentFile(folder)), mounts: [], network: [] };
+			: { local: false, ...(await readAgentFile(folder)), mounts: [] };
 		let net;
 		try {
+			if (!Array.isArray(settings.network)) throw new Error("the network allow-list must be a list of host names");
 			net = network(settings.network);
 			disk = new SqliteFs(join(folder, "files.sqlite"));
 			vfs = new Vfs(disk, settings.mounts);
