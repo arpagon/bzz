@@ -30,7 +30,7 @@ test("initialize answers as bzz's own host, and the pipe keeps to JSON-RPC", asy
 	await assert.rejects(host.rpc("session/new", { cwd: "/home/agent", mcpServers: [] }), /initialize comes first/);
 	const answer = await host.initialize();
 	assert.equal(answer.protocolVersion, 1);
-	assert.deepEqual(answer._meta, { bzz: { host: JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version, tools: "pipe", packages: [] } });
+	assert.deepEqual(answer._meta, { bzz: { host: JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version, tools: "pipe", packages: [], run: [] } });
 	assert.equal(answer.agentCapabilities.loadSession, false);
 	await assert.rejects(host.initialize(), /already called/);
 	await assert.rejects(host.rpc("session/load", {}), { code: -32601 });

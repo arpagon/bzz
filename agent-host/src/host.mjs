@@ -14,6 +14,7 @@ import { defaultPiDir, ModelUnavailable, openModels } from "./model.mjs";
 import { network } from "./network.mjs";
 import { loadPackages, noPackages } from "./packages.mjs";
 import { buzzTool, readAgentFile, readBuzzPrompt } from "./remote.mjs";
+import { createRun, RUN_UNAVAILABLE } from "./run.mjs";
 import { connect, RpcError } from "./rpc.mjs";
 import { Vfs } from "./vfs.mjs";
 
@@ -79,7 +80,7 @@ const CHAT_TOOLS = [
 		},
 	},
 ];
-const TOOL_KIND = { read: "read", write: "edit", edit: "edit", bash: "execute" };
+const TOOL_KIND = { read: "read", write: "edit", edit: "edit", bash: "execute", run: "execute" };
 
 /**
  * Serves one agent on `input` and `output` until the input ends.
@@ -97,6 +98,8 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 	let models;
 	/** Built by `initialize`: what the tools and the prompt hold depends on what bzz grants. */
 	let registry;
+	/** The `run` tool, when the owner granted a folder with `exec`. Otherwise it does not exist. */
+	let run;
 	/** The open Harness, as a promise. A checkpoint closes it; the next turn opens it again. */
 	let opening;
 	const sessions = new Map();
@@ -184,6 +187,25 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 	}
 
 	/**
+	 * Asked by `run` before a real command starts. bzz decides, and may put the command to the owner. What is sent
+	 * is the command as it will be handed to the shell, and nothing else is started.
+	 */
+	async function approve({ conversationId, mount, command }, signal) {
+		const sessionId = await sessionOf(conversationId, signal);
+		return stoppable(peer.request("_bzz/approve", { sessionId, kind: "exec", mount, command }), signal);
+	}
+
+	/** Keeps a long output of `run` on the agent's disk and returns where. */
+	function saveOutput(bytes) {
+		const path = `/tmp/run-${randomUUID().slice(0, 8)}.log`;
+		vfs.tx(() => {
+			vfs.mkdir("/tmp", { recursive: true });
+			vfs.writeFile(path, bytes);
+		});
+		return path;
+	}
+
+	/**
 	 * Off unless BZZ_AGENT_HOST_RECORD names a folder: then a remote copy saves each prompt of buzz-acp there. It is
 	 * how tests/fixtures/agents/buzz-acp-prompts is recorded again at a new Buzz pin, with disposable identities.
 	 */
@@ -195,18 +217,21 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 	}
 
 	const title = (call) => {
-		const hint = call.name === "bash" ? call.arguments?.command : call.arguments?.path;
-		return typeof hint === "string" ? `${call.name}: ${hint.split("\n")[0].slice(0, 80)}` : call.name;
+		const hint = call.name === "bash" || call.name === "run" ? call.arguments?.command : call.arguments?.path;
+		const where = call.name === "run" && typeof call.arguments?.folder === "string" ? ` in /mnt/${call.arguments.folder.replace(/^\/mnt\//, "")}` : "";
+		return typeof hint === "string" ? `${call.name}${where}: ${hint.split("\n")[0].slice(0, 80)}` : call.name;
 	};
 
+	/** What the agent has, told to the model briefly and as it is: its own disk, which folders, which it may write, and whether it has `run`. */
 	function sandbox() {
 		const grants = vfs.describeGrants();
 		const hosts = config.network;
 		return [
 			`You are ${config.agent.name ?? "an agent"}, an agent in a team chat. People see only what you post with \`${PREFIX}send\`: your plain text is not shown to anyone. Set \`final\` to true on the message that ends your turn.`,
 			`The chat tools are \`${PREFIX}send\`, \`${PREFIX}read\` and \`${PREFIX}react\`. Where your instructions name a chat tool such as \`send\`, call \`${PREFIX}send\`.`,
-			`\`read\`, \`write\`, \`edit\` and \`bash\` work on your own disk. ${HOME} is yours and is kept between conversations. The shell is a sandbox: its commands are built in, no other program can be installed or run, and a command's output arrives when it ends.`,
-			grants.length ? `Folders of the owner's machine granted to you: ${grants.join(", ")}.` : "No folder of the owner's machine is granted to you.",
+			`You have a disk of your own: \`read\`, \`write\`, \`edit\` and \`bash\` work on it. ${HOME} is yours and is kept between conversations. \`bash\` is a sandbox: its commands are built in, no other program can be installed or run in it, and a command's output arrives when it ends.`,
+			grants.length ? `Folders of the owner's machine granted to you, which the same tools reach: ${grants.join(", ")}. Nothing else of that machine is visible to them.` : "No folder of the owner's machine is granted to you.",
+			...(run ? [`\`run\` starts a real command of the owner's machine in ${run.names.map((name) => `/mnt/${name}`).join(", ")}: use it for what the sandbox lacks, such as a build or the tests. The owner may be asked before a command starts and can refuse it; a refusal comes back as the tool's error. Copy what you want to keep to your own disk.`] : []),
 			hosts.length ? `Network: \`git\` (https only) and \`curl\` reach only ${hosts.join(", ")}.` : "Network: no host is allowed, so `git clone`, `git push` and `curl` to the network are refused.",
 			"`git` covers init, clone, status, add, commit, log, diff, branch, checkout, merge without conflicts, fetch, pull and push. It has no rebase, no stash and no SSH remotes.",
 		].join("\n");
@@ -225,7 +250,11 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 		for (const extension of packages.extensions) made.install(extension);
 		made.install(defineExtension({
 			name: "bzz",
-			tools: CHAT_TOOLS.map(({ name, ...tool }) => defineTool({ ...tool, name: `${PREFIX}${name}`, execute: (args, api, context) => chat(name, args, api, context) })),
+			tools: [
+				...CHAT_TOOLS.map(({ name, ...tool }) => defineTool({ ...tool, name: `${PREFIX}${name}`, execute: (args, api, context) => chat(name, args, api, context) })),
+				// Without a folder granted for it, the tool is not there, and nothing tells the model of it.
+				...(run ? [run.tool] : []),
+			],
 			sections: [section("bzz", sandbox)],
 			hooks: [
 				hook(GenerationTask, {
@@ -355,15 +384,19 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 		for (const entry of packages.report) log(entry.loaded ? `package ${entry.source} loaded: extensions [${entry.extensions.join(", ")}], providers [${entry.providers.join(", ")}]` : `package ${entry.source} was left out: ${entry.error}`);
 		models = await openModels({ piDir, env, packages });
 		config = { ...settings, network: net.hosts };
+		// Hands on this machine: only under bzz, which is asked about each command, and only where the owner said so.
+		const hands = settings.local ? vfs.execFolders() : new Map();
+		if (hands.size && RUN_UNAVAILABLE) log(`run is not available: ${RUN_UNAVAILABLE}`);
+		run = hands.size && !RUN_UNAVAILABLE ? createRun({ folders: hands, approve, save: saveOutput, env, log }) : undefined;
 		registry = buildRegistry(packages);
 		await ready();
-		log(`ready: ${config.local ? "started by bzz" : "remote copy"}, ${settings.mounts.length} granted folder(s), ${net.hosts.length} allowed host(s), ${packages.off ? "packages off" : `${packages.report.filter((entry) => entry.loaded).length} package(s)`}`);
+		log(`ready: ${config.local ? "started by bzz" : "remote copy"}, ${settings.mounts.length} granted folder(s), ${net.hosts.length} allowed host(s), ${packages.off ? "packages off" : `${packages.report.filter((entry) => entry.loaded).length} package(s)`}, ${run ? `run in ${run.names.length} folder(s)` : "no run"}`);
 		return {
 			protocolVersion: 1,
 			agentCapabilities: { loadSession: false, promptCapabilities: { image: false, audio: false, embeddedContext: false } },
 			agentInfo: { name: "bzz-agent-host", title: "bzz Pi Durable host", version: VERSION },
 			authMethods: [],
-			_meta: { bzz: { host: VERSION, tools: config.local ? "pipe" : "buzz", packages: packages.report } },
+			_meta: { bzz: { host: VERSION, tools: config.local ? "pipe" : "buzz", packages: packages.report, run: run ? run.names : [] } },
 		};
 	}
 
@@ -379,6 +412,7 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 				initialized = false;
 				config = undefined;
 				registry = undefined;
+				run = undefined;
 				opening = undefined;
 				try { disk?.close(); } catch {}
 				throw error;
@@ -454,6 +488,8 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 	const closed = peer.closed.then(async () => {
 		// The client is gone: nothing more is said to it. Unfinished turns are in storage and continue in the next process.
 		peer.stop();
+		// A real command does not outlive the host. Its keeper would see the host go; this is the same order, sooner.
+		run?.stopAll();
 		const timer = new Promise((resolve) => setTimeout(resolve, CLOSE_MS, "late"));
 		if ((await Promise.race([close().catch((error) => log(`close failed: ${error?.message ?? error}`)), timer])) === "late") log("storage did not close in time");
 		try { disk?.close(); } catch {}

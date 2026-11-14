@@ -9,7 +9,7 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export class Vfs {
 	/**
 	 * @param disk the agent's SqliteFs
-	 * @param grants `[{ name, path, write }]`, as bzz sends them at each start. They are never stored.
+	 * @param grants `[{ name, path, write, exec }]`, as bzz sends them at each start. They are never stored.
 	 */
 	constructor(disk, grants = []) {
 		this.disk = disk;
@@ -123,5 +123,10 @@ export class Vfs {
 	/** One line per granted folder, for the model. Names only: the real paths stay in bzz. */
 	describeGrants() {
 		return [...this.grants.values()].map((grant) => `${grant.prefix} (${grant.write ? "read and write" : "read-only"})`);
+	}
+
+	/** The granted folders where the agent may start real commands: `name -> { root }`, the real path, absent when the folder is not there. */
+	execFolders() {
+		return new Map([...this.grants.values()].filter((grant) => grant.exec).map((grant) => [grant.name, { root: grant.root }]));
 	}
 }

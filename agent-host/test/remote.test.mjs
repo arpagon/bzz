@@ -240,7 +240,8 @@ test("a moved agent keeps its allowed hosts, and gets no folder of the machine i
 	const agentFile = { name: "Scout", model: MODEL, instructions: "Be brief.", network: [servers[0]], mounts: [{ name: "there", path: there, write: true, exec: true }] };
 	const { start, posts } = remote(t, { agentFile });
 	const host = start();
-	await host.open();
+	// No folder, so no hands: `run` is not there, whatever agent.json says.
+	assert.deepEqual((await host.open())._meta.bzz.run, []);
 	const command = `curl -s http://${servers[0]}/a; curl -sS http://${servers[1]}/b; ls /mnt; cat /mnt/there/theirs.txt; echo end`;
 	await host.prompt(await host.session(), mention(first.file, ["bash", { command }], ["report"]));
 	// The shell's own output first, then what it wrote to standard error.
@@ -248,6 +249,10 @@ test("a moved agent keeps its allowed hosts, and gets no folder of the machine i
 	assert.equal(posts()[0].stdin.includes("a file of the other machine"), false);
 	assert.deepEqual(reached, [0]);
 	assert.match(host.stderr(), /remote copy, 0 granted folder\(s\), 1 allowed host\(s\)/);
+	await host.prompt(await host.session(), mention(reply.file, ["describe"]));
+	const told = JSON.parse(posts().at(-1).stdin);
+	assert.deepEqual(told.tools, ["read", "write", "edit", "bash", "buzz_send", "buzz_read", "buzz_react"]);
+	assert.match(told.system, /No folder of the owner's machine is granted to you\./);
 	await host.stop();
 
 	// A list that is not host names stops the start: it is never read as "everything".

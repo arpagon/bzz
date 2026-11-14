@@ -232,7 +232,7 @@ test("bzz can switch package loading off for an agent, and a moved agent keeps t
 	const answer = await host.initialize({ packages: false, piDir: pi });
 	assert.deepEqual(answer._meta.bzz.packages, []);
 	assert.equal(host.stderr().includes("the guard package"), false, "no code of a package ran");
-	assert.match(host.stderr(), /packages off\n/);
+	assert.match(host.stderr(), /, packages off, /);
 	const session = await host.session(THREAD);
 	const told = JSON.parse((await host.prompt(session, "e1", script(["describe"])), host.tools.at(-1).arguments.text));
 	assert.deepEqual(told.tools, ["read", "write", "edit", "bash", "buzz_send", "buzz_read", "buzz_react"]);
@@ -254,6 +254,6 @@ test("bzz can switch package loading off for an agent, and a moved agent keeps t
 		const copy = startHost(t, folder, { home: root, env: bareEnv(root, { PI_CODING_AGENT_DIR: pi }) });
 		return copy.rpc("initialize", { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "buzz-acp", version: "1.0.0" } });
 	};
-	assert.deepEqual((await remote({}))._meta.bzz, { host: answer._meta.bzz.host, tools: "buzz", packages: report });
+	assert.deepEqual((await remote({}))._meta.bzz, { host: answer._meta.bzz.host, tools: "buzz", packages: report, run: [] });
 	assert.deepEqual((await remote({ packages: false }))._meta.bzz.packages, []);
 });
