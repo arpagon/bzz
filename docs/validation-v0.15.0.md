@@ -220,6 +220,7 @@ Red on the relay, two runs:
 | `session/load` with a real adapter | scripted only |
 | The pause toggle and community switch in the running TUI | the toggle is covered by the `app` test; a switch of community with agents running is not |
 | Growth over time | inbox rows and stored sessions are never pruned, and a harness keeps every session it opened |
+
 ## M2 — The Pi Durable host
 
 **Scope of this entry:** the host itself, the Node program in `agent-host/`
