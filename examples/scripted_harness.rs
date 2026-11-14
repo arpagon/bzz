@@ -19,6 +19,26 @@
 //!   (`h1`, `h2`, …), as the real host's do.
 //! - `run`, `packages`: what an own host reports in `_meta.bzz` of its
 //!   answer to `initialize`.
+//! - As a coding harness (not `own_host`), what stands in for the owner's
+//!   own program:
+//!   - `modes`: the modes each session offers. Absent: `default`,
+//!     `workspace-write` and `auto`. A session starts in `auto`, as the
+//!     owner's own settings would have it; `session/set_mode` to a mode on
+//!     the list succeeds. `[]`: no modes, and `session/set_mode` is a
+//!     method it does not know. `refuse_mode: true`: it refuses every mode.
+//!   - `models`, `thinking`: the values of the `model` and `thought_level`
+//!     options of `configOptions`. `session/set_config_option` succeeds for
+//!     a value on its list.
+//!   - `capabilities`: `agentCapabilities.sessionCapabilities`.
+//!   - `load_lists: false`: `session/load` answers without modes or
+//!     options, as a harness may.
+//! - `replay`: a transcript recorded from a real program
+//!   (`tests/fixtures/agents/transcripts/`). The harness then expects each
+//!   message bzz sent to that program and sends what the program sent, in
+//!   the transcript's order, and calls bzz's tools where it did. `folders`
+//!   maps the names of granted folders to their paths in this run. A
+//!   message of bzz that differs is logged as a mismatch and ends the
+//!   harness with status 4.
 //! - `log`: every message received, every tool result and the process's own
 //!   arguments and environment, one JSON object per line.
 //! - `state`: what survives a restart: which turns were used, which requests
@@ -30,7 +50,8 @@
 //! `{"text": "…"}`, `{"update": {…}}`, `{"notify": {"method": …}}`,
 //! `{"request": {"method": …}}` (`"$session"` as its `sessionId` is the
 //! turn's session; with `"then_touch": "<file>"` the file is written when
-//! the answer is `{"allow": true}`, as a command that starts),
+//! the answer is `{"allow": true}`, as a command that starts, or selects
+//! the option `"when_selected"` names, as an edit that is made),
 //! `{"requests": [{"method": …}, …]}` (all sent at once, then all awaited;
 //! the log has `answered`, the order in which the answers came),
 //! `{"sleep_ms": 50}`, `{"stall": true}`
@@ -337,11 +358,17 @@ impl Harness {
                 let response =
                     self.request(message["method"].as_str().unwrap_or("x"), params, true);
                 // As a command that starts only on a yes.
-                if let Some(path) = step.get("then_touch").and_then(Value::as_str)
-                    && response
+                let answered = |pointer: &str| {
+                    response
                         .as_ref()
-                        .and_then(|response| response.pointer("/result/allow"))
-                        == Some(&json!(true))
+                        .and_then(|response| response.pointer(pointer))
+                        .cloned()
+                };
+                if let Some(path) = step.get("then_touch").and_then(Value::as_str)
+                    && (answered("/result/allow") == Some(json!(true))
+                        || step.get("when_selected").is_some_and(|option| {
+                            Some(option) == answered("/result/outcome/optionId").as_ref()
+                        }))
                 {
                     let _ = std::fs::write(path, "started\n");
                 }
@@ -456,6 +483,49 @@ impl Harness {
         }
     }
 
+    fn list(&self, name: &str) -> Option<Vec<Value>> {
+        self.script.get(name).and_then(Value::as_array).cloned()
+    }
+
+    /// The modes a coding harness offers: those of the script, or the ones
+    /// the two adapters need and the permissive one a session starts in.
+    fn modes(&self) -> Vec<Value> {
+        self.list("modes")
+            .unwrap_or_else(|| vec![json!("default"), json!("workspace-write"), json!("auto")])
+    }
+
+    /// What a coding harness answers when a session opens, beside its id.
+    fn session_answer(&self, mut answer: Value) -> Value {
+        if self.own_host() {
+            return answer;
+        }
+        let modes = self.modes();
+        if !modes.is_empty() {
+            answer["modes"] = json!({
+                "currentModeId": "auto",
+                "availableModes": modes.iter().map(|mode| json!({"id": mode, "name": mode})).collect::<Vec<_>>(),
+            });
+        }
+        let option = |id: &str, category: &str, values: Vec<Value>| {
+            json!({
+                "id": id, "name": id, "category": category, "type": "select",
+                "currentValue": values.first().cloned().unwrap_or(Value::Null),
+                "options": values.iter().map(|value| json!({"value": value, "name": value})).collect::<Vec<_>>(),
+            })
+        };
+        let mut options = Vec::new();
+        if let Some(models) = self.list("models") {
+            options.push(option("model", "model", models));
+        }
+        if let Some(levels) = self.list("thinking") {
+            options.push(option("effort", "thought_level", levels));
+        }
+        if !options.is_empty() {
+            answer["configOptions"] = json!(options);
+        }
+        answer
+    }
+
     fn handle(self: &Arc<Self>, message: Value) {
         let method = message
             .get("method")
@@ -500,6 +570,9 @@ impl Harness {
                     "protocolVersion": 1,
                     "agentCapabilities": {"loadSession": self.script.get("load_session").and_then(Value::as_bool).unwrap_or(false)},
                 });
+                if let Some(capabilities) = self.script.get("capabilities") {
+                    result["agentCapabilities"]["sessionCapabilities"] = capabilities.clone();
+                }
                 if self.own_host() {
                     result["_meta"] = json!({"bzz": {
                         "host": "scripted",
@@ -522,7 +595,32 @@ impl Harness {
                         .push(json!(session))
                 });
                 self.open_session(&params, &session);
-                answer(json!({"sessionId": session}));
+                answer(self.session_answer(json!({"sessionId": session})));
+            }
+            "session/set_mode" if !self.own_host() && !self.modes().is_empty() => {
+                let wanted = params.get("modeId").cloned().unwrap_or(Value::Null);
+                let refuses = self.script.get("refuse_mode") == Some(&json!(true));
+                if self.modes().contains(&wanted) && !refuses {
+                    answer(json!({}));
+                } else if let Some(id) = &id {
+                    self.write(&json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": "no such mode"}}));
+                }
+            }
+            "session/set_config_option" if !self.own_host() => {
+                let offered = match params.get("configId").and_then(Value::as_str) {
+                    Some("model") => self.list("models"),
+                    Some("effort") => self.list("thinking"),
+                    _ => None,
+                }
+                .unwrap_or_default();
+                if params
+                    .get("value")
+                    .is_some_and(|value| offered.contains(value))
+                {
+                    answer(self.session_answer(json!({})));
+                } else if let Some(id) = &id {
+                    self.write(&json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": "no such value"}}));
+                }
             }
             "session/load" => {
                 let session = params["sessionId"].as_str().unwrap_or_default().to_owned();
@@ -537,7 +635,11 @@ impl Harness {
                         .unwrap_or(false)
                 {
                     self.open_session(&params, &session);
-                    answer(json!({}));
+                    answer(if self.script.get("load_lists") == Some(&json!(false)) {
+                        json!({})
+                    } else {
+                        self.session_answer(json!({}))
+                    });
                 } else if let Some(id) = &id {
                     self.write(&json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": "no such session"}}));
                 }
@@ -564,6 +666,197 @@ impl Harness {
                 }
             }
         }
+    }
+}
+
+/// Whether `actual` is what the transcript expects: every member the
+/// transcript names is there with its value, `<any>`, `<credential>` and
+/// `<bzz>` stand for any text, and the folders are those of this run.
+fn expected_matches(expected: &Value, actual: &Value, places: &[(String, String)]) -> bool {
+    match (expected, actual) {
+        (Value::String(text), _) if text == "<any>" => true,
+        (Value::String(text), Value::String(actual)) => {
+            let mut text = text.clone();
+            for (name, path) in places {
+                text = text.replace(name, path);
+            }
+            // The parts between two wildcards, in their order.
+            let mut parts = Vec::new();
+            let mut rest = text.as_str();
+            loop {
+                let next = ["<any>", "<credential>", "<bzz>"]
+                    .iter()
+                    .filter_map(|wild| rest.find(wild).map(|at| (at, wild.len())))
+                    .min();
+                match next {
+                    Some((at, length)) => {
+                        parts.push(&rest[..at]);
+                        rest = &rest[at + length..];
+                    }
+                    None => {
+                        parts.push(rest);
+                        break;
+                    }
+                }
+            }
+            if parts.len() == 1 {
+                return parts[0] == actual;
+            }
+            let (first, last) = (parts[0], parts[parts.len() - 1]);
+            if !actual.starts_with(first)
+                || !actual.ends_with(last)
+                || actual.len() < first.len() + last.len()
+            {
+                return false;
+            }
+            let mut at = first.len();
+            let end = actual.len() - last.len();
+            parts[1..parts.len() - 1].iter().all(|part| {
+                actual[at..end].find(part).is_some_and(|found| {
+                    at += found + part.len();
+                    true
+                })
+            })
+        }
+        (Value::Object(expected), Value::Object(actual)) => expected.iter().all(|(name, value)| {
+            actual
+                .get(name)
+                .is_some_and(|actual| expected_matches(value, actual, places))
+        }),
+        (Value::Array(expected), Value::Array(actual)) => {
+            expected.len() == actual.len()
+                && expected
+                    .iter()
+                    .zip(actual)
+                    .all(|(expected, actual)| expected_matches(expected, actual, places))
+        }
+        _ => expected == actual,
+    }
+}
+
+impl Harness {
+    /// Plays a recorded transcript: expects what bzz sent the real program,
+    /// in its order, and sends what the program sent.
+    fn replay(self: &Arc<Self>, transcript: &str) {
+        let workspace = std::env::current_dir().unwrap_or_default();
+        let folder = |path: &std::path::Path| path.display().to_string();
+        let mut places = vec![("<workspace>".to_owned(), folder(&workspace))];
+        for (name, path) in self
+            .script
+            .get("folders")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            places.push((
+                format!("<folder:{name}>"),
+                path.as_str().unwrap_or_default().to_owned(),
+            ));
+        }
+        // `<data>/agents/<id>/workspace`.
+        if let Some(data) = workspace.ancestors().nth(3) {
+            places.push(("<data>".into(), folder(data)));
+        }
+        places.push(("<home>".into(), std::env::var("HOME").unwrap_or_default()));
+        let (sender, incoming) = mpsc::channel::<Value>();
+        std::thread::spawn(move || {
+            for line in std::io::stdin().lock().lines() {
+                let Ok(line) = line else { break };
+                if let Ok(message) = serde_json::from_str::<Value>(&line)
+                    && sender.send(message).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let fail = |line: usize, expected: &Value, got: Value| -> ! {
+            self.log(json!({"replay": "mismatch", "line": line, "expected": expected, "got": got}));
+            eprintln!("replay: line {line} of the transcript is not what bzz sent");
+            std::process::exit(4);
+        };
+        // The ids of bzz's requests, as recorded and as they are now.
+        let mut ids = HashMap::<String, Value>::new();
+        // The parameters of a session being opened, until its id is known.
+        let mut opening = None::<Value>;
+        for (index, line) in transcript.lines().enumerate() {
+            let Ok(entry) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if let Some(expected) = entry.get("out") {
+                let got = match incoming.recv_timeout(Duration::from_secs(30)) {
+                    Ok(got) => got,
+                    Err(_) => fail(index + 1, expected, json!("nothing came in 30 s")),
+                };
+                let mut wanted = expected.clone();
+                let recorded = wanted.as_object_mut().and_then(|object| {
+                    object.remove("jsonrpc");
+                    object.remove("id")
+                });
+                if !expected_matches(&wanted, &got, &places) {
+                    fail(index + 1, expected, got);
+                }
+                self.log(json!({"got": got.get("method"), "params": got.get("params"), "replayed": index + 1}));
+                let method = got.get("method").and_then(Value::as_str);
+                match (method, recorded, got.get("id")) {
+                    // A request of bzz: its answer goes back under its id.
+                    (Some(_), Some(recorded), Some(id)) => {
+                        ids.insert(recorded.to_string(), id.clone());
+                    }
+                    // An answer of bzz to a request of the program.
+                    (None, Some(recorded), id) if id != Some(&recorded) => {
+                        fail(index + 1, expected, got.clone());
+                    }
+                    _ => {}
+                }
+                match method {
+                    Some("session/new") => opening = got.get("params").cloned(),
+                    Some("session/load") => {
+                        let params = got.get("params").cloned().unwrap_or(Value::Null);
+                        let session = params["sessionId"].as_str().unwrap_or_default().to_owned();
+                        self.open_session(&params, &session);
+                    }
+                    _ => {}
+                }
+            } else if let Some(message) = entry.get("in") {
+                let mut text = message.to_string();
+                for (name, path) in &places {
+                    let quoted = serde_json::to_string(path).unwrap_or_default();
+                    text = text.replace(name, quoted.trim_matches('"'));
+                }
+                let mut message = serde_json::from_str::<Value>(&text).unwrap_or(Value::Null);
+                if message.get("method").is_none()
+                    && let Some(recorded) = message.get("id")
+                {
+                    match ids.remove(&recorded.to_string()) {
+                        Some(id) => message["id"] = id,
+                        None => fail(index + 1, &entry, json!("an answer to no request of bzz")),
+                    }
+                    // The program has named the session bzz was opening.
+                    if let (Some(params), Some(session)) = (
+                        opening.as_ref(),
+                        message.pointer("/result/sessionId").and_then(Value::as_str),
+                    ) {
+                        self.open_session(params, session);
+                        opening = None;
+                    }
+                }
+                self.write(&message);
+            } else if let Some(call) = entry.get("tool") {
+                let name = call["name"].as_str().unwrap_or_default();
+                let session = call["session"].as_str().unwrap_or_default();
+                let result = self.tool(
+                    session,
+                    name,
+                    call.get("arguments").cloned().unwrap_or(Value::Null),
+                    true,
+                );
+                self.log(json!({"tool": name, "session": session, "result": result}));
+            }
+        }
+        self.log(json!({"replay": "complete"}));
+        // Until bzz closes the pipe.
+        while incoming.recv().is_ok() {}
+        self.log(json!({"eof": true}));
     }
 }
 
@@ -620,6 +913,14 @@ fn main() {
         "cwd": std::env::current_dir().ok(),
     }}));
     eprintln!("scripted harness {} started", std::process::id());
+    if let Some(transcript) = harness.script.get("replay").and_then(Value::as_str) {
+        let transcript = std::fs::read_to_string(transcript).unwrap_or_else(|error| {
+            eprintln!("replay: {transcript}: {error}");
+            std::process::exit(2);
+        });
+        harness.replay(&transcript);
+        return;
+    }
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         if let Ok(message) = serde_json::from_str::<Value>(&line) {

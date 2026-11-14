@@ -206,6 +206,10 @@ impl std::fmt::Display for CallError {
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, RpcError>>>>>;
 
+/// Sees every line of a connection as it is written (`true`) or read:
+/// the tests' transcripts ([`super::record`]).
+pub type Tap = Arc<dyn Fn(bool, &str) + Send + Sync>;
+
 /// Lines the reader dropped, for the status line and the tests.
 #[derive(Debug, Default)]
 pub struct Dropped {
@@ -222,6 +226,7 @@ pub struct Connection {
     closed: Arc<AtomicBool>,
     dropped: Arc<Dropped>,
     close_input: Arc<tokio::sync::Notify>,
+    tap: Option<Tap>,
 }
 
 fn lock(
@@ -236,6 +241,19 @@ impl Connection {
     /// Starts the reader and writer tasks over a harness's output and input.
     /// Dropping every clone closes the harness's input.
     pub fn start<R, W>(reader: R, writer: W) -> (Self, mpsc::Receiver<Incoming>)
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::start_tapped(reader, writer, None)
+    }
+
+    /// As [`Self::start`], with every line also shown to `tap`.
+    pub fn start_tapped<R, W>(
+        reader: R,
+        writer: W,
+        tap: Option<Tap>,
+    ) -> (Self, mpsc::Receiver<Incoming>)
     where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
@@ -278,6 +296,7 @@ impl Connection {
             pending.clone(),
             closed.clone(),
             dropped.clone(),
+            tap.clone(),
         ));
         (
             Self {
@@ -287,6 +306,7 @@ impl Connection {
                 closed,
                 dropped,
                 close_input,
+                tap,
             },
             received,
         )
@@ -310,12 +330,14 @@ impl Connection {
         if self.is_closed() {
             return Err(CallError::Closed);
         }
-        self.outgoing
-            .try_send(frame_line(frame))
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => CallError::Stalled,
-                mpsc::error::TrySendError::Closed(_) => CallError::Closed,
-            })
+        let line = frame_line(frame);
+        if let Some(tap) = &self.tap {
+            tap(true, &line);
+        }
+        self.outgoing.try_send(line).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => CallError::Stalled,
+            mpsc::error::TrySendError::Closed(_) => CallError::Closed,
+        })
     }
 
     /// Sends a request and waits for its answer. It never waits on a harness
@@ -398,6 +420,7 @@ async fn read<R: AsyncRead + Unpin>(
     pending: Pending,
     closed: Arc<AtomicBool>,
     dropped: Arc<Dropped>,
+    tap: Option<Tap>,
 ) {
     let mut reader = BufReader::with_capacity(64 * 1024, reader);
     let mut line = Vec::new();
@@ -410,12 +433,16 @@ async fn read<R: AsyncRead + Unpin>(
             }
             Ok(None) | Err(_) => break,
         }
-        let Some(frame) = std::str::from_utf8(&line).ok().and_then(parse_frame) else {
+        let text = std::str::from_utf8(&line).ok();
+        let Some(frame) = text.and_then(parse_frame) else {
             if !line.iter().all(u8::is_ascii_whitespace) {
                 dropped.not_a_message.fetch_add(1, Ordering::Relaxed);
             }
             continue;
         };
+        if let (Some(tap), Some(text)) = (&tap, text) {
+            tap(false, text);
+        }
         let message = match frame {
             Frame::Response { id, result } => {
                 // An answer to a request we did not make is ignored.

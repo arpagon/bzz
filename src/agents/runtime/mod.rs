@@ -8,6 +8,10 @@
 //! - [`tools`]: `send`, `read` and `react`, their checked arguments.
 //! - [`approval`]: a real command put to the owner before it starts.
 //! - [`credentials`], [`endpoint`], [`mcp`]: `bzz agent-tools`.
+//! - [`coding`]: Grok, Codex and Claude Code: where each is, the versions
+//!   bzz starts, its adapter, its guard, and how it takes a session.
+//! - [`permission`]: what a coding harness asks leave for, and the rule.
+//! - [`record`]: a transcript of one harness process, for the tests.
 //! - [`agent`]: one agent's turns, with the reply ledger of
 //!   [`crate::store::agent_runtime`].
 //! - [`host`]: every local agent of one community.
@@ -19,13 +23,16 @@ pub mod acp;
 pub mod admission;
 pub mod agent;
 pub mod approval;
+pub mod coding;
 pub mod credentials;
 pub mod endpoint;
 pub mod host;
 pub mod install;
 pub mod mcp;
+pub mod permission;
 pub mod process;
 pub mod prompt;
+pub mod record;
 pub mod relay;
 pub mod service;
 pub mod tools;
@@ -56,6 +63,12 @@ pub enum FailureKind {
     Refused,
     /// The harness keeps dying or cannot be started.
     Unavailable,
+    /// A coding harness did not take the mode bzz sets on every session,
+    /// so nothing was sent to it.
+    NotGuarded,
+    /// The turn ended without an answer after bzz refused something the
+    /// harness asked leave for.
+    NotAllowed,
 }
 
 impl FailureKind {
@@ -72,6 +85,8 @@ impl FailureKind {
             Self::NoReply => "no-reply",
             Self::Refused => "refused",
             Self::Unavailable => "unavailable",
+            Self::NotGuarded => "not-guarded",
+            Self::NotAllowed => "not-allowed",
         }
     }
 
@@ -97,6 +112,12 @@ impl FailureKind {
             Self::NoReply => "I finished without an answer.",
             Self::Refused => "I could not answer this request.",
             Self::Unavailable => "I am not available right now: my process keeps stopping.",
+            Self::NotGuarded => {
+                "I could not answer: my program did not accept the limits bzz sets on it, so nothing was sent to it."
+            }
+            Self::NotAllowed => {
+                "I could not finish: I needed something on my owner's machine that my owner has not allowed."
+            }
         }
     }
 
@@ -115,6 +136,8 @@ impl FailureKind {
             Some("provider_unavailable" | "model_unavailable" | "no_model") => {
                 return Self::ModelUnavailable;
             }
+            // bzz's own word for a session it would not prompt.
+            Some("not_guarded") => return Self::NotGuarded,
             _ => {}
         }
         if (error.code == acp::AUTH_REQUIRED && error.kind.is_none())
@@ -305,7 +328,10 @@ mod tests {
             FailureKind::NoReply,
             FailureKind::Refused,
             FailureKind::Unavailable,
+            FailureKind::NotGuarded,
+            FailureKind::NotAllowed,
         ];
+        assert_eq!(named("not_guarded", ""), FailureKind::NotGuarded);
         let names = all
             .iter()
             .map(|kind| kind.as_str())

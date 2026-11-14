@@ -67,12 +67,12 @@ pub const NOT_NEEDED_AT_RUN_TIME: &[&str] = &[
     "work/",
 ];
 
-const MARKER: &str = ".bzz-installed";
-const TEMPORARY_PREFIX: &str = ".installing-";
+pub(crate) const MARKER: &str = ".bzz-installed";
+pub(crate) const TEMPORARY_PREFIX: &str = ".installing-";
 /// A folder of an install that was never finished is removed after this.
 const STALE_INSTALL: Duration = Duration::from_secs(3600);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(900);
-const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// SHA-256 over every embedded file with its path, as hex.
 pub fn host_digest() -> String {
@@ -223,7 +223,7 @@ fn executable_names(name: &str) -> Vec<String> {
 }
 
 /// Every program called `name` in the folders of `PATH`, in their order.
-fn on_path(name: &str, lookup: &impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
+pub(crate) fn on_path(name: &str, lookup: &impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
     let Some(path) = lookup("PATH") else {
         return Vec::new();
     };
@@ -242,7 +242,7 @@ fn on_path(name: &str, lookup: &impl Fn(&str) -> Option<String>) -> Vec<PathBuf>
 /// The environment of a program of the owner's that bzz runs for the
 /// install: what it needs to start, reach the registry and find its cache.
 /// Nothing of bzz's own, and no variable that is not named here.
-fn tool_environment(
+pub(crate) fn tool_environment(
     lookup: &impl Fn(&str) -> Option<String>,
     first_on_path: Option<&Path>,
 ) -> Vec<(String, String)> {
@@ -304,7 +304,7 @@ fn tool_environment(
 /// writing at this moment cannot be started ("text file busy"): it is tried
 /// again shortly, a few times. That moment is short, and a program that was
 /// just written or updated is otherwise reported as missing.
-async fn run_to_end(
+pub(crate) async fn run_to_end(
     command: &mut tokio::process::Command,
 ) -> std::io::Result<std::process::Output> {
     // The owner's own programs get nothing of bzz's but what is named.
@@ -321,7 +321,7 @@ async fn run_to_end(
     }
 }
 
-async fn output_of(
+pub(crate) async fn output_of(
     program: &Path,
     args: &[&str],
     env: &[(String, String)],
@@ -447,7 +447,7 @@ fn write_host_files(folder: &Path) -> Result<(), Problem> {
     Ok(())
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
@@ -455,7 +455,7 @@ fn unix_now() -> u64 {
 
 /// Removes folders of installs that were never finished and are old enough
 /// that nothing can still be writing them.
-fn remove_stale_attempts(root: &Path, older_than: Duration) {
+pub(crate) fn remove_stale_attempts(root: &Path, older_than: Duration) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };

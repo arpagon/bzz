@@ -124,6 +124,7 @@ impl AgentHost {
         // Installs of the host that an older bzz made, once nothing runs
         // from them.
         install::remove_unused_installs(&options.data_dir);
+        crate::agents::runtime::coding::remove_unused_adapters(&options.data_dir);
         let credentials = Arc::new(Credentials::default());
         let agents = Agents::default();
         let denied = |refused| match refused {

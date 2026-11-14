@@ -19,6 +19,8 @@ use crate::{agents::runtime::process, render::sanitize};
 
 /// The most of a command's first line that is kept.
 pub const MAX_COMMAND_CHARS: usize = 200;
+/// The most that is kept of what a coding harness asked leave for.
+pub const MAX_REQUEST_CHARS: usize = 300;
 /// Past this size the file is cut to its newest [`KEPT_LINES`] lines.
 const MAX_BYTES: u64 = 512 * 1024;
 const KEPT_LINES: usize = 1000;
@@ -34,9 +36,16 @@ pub enum What {
         command: String,
         /// How many lines the whole command has.
         lines: usize,
+        /// A coding harness's command: `folder` is where it would start
+        /// on this machine, not a name under `/mnt`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        real: bool,
     },
     /// A git credential the agent's host asked for.
     Credential { host: String },
+    /// Something else a coding harness asked leave for and was refused:
+    /// a file edit outside its folders, or what bzz has no rule for.
+    Request { asked: String },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -76,9 +85,31 @@ impl Entry {
                 folder: sanitize::visible(folder),
                 command: shown,
                 lines: command.split('\n').count(),
+                real: false,
             },
             answer,
         )
+    }
+
+    /// An entry for a command of a coding harness, which would start in
+    /// the real folder `place`.
+    pub fn command_at(place: &Path, command: &str, answer: impl Into<String>) -> Self {
+        let mut entry = Self::command(&place.display().to_string(), command, answer);
+        if let What::Command { real, .. } = &mut entry.what {
+            *real = true;
+        }
+        entry
+    }
+
+    /// An entry for something a coding harness asked leave for that is not
+    /// a command. `asked` says what, with its paths.
+    pub fn request(asked: &str, answer: impl Into<String>) -> Self {
+        let shown = sanitize::visible(asked);
+        let mut kept = shown.chars().take(MAX_REQUEST_CHARS).collect::<String>();
+        if shown.chars().count() > MAX_REQUEST_CHARS {
+            kept.push('…');
+        }
+        Self::now(What::Request { asked: kept }, answer)
     }
 
     /// An entry for a credential asked for. Only the host is kept.
@@ -100,8 +131,10 @@ impl Entry {
                 folder,
                 command,
                 lines,
+                real,
             } => format!(
-                "{when} · command in /mnt/{folder} · {command}{} · {}",
+                "{when} · command in {}{folder} · {command}{} · {}",
+                if *real { "" } else { "/mnt/" },
                 if *lines > 1 {
                     format!(" (and {} more line(s))", lines - 1)
                 } else {
@@ -112,6 +145,7 @@ impl Entry {
             What::Credential { host } => {
                 format!("{when} · git credential for {host} · {}", self.answer)
             }
+            What::Request { asked } => format!("{when} · {asked} · {}", self.answer),
         }
     }
 }
@@ -232,6 +266,32 @@ mod tests {
             lines[2].ends_with(" · git credential for github.com · given"),
             "{}",
             lines[2]
+        );
+        // A coding harness's command names the real folder; what else it
+        // asked for is kept with its path, bounded.
+        let real = Entry::command_at(Path::new("/home/ann/work"), "make", "allowed by you");
+        assert!(
+            real.line()
+                .ends_with(" · command in /home/ann/work · make · allowed by you"),
+            "{}",
+            real.line()
+        );
+        let asked = Entry::request(
+            &format!("a file edit: /etc/passwd\u{1b}{}", "y".repeat(400)),
+            "refused: outside its folders",
+        );
+        assert!(asked.line().contains(" · a file edit: /etc/passwd\\x1byyy"));
+        assert!(asked.line().ends_with("… · refused: outside its folders"));
+        let stored = serde_json::to_string(&real).unwrap();
+        assert_eq!(serde_json::from_str::<Entry>(&stored).unwrap(), real);
+        // An entry written before there were coding harnesses still reads.
+        let old =
+            r#"{"at":1,"what":"command","folder":"site","command":"ls","lines":1,"answer":"x"}"#;
+        assert!(
+            serde_json::from_str::<Entry>(old)
+                .unwrap()
+                .line()
+                .contains("/mnt/site")
         );
         // The file is one JSON object per line, for the owner only.
         let text = std::fs::read_to_string(path(temporary.path(), agent)).unwrap();

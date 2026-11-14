@@ -162,3 +162,29 @@ jobs:
           rm -rf node_modules
           npm ci --ignore-scripts --omit=dev --omit=optional
           npm test
+  agent-adapters:
+    # v0.15.0 M6: the two ACP adapters bzz installs for the codex and
+    # claude-code harnesses (agent-adapters/). Installed as bzz installs
+    # them on first use: from the lock file, without install scripts and
+    # without their optional packages. No sign-in, no model, no session.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        adapter:
+          - { folder: claude-code, package: '@agentclientprotocol/claude-agent-acp' }
+          - { folder: codex, package: '@agentclientprotocol/codex-acp' }
+    defaults:
+      run:
+        shell: bash
+        working-directory: agent-adapters/${{ matrix.adapter.folder }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts --omit=optional --omit=dev
+      - name: The adapter's entry is there
+        run: test -f "node_modules/${{ matrix.adapter.package }}/dist/index.js"
+      - name: Audit the packages an agent runs with
+        run: npm audit --omit=dev --omit=optional

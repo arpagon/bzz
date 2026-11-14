@@ -157,10 +157,16 @@ fn clock(seconds: u64) -> String {
 
 /// The line that says a question waits, for the top of the screen.
 pub fn banner_text(first: &Asked, conversation: &str, waiting: usize, seconds_left: u64) -> String {
+    // A coding harness's command starts in a real folder of this machine.
+    let place = if first.coding {
+        crate::protocol::artifact::display(&first.path.display().to_string(), 48)
+    } else {
+        format!("/mnt/{}", first.folder)
+    };
     format!(
-        " {} asks to run a command in /mnt/{} ({}){} · Ctrl-Y to see and answer it · refused in {} ",
+        " {} asks to run a command in {} ({}){} · Ctrl-Y to see and answer it · refused in {} ",
         sanitize::single_line(&crate::protocol::artifact::display(&first.agent_name, 32)),
-        sanitize::single_line(&first.folder),
+        sanitize::single_line(&place),
         sanitize::single_line(&crate::protocol::artifact::display(conversation, 40)),
         match waiting.saturating_sub(1) {
             0 => String::new(),
@@ -229,11 +235,19 @@ pub fn render(
             sanitize::single_line(view.conversation),
             sanitize::single_line(view.requester)
         )),
-        Line::from(format!(
-            "folder:       /mnt/{} = {}",
-            sanitize::single_line(&asked.folder),
-            sanitize::single_line(&asked.path.display().to_string())
-        )),
+        Line::from(if asked.coding {
+            format!(
+                "folder:       {} (commands granted by: {})",
+                sanitize::single_line(&asked.path.display().to_string()),
+                sanitize::single_line(&asked.folder)
+            )
+        } else {
+            format!(
+                "folder:       /mnt/{} = {}",
+                sanitize::single_line(&asked.folder),
+                sanitize::single_line(&asked.path.display().to_string())
+            )
+        }),
         Line::from(Span::styled(
             "It runs as your user, starting in that folder, and can reach whatever you can.",
             warning,
@@ -246,11 +260,26 @@ pub fn render(
                 others => format!(" · {others} more wait (Tab)"),
             }
         )),
-        muted(format!(
-            "the command, exactly as /bin/sh will get it ({lines} line(s), {} bytes):",
-            asked.command.len()
-        )),
+        muted(if asked.coding {
+            format!(
+                "the command, as its program reports it ({lines} line(s), {} bytes):",
+                asked.command.len()
+            )
+        } else {
+            format!(
+                "the command, exactly as /bin/sh will get it ({lines} line(s), {} bytes):",
+                asked.command.len()
+            )
+        }),
     ];
+    if asked.coding {
+        // bzz answers the program's question; the program starts the
+        // command, and bzz cannot check that it is this one.
+        head.push(Line::from(Span::styled(
+            "Its own program starts it, not bzz: what runs is that program's to keep to.",
+            warning,
+        )));
+    }
     if escapes {
         head.push(Line::from(Span::styled(
             "It holds characters that would not show; each is written out, like \\x1b or \\u{202e}.",
@@ -346,6 +375,7 @@ mod tests {
             folder: "work".into(),
             path: "/home/ann/work".into(),
             command: command.into(),
+            coding: false,
             asked_at: 1,
             expires: Instant::now() + Duration::from_secs(272),
         }
@@ -542,6 +572,16 @@ mod tests {
         );
         assert!(banner_text(&first, "#general", 3, 9).contains("· and 2 more · Ctrl-Y"));
         assert!(banner_text(&first, "#general", 3, 9).ends_with("refused in 0:09 "));
+        // A coding harness's command: the real folder it starts in.
+        let mut coding = asked("make");
+        coding.coding = true;
+        coding.path = "/home/ann/.local/share/bzz/agents/a/workspace".into();
+        assert!(
+            banner_text(&coding, "#general", 1, 272)
+                .contains("a command in /home/ann/.local/share/bzz/agents/a/workspace (#general)"),
+            "{}",
+            banner_text(&coding, "#general", 1, 272)
+        );
         let mut named = asked("x");
         named.agent_name = "Sc\u{1b}[31mout".into();
         assert!(!banner_text(&named, "a\nb", 1, 1).contains(['\u{1b}', '\n']));

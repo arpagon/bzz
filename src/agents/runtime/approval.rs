@@ -46,8 +46,14 @@ pub struct Asked {
     pub folder: String,
     /// Where that folder is on this machine.
     pub path: PathBuf,
-    /// The command exactly as the shell will receive it.
+    /// The command exactly as the shell will receive it. From a coding
+    /// harness ([`Self::coding`]): as its program reports it.
     pub command: String,
+    /// Asked by a coding harness (Grok, Codex, Claude Code). `folder` then
+    /// names the grants that let it run, and `path` is where it would
+    /// start. bzz answers the program's request and does not start the
+    /// command itself, so what runs is the program's to keep to.
+    pub coding: bool,
     /// Unix seconds.
     pub asked_at: u64,
     /// When it counts as refused.
@@ -241,6 +247,7 @@ mod tests {
             folder: "site".into(),
             path: "/home/ann/site".into(),
             command: command.into(),
+            coding: false,
             asked_at: 1,
             expires: Instant::now() + Duration::from_secs(60),
         }

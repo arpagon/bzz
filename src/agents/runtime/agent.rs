@@ -24,6 +24,11 @@
 //!   else** (`_bzz/credential`): for a host on the agent's own allow-list,
 //!   from what the owner stored for that agent. It is in no log and no
 //!   record.
+//! - **A coding harness is guarded by bzz, not by its owner's settings.**
+//!   Its sandbox or its mode is set before a session is prompted, and each
+//!   thing it asks leave for is answered by rule ([`guard`]).
+
+mod guard;
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -50,10 +55,13 @@ use crate::{
             acp::{self, CallError, Connection, Incoming, RpcError},
             admission::{self, ChannelFacts, PlaceKind, Refusal, ReplyTarget, Rule},
             approval::{self, Approvals, Asked, NotAsked, Outcome},
+            coding,
             credentials::Credentials,
             install::{self, StartReport},
+            permission as permission_rule,
             process::{self, Harness, Launch},
             prompt::{self, PromptContext},
+            record::Recorder,
             relay::{self, AgentRelay, Published},
             tools::{self, ToolCall, ToolReply},
         },
@@ -256,6 +264,8 @@ struct LiveTurn {
     final_sent: bool,
     /// The owner stopped this turn from the agents panel.
     stopped: bool,
+    /// bzz refused something the harness asked leave for in this turn.
+    refused: bool,
     effects: u32,
     /// Tool calls of this turn still at work.
     in_flight: usize,
@@ -296,6 +306,10 @@ struct Run {
     /// bzz's own host: it asks for tools over the pipe and needs no server.
     pipe_tools: bool,
     load_session: bool,
+    /// How a coding harness takes a system prompt and extra folders.
+    offer: coding::Offer,
+    /// The transcript of this process, when one is being recorded.
+    recorder: Option<Arc<Recorder>>,
     pid: Option<u32>,
     harness: tokio::sync::Mutex<Option<Harness>>,
     /// Place -> session id, for this process.
@@ -347,50 +361,16 @@ enum Reply {
     Failed,
 }
 
-fn is_chat_tool(tool: &Value) -> bool {
-    // A tool that runs, edits, deletes or moves something is never ours.
-    if !matches!(
-        tool.get("kind").and_then(Value::as_str),
-        None | Some("other")
-    ) {
-        return false;
-    }
-    let title = tool
-        .get("title")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let words = title
-        .split(|character: char| !character.is_ascii_alphanumeric())
-        .filter(|word| !word.is_empty() && !matches!(*word, "mcp" | "tool"))
-        .collect::<Vec<_>>();
-    matches!(words.as_slice(), ["buzz", "send" | "read" | "react"])
-}
-
-/// Answers `session/request_permission`: bzz's own chat tools are allowed,
-/// once; anything else is refused (grants are M7). The answer names an
-/// option by its kind, never by a fixed id.
+/// Answers `session/request_permission` for a harness that is not a coding
+/// harness: bzz's own chat tools are allowed, once; anything else is
+/// refused. The answer names an option by its kind, never by a fixed id,
+/// and never one that the harness would remember ("always"). A coding
+/// harness is answered by [`Agent::permission_request`].
 pub fn permission(params: &Value) -> Value {
-    let options = params
-        .get("options")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    let pick = |kind: &str| {
-        options
-            .iter()
-            .find(|option| option.get("kind").and_then(Value::as_str) == Some(kind))
-            .and_then(|option| option.get("optionId").cloned())
-    };
-    let chosen = if is_chat_tool(params.get("toolCall").unwrap_or(&Value::Null)) {
-        pick("allow_once")
-    } else {
-        pick("reject_once").or_else(|| pick("reject_always"))
-    };
-    match chosen {
-        Some(option) => json!({"outcome": {"outcome": "selected", "optionId": option}}),
-        None => json!({"outcome": {"outcome": "cancelled"}}),
-    }
+    permission_rule::answer(
+        params,
+        permission_rule::is_chat_tool(params.get("toolCall").unwrap_or(&Value::Null)),
+    )
 }
 
 impl Agent {
@@ -651,6 +631,9 @@ impl Agent {
                     .into(),
             );
         }
+        // What a coding harness's own launch adds to its environment: where
+        // its adapter finds the owner's program.
+        let mut launch_env = Vec::new();
         let (program, mut args) = match local.command.split_first() {
             Some((program, arguments)) => (program.clone(), arguments.to_vec()),
             None if own_host => {
@@ -668,11 +651,34 @@ impl Agent {
                     vec![host.directory.join("main.mjs").display().to_string()],
                 )
             }
+            // The owner's own program: found, held to the versions bzz
+            // knows to work, and for Codex and Claude Code started through
+            // its adapter, which is installed first when this is its first
+            // use.
             None => {
-                return Err(format!(
-                    "the {} harness is not available in this version yet",
-                    local.harness.as_str()
-                ));
+                let Some(spec) = coding::spec(local.harness) else {
+                    return Err("this harness has no program of its own".into());
+                };
+                if spec
+                    .adapter
+                    .is_some_and(|adapter| !adapter.is_installed(&self.shared.data_dir))
+                {
+                    self.state().problem = Some(format!(
+                        "installing the adapter of {} (first use)",
+                        spec.title
+                    ));
+                }
+                let ready = coding::prepare(
+                    &self.shared.data_dir,
+                    spec,
+                    |name: &str| (self.shared.environment)(name),
+                    &|_| {},
+                )
+                .await
+                .map_err(|problem| problem.to_string())?;
+                let start = ready.start();
+                launch_env = start.env;
+                (start.program, start.args)
             }
         };
         // bzz's own host works in the agent's folder and nowhere else; a
@@ -686,10 +692,23 @@ impl Agent {
                 .map_or_else(|| directory.clone(), |dirs| dirs.home_dir().to_path_buf());
             (directory.join("workspace"), home)
         };
+        let mut env = process::base_environment(&home, |name| (self.shared.environment)(name));
+        if !own_host {
+            // Its guard is in its environment whatever starts it, and for
+            // Grok in a file of its working folder, written now.
+            process::create_private_dir(&cwd).map_err(|error| error.to_string())?;
+            env.extend(launch_env);
+            env.extend(
+                coding::environment(local.harness, local, &cwd, |name: &str| {
+                    (self.shared.environment)(name)
+                })
+                .map_err(|problem| problem.to_string())?,
+            );
+        }
         Ok(Launch {
             program,
             args,
-            env: process::base_environment(&home, |name| (self.shared.environment)(name)),
+            env,
             cwd,
             log: directory.join("harness.log"),
         })
@@ -733,7 +752,11 @@ impl Agent {
         let run_dir = process::run_dir(&self.shared.data_dir);
         let (harness, stdin, stdout) =
             Harness::spawn(&launch, &run_dir, self.spec.id).map_err(|error| error.to_string())?;
-        let (connection, incoming) = Connection::start(stdout, stdin);
+        let recorder = self.recorder(&launch);
+        let tap = recorder.clone().map(|recorder| {
+            Arc::new(move |outgoing: bool, line: &str| recorder.line(outgoing, line)) as acp::Tap
+        });
+        let (connection, incoming) = Connection::start_tapped(stdout, stdin, tap);
         let answer = tokio::time::timeout(
             self.limits().start,
             connection.request("initialize", self.initialize_params()),
@@ -780,6 +803,8 @@ impl Agent {
             id: self.next_run.fetch_add(1, Ordering::Relaxed),
             pipe_tools,
             load_session: response.pointer("/agentCapabilities/loadSession") == Some(&json!(true)),
+            offer: coding::Offer::from_initialize(&response),
+            recorder,
             pid: harness.pid(),
             connection,
             harness: tokio::sync::Mutex::new(Some(harness)),
@@ -910,6 +935,16 @@ impl Agent {
                             let answer = agent.credential(run.id, &params).await;
                             let _ = run.connection.respond(id, answer);
                             drop(permit);
+                        });
+                    }
+                    // A coding harness asks leave for an edit or a command.
+                    // A command may wait for the owner, so each request is
+                    // answered in a task of its own.
+                    "session/request_permission" if self.is_coding(&run) => {
+                        let (agent, run) = (self.clone(), run.clone());
+                        tokio::spawn(async move {
+                            let answer = agent.permission_request(&run, &params).await;
+                            let _ = run.connection.respond(id, Ok(answer));
                         });
                     }
                     "session/request_permission" => {
@@ -1141,28 +1176,53 @@ impl Agent {
                 .await
                 .ok()
                 .flatten();
-            let mut session = None;
+            // A coding harness is told its system prompt, its folders and
+            // what switches its owner's own settings off in the way that
+            // program takes them, on a new session and on a loaded one.
+            let params = if self.is_coding(run) {
+                coding::session_params(
+                    self.spec.local.harness,
+                    run.offer,
+                    &workspace,
+                    &servers,
+                    place,
+                    &coding::system_prompt(
+                        &self.spec.name,
+                        self.spec.local.harness,
+                        &self.spec.local,
+                        &workspace,
+                    ),
+                    &self.spec.local,
+                )
+            } else {
+                json!({"cwd": workspace, "mcpServers": servers, "_meta": {"bzz/place": place}})
+            };
+            let mut opened = None;
             if run.load_session
                 && let Some(stored) = stored
-                && call(
-                    "session/load",
-                    json!({"sessionId": stored, "cwd": workspace, "mcpServers": servers}),
-                )
-                .await
-                .is_ok()
             {
-                session = Some(stored);
+                let mut load = params.clone();
+                load["sessionId"] = json!(stored);
+                if let Ok(answer) = call("session/load", load).await {
+                    opened = Some((stored, answer));
+                }
             }
-            let session = match session {
-                Some(session) => Ok(session),
-                None => call(
-                    "session/new",
-                    json!({"cwd": workspace, "mcpServers": servers, "_meta": {"bzz/place": place}}),
-                )
-                .await
-                .and_then(|opened| session_id(&opened)),
+            let opened = match opened {
+                Some(opened) => Ok(opened),
+                None => call("session/new", params)
+                    .await
+                    .and_then(|answer| session_id(&answer).map(|session| (session, answer))),
             };
-            match session {
+            // Its guard, before the session can be prompted: the mode bzz
+            // sets on every session, and the model its owner chose.
+            let opened = match opened {
+                Ok((session, answer)) => self
+                    .guard_session(run, &session, &answer)
+                    .await
+                    .map(|()| session),
+                Err(error) => Err(error),
+            };
+            match opened {
                 Ok(session) => {
                     self.shared.credentials.bind(&credential, &session);
                     let (place_owned, session_owned) = (place.to_owned(), session.clone());
@@ -1282,6 +1342,7 @@ impl Agent {
                 sent_any: false,
                 final_sent: false,
                 stopped: false,
+                refused: false,
                 effects: 0,
                 in_flight: 0,
                 text: String::new(),
@@ -1290,7 +1351,9 @@ impl Agent {
                 typing: Some(self.typing(&target)),
             },
         );
-        let text = self.prompt_text(&row, &request, !run.pipe_tools).await;
+        let text = self
+            .prompt_text(&row, &request, self.prompt_instructions(&run))
+            .await;
         let prompt = run.connection.request(
             "session/prompt",
             json!({
@@ -1392,14 +1455,21 @@ impl Agent {
                     return;
                 }
                 let text = turn.last_text();
+                // A harness that ends its turn when it is refused (Codex)
+                // leaves nothing to publish: the notice says why.
+                let nothing = if turn.refused {
+                    FailureKind::NotAllowed
+                } else {
+                    FailureKind::NoReply
+                };
                 match response.get("stopReason").and_then(Value::as_str) {
-                    Some("cancelled") => self.fail(row, FailureKind::NoReply).await,
+                    Some("cancelled") => self.fail(row, nothing).await,
                     _ if !text.is_empty() => {
                         self.reply(row, &turn.request, &text, &[], ReplyOrigin::Text, None)
                             .await;
                     }
                     Some("refusal") => self.fail(row, FailureKind::Refused).await,
-                    _ => self.fail(row, FailureKind::NoReply).await,
+                    _ => self.fail(row, nothing).await,
                 }
             }
             Err(CallError::Rpc(error)) => self.fail(row, FailureKind::classify(&error)).await,
@@ -1437,7 +1507,15 @@ impl Agent {
         }
     }
 
-    async fn prompt_text(&self, row: &InboxRow, request: &Event, foreign: bool) -> String {
+    /// `instructions`: for a harness that is not bzz's own host, which is
+    /// told in every message how to answer; the agent's own instructions
+    /// are in it unless the harness took them as its system prompt.
+    async fn prompt_text(
+        &self,
+        row: &InboxRow,
+        request: &Event,
+        instructions: Option<&str>,
+    ) -> String {
         let limit = Duration::from_secs(10);
         let relay = self.relay.as_ref();
         // The conversation as it stands now, the request aside: a message
@@ -1477,7 +1555,7 @@ impl Agent {
             recent: &recent,
             names: &names,
             resumed: row.attempts > 0,
-            instructions: foreign.then_some(self.spec.local.instructions.as_str()),
+            instructions,
         })
     }
 
@@ -1678,6 +1756,9 @@ impl Agent {
         name: &str,
         arguments: &Value,
     ) -> ToolReply {
+        // As it arrived, also a call bzz refuses: a transcript holds what a
+        // model really called.
+        self.record_tool(run, session, name, arguments).await;
         let call = match tools::parse(name, arguments) {
             Ok(call) => call,
             Err(text) => return ToolReply::refused(text),
@@ -1918,6 +1999,7 @@ impl Agent {
             folder: folder.name.clone(),
             path: folder.path.clone(),
             command: command.to_owned(),
+            coding: false,
             asked_at: unix_now(),
             expires: Instant::now() + limit,
         };
@@ -2325,7 +2407,8 @@ mod tests {
             permission(
                 &json!({"toolCall": {"title": "bash"}, "options": [{"optionId": "never", "kind": "reject_always"}]})
             ),
-            selected("never")
+            json!({"outcome": {"outcome": "cancelled"}}),
+            "a refusal the harness would remember is not chosen either"
         );
         assert_eq!(
             permission(&json!({})),
@@ -2359,6 +2442,7 @@ mod tests {
             sent_any: false,
             final_sent: false,
             stopped: false,
+            refused: false,
             effects: 0,
             in_flight: 0,
             text: String::new(),
