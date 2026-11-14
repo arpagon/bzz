@@ -95,7 +95,8 @@ test("an approved command runs in the granted folder, exactly as approved, in an
 	assert.equal(host.approvals().at(-1).command, quoted);
 	assert.equal(host.approvals().at(-1).mount, "site");
 	// What the shell was started with is the approved string, whole and alone, as its one command.
-	const self = "ps -o args= -p $$";
+	// The `; :` keeps the shell alive: a shell that runs a lone command in its own place (macOS) would show `ps` here.
+	const self = "ps -o args= -p $$; :";
 	assert.equal((await host.run({ folder: "site", command: self })).trim(), `/bin/sh -c -- ${self}`);
 	// Also a line that begins like an option of the shell: it is the command, not an option.
 	assert.match(await host.run({ folder: "site", command: "-x; echo after the dash" }), /-x: (command )?not found\nafter the dash\n/);
