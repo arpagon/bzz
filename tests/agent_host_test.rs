@@ -102,6 +102,10 @@ impl World {
     }
 
     async fn host(&self) -> AgentHost {
+        self.host_with(self.settings()).await
+    }
+
+    async fn host_with(&self, local: LocalAgentConfig) -> AgentHost {
         let mut options = HostOptions::new(self.data_dir(), self.store.clone());
         options.limits = Limits {
             stop_grace: Duration::from_millis(500),
@@ -120,7 +124,7 @@ impl World {
                 pubkey: self.relay.agent.public_key().to_hex(),
                 owner: self.owner.public_key().to_hex(),
                 community: Uuid::nil(),
-                local: self.settings(),
+                local,
             },
             self.relay.clone(),
         )
@@ -382,6 +386,168 @@ async fn the_real_host_is_installed_started_and_answers_once_across_kills_and_re
     }
     host.shutdown().await;
     assert!(!running(third_pid));
+}
+
+/// What bzz tells the real host at `initialize` is what the host enforces,
+/// and what the host says of a failure is what bzz posts: a granted folder
+/// is read under `/mnt/<name>` and not written; a provider's error and a
+/// model that cannot be used are named as such, never as "sign in"; and the
+/// check of a model before an agent is created is the host's own.
+#[tokio::test]
+async fn the_real_host_keeps_to_the_grants_and_names_its_failures() {
+    use bzz::{agents::runtime::install::ModelCheck, config::FolderGrant};
+    let Some(node) = pi_host::node_or_skip("agent_host_test").await else {
+        return;
+    };
+    let world = World::new(&node).await;
+    let site = world.temporary.path().join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    std::fs::write(site.join("hello.txt"), "hello from the machine\n").unwrap();
+    let mut local = world.settings();
+    local.folders = vec![FolderGrant {
+        name: "site".into(),
+        path: site.clone(),
+        write: false,
+    }];
+    let host = world.host_with(local).await;
+
+    // The granted folder, read-only, as the owner granted it.
+    let read = world
+        .ask(
+            &host,
+            r#"do: [["bash", {"command": "cat /mnt/site/hello.txt"}], ["report"]]"#,
+            None,
+        )
+        .await;
+    world.settled(&host, &read).await;
+    let reported = world.replies(&read);
+    assert!(
+        reported.len() == 1 && reported[0].contains("hello from the machine"),
+        "{reported:?}\n{}",
+        world.log()
+    );
+    let write = world
+        .ask(
+            &host,
+            r#"do: [["bash", {"command": "echo changed > /mnt/site/hello.txt"}], ["bash", {"command": "echo new > /mnt/site/new.txt"}], ["report"]]"#,
+            None,
+        )
+        .await;
+    world.settled(&host, &write).await;
+    assert_eq!(world.replies(&write).len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(site.join("hello.txt")).unwrap(),
+        "hello from the machine\n",
+        "a folder granted read-only is not written"
+    );
+    assert!(!site.join("new.txt").exists());
+
+    // A provider's error: named as that, with none of its words.
+    let failed = world
+        .ask(
+            &host,
+            r#"do: [["error", "upstream exploded at 10.1.2.3"]]"#,
+            None,
+        )
+        .await;
+    let row = world.settled(&host, &failed).await;
+    assert_eq!(
+        (row.state, row.failure.as_deref()),
+        (RequestState::Failed, Some("provider-error")),
+        "{}",
+        world.log()
+    );
+    assert_eq!(
+        world.replies(&failed),
+        ["I could not answer: my model returned an error."]
+    );
+    // The agent goes on: the next mention is answered.
+    let after = world.ask(&host, "still there?", None).await;
+    let row = world.settled(&host, &after).await;
+    assert_eq!(row.state, RequestState::Replied, "{}", world.log());
+    host.shutdown().await;
+
+    // The check `agent new` makes before anything exists, asked of the
+    // installed host itself. Pi's folder here is empty: no sign-in at all.
+    let installed = install::host_dir(&world.data_dir());
+    let stand_in = install::Node {
+        program: world.node.clone(),
+        version: node.version,
+    };
+    let environment = pi_host::environment(&world.node, &world.pi_dir());
+    let model = |provider: &str, model_id: &str| AgentModelConfig {
+        provider: provider.into(),
+        model_id: model_id.into(),
+        thinking_level: None,
+    };
+    let check = async |wanted: Option<AgentModelConfig>| {
+        install::check_model(
+            &stand_in,
+            &installed,
+            &world.pi_dir(),
+            wanted.as_ref(),
+            environment.clone(),
+        )
+        .await
+    };
+    assert_eq!(
+        check(Some(model("scripted", "scripted"))).await,
+        ModelCheck::Available {
+            provider: "scripted".into(),
+            model_id: "scripted".into(),
+            // The level Pi would use when none is named.
+            thinking_level: Some("off".into()),
+        }
+    );
+    for (wanted, kind) in [
+        (Some(model("nope", "none")), "provider_unavailable"),
+        (
+            Some(model("scripted", "no-such-model")),
+            "model_unavailable",
+        ),
+        (Some(model("openai-codex", "gpt-6-luna")), "sign_in_needed"),
+    ] {
+        match check(wanted.clone()).await {
+            ModelCheck::Unavailable {
+                kind: found,
+                message,
+            } => {
+                assert_eq!(found, kind, "{wanted:?}: {message}");
+                assert!(!message.is_empty());
+            }
+            other => panic!("{wanted:?}: {other:?}"),
+        }
+    }
+    assert!(
+        !world.pi_dir().exists(),
+        "asking leaves Pi's folder as it was: not even created"
+    );
+
+    // An agent whose model cannot be used says so when it is asked.
+    let mut unusable = world.settings();
+    unusable.model = Some(model("nope", "none"));
+    let host = world.host_with(unusable).await;
+    let asked = world.ask(&host, "anyone?", None).await;
+    let row = world.settled(&host, &asked).await;
+    assert_eq!(
+        (row.state, row.failure.as_deref()),
+        (RequestState::Failed, Some("model-unavailable")),
+        "{}",
+        world.log()
+    );
+    assert_eq!(
+        world.replies(&asked),
+        ["I could not answer: the model my owner chose for me is not available."]
+    );
+    let published = world
+        .relay
+        .by_agent(9)
+        .into_iter()
+        .map(|event| event.content)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!published.contains("10.1.2.3"), "{published}");
+    host.shutdown().await;
 }
 
 /// Without a Node that is new enough the agent does not start and its
