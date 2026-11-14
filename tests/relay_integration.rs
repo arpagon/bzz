@@ -4022,28 +4022,54 @@ fn a_buzz_acp_prompts_shape_leaves_out_what_differs_from_run_to_run() {
     ] {
         assert!(shape.contains(kept), "`{kept}` in:\n{shape}");
     }
-    // The same prompt in another run: other ids, other times, a name for
-    // the agent, another channel and other words.
-    let agent = "fc183c4036b502191f696acd4a40c8cf85a83d4f624c862bdec5129ee569af83";
-    assert!(recorded.contains(agent));
-    let another = recorded
+    // The same prompt in another run: other ids, another time, another
+    // channel, other words, and an agent with a name where this one has
+    // none, or without one where this one has it.
+    let after = |marker: &str, length: usize| {
+        let at = recorded.find(marker).expect(marker) + marker.len();
+        recorded[at..at + length].to_owned()
+    };
+    let agent = after("[\"p\",\"", 64);
+    let channel = after("(#", 36);
+    let time = after("Time: ", 19);
+    let name = recorded[recorded.find("Channel: ").unwrap() + 9..]
+        .split(" (#")
+        .next()
+        .unwrap()
+        .to_owned();
+    let content = recorded[recorded.find("Content: ").unwrap() + 9..]
+        .lines()
+        .next()
+        .unwrap()
+        .to_owned();
+    assert!(!content.is_empty());
+    let named = format!("Scout ({agent})");
+    let renamed = if recorded.contains(&named) {
+        recorded.replace(&named, &agent)
+    } else {
+        recorded
+            .replace(
+                &format!("[1] {agent} "),
+                &format!("[1] Scout the 2nd ({agent}) "),
+            )
+            .replace(
+                &format!("mentions=[{agent}]"),
+                &format!("mentions=[Scout the 2nd ({agent})]"),
+            )
+    };
+    assert_ne!(renamed, recorded, "the agent's name was not changed");
+    let another = renamed
+        .replace(&agent, &"ab".repeat(32))
+        .replace(&channel, "00000000-1111-2222-3333-444444444444")
         .replace(
-            &format!("[1] {agent} "),
-            &format!("[1] Scout the 2nd ({agent}) "),
+            &format!("Channel: {name} "),
+            "Channel: a channel (with brackets) ",
         )
-        .replace(
-            &format!("mentions=[{agent}]"),
-            &format!("mentions=[Scout the 2nd ({agent})]"),
-        )
-        .replace(agent, &"ab".repeat(32))
-        .replace(
-            "bf7b4122-206d-45a8-bbe2-f80f99fa2f1c",
-            "00000000-1111-2222-3333-444444444444",
-        )
-        .replace("s10-bf7b4122", "a channel (with brackets)")
-        .replace("2026-11-14T02:11:4", "2027-01-02T03:04:5")
-        .replace("@agent ping one", "something else entirely");
-    assert_ne!(another, recorded);
+        .replace(&time[..18], "2027-01-02T03:04:5")
+        .replace(&content, "something else entirely");
+    for changed in [&agent, &channel, &time[..18], content.as_str()] {
+        assert!(!another.contains(changed), "{changed} is still there");
+    }
     assert_eq!(buzz_acp_prompt_shape(&another), shape);
     // A reply in a thread names its root beside the people it mentions.
     let reply = std::fs::read_to_string(fixtures.join("03-reply-in-thread.txt")).unwrap();
@@ -4061,7 +4087,7 @@ fn a_buzz_acp_prompts_shape_leaves_out_what_differs_from_run_to_run() {
         recorded.replace("Thread root: ", "Thread: "),
         recorded.replace("Scope: thread", "Scope: channel"),
         recorded.replace("<buzz-event type=", "<event type="),
-        recorded.replace("(#bf7b4122", "(bf7b4122"),
+        recorded.replace("(#", "("),
     ] {
         assert_ne!(reworded, recorded);
         assert_ne!(buzz_acp_prompt_shape(&reworded), shape);
@@ -4886,18 +4912,23 @@ async fn real_relay_agent_moves_to_another_bzz_and_to_buzz_acp() {
                 "buzz-acp at {PIN} no longer words its prompt as tests/fixtures/agents/buzz-acp-prompts/{name} has it. Record the prompts again (the README in that folder says how), then run `npm test` in agent-host/: it says whether the host still finds the place and the request"
             );
         }
-        expected.push(json!({
-            "file": name,
-            "what": what,
-            "channel": channel.to_string(),
-            "request": request.id.to_hex(),
-            "place": format!("{channel}/{}", root.id.to_hex()),
-        }));
+        // What the host must read from it: known here because this test
+        // published the events, not because anything parsed the prompt.
+        let quoted = |text: &str| serde_json::to_string(text).unwrap();
+        expected.push(format!(
+            "    {{\n      \"file\": {},\n      \"what\": {},\n      \"channel\": {},\n      \"request\": {},\n      \"place\": {}\n    }}",
+            quoted(name),
+            quoted(what),
+            quoted(&channel.to_string()),
+            quoted(&request.id.to_hex()),
+            quoted(&format!("{channel}/{}", root.id.to_hex())),
+        ));
     }
     if refresh {
-        let mut text =
-            serde_json::to_string_pretty(&json!({"buzz": PIN, "prompts": expected})).unwrap();
-        text.push('\n');
+        let text = format!(
+            "{{\n  \"buzz\": \"{PIN}\",\n  \"prompts\": [\n{}\n  ]\n}}\n",
+            expected.join(",\n")
+        );
         std::fs::write(fixtures.join("expected.json"), text).unwrap();
         use std::io::Write as _;
         let _ = writeln!(
