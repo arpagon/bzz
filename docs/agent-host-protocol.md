@@ -85,16 +85,18 @@ asks of bzz beyond the chat tools.
 - To stop, bzz closes the child's standard input. A harness must close its
   storage and exit within 2 s. After that bzz sends TERM to the group, and
   KILL 2 s later.
-- The Pi Durable host exits with code 0 within 1.5 s of the end of its
-  input, whether or not storage closed in that time. TERM is taken as the
-  end of input. A real command that runs is told to stop at that moment
+- The Pi Durable host exits with code 0 after the end of its input. It
+  gives storage 1.5 s to close and exits then in any case. TERM is taken as
+  the end of input. A real command that runs is told to stop at that moment
   (section 9).
 - The Pi Durable host also exits when its parent process is gone. It looks
   once a second.
 - It exits with code 1 on a fault of its own. Unfinished turns are in
   storage, and the next process continues them.
 - The log names what happened, not what was said: no prompt, message,
-  command line or credential is written to it.
+  command line or credential is written to it. The first line of an error
+  that Pi or a package reports is, and the whole of a fault that ends the
+  host.
 - Only the protocol is written to standard output. What a Pi package prints
   goes to the log.
 
