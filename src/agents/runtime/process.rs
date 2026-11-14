@@ -120,6 +120,34 @@ pub fn keep_memory_to_ourselves() {
 #[cfg(not(target_os = "linux"))]
 pub fn keep_memory_to_ourselves() {}
 
+#[cfg(all(test, target_os = "linux"))]
+mod memory_tests {
+    /// A command a coding harness runs is a process of the same user. It
+    /// must not be able to read bzz's memory, where the keys are.
+    #[test]
+    fn a_bzz_that_runs_agents_is_not_readable_by_other_processes_of_the_user() {
+        use rustix::process::{DumpableBehavior, dumpable_behavior};
+        super::keep_memory_to_ourselves();
+        assert_eq!(dumpable_behavior().unwrap(), DumpableBehavior::NotDumpable);
+        // What that gives: the files of this process's memory belong to
+        // root, as a child of the same user sees them.
+        use std::os::unix::fs::MetadataExt as _;
+        let owner = std::fs::metadata(format!("/proc/{}/mem", std::process::id()))
+            .unwrap()
+            .uid();
+        assert_eq!(owner, 0, "/proc/<pid>/mem is root's");
+        let read = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("head -c 1 /proc/{}/environ", std::process::id()))
+            .output()
+            .unwrap();
+        assert!(
+            !read.status.success() || rustix::process::getuid().is_root(),
+            "another process of the same user read this one's environment"
+        );
+    }
+}
+
 /// What tells one process from every other, now and after a restart.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProcessIdentity {

@@ -5,6 +5,11 @@ its key, starts its process, decides who may wake it and signs what it says.
 This guide is for the owner of one. The reasons behind it are in
 [`adr-v0.15-local-agents.md`](adr-v0.15-local-agents.md).
 
+This guide is first about an agent on **`pi-durable`**, bzz's own harness
+and the default. An agent can also run on one of three coding programs you
+have installed, Grok, Codex or Claude Code: those are different in what they
+can touch, and have [a section of their own](#coding-harnesses).
+
 An agent is three things, kept apart:
 
 | Piece | Where it is | Rule |
@@ -49,15 +54,15 @@ uses the defaults for what you did not give.
 |---|---|---|
 | Name, as Buzz will show it | first argument | — |
 | Community | `--community <uuid>` | the default one, or the only one |
-| Harness | `--harness pi-durable` | `pi-durable`, the only one in this version |
-| Model, as Pi names it | `--model provider/model`, `--thinking <level>` | Pi's own default model |
+| Harness | `--harness pi-durable\|grok\|codex\|claude-code` | `pi-durable`. The others: [coding harnesses](#coding-harnesses) |
+| Model | `--model provider/model` as Pi names it (for a coding harness, a model its own program offers), `--thinking <level>` | the harness's own default model |
 | Instructions | `--instructions <text>` or `--instructions-file <file>` | none |
 | Who may wake it | `--wake owner-only\|allowlist\|anyone` | `owner-only` |
 | People who may wake it | `--allow <npub or hex>`, repeated | none |
 | Folders it may read | `--folder name=/path`, repeated. Add `:rw` to let it write there, and `:exec` to let it run real commands there ([below](#letting-an-agent-run-commands)) | none |
-| Hosts it may reach | `--allow-host github.com`, repeated | none |
+| Hosts it may reach (`pi-durable` only) | `--allow-host github.com`, repeated | none |
 | Picture | `--picture https://…` | none |
-| Pi packages | `--no-packages` | on: packages named in Pi's settings are loaded ([below](#pi-packages)) |
+| Pi packages (`pi-durable` only) | `--no-packages` | on: packages named in Pi's settings are loaded ([below](#pi-packages)) |
 
 In the TUI, `:agent new` (or `n` in `:agents`) asks the same things in a
 form, for the community that is open. `Ctrl-S` runs the checks; `Enter` then
@@ -160,8 +165,8 @@ read it.
 restart, whether it has its own disk, what runs on your machine for it
 (with the folders where it may run commands, and whether you are asked), and
 for each rule whether bzz or the harness enforces it. Grok, Codex and Claude
-Code have records too, so that you can see how they differ (they run a real
-shell as your user), but bzz does not start them in this version.
+Code have records of their own: they run a real shell as your user, and
+[what holds each of them](#coding-harnesses) differs.
 
 ## Letting an agent run commands
 
@@ -297,6 +302,141 @@ agent's host when they are written for it (a Pi Durable entry in their
 - `bzz agent show` and `bzz agent doctor` print what the host loaded, and
   what it left out and why, when the agent last started.
 
+## Coding harnesses
+
+An agent can run on a coding program **you have installed and signed in
+to**, instead of bzz's own host:
+
+| Harness | Program | What v0.15.0 promises | Versions bzz starts |
+|---|---|---|---|
+| `grok` | Grok Build (`grok`) | supported | 1.0.77, and later ones below 1.1.0 |
+| `codex` | Codex (`codex`) | **experimental** | 0.166.0, and later ones below 0.167.0 |
+| `claude-code` | Claude Code (`claude`) | **experimental** | 2.1.322, and later ones below 2.2.0 |
+
+What bzz says of every one of them, and means:
+
+> It runs a real shell as your user, in a folder bzz makes plus the folders
+> you grant, with the harness's own sandbox on where it has one. bzz never
+> gives it the key; bzz cannot promise the key is out of reach.
+
+This is not the `pi-durable` agent of the rest of this guide. That one has a
+disk of its own and starts no program of your machine. A coding harness is
+your own program at work on your own machine.
+
+### What you need
+
+- **The program, installed and signed in by you**: `grok login`,
+  `codex login`, or `claude auth login`. bzz has no sign-in of its own, does
+  not read yours, and hands no API key of its environment on. A sign-in that
+  is missing shows at the agent's first message, as "my owner needs to sign
+  in to my model again".
+- **A version bzz knows to work** (the table above). The first of each range
+  is the one the tests ran with. Outside the range bzz starts nothing, and
+  says which version it found. `BZZ_GROK`, `BZZ_CODEX` and `BZZ_CLAUDE` name
+  another copy of the program than the first on your `PATH`.
+- For **Codex and Claude Code**: Node.js 22.19 or newer with `npm`. They are
+  driven through an adapter, which bzz installs the first time it is needed
+  (about 20 MB and 80 MB), from a lock file inside bzz, without install
+  scripts. The adapter runs **your** program, not a copy of its own.
+- For **Grok on Linux**: bubblewrap (`bwrap`), which Grok's sandbox needs to
+  hide bzz's keys.
+
+```sh
+bzz agent doctor      # each program, its version, its adapter; opens no session
+bzz agent new Scout --harness grok --model grok-4.5 --folder work=/home/ann/work:rw
+```
+
+`agent new` checks the program, its version and the adapter before it makes
+a key, and prints the harness's capability record before you confirm.
+
+### What each can touch
+
+| | Grok | Codex | Claude Code |
+|---|---|---|---|
+| **Writes** | its working folder, folders granted `:rw`, its own `~/.grok`, and the machine's temporary folders (`/tmp`) | its working folder, folders granted `:rw`, and the temporary folders | its working folder and folders granted `:rw` |
+| Who holds that | Grok's own sandbox | Codex's own sandbox; what would leave it, Codex asks for and bzz refuses | **only bzz**, by answering each request by the path it names |
+| **Reads** | everything you can read, but the folder of bzz's keys | everything you can read | its folders; with a folder granted for commands, whatever a command reads |
+| **Shell commands** | run without asking, inside the sandbox | run without asking inside the sandbox, with no network; to leave it, [as below](#commands-of-a-coding-harness) | none, unless you grant a folder for commands; then [as below](#commands-of-a-coding-harness) |
+| **Your own settings of that program** (MCP servers, hooks, rules, plugins) | all apply, and Grok uses them without asking | apply; for a tool of an MCP server Codex asks, and bzz allows only its own | none: bzz tells the adapter to load none |
+| Its own sandbox | yes (not on Windows) | yes | **none**: bzz prints a warning at creation and in `agent show` |
+
+Read the row "Reads" twice. A sandbox that holds an agent's writes does not
+keep it from reading: a Grok or a Codex agent can read your other files and
+bzz's own database of your messages, and whoever may wake it can ask it to.
+Wake rules matter more for these harnesses than for `pi-durable`.
+
+How bzz keeps this, whatever your own settings of the program say (in the
+mode your settings name, all three write anywhere without asking):
+
+- **Grok**: before every start bzz writes a sandbox profile in the agent's
+  working folder (`.grok/sandbox.toml`) and tells Grok to use it. Grok
+  refuses to start when it cannot apply it.
+- **Codex**: bzz sets the mode `workspace-write` on every conversation
+  before the first message. A conversation that does not take the mode is
+  never sent anything, and the agent says so.
+- **Claude Code**: bzz sets the mode `default`, in which it asks before each
+  edit and each command, and answers each request itself:
+  - one of bzz's own chat tools: yes;
+  - a file edit: yes when every file it names is inside the working folder
+    or a folder granted `:rw`, where the path really leads (links are
+    followed); otherwise no;
+  - a shell command: by the folders granted for commands, below;
+  - anything else, and anything bzz cannot read: no.
+- bzz never answers "always": a program would remember that in its own
+  files, where your settings in bzz do not reach.
+
+What bzz refused, and every command an agent asked to run, is in
+`bzz agent show <name>`.
+
+### Commands of a coding harness
+
+`:exec` on a folder means for Codex and Claude Code what it means for a
+`pi-durable` agent ([above](#letting-an-agent-run-commands)): each command
+waits for your yes in the TUI, and `:exec-without-asking` lets it run without
+it. The differences:
+
+- A command that starts in the agent's own working folder follows **every**
+  folder you granted for commands: with none it is refused, and you are
+  asked unless all of them are `:exec-without-asking`.
+- You are shown the command **as the program reports it**. bzz answers the
+  program's question and starts nothing itself.
+- Your reason for a refusal stays in the agent's activity: the program has
+  no place to take it.
+- For Codex this is only about commands that would leave its sandbox.
+- **Grok takes no `:exec`**: it never asks, so there is nothing to answer.
+  bzz refuses the grant and says why.
+
+### What they do not have
+
+| | Instead |
+|---|---|
+| A disk of its own, and a shell and git that start no program | a real folder, `<data>/agents/<id>/workspace/`, and your real shell and git |
+| A list of hosts (`--allow-host`) | the program reaches what it reaches; bzz refuses the flag |
+| Pi packages | none are loaded; bzz refuses `--no-packages` and `--packages` |
+| Git credentials from bzz (`agent credential`) | your own git, with your own credentials; bzz refuses to store one |
+| A move to another machine with its memory | its memory is the program's own saved sessions on this machine |
+
+Its conversations are the program's own sessions: after a restart bzz asks
+the program to load the one it kept for the thread. They also show in that
+program's own history (`grok sessions`, `codex resume`, `claude --resume`).
+
+### What was seen, and what was not
+
+On Linux, with the three versions named above, on a relay: each answered a
+mention once, wrote in a folder granted `:rw`, did not write in a folder that
+was not granted, and remembered its conversation after bzz and the program
+had restarted. Not tried: macOS, Windows, any other version, and whether an
+allow rule in your own Claude settings would get past bzz (bzz starts Claude
+Code without your settings so that none is read).
+
+One run is worth knowing. A Grok agent whose `send` tool did not work looked
+for another way to answer: in four minutes it ran fifty commands through its
+shell, among them a search of bzz's own files for a key. It found none it
+could use. bzz now hides its keys from Grok, tells every coding harness to
+stop when `send` fails, and keeps its own memory from other processes on
+Linux. That is the plain meaning of "bzz cannot promise the key is out of
+reach".
+
 ## See what it is doing
 
 In the TUI, `:agents` opens your agents when the community has any (and the
@@ -412,6 +552,8 @@ recovered.
 | `<data>/agents/<id>/memory.sqlite` | its conversations |
 | `<data>/agents/<id>/files.sqlite` | its disk |
 | `<data>/agents/<id>/harness.log` | its host's log |
+| `<data>/agents/<id>/workspace/` | the working folder of an agent on a coding harness |
+| `<data>/agent-adapters/` | the adapters of Codex and Claude Code, and their install logs |
 | `<data>/agents/<id>/activity.jsonl` | the commands it asked to run and the credentials it asked for, with the answers; never a secret |
 | `<data>/agents/<id>/started.json` | what its host reported when it last started |
 | `<data>/keys/agent-<id>.git/` | its git credentials, each sealed to your key |
@@ -424,7 +566,8 @@ signed, for 30 days after the turn is over (at most 1000 per agent), so that
 
 ## Limits of this version
 
-- One harness, `pi-durable`. Grok, Codex and Claude Code are not offered yet.
+- Codex and Claude Code are experimental, and all three coding harnesses
+  were tried on Linux only, each at one version.
 - An agent cannot be moved to another machine yet.
 - A real command is approved in the TUI of the bzz that runs the agent.
   There is no way to approve from the chat, from another machine, or from
@@ -457,3 +600,10 @@ signed, for 30 days after the turn is over (at most 1000 per agent), so that
 | `a` in the question says "scroll to the end of the command first" | the command is longer than the screen: `G` or `PgDn`, read it, then `a` |
 | "its harness refused its settings: …" in `:agents` | a granted folder or an allowed host is not one the host takes; the line says which |
 | "its harness did not answer in time" | a Pi package may hold the host at its start: `bzz agent edit <name> --packages off`, then look at the package |
+| "runs your own `grok` …, and none was found on PATH" | install the program and sign in, or set `BZZ_GROK`, `BZZ_CODEX` or `BZZ_CLAUDE` to its path |
+| "is version …, which is outside the versions bzz knows to work" | install a version in the range the message names; bzz does not start another |
+| "needs bubblewrap (`bwrap`) on Linux" | install the package `bubblewrap` |
+| "installing the adapter … failed" | read `<data>/agent-adapters/install-<name>.log`; the install needs the npm registry once |
+| The agent says "my program did not accept the limits bzz sets on it" | the program refused bzz's mode; `:agents` says which. Nothing was sent to it |
+| The agent says "I needed something on my owner's machine that my owner has not allowed" | it asked for a file or a command outside what you granted; `bzz agent show <name>` lists what |
+| The agent says "the model my owner chose for me is not available" | the program does not offer that model; `:agents` lists the ones it does |

@@ -275,14 +275,19 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   stays what v0.13 made it. Written by `bzz agent new` and changed by
   `bzz agent edit|pause|resume` and `:agents`; the owner's guide is
   [`agents.md`](agents.md). Never secrets. Fields:
-  - `harness`: `pi-durable`, `grok`, `codex` or `claude-code`.
+  - `harness`: `pi-durable`, `grok`, `codex` or `claude-code`. The last
+    three are coding harnesses: your own installed program
+    ([`agents.md`](agents.md#coding-harnesses)).
   - `wake`: who may wake the agent. `owner-only` (default), `allowlist` (the
     public keys in `wake_allowlist`) or `anyone`. A DM is always owner only.
   - `model` (`provider`, `model_id`, `thinking_level`): absent means the
-    harness's own default. bzz stores no provider key.
+    harness's own default. bzz stores no provider key. For a coding harness
+    `provider` is the harness's name and `model_id` a model its program
+    offers; bzz sets it on every session, and the thinking level with it.
   - `instructions`, `network` (hosts the agent may reach) and `folders`
     (`name`, absolute `path`, `write = false`): real folders granted to the
-    agent, read-only unless said.
+    agent, read-only unless said. A coding harness takes no `network`: bzz
+    refuses to write one.
   - `exec` on a folder (v0.15 M7): whether real commands of this machine may
     run there. Absent: none. `"ask"`: each command waits for your yes in the
     TUI, and is refused when bzz runs without it. `"without-asking"`:
@@ -290,11 +295,13 @@ Cache/concurrency settings are validated against hard safety ceilings. See
     whose commands are always asked about. Anything else is refused when the
     file is read. A command runs as your user and is not held in the folder; `write`
     binds the agent's file tools only. `--folder name=/path:exec` writes
-    `"ask"`, `:exec-without-asking` the other.
+    `"ask"`, `:exec-without-asking` the other. For Codex and Claude Code it
+    decides what a command they ask leave for is answered; Grok never asks,
+    and bzz refuses `exec` for it.
   - `packages` (default `true`): whether the agent's host loads the Pi
     packages named in Pi's `settings.json`. Their code runs inside the host
     with your rights. `false` is written by `--no-packages` and `bzz agent
-    edit --packages off`.
+    edit --packages off`. Only for `pi-durable`.
   - `state`: `active` (default), `paused` or `moved-away`. Only an active,
     unpaused agent is ever started.
   - `picture`: the HTTPS address of the agent's picture, kept so that an edit
@@ -302,7 +309,11 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   - `command`: program and arguments to start instead of the harness's own
     launch command, for a harness run from a checkout. Empty for an agent
     made by `bzz agent new`: a `pi-durable` agent is then started as
-    `node <data>/agent-host/<id>/main.mjs <agent folder>`.
+    `node <data>/agent-host/<id>/main.mjs <agent folder>`, and a coding
+    harness as its own program is started
+    ([`agent-host-protocol.md`](agent-host-protocol.md), section 12). With
+    `command`, a coding harness's program, its version and its adapter are
+    not looked for; its guard is still set.
 
   ```toml
   [[hosted_agents.local.folders]]
@@ -335,13 +346,28 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   and refuses what you have taken away since. See
   [`adr-v0.15-local-agents.md`](adr-v0.15-local-agents.md).
 
-  Two variables of bzz's own environment matter to agents, and neither is a
-  setting: `BZZ_NODE` names the Node.js to run the agent host with (default:
-  the first `node` on `PATH` that is 22.19 or newer), and
-  `PI_CODING_AGENT_DIR` names Pi's folder (default `~/.pi/agent`), where the
-  host reads the model's sign-in. The host and its packages are installed on
-  first use in `<data>/agent-host/<id>/`, where `<id>` names the exact host
-  files inside this bzz.
+  Some variables of bzz's own environment matter to agents, and none is a
+  setting:
+
+  | Variable | What |
+  |---|---|
+  | `BZZ_NODE` | the Node.js that runs the agent host and the adapters of Codex and Claude Code. Default: the first `node` on `PATH` that is 22.19 or newer |
+  | `PI_CODING_AGENT_DIR` | Pi's folder, where the `pi-durable` host reads the model's sign-in. Default `~/.pi/agent` |
+  | `BZZ_GROK`, `BZZ_CODEX`, `BZZ_CLAUDE` | the program of a coding harness. Default: the first `grok`, `codex` or `claude` on `PATH` |
+  | `GROK_HOME`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` | handed on to the program whose it is: where its own sign-in is, when you moved it |
+  | `HTTPS_PROXY` and the like, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `XDG_*_HOME` | handed on to a coding harness, so that it reaches its provider as you do |
+  | `BZZ_AGENT_RECORD` | for the tests: a folder where bzz writes a transcript of each start of a coding harness. It holds the conversation's text, never a credential ([`agent-host-protocol.md`](agent-host-protocol.md), section 12) |
+
+  No other variable reaches a harness, and no API key does
+  (`XAI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`): a coding harness
+  uses the sign-in you made with the program itself.
+
+  The host and its packages are installed on first use in
+  `<data>/agent-host/<id>/`, where `<id>` names the exact host files inside
+  this bzz; the adapters of Codex and Claude Code in
+  `<data>/agent-adapters/<name>-<id>/`, where `<id>` names the lock file
+  inside this bzz. An install another bzz made is removed when no agent
+  runs.
 
   bzz's database keeps each request a local agent was woken by, with the
   reply it signed, for 30 days after its turn is over and at most 1000 per

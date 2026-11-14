@@ -14,7 +14,10 @@ harness that knows none of them still works.
 
 Sections 1 to 7 keep their numbers. Sections 8 to 10 are what bzz's own host
 asks of bzz beyond the chat tools, each with what bzz answers. Section 11 is
-the host's one entry that is not the protocol.
+the host's one entry that is not the protocol. Section 12 is what bzz does
+for a coding harness beyond sections 2 to 6: how it starts Grok, Codex and
+Claude Code, what it sets on each of their sessions, and how it answers what
+they ask leave for.
 
 ## 1. Files
 
@@ -25,13 +28,16 @@ the host's one entry that is not the protocol.
 | `…/files.sqlite` | the agent's disk |
 | `…/agent.json` | settings a remote copy needs (below). Written by `agent move` and `agent launch-kit`, never read by a local launch |
 | `…/workspace/` | the working folder of a coding harness |
+| `…/workspace/.grok/sandbox.toml` | Grok's sandbox profile for this agent. Written by bzz before every start, in place of whatever is there (section 12) |
 | `…/harness.log` | the harness's standard error, from its last start. At most 8 MiB are kept |
 | `…/started.json` | what bzz's own host answered to its last `initialize`: its version, where it offers `run`, its packages (section 3). Written by bzz |
-| `…/activity.jsonl` | every real command the agent asked to run and every git credential it asked for, with bzz's answer (sections 8 and 9). Written by bzz; never a secret |
+| `…/activity.jsonl` | every real command the agent asked to run and every git credential it asked for, with bzz's answer (sections 8 and 9); for a coding harness, also what bzz refused it (section 12). Written by bzz; never a secret |
 | `<data>/agents/run/<agent id>.json` | the ownership record of a running process |
 | `<data>/keys/agent-<agent id>.nip44` | the agent's key, sealed to its owner's |
 | `<data>/keys/agent-<agent id>.git/` | the git credentials stored for the agent, each sealed to its owner's key (section 8) |
 | `<data>/agent-host/<sha16>/` | the Pi Durable host: `main.mjs`, `package.json`, `src/` and `node_modules`. `<sha16>` is the first 16 hex characters of a SHA-256 over **every host file inside the bzz binary**, each with its path: the lock file, `package.json`, `main.mjs` and all of `src/`. A change to any of them is another install |
+
+| `<data>/agent-adapters/<name>-<sha16>/` | the ACP adapter of Codex (`codex`) or of Claude Code (`claude-code`): `package.json`, `package-lock.json` and `node_modules`. `<sha16>` is the first 16 hex characters of a SHA-256 over the two files inside the bzz binary (section 12) |
 
 - The host reads its version from `package.json`, so that file must sit
   beside `main.mjs`. `src/` must be whole: `src/run-child.mjs` is started as
@@ -82,10 +88,16 @@ the host's one entry that is not the protocol.
     mark between that moment and the start of the child. On Windows a handle
     bzz itself inherited as inheritable is handed on; the host offers no
     `run` there.
+- **On Linux, bzz is a process whose memory others of the same user may not
+  read**, from the moment it runs agents (`PR_SET_DUMPABLE` 0): a command a
+  harness runs cannot read an agent's key, or the owner's, out of
+  `/proc/<bzz>/mem`. bzz then leaves no core dump either.
 - The environment is built from nothing: `PATH`, `HOME`, `LANG`, `TMPDIR`,
-  and what the harness needs to find its own sign-in. It never holds an agent
-  key, an owner key, a relay address or a bzz credential, with one exception:
-  the `bzz agent-tools` server of section 6 gets its own session's credential.
+  and for a coding harness the variables of section 12: its guard, where
+  its adapter finds the owner's program, and where its sign-in is when the
+  owner moved it. It never holds an agent key, an owner key, a relay address
+  or a bzz credential, with one exception: the `bzz agent-tools` server of
+  section 6 gets its own session's credential.
 - **`HOME` is the agent's own folder for bzz's Pi Durable host**, and the
   owner's home for a coding harness, which finds its own sign-in there. So
   the Pi Durable host would look for Pi's folder in the wrong place: bzz
@@ -252,8 +264,11 @@ The host answers:
   place gets `-32602`.
 - For other harnesses bzz stores the session id the harness returned for the
   place and uses `session/load` after a restart when the harness offers it.
+  `session/load` takes the parameters of `session/new` and the session's id.
 - `mcpServers` is empty for a `"tools": "pipe"` host and holds the server of
   section 6 otherwise.
+- A coding harness gets more in `session/new` and `session/load`, and two
+  more requests before its first prompt: section 12.
 
 ### `session/prompt`
 
@@ -345,9 +360,13 @@ to another harness.
   `tool_call` of a `run` comes before its `_bzz/approve`. A turn that
   continues after a restart sends nothing until bzz has handed its request
   over again.
-- `session/request_permission`. bzz allows its own chat tools. Anything else
-  is refused unless the agent has a grant that covers it. bzz's own host
-  never sends it: it asks with `_bzz/approve` (section 9).
+- `session/request_permission`. bzz allows its own chat tools, once.
+  Anything else is refused, but for a coding harness, whose requests are
+  answered by the rule of section 12. An answer names an option of the
+  request by its kind (`allow_once`, `reject_once`), never one the harness
+  would remember (`allow_always`, `reject_always`); with no such option the
+  request is cancelled. bzz's own host never sends it: it asks with
+  `_bzz/approve` (section 9).
 - Notifications in a namespace bzz does not know, such as `_x.ai/…`, are
   ignored. A request bzz does not know gets error `-32601`.
 - The requests of bzz's own host (`_bzz/tool`, `_bzz/credential`,
@@ -749,3 +768,212 @@ node <host dir>/main.mjs --check-model <Pi's folder> '<model as JSON>' [--no-pac
 - `packages` is the report `initialize` would give.
 - It reads Pi's sign-in as the host does, creates nothing in Pi's folder,
   and starts no agent. bzz gives it 30 s.
+
+## 12. Coding harnesses: Grok, Codex and Claude Code
+
+Each is the owner's own installed program, with the sign-in he made there
+(ADR decision 8). bzz starts it, speaks ACP to it as to any harness, and
+sets its guard itself: in the mode the owner's own settings name, all three
+write anywhere without asking.
+
+### Finding and starting the program
+
+| Harness | Program | Named instead by | Versions bzz starts | Started as |
+|---|---|---|---|---|
+| `grok` | `grok` on `PATH` | `BZZ_GROK` | 1.0.77 up to, not including, 1.1.0 | `grok agent --no-leader stdio` |
+| `codex` | `codex` on `PATH` | `BZZ_CODEX` | 0.166.0 up to, not including, 0.167.0 | `node <adapter>/node_modules/@agentclientprotocol/codex-acp/dist/index.js` |
+| `claude-code` | `claude` on `PATH` | `BZZ_CLAUDE` | 2.1.322 up to, not including, 2.2.0 | `node <adapter>/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js` |
+
+- bzz runs `<program> --version` and reads the first `a.b.c` it prints.
+  Outside the range nothing is started: `agent new`, `agent doctor` and the
+  start each say which version was found and which are known to work. The
+  first version of each range is the one the tests ran with; later ones in
+  it are accepted and were not tested.
+- The adapters are `@agentclientprotocol/codex-acp` 2.5.0 and
+  `@agentclientprotocol/claude-agent-acp` 0.101.0, each pinned by a lock
+  file inside the bzz binary (`agent-adapters/`). They are installed on
+  first use with `npm ci --ignore-scripts --omit=optional --omit=dev` in a
+  folder of their own, which gets its name only when the install is whole
+  and holds exactly the pinned version. The optional packages are the
+  adapters' own copies of `codex` and `claude`: they are not installed and
+  not used. Node is found as for bzz's own host (`BZZ_NODE`).
+- An adapter is pointed at the owner's program, with links followed:
+  `CODEX_PATH` for Codex, `CLAUDE_CODE_EXECUTABLE` for Claude Code.
+- `command` in the agent's settings replaces the program and its arguments.
+  Nothing is found, checked or installed then; the rest of this section
+  still holds.
+
+The environment, beside `PATH`, `HOME` (the owner's home), `LANG` and
+`TMPDIR`:
+
+| Variable | For | Value |
+|---|---|---|
+| `GROK_SANDBOX` | Grok, not on Windows | `bzz-agent` |
+| `INITIAL_AGENT_MODE` | Codex | `workspace-write` |
+| `CODEX_PATH`, `CLAUDE_CODE_EXECUTABLE` | the adapter | the owner's program |
+| `GROK_HOME`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` | the program whose it is | as in bzz's environment, when set: where its sign-in is |
+| `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` (and in lower case), `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME` | all three | as in bzz's environment, when set |
+
+No API key is handed on (`XAI_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`,
+`ANTHROPIC_API_KEY`): a coding harness uses the sign-in the owner made with
+the program itself.
+
+### The guard
+
+- **Grok.** Before every start bzz writes `.grok/sandbox.toml` in the
+  agent's working folder, in place of whatever is there:
+
+  ```toml
+  [profiles.bzz-agent]
+  extends = "workspace"
+  deny = ["<data>/keys"]            # the folder of bzz's keys
+  read_write = ["/home/ann/site"]   # the folders granted for writing
+  ```
+
+  and names it with `GROK_SANDBOX`. Grok applies it to its whole process:
+  it reads everything the owner can but what `deny` names, and writes in
+  its working folder, the folders above, its own `~/.grok` and the
+  machine's temporary folders. `deny` holds for reading and for writing,
+  for Grok's own tools and for every command it runs. A profile of that
+  kind that cannot be applied stops Grok at its start; a built-in one would
+  only be warned about. On Linux Grok needs bubblewrap (`bwrap`) for
+  `deny`: bzz looks for it and says so when it is missing. Grok sends no
+  permission request, so there is nothing for bzz to answer. On Windows
+  Grok has no sandbox, and bzz sets none.
+- **Codex.** bzz sets the mode `workspace-write` on every session. Codex's
+  sandbox then holds what it runs to its working folder, the folders it was
+  told of and the temporary folders, with no network, and Codex asks leave
+  for the rest.
+- **Claude Code.** bzz sets the mode `default` on every session. Claude Code
+  has no boundary of its own: it asks leave before each edit and each
+  command, and bzz's answers are all that holds it.
+
+### What a session is told
+
+`session/new`, and `session/load` with the session's id beside it:
+
+```json
+{"cwd": "<data>/agents/<agent id>/workspace",
+ "mcpServers": [ … section 6 … ],
+ "additionalDirectories": ["/home/ann/site"],
+ "systemPrompt": {"mode": "append", "content": [{"type": "text", "text": "…"}]},
+ "_meta": {"bzz/place": "…",
+           "rules": "…",
+           "claudeCode": {"options": {"settingSources": [], "strictMcpConfig": true}}}}
+```
+
+- `systemPrompt` and `additionalDirectories` are sent to a harness that
+  offered them at `initialize` (`agentCapabilities.sessionCapabilities`).
+  Both adapters do. Grok offers neither: it takes the same text as
+  `_meta.rules`, and its folders from its sandbox profile.
+- The text says who the agent is and how to answer (`send` of the `buzz`
+  server), its working folder, the folders it may read and those it may
+  write in, what happens to a shell command, what to do when `send` fails
+  (stop and say so; never look for another way to post, nor for keys), and
+  the agent's instructions. A harness that took it is not sent the
+  instructions again in each message.
+- `additionalDirectories`: for Claude Code, every granted folder; for Codex,
+  only those granted for writing, because Codex makes writable what it is
+  told of.
+- `_meta.claudeCode.options`, for Claude Code only: none of the owner's
+  Claude settings are loaded, nor those of the working folder, which the
+  agent can write: no allow rule, hook, plugin or MCP server of his. The
+  sign-in is not a setting and is still found.
+
+Then, before the first `session/prompt` of that session, new or loaded:
+
+1. `session/set_mode` with `{"sessionId", "modeId"}`: `workspace-write` for
+   Codex, `default` for Claude Code. Grok has no modes and gets none.
+   - A session whose answer lists its modes without that one is not asked.
+   - A harness that refuses the mode, or does not know the method, leaves a
+     session that is **never prompted**: the request ends with a notice
+     (`not-guarded`), and `:agents` says why.
+2. `session/set_config_option` with `{"sessionId", "configId", "value"}`,
+   when the owner chose a model: the option whose `category` is `model`,
+   from the `configOptions` of the session's answer. A model that is not
+   among its values is not set, and the request ends with a notice
+   (`model-unavailable`) that says so. Then the thinking level, in the
+   option whose `category` is `thought_level`; a level the model does not
+   have is passed over, and the owner is told in `:agents`.
+
+### Permission requests
+
+A request is read from its `toolCall`, and from what the harness reported of
+that call before (`tool_call` and `tool_call_update`, by `toolCallId`): a
+harness may ask leave for a call by its id alone, as Codex does. The
+request's own `kind`, `title` and `rawInput` come first; every path of either
+counts. Text of a file is not kept.
+
+| What is asked | Read from | Answer |
+|---|---|---|
+| One of bzz's chat tools | `kind` absent or `other`, and a `title` that reads `buzz` then `send`, `read` or `react` (`mcp__buzz__send`, `buzz__send`); for Codex, a reported call marked `_meta.is_mcp_tool_call` with `rawInput.server` `buzz` and that tool | allowed |
+| A file edit | `kind` `edit`; paths in `locations[].path`, in `content[]` of type `diff`, and in `rawInput.file_path`, `path` or `notebook_path` | allowed when there is a path and **every** path is inside the working folder or a folder granted for writing |
+| A read | `kind` `read` or `search`; the same paths | allowed when every path is inside the working folder or a granted folder |
+| A shell command | `kind` `execute`; `rawInput.command`, a text or a list of texts; `rawInput.cwd` when it says where | below |
+| Anything else: `delete`, `move`, `fetch`, `switch_mode`, a tool of another MCP server, no kind, no path, no command | | refused |
+
+- A path counts where it really is: links are followed as far as the path
+  exists. A path that is not absolute, holds `..`, or ends in a link to
+  nowhere is refused.
+- Every request but one for a chat tool must belong to a turn that is
+  running in that process and that the owner has not stopped.
+- The folders are those bzz started the agent with that the settings file
+  still grants at that moment, each with what both allow.
+- bzz selects `allow_once` or `reject_once`. With neither on offer the
+  outcome is `cancelled`.
+- What bzz refuses, and every command, is a line of the agent's activity.
+- A turn that ends with no answer after a refusal gets the notice
+  `not-allowed`: Codex ends its turn when it is refused.
+
+A shell command, by the rule of section 9 for a program that starts its
+commands itself:
+
+1. It is refused when no folder is granted for commands, when it would start
+   (`cwd`) inside a granted folder that is not granted for commands, or when
+   it would start anywhere that is neither the working folder nor a granted
+   folder.
+2. Started inside a folder granted for commands, that folder decides
+   whether the owner is asked. Started in the working folder, or with no
+   `cwd`, every folder granted for commands counts, and the owner is asked
+   unless all of them are allowed without asking: a command is not held in
+   the folder it starts in.
+3. An agent anyone may wake is always asked about.
+4. The owner is asked in the TUI as in section 9, with the same time limit
+   and the same reasons for a question to be void. He is shown where the
+   command would start and the command **as the program reports it**. bzz
+   answers the program's request and starts nothing: that what runs is what
+   was shown is the program's to keep to. His reason for a refusal stays in
+   the activity; the protocol has no place to hand it to the program.
+
+Grok sends none of these. Codex sends one when a command or a file change
+would leave its sandbox, and for every tool of an MCP server. Claude Code
+sends one for every edit, every command and every tool of an MCP server.
+
+### Transcripts: `BZZ_AGENT_RECORD`
+
+When `BZZ_AGENT_RECORD` names a folder in bzz's environment, bzz writes one
+file per start of a coding harness there, `<harness>-<time>.ndjson`: one
+JSON object per line.
+
+| Line | What |
+|---|---|
+| `{"transcript": {"harness", "bzz"}}` | the first line |
+| `{"out": <message>}` | what bzz wrote to the pipe |
+| `{"in": <message>}` | what the harness wrote |
+| `{"tool": {"session", "name", "arguments"}}` | a call of a chat tool, as it reached bzz |
+
+It is for the tests (`tests/fixtures/agents/transcripts/`), and it holds the
+text of the conversation it records. It never holds:
+
+- the session credential (`<credential>`) or the path of bzz (`<bzz>`);
+- paths of the machine: `<workspace>`, `<folder:NAME>`, `<data>`, `<home>`;
+- what changes from run to run: a prompt's text, the system prompt, the
+  place and the request (`<any>`);
+- the parameters of any notification but `session/update`, and of any
+  request but `session/request_permission`. Grok lists the owner's own MCP
+  servers in a notification, with whatever their settings hold;
+- of an answer, anything bzz does not read: of `initialize`, only the
+  protocol version, the capabilities, the program's name and the ids of its
+  sign-in methods; of a session, only its id, modes and options; of a
+  prompt, only the stop reason. Usage and the commands on offer are left
+  out of `session/update`.

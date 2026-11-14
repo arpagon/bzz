@@ -250,7 +250,7 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
     let coding = |promise,
                   sandbox: Option<&'static str>,
                   real_folders: &'static str,
-                  [folders, commands, settings]: [Rule; 3],
+                  [folders, commands, reading, settings]: [Rule; 4],
                   seen_with: &'static str| CapabilityRecord {
         harness,
         promise,
@@ -274,6 +274,7 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
             ONLY_THROUGH_TOOLS,
             folders,
             commands,
+            reading,
             settings,
         ],
         warning: match (sandbox, folders.by) {
@@ -283,6 +284,13 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
         },
         notes: Vec::new(),
         seen_with,
+    };
+    // What it can read is not what it can write: a sandbox that holds
+    // writes may let everything be read.
+    let reads = |how: &'static str, by| Rule {
+        rule: "what it can read",
+        by,
+        how,
     };
     // What the owner's own settings for the program give it. bzz switches
     // them off only where the program takes an instruction to.
@@ -337,7 +345,7 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
             coding(
                 Promise::Supported,
                 sandbox,
-                "its working folder and the folders you grant for writing; it reads everything you can read, whatever you grant",
+                "its working folder and the folders you grant for writing, and the machine's temporary folders",
                 [
                     Rule {
                         rule: "it writes only in its folders",
@@ -362,11 +370,19 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
                         how: if windows {
                             "they run as your user without asking"
                         } else {
-                            "they run as your user without asking, inside that sandbox: they read what you can read and write only where it lets them"
+                            "they run as your user without asking, inside that sandbox: they read what it lets them read and write only where it lets them write"
                         },
                     },
+                    if windows {
+                        reads("everything you can read", Enforcer::Nobody)
+                    } else {
+                        reads(
+                            "everything you can read, your other files and bzz's database of your messages among them, but for the folder of bzz's keys, which bzz tells Grok's sandbox to hide",
+                            Enforcer::Harness,
+                        )
+                    },
                     own_settings(
-                        "it has what your Grok settings give it (your MCP servers, hooks, rules and plugins); bzz does not switch them off",
+                        "it has what your Grok settings give it (your MCP servers and their tools, hooks, rules and plugins) and uses them without asking; bzz does not switch them off",
                         Enforcer::Nobody,
                     ),
                 ],
@@ -376,20 +392,24 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
         Harness::Codex => coding(
             Promise::Experimental,
             Some("Codex's own, mode `workspace-write`, which bzz sets on every session"),
-            "its working folder and the folders you grant for writing; it reads everything you can read, whatever you grant",
+            "its working folder and the folders you grant for writing, and the machine's temporary folders",
             [
                 Rule {
                     rule: "it writes only in its folders",
                     by: Enforcer::Harness,
-                    how: "Codex's sandbox holds what it runs to them and the temporary folders, with no network; a session that does not take the mode is never asked anything",
+                    how: "Codex's sandbox holds what it runs to them and the temporary folders, with no network, and asks leave for the rest, which bzz refuses; a session that does not take the mode is never asked anything",
                 },
                 Rule {
                     rule: "real commands on this machine",
                     by: Enforcer::Harness,
                     how: "inside the sandbox they run as your user without asking; to leave it Codex asks, and bzz says no unless you granted a folder for commands, and then asks you in the TUI unless you allowed that without asking",
                 },
+                reads(
+                    "everything you can read, your other files and bzz's own among them: Codex's sandbox limits writing and the network, not reading",
+                    Enforcer::Nobody,
+                ),
                 own_settings(
-                    "it has what your Codex settings give it (your MCP servers, rules and plugins); bzz does not switch them off",
+                    "it has what your Codex settings give it (rules and plugins); bzz does not switch them off. For a tool of an MCP server Codex asks leave, and bzz allows only its own",
                     Enforcer::Nobody,
                 ),
             ],
@@ -410,6 +430,10 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
                     by: Enforcer::BzzOnly,
                     how: "Claude Code asks before each one; bzz says no unless you granted a folder for commands, and then asks you in the TUI unless you allowed that without asking. Allowed, a command runs as your user and can reach whatever you can",
                 },
+                reads(
+                    "its folders: bzz refuses a read it asks for outside them. A command you let it run reads whatever you can",
+                    Enforcer::BzzOnly,
+                ),
                 own_settings(
                     "bzz tells its adapter to load none of them, nor those of its working folder: no allow rule, hook, plugin or MCP server of yours. bzz cannot check that it obeys",
                     Enforcer::Harness,
@@ -565,6 +589,26 @@ mod tests {
                 "{text}"
             );
         }
+        // What it can read is said apart from what it can write: Grok's
+        // sandbox hides bzz's keys, Codex's hides nothing, and Claude Code
+        // is refused by bzz.
+        let reads = |harness, windows| {
+            record_on(harness, windows)
+                .rules
+                .iter()
+                .find(|rule| rule.rule == "what it can read")
+                .map(|rule| (rule.by, rule.how))
+                .unwrap()
+        };
+        assert_eq!(reads(Harness::Grok, false).0, Enforcer::Harness);
+        assert!(
+            reads(Harness::Grok, false)
+                .1
+                .contains("the folder of bzz's keys")
+        );
+        assert_eq!(reads(Harness::Grok, true).0, Enforcer::Nobody);
+        assert_eq!(reads(Harness::Codex, false).0, Enforcer::Nobody);
+        assert_eq!(reads(Harness::ClaudeCode, false).0, Enforcer::BzzOnly);
         // Only Claude Code is told to load none of the owner's settings.
         let settings = |harness| {
             record_on(harness, false)

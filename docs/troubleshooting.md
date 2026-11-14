@@ -435,10 +435,35 @@ with `:huddle devices`, choose one with `:huddle input <name>` /
 
 ## A local agent does not start or does not answer
 
-`bzz agent doctor` reports Node.js, npm, the agent host and each agent's
-readiness, and `:agents` shows what each agent is doing and why it is not
-running. The symptoms and what to do are in
+`bzz agent doctor` reports Node.js, npm, the agent host, each coding
+program (`grok`, `codex`, `claude`) with its version and its adapter, and
+each agent's readiness. `:agents` shows what each agent is doing and why it
+is not running. The symptoms and what to do are in
 [`agents.md`](agents.md#when-something-is-wrong).
+
+For an agent on a coding harness:
+
+- **"none was found on PATH"**, or the wrong copy is found: install the
+  program, or name it with `BZZ_GROK`, `BZZ_CODEX` or `BZZ_CLAUDE`.
+- **"outside the versions bzz knows to work"**: bzz starts only the versions
+  it was tested with and later ones of the same line. The message names the
+  range. A program that updated itself past it is not started until bzz
+  knows the new version.
+- **The agent says its owner must sign in**: sign in with the program
+  itself (`grok login`, `codex login`, `claude auth login`). bzz hands on no
+  API key from its environment.
+- **Grok does not start on Linux**: its sandbox needs `bwrap` (the package
+  `bubblewrap`). `harness.log` in the agent's folder has Grok's own words.
+- **The agent cannot write where you expect**: it writes only in its working
+  folder and in folders granted `:rw`. `bzz agent show <name>` lists what
+  bzz refused, with the path.
+- **A Claude Code agent runs no shell command**: grant a folder for commands
+  (`:exec`). Each command then waits for `Ctrl-Y` in the TUI.
+- **A Codex agent stops with "my owner has not allowed"**: Codex ends its
+  turn when a request of its own is refused. `bzz agent show <name>` says
+  what it asked for.
+- **Your own MCP servers do not show for a Claude Code agent**: bzz starts
+  it without your Claude settings, on purpose.
 
 ## Development relay
 

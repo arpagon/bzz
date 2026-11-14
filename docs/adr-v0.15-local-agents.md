@@ -7,7 +7,8 @@ write in a channel where it is a member without the `bot` role (decision 4
 there required it).
 
 **Date:** 2026-11-14. Decisions 13 to 16 and the details marked "as built"
-were added the same day, when M3 and M7 were finished on bzz's side.
+were added the same day, when M3 and M7 were finished on bzz's side, and
+those of decisions 8 and 17 when the three coding harnesses were (M6).
 
 ## Context
 
@@ -75,7 +76,28 @@ key, talks to the relay and starts an ACP agent beneath it.
    folder bzz creates plus the folders he grants, with the harness's own
    sandbox on where it has one. bzz says, at creation and in `agent show`,
    that such a harness runs a real shell as the owner's user, and where it has
-   no sandbox.
+   no sandbox. As built:
+   - **Its guard is set by bzz, never left to the owner's settings.** In the
+     mode his own settings name, all three write anywhere without asking.
+     Grok gets a sandbox profile bzz writes before every start; Codex and
+     Claude Code get a mode, set on every session before its first prompt,
+     and a session that does not take it is never prompted.
+   - **What a harness asks leave for is answered by rule**, once and never
+     "always": bzz's chat tools, yes; a file edit, only inside the working
+     folder and folders granted for writing; a shell command, by decision
+     13; anything else, and anything bzz cannot read, no.
+   - **Who holds the boundary differs, and bzz says which.** Grok's and
+     Codex's own sandboxes hold their writes; bzz does not check them.
+     Claude Code has none: only bzz's answers hold it.
+   - **A sandbox is not the agent's folders alone.** Grok and Codex read
+     everything the owner can, and write in the machine's temporary folders
+     too. bzz's record of each says so.
+   - **The owner's own settings of the program still apply to Grok and to
+     Codex**: his MCP servers, hooks, rules and plugins. Only Claude Code
+     takes an instruction to load none, and bzz gives it.
+   - A coding harness keeps no list of hosts of bzz's, loads no Pi package,
+     gets no git credential from bzz and cannot be moved: the commands that
+     would set these refuse, with the reason.
 9. **Processes are owned.** Each agent runs in its own process group with an
    environment built from nothing. bzz records pid, start time and boot id,
    stops leftovers at startup before it recovers anything, and stops a
@@ -139,6 +161,13 @@ key, talks to the relay and starts an ACP agent beneath it.
     runs inside the agent's host, with the owner's rights and outside the
     agent's sandbox. They are on by default, as in Pi, and the owner can
     switch them off per agent.
+17. **A coding harness's command is the program's to start.** Decision 13
+    holds for it with two differences. The owner is shown the command as
+    the program reports it, and bzz answers the program's request: that
+    what runs is what was shown is the program's to keep to. And a command
+    that starts in the agent's own working folder, where no grant says
+    anything, follows every folder granted for commands: none is a no, and
+    the owner is asked unless all of them are allowed without asking.
 
 ## Consequences
 
@@ -167,7 +196,16 @@ key, talks to the relay and starts an ACP agent beneath it.
   key. A real shell running as the owner's user can reach what the owner can.
 - Three things move fast under this design and are pinned: Pi Durable, the
   two ACP adapters, and the three coding programs, each with a tested version
-  range.
+  range. As built: the adapters are pinned to one version each by lock files
+  inside the bzz binary and installed on first use without install scripts
+  and without their optional packages, which are their own copies of the two
+  programs (98 MB instead of 836 MB). A program's range starts at the
+  version the tests ran with and ends before its next minor version; for
+  Codex, whose adapter is built against one of them, it is one minor line.
+- A harness's own messages can hold what its owner's settings hold. Grok
+  lists the owner's MCP servers, with their arguments and environment, in a
+  notification to its client. bzz ignores every notification it does not
+  know and writes none of them anywhere, also not in a recorded transcript.
 
 ## Rejected
 
@@ -180,6 +218,12 @@ key, talks to the relay and starts an ACP agent beneath it.
   environment and posts around bzz, so rule 5 could not be enforced.
 - **A JavaScript engine inside bzz, or a port of Pi Durable to Rust.**
 - **Docker, a daemon, or root** for any sandbox.
+- **Answering a coding harness's requests by the mode the owner chose
+  there.** His own mode is the one in which it writes anywhere. bzz offers
+  no choice of mode: one per harness, the strictest that still lets it work
+  in its folders.
+- **Telling Grok and Codex to ignore the owner's settings** by starting them
+  in a home of their own. Their sign-in is in that home.
 - **Asking the owner at the moment a credential is used.** A clone is
   several requests of one git command, and an agent that waits on its owner
   for each is no use while he is away; the store per agent and host, with

@@ -245,7 +245,8 @@ trusted with anything of bzz's:
   bzz. The message answered comes from the calling session's live turn, never
   from an argument; one final reply per message is kept in bzz's database
   before anything is published. A permission request for anything but those
-  tools is refused. bzz's own host may also ask for a git credential and for
+  tools is refused, but for a coding harness, whose requests are answered
+  by rule (below). bzz's own host may also ask for a git credential and for
   leave to start a real command (below); no other harness may.
 - **`bzz agent-tools`.** A harness that is not bzz's own host reaches the
   tools through this MCP server and a loopback endpoint, with a credential
@@ -260,11 +261,59 @@ trusted with anything of bzz's:
   descriptor: before a start, bzz marks everything it holds above them as
   not to be passed on, also what bzz itself inherited from the terminal it
   was started in (on Linux and macOS; on Windows a handle bzz inherited as
-  inheritable is passed on). A coding harness (Grok, Codex, Claude Code) is the owner's own
-  program: it runs a real shell as the owner's user, and bzz cannot promise
-  the key is out of its reach, only that bzz never gives it. bzz does not
-  start those three in this version; `bzz agent show` prints each harness's
+  inheritable is passed on). On Linux, a bzz that runs agents marks itself
+  as a process whose memory other processes of the same user may not read
+  or attach to (`PR_SET_DUMPABLE` 0), and so leaves no core dump.
+- **Coding harnesses (Grok, Codex, Claude Code).** Each is the owner's own
+  installed program with his own sign-in. It runs a real shell as the
+  owner's user, and bzz cannot promise the key is out of its reach, only
+  that bzz never gives it. `bzz agent show` prints each harness's
   capability record, with who enforces each rule.
+  - **The guard is bzz's, not the owner's settings of the program.** In the
+    mode those name, all three write anywhere without asking. bzz writes a
+    sandbox profile for Grok before every start, and sets a mode on every
+    session of Codex (`workspace-write`) and of Claude Code (`default`)
+    before its first prompt. A session that does not take the mode is never
+    prompted.
+  - **Who holds the boundary.** Grok's and Codex's own sandboxes hold their
+    writes; bzz does not check them. Claude Code has none: bzz's answers to
+    its requests are the only boundary, and bzz says so at creation and in
+    `agent show`.
+  - **The rule for a request**: bzz's chat tools, allowed; a file edit, only
+    when every path it names is inside the agent's working folder or a
+    folder granted for writing, where the path really leads; a shell
+    command, by the folders granted for commands and the owner's answer, as
+    above; anything else, and anything bzz cannot read a kind, a path or a
+    command from, refused. Never "always".
+  - **What a sandbox does not do.** Grok and Codex read everything the
+    owner can: his files, bzz's database of his messages, other programs'
+    settings. Both write in the machine's temporary folders. Their commands
+    run without asking. bzz tells Grok's sandbox to hide the folder of
+    bzz's keys (sealed agent keys, the owner's key when it is kept in a
+    file, git credentials); Codex's sandbox takes no such instruction.
+  - **The owner's own settings of the program still apply to Grok and
+    Codex**: his MCP servers and their tools, hooks, rules, plugins. A Grok
+    agent uses them without asking. Claude Code is told to load none, and
+    none of its working folder's, which the agent can write.
+  - **What bzz answers is the program's question.** For a shell command the
+    owner sees the command as the program reports it, and the program starts
+    it. For an edit, bzz checks where the path leads at that moment: a link
+    put in its place afterwards, by a command the owner allowed, is not
+    seen.
+  - **A model that cannot post looks for another way.** In one test a Grok
+    agent whose `send` tool did not work ran fifty commands in four
+    minutes, among them a search of bzz's files and of its parent's memory
+    for a key or a credential. It found none it could use; the key folder
+    was readable then and is hidden now. An agent anyone may wake can be
+    asked to do the same on purpose.
+  - **Versions and adapters.** bzz starts only versions it knows to work.
+    The two adapters are pinned by lock files inside the binary, installed
+    without install scripts and without their optional packages, and used
+    only when whole.
+  - **A harness's own messages can hold the owner's secrets.** Grok lists
+    his MCP servers, with their arguments and environment, in a notification
+    to its client. bzz ignores what it does not know and writes none of it,
+    not to a log and not to a recorded transcript.
 - **bzz's own agent host (`pi-durable`).** A Node program inside the bzz
   binary, run with the owner's Node. bzz installs it on first use from the
   lock file inside the binary with `npm ci --ignore-scripts --omit=optional
