@@ -253,98 +253,66 @@ fn community_answer(
 }
 
 /// The rest of the answers of `agent new`: from the flags, and from the
-/// terminal for what no flag gave.
+/// terminal for what no flag gave. The questions and how an answer is read
+/// are `manage`'s, shared with the form of `:agent new`.
 fn answers(args: &NewArgs, interactive: bool, name: &str) -> Result<manage::NewAgent> {
-    let mut new = manage::NewAgent::named(name);
-    let asked = |given: &Option<String>, question: &str, default: &str| match (given, interactive) {
+    let question = |index: usize| {
+        let (label, hint) = manage::QUESTIONS[index];
+        format!("{label} ({hint})")
+    };
+    let asked = |given: &Option<String>, index: usize, default: &str| match (given, interactive) {
         (Some(value), _) => Ok(value.clone()),
-        (None, true) => ask(question, default),
+        (None, true) => ask(&question(index), default),
         (None, false) => Ok(default.to_owned()),
     };
-    new.harness = manage::parse_harness(&asked(
-        &args.harness,
-        "Harness (pi-durable; grok, codex and claude-code are not available yet)",
-        "pi-durable",
-    )?)?;
-    let model = asked(
-        &args.model,
-        "Model, as provider/model (empty: Pi's own default)",
-        "",
-    )?;
-    new.model = manage::parse_model(&model, args.thinking.as_deref())?;
-    new.instructions =
+    let listed = |given: &[String], index: usize| -> Result<Vec<String>> {
+        if !given.is_empty() || !interactive {
+            return Ok(given.to_vec());
+        }
+        Ok(manage::split_list(&ask(&question(index), "")?)
+            .into_iter()
+            .map(str::to_owned)
+            .collect())
+    };
+    let harness = asked(&args.harness, 1, "pi-durable")?;
+    let model = asked(&args.model, 2, "")?;
+    let instructions =
         match instructions_from(args.instructions.clone(), args.instructions_file.as_ref())? {
             Some(text) => text,
-            None if interactive => ask(
-                "Instructions (one line; a longer text: `bzz agent edit --instructions-file`)",
-                "",
-            )?,
-            None => String::new(),
+            None => asked(&None, 3, "")?,
         };
-    let mut allow = args.allow.clone();
-    let wake = match (&args.wake, allow.is_empty()) {
+    // People named by a flag make the rule an allowlist without asking.
+    let wake = match (&args.wake, args.allow.is_empty()) {
         (Some(wake), _) => wake.clone(),
         (None, false) => "allowlist".into(),
-        (None, true) => asked(
-            &None,
-            "Who may wake it (owner-only, allowlist, anyone)",
-            "owner-only",
-        )?,
+        (None, true) => asked(&None, 4, "owner-only")?,
     };
-    new.wake = manage::parse_wake(&wake)?;
-    if new.wake == WakeRule::Allowlist && allow.is_empty() && interactive {
-        allow = manage::split_list(&ask(
-            "People who may wake it (npub or hex, with commas)",
-            "",
-        )?)
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+    let allow = if manage::parse_wake(&wake)? == WakeRule::Allowlist {
+        listed(&args.allow, 5)?
+    } else {
+        args.allow.clone()
+    };
+    // A folder's path may hold a space: folders are split at commas only.
+    let folders = if !args.folders.is_empty() || !interactive {
+        args.folders.clone()
+    } else {
+        manage::split_commas(&ask(&question(6), "")?)
+    };
+    let hosts = listed(&args.hosts, 7)?;
+    let picture = asked(&args.picture, 8, "")?;
+    manage::Answers {
+        name: name.to_owned(),
+        harness,
+        model,
+        thinking: args.thinking.clone(),
+        instructions,
+        wake,
+        allow,
+        folders,
+        hosts,
+        picture,
     }
-    new.wake_allowlist = allow
-        .iter()
-        .map(|key| manage::parse_pubkey(key))
-        .collect::<Result<Vec<_>>>()?;
-    new.wake_allowlist.sort();
-    new.wake_allowlist.dedup();
-    let mut folders = args.folders.clone();
-    if folders.is_empty() && interactive {
-        folders = ask(
-            "Folders of this machine it may read (name=/path, or name=/path:rw; with commas; empty: none)",
-            "",
-        )?
-        .split(',')
-        .map(|folder| folder.trim().to_owned())
-        .filter(|folder| !folder.is_empty())
-        .collect();
-    }
-    new.folders = folders
-        .iter()
-        .map(|folder| manage::parse_folder(folder))
-        .collect::<Result<Vec<_>>>()?;
-    let mut hosts = args.hosts.clone();
-    if hosts.is_empty() && interactive {
-        hosts = manage::split_list(&ask(
-            "Hosts it may reach (for example github.com; with commas; empty: none)",
-            "",
-        )?)
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-    }
-    new.network = hosts
-        .iter()
-        .map(|host| manage::parse_host(host))
-        .collect::<Result<Vec<_>>>()?;
-    new.network.sort();
-    new.network.dedup();
-    new.picture = manage::parse_picture(&asked(
-        &args.picture,
-        "Picture (an HTTPS address; empty: none)",
-        "",
-    )?)?;
-    manage::validate_settings(&new.name, new.wake, &new.wake_allowlist, &new.folders)?;
-    Ok(new)
+    .read()
 }
 
 async fn new_agent(paths: &Paths, config: &mut Config, args: NewArgs) -> Result<()> {

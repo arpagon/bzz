@@ -117,6 +117,104 @@ impl NewAgent {
     }
 }
 
+/// The answers as an owner writes them, before they are read: from the
+/// flags and questions of `bzz agent new`, or from the form of `:agent new`.
+/// Both ask the same things and read them the same way.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Answers {
+    pub name: String,
+    /// Empty: `pi-durable`.
+    pub harness: String,
+    /// `provider/model`. Empty: the harness's own default.
+    pub model: String,
+    pub thinking: Option<String>,
+    pub instructions: String,
+    /// Empty: the owner only, or the list when people are named.
+    pub wake: String,
+    pub allow: Vec<String>,
+    pub folders: Vec<String>,
+    pub hosts: Vec<String>,
+    /// Empty: none.
+    pub picture: String,
+}
+
+/// The questions, in the order they are asked, each with what to answer.
+/// The community comes first and is not in the list: a command asks for it,
+/// and the TUI creates an agent in the community that is open.
+pub const QUESTIONS: [(&str, &str); 9] = [
+    ("Name", "as Buzz will show it"),
+    (
+        "Harness",
+        "pi-durable (grok, codex and claude-code are not available in this version yet)",
+    ),
+    (
+        "Model",
+        "provider/model as Pi names them; empty: Pi's own default",
+    ),
+    (
+        "Instructions",
+        "one line; a longer text: `bzz agent edit <name> --instructions-file <file>`",
+    ),
+    (
+        "Who may wake it",
+        "owner-only, allowlist or anyone; empty: owner-only",
+    ),
+    (
+        "People who may wake it",
+        "npub or hex, with commas; only for an allowlist",
+    ),
+    (
+        "Folders it may read",
+        "name=/path, or name=/path:rw to let it write; with commas; empty: none",
+    ),
+    (
+        "Hosts it may reach",
+        "for example github.com; with commas; empty: none",
+    ),
+    ("Picture", "an HTTPS address; empty: none"),
+];
+
+impl Answers {
+    /// Reads the answers. Every refusal says what to write instead.
+    pub fn read(&self) -> Result<NewAgent> {
+        let mut new = NewAgent::named(&self.name);
+        new.harness = parse_harness(if self.harness.trim().is_empty() {
+            "pi-durable"
+        } else {
+            &self.harness
+        })?;
+        new.model = parse_model(&self.model, self.thinking.as_deref())?;
+        new.instructions = self.instructions.trim().to_owned();
+        new.wake = if self.wake.trim().is_empty() && !self.allow.is_empty() {
+            WakeRule::Allowlist
+        } else {
+            parse_wake(&self.wake)?
+        };
+        new.wake_allowlist = self
+            .allow
+            .iter()
+            .map(|key| parse_pubkey(key))
+            .collect::<Result<Vec<_>>>()?;
+        new.wake_allowlist.sort();
+        new.wake_allowlist.dedup();
+        new.folders = self
+            .folders
+            .iter()
+            .map(|folder| parse_folder(folder))
+            .collect::<Result<Vec<_>>>()?;
+        new.network = self
+            .hosts
+            .iter()
+            .map(|host| parse_host(host))
+            .collect::<Result<Vec<_>>>()?;
+        new.network.sort();
+        new.network.dedup();
+        new.picture = parse_picture(&self.picture)?;
+        validate_settings(&new.name, new.wake, &new.wake_allowlist, &new.folders)?;
+        Ok(new)
+    }
+}
+
 pub fn parse_harness(text: &str) -> Result<Harness> {
     match text.trim().to_ascii_lowercase().as_str() {
         "pi-durable" | "pi" => Ok(Harness::PiDurable),
@@ -187,6 +285,14 @@ pub fn parse_pubkey(text: &str) -> Result<String> {
 pub fn split_list(text: &str) -> Vec<&str> {
     text.split([',', ' ', '\n', '\t'])
         .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+/// A list written with commas only, for values that may hold a space.
+pub fn split_commas(text: &str) -> Vec<String> {
+    text.split([',', '\n'])
+        .map(|part| part.trim().to_owned())
         .filter(|part| !part.is_empty())
         .collect()
 }
@@ -1532,7 +1638,8 @@ pub fn state_of(agent: &HostedAgentConfig) -> &'static str {
     }
 }
 
-fn when(seconds: u64) -> String {
+/// A time as `bzz agent show` prints it.
+pub fn when(seconds: u64) -> String {
     time::OffsetDateTime::from_unix_timestamp(i64::try_from(seconds).unwrap_or(0))
         .ok()
         .and_then(|at| {
@@ -1584,26 +1691,10 @@ pub async fn details(
     })
 }
 
-/// The lines of `bzz agent show`.
-pub fn show_lines(agent: &HostedAgentConfig, community: &str, details: &Details) -> Vec<String> {
-    let Some(local) = &agent.local else {
-        return vec![format!(
-            "{} is an agent whose process you run yourself (`bzz broker`)",
-            agent.label
-        )];
-    };
+/// An agent's settings as `bzz agent show` and the agents panel print them:
+/// harness, model, who may wake it, instructions, folders, hosts, picture.
+pub fn settings_lines(local: &LocalAgentConfig) -> Vec<String> {
     let mut lines = vec![
-        format!("name:        {}", agent.label),
-        format!("public key:  {}", agent.pubkey),
-        format!("community:   {community}"),
-        format!(
-            "state:       {}{}",
-            state_of(agent),
-            details
-                .running
-                .map(|pid| format!(" · its process is running ({pid})"))
-                .unwrap_or_default()
-        ),
         format!("harness:     {}", local.harness.as_str()),
         format!(
             "model:       {}",
@@ -1680,6 +1771,31 @@ pub fn show_lines(agent: &HostedAgentConfig, community: &str, details: &Details)
             crate::protocol::artifact::display(&local.command.join(" "), 120)
         ));
     }
+    lines
+}
+
+/// The lines of `bzz agent show`.
+pub fn show_lines(agent: &HostedAgentConfig, community: &str, details: &Details) -> Vec<String> {
+    let Some(local) = &agent.local else {
+        return vec![format!(
+            "{} is an agent whose process you run yourself (`bzz broker`)",
+            agent.label
+        )];
+    };
+    let mut lines = vec![
+        format!("name:        {}", agent.label),
+        format!("public key:  {}", agent.pubkey),
+        format!("community:   {community}"),
+        format!(
+            "state:       {}{}",
+            state_of(agent),
+            details
+                .running
+                .map(|pid| format!(" · its process is running ({pid})"))
+                .unwrap_or_default()
+        ),
+    ];
+    lines.extend(settings_lines(local));
     if details.channels.is_empty() {
         lines.push(
             "channels:    none known here; add it with `bzz agent add <name> <channel>`".into(),
@@ -1978,6 +2094,66 @@ mod tests {
         assert!(parse_folder(&format!("my docs={text}")).is_err());
         assert!(parse_folder("docs=relative/path").is_err());
         assert!(parse_folder(&format!("docs={text}/missing")).is_err());
+
+        // The answers of the command and of the form, read the same way.
+        let answers = Answers {
+            name: " Scout ".into(),
+            model: "scripted/scripted".into(),
+            allow: vec![key.to_bech32().unwrap()],
+            hosts: vec!["GitHub.com".into(), "github.com".into()],
+            folders: vec![format!("docs={text}:rw")],
+            picture: "https://example.org/a.png".into(),
+            ..Answers::default()
+        };
+        let new = answers.read().unwrap();
+        assert_eq!(new.name, "Scout");
+        assert_eq!(new.harness, Harness::PiDurable, "the default");
+        assert_eq!(
+            (new.wake, new.wake_allowlist.clone()),
+            (WakeRule::Allowlist, vec![key.to_hex()]),
+            "naming people makes the rule a list"
+        );
+        assert_eq!(new.network, ["github.com"]);
+        assert!(new.folders[0].write);
+        assert_eq!(new.picture.as_deref(), Some("https://example.org/a.png"));
+        assert_eq!(
+            Answers {
+                name: "Scout".into(),
+                ..Answers::default()
+            }
+            .read()
+            .unwrap(),
+            NewAgent::named("Scout"),
+            "nothing but a name: every default"
+        );
+        for wrong in [
+            Answers::default(),
+            Answers {
+                name: "Scout".into(),
+                harness: "gemini".into(),
+                ..Answers::default()
+            },
+            Answers {
+                name: "Scout".into(),
+                wake: "anyone".into(),
+                allow: vec![key.to_hex()],
+                ..Answers::default()
+            },
+            Answers {
+                name: "Scout".into(),
+                wake: "allowlist".into(),
+                ..Answers::default()
+            },
+            Answers {
+                name: "Scout".into(),
+                hosts: vec!["https://github.com".into()],
+                ..Answers::default()
+            },
+        ] {
+            assert!(wrong.read().is_err(), "{wrong:?}");
+        }
+        assert_eq!(split_commas("a=/x y, b=/z ,"), ["a=/x y", "b=/z"]);
+        assert_eq!(QUESTIONS.len(), 9);
 
         // Settings that contradict each other are refused.
         let friend = vec![key.to_hex()];
