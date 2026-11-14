@@ -83,6 +83,20 @@ pub fn parse(event: &Event, selected_channel: Uuid, now: u64) -> Option<AgentTyp
     })
 }
 
+/// The typing indicator a local agent publishes while its turn runs, in the
+/// shape [`parse`] accepts: the channel, and for a thread its root and the
+/// message being answered.
+pub fn build(channel_id: Uuid, thread: Option<(&str, &str)>) -> Option<nostr::EventBuilder> {
+    let mut tags = vec![nostr::Tag::parse(["h", &channel_id.to_string()]).ok()?];
+    if let Some((root, parent)) = thread {
+        if root != parent {
+            tags.push(nostr::Tag::parse(["e", root, "", "root"]).ok()?);
+        }
+        tags.push(nostr::Tag::parse(["e", parent, "", "reply"]).ok()?);
+    }
+    Some(nostr::EventBuilder::new(nostr::Kind::Custom(KIND_TYPING_INDICATOR), "").tags(tags))
+}
+
 pub fn message_scope(event: &Event, channel_id: Uuid) -> Option<TypingScope> {
     if !matches!(event.kind.as_u16(), 9 | 40_002) {
         return None;
@@ -293,6 +307,38 @@ mod tests {
             .custom_created_at(nostr::Timestamp::from_secs(created_at))
             .sign_with_keys(keys)
             .unwrap()
+    }
+
+    /// v0.15 M1: what a local agent publishes while its turn runs is read
+    /// back by the same parser the TUI uses for every agent.
+    #[test]
+    fn a_built_indicator_parses_in_its_scope() {
+        let channel = Uuid::new_v4();
+        let keys = Keys::generate();
+        let now = nostr::Timestamp::now().as_secs();
+        let (root, parent) = ("a".repeat(64), "b".repeat(64));
+        for (thread, scope) in [
+            (None, TypingScope::Channel),
+            (
+                Some((root.as_str(), parent.as_str())),
+                TypingScope::Thread(root.clone()),
+            ),
+            // A top-level mention: the thread it starts is its own.
+            (
+                Some((root.as_str(), root.as_str())),
+                TypingScope::Thread(root.clone()),
+            ),
+        ] {
+            let event = build(channel, thread)
+                .unwrap()
+                .sign_with_keys(&keys)
+                .unwrap();
+            assert_eq!(
+                parse(&event, channel, now).unwrap().scope,
+                scope,
+                "{thread:?}"
+            );
+        }
     }
 
     #[test]
