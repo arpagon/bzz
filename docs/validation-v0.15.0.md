@@ -616,7 +616,7 @@ pass's "credentials given for one host…" in `network.test.mjs`, above.
 ### Credentials for a private remote, bzz's side
 
 Linux x86_64, Rust 1.98.1, Node 26.5.0, git 2.x with `http-backend`, Buzz pin
-`bf3bdd0eaefe`, 2026-11-14. Commits `30d65a5..@@HEAD@@` on `v0.15.0`.
+`bf3bdd0eaefe`, 2026-11-14. Commits `30d65a5..1bf8764` on `v0.15.0`.
 
 **Where it is.** `src/agents/git_credentials.rs` (the store, sealed to the
 owner's key), `Agent::credential` in `src/agents/runtime/agent.rs` (the
@@ -1010,7 +1010,7 @@ agents panel, and one writer for the settings. The host's own half is the
 section above.
 
 Linux x86_64, Rust 1.98.1, Node 26.5.0, Buzz pin `bf3bdd0eaefe`, 2026-11-14.
-Commits `f76bfc3..@@HEAD@@` on `v0.15.0`.
+Commits `f76bfc3..1bf8764` on `v0.15.0`.
 
 **Where it is.**
 
@@ -1141,7 +1141,9 @@ its own relay connection; the host is the real one.
 | The secret scan over the whole profile; `agent delete` | no file holds the token or the passphrase; `removed: its 1 stored git credential(s)` | pass |
 
 Red on the relay, one run, the same test in a clone of the repository with
-"a refusal is passed on as a yes" planted: @@RELAYRED@@
+"a refusal is passed on as a yes" planted: `panicked at tests/relay_integration.rs:5544:5: done`. The command the owner
+refused ran, and the agent's reply in the chat was `done` where his refusal
+was expected.
 
 ### Pi packages, and the model check
 
@@ -1246,6 +1248,15 @@ agent's disk; a refused one does not run."
   now tries such a start again (`install::run_to_end`); twelve runs in a row
   passed afterwards. The cause was not seen directly, only that the failures
   stopped.
+- **Ten copies of the scripted-harness suite at once** fail now and then on
+  two tests of M1 and M4 that measure time
+  (`the_owner_stops_a_running_turn_and_it_ends_once`, "its process stays";
+  once `at_startup_leftovers_are_stopped…`): 3 of 50 runs with this work, 1
+  of 50 with the code before it (`0626ddb`), on a machine with a load of 40
+  to 70. One copy at a time: 30 of 30, and the unit tests 25 of 25. M1's
+  record says 100 runs, ten at once, without a failure; that did not repeat
+  here. A longer grace for the cancel did not change it, so its cause is
+  not known. No test of this work failed in those runs.
 - A red run for "a clone works with the stored credential" did not compile
   (a `match` left without an arm), which is no red run. It was planted again
   another way.
@@ -1255,16 +1266,17 @@ agent's disk; a refused one does not run."
 
 ### Gates after M7 (bzz's side)
 
-Run on `@@HEAD@@`, 2026-11-14, Linux x86_64, Node 26.5.0.
+Run on `d902505` (the code and tests of `1bf8764`, and the documents), 2026-11-14,
+Linux x86_64, Node 26.5.0.
 
 | Gate | Command | Result |
 |---|---|---|
-| Format | `cargo fmt --check` | @@FMT@@ |
-| Lint | `cargo clippy --locked --all-targets --all-features -- -D warnings` | @@CLIPPY@@ |
-| Tests | `cargo test --locked --all-features` | @@TESTS@@ |
-| Pinned relay | `BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh` | @@RELAY@@ |
-| Agent host | `cd agent-host && npm ci --ignore-scripts --omit=optional && npm test` | @@NPM@@ |
-| Supply chain | `cargo deny check`; `cargo audit` | @@SUPPLY@@ |
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets --all-features -- -D warnings` | clean (also `--no-default-features`) |
+| Tests | `cargo test --locked --all-features` | 643 passed, 0 failed, 26 ignored. 33 passing tests are new since M4: 15 unit (3 App, 3 `ui::approval`, 2 `approval`, 2 `activity`, 1 each of `git_credentials`, `capability`, `process`, `runtime`, `sanitize`), 10 scripted harness, 3 real host, 3 configuration, 1 creation, 1 secret scan |
+| Pinned relay | `BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh` | 19 passed (the 18 of M4 and the journey above) in 455 s, then `agent_host_test`, 6 passed. The other agent's work uses the same harness: the run waited for it to be free |
+| Agent host | `cd agent-host && npm ci --ignore-scripts --omit=optional && npm test` | 99 tests, 99 pass, 0 skipped (the 98 of the second pass and the one for `--check-model`); `npm ci` reports 0 vulnerabilities |
+| Supply chain | `cargo deny check`; `cargo audit` | `advisories ok, bans ok, licenses ok, sources ok`; the 4 allowed warnings of v0.14. `Cargo.lock` gains one package, `close_fds` 0.3.2 (MIT), whose own dependencies were there already |
 
 ## Evidence gathered before the plan (2026-11-13)
 
