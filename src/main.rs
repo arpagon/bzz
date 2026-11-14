@@ -44,12 +44,21 @@ enum Command {
         #[command(subcommand)]
         command: AgentsCommand,
     },
-    /// Manage agents whose keys bzz holds for the local broker; bzz never
-    /// runs agent processes.
+    /// Manage agents whose keys bzz holds for the local broker, for a
+    /// process you run yourself.
     Broker {
         #[command(subcommand)]
         command: BrokerCommand,
     },
+    /// Run local agents: bzz holds each key and starts each process.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
+    /// The chat tools of one agent session, as an MCP server on standard
+    /// streams. Started by an agent's harness, never by hand.
+    #[command(name = "agent-tools", hide = true)]
+    AgentTools,
     /// Manage cached conversation data.
     Cache {
         #[command(subcommand)]
@@ -242,6 +251,15 @@ enum BrokerCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum AgentCommand {
+    /// Run this community's local agents without the TUI, until interrupted.
+    Run {
+        #[arg(long)]
+        community: Option<Uuid>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum AgentsCommand {
     /// List verified remote agents in one configured community.
     List {
@@ -399,6 +417,11 @@ async fn run() -> Result<()> {
         }
         return Ok(());
     }
+    // Before anything of bzz's own is read: this runs inside a harness's
+    // environment and only passes tool calls to the bzz that started it.
+    if matches!(cli.command, Some(Command::AgentTools)) {
+        return bzz::agents::runtime::mcp::run_stdio().await;
+    }
     let paths = Paths::discover()?;
     paths.ensure()?;
     let mut config = Config::load(&paths)?;
@@ -422,6 +445,10 @@ async fn run() -> Result<()> {
         }
         Some(Command::Agents { command }) => agents_command(command, &paths, &config).await,
         Some(Command::Broker { command }) => broker_command(command, &paths, &mut config).await,
+        Some(Command::Agent {
+            command: AgentCommand::Run { community },
+        }) => agent_run(&paths, &config, community).await,
+        Some(Command::AgentTools) => Ok(()),
         Some(Command::Cache { command }) => cache_command(command, &paths, &mut config),
         Some(Command::Media { command }) => media_command(command, &paths, &config),
         Some(Command::Diagnostics { command }) => diagnostics_command(command, &paths),
@@ -888,6 +915,107 @@ async fn broker_command(command: BrokerCommand, paths: &Paths, config: &mut Conf
             Ok(())
         }
     }
+}
+
+/// `bzz agent run`: the local agents of one community, without the TUI. It
+/// needs the owner's identity unlocked, as the TUI does, because each agent
+/// key is sealed to it.
+async fn agent_run(paths: &Paths, config: &Config, community: Option<Uuid>) -> Result<()> {
+    use bzz::agents::runtime::{Limits, service};
+    let community = selected_community(config, community)?.clone();
+    let identity = find_identity(config, community.identity_id)?.clone();
+    if !config.hosted_agents.iter().any(|agent| {
+        agent.local.is_some()
+            && agent.community == community.id
+            && agent.owner_identity == identity.id
+    }) {
+        return Err(Error::Config(format!(
+            "{} has no local agents",
+            community.label
+        )));
+    }
+    let passphrase = identity_passphrase(&identity, "Owner identity passphrase: ", false)?;
+    let owner = IdentityManager::new(paths).signer(&identity, passphrase.as_ref())?;
+    let mut store = Store::open(paths.database_file())?;
+    store.sync_config(config)?;
+    let store = StoreHandle::spawn(store)?;
+    let diagnostics =
+        bzz::diagnostics::DiagnosticHandle::start(paths, config.diagnostics.local_journal, None)?;
+    // A federated community: the agents enroll under the owner's stored
+    // adapter session, as the broker's agents do.
+    let federated = community
+        .identity_adapter
+        .as_deref()
+        .map(url::Url::parse)
+        .transpose()
+        .map_err(|_| Error::Config("identity_adapter is not a URL".into()))?;
+    let running = service::serve(service::ServeOptions {
+        paths,
+        store,
+        diagnostics,
+        community: &community,
+        agents: &config.hosted_agents,
+        owner: &owner,
+        owner_identity: identity.id,
+        federated,
+        limits: Limits::default(),
+    })
+    .await;
+    let running = match running {
+        Ok(Some(running)) => running,
+        Ok(None) => {
+            owner.lock().await;
+            return Ok(());
+        }
+        Err(error) => {
+            owner.lock().await;
+            return Err(error);
+        }
+    };
+    for leftover in running.host.leftovers() {
+        if let bzz::agents::runtime::process::Leftover::Stopped { pid, .. } = leftover {
+            println!("stopped a harness left by an earlier bzz (process {pid})");
+        }
+    }
+    for problem in &running.problems {
+        eprintln!("bzz: {problem}");
+    }
+    let lines = |host: &bzz::agents::runtime::host::AgentHost| {
+        host.status()
+            .iter()
+            .map(bzz::agents::runtime::agent::AgentStatus::line)
+            .collect::<Vec<_>>()
+    };
+    let mut shown = lines(&running.host);
+    for line in &shown {
+        println!("{line}");
+    }
+    println!("running in {}; interrupt to stop", community.label);
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    #[cfg(unix)]
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|error| Error::io("signal handler", error))?;
+    loop {
+        #[cfg(unix)]
+        let terminated = terminate.recv();
+        #[cfg(not(unix))]
+        let terminated = std::future::pending::<Option<()>>();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            _ = terminated => break,
+            _ = tick.tick() => {
+                let now = lines(&running.host);
+                for line in now.iter().filter(|line| !shown.contains(line)) {
+                    println!("{line}");
+                }
+                shown = now;
+            }
+        }
+    }
+    println!("stopping");
+    running.stop().await;
+    owner.lock().await;
+    Ok(())
 }
 
 async fn agents_command(command: AgentsCommand, paths: &Paths, config: &Config) -> Result<()> {
