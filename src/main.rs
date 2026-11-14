@@ -16,6 +16,8 @@ use secrecy::ExposeSecret as _;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+mod cli_agent;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "bzz",
@@ -50,10 +52,11 @@ enum Command {
         #[command(subcommand)]
         command: BrokerCommand,
     },
-    /// Run local agents: bzz holds each key and starts each process.
+    /// Create, run and manage local agents: bzz holds each key and starts
+    /// each process.
     Agent {
         #[command(subcommand)]
-        command: AgentCommand,
+        command: cli_agent::AgentCommand,
     },
     /// The chat tools of one agent session, as an MCP server on standard
     /// streams. Started by an agent's harness, never by hand.
@@ -251,15 +254,6 @@ enum BrokerCommand {
 }
 
 #[derive(Debug, Subcommand)]
-enum AgentCommand {
-    /// Run this community's local agents without the TUI, until interrupted.
-    Run {
-        #[arg(long)]
-        community: Option<Uuid>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
 enum AgentsCommand {
     /// List verified remote agents in one configured community.
     List {
@@ -445,9 +439,7 @@ async fn run() -> Result<()> {
         }
         Some(Command::Agents { command }) => agents_command(command, &paths, &config).await,
         Some(Command::Broker { command }) => broker_command(command, &paths, &mut config).await,
-        Some(Command::Agent {
-            command: AgentCommand::Run { community },
-        }) => agent_run(&paths, &config, community).await,
+        Some(Command::Agent { command }) => cli_agent::command(command, &paths, &mut config).await,
         Some(Command::AgentTools) => Ok(()),
         Some(Command::Cache { command }) => cache_command(command, &paths, &mut config),
         Some(Command::Media { command }) => media_command(command, &paths, &config),
