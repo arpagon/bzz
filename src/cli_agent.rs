@@ -174,6 +174,13 @@ pub struct EditArgs {
     /// changed.
     #[arg(long)]
     pub republish: bool,
+    /// Load your Pi packages for it again (the default).
+    #[arg(long, conflicts_with = "no_packages")]
+    pub packages: bool,
+    /// Load no Pi package for it: none of their code runs in its host. The
+    /// choice moves with the agent.
+    #[arg(long)]
+    pub no_packages: bool,
 }
 
 fn environment() -> Environment {
@@ -528,6 +535,11 @@ async fn edit(paths: &Paths, config: &mut Config, args: EditArgs) -> Result<()> 
             (Some(picture), _) => Some(manage::parse_picture(picture)?),
             (None, true) => Some(None),
             (None, false) => None,
+        },
+        packages: match (args.packages, args.no_packages) {
+            (true, _) => Some(true),
+            (_, true) => Some(false),
+            _ => None,
         },
     };
     if change == manage::Edit::default() && !args.republish {

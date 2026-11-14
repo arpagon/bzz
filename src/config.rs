@@ -207,6 +207,20 @@ pub struct LocalAgentConfig {
     /// HTTPS address. Kept so that an edit can publish both again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture: Option<String>,
+    /// Whether the Pi Durable host loads the owner's Pi packages for this
+    /// agent (`docs/agent-host-protocol.md`, section 10). On unless the
+    /// owner switched them off; the choice moves with the agent.
+    #[serde(default = "packages_on", skip_serializing_if = "is_on")]
+    pub packages: bool,
+}
+
+const fn packages_on() -> bool {
+    true
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_on(value: &bool) -> bool {
+    *value
 }
 
 impl LocalAgentConfig {
@@ -222,6 +236,7 @@ impl LocalAgentConfig {
             state: LocalAgentState::default(),
             command: Vec::new(),
             picture: None,
+            packages: true,
         }
     }
 }

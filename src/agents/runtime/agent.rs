@@ -678,6 +678,10 @@ impl Agent {
         if let Some(pi_dir) = &self.shared.pi_dir {
             bzz["piDir"] = json!(pi_dir);
         }
+        // Only `false` means something to the host: no Pi package's code runs.
+        if !local.packages {
+            bzz["packages"] = json!(false);
+        }
         json!({
             "protocolVersion": 1,
             "clientCapabilities": {},

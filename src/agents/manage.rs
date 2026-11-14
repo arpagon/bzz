@@ -113,6 +113,7 @@ impl NewAgent {
             state: LocalAgentState::Active,
             command: Vec::new(),
             picture: self.picture.clone(),
+            packages: true,
         }
     }
 }
@@ -1254,6 +1255,8 @@ pub struct Edit {
     pub folders: Option<Vec<FolderGrant>>,
     pub network: Option<Vec<String>>,
     pub picture: Option<Option<String>>,
+    /// Whether the Pi Durable host loads the owner's Pi packages.
+    pub packages: Option<bool>,
 }
 
 /// Which records an edit must publish again.
@@ -1332,6 +1335,9 @@ pub fn apply_edit(config: &mut Config, id: Uuid, edit: &Edit) -> Result<Republis
     }
     if let Some(network) = &edit.network {
         local.network = network.clone();
+    }
+    if let Some(packages) = edit.packages {
+        local.packages = packages;
     }
     validate_settings(&label, local.wake, &local.wake_allowlist, &local.folders)?;
     agent.label = label;
@@ -1764,6 +1770,9 @@ pub fn settings_lines(local: &LocalAgentConfig) -> Vec<String> {
     ));
     if let Some(picture) = &local.picture {
         lines.push(format!("picture:     {picture}"));
+    }
+    if !local.packages {
+        lines.push("Pi packages: off: no code of a Pi package runs for it".into());
     }
     if !local.command.is_empty() {
         lines.push(format!(
