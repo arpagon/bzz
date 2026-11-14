@@ -13,7 +13,7 @@ const EVENT = "[0-9a-f]{64}";
 
 /**
  * What a moved agent carries beside its two SQLite files, written by `agent move` and `agent launch-kit`: name, model,
- * instructions, and the hosts it may reach. Granted folders are not read from it, whatever the file says: they belong
+ * instructions, the hosts it may reach, and whether Pi packages are off for it. Granted folders are not read from it, whatever the file says: they belong
  * to the machine the owner granted them on.
  */
 export async function readAgentFile(folder) {
@@ -32,6 +32,8 @@ export async function readAgentFile(folder) {
 		instructions: typeof parsed.instructions === "string" ? parsed.instructions : "",
 		// Checked like bzz's own list, where the host reads it: a bad entry stops the start instead of opening the network.
 		network: parsed.network === undefined ? [] : parsed.network,
+		// The owner's choice moves with the agent: `false` keeps Pi packages off on the other machine too.
+		packages: parsed.packages === false ? false : undefined,
 	};
 }
 

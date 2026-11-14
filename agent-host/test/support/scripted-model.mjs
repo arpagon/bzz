@@ -6,7 +6,9 @@
 //
 // Steps: ["tool", {arguments}] calls a tool; "say: text" answers in plain
 // text; ["sleep", ms] waits, then runs `true`; ["report"] sends the last tool
-// result as the final message; ["error", "why"] fails as a provider would.
+// result as the final message; ["error", "why"] fails as a provider would;
+// ["describe"] sends what the model was given, as JSON: `{ system, tools }`,
+// the text of its system prompt and the names of the tools it was offered.
 const textOf = (message) => (typeof message.content === "string" ? message.content : message.content.map((part) => part.text ?? "").join(""));
 
 export default async function respond(context, { call, message }, options) {
@@ -30,6 +32,17 @@ export default async function respond(context, { call, message }, options) {
 	if (name === "report") {
 		const result = messages.findLast((entry) => entry.role === "toolResult");
 		return call("buzz_send", { text: result ? textOf(result) : "(no tool result)", final: true });
+	}
+	if (name === "describe") {
+		// Pi sends the prompt as sections and the tools as a list, and later only what changed: put together here.
+		const sections = {};
+		const tools = new Set();
+		for (const entry of messages.filter((entry) => entry.role === "system")) {
+			Object.assign(sections, entry.sections);
+			for (const tool of entry.toolsAdded ?? []) tools.add(tool.name);
+			for (const tool of entry.toolsRemoved ?? []) tools.delete(typeof tool === "string" ? tool : tool.name);
+		}
+		return call("buzz_send", { text: JSON.stringify({ system: Object.values(sections).join("\n"), tools: [...tools] }), final: true });
 	}
 	if (name === "error") return message("", { stopReason: "error", errorMessage: argument });
 	return call(name, argument);

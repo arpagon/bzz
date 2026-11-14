@@ -12,6 +12,7 @@ import { normalize, SqliteFs } from "./disk.mjs";
 import { BzzVfsEnv, calling, createShell, HOME } from "./env.mjs";
 import { defaultPiDir, ModelUnavailable, openModels } from "./model.mjs";
 import { network } from "./network.mjs";
+import { loadPackages, noPackages } from "./packages.mjs";
 import { buzzTool, readAgentFile, readBuzzPrompt } from "./remote.mjs";
 import { connect, RpcError } from "./rpc.mjs";
 import { Vfs } from "./vfs.mjs";
@@ -94,6 +95,8 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 	let vfs;
 	let shell;
 	let models;
+	/** Built by `initialize`: what the tools and the prompt hold depends on what bzz grants. */
+	let registry;
 	/** The open Harness, as a promise. A checkpoint closes it; the next turn opens it again. */
 	let opening;
 	const sessions = new Map();
@@ -209,30 +212,41 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 		].join("\n");
 	}
 
-	const registry = createRegistry();
-	registry.install(CodingTools);
-	registry.install(defineExtension({
-		name: "bzz",
-		tools: CHAT_TOOLS.map(({ name, ...tool }) => defineTool({ ...tool, name: `${PREFIX}${name}`, execute: (args, api, context) => chat(name, args, api, context) })),
-		sections: [section("bzz", sandbox)],
-		hooks: [
-			hook(GenerationTask, {
-				// bzz keeps the last plain text of a turn: it is the reply when the model never calls send.
-				afterResponse(message, api) {
-					const text = message.content.filter((part) => part.type === "text").map((part) => part.text).join("");
-					if (text.trim()) update(api.conversationId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
-				},
-			}),
-			hook(ToolTask, {
-				beforeTool(call, api) {
-					update(api.conversationId, { sessionUpdate: "tool_call", toolCallId: call.id, title: title(call), kind: TOOL_KIND[call.name] ?? "other", status: "in_progress" });
-				},
-				afterTool(call, result, api) {
-					update(api.conversationId, { sessionUpdate: "tool_call_update", toolCallId: call.id, status: result.isError ? "failed" : "completed" });
-				},
-			}),
-		],
-	}));
+	/** bzz's own tool names: a Pi package may not take them. */
+	const reservedTool = (name) => typeof name === "string" && (name.startsWith(PREFIX) || name === "run");
+
+	/**
+	 * What every conversation of this agent runs with: Pi's file tools, then what the Pi packages bring, then bzz's
+	 * own tools and section. A later tool or section replaces an earlier one of the same name, so bzz's are last.
+	 */
+	function buildRegistry(packages) {
+		const made = createRegistry();
+		made.install(CodingTools);
+		for (const extension of packages.extensions) made.install(extension);
+		made.install(defineExtension({
+			name: "bzz",
+			tools: CHAT_TOOLS.map(({ name, ...tool }) => defineTool({ ...tool, name: `${PREFIX}${name}`, execute: (args, api, context) => chat(name, args, api, context) })),
+			sections: [section("bzz", sandbox)],
+			hooks: [
+				hook(GenerationTask, {
+					// bzz keeps the last plain text of a turn: it is the reply when the model never calls send.
+					afterResponse(message, api) {
+						const text = message.content.filter((part) => part.type === "text").map((part) => part.text).join("");
+						if (text.trim()) update(api.conversationId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+					},
+				}),
+				hook(ToolTask, {
+					beforeTool(call, api) {
+						update(api.conversationId, { sessionUpdate: "tool_call", toolCallId: call.id, title: title(call), kind: TOOL_KIND[call.name] ?? "other", status: "in_progress" });
+					},
+					afterTool(call, result, api) {
+						update(api.conversationId, { sessionUpdate: "tool_call_update", toolCallId: call.id, status: result.isError ? "failed" : "completed" });
+					},
+				}),
+			],
+		}));
+		return made;
+	}
 
 	function ready() {
 		opening ??= (async () => {
@@ -295,7 +309,7 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 				try {
 					chosen = await models.choose(config.model);
 				} catch (error) {
-					if (error instanceof ModelUnavailable) throw new RpcError(FAILED, error.message, { kind: error.kind });
+					if (error instanceof ModelUnavailable) throw new RpcError(FAILED, error.message, error.data);
 					throw error;
 				}
 				const agent = { model: chosen.model, thinkingLevel: chosen.thinkingLevel, instructions: config.instructions || null, cwd: session.cwd };
@@ -322,7 +336,7 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 		const bzz = params._meta?.bzz;
 		// Without bzz's fields this is a remote copy under buzz-acp: the settings moved with the agent.
 		const settings = bzz
-			? { local: true, agent: bzz.agent ?? {}, model: bzz.model, instructions: bzz.instructions ?? "", mounts: bzz.mounts ?? [], network: bzz.network ?? [], piDir: bzz.piDir }
+			? { local: true, agent: bzz.agent ?? {}, model: bzz.model, instructions: bzz.instructions ?? "", mounts: bzz.mounts ?? [], network: bzz.network ?? [], piDir: bzz.piDir, packages: bzz.packages }
 			: { local: false, ...(await readAgentFile(folder)), mounts: [] };
 		let net;
 		try {
@@ -335,16 +349,21 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 		} catch (error) {
 			throw new RpcError(INVALID, error.message);
 		}
-		models = await openModels({ piDir: settings.piDir ?? defaultPiDir(env), env });
+		const piDir = settings.piDir ?? defaultPiDir(env);
+		// On unless bzz, or agent.json for a remote copy, says `false`: a package's code runs in this process.
+		const packages = settings.packages === false ? noPackages(true) : await loadPackages(piDir, { reservedTools: reservedTool });
+		for (const entry of packages.report) log(entry.loaded ? `package ${entry.source} loaded: extensions [${entry.extensions.join(", ")}], providers [${entry.providers.join(", ")}]` : `package ${entry.source} was left out: ${entry.error}`);
+		models = await openModels({ piDir, env, packages });
 		config = { ...settings, network: net.hosts };
+		registry = buildRegistry(packages);
 		await ready();
-		log(`ready: ${config.local ? "started by bzz" : "remote copy"}, ${settings.mounts.length} granted folder(s), ${net.hosts.length} allowed host(s)`);
+		log(`ready: ${config.local ? "started by bzz" : "remote copy"}, ${settings.mounts.length} granted folder(s), ${net.hosts.length} allowed host(s), ${packages.off ? "packages off" : `${packages.report.filter((entry) => entry.loaded).length} package(s)`}`);
 		return {
 			protocolVersion: 1,
 			agentCapabilities: { loadSession: false, promptCapabilities: { image: false, audio: false, embeddedContext: false } },
 			agentInfo: { name: "bzz-agent-host", title: "bzz Pi Durable host", version: VERSION },
 			authMethods: [],
-			_meta: { bzz: { host: VERSION, tools: config.local ? "pipe" : "buzz" } },
+			_meta: { bzz: { host: VERSION, tools: config.local ? "pipe" : "buzz", packages: packages.report } },
 		};
 	}
 
@@ -359,6 +378,7 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 				// Refused settings can be sent again, corrected: nothing of the failed attempt stays open.
 				initialized = false;
 				config = undefined;
+				registry = undefined;
 				opening = undefined;
 				try { disk?.close(); } catch {}
 				throw error;
