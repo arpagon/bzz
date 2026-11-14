@@ -30,6 +30,8 @@ asks of bzz beyond the chat tools.
 - The host reads its version from `package.json`, so that file must sit
   beside `main.mjs`. `src/` must be whole: `src/run-child.mjs` is started as
   a process of its own (section 9).
+- The host makes the agent's folder if it is not there, for its owner only
+  (`0700`), and keeps the two SQLite files at `0600`.
 - While the host works, a write-ahead file (`-wal`, `-shm`) sits beside each
   SQLite file. `_bzz/checkpoint` and a clean exit leave none.
 - `memory.sqlite` and `files.sqlite` are what a move carries. They hold no
@@ -47,7 +49,8 @@ asks of bzz beyond the chat tools.
 ```
 
 - `name` defaults to `agent`, `instructions` to none, `network` to no host.
-  `model` may be absent: Pi's default on that machine is used.
+  `model` has the form of `_meta.bzz.model` (section 3) and may be absent:
+  Pi's default on that machine is used.
 - `network` has the form of `_meta.bzz.network` (section 3). A list the host
   cannot read stops the start; it is never read as "everything".
 - `packages`: only `false` means something: Pi packages stay off (section 10).
@@ -58,16 +61,38 @@ asks of bzz beyond the chat tools.
 
 - bzz starts one process per agent, in its own process group, with standard
   input and output as the protocol and standard error as a log.
+- **bzz hands the child those three streams and no other open descriptor**,
+  also none that bzz itself inherited from the terminal it was started in.
+  A real command (section 9) would get them. On Linux the Pi Durable host
+  closes what it inherited before a command starts; on other systems it
+  cannot tell which those are.
 - The environment is built from nothing: `PATH`, `HOME`, `LANG`, `TMPDIR`,
   and what the harness needs to find its own sign-in. It never holds an agent
   key, an owner key, a relay address or a bzz credential, with one exception:
   the `bzz agent-tools` server of section 6 gets its own session's credential.
 - Pi Durable host: `node <host dir>/main.mjs <agent folder>`. Node 22.19 or
-  newer; on an older one it exits with code 2 and says so.
+  newer; on an older one, or without the folder, it exits with code 2 and
+  says so.
+- The Pi Durable host's own code reads these from its environment, and the
+  variables of section 7. Node reads its own (`NODE_OPTIONS` and the like),
+  so bzz sets none of those:
+
+| Variable | Use |
+|---|---|
+| `PATH`, `HOME`, `LANG`, `TMPDIR` | handed on to a real command (section 9). Without `PATH` a command gets `/usr/local/bin:/usr/bin:/bin` |
+| `HOME` (`USERPROFILE` on Windows) | `~` in the path of a Pi package, and Pi's folder when nothing names it |
+
 - To stop, bzz closes the child's standard input. A harness must close its
   storage and exit within 2 s. After that bzz sends TERM to the group, and
   KILL 2 s later.
-- The Pi Durable host also exits when its parent process is gone.
+- The Pi Durable host exits with code 0 within 1.5 s of the end of its
+  input, whether or not storage closed in that time. TERM is taken as the
+  end of input. A real command that runs is told to stop at that moment
+  (section 9).
+- The Pi Durable host also exits when its parent process is gone. It looks
+  once a second.
+- It exits with code 1 on a fault of its own. Unfinished turns are in
+  storage, and the next process continues them.
 - The log names what happened, not what was said: no prompt, message,
   command line or credential is written to it.
 - Only the protocol is written to standard output. What a Pi package prints
@@ -94,34 +119,46 @@ asks of bzz beyond the chat tools.
 
 - The presence of `_meta.bzz` is what tells the host that bzz started it.
   Without it the host is a remote copy (section 7).
-- `model` may be absent: the host then uses Pi's own default.
+- Of `agent` the host reads `name` only, for the model's prompt and as the
+  author of the agent's commits. It defaults to `agent`.
+- `model` may be absent, or lack any of its fields: the host then uses the
+  default provider, model and thinking level in Pi's `settings.json`. A
+  `provider` without `modelId` gets Pi's default model only when it is Pi's
+  default provider. `thinkingLevel` is brought within what the model offers;
+  without one anywhere it is `medium`.
 - `mounts` and `network` come from bzz's configuration at every start. The
   host never stores them.
 - A `mounts` entry:
   - `name`: a simple name, `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, unique. The
     folder appears at `/mnt/<name>`. `/mnt` holds granted folders and nothing
     else.
-  - `path`: the folder on this machine. If it is not a folder, `/mnt/<name>`
-    is there and empty of everything.
+  - `path`: the folder on this machine, as an absolute path. A link is
+    followed once, at the start. If it is not a folder, `/mnt/<name>` is
+    there and empty of everything.
   - `write`: `true` lets the agent's file tools, shell and git change the
     folder. Anything else is read-only.
   - `exec`: `true` lets the agent start real commands there (section 9).
     Anything else does not. It is separate from `write`.
 - A `network` entry is `host` or `host:port`, such as `github.com` or
   `git.example.org:8443`. It is matched exactly: that host, not the names
-  below it, and that port (`host` alone means 443). Only HTTPS is let
-  through, and plain HTTP to this machine itself (`localhost`, `127.0.0.1`,
-  `[::1]`). Each hop of a redirect is checked; `Authorization` and `Cookie`
-  headers do not follow a redirect to another host.
+  below it, and that port. `host` alone means the port of the scheme: 443,
+  or 80 for plain HTTP. Only HTTPS is let through, and plain HTTP to this
+  machine itself (`localhost`, `127.0.0.1`, `[::1]`). Each hop of a redirect
+  is checked, at most five; `Authorization` and `Cookie` headers do not
+  follow a redirect to another host or port.
 - `piDir` is Pi's folder: `auth.json` for the sign-in, `settings.json` for
-  the default model and the packages.
+  the default model and the packages. bzz always sends it. Without it the
+  host takes `PI_CODING_AGENT_DIR` from its environment, or `~/.pi/agent`.
 - `packages`: `false` switches Pi packages off for this agent. Absent or
   anything else: on (section 10).
 - A bad `mounts` or `network` entry fails `initialize` with `-32602` and the
   reason. `initialize` may then be sent again, corrected. A second
-  `initialize` after a successful one gets `-32600`.
+  `initialize` after a successful one gets `-32600`, and so does any other
+  request before it.
 - `initialize` may take as long as the package time limit, 10 s, when a
-  package hangs.
+  package hangs. A package that never gives the thread back holds the host
+  for good (section 10): bzz needs a time limit of its own for `initialize`,
+  longer than 10 s.
 
 The host answers:
 
@@ -145,7 +182,8 @@ The host answers:
 - `packages`: one entry per package in Pi's settings, in their order
   (section 10). Empty when there are none or they are off.
 - `run`: the names of the granted folders where the agent may start commands
-  (section 9). Empty when it has no such tool.
+  (section 9). Empty when it has no such tool: no grant has `exec`, the host
+  is a remote copy, or this is Windows.
 - **A turn that was cut off runs again at `initialize`**, before bzz asks.
   Its calls to bzz (`_bzz/tool`, `_bzz/credential`, `_bzz/approve`) wait
   until bzz hands the same request over again on a new session. If bzz never
@@ -168,7 +206,8 @@ The host answers:
   after any restart, whatever the session id. bzz therefore never needs
   `session/load` for it. Session ids do not survive a restart of the host.
 - `cwd` is a directory of the agent's disk; the host makes it if it is not
-  there. A missing place gets `-32602`.
+  there. Without one that starts with `/` it is `/home/agent`. A missing
+  place gets `-32602`.
 - For other harnesses bzz stores the session id the harness returned for the
   place and uses `session/load` after a restart when the harness offers it.
 - `mcpServers` is empty for a `"tools": "pipe"` host and holds the server of
@@ -236,8 +275,14 @@ move and when the agent has been idle for a while.
   the agent is doing. It ignores kinds it does not know. bzz's own host sends
   one `agent_message_chunk` per answer of the model, a `tool_call` with
   `status: "in_progress"` before each tool, and a `tool_call_update` with
-  `completed` or `failed` after it. A command's title is `run in
-  /mnt/<name>: <its first line>`.
+  `completed` or `failed` after it. A `tool_call` has `toolCallId`, `title`
+  and `kind`: `read`, `edit` (for `write` and `edit`), `execute` (for `bash`
+  and `run`) or `other`. The title is the tool's name, with the path for a
+  file tool and the first line of the command, cut at 80 characters, for
+  `bash`; for a real command it is `run in /mnt/<name>: <that line>`. The
+  `tool_call` of a `run` comes before its `_bzz/approve`. A turn that
+  continues after a restart sends nothing until bzz has handed its request
+  over again.
 - `session/request_permission`. bzz allows its own chat tools. Anything else
   is refused unless the agent has a grant that covers it. bzz's own host
   never sends it: it asks with `_bzz/approve` (section 9).
@@ -312,9 +357,10 @@ It reads these from its environment:
 
 | Variable | Use |
 |---|---|
-| `PI_CODING_AGENT_DIR` | Pi's folder. Default `~/.pi/agent` |
+| `PI_CODING_AGENT_DIR` | Pi's folder. Default `~/.pi/agent`. Under bzz it is read only when `piDir` is absent |
 | `BZZ_AGENT_HOST_BUZZ` | the `buzz` command, as a path or a JSON array with first arguments. Default `buzz` on the `PATH` |
 | `BZZ_AGENT_HOST_RECORD` | a folder where each prompt of `buzz-acp` is saved, to record the fixtures again |
+| `BZZ_AGENT_HOST_SCRIPTED_MODEL` | tests only, and read under bzz too: a module that plays the model, as the provider `scripted`. bzz never sets it |
 
 `tests/fixtures/agents/buzz-acp-prompts/` holds prompts recorded from the
 pinned `buzz-acp`; the host's tests read them, and they are recorded again at
@@ -360,7 +406,8 @@ or with a JSON-RPC error when it has none or refuses. The error's message
 reaches the model, so it should say what the owner can do.
 
 - `host` has the form of an allow-list entry: `host`, or `host:port` for a
-  port that is not 443. It is the host of the remote's URL.
+  port that is not the scheme's own. It is the host of the remote's URL, in
+  lower case.
 - `sessionId` is the session of the turn whose command asked.
 - A host that is not on the allow-list never causes the request.
 - The host asks once per git command (`clone`, `fetch`, `pull`, `push`) and
@@ -373,8 +420,10 @@ reaches the model, so it should say what the owner can do.
   refusal, the host stars it out.
 - A remote that refuses the answer ends the command. bzz is not asked a
   second time for it.
-- A cancelled turn does not wait for the answer, and a question that was
-  open when the host exited is void.
+- The host sets no time limit on the answer. A cancelled turn does not wait
+  for it, and neither does the shell command's own time limit; an answer
+  that comes after either is dropped. A question that was open when the
+  host exited is void.
 - Only `git` asks, and only on a challenge: 401, or the 203 that Azure
   DevOps sends in its place. The shell's `curl` does not. A remote that
   answers "not found" for a private repository never causes the request.
@@ -406,11 +455,18 @@ bzz answers `{"allow": true}` or `{"allow": false, "reason": "…"}`.
 - **What bzz approved is what runs.** `command` is the string the shell
   receives (`/bin/sh -c -- <command>`). The host does not read it, quote it
   or add to it.
+- `mount` is a name from `_meta.bzz.run`. `command` is never empty, holds
+  no NUL character and is at most 100 000 bytes; it may hold several lines.
+  `kind` is always `exec`.
 - bzz is not asked about what can never run: a folder without `exec`, an
-  empty command, a time limit out of range, a folder that is not there. The
-  model gets an error.
+  empty command, one with a NUL character or longer than 100 000 bytes, a
+  time limit out of range, a folder that is not there. The model gets an
+  error.
 - The host asks about one command at a time within a turn. Two
   conversations may each have a question open.
+- The host sets no time limit on the answer: it waits until bzz answers or
+  the turn is cancelled. An answer that comes after the cancel is dropped.
+  The command's own time limit starts when the command does.
 - bzz decides whether the owner is asked. The host knows nothing of
   "allowed without asking".
 - A question that was open when the host exited is void. The next process
@@ -421,12 +477,15 @@ The command:
 
 - starts with the granted folder as its working directory;
 - gets an environment built from nothing: `PATH`, `HOME`, `LANG` and
-  `TMPDIR` as the host has them, and nothing else;
+  `TMPDIR` as the host has them, and nothing else. What bzz gives the host
+  under those names is what every command gets;
 - has no terminal, and an empty standard input;
+- has no other open descriptor of the host, on Linux (section 2);
 - runs in a process group of its own, not bzz's and not the host's;
 - is ended, with its group, when the turn is cancelled, at its time limit,
   and when the host exits, however it exits. The group gets TERM, and KILL
-  2 s later;
+  2 s later. A keeper process outside the host's group does this, so a
+  command that ignores TERM can outlive the host by those 2 s;
 - leaves nothing running: what is still in its group when it returns is
   killed;
 - is not started again after a restart. A turn that was cut off inside a
@@ -434,7 +493,9 @@ The command:
 
 Its output, standard output and standard error together, comes back bounded:
 the last 2000 lines or 50 KB. A longer output is saved on the agent's disk
-(`/tmp/run-<id>.log`, at most 8 MiB) and the result says where.
+(`/tmp/run-<id>.log`, at most 8 MiB) and the result says where. A command
+that ends with another code than 0, or by a signal, is a failed tool call
+with its output.
 
 What this does not give:
 
@@ -444,7 +505,9 @@ What this does not give:
 - A process that leaves the group (`setsid`, a daemon) is not ended.
 - If the host and the command's keeper process are both killed at the same
   moment, the command is not ended. bzz's sweep at startup does not see it:
-  it is not in the host's group.
+  neither the keeper nor the command is in the host's group.
+- On a system that is not Linux a command inherits the descriptors the host
+  was started with (section 2).
 - A command's output is kept as printed, so paths of this machine can enter
   `memory.sqlite`.
 
@@ -463,15 +526,24 @@ extensions (tools, prompt sections, hooks) are installed for the agent.
 - Only a package in a local folder is loaded. An entry is a path: absolute,
   `~/…`, or relative to Pi's folder. `npm:`, `git:` and URL entries are left
   out.
-- Each package has 10 s to load. The packages load at the same time.
+- Each package has 10 s to load. The packages load at the same time. A
+  package that never gives the thread back, such as an endless loop, cannot
+  be timed out: `initialize` is never answered.
 - A package that fails is left out and the others still load. The answer to
   `initialize` reports each one: `{"source", "loaded": true, "extensions":
   [names], "providers": [ids]}` or `{"source", "loaded": false, "error":
   "…"}`. A package without a Pi Durable entry is reported as not loaded,
   with that reason.
-- A package may not name an extension `bzz` or `coding-tools`, nor a tool
-  `run` or `buzz_…`. A tool of a package with the name of one of Pi's file
-  tools (`read`, `write`, `edit`, `bash`) replaces it.
+- A package may not name an extension `bzz` or `coding-tools` or as an
+  earlier package did, nor a tool `run` or `buzz_…`. A tool of a package
+  with the name of one of Pi's file tools (`read`, `write`, `edit`, `bash`),
+  or of an earlier package's tool, replaces it.
+- A provider of a package takes the place of one of Pi's, or of an earlier
+  package's, with the same id.
+- What a package leaves uncaught after it loaded does not end the host: a
+  promise that fails with nobody waiting for it, and an exception from a
+  timer or an event whose stack names a file of the package. It is written
+  to the log. An exception that names no package ends the host with code 1.
 - The host uses the models a provider lists when it loads. It does not fetch
   a provider's models.
 - When a turn fails with `provider_unavailable`, the message names each
