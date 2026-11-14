@@ -183,7 +183,16 @@ async fn refresh_agents(
     let candidates = store
         .call(move |store| store.remote_agent_candidate_pubkeys(community_id))
         .await?;
-    if candidates.is_empty() {
+    // D13 (ADR v0.15): an agent may be a plain member of a channel. Its
+    // owner's proof is on its profile, so the members whose profile may
+    // carry one are looked at too.
+    let members = store
+        .call(move |store| store.remote_agent_member_pubkeys(community_id))
+        .await?
+        .into_iter()
+        .filter(|member| !candidates.contains(member))
+        .collect::<Vec<_>>();
+    if candidates.is_empty() && members.is_empty() {
         return Ok(AgentRefreshReport::default());
     }
     let bot_candidates = store
@@ -213,11 +222,12 @@ async fn refresh_agents(
         declared_set.extend(declarations.iter().map(|event| event.pubkey.to_hex()));
         public_events.extend(declarations);
     }
-    let profile_candidates = candidates
+    let mut profile_candidates = candidates
         .iter()
         .filter(|candidate| declared_set.contains(*candidate) || bot_set.contains(*candidate))
         .cloned()
         .collect::<Vec<_>>();
+    profile_candidates.extend(members.iter().cloned());
     let profile_set = profile_candidates.iter().cloned().collect::<BTreeSet<_>>();
     let mut profiles = Vec::new();
     for chunk in profile_candidates.chunks(AUTHOR_CHUNK) {
@@ -245,6 +255,34 @@ async fn refresh_agents(
         })
         .collect::<std::collections::BTreeMap<_, _>>();
 
+    // A plain member is a candidate only with its owner's proof: a person's
+    // profile is kept as a profile and asked nothing more.
+    let profile_candidates = profile_candidates
+        .into_iter()
+        .filter(|candidate| {
+            candidate_set.contains(candidate) || verified_owners.contains_key(candidate)
+        })
+        .collect::<Vec<_>>();
+    // What a proven member declares about itself, when it declares anything.
+    let proven_members = members
+        .iter()
+        .filter(|member| verified_owners.contains_key(*member))
+        .cloned()
+        .collect::<Vec<_>>();
+    for chunk in proven_members.chunks(AUTHOR_CHUNK) {
+        let mut declarations = http
+            .query(&[QueryFilter {
+                kinds: vec![10_100],
+                authors: chunk.to_vec(),
+                limit: Some(chunk.len() as u32),
+                ..QueryFilter::default()
+            }])
+            .await?;
+        declarations.retain(|event| {
+            event.kind.as_u16() == 10_100 && chunk.contains(&event.pubkey.to_hex())
+        });
+        public_events.extend(declarations);
+    }
     for chunk in profile_candidates.chunks(AUTHOR_CHUNK) {
         let owners = chunk
             .iter()
@@ -285,7 +323,7 @@ async fn refresh_agents(
         })
         .await?;
     Ok(AgentRefreshReport {
-        candidates: candidates.len(),
+        candidates: candidates.len() + proven_members.len(),
         public_events: public_event_count,
         verified,
         projection_changes,

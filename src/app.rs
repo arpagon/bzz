@@ -7795,7 +7795,7 @@ impl App {
                 {
                     "the verified remote agent is not a current participant in this DM".into()
                 } else {
-                    "the verified remote agent is not a bot member of this channel".into()
+                    "the verified remote agent is not a member of this channel".into()
                 },
             );
             return Ok(());

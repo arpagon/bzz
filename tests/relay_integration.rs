@@ -4749,6 +4749,38 @@ async fn real_relay_agent_new_to_delete_on_the_pi_durable_host() {
     let (added, text) = said(&["agent", "add", "Scout", "no-such-channel"]);
     assert!(!added && text.contains("no channel is called"), "{text}");
 
+    // bzz's own directory lists it, although it has the `bot` role in no
+    // channel but the Solo chat: its owner's proof is what counts (D13).
+    let refreshed = ok(&["agents", "refresh"]);
+    assert!(refreshed.contains("verified=1"), "{refreshed}");
+    let directory: serde_json::Value =
+        serde_json::from_str(&ok(&["agents", "list", "--json"])).unwrap();
+    let listed = directory["agents"].as_array().unwrap();
+    assert_eq!(listed.len(), 1, "{directory}");
+    assert_eq!(
+        (
+            listed[0]["name"].as_str(),
+            listed[0]["pubkey"].as_str(),
+            listed[0]["owner_pubkey"].as_str(),
+            listed[0]["eligibility"].as_str(),
+            listed[0]["respond_to"].as_str(),
+        ),
+        (
+            Some("Scout"),
+            Some(agent_hex.as_str()),
+            Some(owner_hex.as_str()),
+            Some("eligible"),
+            Some("owner-only"),
+        ),
+        "{directory}"
+    );
+    let channels = listed[0]["channel_ids"].as_array().unwrap();
+    assert!(
+        channels.contains(&json!(channel.to_string()))
+            && channels.contains(&json!(solo.to_string())),
+        "the channel it is a plain member of, and the Solo chat: {directory}"
+    );
+
     // ---- mentions ---------------------------------------------------------
     let message = |channel: uuid::Uuid, text: String, thread: Option<nostr::EventId>| {
         let agent = agent_hex.clone();

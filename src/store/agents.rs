@@ -15,6 +15,22 @@ use crate::{
 const MAX_OWNER_POLICIES: usize = 512;
 const AGENT_FRESHNESS_SECONDS: u64 = 10 * 60;
 
+/// A membership in which a verified agent is listed, with `c` as its
+/// channel: any channel that is not a DM, whatever the member's role, or a
+/// small DM the viewer is in. Since v0.15 the `bot` role is not required:
+/// Buzz 1.0 adds an agent to a channel as a plain member, and so does bzz
+/// (ADR v0.15 local agents, decision 11). What makes a member an agent is
+/// its owner's proof, checked by [`Store::reconcile_remote_agent`].
+pub(crate) const AGENT_MEMBERSHIP: &str =
+    "(c.channel_type!='dm' OR (c.is_member=1 AND c.member_count BETWEEN 2 AND 9))";
+
+/// A member, with `m` as its membership, that has a stored profile carrying
+/// an owner's authorization. Only a first look: the proof itself is
+/// verified in Rust.
+const PROFILE_CLAIMS_AN_OWNER: &str = "EXISTS(SELECT 1 FROM events p
+       WHERE p.community_id=m.community_id AND p.kind=0 AND p.pubkey=m.pubkey
+         AND p.deleted_by_event_id IS NULL AND p.tags_json LIKE '%\"auth\"%')";
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RemoteAgentView {
     pub schema_version: u32,
@@ -43,10 +59,14 @@ impl Store {
         let agent_pubkey = PublicKey::from_hex(agent_pubkey)
             .map_err(|_| Error::Protocol("agent candidate has an invalid pubkey".into()))?
             .to_hex();
-        let (is_bot, is_declared_dm_participant): (bool, bool) = self.connection.query_row(
-            "SELECT
+        let (is_bot, is_channel_member, is_declared_dm_participant): (bool, bool, bool) =
+            self.connection.query_row(
+                "SELECT
                EXISTS(SELECT 1 FROM memberships
                  WHERE community_id=?1 AND pubkey=?2 AND role='bot'),
+               EXISTS(SELECT 1 FROM memberships m
+                 JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
+                 WHERE m.community_id=?1 AND m.pubkey=?2 AND c.channel_type!='dm'),
                EXISTS(SELECT 1 FROM memberships m
                  JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
                  WHERE m.community_id=?1 AND m.pubkey=?2 AND c.channel_type='dm'
@@ -54,17 +74,24 @@ impl Store {
                    AND EXISTS(SELECT 1 FROM events d WHERE d.community_id=m.community_id
                      AND d.kind=10100 AND d.pubkey=m.pubkey
                      AND d.deleted_by_event_id IS NULL))",
-            params![community_id.to_string(), agent_pubkey],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        if !is_bot && !is_declared_dm_participant {
+                params![community_id.to_string(), agent_pubkey],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        let profile = self.latest_agent_event(community_id, 0, &agent_pubkey)?;
+        // D13: a plain member of a channel is an agent when its profile
+        // carries its owner's valid proof. A person's profile carries none,
+        // so people never enter the directory, not even as failures.
+        let is_proven_member = is_channel_member
+            && profile.as_ref().is_some_and(|profile| {
+                crate::agents::protocol::verified_owner_pubkey(profile).is_ok()
+            });
+        if !is_bot && !is_proven_member && !is_declared_dm_participant {
             return Ok(self.connection.execute(
                 "UPDATE remote_agents SET verification_state='removed',failure_reason='not-a-current-candidate',updated_at=unixepoch() WHERE community_id=?1 AND agent_pubkey=?2 AND verification_state!='removed'",
                 params![community_id.to_string(), agent_pubkey],
             )? > 0);
         }
 
-        let profile = self.latest_agent_event(community_id, 0, &agent_pubkey)?;
         let declaration = self.latest_agent_event(community_id, 10_100, &agent_pubkey)?;
         let Some(profile) = profile else {
             return self.upsert_agent_failure(
@@ -74,7 +101,7 @@ impl Store {
                 "required-public-record-missing",
             );
         };
-        if !is_bot && declaration.is_none() {
+        if !is_bot && !is_proven_member && declaration.is_none() {
             return self.upsert_agent_failure(
                 community_id,
                 &agent_pubkey,
@@ -83,9 +110,10 @@ impl Store {
             );
         }
 
-        // Exact relay bot membership establishes the agent class even when an
-        // older Buzz-managed identity has no kind 10100. NIP-OA still proves
-        // ownership; a DM-only operational member must have the declaration.
+        // Relay bot membership, or membership of a channel with the owner's
+        // proof, establishes the agent class even when a Buzz-managed
+        // identity has no kind 10100. NIP-OA still proves ownership; a
+        // DM-only operational member must have the declaration.
         let without_policy = match verify_public_agent(&profile, declaration.as_ref(), None) {
             Ok(agent) => agent,
             Err(failure) => {
@@ -124,6 +152,8 @@ impl Store {
         Ok(changed)
     }
 
+    /// Members whose class the relay or a declaration can establish: every
+    /// `bot` member, and every participant of a small DM the viewer is in.
     pub fn remote_agent_candidate_pubkeys(&self, community_id: Uuid) -> Result<Vec<String>> {
         let mut statement = self.connection.prepare(
             "SELECT DISTINCT m.pubkey FROM memberships m
@@ -150,22 +180,48 @@ impl Store {
             .map_err(Into::into)
     }
 
-    /// Reconcile every currently known bot candidate plus projections whose
-    /// membership was removed. The bounded membership source prevents a
-    /// hostile global profile stream from creating unbounded candidates.
+    /// D13: plain members of channels whose profile may prove an owner, for
+    /// a refresh to look at: those whose stored profile carries an owner's
+    /// authorization, and those with no stored profile yet. A member whose
+    /// stored profile carries none is a person and is not asked about again
+    /// here. Bounded, like every candidate source.
+    pub fn remote_agent_member_pubkeys(&self, community_id: Uuid) -> Result<Vec<String>> {
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT DISTINCT m.pubkey FROM memberships m
+             JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
+             WHERE m.community_id=?1 AND c.channel_type!='dm' AND m.role!='bot'
+               AND ({PROFILE_CLAIMS_AN_OWNER}
+                    OR NOT EXISTS(SELECT 1 FROM events p
+                      WHERE p.community_id=m.community_id AND p.kind=0 AND p.pubkey=m.pubkey
+                        AND p.deleted_by_event_id IS NULL))
+             ORDER BY m.pubkey LIMIT 2000"
+        ))?;
+        statement
+            .query_map([community_id.to_string()], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// Reconcile every currently known candidate plus projections whose
+    /// membership was removed: `bot` members, declared participants of small
+    /// DMs, and (D13) channel members whose profile claims an owner. The
+    /// bounded membership source prevents a hostile global profile stream
+    /// from creating unbounded candidates.
     pub fn reconcile_remote_agents(&mut self, community_id: Uuid) -> Result<usize> {
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare(&format!(
             "SELECT m.pubkey FROM memberships m
              JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
              WHERE m.community_id=?1
-               AND (m.role='bot' OR (c.channel_type='dm' AND c.is_member=1
+               AND (m.role='bot'
+                    OR (c.channel_type!='dm' AND {PROFILE_CLAIMS_AN_OWNER})
+                    OR (c.channel_type='dm' AND c.is_member=1
                     AND c.member_count BETWEEN 2 AND 9 AND EXISTS(
                       SELECT 1 FROM events d WHERE d.community_id=m.community_id
                         AND d.kind=10100 AND d.pubkey=m.pubkey
                         AND d.deleted_by_event_id IS NULL)))
              UNION SELECT agent_pubkey FROM remote_agents WHERE community_id=?1
-             ORDER BY 1 LIMIT 5000",
-        )?;
+             ORDER BY 1 LIMIT 5000"
+        ))?;
         let pubkeys = statement
             .query_map([community_id.to_string()], |row| row.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -184,7 +240,7 @@ impl Store {
     ) -> Result<Vec<RemoteAgentView>> {
         PublicKey::from_hex(active_pubkey)
             .map_err(|_| Error::Config("active identity has an invalid pubkey".into()))?;
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare(&format!(
             "SELECT agent_pubkey,owner_pubkey,name,capabilities_json,presence,respond_to,
                     respond_to_allowlist_json,last_verified_at
              FROM remote_agents a
@@ -192,10 +248,9 @@ impl Store {
                AND EXISTS(SELECT 1 FROM memberships m
                  JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
                  WHERE m.community_id=a.community_id AND m.pubkey=a.agent_pubkey
-                   AND (m.role='bot' OR (c.channel_type='dm' AND c.is_member=1
-                        AND c.member_count BETWEEN 2 AND 9)))
-             ORDER BY name COLLATE NOCASE,agent_pubkey LIMIT 5000",
-        )?;
+                   AND {AGENT_MEMBERSHIP})
+             ORDER BY name COLLATE NOCASE,agent_pubkey LIMIT 5000"
+        ))?;
         let rows = statement.query_map([community_id.to_string()], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -276,6 +331,8 @@ impl Store {
             let mention = PublicKey::from_hex(mention)
                 .map_err(|_| Error::Protocol("message mention has an invalid pubkey".into()))?
                 .to_hex();
+            // A `bot` member is an agent by the relay's word; anyone else
+            // only once the directory has a projection of it.
             let is_agent_candidate: bool = self.connection.query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM memberships WHERE community_id=?1 AND channel_id=?2 AND pubkey=?3 AND role='bot'
@@ -310,23 +367,24 @@ impl Store {
             let mention = PublicKey::from_hex(mention)
                 .map_err(|_| Error::Protocol("message mention has an invalid pubkey".into()))?
                 .to_hex();
-            let (is_agent_candidate, is_bot, is_participant): (bool, bool, bool) = self.connection.query_row(
+            let (is_agent_candidate, is_participant): (bool, bool) = self.connection.query_row(
                 "SELECT
                     EXISTS(SELECT 1 FROM remote_agents WHERE community_id=?1 AND agent_pubkey=?3)
                       OR EXISTS(SELECT 1 FROM memberships WHERE community_id=?1 AND channel_id=?2 AND pubkey=?3 AND role='bot'),
-                    EXISTS(SELECT 1 FROM memberships WHERE community_id=?1 AND channel_id=?2 AND pubkey=?3 AND role='bot'),
                     EXISTS(SELECT 1 FROM memberships WHERE community_id=?1 AND channel_id=?2 AND pubkey=?3)",
                 params![community_id.to_string(),channel_id.to_string(),mention],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
             if !is_agent_candidate {
                 continue;
             }
-            if (!is_dm && !is_bot) || (is_dm && !is_participant) {
+            // A member of the channel, whatever its role (D13); whether it
+            // is a verified agent there is checked below.
+            if !is_participant {
                 return Err(Error::Access(if is_dm {
                     "remote agent mention is no longer a current DM participant".into()
                 } else {
-                    "remote agent mention is no longer a bot member of this channel".into()
+                    "remote agent mention is no longer a member of this channel".into()
                 }));
             }
             let agent = self
@@ -446,14 +504,12 @@ impl Store {
     }
 
     fn remote_agent_channels(&self, community_id: Uuid, agent_pubkey: &str) -> Result<Vec<Uuid>> {
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare(&format!(
             "SELECT m.channel_id FROM memberships m
              JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
-             WHERE m.community_id=?1 AND m.pubkey=?2
-               AND (m.role='bot' OR (c.channel_type='dm' AND c.is_member=1
-                    AND c.member_count BETWEEN 2 AND 9))
-             ORDER BY m.channel_id LIMIT 5000",
-        )?;
+             WHERE m.community_id=?1 AND m.pubkey=?2 AND {AGENT_MEMBERSHIP}
+             ORDER BY m.channel_id LIMIT 5000"
+        ))?;
         statement
             .query_map(params![community_id.to_string(), agent_pubkey], |row| {
                 row.get::<_, String>(0)
@@ -887,8 +943,10 @@ mod tests {
         assert!(mentions[0].is_agent);
         assert_eq!(mentions[0].agent_eligibility, Some(Eligibility::Eligible));
 
-        // The same operational `member` role has no authority once the
-        // destination is not positively known as a DM.
+        // Until v0.14 the same `member` role had no authority once the
+        // destination was not a DM. Since v0.15 (D13) a member of a channel
+        // whose profile carries its owner's proof is an agent there, as
+        // Buzz 1.0 adds one; the DM stays the owner's alone all the same.
         store
             .connection
             .execute(
@@ -898,15 +956,232 @@ mod tests {
             )
             .unwrap();
         store.reconcile_remote_agents(community_id).unwrap();
-        assert!(matches!(
-            store.validate_agent_mentions(
+        for person in [&owner, &viewer] {
+            store
+                .validate_agent_mentions(
+                    community_id,
+                    channel_id,
+                    &person.public_key().to_hex(),
+                    &[agent.public_key().to_hex()],
+                )
+                .unwrap();
+        }
+    }
+
+    /// The membership of `setup`, as Buzz 1.0 and bzz add an agent to a
+    /// channel: a plain member.
+    fn as_plain_member(store: &Store, community_id: Uuid, agent: &Keys) {
+        store
+            .connection
+            .execute(
+                "UPDATE memberships SET role='member' WHERE community_id=?1 AND pubkey=?2",
+                params![community_id.to_string(), agent.public_key().to_hex()],
+            )
+            .unwrap();
+    }
+
+    fn add_member(store: &Store, community_id: Uuid, channel_id: Uuid, member: &Keys) {
+        store
+            .connection
+            .execute(
+                "INSERT INTO memberships(community_id,channel_id,pubkey,role,source_event_id)
+                 VALUES(?1,?2,?3,'member',?4)",
+                params![
+                    community_id.to_string(),
+                    channel_id.to_string(),
+                    member.public_key().to_hex(),
+                    "e".repeat(64)
+                ],
+            )
+            .unwrap();
+    }
+
+    fn directory_rows(store: &Store, community_id: Uuid) -> i64 {
+        store
+            .connection
+            .query_row(
+                "SELECT count(*) FROM remote_agents WHERE community_id=?1",
+                [community_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    /// D13: the records bzz and Buzz 1.0 publish for an agent (a profile
+    /// marked as a bot with the owner's tag, and the owner's record), and a
+    /// plain membership: the agent is listed, mentionable by its rule, and
+    /// gone when it leaves.
+    #[test]
+    fn a_plain_member_with_its_owners_proof_is_an_agent() {
+        let (mut store, community_id, viewer, owner, agent, channel_id) = setup();
+        as_plain_member(&store, community_id, &agent);
+        let auth = buzz_sdk::nip_oa::compute_auth_tag(&owner, &agent.public_key(), "").unwrap();
+        let auth: Vec<String> = serde_json::from_str(&auth).unwrap();
+        let profile = EventBuilder::new(Kind::Metadata, r#"{"name":"Scout","bot":true}"#)
+            .tags([Tag::parse(auth).unwrap()])
+            .sign_with_keys(&agent)
+            .unwrap();
+        let record = EventBuilder::new(
+            Kind::Custom(30_177),
+            r#"{"parallelism":1,"respond_to":"owner-only","name":"Scout"}"#,
+        )
+        .tags([
+            Tag::parse(["d", &agent.public_key().to_hex()]).unwrap(),
+            Tag::parse(["runtime", "bzz/pi-durable"]).unwrap(),
+        ])
+        .sign_with_keys(&owner)
+        .unwrap();
+        let agent_hex = agent.public_key().to_hex();
+        // Without its profile it is a member like any other.
+        store.reconcile_remote_agents(community_id).unwrap();
+        assert_eq!(directory_rows(&store, community_id), 0);
+        assert_eq!(
+            store.remote_agent_member_pubkeys(community_id).unwrap(),
+            std::slice::from_ref(&agent_hex),
+            "a member with no stored profile is looked at by a refresh"
+        );
+        for event in [&profile, &record] {
+            store.apply_event(community_id, event).unwrap();
+        }
+        assert_eq!(store.reconcile_remote_agents(community_id).unwrap(), 1);
+        let listed = store
+            .list_remote_agents(community_id, &owner.public_key().to_hex())
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            (listed[0].name.as_str(), listed[0].owner_pubkey.clone()),
+            ("Scout", owner.public_key().to_hex())
+        );
+        assert_eq!(listed[0].eligibility, Eligibility::Eligible);
+        assert_eq!(listed[0].channel_ids, vec![channel_id]);
+        assert_eq!(listed[0].respond_to, Some(RespondTo::OwnerOnly));
+        // Mentioned as an agent, by its owner's rule.
+        let mentions = store
+            .mention_candidates(
                 community_id,
                 channel_id,
                 &owner.public_key().to_hex(),
-                &[agent.public_key().to_hex()],
+                "Scout",
+            )
+            .unwrap();
+        assert_eq!(mentions.len(), 1);
+        assert!(mentions[0].is_agent);
+        assert_eq!(mentions[0].agent_eligibility, Some(Eligibility::Eligible));
+        store
+            .validate_agent_mentions(
+                community_id,
+                channel_id,
+                &owner.public_key().to_hex(),
+                std::slice::from_ref(&agent_hex),
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                store.validate_agent_mentions(
+                    community_id,
+                    channel_id,
+                    &viewer.public_key().to_hex(),
+                    std::slice::from_ref(&agent_hex),
+                ),
+                Err(Error::Access(_))
             ),
-            Err(Error::Access(_))
-        ));
+            "owner only: its owner's rule still decides who may wake it"
+        );
+        assert_eq!(
+            store.remote_agent_member_pubkeys(community_id).unwrap(),
+            std::slice::from_ref(&agent_hex),
+            "its profile is refreshed with the directory"
+        );
+        // It leaves the channel: no longer listed.
+        store
+            .connection
+            .execute(
+                "DELETE FROM memberships WHERE community_id=?1 AND pubkey=?2",
+                params![community_id.to_string(), agent_hex],
+            )
+            .unwrap();
+        assert_eq!(store.reconcile_remote_agents(community_id).unwrap(), 1);
+        assert!(
+            store
+                .list_remote_agents(community_id, &owner.public_key().to_hex())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// The proof requirements are those of v0.11: a member without a valid
+    /// owner's proof on its profile is a person, and never enters the
+    /// directory, not even as a failure that would get in the way of
+    /// mentioning it.
+    #[test]
+    fn a_member_without_a_valid_owners_proof_is_not_an_agent() {
+        let (mut store, community_id, viewer, owner, agent, channel_id) = setup();
+        as_plain_member(&store, community_id, &agent);
+        let person = Keys::generate();
+        let claims_a_bot = Keys::generate();
+        let borrowed_proof = Keys::generate();
+        for member in [&person, &claims_a_bot, &borrowed_proof] {
+            add_member(&store, community_id, channel_id, member);
+        }
+        // A person's profile; a profile that only says it is a bot; and one
+        // that carries the owner's authorization of another key.
+        let plain = EventBuilder::new(Kind::Metadata, r#"{"name":"Ann"}"#)
+            .sign_with_keys(&person)
+            .unwrap();
+        let unproven = EventBuilder::new(Kind::Metadata, r#"{"name":"Bot","bot":true}"#)
+            .sign_with_keys(&claims_a_bot)
+            .unwrap();
+        let auth = buzz_sdk::nip_oa::compute_auth_tag(&owner, &agent.public_key(), "").unwrap();
+        let auth: Vec<String> = serde_json::from_str(&auth).unwrap();
+        let borrowed = EventBuilder::new(Kind::Metadata, r#"{"name":"Thief","bot":true}"#)
+            .tags([Tag::parse(auth).unwrap()])
+            .sign_with_keys(&borrowed_proof)
+            .unwrap();
+        for event in [&plain, &unproven, &borrowed] {
+            store.apply_event(community_id, event).unwrap();
+        }
+        store.reconcile_remote_agents(community_id).unwrap();
+        assert_eq!(
+            directory_rows(&store, community_id),
+            0,
+            "none of them is in the directory, in any state"
+        );
+        for identity in [&viewer, &owner] {
+            assert!(
+                store
+                    .list_remote_agents(community_id, &identity.public_key().to_hex())
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        // Mentioning them is mentioning people: nothing to validate.
+        let mentioned = [&person, &claims_a_bot, &borrowed_proof]
+            .map(|member| member.public_key().to_hex())
+            .to_vec();
+        assert_eq!(
+            store
+                .agent_mentions_need_validation(community_id, channel_id, &mentioned)
+                .unwrap(),
+            0
+        );
+        store
+            .validate_agent_mentions(
+                community_id,
+                channel_id,
+                &viewer.public_key().to_hex(),
+                &mentioned,
+            )
+            .unwrap();
+        // A refresh looks again only at the one whose profile claims an
+        // owner and at the one with no profile yet, never at the person.
+        let mut looked_at = store.remote_agent_member_pubkeys(community_id).unwrap();
+        looked_at.sort();
+        let mut expected = vec![
+            agent.public_key().to_hex(),
+            borrowed_proof.public_key().to_hex(),
+        ];
+        expected.sort();
+        assert_eq!(looked_at, expected);
     }
 
     #[test]

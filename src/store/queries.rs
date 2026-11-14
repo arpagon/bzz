@@ -1202,7 +1202,9 @@ impl Store {
             )
             .optional()?
             .is_none_or(|kind| kind == "dm");
-        let mut statement = self.connection.prepare(
+        // A verified agent is an agent in every channel it is a member of,
+        // whatever its role there (ADR v0.15 local agents, decision 11).
+        let mut statement = self.connection.prepare(&format!(
             "SELECT m.pubkey,p.display_name,p.name,a.name,v.display_name,v.username,
                     a.owner_pubkey,a.respond_to,a.respond_to_allowlist_json,v.pubkey IS NOT NULL
              FROM memberships m
@@ -1210,12 +1212,12 @@ impl Store {
              LEFT JOIN profiles p ON p.community_id=m.community_id AND p.pubkey=m.pubkey
              LEFT JOIN remote_agents a ON a.community_id=m.community_id AND a.agent_pubkey=m.pubkey
                   AND a.verification_state='verified'
-                  AND (m.role='bot' OR (c.channel_type='dm' AND c.is_member=1
-                       AND c.member_count BETWEEN 2 AND 9))
+                  AND {}
              LEFT JOIN verified_profiles v ON v.community_id=m.community_id AND v.pubkey=m.pubkey AND v.active=1
              WHERE m.community_id=?1 AND m.channel_id=?2
              ORDER BY m.pubkey",
-        )?;
+            crate::store::agents::AGENT_MEMBERSHIP
+        ))?;
         type Row = (
             String,
             [Option<String>; 5],
