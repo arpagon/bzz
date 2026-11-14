@@ -4743,14 +4743,10 @@ async fn real_relay_agent_new_to_delete_on_the_pi_durable_host() {
     );
     let text = ok(&["agent", "add", "Scout", &channel.to_string()]);
     assert!(text.contains("was already a member"), "{text}");
-    let text = ok(&["agent", "add", "Scout", &solo.to_string()]);
-    assert!(text.contains("with the bot role (a Solo chat)"), "{text}");
-    assert_eq!(role_in(solo).await.as_deref(), Some("bot"));
-    let (added, text) = said(&["agent", "add", "Scout", "no-such-channel"]);
-    assert!(!added && text.contains("no channel is called"), "{text}");
 
-    // bzz's own directory lists it, although it has the `bot` role in no
-    // channel but the Solo chat: its owner's proof is what counts (D13).
+    // bzz's own directory lists it now, while it has the `bot` role nowhere:
+    // its owner's proof is what counts (D13). Until v0.14 it was not listed.
+    assert_eq!(role_in(solo).await, None);
     let refreshed = ok(&["agents", "refresh"]);
     assert!(refreshed.contains("verified=1"), "{refreshed}");
     let directory: serde_json::Value =
@@ -4774,12 +4770,16 @@ async fn real_relay_agent_new_to_delete_on_the_pi_durable_host() {
         ),
         "{directory}"
     );
-    let channels = listed[0]["channel_ids"].as_array().unwrap();
-    assert!(
-        channels.contains(&json!(channel.to_string()))
-            && channels.contains(&json!(solo.to_string())),
-        "the channel it is a plain member of, and the Solo chat: {directory}"
+    assert_eq!(
+        listed[0]["channel_ids"],
+        json!([channel.to_string()]),
+        "the channel it is a plain member of: {directory}"
     );
+    let text = ok(&["agent", "add", "Scout", &solo.to_string()]);
+    assert!(text.contains("with the bot role (a Solo chat)"), "{text}");
+    assert_eq!(role_in(solo).await.as_deref(), Some("bot"));
+    let (added, text) = said(&["agent", "add", "Scout", "no-such-channel"]);
+    assert!(!added && text.contains("no channel is called"), "{text}");
 
     // ---- mentions ---------------------------------------------------------
     let message = |channel: uuid::Uuid, text: String, thread: Option<nostr::EventId>| {
