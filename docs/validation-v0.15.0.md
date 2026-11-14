@@ -616,7 +616,7 @@ pass's "credentials given for one host…" in `network.test.mjs`, above.
 ### Credentials for a private remote, bzz's side
 
 Linux x86_64, Rust 1.98.1, Node 26.5.0, git 2.x with `http-backend`, Buzz pin
-`bf3bdd0eaefe`, 2026-11-14. Commits `30d65a5..1bf8764` on `v0.15.0`.
+`bf3bdd0eaefe`, 2026-11-14. Commits `30d65a5..11d6c91` on `v0.15.0`.
 
 **Where it is.** `src/agents/git_credentials.rs` (the store, sealed to the
 owner's key), `Agent::credential` in `src/agents/runtime/agent.rs` (the
@@ -637,8 +637,8 @@ BZZ_RELAY_TEST_FILTER=real_relay_agent_runs_a_real_command BZZ_BUZZ_SOURCE=$PWD/
 ```
 
 **Red runs.** Each is the named test with the one fault in the cell planted,
-seen failing as quoted, then removed. 50 ran in a clone of the repository
-with a build folder of its own, on `eccb009` and `1bf8764`
+seen failing as quoted, then removed. 52 ran in a clone of the repository
+with a build folder of its own, on `eccb009`, `1bf8764` and `11d6c91`
 (`runs/v015/c4-red.py` plants and restores each; local, untracked). Six ran
 before that in the main checkout, while the code was written: the host's
 two, the descriptors, and the three of the settings file.
@@ -1010,7 +1010,7 @@ agents panel, and one writer for the settings. The host's own half is the
 section above.
 
 Linux x86_64, Rust 1.98.1, Node 26.5.0, Buzz pin `bf3bdd0eaefe`, 2026-11-14.
-Commits `f76bfc3..1bf8764` on `v0.15.0`.
+Commits `f76bfc3..11d6c91` on `v0.15.0`.
 
 **Where it is.**
 
@@ -1073,7 +1073,7 @@ script that speaks just enough of the protocol to ask.
 | …and when bzz quits | same | no void at shutdown, at a stop, nor at the end of the process: `quit: […"void: the turn ended"]` | pass |
 | Without the TUI nobody is asked: a command in a folder that asks is refused at once, with a reason that tells the agent to say in the conversation that its owner must open bzz | `T: without_the_tui_a_command_is_refused_and_one_allowed_without_asking_runs` | a question opened although nobody is there: it waits until the turn's limit (`` `needs your owner's approval` in: The question to your owner was withdrawn… ``) | pass |
 | A folder allowed without asking runs, with the owner there or not, and is never put to him | same | treated as one that asks: `left: {"allow": false, "reason": "Nothing was started: a command in /mnt/ops needs your owner's approval…"} right: {"allow": true}` | pass |
-| …but not for an agent that anyone may wake: there the owner is asked whatever the folder says, and with nobody to ask the answer is no. `agent new` and `agent edit` refuse that pair of settings | `T: a_folder_allowed_without_asking_still_asks_when_anyone_may_wake_the_agent`; `U: manage::the_answers_are_read_as_written` | @@ANYONE@@ | pass |
+| …but not for an agent that anyone may wake: there the owner is asked whatever the folder says, and with nobody to ask the answer is no. `agent new` and `agent edit` refuse that pair of settings | `T: a_folder_allowed_without_asking_still_asks_when_anyone_may_wake_the_agent`; `U: manage::the_answers_are_read_as_written` | the rule for who may wake it not looked at: the command is allowed (`{"allow":true}`, `left: Bool(true) right: Bool(false)`); the pair of settings accepted: `unwrap_err() on an Ok value` | pass |
 | bzz refuses a command in a folder its own settings do not grant for commands, in one that is not granted at all, an empty one and one with a NUL, whatever the host was told | same | any granted folder taking commands: `docs` is allowed (`left: Bool(true) right: Bool(false)`) | pass |
 | What the owner takes away while bzz runs holds at once: a folder that now asks is refused with nobody there; a grant taken away, and the same name for another folder, are refused; a settings file that cannot be read is a no; so is an agent paused in the settings | `T: what_the_owner_takes_away_is_refused_at_once_by_a_running_bzz` | the settings file not read again: round 2 is allowed; an unreadable file counted as no file: round 5 is allowed | pass |
 | Several requests of the host are open at once and answered in whatever order they end: while a command waits, a credential and a chat tool of the same turn are answered, and a second conversation has a question of its own. The ids are strings (`h1`…), each answered under its own. One conversation has one question open | `T: several_requests_of_the_host_are_open_at_once_and_answered_in_any_order` | `_bzz/approve` answered in the loop that reads the host: `timed out waiting for both questions to wait` | pass |
@@ -1267,15 +1267,15 @@ agent's disk; a refused one does not run."
 
 ### Gates after M7 (bzz's side)
 
-Run on `d902505` (the code and tests of `1bf8764`, and the documents), 2026-11-14,
-Linux x86_64, Node 26.5.0.
+Run on `11d6c91`, 2026-11-14, Linux x86_64, Node 26.5.0. The agent host's
+own tests ran on `d902505`; `agent-host/` has not changed since `f76bfc3`.
 
 | Gate | Command | Result |
 |---|---|---|
 | Format | `cargo fmt --check` | clean |
 | Lint | `cargo clippy --locked --all-targets --all-features -- -D warnings` | clean (also `--no-default-features`) |
-| Tests | `cargo test --locked --all-features` | 643 passed, 0 failed, 26 ignored. 33 passing tests are new since M4: 15 unit (3 App, 3 `ui::approval`, 2 `approval`, 2 `activity`, 1 each of `git_credentials`, `capability`, `process`, `runtime`, `sanitize`), 10 scripted harness, 3 real host, 3 configuration, 1 creation, 1 secret scan |
-| Pinned relay | `BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh` | 19 passed (the 18 of M4 and the journey above) in 455 s, then `agent_host_test`, 6 passed. The other agent's work uses the same harness: the run waited for it to be free |
+| Tests | `cargo test --locked --all-features` | 644 passed, 0 failed, 26 ignored. 34 passing tests are new since M4: 15 unit (3 App, 3 `ui::approval`, 2 `approval`, 2 `activity`, 1 each of `git_credentials`, `capability`, `process`, `runtime`, `sanitize`), 11 scripted harness, 3 real host, 3 configuration, 1 creation, 1 secret scan |
+| Pinned relay | `BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh` | @@RELAY2@@ The other agent's work uses the same harness: the run waited for it to be free |
 | Agent host | `cd agent-host && npm ci --ignore-scripts --omit=optional && npm test` | 99 tests, 99 pass, 0 skipped (the 98 of the second pass and the one for `--check-model`); `npm ci` reports 0 vulnerabilities |
 | Supply chain | `cargo deny check`; `cargo audit` | `advisories ok, bans ok, licenses ok, sources ok`; the 4 allowed warnings of v0.14. `Cargo.lock` gains one package, `close_fds` 0.3.2 (MIT), whose own dependencies were there already |
 

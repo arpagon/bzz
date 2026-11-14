@@ -221,10 +221,10 @@ What you should know before you grant it:
   it run commands as you. Use it for a folder and an agent you would hand
   your shell to, and keep `--wake owner-only`. bzz refuses the grant for an
   agent that anyone may wake, and such an agent is asked about in any case.
-- A command has no terminal and no input, 2 minutes unless the agent asks
-  for more (at most an hour), and is ended with everything it started when
-  its turn is stopped. A program that detaches itself (`setsid`, a daemon)
-  is not ended.
+- A command has no terminal and no input, and 2 minutes unless the agent
+  asks for more. It is ended, with everything it started, when its turn is
+  stopped or reaches its ten minutes, the wait for your answer included. A
+  program that detaches itself (`setsid`, a daemon) is not ended.
 - On Windows the agent's host offers no `run`: the grant is kept and does
   nothing.
 
