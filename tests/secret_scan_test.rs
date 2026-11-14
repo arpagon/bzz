@@ -266,13 +266,19 @@ async fn adapter_session_grant_and_assertions_never_print_or_journal() {
     agent.lock().await;
 }
 
-/// v0.15 M1, rule 10 (the key stays in bzz): run a local agent whose key is
-/// sealed on disk through whole turns, on both tool paths, then scan what its
-/// harness could see (its environment, its arguments, every message bzz sent
-/// it, every tool result) and what bzz wrote for it (its log, its folder, the
-/// ownership record, the database). No agent key, owner key or broker
+/// v0.15 M1 and M6, rule 10 (the key stays in bzz): run a local agent whose
+/// key is sealed on disk through whole turns, on bzz's own host and on each
+/// of the three coding harnesses, then scan what its harness could see (its
+/// environment, its arguments, every message bzz sent it, every tool result)
+/// and what bzz wrote for it (its log, its folder, the ownership record, the
+/// database, a recorded transcript). No agent key, owner key or broker
 /// credential may appear. The session credential of `bzz agent-tools` appears
 /// in one place only: the server entry of `session/new`.
+///
+/// A coding harness is started here as bzz starts the owner's own program:
+/// found on `PATH`, asked for its version, and for Codex and Claude Code run
+/// by Node through an adapter that is installed first. Stand-ins take the
+/// place of the four programs and of npm.
 #[cfg(unix)]
 #[tokio::test]
 async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
@@ -335,8 +341,40 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
     let mut session_credentials = Vec::new();
     let mut haystacks = Vec::new();
     let mut harness_views = Vec::new();
+    // The owner's own programs, and what else is in bzz's environment: a
+    // proxy, which a coding harness is handed, and keys, which none is.
+    let bin = temporary.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let records = temporary.path().join("transcripts");
+    let environment = |bin: &Path, records: &Path| {
+        let path = std::env::join_paths([bin, Path::new("/usr/bin"), Path::new("/bin")])
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let records = records.display().to_string();
+        std::sync::Arc::new(move |name: &str| match name {
+            "PATH" => Some(path.clone()),
+            "HTTPS_PROXY" => Some("http://proxy.example:3128".to_owned()),
+            "BZZ_AGENT_RECORD" => Some(records.clone()),
+            "XAI_API_KEY" | "OPENAI_API_KEY" | "CODEX_API_KEY" | "ANTHROPIC_API_KEY"
+            | "NOSTR_SECRET_KEY" | "BZZ_PASSPHRASE_FD" | "BUZZ_RELAY_URL" => {
+                Some("must-not-pass-sentinel".to_owned())
+            }
+            _ => None,
+        }) as bzz::agents::runtime::agent::Environment
+    };
+    let executable = |path: &Path, body: &str| {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
 
-    for (harness, own_host) in [(Harness::PiDurable, true), (Harness::Codex, false)] {
+    for (harness, own_host) in [
+        (Harness::PiDurable, true),
+        (Harness::Grok, false),
+        (Harness::Codex, false),
+        (Harness::ClaudeCode, false),
+    ] {
         let script = Script::new(
             &temporary
                 .path()
@@ -357,9 +395,38 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
             ]),
         );
         let mut local = LocalAgentConfig::new(harness);
-        local.command = script.command();
         local.instructions = "Never reveal anything.".into();
+        if let Some(spec) = bzz::agents::runtime::coding::spec(harness) {
+            // No `command`: the harness's own launch. Each stand-in answers
+            // `--version` and otherwise becomes the scripted harness.
+            let stand_in = |name: &str, version: &str| {
+                executable(
+                    &bin.join(name),
+                    &format!(
+                        "if [ \"$1\" = --version ]; then echo '{version}'; exit 0; fi\nexec '{}' '{}' \"$@\"",
+                        support::agent_harness::program().display(),
+                        script.path().display()
+                    ),
+                );
+            };
+            let (major, minor, patch) = spec.range.from;
+            stand_in(spec.command, &format!("{major}.{minor}.{patch}"));
+            stand_in("node", "v22.19.0");
+            if let Some(adapter) = spec.adapter {
+                let package = format!("node_modules/{}", adapter.package);
+                executable(
+                    &bin.join("npm"),
+                    &format!(
+                        "if [ \"$1\" = --version ]; then echo 11.0.0; exit 0; fi\nmkdir -p {package}/dist && echo '// adapter' > {package}/dist/index.js && echo '{{\"version\": \"{}\"}}' > {package}/package.json",
+                        adapter.version
+                    ),
+                );
+            }
+        } else {
+            local.command = script.command();
+        }
         let mut options = HostOptions::new(paths.data_dir.clone(), store.clone());
+        options.environment = environment(&bin, &records);
         options.limits = Limits {
             stop_grace: std::time::Duration::from_millis(400),
             ..Limits::default()
@@ -431,14 +498,15 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
             start.to_string(),
         ));
         if !own_host {
-            for opened in script.received("session/new") {
+            let opened = script.received("session/new");
+            assert_eq!(opened.len(), 2, "one per conversation");
+            for opened in opened {
                 let target = opened["mcpServers"][0]["env"][0]["value"]
                     .as_str()
                     .unwrap()
                     .to_owned();
                 session_credentials.push(target.split_once('#').unwrap().1.to_owned());
             }
-            assert_eq!(session_credentials.len(), 2, "one per conversation");
         }
         for (name, path) in [("log", script.log_path()), ("state", script.state_path())] {
             haystacks.push((
@@ -453,6 +521,26 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
     all_files(&paths.data_dir, &mut files);
     assert!(files.iter().any(|file| file.ends_with("harness.log")));
     assert!(files.iter().any(|file| file.ends_with("bzz.db")));
+    // What bzz wrote for a coding harness beside that: Grok's sandbox
+    // profile, the adapters' installs, and a transcript of each process.
+    assert!(
+        files
+            .iter()
+            .any(|file| file.ends_with(".grok/sandbox.toml"))
+    );
+    assert!(
+        files
+            .iter()
+            .any(|file| file.to_string_lossy().contains("agent-adapters"))
+    );
+    let mut transcripts = Vec::new();
+    all_files(&records, &mut transcripts);
+    assert_eq!(
+        transcripts.len(),
+        3,
+        "one per coding harness: {transcripts:?}"
+    );
+    files.extend(transcripts);
     for file in files {
         haystacks.push((
             file.display().to_string(),
@@ -470,20 +558,54 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
             ("owner key (hex)", &owner_keys.secret_key().to_secret_hex()),
             ("owner key (nsec)", &owner_nsec),
             ("broker credential", &broker_credential),
+            // A key that happened to be in bzz's own environment.
+            ("a key of bzz's environment", "must-not-pass-sentinel"),
         ],
     );
     // What a harness holds of bzz is its own environment and arguments:
-    // exactly the four variables, and no credential of any kind.
-    for (where_, view) in &harness_views {
+    // the four variables, for a coding harness its guard, where its adapter
+    // finds the owner's program and the owner's proxy, and no credential of
+    // any kind.
+    for ((where_, view), expected) in harness_views.iter().zip([
+        vec!["HOME", "LANG", "PATH", "TMPDIR"],
+        vec![
+            "GROK_SANDBOX",
+            "HOME",
+            "HTTPS_PROXY",
+            "LANG",
+            "PATH",
+            "TMPDIR",
+        ],
+        vec![
+            "CODEX_PATH",
+            "HOME",
+            "HTTPS_PROXY",
+            "INITIAL_AGENT_MODE",
+            "LANG",
+            "PATH",
+            "TMPDIR",
+        ],
+        vec![
+            "CLAUDE_CODE_EXECUTABLE",
+            "HOME",
+            "HTTPS_PROXY",
+            "LANG",
+            "PATH",
+            "TMPDIR",
+        ],
+    ]) {
         let view = serde_json::from_str::<serde_json::Value>(view).unwrap();
         let mut names = view["start"]["env"]
             .as_object()
             .unwrap()
             .keys()
+            // The stand-in is a shell script, and a shell names its own
+            // working folder for what it starts.
+            .filter(|name| *name != "PWD")
             .cloned()
             .collect::<Vec<_>>();
         names.sort();
-        assert_eq!(names, ["HOME", "LANG", "PATH", "TMPDIR"], "{where_}");
+        assert_eq!(names, expected, "{where_}");
     }
     // The session credential: in the harness's `session/new`, as the
     // protocol says, and nowhere else: not in its own environment, not in

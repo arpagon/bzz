@@ -29,6 +29,7 @@ use crate::{
         runtime::{
             admission::{ChannelFacts, PlaceKind},
             agent::Environment,
+            coding,
             install::{self, ModelCheck},
             process,
             relay::{self, Published},
@@ -151,11 +152,11 @@ pub const QUESTIONS: [(&str, &str); 10] = [
     ("Name", "as Buzz will show it"),
     (
         "Harness",
-        "pi-durable (grok, codex and claude-code are not available in this version yet)",
+        "pi-durable, grok, codex (experimental) or claude-code (experimental); empty: pi-durable",
     ),
     (
         "Model",
-        "provider/model as Pi names them; empty: Pi's own default",
+        "pi-durable: provider/model as Pi names them; another harness: a model its own program offers; empty: the harness's own default",
     ),
     (
         "Instructions",
@@ -175,12 +176,12 @@ pub const QUESTIONS: [(&str, &str); 10] = [
     ),
     (
         "Hosts it may reach",
-        "for example github.com; with commas; empty: none",
+        "pi-durable only; for example github.com; with commas; empty: none",
     ),
     ("Picture", "an HTTPS address; empty: none"),
     (
         "Pi packages",
-        "on or off: a package named in Pi's settings runs inside the agent's host, with your rights; empty: on",
+        "pi-durable only; on or off: a package named in Pi's settings runs inside the agent's host, with your rights; empty: on",
     ),
 ];
 
@@ -193,7 +194,7 @@ impl Answers {
         } else {
             &self.harness
         })?;
-        new.model = parse_model(&self.model, self.thinking.as_deref())?;
+        new.model = parse_model_for(new.harness, &self.model, self.thinking.as_deref())?;
         new.instructions = self.instructions.trim().to_owned();
         new.wake = if self.wake.trim().is_empty() && !self.allow.is_empty() {
             WakeRule::Allowlist
@@ -220,8 +221,10 @@ impl Answers {
         new.network.sort();
         new.network.dedup();
         new.picture = parse_picture(&self.picture)?;
-        new.packages = parse_switch(&self.packages)?.unwrap_or(true);
+        let packages = parse_switch(&self.packages)?;
+        new.packages = packages.unwrap_or(true);
         validate_settings(&new.name, new.wake, &new.wake_allowlist, &new.folders)?;
+        validate_for_harness(new.harness, &new.folders, &new.network, packages)?;
         Ok(new)
     }
 }
@@ -235,6 +238,121 @@ pub fn parse_harness(text: &str) -> Result<Harness> {
         other => Err(Error::Config(format!(
             "unknown harness {other:?}: choose pi-durable, grok, codex or claude-code"
         ))),
+    }
+}
+
+/// A harness as it is shown wherever an owner reads it: with what v0.15.0
+/// promises for it when that is less than supported (D16).
+pub fn harness_label(harness: Harness) -> String {
+    match capability::record(harness).promise {
+        capability::Promise::Experimental => format!("{} (experimental)", harness.as_str()),
+        capability::Promise::Full | capability::Promise::Supported => harness.as_str().to_owned(),
+    }
+}
+
+/// Refuses what a harness does not have, where an owner would set it
+/// (rule 12): a setting that did nothing would be a promise bzz does not
+/// keep. `packages`: whether Pi packages were answered at all.
+///
+/// A coding harness has no list of hosts of bzz's (its own program reaches
+/// what it reaches), no Pi packages, and for Grok no question to answer
+/// before a command.
+pub fn validate_for_harness(
+    harness: Harness,
+    folders: &[FolderGrant],
+    network: &[String],
+    packages: Option<bool>,
+) -> Result<()> {
+    if harness == Harness::PiDurable {
+        return Ok(());
+    }
+    let name = harness.as_str();
+    if !network.is_empty() {
+        return Err(Error::Unsupported(format!(
+            "a list of hosts is for a pi-durable agent, whose host checks every request. A {name} agent is your own program and reaches what that program reaches: bzz cannot limit it, so it takes no --allow-host"
+        )));
+    }
+    if packages.is_some() {
+        return Err(Error::Unsupported(format!(
+            "Pi packages are for a pi-durable agent. A {name} agent loads none: leave them out"
+        )));
+    }
+    if harness == Harness::Grok
+        && let Some(folder) = folders.iter().find(|folder| folder.exec.granted())
+    {
+        return Err(Error::Unsupported(format!(
+            "the folder {:?} cannot be granted for commands to a grok agent: Grok runs its commands inside its own sandbox without asking, so there is nothing for bzz or you to answer. Grant it without `:exec`",
+            folder.name
+        )));
+    }
+    Ok(())
+}
+
+/// What a coding harness does not have, said by the command that would
+/// need it (rule 12). `None`: the harness has it.
+pub fn lacks(harness: Harness, what: Lacking) -> Option<String> {
+    if harness == Harness::PiDurable {
+        return None;
+    }
+    let name = harness.as_str();
+    Some(match what {
+        Lacking::MoveWithMemory => format!(
+            "a {name} agent cannot be moved: its memory is its own program's saved sessions, which belong to that program and to this machine. Only a pi-durable agent carries its memory and its disk. Create the agent again where you want it"
+        ),
+        Lacking::GitCredentials => format!(
+            "a {name} agent uses your own git and its credentials; bzz stores a git credential only for a pi-durable agent"
+        ),
+        Lacking::OwnDisk => format!(
+            "a {name} agent has no disk of its own: it works in a real folder bzz makes for it on this machine"
+        ),
+    })
+}
+
+/// A capability only bzz's own host has.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Lacking {
+    MoveWithMemory,
+    GitCredentials,
+    OwnDisk,
+}
+
+/// A model for an agent on `harness`. For pi-durable, `provider/model` as
+/// Pi names them. For a coding harness, a model its own program offers,
+/// written as that program names it: bzz keeps the harness as the
+/// provider. A leading `<harness>/` is accepted and means the same.
+pub fn parse_model_for(
+    harness: Harness,
+    text: &str,
+    thinking: Option<&str>,
+) -> Result<Option<AgentModelConfig>> {
+    if harness == Harness::PiDurable {
+        return parse_model(text, thinking);
+    }
+    let text = text.trim();
+    let thinking = thinking
+        .map(str::trim)
+        .filter(|level| !level.is_empty())
+        .map(str::to_owned);
+    let model = [harness.as_str(), "claude"]
+        .iter()
+        .find_map(|prefix| text.strip_prefix(&format!("{prefix}/")))
+        .unwrap_or(text);
+    match (model.is_empty(), thinking) {
+        (true, None) => Ok(None),
+        (true, Some(_)) => Err(Error::Config(
+            "a thinking level needs a model: give --model too".into(),
+        )),
+        (false, _) if model.len() > 200 || model.chars().any(char::is_whitespace) => {
+            Err(Error::Config(format!(
+                "a {} agent's model is written as its own program names it, without spaces; got {text:?}",
+                harness.as_str()
+            )))
+        }
+        (false, thinking_level) => Ok(Some(AgentModelConfig {
+            provider: harness.as_str().to_owned(),
+            model_id: model.to_owned(),
+            thinking_level,
+        })),
     }
 }
 
@@ -975,6 +1093,9 @@ pub async fn preflight(
             new.harness.as_str()
         )));
     }
+    if let Some(spec) = coding::spec(new.harness) {
+        return coding_preflight(data_dir, new, spec, environment, progress).await;
+    }
     let mut notes = Vec::new();
     let lookup = |name: &str| environment(name);
     let node = install::find_node(lookup)
@@ -1033,6 +1154,52 @@ pub async fn preflight(
     // What the answers give the agent beyond its own disk, said before the
     // owner confirms: where it may run real commands and whether he is
     // asked, and whether Pi packages are loaded.
+    notes.extend(capability::record_for(&new.settings()).notes);
+    Ok(Preflight { notes })
+}
+
+/// The checks before an agent on a coding harness is made: the owner's own
+/// program is there, its version is one bzz knows to work, and for Codex
+/// and Claude Code the adapter is installed (now, when this is its first
+/// use). No session is opened and no sign-in is read.
+async fn coding_preflight(
+    data_dir: &Path,
+    new: &NewAgent,
+    spec: &'static coding::ProgramSpec,
+    environment: &Environment,
+    progress: &(dyn Fn(&str) + Send + Sync),
+) -> Result<Preflight> {
+    let ready = coding::prepare(data_dir, spec, |name: &str| environment(name), progress)
+        .await
+        .map_err(|problem| Error::Config(problem.to_string()))?;
+    let mut notes = vec![format!(
+        "{} {} at {} (known to work: {})",
+        spec.title,
+        ready.program.version_text(),
+        ready.program.path.display(),
+        spec.range.text()
+    )];
+    if let (Some(adapter), Some((node, folder))) = (spec.adapter, &ready.adapter) {
+        notes.push(format!(
+            "adapter {} {} in {}, run by Node.js {}",
+            adapter.package,
+            adapter.version,
+            folder.display(),
+            node.version_text()
+        ));
+    }
+    notes.push(coding::sign_in_note(spec));
+    notes.push(match &new.model {
+        Some(model) => format!(
+            "model {}: checked when the agent is first asked; if {} does not offer it, the agent says so in the chat",
+            model.model_id, spec.title
+        ),
+        None => format!("model: {}'s own default", spec.title),
+    });
+    notes.push(format!(
+        "its sessions also appear in {}'s own history ({})",
+        spec.title, spec.history
+    ));
     notes.extend(capability::record_for(&new.settings()).notes);
     Ok(Preflight { notes })
 }
@@ -1220,6 +1387,8 @@ pub async fn create(
     publisher: &dyn Publisher,
 ) -> std::result::Result<Created, CreateFailure> {
     validate_settings(&new.name, new.wake, &new.wake_allowlist, &new.folders)?;
+    // What the harness does not have is refused before a key is made.
+    validate_for_harness(new.harness, &new.folders, &new.network, None)?;
     if name_taken(config, &new.name, None) {
         return Err(Error::Config(format!("an agent named {} exists", new.name)).into());
     }
@@ -1434,6 +1603,7 @@ pub fn apply_edit(config: &mut Config, id: Uuid, edit: &Edit) -> Result<Republis
         local.packages = packages;
     }
     validate_settings(&label, local.wake, &local.wake_allowlist, &local.folders)?;
+    validate_for_harness(local.harness, &local.folders, &local.network, edit.packages)?;
     agent.label = label;
     agent.local = Some(local);
     Ok(changed)
@@ -1815,6 +1985,8 @@ pub struct Details {
     pub activity: Vec<crate::agents::activity::Entry>,
     /// The hosts a git credential is stored for. Never the credentials.
     pub credential_hosts: Vec<String>,
+    /// The working folder of a coding harness.
+    pub workspace: std::path::PathBuf,
 }
 
 pub async fn details(
@@ -1838,6 +2010,7 @@ pub async fn details(
         started: install::StartReport::read(&paths.data_dir, agent.id),
         activity: crate::agents::activity::recent(&paths.data_dir, agent.id, SHOWN_ACTIVITY),
         credential_hosts: crate::agents::git_credentials::hosts(&paths.keys_dir(), agent.id),
+        workspace: process::agent_dir(&paths.data_dir, agent.id).join("workspace"),
     })
 }
 
@@ -1845,7 +2018,7 @@ pub async fn details(
 /// harness, model, who may wake it, instructions, folders, hosts, picture.
 pub fn settings_lines(local: &LocalAgentConfig) -> Vec<String> {
     let mut lines = vec![
-        format!("harness:     {}", local.harness.as_str()),
+        format!("harness:     {}", harness_label(local.harness)),
         format!(
             "model:       {}",
             match &local.model {
@@ -1889,20 +2062,37 @@ pub fn settings_lines(local: &LocalAgentConfig) -> Vec<String> {
             format!("{} characters", local.instructions.chars().count())
         }
     ));
+    let coding = local.harness != Harness::PiDurable;
     if local.folders.is_empty() {
-        lines.push("folders:     none of this machine: only its own disk".into());
+        lines.push(if coding {
+            "folders:     none granted: it writes only in its working folder".into()
+        } else {
+            "folders:     none of this machine: only its own disk".into()
+        });
     }
     for folder in &local.folders {
-        lines.push(format!(
-            "folder:      /mnt/{} = {} ({})",
-            folder.name,
-            folder.path.display(),
-            folder_rights(folder)
-        ));
+        lines.push(if coding {
+            // A coding harness sees the folder where it is.
+            format!(
+                "folder:      {} ({}: {})",
+                folder.path.display(),
+                folder.name,
+                folder_rights(folder)
+            )
+        } else {
+            format!(
+                "folder:      /mnt/{} = {} ({})",
+                folder.name,
+                folder.path.display(),
+                folder_rights(folder)
+            )
+        });
     }
     lines.push(format!(
         "may reach:   {}",
-        if local.network.is_empty() {
+        if coding {
+            "whatever its own program reaches: bzz keeps no list of hosts for it".to_owned()
+        } else if local.network.is_empty() {
             "no host".to_owned()
         } else {
             local.network.join(", ")
@@ -2000,6 +2190,34 @@ pub fn show_lines(agent: &HostedAgentConfig, community: &str, details: &Details)
         } else {
             lines.push(
                 "activity (commands it asked to run, credentials it asked for, and the answer):"
+                    .into(),
+            );
+        }
+        lines.extend(
+            details
+                .activity
+                .iter()
+                .map(|entry| format!("  {}", entry.line())),
+        );
+    }
+    if let Some(spec) = coding::spec(local.harness) {
+        lines.push(format!(
+            "its program: your own `{}` ({}), found when it starts; `bzz agent doctor` says which",
+            spec.command, spec.title
+        ));
+        lines.push(format!("  {}", coding::sign_in_note(spec)));
+        lines.push(format!(
+            "  its sessions also appear in {}'s own history ({})",
+            spec.title, spec.history
+        ));
+        lines.push(format!("working folder: {}", details.workspace.display()));
+        if details.activity.is_empty() {
+            lines.push(
+                "activity:    nothing it asked leave for was refused or put to you yet".into(),
+            );
+        } else {
+            lines.push(
+                "activity (commands it asked to run and what bzz refused it, with the answer):"
                     .into(),
             );
         }

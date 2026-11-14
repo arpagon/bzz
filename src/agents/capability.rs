@@ -6,10 +6,12 @@
 //! The record for Pi Durable states what bzz's own host does and its tests
 //! show (`docs/validation-v0.15.0.md`, M2, M3 and M7). What one agent may do
 //! beyond the harness's default (real commands in a granted folder, Pi
-//! packages) is in [`record_for`], from that agent's own settings. The records for Grok,
-//! Codex and Claude Code state what was seen with the owner's installed
-//! programs in the M6 groundwork (2026-11-14, Linux); bzz does not start
-//! those harnesses yet.
+//! packages) is in [`record_for`], from that agent's own settings. The
+//! records for Grok, Codex and Claude Code state what bzz does for each
+//! (`runtime::coding`, `runtime::permission`) and what was seen with the
+//! owner's installed programs on Linux (`docs/validation-v0.15.0.md`, M6).
+//! Each line names who keeps the rule: the program's own sandbox, or only
+//! bzz's answers to what the program asks leave for.
 
 use std::borrow::Cow;
 
@@ -92,6 +94,8 @@ pub struct CapabilityRecord {
     /// where it may run real commands, and Pi packages. Empty for the
     /// harness as such.
     pub notes: Vec<String>,
+    /// With which program, and where, the record was seen to hold.
+    pub seen_with: &'static str,
 }
 
 /// D19, word for word what bzz says of a coding harness.
@@ -118,6 +122,7 @@ pub const REAL_COMMAND_WARNING: &str = "Warning: a real command runs as your use
 pub fn record_for(local: &LocalAgentConfig) -> CapabilityRecord {
     let mut record = record(local.harness);
     if local.harness != Harness::PiDurable {
+        record.notes = coding_notes(local);
         return record;
     }
     let in_folders = |wanted: ExecGrant| {
@@ -166,6 +171,58 @@ pub fn record_for(local: &LocalAgentConfig) -> CapabilityRecord {
     record
 }
 
+/// What one agent's settings mean on a coding harness: whether it may run
+/// a real command outside what its own sandbox holds, and whether the
+/// owner is asked.
+fn coding_notes(local: &LocalAgentConfig) -> Vec<String> {
+    let named = |wanted: ExecGrant| {
+        local
+            .folders
+            .iter()
+            .filter(|folder| folder.exec == wanted)
+            .map(|folder| folder.name.clone())
+            .collect::<Vec<_>>()
+    };
+    let (asked, unasked) = (named(ExecGrant::Ask), named(ExecGrant::WithoutAsking));
+    // Grok never asks: there is nothing a grant could answer.
+    let (what, none) = match local.harness {
+        Harness::Grok | Harness::PiDurable => return Vec::new(),
+        Harness::Codex => (
+            "A command that would leave Codex's sandbox",
+            "Outside its sandbox it runs no command: no folder is granted for commands.",
+        ),
+        Harness::ClaudeCode => (
+            "A shell command",
+            "It runs no shell command: no folder is granted for commands.",
+        ),
+    };
+    if asked.is_empty() && unasked.is_empty() {
+        return vec![none.into()];
+    }
+    let mut notes = Vec::new();
+    if asked.is_empty() {
+        notes.push(format!(
+            "Warning: {} runs WITHOUT asking you (granted by: {}), also when bzz runs without the TUI. Whoever may wake this agent can make it run one, as you.",
+            what.to_lowercase(),
+            unasked.join(", ")
+        ));
+    } else {
+        // One folder that asks is enough: a command is not held in the
+        // folder it starts in, so the strictest grant decides.
+        notes.push(format!(
+            "{what} waits for your yes in the TUI (granted by: {}). Without the TUI (`bzz agent run`) it is refused.",
+            asked
+                .iter()
+                .chain(&unasked)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    notes.push(REAL_COMMAND_WARNING.into());
+    notes
+}
+
 const ONE_REPLY: Rule = Rule {
     rule: "one final reply per mention",
     by: Enforcer::Bzz,
@@ -190,38 +247,50 @@ pub fn record(harness: Harness) -> CapabilityRecord {
 /// The record of `harness`; `windows` says whether the platform is Windows,
 /// where Grok has no sandbox.
 pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
-    let coding =
-        |promise, sandbox: Option<&'static str>, folders: Rule, commands: Rule| CapabilityRecord {
-            harness,
-            promise,
-            available: false,
-            survives_restart: "its own saved session for each conversation, loaded again by its id",
-            own_disk: (
-                false,
-                "it works in a folder bzz makes for it on this machine",
-            ),
-            git_without_a_process: (false, "it runs the real git, as your user"),
-            real_folders: "its working folder, and the folders you grant",
-            move_with_memory: (
-                false,
-                "its memory belongs to its own program and stays on this machine",
-            ),
-            runs: CODING_HARNESS_RUNS.into(),
-            sandbox,
-            rules: vec![
-                ONE_REPLY,
-                WHO_MAY_WAKE,
-                ONLY_THROUGH_TOOLS,
-                folders,
-                commands,
-            ],
-            warning: match (sandbox, folders.by) {
-                (Some(_), _) => None,
-                (None, Enforcer::Nobody) => Some(NO_BOUNDARY_WARNING),
-                (None, _) => Some(NO_SANDBOX_WARNING),
-            },
-            notes: Vec::new(),
-        };
+    let coding = |promise,
+                  sandbox: Option<&'static str>,
+                  real_folders: &'static str,
+                  [folders, commands, settings]: [Rule; 3],
+                  seen_with: &'static str| CapabilityRecord {
+        harness,
+        promise,
+        available: true,
+        survives_restart: "its own saved session for each conversation, loaded again by its id",
+        own_disk: (
+            false,
+            "it works in a folder bzz makes for it on this machine",
+        ),
+        git_without_a_process: (false, "it runs the real git, as your user"),
+        real_folders,
+        move_with_memory: (
+            false,
+            "its memory belongs to its own program and stays on this machine",
+        ),
+        runs: CODING_HARNESS_RUNS.into(),
+        sandbox,
+        rules: vec![
+            ONE_REPLY,
+            WHO_MAY_WAKE,
+            ONLY_THROUGH_TOOLS,
+            folders,
+            commands,
+            settings,
+        ],
+        warning: match (sandbox, folders.by) {
+            (Some(_), _) => None,
+            (None, Enforcer::Nobody) => Some(NO_BOUNDARY_WARNING),
+            (None, _) => Some(NO_SANDBOX_WARNING),
+        },
+        notes: Vec::new(),
+        seen_with,
+    };
+    // What the owner's own settings for the program give it. bzz switches
+    // them off only where the program takes an instruction to.
+    let own_settings = |how: &'static str, by| Rule {
+        rule: "your own settings for that program",
+        by,
+        how,
+    };
     match harness {
         Harness::PiDurable => CapabilityRecord {
             harness,
@@ -259,63 +328,94 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
             ],
             warning: None,
             notes: Vec::new(),
+            seen_with: "bzz's own host, on Linux, macOS and Windows",
         },
         Harness::Grok => {
-            let sandbox = (!windows).then_some("Grok's own sandbox, profile `workspace`");
+            let sandbox = (!windows).then_some(
+                "Grok's own, with a profile bzz writes at every start (`bzz-agent`, from Grok's `workspace`)",
+            );
             coding(
                 Promise::Supported,
                 sandbox,
-                Rule {
-                    rule: "it writes only in its folders",
-                    by: if windows {
-                        Enforcer::Nobody
-                    } else {
-                        Enforcer::Harness
+                "its working folder and the folders you grant for writing; it reads everything you can read, whatever you grant",
+                [
+                    Rule {
+                        rule: "it writes only in its folders",
+                        by: if windows {
+                            Enforcer::Nobody
+                        } else {
+                            Enforcer::Harness
+                        },
+                        how: if windows {
+                            "Grok has no sandbox on Windows"
+                        } else {
+                            "Grok's sandbox refuses a write outside them, its own `~/.grok` and the temporary folders; Grok never asks, so there is nothing for bzz to answer"
+                        },
                     },
-                    how: if windows {
-                        "Grok has no sandbox on Windows"
-                    } else {
-                        "Grok's sandbox refuses a write outside; Grok never asks, so there is nothing for bzz to answer"
+                    Rule {
+                        rule: "real commands on this machine",
+                        by: if windows {
+                            Enforcer::Nobody
+                        } else {
+                            Enforcer::Harness
+                        },
+                        how: if windows {
+                            "they run as your user without asking"
+                        } else {
+                            "they run as your user without asking, inside that sandbox: they read what you can read and write only where it lets them"
+                        },
                     },
-                },
-                Rule {
-                    rule: "real commands on this machine",
-                    by: if windows {
-                        Enforcer::Nobody
-                    } else {
-                        Enforcer::Harness
-                    },
-                    how: "they run as your user, inside the sandbox where there is one",
-                },
+                    own_settings(
+                        "it has what your Grok settings give it (your MCP servers, hooks, rules and plugins); bzz does not switch them off",
+                        Enforcer::Nobody,
+                    ),
+                ],
+                "Grok Build 1.0.77 on Linux; not tried on macOS or Windows",
             )
         }
         Harness::Codex => coding(
             Promise::Experimental,
-            Some("Codex's own sandbox, mode `workspace-write`"),
-            Rule {
-                rule: "it writes only in its folders",
-                by: Enforcer::Harness,
-                how: "Codex's sandbox holds it, and bzz refuses its requests to leave",
-            },
-            Rule {
-                rule: "real commands on this machine",
-                by: Enforcer::Harness,
-                how: "they run as your user, inside Codex's sandbox",
-            },
+            Some("Codex's own, mode `workspace-write`, which bzz sets on every session"),
+            "its working folder and the folders you grant for writing; it reads everything you can read, whatever you grant",
+            [
+                Rule {
+                    rule: "it writes only in its folders",
+                    by: Enforcer::Harness,
+                    how: "Codex's sandbox holds what it runs to them and the temporary folders, with no network; a session that does not take the mode is never asked anything",
+                },
+                Rule {
+                    rule: "real commands on this machine",
+                    by: Enforcer::Harness,
+                    how: "inside the sandbox they run as your user without asking; to leave it Codex asks, and bzz says no unless you granted a folder for commands, and then asks you in the TUI unless you allowed that without asking",
+                },
+                own_settings(
+                    "it has what your Codex settings give it (your MCP servers, rules and plugins); bzz does not switch them off",
+                    Enforcer::Nobody,
+                ),
+            ],
+            "Codex 0.166.0 through codex-acp 2.5.0 on Linux; not tried on macOS or Windows",
         ),
         Harness::ClaudeCode => coding(
             Promise::Experimental,
             None,
-            Rule {
-                rule: "it writes only in its folders",
-                by: Enforcer::BzzOnly,
-                how: "bzz answers each permission request by the path it names; Claude Code has no boundary of its own",
-            },
-            Rule {
-                rule: "real commands on this machine",
-                by: Enforcer::BzzOnly,
-                how: "bzz refuses a command unless you granted it; allowed, it runs as your user",
-            },
+            "its working folder and the folders you grant; what it asks for outside them, bzz refuses",
+            [
+                Rule {
+                    rule: "it writes only in its folders",
+                    by: Enforcer::BzzOnly,
+                    how: "bzz sets the mode `default` on every session, so that Claude Code asks before each edit, and allows an edit only inside them, by the path it names; Claude Code has no boundary of its own",
+                },
+                Rule {
+                    rule: "real commands on this machine",
+                    by: Enforcer::BzzOnly,
+                    how: "Claude Code asks before each one; bzz says no unless you granted a folder for commands, and then asks you in the TUI unless you allowed that without asking. Allowed, a command runs as your user and can reach whatever you can",
+                },
+                own_settings(
+                    "bzz tells its adapter to load none of them, nor those of its working folder: no allow rule, hook, plugin or MCP server of yours. bzz cannot check that it obeys",
+                    Enforcer::Harness,
+                ),
+            ],
+            "Claude Code 2.1.322 through claude-agent-acp 0.101.0 on Linux; not tried on macOS or Windows",
         ),
     }
 }
@@ -360,6 +460,7 @@ impl CapabilityRecord {
         if let Some(warning) = self.warning {
             lines.push(format!("  {warning}"));
         }
+        lines.push(format!("  seen to hold with:   {}", self.seen_with));
         lines
     }
 
@@ -446,21 +547,51 @@ mod tests {
                 .how
                 .contains("unless you grant a folder for commands")
         );
-        // The three coding harnesses: not offered yet, no disk of their own,
-        // no move with memory, and D19's wording.
+        // The three coding harnesses: offered, no disk of their own, no
+        // move with memory, D19's wording, and with what each was seen.
         for harness in [Harness::Grok, Harness::Codex, Harness::ClaudeCode] {
             let record = record_on(harness, false);
-            assert!(!record.available);
+            assert!(record.available);
             assert!(!record.own_disk.0 && !record.git_without_a_process.0);
             assert!(!record.move_with_memory.0);
             assert_eq!(record.runs, CODING_HARNESS_RUNS);
+            let text = record.lines().join("\n");
+            assert!(!text.contains("not available in this version yet"));
+            assert!(text.contains("on Linux; not tried on macOS or Windows"));
+            // What the owner's own settings for the program give it is
+            // said, with who keeps it out.
             assert!(
-                record
-                    .lines()
-                    .join("\n")
-                    .contains("not available in this version yet")
+                text.contains("your own settings for that program:"),
+                "{text}"
             );
         }
+        // Only Claude Code is told to load none of the owner's settings.
+        let settings = |harness| {
+            record_on(harness, false)
+                .rules
+                .iter()
+                .find(|rule| rule.rule == "your own settings for that program")
+                .map(|rule| rule.by)
+        };
+        assert_eq!(settings(Harness::Grok), Some(Enforcer::Nobody));
+        assert_eq!(settings(Harness::Codex), Some(Enforcer::Nobody));
+        assert_eq!(settings(Harness::ClaudeCode), Some(Enforcer::Harness));
+        // Who keeps real commands: the sandbox where there is one, and
+        // only bzz's answers for Claude Code.
+        let commands = |harness, windows| {
+            record_on(harness, windows)
+                .rules
+                .iter()
+                .find(|rule| rule.rule == "real commands on this machine")
+                .map(|rule| rule.by)
+        };
+        assert_eq!(commands(Harness::Grok, false), Some(Enforcer::Harness));
+        assert_eq!(commands(Harness::Grok, true), Some(Enforcer::Nobody));
+        assert_eq!(commands(Harness::Codex, false), Some(Enforcer::Harness));
+        assert_eq!(
+            commands(Harness::ClaudeCode, false),
+            Some(Enforcer::BzzOnly)
+        );
         assert!(CODING_HARNESS_RUNS.contains("a real shell as your user"));
         assert!(CODING_HARNESS_RUNS.contains("bzz cannot promise the key is out of reach"));
         assert_eq!(record(Harness::Grok).promise, Promise::Supported);
@@ -538,8 +669,38 @@ mod tests {
             assert!(text.contains(stated), "`{stated}` in:\n{text}");
         }
         assert!(!text.contains("/mnt/docs"), "{text}");
-        // Another harness's record is not changed by these settings.
-        local.harness = Harness::Codex;
-        assert_eq!(record_for(&local), record(Harness::Codex));
+        // A coding harness: the same grants say whether a command may leave
+        // what its own sandbox holds, and whether you are asked. One folder
+        // that asks is enough for every command to be asked about.
+        for (harness, what) in [
+            (Harness::Codex, "A command that would leave Codex's sandbox"),
+            (Harness::ClaudeCode, "A shell command"),
+        ] {
+            local.harness = harness;
+            let text = record_for(&local).lines().join("\n");
+            for stated in [
+                format!("{what} waits for your yes in the TUI (granted by: work, ops)."),
+                REAL_COMMAND_WARNING.to_owned(),
+            ] {
+                assert!(text.contains(&stated), "`{stated}` in:\n{text}");
+            }
+            assert!(!text.contains("Pi packages"), "{text}");
+            let mut unasked = local.clone();
+            unasked.folders.remove(1);
+            let text = record_for(&unasked).lines().join("\n");
+            assert!(
+                text.contains("runs WITHOUT asking you (granted by: ops)"),
+                "{text}"
+            );
+            let mut none = local.clone();
+            none.folders.truncate(1);
+            let text = record_for(&none).lines().join("\n");
+            assert!(text.contains("no folder is granted for commands"), "{text}");
+            assert!(!text.contains(REAL_COMMAND_WARNING));
+        }
+        // Grok never asks: its record is the harness's own, whatever the
+        // settings say.
+        local.harness = Harness::Grok;
+        assert_eq!(record_for(&local), record(Harness::Grok));
     }
 }

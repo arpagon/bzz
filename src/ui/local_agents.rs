@@ -125,7 +125,7 @@ pub fn render(
             "{} {} · {} · {}{}",
             if index == state.selected { "›" } else { " " },
             sanitize::single_line(&crate::protocol::artifact::display(&row.name, 32)),
-            row.harness.as_str(),
+            manage::harness_label(row.harness),
             row.state,
             row.doing
                 .as_deref()

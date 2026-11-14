@@ -230,7 +230,7 @@ impl AgentStatus {
         let mut line = format!(
             "{} · {} · {state}",
             crate::protocol::artifact::display(&self.name, 32),
-            self.harness.as_str()
+            crate::agents::manage::harness_label(self.harness)
         );
         if let Some(problem) = &self.problem
             && self.turns == 0

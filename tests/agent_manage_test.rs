@@ -459,20 +459,21 @@ async fn a_creation_that_fails_on_this_machine_publishes_nothing() {
     assert_eq!(world.on_this_machine(), (0, 0, 0), "{failure}");
     assert!(config.hosted_agents.is_empty());
 
-    // Refused before anything is made: a harness of another task, a name
-    // that is no name, and an allowlist with nobody in it.
+    // Refused before anything is made: what a coding harness does not
+    // have, a name that is no name, and an allowlist with nobody in it.
     let (world, mut config) = World::new();
     let context = world.context();
     for harness in [Harness::Grok, Harness::Codex, Harness::ClaudeCode] {
         let mut coding = NewAgent::named("Scout");
         coding.harness = harness;
+        coding.network = vec!["github.com".into()];
         let failure = manage::create(&context, &mut config, &coding, relay.as_ref())
             .await
             .unwrap_err();
         assert!(
             failure
                 .to_string()
-                .contains("not available in this version yet"),
+                .contains("a list of hosts is for a pi-durable agent"),
             "{harness:?}: {failure}"
         );
     }
@@ -518,8 +519,9 @@ async fn what_an_undo_cannot_take_back_is_named() {
     assert_eq!(world.on_this_machine(), (0, 0, 0));
 }
 
-/// The checks before anything exists: a harness that is not offered, and a
-/// machine without Node, each with what to do.
+/// The checks before anything exists: a machine without Node, and one
+/// without the owner's own program of a coding harness, each with what to
+/// do.
 #[tokio::test]
 async fn the_checks_before_a_creation_say_what_to_do() {
     let temporary = TempDir::new().unwrap();
@@ -545,10 +547,18 @@ async fn the_checks_before_a_creation_say_what_to_do() {
             .await
             .unwrap_err()
             .to_string();
-        assert!(
-            refused.contains("not available in this version yet"),
-            "{harness:?}: {refused}"
-        );
+        let spec = bzz::agents::runtime::coding::spec(harness).unwrap();
+        for stated in [
+            "none was found on PATH",
+            spec.variable,
+            spec.sign_in,
+            "bzz agent doctor",
+        ] {
+            assert!(
+                refused.contains(stated),
+                "{harness:?}: `{stated}` in: {refused}"
+            );
+        }
     }
     assert!(!data.exists(), "nothing was installed or made");
 }
@@ -638,4 +648,255 @@ async fn deleting_an_agent_removes_its_git_credentials() {
         .filter(|name| name.contains(&scout.id.to_string()))
         .collect::<Vec<_>>();
     assert!(left.is_empty(), "{left:?}");
+}
+
+/// v0.15 M6: an agent on a coding harness is made only after the owner's
+/// own program was found, its version is one bzz knows to work, and (for
+/// Codex and Claude Code) the adapter is installed. Whatever is wrong is
+/// said before a key exists.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_agent_on_a_coding_harness_is_checked_before_its_key_is_made() {
+    use bzz::agents::{
+        capability,
+        manage::{Answers, Edit, Lacking},
+        runtime::coding,
+    };
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let (world, mut config) = World::new();
+    let bin = world.paths.data_dir.parent().unwrap().join("bin");
+    let program = |name: &str, script: &str| {
+        std::fs::create_dir_all(&bin).unwrap();
+        let path = bin.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let path = std::env::join_paths([bin.as_path(), "/usr/bin".as_ref(), "/bin".as_ref()])
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let environment: bzz::agents::runtime::agent::Environment =
+        Arc::new(move |name| (name == "PATH").then(|| path.clone()));
+    let said = Mutex::new(Vec::new());
+    let progress = |line: &str| said.lock().unwrap().push(line.to_owned());
+    let data = world.paths.data_dir.clone();
+    let on = |harness| {
+        let mut new = NewAgent::named("Scout");
+        new.harness = harness;
+        new
+    };
+    let check = async |new: &NewAgent| {
+        manage::preflight(&data, new, None, &environment, &progress)
+            .await
+            .map(|preflight| preflight.notes.join("\n"))
+            .map_err(|error| error.to_string())
+    };
+
+    // A version bzz does not know to work: refused, with both versions.
+    program("grok", "echo 'grok 1.1.0 (abc) [stable]'");
+    let refused = check(&on(Harness::Grok)).await.unwrap_err();
+    for stated in ["1.1.0", "1.0.77", "does not start it", "BZZ_GROK"] {
+        assert!(refused.contains(stated), "`{stated}` in: {refused}");
+    }
+    assert_eq!(world.on_this_machine(), (0, 0, 0));
+
+    // The tested one: the notes say which program, which sign-in is in
+    // use, and where its sessions also appear.
+    program("grok", "echo 'grok 1.0.77 (50ca579fa996) [stable]'");
+    let notes = check(&on(Harness::Grok)).await.unwrap();
+    for stated in [
+        "Grok Build 1.0.77 at",
+        "known to work: 1.0.77 (tested), and later ones below 1.1.0",
+        "sign-in: your own, made with `grok login`. bzz has none of its own",
+        "model: Grok Build's own default",
+        "its sessions also appear in Grok Build's own history",
+    ] {
+        assert!(notes.contains(stated), "`{stated}` in:\n{notes}");
+    }
+
+    // Codex needs its adapter, and the adapter Node and npm.
+    program("codex", "echo 'codex-cli 0.166.0'");
+    let no_node = check(&on(Harness::Codex)).await.unwrap_err();
+    assert!(
+        no_node.contains("codex harness needs Node.js 22.19"),
+        "{no_node}"
+    );
+    program("node", "echo v22.19.0");
+    // No npm anywhere on PATH: the adapter cannot be installed.
+    let only = bin.display().to_string();
+    let lonely: bzz::agents::runtime::agent::Environment =
+        Arc::new(move |name| (name == "PATH").then(|| only.clone()));
+    let no_npm = manage::preflight(&data, &on(Harness::Codex), None, &lonely, &progress)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(no_npm.contains("npm was not found"), "{no_npm}");
+    assert!(!coding::CODEX_ADAPTER.is_installed(&data));
+    let package = format!("node_modules/{}", coding::CODEX_ADAPTER.package);
+    program(
+        "npm",
+        &format!(
+            "if [ \"$1\" = --version ]; then echo 11.0.0; exit 0; fi\nmkdir -p {package}/dist && echo '// adapter' > {package}/dist/index.js && echo '{{\"version\": \"{}\"}}' > {package}/package.json",
+            coding::CODEX_ADAPTER.version
+        ),
+    );
+    let mut with_model = on(Harness::Codex);
+    with_model.model =
+        manage::parse_model_for(Harness::Codex, "gpt-5.6-luna", Some("low")).unwrap();
+    let notes = check(&with_model).await.unwrap();
+    assert!(coding::CODEX_ADAPTER.is_installed(&data));
+    assert!(
+        said.lock().unwrap().iter().any(
+            |line| line.contains("installing the adapter @agentclientprotocol/codex-acp 2.5.0")
+        ),
+        "the owner is told of the install"
+    );
+    for stated in [
+        "Codex 0.166.0 at",
+        "adapter @agentclientprotocol/codex-acp 2.5.0 in",
+        "run by Node.js 22.19.0",
+        "`codex login`",
+        "model gpt-5.6-luna: checked when the agent is first asked",
+        "Outside its sandbox it runs no command: no folder is granted for commands.",
+    ] {
+        assert!(notes.contains(stated), "`{stated}` in:\n{notes}");
+    }
+    // Nothing of an agent exists yet: the checks made no key.
+    assert_eq!(world.on_this_machine(), (0, 0, 0));
+
+    // Created: Buzz reads its runtime, and `agent show` carries the record
+    // of its harness, with D18's warning where it has no sandbox.
+    let relay = RecordedRelay::answering(&[]);
+    let context = world.context();
+    let mut claude = on(Harness::ClaudeCode);
+    claude.name = "Clara".into();
+    let created = manage::create(&context, &mut config, &claude, relay.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(
+        RecordedRelay::tag(&created.record, "runtime"),
+        Some("bzz/claude-code")
+    );
+    let store = bzz::store::writer::StoreHandle::spawn(
+        bzz::store::Store::open(world.paths.database_file()).unwrap(),
+    )
+    .unwrap();
+    let details = manage::details(&world.paths, &store, &created.agent)
+        .await
+        .unwrap();
+    let shown = manage::show_lines(&created.agent, "home", &details).join("\n");
+    for stated in [
+        "harness:     claude-code (experimental)",
+        "capability record: claude-code (experimental)",
+        capability::NO_SANDBOX_WARNING,
+        capability::CODING_HARNESS_RUNS,
+        "it writes only in its folders: bzz only",
+        "its program: your own `claude` (Claude Code)",
+        "made with `claude auth login`",
+        "its sessions also appear in Claude Code's own history",
+        "working folder:",
+        "may reach:   whatever its own program reaches",
+        "It runs no shell command: no folder is granted for commands.",
+    ] {
+        assert!(shown.contains(stated), "`{stated}` in:\n{shown}");
+    }
+    assert!(!shown.contains("Pi packages") && !shown.contains("git credentials"));
+    assert!(shown.contains(&details.workspace.display().to_string()));
+
+    // What these harnesses do not have is refused where it would be set.
+    let answers = |harness: &str| Answers {
+        name: "Other".into(),
+        harness: harness.into(),
+        ..Answers::default()
+    };
+    let refusal = |answers: Answers| answers.read().unwrap_err().to_string();
+    for harness in ["grok", "codex", "claude-code"] {
+        assert!(answers(harness).read().is_ok(), "{harness}");
+        let hosts = refusal(Answers {
+            hosts: vec!["github.com".into()],
+            ..answers(harness)
+        });
+        assert!(hosts.contains("it takes no --allow-host"), "{hosts}");
+        for packages in ["on", "off"] {
+            let refused = refusal(Answers {
+                packages: packages.into(),
+                ..answers(harness)
+            });
+            assert!(refused.contains("Pi packages are for a pi-durable agent"));
+        }
+        for (what, said) in [
+            (Lacking::MoveWithMemory, "cannot be moved"),
+            (Lacking::GitCredentials, "your own git and its credentials"),
+            (Lacking::OwnDisk, "no disk of its own"),
+        ] {
+            let harness = manage::parse_harness(harness).unwrap();
+            assert!(manage::lacks(harness, what).unwrap().contains(said));
+            assert_eq!(manage::lacks(Harness::PiDurable, what), None);
+        }
+    }
+    // Grok never asks before a command: a folder cannot be granted for them.
+    let folder = world.paths.data_dir.display().to_string();
+    let grok = refusal(Answers {
+        folders: vec![format!("work={folder}:exec")],
+        ..answers("grok")
+    });
+    assert!(grok.contains("cannot be granted for commands to a grok agent"));
+    for harness in ["codex", "claude-code"] {
+        let granted = Answers {
+            folders: vec![format!("work={folder}:rw:exec")],
+            ..answers(harness)
+        }
+        .read()
+        .unwrap();
+        assert!(granted.folders[0].exec.granted());
+    }
+    // A model is written as the program names it, with or without the
+    // harness before it; Pi's `provider/model` is Pi's.
+    for written in ["haiku", "claude-code/haiku", "claude/haiku"] {
+        let model = manage::parse_model_for(Harness::ClaudeCode, written, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (model.provider.as_str(), model.model_id.as_str()),
+            ("claude-code", "haiku")
+        );
+    }
+    assert!(manage::parse_model_for(Harness::Grok, "", Some("low")).is_err());
+    assert!(manage::parse_model_for(Harness::Grok, "two words", None).is_err());
+    assert_eq!(
+        manage::parse_model_for(Harness::Grok, " ", None).unwrap(),
+        None
+    );
+    assert!(manage::parse_model_for(Harness::PiDurable, "haiku", None).is_err());
+    // An edit is held to the same.
+    let id = created.agent.id;
+    for (edit, said) in [
+        (
+            Edit {
+                network: Some(vec!["github.com".into()]),
+                ..Edit::default()
+            },
+            "it takes no --allow-host",
+        ),
+        (
+            Edit {
+                packages: Some(false),
+                ..Edit::default()
+            },
+            "Pi packages are for a pi-durable agent",
+        ),
+    ] {
+        let refused = manage::apply_edit(&mut config, id, &edit)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains(said), "{refused}");
+    }
+    // Wherever a harness is shown, what is promised for it is said.
+    assert_eq!(manage::harness_label(Harness::Grok), "grok");
+    assert_eq!(manage::harness_label(Harness::PiDurable), "pi-durable");
+    assert_eq!(
+        manage::harness_label(Harness::Codex),
+        "codex (experimental)"
+    );
 }

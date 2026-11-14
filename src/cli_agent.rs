@@ -10,6 +10,7 @@ use bzz::{
         capability, manage,
         runtime::{
             agent::Environment,
+            coding,
             install::{self, ModelCheck},
         },
     },
@@ -104,13 +105,16 @@ pub struct NewArgs {
     /// The community it belongs to. Default: the default one, or the only one.
     #[arg(long)]
     pub community: Option<Uuid>,
-    /// pi-durable (the others are not available in this version yet).
+    /// pi-durable (default), grok, codex (experimental) or claude-code
+    /// (experimental). The last three run your own installed program with
+    /// the sign-in you made there.
     #[arg(long)]
     pub harness: Option<String>,
-    /// provider/model as Pi names them. Default: Pi's own default model.
+    /// pi-durable: provider/model as Pi names them. Another harness: a
+    /// model its own program offers. Default: the harness's own default.
     #[arg(long)]
     pub model: Option<String>,
-    /// The model's thinking level, as Pi names it; needs --model.
+    /// The model's thinking level, as its harness names it; needs --model.
     #[arg(long)]
     pub thinking: Option<String>,
     /// What the agent is told about itself and its work.
@@ -132,14 +136,15 @@ pub struct NewArgs {
     /// Repeat for more.
     #[arg(long = "folder", value_name = "NAME=PATH[:rw][:exec]")]
     pub folders: Vec<String>,
-    /// A host it may reach (host or host:port). Repeat for more.
+    /// A host it may reach (host or host:port). Repeat for more. Only for
+    /// pi-durable: bzz keeps no list of hosts for another harness.
     #[arg(long = "allow-host", value_name = "HOST")]
     pub hosts: Vec<String>,
     /// An HTTPS address of its picture.
     #[arg(long)]
     pub picture: Option<String>,
     /// Do not load the Pi packages named in Pi's settings: their code would
-    /// run inside the agent's host, with your rights.
+    /// run inside the agent's host, with your rights. Only for pi-durable.
     #[arg(long)]
     pub no_packages: bool,
     /// Ask nothing: use the defaults for what was not given, and sign the
@@ -155,10 +160,11 @@ pub struct EditArgs {
     /// A new name.
     #[arg(long)]
     pub name: Option<String>,
-    /// provider/model as Pi names them; checked before it is saved.
+    /// pi-durable: provider/model as Pi names them, checked before it is
+    /// saved. Another harness: a model its own program offers.
     #[arg(long, conflicts_with = "default_model")]
     pub model: Option<String>,
-    /// The model's thinking level, as Pi names it; needs --model.
+    /// The model's thinking level, as its harness names it; needs --model.
     #[arg(long)]
     pub thinking: Option<String>,
     /// Use the harness's own default model again.
@@ -316,6 +322,9 @@ fn answers(args: &NewArgs, interactive: bool, name: &str) -> Result<manage::NewA
             .collect())
     };
     let harness = asked(&args.harness, 1, "pi-durable")?;
+    // A coding harness has no list of hosts and no Pi packages: neither is
+    // asked, and a flag that sets one is refused with the reason.
+    let coding = manage::parse_harness(&harness)? != Harness::PiDurable;
     let model = asked(&args.model, 2, "")?;
     let instructions =
         match instructions_from(args.instructions.clone(), args.instructions_file.as_ref())? {
@@ -339,12 +348,16 @@ fn answers(args: &NewArgs, interactive: bool, name: &str) -> Result<manage::NewA
     } else {
         manage::split_commas(&ask(&question(6), "")?)
     };
-    let hosts = listed(&args.hosts, 7)?;
-    let picture = asked(&args.picture, 8, "")?;
-    let packages = if args.no_packages {
-        "off".to_owned()
+    let hosts = if coding {
+        args.hosts.clone()
     } else {
-        asked(&None, 9, "on")?
+        listed(&args.hosts, 7)?
+    };
+    let picture = asked(&args.picture, 8, "")?;
+    let packages = match (args.no_packages, coding) {
+        (true, _) => "off".to_owned(),
+        (false, true) => String::new(),
+        (false, false) => asked(&None, 9, "on")?,
     };
     manage::Answers {
         name: name.to_owned(),
@@ -472,7 +485,7 @@ fn list(paths: &Paths, config: &Config) {
             manage::running_pid(&paths.data_dir, agent.id)
                 .map(|pid| format!(" (running, process {pid})"))
                 .unwrap_or_default(),
-            settings.harness.as_str(),
+            manage::harness_label(settings.harness),
             settings.model.as_ref().map_or_else(
                 || "default model".to_owned(),
                 |model| format!("{}/{}", model.provider, model.model_id)
@@ -526,7 +539,12 @@ fn adapter_of(config: &Config, community: Uuid) -> Option<url::Url> {
 }
 
 async fn edit(paths: &Paths, config: &mut Config, args: EditArgs) -> Result<()> {
-    let id = manage::find(config, &args.agent)?.id;
+    let found = manage::find(config, &args.agent)?;
+    let id = found.id;
+    let harness = found
+        .local
+        .as_ref()
+        .map_or(Harness::PiDurable, |local| local.harness);
     let wake = match (&args.wake, args.allow.is_empty()) {
         (Some(wake), _) => Some(manage::parse_wake(wake)?),
         (None, false) => Some(WakeRule::Allowlist),
@@ -544,7 +562,11 @@ async fn edit(paths: &Paths, config: &mut Config, args: EditArgs) -> Result<()> 
     let change = manage::Edit {
         name: args.name.as_ref().map(|name| name.trim().to_owned()),
         model: match (&args.model, args.default_model) {
-            (Some(model), _) => Some(manage::parse_model(model, args.thinking.as_deref())?),
+            (Some(model), _) => Some(manage::parse_model_for(
+                harness,
+                model,
+                args.thinking.as_deref(),
+            )?),
             (None, true) => Some(None),
             (None, false) => None,
         },
@@ -795,6 +817,28 @@ async fn doctor(paths: &Paths, config: &Config, models: bool) -> Result<()> {
         ),
         None => println!("Pi:       its folder could not be found"),
     }
+    // The three coding harnesses: each is your own program. Found and asked
+    // for its version; no session is opened and no sign-in is read.
+    let mut coding_reports = Vec::new();
+    for spec in [&coding::GROK, &coding::CODEX, &coding::CLAUDE] {
+        let found = coding::report(&paths.data_dir, spec, lookup).await;
+        let mut lines = found.lines().into_iter();
+        println!(
+            "{:<10}{}",
+            format!("{}:", spec.command),
+            lines.next().unwrap_or_default()
+        );
+        for line in lines {
+            println!("          {line}");
+        }
+        coding_reports.push(found);
+    }
+    // What an adapter still needs of Node and npm.
+    let node_missing = match (&report.node, &report.npm) {
+        (Err(problem), _) => Some(problem.to_string()),
+        (Ok(_), Some(Err(problem))) => Some(problem.to_string()),
+        _ => None,
+    };
     let local = config
         .hosted_agents
         .iter()
@@ -813,6 +857,20 @@ async fn doctor(paths: &Paths, config: &Config, models: bool) -> Result<()> {
         }
         if !capability::record(settings.harness).available {
             missing.push("its harness is not available in this version yet".to_owned());
+        } else if let Some(found) = coding_reports
+            .iter()
+            .find(|found| found.spec.harness == settings.harness)
+        {
+            // An adapter that is installed needs Node; one that is not
+            // needs npm too.
+            let node = match &found.adapter {
+                Some((_, true)) => report.node.as_ref().err().map(ToString::to_string),
+                Some((_, false)) => node_missing.clone(),
+                None => None,
+            };
+            if settings.command.is_empty() {
+                missing.extend(found.problems(node.as_deref()));
+            }
         } else if settings.command.is_empty() && !report.ready() {
             missing.push("Node.js or npm is not ready (above)".to_owned());
         }
@@ -850,7 +908,7 @@ async fn doctor(paths: &Paths, config: &Config, models: bool) -> Result<()> {
         println!(
             "agent:    {} · {} · {} · {}",
             agent.label,
-            settings.harness.as_str(),
+            manage::harness_label(settings.harness),
             manage::state_of(agent),
             if missing.is_empty() {
                 "ready".to_owned()
@@ -858,6 +916,11 @@ async fn doctor(paths: &Paths, config: &Config, models: bool) -> Result<()> {
                 format!("not ready: {}", missing.join("; "))
             }
         );
+        if models && settings.harness != Harness::PiDurable {
+            println!(
+                "          its model is its own program's to check: bzz asks for it when the agent is first asked, without a session none can be opened"
+            );
+        }
         // What its host said when it last started: where it offers `run`,
         // and the Pi packages it loaded or left out.
         if settings.harness == Harness::PiDurable {
@@ -911,12 +974,8 @@ async fn credential(command: CredentialCommand, paths: &Paths, config: &Config) 
                 .local
                 .as_ref()
                 .ok_or_else(|| Error::Config("this agent is not run by bzz".into()))?;
-            if settings.harness != Harness::PiDurable {
-                return Err(Error::Config(format!(
-                    "{} runs on {}, which uses your own git and its credentials; bzz stores a git credential only for a pi-durable agent",
-                    agent.label,
-                    settings.harness.as_str()
-                )));
+            if let Some(why) = manage::lacks(settings.harness, manage::Lacking::GitCredentials) {
+                return Err(Error::Unsupported(format!("{}: {why}", agent.label)));
             }
             let host = git_credentials::host_name(&host)?;
             let identity = find_identity(config, agent.owner_identity)?.clone();
