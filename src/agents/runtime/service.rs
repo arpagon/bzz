@@ -44,22 +44,25 @@ pub struct ServeOptions<'a> {
 pub struct CommunityAgents {
     pub community: Uuid,
     pub host: AgentHost,
-    signers: Vec<SignerHandle>,
-    supervisors: Vec<SupervisorHandle>,
+    ports: Vec<Arc<RelayPort>>,
     /// Agents that could not be started, each with its reason.
     pub problems: Vec<String>,
 }
 
 impl CommunityAgents {
+    /// Whether every agent's intake is subscribed: a request published from
+    /// now on reaches its agent.
+    pub fn listening(&self) -> bool {
+        self.ports.iter().all(|port| port.listening())
+    }
+
     /// Stops every harness, closes every agent connection and forgets every
     /// agent key.
     pub async fn stop(self) {
         self.host.shutdown().await;
-        for supervisor in &self.supervisors {
-            supervisor.shutdown().await;
-        }
-        for signer in &self.signers {
-            signer.lock().await;
+        for port in &self.ports {
+            port.supervisor.shutdown().await;
+            port.signer.lock().await;
         }
     }
 }
@@ -111,8 +114,7 @@ pub async fn serve(options: ServeOptions<'_>) -> Result<Option<CommunityAgents>>
     let mut running = CommunityAgents {
         community,
         host: host.clone(),
-        signers: Vec::new(),
-        supervisors: Vec::new(),
+        ports: Vec::new(),
         problems: Vec::new(),
     };
     for agent in local {
@@ -169,8 +171,7 @@ pub async fn serve(options: ServeOptions<'_>) -> Result<Option<CommunityAgents>>
         .await;
         match built {
             Ok(port) => {
-                running.signers.push(port.signer.clone());
-                running.supervisors.push(port.supervisor.clone());
+                running.ports.push(port.clone());
                 host.add(
                     AgentSpec {
                         id: agent.id,

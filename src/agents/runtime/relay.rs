@@ -187,6 +187,28 @@ const CHANNEL_CACHE: Duration = Duration::from_secs(60);
 /// answer what was asked hours before it was started.
 pub const CATCH_UP: Duration = Duration::from_secs(600);
 const INTAKE: &str = "agent-intake";
+/// The least time between two subscriptions of one intake, whatever asks.
+const RESUBSCRIBE_INTERVAL: Duration = Duration::from_secs(2);
+/// How long a reason to subscribe again waits for others to join it.
+const RESUBSCRIBE_DEBOUNCE: Duration = Duration::from_millis(500);
+const REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+const RETRY_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Membership notices already acted on. The relay sends a stored notice
+/// again with every new subscription, so acting on one twice would
+/// subscribe again for ever.
+#[derive(Default)]
+struct Notices(std::collections::HashSet<String>);
+
+impl Notices {
+    /// Whether `event` is a notice not seen before.
+    fn is_new(&mut self, event: &Event) -> bool {
+        if self.0.len() > 4096 {
+            self.0.clear();
+        }
+        self.0.insert(event.id.to_hex())
+    }
+}
 
 /// One agent's key, connection and HTTP client on the real relay.
 pub struct RelayPort {
@@ -378,31 +400,46 @@ pub async fn intake(
         seen.saturating_sub(30)
             .max(now.saturating_sub(CATCH_UP.as_secs()))
     });
-    let mut refresh = tokio::time::interval(Duration::from_secs(300));
-    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut resubscribe = true;
+    let mut notices = Notices::default();
+    // When to subscribe next: now, and again whenever the agent's channels
+    // may have changed. Several reasons close together make one subscription.
+    let mut due = Some(tokio::time::Instant::now());
+    let mut subscribed_at = None::<tokio::time::Instant>;
     loop {
-        if resubscribe {
-            resubscribe = false;
-            match port.memberships().await {
-                Ok(channels) => {
-                    let filters = intake_filters(&agent_pubkey, &owner, &channels, since);
-                    if port.supervisor.subscribe(INTAKE, filters).await.is_err() {
-                        return;
-                    }
-                }
-                // Not connected yet, or the relay refused: the next tick or
-                // the next authentication tries again.
-                Err(_) => port.listening.store(false, Ordering::Release),
-            }
-        }
         let event = tokio::select! {
             () = stop.notified() => break,
-            _ = refresh.tick() => {
-                resubscribe = true;
+            () = async {
+                match due {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                subscribed_at = Some(tokio::time::Instant::now());
+                match port.memberships().await {
+                    Ok(channels) => {
+                        let filters = intake_filters(&agent_pubkey, &owner, &channels, since);
+                        if port.supervisor.subscribe(INTAKE, filters).await.is_err() {
+                            return;
+                        }
+                        // The relay may have added the agent to a channel
+                        // without a notice reaching it: look again later.
+                        due = Some(tokio::time::Instant::now() + REFRESH_INTERVAL);
+                    }
+                    // Not reachable just now: try again shortly.
+                    Err(_) => {
+                        port.listening.store(false, Ordering::Release);
+                        due = Some(tokio::time::Instant::now() + RETRY_INTERVAL);
+                    }
+                }
                 continue;
             }
             event = events.recv() => event,
+        };
+        // Soon, but never faster than the interval, whatever the relay sends.
+        let soon = || {
+            let earliest = subscribed_at
+                .map_or_else(tokio::time::Instant::now, |at| at + RESUBSCRIBE_INTERVAL);
+            Some(earliest.max(tokio::time::Instant::now() + RESUBSCRIBE_DEBOUNCE))
         };
         match event {
             Ok(SupervisorEvent::Session(SessionEvent::Event {
@@ -410,8 +447,11 @@ pub async fn intake(
                 event,
             })) if subscription == INTAKE => {
                 if matches!(event.kind.as_u16(), 44_100 | 44_101) {
-                    port.cache().clear();
-                    resubscribe = true;
+                    // The agent joined or left a channel: look again, once.
+                    if notices.is_new(&event) {
+                        port.cache().clear();
+                        due = soon();
+                    }
                     continue;
                 }
                 let Some(channel) = events::channel_id(&event) else {
@@ -433,14 +473,12 @@ pub async fn intake(
             {
                 port.listening.store(true, Ordering::Release);
             }
-            Ok(SupervisorEvent::Session(
-                SessionEvent::Authenticated | SessionEvent::Closed { .. },
-            )) => resubscribe = !port.listening() || resubscribe,
             Ok(SupervisorEvent::Session(SessionEvent::Disconnected(_))) => {
+                // The supervisor subscribes again by itself when it is back.
                 port.listening.store(false, Ordering::Release);
             }
             // Events were dropped: ask again from the last one handled.
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => resubscribe = true,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => due = soon(),
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             Ok(_) => {}
         }
@@ -549,6 +587,21 @@ mod tests {
             channel_facts(channel, &relay_hex, &[stream, elsewhere]),
             None
         );
+    }
+
+    /// Found on the pinned relay: a stored membership notice comes back with
+    /// every new subscription. Acted on each time, the intake subscribed
+    /// twice a second until the relay's quota stopped it.
+    #[test]
+    fn a_membership_notice_is_acted_on_once() {
+        let relay = Keys::generate();
+        let notice = record(&relay, 44_100, &[&["p", &"a".repeat(64)]]);
+        let another = record(&relay, 44_101, &[&["p", &"a".repeat(64)]]);
+        let mut notices = Notices::default();
+        assert!(notices.is_new(&notice));
+        assert!(!notices.is_new(&notice), "the same notice replayed");
+        assert!(notices.is_new(&another));
+        assert!(!notices.is_new(&notice) && !notices.is_new(&another));
     }
 
     #[test]
