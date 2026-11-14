@@ -7,6 +7,7 @@
 //! starts the process; [`manage`] creates and manages them, and
 //! [`capability`] says what each harness can do.
 
+pub mod bundle;
 pub mod capability;
 pub mod manage;
 pub mod policy;
