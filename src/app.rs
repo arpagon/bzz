@@ -10813,6 +10813,143 @@ mod tests {
         assert!(super::send_to_channel_root(Some(deleted), channel).is_err());
     }
 
+    /// v0.15 M1: with the owner's identity unlocked the TUI runs the
+    /// community's local agents beside the broker, which does not serve
+    /// them; the panel shows each one's state; pausing one there stops it;
+    /// locking stops them all.
+    #[tokio::test]
+    async fn local_agents_run_while_the_owner_is_unlocked_and_stop_on_lock() {
+        use crate::agents::runtime::agent::Phase;
+        use crate::config::{Harness, LocalAgentConfig};
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let owner_keys = nostr::Keys::generate();
+        let owner = crate::auth::signer::SignerHandle::spawn(owner_keys.clone());
+        let mut config = Config::default();
+        let identity = crate::config::IdentityConfig {
+            id: Uuid::new_v4(),
+            label: "owner".into(),
+            pubkey: owner_keys.public_key().to_hex(),
+            backend: crate::config::KeyBackend::EncryptedFile,
+            key_ref: "owner".into(),
+        };
+        config.identities.push(identity.clone());
+        // A loopback port nothing listens on: no relay is needed to start.
+        let community = config
+            .add_community("m1".into(), "ws://127.0.0.1:9".into(), identity.id, true)
+            .unwrap();
+        // One local agent, and one the user runs himself.
+        let (mut scout, _) = crate::broker::custody::create(
+            &paths.keys_dir(),
+            &owner,
+            identity.id,
+            community,
+            "Scout",
+        )
+        .await
+        .unwrap();
+        scout.local = Some(LocalAgentConfig::new(Harness::PiDurable));
+        config.hosted_agents.push(scout.clone());
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        store.pin_relay_pubkey(community, &"d".repeat(64)).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        // Started without a community, so that nothing asks for a passphrase.
+        let mut app = super::App::new(Config::default(), paths.clone(), handle.clone())
+            .await
+            .unwrap();
+        app.config = config;
+        // Not unlocked: nothing runs.
+        app.reconcile_local_agents().await;
+        assert!(app.local_agents.is_none());
+
+        app.runtime = Some(
+            super::Runtime::build(
+                &app.config,
+                0,
+                &paths,
+                handle,
+                Some(owner.clone()),
+                crate::diagnostics::DiagnosticHandle::disabled(),
+            )
+            .unwrap(),
+        );
+        app.reconcile_broker().await;
+        assert!(
+            app.broker.is_none(),
+            "the broker does not serve a local agent"
+        );
+        app.reconcile_local_agents().await;
+        assert_eq!(app.status_error, None);
+        let phase = |app: &super::App| {
+            app.local_agents
+                .as_ref()
+                .and_then(|agents| agents.host.status().first().map(|status| status.phase))
+        };
+        let wait_for = async |app: &super::App, expected: Phase| {
+            for _ in 0..500 {
+                if phase(app) == Some(expected) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("the agent never became {expected:?}: {:?}", phase(app));
+        };
+        // Its key is unsealed and its requests settled; no process yet.
+        wait_for(&app, Phase::Idle).await;
+        assert!(
+            !crate::agents::runtime::process::run_dir(&paths.data_dir)
+                .join(format!("{}.json", scout.id))
+                .exists()
+        );
+        app.command = "broker".into();
+        app.execute_command().await.unwrap();
+        let screen = |app: &mut super::App| {
+            let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+        };
+        let shown = screen(&mut app);
+        assert!(
+            shown.contains("Scout · active · local: bzz runs it"),
+            "{shown}"
+        );
+        assert!(shown.contains("Scout · pi-durable · idle"), "{shown}");
+        assert!(shown.contains("agent broker · not serving"), "{shown}");
+
+        // Space in the panel pauses the selected agent, and resumes it.
+        app.broker_toggle_paused();
+        assert!(app.config.hosted_agents[0].paused);
+        app.reconcile_local_agents().await;
+        wait_for(&app, Phase::Paused).await;
+        let shown = screen(&mut app);
+        assert!(shown.contains("Scout · pi-durable · paused"), "{shown}");
+        app.broker_toggle_paused();
+        app.reconcile_local_agents().await;
+        wait_for(&app, Phase::Idle).await;
+
+        // Locked: no agent runs, and the next unlock starts them again.
+        app.presentation.close_overlay();
+        app.command = "lock".into();
+        app.execute_command().await.unwrap();
+        assert!(app.local_agents.is_none() && app.runtime.is_none());
+        app.reconcile_local_agents().await;
+        assert!(app.local_agents.is_none());
+        assert_eq!(app.local_agents_attempted, None);
+        owner.lock().await;
+    }
+
     /// v0.15 M1: the `:broker` panel has one status line per local agent,
     /// and a local agent is told apart from one the user runs himself.
     #[test]
