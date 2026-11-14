@@ -32,9 +32,7 @@ pub enum AgentCommand {
     List,
     /// Show one agent: state, model, folders, hosts, channels, last turns
     /// and its capability record.
-    Show {
-        name: String,
-    },
+    Show { name: String },
     /// Add an agent to a channel, as its owner. In a Solo chat it gets the
     /// bot role; elsewhere it is a plain member, as Buzz adds one.
     Add {
@@ -45,12 +43,9 @@ pub enum AgentCommand {
     /// Change an agent's settings and publish again what Buzz shows of it.
     Edit(Box<EditArgs>),
     /// Stop an agent's process; it answers nothing until it is resumed.
-    Pause {
-        name: String,
-    },
-    Resume {
-        name: String,
-    },
+    Pause { name: String },
+    /// Let a paused agent run again.
+    Resume { name: String },
     /// Delete an agent: its key, its folder with memory and disk, its rows
     /// in bzz's database, and your record of it on the relay.
     Delete {
@@ -83,6 +78,7 @@ pub enum AgentCommand {
 pub struct NewArgs {
     /// The agent's name, as Buzz will show it.
     pub name: Option<String>,
+    /// The community it belongs to. Default: the default one, or the only one.
     #[arg(long)]
     pub community: Option<Uuid>,
     /// pi-durable (the others are not available in this version yet).
@@ -91,8 +87,10 @@ pub struct NewArgs {
     /// provider/model as Pi names them. Default: Pi's own default model.
     #[arg(long)]
     pub model: Option<String>,
+    /// The model's thinking level, as Pi names it; needs --model.
     #[arg(long)]
     pub thinking: Option<String>,
+    /// What the agent is told about itself and its work.
     #[arg(long, conflicts_with = "instructions_file")]
     pub instructions: Option<String>,
     /// Read the instructions from a file.
@@ -128,17 +126,22 @@ pub struct EditArgs {
     /// A new name.
     #[arg(long)]
     pub name: Option<String>,
+    /// provider/model as Pi names them; checked before it is saved.
     #[arg(long, conflicts_with = "default_model")]
     pub model: Option<String>,
+    /// The model's thinking level, as Pi names it; needs --model.
     #[arg(long)]
     pub thinking: Option<String>,
     /// Use the harness's own default model again.
     #[arg(long)]
     pub default_model: bool,
+    /// What the agent is told about itself and its work.
     #[arg(long, conflicts_with = "instructions_file")]
     pub instructions: Option<String>,
+    /// Read the instructions from a file.
     #[arg(long)]
     pub instructions_file: Option<PathBuf>,
+    /// Who may wake it: owner-only, allowlist or anyone.
     #[arg(long)]
     pub wake: Option<String>,
     /// The people who may wake it, replacing the list. Implies
@@ -158,10 +161,13 @@ pub struct EditArgs {
     /// The hosts it may reach, replacing the list.
     #[arg(long = "allow-host", value_name = "HOST", conflicts_with = "no_hosts")]
     pub hosts: Vec<String>,
+    /// Let it reach no host at all.
     #[arg(long)]
     pub no_hosts: bool,
+    /// An HTTPS address of its picture.
     #[arg(long, conflicts_with = "no_picture")]
     pub picture: Option<String>,
+    /// Take its picture away.
     #[arg(long)]
     pub no_picture: bool,
     /// Publish the agent's profile and your record of it again, whatever
