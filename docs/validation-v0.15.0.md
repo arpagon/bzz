@@ -1275,7 +1275,7 @@ own tests ran on `d902505`; `agent-host/` has not changed since `f76bfc3`.
 | Format | `cargo fmt --check` | clean |
 | Lint | `cargo clippy --locked --all-targets --all-features -- -D warnings` | clean (also `--no-default-features`) |
 | Tests | `cargo test --locked --all-features` | 644 passed, 0 failed, 26 ignored. 34 passing tests are new since M4: 15 unit (3 App, 3 `ui::approval`, 2 `approval`, 2 `activity`, 1 each of `git_credentials`, `capability`, `process`, `runtime`, `sanitize`), 11 scripted harness, 3 real host, 3 configuration, 1 creation, 1 secret scan |
-| Pinned relay | `BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh` | @@RELAY2@@ The other agent's work uses the same harness: the run waited for it to be free |
+| Pinned relay | `BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh` | 19 passed (the 18 of M4 and the journey above) in 456 s, then `agent_host_test`, 6 passed. It had passed the same way on `d902505`, before the last change. The other agent's work uses the same harness: the run waited for it to be free |
 | Agent host | `cd agent-host && npm ci --ignore-scripts --omit=optional && npm test` | 99 tests, 99 pass, 0 skipped (the 98 of the second pass and the one for `--check-model`); `npm ci` reports 0 vulnerabilities |
 | Supply chain | `cargo deny check`; `cargo audit` | `advisories ok, bans ok, licenses ok, sources ok`; the 4 allowed warnings of v0.14. `Cargo.lock` gains one package, `close_fds` 0.3.2 (MIT), whose own dependencies were there already |
 
