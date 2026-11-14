@@ -300,6 +300,27 @@ fn tool_environment(
     env
 }
 
+/// Runs `command` to its end. A program that another process has open for
+/// writing at this moment cannot be started ("text file busy"): it is tried
+/// again shortly, a few times. That moment is short, and a program that was
+/// just written or updated is otherwise reported as missing.
+async fn run_to_end(
+    command: &mut tokio::process::Command,
+) -> std::io::Result<std::process::Output> {
+    // The owner's own programs get nothing of bzz's but what is named.
+    process::keep_descriptors_to_ourselves();
+    let mut tries = 0;
+    loop {
+        match command.output().await {
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 20 => {
+                tries += 1;
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            output => return output,
+        }
+    }
+}
+
 async fn output_of(
     program: &Path,
     args: &[&str],
@@ -315,9 +336,7 @@ async fn output_of(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    // The owner's own programs get nothing of bzz's but what is named here.
-    process::keep_descriptors_to_ourselves();
-    tokio::time::timeout(limit, command.output())
+    tokio::time::timeout(limit, run_to_end(&mut command))
         .await
         .ok()?
         .ok()
@@ -559,8 +578,7 @@ async fn install_into(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    process::keep_descriptors_to_ourselves();
-    let output = match tokio::time::timeout(limits.timeout, command.output()).await {
+    let output = match tokio::time::timeout(limits.timeout, run_to_end(&mut command)).await {
         Ok(Ok(output)) => output,
         Ok(Err(error)) => return Err(failed(format!("npm could not be started: {error}"))),
         Err(_) => {
@@ -920,8 +938,8 @@ pub async fn check_model(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    process::keep_descriptors_to_ourselves();
-    let Ok(Ok(output)) = tokio::time::timeout(MODEL_CHECK_TIMEOUT, command.output()).await else {
+    let Ok(Ok(output)) = tokio::time::timeout(MODEL_CHECK_TIMEOUT, run_to_end(&mut command)).await
+    else {
         return ModelCheck::Unknown("the host did not answer in time".into());
     };
     let text = String::from_utf8_lossy(&output.stdout);

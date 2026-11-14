@@ -43,6 +43,8 @@ pub enum Overlay {
     LocalAgents,
     /// The form of `:agent new`.
     AgentNew,
+    /// A real command an agent wants to run, put to its owner (v0.15 M7).
+    Approval,
     Artifacts,
     Broker,
     Huddle,

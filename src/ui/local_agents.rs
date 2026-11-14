@@ -93,7 +93,7 @@ pub fn render(
         .border_style(theme.style(HighlightGroup::ModalBorder))
         .title_style(theme.style(HighlightGroup::ModalTitle))
         .title(format!(
-            " local agents{} · j/k select · space pause/resume · x stop the running turn · l log · n new · Tab directory · Esc ",
+            " local agents{} · j/k select · space pause/resume · x stop its turn · i add to this channel · l log · n new · Tab directory · Esc ",
             if running { "" } else { " · not running: unlock to run them" }
         ));
     let inner = block.inner(area);
@@ -447,7 +447,7 @@ mod tests {
             render(frame, frame.area(), &rows, &state, true, &theme)
         });
         for expected in [
-            "local agents · j/k select · space pause/resume · x stop the running turn · l log · n new",
+            "local agents · j/k select · space pause/resume · x stop its turn · i add to this channel · l log · n new",
             "› Scout · pi-durable · answering 1 · bash",
             "  Ranger · pi-durable · paused · paused by its owner",
             "state:        answering 1",
