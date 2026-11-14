@@ -53,7 +53,7 @@ leave none.
 
 | File | What |
 |---|---|
-| `main.mjs` | arguments, the log, leaving when the parent is gone |
+| `main.mjs` | arguments, the log, leaving when the parent is gone, surviving what a package leaves uncaught |
 | `src/host.mjs` | the ACP face: sessions, places, turns, tools, checkpoint |
 | `src/rpc.mjs` | JSON-RPC, one message per line |
 | `src/model.mjs` | Pi's login file and settings; the stand-in model switch |
@@ -191,7 +191,8 @@ folder, the list `pi install` writes to. The rules:
 - **A package's code runs inside this process, with this process's rights.**
   It is not in the agent's sandbox: its tools can read and change what the
   owner's user can, and start programs. A tool it names `read`, `write`,
-  `edit` or `bash` replaces Pi's. In a remote copy, under `buzz-acp`, the
+  `edit` or `bash` replaces Pi's, and a tool with the name of an earlier
+  package's replaces that one. In a remote copy, under `buzz-acp`, the
   agent's key is in this process's environment and a package can read it.
   Install only packages you trust.
 - **bzz can switch them off for an agent**: `_meta.bzz.packages: false` in
@@ -209,6 +210,12 @@ folder, the list `pi install` writes to. The rules:
   takes a name that is taken (`bzz`, `coding-tools`, another package's), when
   a tool has the name of one of bzz's own (`run`, `buzz_…`), or when a
   provider lacks an id, a name, `auth` or `getModels`, or lists no models.
+- What a package leaves uncaught after it loaded is logged and does not end
+  the host: a promise that fails with nobody waiting for it, as a fetch at
+  start does on a machine that is offline, and an exception thrown from a
+  timer or an event when its stack names a file of the package. An
+  exception that no stack traces to a package, such as a thrown string, is
+  taken for the host's own fault and ends it, as before.
 - What loaded and what did not is in the answer to `initialize` and in the
   log. When a turn fails because its provider is not there, the error names
   each package that did not load and why, and says whether a package without
@@ -242,6 +249,9 @@ program for the agent, on purpose, and only by the owner's grant.
   process has them, and nothing else of this process's environment. It has
   no terminal and its standard input is empty: a command that asks a
   question gets no answer.
+- On Linux it has no open file but its three streams. A descriptor the host
+  was born with, left open by whatever started bzz, is closed by the keeper
+  before the command starts.
 - It runs in a process group of its own, watched by a small keeper process
   (`src/run-child.mjs`). The group is ended, TERM and then KILL after 2
   seconds, when the turn is cancelled, at the time limit, and when the host
@@ -273,6 +283,12 @@ What it does not give, said plainly:
 - **If the host and the keeper are both killed at the same moment**, the
   command goes on. bzz's sweep of leftovers does not see it: it is not in the
   host's process group.
+- A command that ignores TERM lives up to 2 seconds longer than a host that
+  was stopped or killed: the keeper, not the host, ends it.
+- **On macOS and other systems that are not Linux a command inherits the
+  descriptors the host was started with.** Only Linux tells a process which
+  of its descriptors it inherited. bzz is asked to start the host with none
+  (protocol, section 2).
 - A command's output is stored as printed, so paths of the machine can enter
   `memory.sqlite`, which a move carries.
 - Output arrives when the command ends, as in the sandbox.
