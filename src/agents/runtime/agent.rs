@@ -127,6 +127,12 @@ pub struct Shared {
     /// What the owner stored for private git remotes. `None`: nothing can
     /// be given.
     pub git_credentials: Option<Arc<dyn GitCredentials>>,
+    /// The settings file. An agent runs on the settings bzz started with,
+    /// but what the owner has taken away since (a folder for commands, an
+    /// allowed host) is refused at once: the file is read again before a
+    /// command is allowed or a credential given. `None`: there is no file
+    /// to read, and the settings bzz started with are all there is.
+    pub settings_file: Option<PathBuf>,
 }
 
 impl Shared {
@@ -1749,6 +1755,26 @@ impl Agent {
 
     // ---- a real command, and a git credential ---------------------------
 
+    /// The agent's settings as the settings file has them at this moment.
+    /// `Ok(None)`: bzz has no settings file to read. `Err`: the file cannot
+    /// be read, or no longer has this agent as one bzz runs; in that doubt
+    /// nothing is allowed and nothing is given.
+    fn settings_now(&self) -> std::result::Result<Option<LocalAgentConfig>, &'static str> {
+        let Some(path) = &self.shared.settings_file else {
+            return Ok(None);
+        };
+        let config = crate::config::load_from(path)
+            .map_err(|_| "bzz could not read its settings just now")?;
+        config
+            .hosted_agents
+            .into_iter()
+            .find(|agent| agent.id == self.spec.id)
+            .filter(|agent| agent.runs_locally())
+            .and_then(|agent| agent.local)
+            .map(Some)
+            .ok_or("this agent is no longer one that bzz runs, by its settings")
+    }
+
     fn record(&self, entry: &activity::Entry) {
         activity::record(&self.shared.data_dir, self.spec.id, entry);
     }
@@ -1806,6 +1832,41 @@ impl Agent {
                 "No real command may run in /mnt/{shown}: your owner has not granted that folder for commands. Nothing was started."
             ));
         };
+        // And by the settings as they are now: what the owner has taken
+        // away since this bzz started is refused at once. What he has added
+        // since counts only after a restart, when the host is told of it.
+        let mut asks = folder.exec == ExecGrant::Ask;
+        match self.settings_now() {
+            Ok(None) => {}
+            Ok(Some(now)) => {
+                let still = now.folders.iter().find(|granted| {
+                    granted.name == folder.name
+                        && granted.path == folder.path
+                        && granted.exec.granted()
+                });
+                let Some(still) = still else {
+                    self.record(&activity::Entry::command(
+                        &folder.name,
+                        command,
+                        "refused: the folder is no longer granted for commands",
+                    ));
+                    return refuse(format!(
+                        "No real command may run in /mnt/{}: your owner has taken that grant away. Nothing was started.",
+                        folder.name
+                    ));
+                };
+                // Asked about there now, though not when this bzz started.
+                asks |= still.exec == ExecGrant::Ask;
+            }
+            Err(why) => {
+                self.record(&activity::Entry::command(
+                    &folder.name,
+                    command,
+                    format!("refused: {why}"),
+                ));
+                return refuse(format!("Nothing was started: {why}."));
+            }
+        }
         let refused = |agent: &Self, why: &str, reason: String| {
             agent.record(&activity::Entry::command(&folder.name, command, why));
             refuse(reason)
@@ -1834,7 +1895,7 @@ impl Agent {
                     .into(),
             );
         };
-        if folder.exec == ExecGrant::WithoutAsking {
+        if !asks {
             self.record(&activity::Entry::command(
                 &folder.name,
                 command,
@@ -2005,7 +2066,15 @@ impl Agent {
             .chars()
             .take(260)
             .collect::<String>();
-        if !self.spec.local.network.contains(&host) {
+        // By the settings bzz started with, and by the settings as they are
+        // now: a host the owner has taken off the list since is refused.
+        let listed = self.spec.local.network.contains(&host)
+            && match self.settings_now() {
+                Ok(None) => true,
+                Ok(Some(now)) => now.network.contains(&host),
+                Err(_) => false,
+            };
+        if !listed {
             self.record(&activity::Entry::credential(
                 &shown,
                 "refused: the host is not on its list of allowed hosts",

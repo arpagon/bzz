@@ -13,7 +13,8 @@ start with `bzz` or in methods that start with `_bzz/`, as ACP allows. A
 harness that knows none of them still works.
 
 Sections 1 to 7 keep their numbers. Sections 8 to 10 are what bzz's own host
-asks of bzz beyond the chat tools.
+asks of bzz beyond the chat tools, each with what bzz answers. Section 11 is
+the host's one entry that is not the protocol.
 
 ## 1. Files
 
@@ -24,14 +25,20 @@ asks of bzz beyond the chat tools.
 | `…/files.sqlite` | the agent's disk |
 | `…/agent.json` | settings a remote copy needs (below). Written by `agent move` and `agent launch-kit`, never read by a local launch |
 | `…/workspace/` | the working folder of a coding harness |
+| `…/harness.log` | the harness's standard error, from its last start. At most 8 MiB are kept |
+| `…/started.json` | what bzz's own host answered to its last `initialize`: its version, where it offers `run`, its packages (section 3). Written by bzz |
+| `…/activity.jsonl` | every real command the agent asked to run and every git credential it asked for, with bzz's answer (sections 8 and 9). Written by bzz; never a secret |
 | `<data>/agents/run/<agent id>.json` | the ownership record of a running process |
-| `<data>/agent-host/<sha16>/` | the Pi Durable host: `main.mjs`, `package.json`, `src/` and `node_modules`. `<sha16>` is the first 16 hex characters of the SHA-256 of the lock file inside the bzz binary |
+| `<data>/keys/agent-<agent id>.nip44` | the agent's key, sealed to its owner's |
+| `<data>/keys/agent-<agent id>.git/` | the git credentials stored for the agent, each sealed to its owner's key (section 8) |
+| `<data>/agent-host/<sha16>/` | the Pi Durable host: `main.mjs`, `package.json`, `src/` and `node_modules`. `<sha16>` is the first 16 hex characters of a SHA-256 over **every host file inside the bzz binary**, each with its path: the lock file, `package.json`, `main.mjs` and all of `src/`. A change to any of them is another install |
 
 - The host reads its version from `package.json`, so that file must sit
   beside `main.mjs`. `src/` must be whole: `src/run-child.mjs` is started as
   a process of its own (section 9).
 - The host makes the agent's folder if it is not there, for its owner only
-  (`0700`), and keeps the two SQLite files at `0600`.
+  (`0700`), and keeps the two SQLite files at `0600`. bzz makes it first,
+  the same way, and writes its own three files there at `0600`.
 - While the host works, a write-ahead file (`-wal`, `-shm`) sits beside each
   SQLite file. `_bzz/checkpoint` and a clean exit leave none.
 - `memory.sqlite` and `files.sqlite` are what a move carries. They hold no
@@ -66,10 +73,26 @@ asks of bzz beyond the chat tools.
   A real command (section 9) would get them. On Linux the Pi Durable host
   closes what it inherited before a command starts; on other systems it
   cannot tell which those are.
+  - How bzz does it, on Linux and on macOS: just before it starts a harness
+    (and `npm`, and the probes of `node`), it marks every descriptor it holds
+    above 2 as not to be handed on (`FD_CLOEXEC`). What Rust opened is marked
+    that way from the start; this covers what bzz was born with and what a C
+    library opened.
+  - What that leaves: a descriptor another thread of bzz opens without the
+    mark between that moment and the start of the child. On Windows a handle
+    bzz itself inherited as inheritable is handed on; the host offers no
+    `run` there.
 - The environment is built from nothing: `PATH`, `HOME`, `LANG`, `TMPDIR`,
   and what the harness needs to find its own sign-in. It never holds an agent
   key, an owner key, a relay address or a bzz credential, with one exception:
   the `bzz agent-tools` server of section 6 gets its own session's credential.
+- **`HOME` is the agent's own folder for bzz's Pi Durable host**, and the
+  owner's home for a coding harness, which finds its own sign-in there. So
+  the Pi Durable host would look for Pi's folder in the wrong place: bzz
+  tells it where Pi's folder is at every start (`piDir`, section 3), and
+  does not start it when it cannot find that folder.
+- The working directory is the agent's folder for the Pi Durable host, and
+  `…/workspace/` for a coding harness.
 - Pi Durable host: `node <host dir>/main.mjs <agent folder>`. Node 22.19 or
   newer; on an older one, or without the folder, it exits with code 2 and
   says so.
@@ -84,7 +107,8 @@ asks of bzz beyond the chat tools.
 
 - To stop, bzz closes the child's standard input. A harness must close its
   storage and exit within 2 s. After that bzz sends TERM to the group, and
-  KILL 2 s later.
+  KILL 2 s later. The order is always these three: end of input, TERM, KILL.
+  What is still in the group afterwards is killed with it.
 - The Pi Durable host exits with code 0 after the end of its input. It
   gives storage 1.5 s to close and exits then in any case. TERM is taken as
   the end of input. A real command that runs is told to stop at that moment
@@ -140,7 +164,10 @@ asks of bzz beyond the chat tools.
   - `write`: `true` lets the agent's file tools, shell and git change the
     folder. Anything else is read-only.
   - `exec`: `true` lets the agent start real commands there (section 9).
-    Anything else does not. It is separate from `write`.
+    Anything else does not. It is separate from `write`. bzz sends `true`
+    for a folder its settings grant for commands, whether the owner is asked
+    about each command or not: that part is bzz's alone, and the host is
+    never told.
 - A `network` entry is `host` or `host:port`, such as `github.com` or
   `git.example.org:8443`. It is matched exactly: that host, not the names
   below it, and that port. `host` alone means the port of the scheme: 443,
@@ -149,10 +176,14 @@ asks of bzz beyond the chat tools.
   is checked, at most five; `Authorization` and `Cookie` headers do not
   follow a redirect to another host or port.
 - `piDir` is Pi's folder: `auth.json` for the sign-in, `settings.json` for
-  the default model and the packages. bzz always sends it. Without it the
-  host takes `PI_CODING_AGENT_DIR` from its environment, or `~/.pi/agent`.
+  the default model and the packages. bzz always sends it: the folder
+  `PI_CODING_AGENT_DIR` names in bzz's own environment, or `~/.pi/agent` of
+  the owner's home. Without it the host takes `PI_CODING_AGENT_DIR` from its
+  environment, or `~/.pi/agent`, which under bzz is inside the agent's
+  folder.
 - `packages`: `false` switches Pi packages off for this agent. Absent or
-  anything else: on (section 10).
+  anything else: on (section 10). bzz always sends it, `true` or `false`,
+  from the agent's settings.
 - A bad `mounts` or `network` entry fails `initialize` with `-32602` and the
   reason. `initialize` may then be sent again, corrected. A second
   `initialize` after a successful one gets `-32600`, and so does any other
@@ -161,6 +192,10 @@ asks of bzz beyond the chat tools.
   package hangs. A package that never gives the thread back holds the host
   for good (section 10): bzz needs a time limit of its own for `initialize`,
   longer than 10 s.
+- **bzz gives `initialize` 30 s.** A harness that has not answered by then
+  is stopped (end of input, TERM, KILL), and the start counts as a failed
+  one: after five within five minutes the agent is left alone until that
+  time has passed, and whoever asked is told that it is not available.
 
 The host answers:
 
@@ -186,6 +221,11 @@ The host answers:
 - `run`: the names of the granted folders where the agent may start commands
   (section 9). Empty when it has no such tool: no grant has `exec`, the host
   is a remote copy, or this is Windows.
+- **bzz keeps `host`, `run` and `packages`** of a host that answers
+  `"tools": "pipe"`, in `started.json` of the agent's folder, in place of
+  the ones before. `bzz agent show` and `bzz agent doctor` print them. Only a
+  simple name is kept as a folder, and every text of a package is bounded
+  and made safe to print.
 - **A turn that was cut off runs again at `initialize`**, before bzz asks.
   Its calls to bzz (`_bzz/tool`, `_bzz/credential`, `_bzz/approve`) wait
   until bzz hands the same request over again on a new session. If bzz never
@@ -235,7 +275,11 @@ The host answers:
 - The response is `{"stopReason": …}` when the turn is over: `end_turn`,
   `cancelled`, or `max_turn_requests`.
 - **A turn that fails is answered with a JSON-RPC error**, not a
-  `stopReason`: code `-32000`, a message that says why, and `data.kind`.
+  `stopReason`: code `-32010`, a message that says why, and `data.kind`.
+  The code is the host's own, in the range JSON-RPC leaves to a server. It
+  was `-32000` before, which is ACP's code for "sign in". bzz reads
+  `data.kind` first, so it names a failure of either host correctly; without
+  a kind, `-32010` is a failure of the model and `-32000` a missing sign-in.
 
 | `data.kind` | When |
 |---|---|
@@ -251,6 +295,14 @@ The host answers:
   same request sent again is tried again.
 - A turn that failed while it ran is settled. The same request sent again
   gets the same error and starts no work. Only a new request is a new try.
+- **bzz sends a prompt only for a request it admitted.** Before anything
+  reaches a harness: the author may wake the agent (its owner, listed
+  people, or anyone, by the agent's rule; only its owner in a DM); the
+  message is at most a day old, so nothing older is ever a request; and
+  another agent's message has woken this one fewer than six times in the
+  last hour in that conversation. People are not counted.
+- One turn has ten minutes, waits for the owner included. Then bzz sends
+  `session/cancel` and, 5 s later, stops a harness that has not answered.
 
 ### `session/cancel`
 
@@ -259,11 +311,19 @@ A notification. The harness stops the turn and answers the pending
 for an answer of bzz that is still open, and ends a real command that the
 turn started (section 9).
 
+bzz sends it in two cases: when a turn's time limit passes, and when the
+owner stops a running turn (`x` in `:agents`). In both, a harness that has
+not answered the prompt 5 s later is stopped, and a command of that turn that
+still waits for the owner's answer is void from the moment of the cancel
+(section 9).
+
 ### `_bzz/checkpoint`
 
 A request to bzz's own host, with no parameters. It answers `{}` when both
 SQLite files are whole and no write-ahead file is left. bzz sends it before a
-move and when the agent has been idle for a while.
+move and when the agent has been idle for 60 s: no turn started or ended in
+that time. It is not sent during a turn, to a host that is being stopped, or
+to another harness.
 
 - It waits for the turns that run.
 - A prompt that arrives meanwhile is held until the checkpoint is done.
@@ -294,6 +354,15 @@ move and when the agent has been idle for a while.
   `_bzz/approve`) carry string ids: `h1`, `h2`, and so on. Several may be
   open at once, and bzz may answer them in any order. An answer to a request
   the host no longer waits for is dropped.
+- bzz answers each under the id it came with, a string or a number. A
+  `_bzz/approve` waits in a task of its own for as long as the owner takes,
+  and everything else the host sends is read and answered meanwhile. At most
+  eight `_bzz/tool` and four `_bzz/credential` of one host are worked on at
+  once: a ninth tool call waits in the pipe, a fifth credential is answered
+  with an error at once.
+- **Only a host that answered `"tools": "pipe"` may send `_bzz/credential`
+  and `_bzz/approve`.** From any other harness they are requests bzz does
+  not know (`-32601`).
 
 ## 5. Tools over the pipe: `_bzz/tool`
 
@@ -342,6 +411,11 @@ three tools. A harness starts it because bzz listed it in `mcpServers`:
 
 - The credential is made by bzz for one agent and one session, kept in memory,
   and revoked when that agent's process exits.
+- **It travels in `session/new`**, so the harness holds it before the server
+  it starts does, and can do through it exactly what the tools allow. bzz
+  binds it to the session id the harness answers with; until then it
+  resolves to nothing. The Pi Durable host has no such credential: it asks
+  over the pipe (section 5), and `mcpServers` is empty for it.
 - The server holds no key. It sends each call to bzz on the loopback address
   with the credential, and bzz treats the call exactly as in section 5.
 
@@ -436,6 +510,41 @@ reaches the model, so it should say what the owner can do.
 - Credentials are for the host in the remote's URL. They do not follow a
   redirect to another host.
 
+What bzz does with the request:
+
+- **The agent is the one the process was started for.** No parameter names
+  it, and bzz looks in that agent's stored credentials only.
+- **The session must have a turn running** in that process, and not one the
+  owner stopped. Otherwise: an error.
+- **The host must be on that agent's list of allowed hosts** in bzz's own
+  settings, compared exactly, in lower case: in the settings bzz started
+  with, and in the settings file as it is at that moment. bzz checks this
+  itself, whatever the host process was told at its start.
+- **The answer comes from what the owner stored** with `bzz agent credential
+  set <agent> <host>`: a user name and a token, sealed with NIP-44 to the
+  owner's own key in `<data>/keys/agent-<agent id>.git/`, one file per host.
+  They are never in the settings file. They are opened at the moment of the
+  request, so one stored while the agent runs is used by its next git
+  command. What is sealed names the agent and the host; a file that was
+  moved to another agent, or under another host's name, opens for nobody.
+- **Everything else is a JSON-RPC error with code `-32011`**, whose message
+  is written for the model and says what the owner can do:
+
+| When | The message |
+|---|---|
+| the host is not on the agent's list | `bzz gives no credential for <host>: it is not on this agent's list of allowed hosts. Your owner can allow it with …` |
+| nothing is stored for it | `No credential is stored for <host>. Your owner can store one with …` |
+| the stored one does not open | `The credential stored for <host> could not be opened. Your owner can store it again with …` |
+| no turn runs in the session | `No message is being answered in this session right now, so bzz gives no credential.` |
+
+- bzz writes one line per request to the agent's activity: the host and what
+  happened (`given`, `none is stored`, `refused: …`). Never the user name or
+  the token. They are in no log of bzz's, and bzz keeps them in memory only
+  while it writes the answer to the pipe.
+- The owner is not asked at the moment of the request: storing a credential
+  for an agent and a host is the grant.
+- `bzz agent delete` removes an agent's stored credentials with its key.
+
 ## 9. Hands on this machine: `run` and `_bzz/approve`
 
 A granted folder with `"exec": true` gives the agent one more tool, `run`,
@@ -478,6 +587,52 @@ bzz answers `{"allow": true}` or `{"allow": false, "reason": "…"}`.
 - A question that was open when the host exited is void. The next process
   does not act on an answer to it: the model is told that the call was
   interrupted, and a new call asks again.
+
+How bzz answers. `{"allow": true}` is given only when every line below
+holds; anything else is `{"allow": false, "reason": "…"}`, and the reason is
+written for the model:
+
+1. **The folder is granted for commands in bzz's own settings**, by the
+   name in `mount`: in the settings bzz started the host with, and in the
+   settings file as it is at that moment, with the same path. So a grant
+   the owner took away while bzz runs is refused at once, and one he added
+   counts after a restart. What the host was told at its start does not
+   count. A settings file that cannot be read, or that no longer has the
+   agent as one bzz runs, is a no.
+2. **The session has a turn running** in that process, which the owner has
+   not stopped, and the agent is neither paused nor being stopped.
+3. `command` is not empty, holds no NUL and is at most 100 000 bytes.
+4. **The folder is allowed without asking, or the owner said yes.** A folder
+   that either the settings bzz started with or the settings file now says
+   to ask about is asked about.
+
+The owner is asked in the TUI, and only there:
+
+- He is shown the agent, the conversation, the folder with its real path,
+  and `command` whole: every line, with what would not show on a terminal
+  written out as an escape. A yes is taken only after the end of the command
+  has been on screen.
+- **Without the TUI (`bzz agent run`) there is nobody to ask.** A command in
+  a folder that asks is refused at once, with a reason that tells the agent
+  to say in the conversation that its owner must open bzz.
+- **A question waits 300 s and then counts as refused.**
+- **It is void**, and answered with a refusal that says so, when its turn is
+  cancelled or ends, when the agent is paused or stopped, when the host's
+  process ends, and when bzz quits or locks.
+- **It is answered once.** The owner's answer to a question that timed out
+  or became void does nothing, and he is told that nothing was started.
+- One conversation has one question open. A second `_bzz/approve` for the
+  same session while one waits is refused. Two conversations, and two
+  agents, each have their own.
+- bzz sends back yes or no, and nothing of the command: the host runs the
+  string it asked about.
+
+Every question and its answer is a line in the agent's activity
+(`activity.jsonl`, printed by `bzz agent show`): when, the folder, the
+command's first line, and one of `asked of you`, `allowed by you`, `refused
+by you[: reason]`, `allowed without asking`, `refused: nobody was at bzz to
+ask`, `refused: no answer in 300 s`, `refused: the folder is not granted for
+commands`, `void: <why>`.
 
 The command:
 
@@ -558,3 +713,37 @@ extensions (tools, prompt sections, hooks) are installed for the agent.
   as text: the provider's id as a quoted string.
 - A change to a package or to the list takes effect when the host starts
   again.
+
+## 11. Asking about a model without an agent: `main.mjs --check-model`
+
+`bzz agent new --model`, `bzz agent edit --model` and `bzz agent doctor
+--models` ask whether a model can be used before any agent runs. They use the
+host's own entry for it, so bzz names no file inside the host:
+
+```sh
+node <host dir>/main.mjs --check-model <Pi's folder> '<model as JSON>' [--no-packages]
+```
+
+- `<model as JSON>` has the form of `_meta.bzz.model` (section 3); `{}` asks
+  about Pi's default.
+- It is the check a turn makes, with the providers a turn would have: Pi's
+  own and those of the Pi packages in Pi's settings. **Their code runs for
+  it**, as at an agent's start. `--no-packages` loads none, and bzz passes it
+  when packages are off for the agent.
+- It writes one line of JSON to standard output and exits with code 0,
+  whatever the answer. What a package prints goes to standard error.
+
+```json
+{"ok": true, "provider": "openai-codex", "modelId": "gpt-6-luna", "thinkingLevel": "low", "packages": [ … ]}
+{"ok": false, "kind": "provider_unavailable", "message": "…", "package": "~/pi/pi-acme-cloud", "packages": [ … ]}
+```
+
+- `kind` is one of `session/prompt`'s first four (section 3), or `error` for
+  a question that could not be asked.
+- `package` is there for `provider_unavailable` when a package of Pi's
+  settings names that provider and has no Pi Durable entry (section 10).
+  `bzz agent new` then says so; without it, bzz says that no package names
+  the provider, or that packages are off.
+- `packages` is the report `initialize` would give.
+- It reads Pi's sign-in as the host does, creates nothing in Pi's folder,
+  and starts no agent. bzz gives it 30 s.

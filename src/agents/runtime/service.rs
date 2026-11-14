@@ -128,6 +128,7 @@ pub async fn serve(options: ServeOptions<'_>) -> Result<Option<CommunityAgents>>
     let mut host_options = HostOptions::new(options.paths.data_dir.clone(), options.store.clone());
     host_options.limits = options.limits;
     host_options.owner_present = options.owner_present;
+    host_options.settings_file = Some(options.paths.config_file());
     if let Some(environment) = options.environment {
         host_options.pi_dir = crate::agents::runtime::install::pi_dir(|name| environment(name));
         host_options.environment = environment;

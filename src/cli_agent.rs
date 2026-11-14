@@ -606,6 +606,8 @@ async fn edit(paths: &Paths, config: &mut Config, args: EditArgs) -> Result<()> 
     {
         let mut probe = manage::NewAgent::named(&agent.label);
         probe.model = settings.model.clone();
+        // As its host will load them, or not, when it starts.
+        probe.packages = settings.packages;
         if let Err(error) = manage::preflight(
             &paths.data_dir,
             &probe,

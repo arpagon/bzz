@@ -54,6 +54,10 @@ pub struct HostOptions {
     /// Whether someone is there to answer when an agent asks to run a real
     /// command: the TUI is, `bzz agent run` is not.
     pub owner_present: bool,
+    /// The settings file, read again before a command is allowed or a
+    /// credential given, so that what the owner took away since this bzz
+    /// started is refused at once.
+    pub settings_file: Option<PathBuf>,
 }
 
 impl HostOptions {
@@ -67,6 +71,7 @@ impl HostOptions {
             environment: Arc::new(|name| std::env::var(name).ok()),
             git_credentials: None,
             owner_present: false,
+            settings_file: None,
         }
     }
 }
@@ -163,6 +168,7 @@ impl AgentHost {
             shared: Arc::new(Shared {
                 approvals,
                 git_credentials: options.git_credentials,
+                settings_file: options.settings_file,
                 data_dir: options.data_dir,
                 store: options.store,
                 credentials,

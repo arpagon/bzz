@@ -3380,3 +3380,165 @@ async fn two_agents_may_each_have_a_command_waiting() {
     assert!(rangers[1].line().ends_with("make ranger · refused by you"));
     host.shutdown().await;
 }
+
+/// M7 and M3: an agent runs on the settings bzz started with, but what its
+/// owner takes away afterwards is refused at once, by the bzz that is
+/// running: a folder that is no longer granted for commands, a folder that
+/// now asks, a host that is no longer allowed, and an agent that is paused
+/// or gone from the settings. In doubt (a settings file that cannot be
+/// read) nothing is allowed and nothing is given.
+#[tokio::test]
+async fn what_the_owner_takes_away_is_refused_at_once_by_a_running_bzz() {
+    let world = World::new().await;
+    let owner = bzz::auth::signer::SignerHandle::spawn(world.owner.clone());
+    let keys = world.data_dir().join("keys");
+    git_credentials::set(
+        &keys,
+        &owner,
+        world.agent,
+        "github.com",
+        "bot",
+        "t0ken-marker",
+    )
+    .await
+    .unwrap();
+    let marker = |name: &str| world.script.marker(name);
+    let steps = (1..=6)
+        .flat_map(|round| {
+            vec![
+                approve(
+                    "ops",
+                    &format!("make {round}"),
+                    &marker(&format!("ran-{round}")),
+                ),
+                credential("github.com"),
+                json!({"touch": marker(&format!("asked-{round}"))}),
+                json!({"wait_for": marker(&format!("go-{round}"))}),
+            ]
+        })
+        .chain([send("done", true)])
+        .collect::<Vec<_>>();
+    world.script.write(
+        json!({"own_host": true, "run": ["ops"]}),
+        json!([{"steps": steps}]),
+    );
+    let mut local = world.hands(&[("ops", ExecGrant::WithoutAsking)]);
+    local.network = vec!["github.com".into()];
+    // The settings file, as `bzz agent edit` writes it.
+    let settings_file = world.temporary.path().join("config.toml");
+    let write = |local: Option<&LocalAgentConfig>, paused: bool| {
+        let config = bzz::config::Config {
+            hosted_agents: vec![HostedAgentConfig {
+                id: world.agent,
+                label: "Scout".into(),
+                pubkey: world.agent_pubkey(),
+                community: Uuid::nil(),
+                owner_identity: Uuid::nil(),
+                auth_tag: "[]".into(),
+                credential_hash: "c".repeat(64),
+                allowed: Vec::new(),
+                paused,
+                local: local.cloned(),
+            }],
+            ..bzz::config::Config::default()
+        };
+        std::fs::write(&settings_file, toml::to_string_pretty(&config).unwrap()).unwrap();
+    };
+    write(Some(&local), false);
+    let host = world
+        .host_configured(local.clone(), limits(), |options| {
+            options.settings_file = Some(settings_file.clone());
+            options.git_credentials = Some(Arc::new(git_credentials::SealedGitCredentials {
+                keys_dir: keys.clone(),
+                owner: owner.clone(),
+            }));
+        })
+        .await;
+    let request = world.ask(&host, "build").await;
+    // One round: what the harness was answered for its command and for its
+    // credential, then the next change of the settings.
+    let round = async |number: usize| {
+        let asked = marker(&format!("asked-{number}"));
+        until(&format!("round {number}"), WAIT, || {
+            asked.exists().then_some(())
+        })
+        .await;
+        let command = world.answers("_bzz/approve", number).await[number - 1].clone();
+        let credential = world.answers("_bzz/credential", number).await[number - 1].clone();
+        (
+            command["result"]["allow"].as_bool().unwrap(),
+            command["result"]["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            credential.get("result").is_some(),
+        )
+    };
+    let next = |number: usize| std::fs::write(marker(&format!("go-{number}")), "go\n").unwrap();
+
+    // 1. As bzz started: the command runs, the credential is given.
+    let (allowed, _, given) = round(1).await;
+    assert!(allowed && given && marker("ran-1").exists());
+
+    // 2. The owner takes the host off the list, and makes the folder ask.
+    //    Nobody is at this bzz to ask, so the command is refused.
+    let mut edited = local.clone();
+    edited.network.clear();
+    edited.folders[0].exec = ExecGrant::Ask;
+    write(Some(&edited), false);
+    next(1);
+    let (allowed, reason, given) = round(2).await;
+    assert!(!allowed && !given, "{reason}");
+    assert!(reason.contains("your owner is not at bzz"), "{reason}");
+    assert!(!marker("ran-2").exists());
+
+    // 3. The grant for commands is taken away; the host is allowed again.
+    edited.network = vec!["github.com".into()];
+    edited.folders[0].exec = ExecGrant::No;
+    write(Some(&edited), false);
+    next(2);
+    let (allowed, reason, given) = round(3).await;
+    assert!(!allowed && given, "{reason}");
+    assert!(
+        reason.contains("your owner has taken that grant away"),
+        "{reason}"
+    );
+
+    // 4. The folder is granted again, but it is another folder of the
+    //    machine under the same name: not the one this bzz told the host of.
+    edited.folders[0].exec = ExecGrant::WithoutAsking;
+    edited.folders[0].path = world.temporary.path().join("elsewhere");
+    write(Some(&edited), false);
+    next(3);
+    let (allowed, reason, _) = round(4).await;
+    assert!(!allowed, "{reason}");
+
+    // 5. The settings cannot be read: in doubt, nothing.
+    std::fs::write(&settings_file, "this is [not toml").unwrap();
+    next(4);
+    let (allowed, reason, given) = round(5).await;
+    assert!(!allowed && !given, "{reason}");
+    assert!(reason.contains("could not read its settings"), "{reason}");
+
+    // 6. The agent is paused in the settings, by a command.
+    write(Some(&local), true);
+    next(5);
+    let (allowed, reason, given) = round(6).await;
+    assert!(!allowed && !given, "{reason}");
+    assert!(reason.contains("no longer one that bzz runs"), "{reason}");
+    for number in 2..=6 {
+        assert!(!marker(&format!("ran-{number}")).exists(), "round {number}");
+    }
+    next(6);
+    world.settled(&request).await;
+    let activity = world.activity();
+    assert!(
+        activity.contains(
+            &"command in /mnt/ops · make 3 · refused: the folder is no longer granted for commands"
+                .to_owned()
+        ),
+        "{activity:?}"
+    );
+    host.shutdown().await;
+    owner.lock().await;
+}
