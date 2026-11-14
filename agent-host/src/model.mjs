@@ -139,7 +139,7 @@ export async function openModels({ piDir, env = process.env }) {
 		if (!provider || !modelId)
 			throw new ModelUnavailable("no_model", "This agent has no model: none is set for it in bzz, and Pi's settings name no default provider and model.");
 		if (!models.getProvider(provider))
-			throw new ModelUnavailable("provider_unavailable", `The provider "${provider}" is not available: it is not one of Pi's built-in providers. A provider that comes from a Pi extension works here only if that package has a Pi Durable entry. Choose another model for this agent.`);
+			throw new ModelUnavailable("provider_unavailable", `The provider "${provider}" is not available: it is not one of Pi's built-in providers, and this host does not load the providers of Pi extensions. Choose another model for this agent.`);
 		const found = models.getModel(provider, modelId);
 		if (!found) throw new ModelUnavailable("model_unavailable", `The provider "${provider}" has no model "${modelId}". Choose another model for this agent.`);
 		let auth;

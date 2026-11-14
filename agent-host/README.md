@@ -41,20 +41,20 @@ while the host works. `_bzz/checkpoint` and a clean exit leave none.
 
 ## Source
 
-| File | Lines | What |
-|---|---|---|
-| `main.mjs` | 54 | arguments, the log, leaving when the parent is gone |
-| `src/host.mjs` | 412 | the ACP face: sessions, places, turns, tools, checkpoint |
-| `src/rpc.mjs` | 85 | JSON-RPC, one message per line |
-| `src/model.mjs` | 174 | Pi's login file and settings; the stand-in model switch |
-| `src/remote.mjs` | 118 | the remote copy: `agent.json`, buzz-acp's prompt, the `buzz` command |
-| `src/disk.mjs` | 551 | the disk in SQLite |
-| `src/granted.mjs` | 328 | one granted folder of the machine, and `/mnt` |
-| `src/vfs.mjs` | 127 | the disk and the granted folders as one tree |
-| `src/adapters.mjs` | 108 | that tree as Node's `fs` (for git) and as the shell's filesystem |
-| `src/env.mjs` | 333 | the tree and the shell as a Pi Durable environment |
-| `src/git.mjs` | 216 | the `git` command |
-| `src/network.mjs` | 113 | the allow-list and the one way out to the network |
+| File | What |
+|---|---|
+| `main.mjs` | arguments, the log, leaving when the parent is gone |
+| `src/host.mjs` | the ACP face: sessions, places, turns, tools, checkpoint |
+| `src/rpc.mjs` | JSON-RPC, one message per line |
+| `src/model.mjs` | Pi's login file and settings; the stand-in model switch |
+| `src/remote.mjs` | the remote copy: `agent.json`, buzz-acp's prompt, the `buzz` command |
+| `src/disk.mjs` | the disk in SQLite |
+| `src/granted.mjs` | one granted folder of the machine, and `/mnt` |
+| `src/vfs.mjs` | the disk and the granted folders as one tree |
+| `src/adapters.mjs` | that tree as Node's `fs` (for git) and as the shell's filesystem |
+| `src/env.mjs` | the tree and the shell as a Pi Durable environment |
+| `src/git.mjs` | the `git` command |
+| `src/network.mjs` | the allow-list and the one way out to the network |
 
 ## What the model gets
 
@@ -133,8 +133,9 @@ A turn whose model cannot be used fails with a message that says why, and
 `error.data.kind` names it: `provider_unavailable` (not one of Pi's built-in
 providers), `model_unavailable`, `sign_in_needed` or `no_model`.
 
-Not supported: providers that come from a Pi extension, and `!command` or
-`$NAME` keys in `auth.json` (this host starts no program and has no such
+Not supported: providers that come from a Pi extension (Buzz's host loads the
+ones that have a Pi Durable entry; this host loads none yet), and `!command`
+or `$NAME` keys in `auth.json` (this host starts no program and has no such
 environment).
 
 ## As a remote copy

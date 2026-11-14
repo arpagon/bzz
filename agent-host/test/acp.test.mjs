@@ -283,7 +283,7 @@ test("a model that is not available fails the turn and says why", async (t) => {
 	const openai = getBuiltinModels("openai")[0].id;
 
 	let { failure, host } = await attempt({ model: { provider: "my-extension", modelId: "x" } });
-	assert.match(failure.message, /The provider "my-extension" is not available.*Pi Durable entry/);
+	assert.match(failure.message, /The provider "my-extension" is not available: it is not one of Pi's built-in providers.*Choose another model/);
 	assert.equal(failure.data.kind, "provider_unavailable");
 	assert.equal(host.tools.length, 0);
 
