@@ -265,14 +265,16 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 	}
 
 	async function prompt(session, sessionId, where, text) {
-		const harness = await ready();
-		const known = (await harness.snapshot(Places, ctx))?.[where.place];
-		let conversation = known !== undefined ? await harness.conversation(known, ctx) : undefined;
-		// The request is the idempotency key: handed over again, it is the same submission and nothing is written for it.
-		const before = conversation && (await harness.commit((tx) => tx.submissionByRequest(conversation.id, where.request), ctx));
-		const turn = { conversation, cancelled: false };
+		// Known to `session/cancel` from the first moment, before there is anything to stop.
+		const turn = { cancelled: false };
 		session.turns.add(turn);
 		try {
+			const harness = await ready();
+			const known = (await harness.snapshot(Places, ctx))?.[where.place];
+			let conversation = known !== undefined ? await harness.conversation(known, ctx) : undefined;
+			// The request is the idempotency key: handed over again, it is the same submission and nothing is written for it.
+			const before = conversation && (await harness.commit((tx) => tx.submissionByRequest(conversation.id, where.request), ctx));
+			turn.conversation = conversation;
 			if (before) {
 				attach(conversation.id, sessionId);
 				turn.submission = await harness.submission(before.id, ctx);
@@ -304,35 +306,49 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 		}
 	}
 
+	async function initialize(params) {
+		const bzz = params._meta?.bzz;
+		// Without bzz's fields this is a remote copy under buzz-acp: the settings moved with the agent.
+		const settings = bzz
+			? { local: true, agent: bzz.agent ?? {}, model: bzz.model, instructions: bzz.instructions ?? "", mounts: bzz.mounts ?? [], network: bzz.network ?? [], piDir: bzz.piDir }
+			: { local: false, ...(await readAgentFile(folder)), mounts: [], network: [] };
+		let net;
+		try {
+			net = network(settings.network);
+			disk = new SqliteFs(join(folder, "files.sqlite"));
+			vfs = new Vfs(disk, settings.mounts);
+			shell = createShell(vfs, { net, author: { name: settings.agent.name ?? "agent", email: "agent@bzz.invalid" } });
+		} catch (error) {
+			throw new RpcError(INVALID, error.message);
+		}
+		models = await openModels({ piDir: settings.piDir ?? defaultPiDir(env), env });
+		config = { ...settings, network: net.hosts };
+		await ready();
+		log(`ready: ${config.local ? "started by bzz" : "remote copy"}, ${settings.mounts.length} granted folder(s), ${net.hosts.length} allowed host(s)`);
+		return {
+			protocolVersion: 1,
+			agentCapabilities: { loadSession: false, promptCapabilities: { image: false, audio: false, embeddedContext: false } },
+			agentInfo: { name: "bzz-agent-host", title: "bzz Pi Durable host", version: VERSION },
+			authMethods: [],
+			_meta: { bzz: { host: VERSION, tools: config.local ? "pipe" : "buzz" } },
+		};
+	}
+
+	let initialized = false;
 	const methods = {
 		async initialize(params) {
-			if (config) throw new RpcError(-32600, "initialize was already called");
-			const bzz = params._meta?.bzz;
-			// Without bzz's fields this is a remote copy under buzz-acp: the settings moved with the agent.
-			const settings = bzz
-				? { local: true, agent: bzz.agent ?? {}, model: bzz.model, instructions: bzz.instructions ?? "", mounts: bzz.mounts ?? [], network: bzz.network ?? [], piDir: bzz.piDir }
-				: { local: false, ...(await readAgentFile(folder)), mounts: [], network: [] };
-			let net;
+			if (initialized) throw new RpcError(-32600, "initialize was already called");
+			initialized = true;
 			try {
-				net = network(settings.network);
-				disk = new SqliteFs(join(folder, "files.sqlite"));
-				vfs = new Vfs(disk, settings.mounts);
-				shell = createShell(vfs, { net, author: { name: settings.agent.name ?? "agent", email: "agent@bzz.invalid" } });
+				return await initialize(params);
 			} catch (error) {
-				disk?.close();
-				throw new RpcError(INVALID, error.message);
+				// Refused settings can be sent again, corrected: nothing of the failed attempt stays open.
+				initialized = false;
+				config = undefined;
+				opening = undefined;
+				try { disk?.close(); } catch {}
+				throw error;
 			}
-			models = await openModels({ piDir: settings.piDir ?? defaultPiDir(env), env });
-			config = { ...settings, network: net.hosts };
-			await ready();
-			log(`ready: ${config.local ? "started by bzz" : "remote copy"}, ${settings.mounts.length} granted folder(s), ${net.hosts.length} allowed host(s)`);
-			return {
-				protocolVersion: 1,
-				agentCapabilities: { loadSession: false, promptCapabilities: { image: false, audio: false, embeddedContext: false } },
-				agentInfo: { name: "bzz-agent-host", title: "bzz Pi Durable host", version: VERSION },
-				authMethods: [],
-				_meta: { bzz: { host: VERSION, tools: config.local ? "pipe" : "buzz" } },
-			};
 		},
 
 		async "session/new"(params) {
