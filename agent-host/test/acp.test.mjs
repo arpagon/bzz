@@ -379,7 +379,8 @@ test("grants and the allow-list arrive in initialize, apply to the tools, and le
 	assert.equal(await run("e1", "ls -1 /mnt; cat /mnt/site/index.html; echo made > /mnt/drop/made.txt; cat /mnt/drop/made.txt"), "drop\nsite\n<h1>granted</h1>\nmade\n");
 	assert.equal(readFileSync(join(root, "drop", "made.txt"), "utf8"), "made\n");
 	assert.match(await run("e2", "echo no > /mnt/site/no.txt"), /EROFS: this folder was granted read-only/);
-	assert.equal((await run("e3", "cat /mnt/site/../../secret.txt /mnt/drop/../secret.txt; echo end")).includes("SECRET"), false);
+	// Errors of the machine's own filesystem come back with the virtual path.
+	assert.match(await run("e3", "cat /mnt/site/../../secret.txt /mnt/drop/../secret.txt; ls /mnt/site/index.html/x; cat /mnt/site/index.html/x; echo end"), /^(?!.*SECRET).*end\n/s);
 	assert.equal(existsSync(join(root, "site", "no.txt")), false);
 	assert.equal(await run("e4", `curl -s http://${servers[0]}/a`), "server 0 answered /a\n");
 	assert.match(await run("e5", `curl -sS http://${servers[1]}/b; git clone http://${servers[1]}/r.git`), /not on this agent's allow-list.*not on this agent's allow-list/s);
@@ -388,6 +389,9 @@ test("grants and the allow-list arrive in initialize, apply to the tools, and le
 	await host.prompt(session, "e6", script(["write", { path: "/mnt/drop/from-tool.txt", content: "tool\n" }], ["read", { path: "/mnt/site/index.html" }], ["report"]));
 	assert.match(texts(host).at(-1), /<h1>granted<\/h1>/);
 	assert.equal(readFileSync(join(root, "drop", "from-tool.txt"), "utf8"), "tool\n");
+	// What the machine's own filesystem refuses is told with the virtual path, in Pi's tools and in the shell.
+	await host.prompt(session, "e7", script(["read", { path: "/mnt/site/index.html/x" }], ["bash", { command: "touch /mnt/drop/absent/x; mkdir /mnt/site/index.html/d" }], ["report"]));
+	assert.match(texts(host).at(-1), /'\/mnt\/drop\/absent\/x'/);
 	await host.rpc("_bzz/checkpoint");
 	await host.stop();
 

@@ -29,8 +29,8 @@ export function createShell(vfs, { net, author }) {
 		fs: shellFs(vfs),
 		cwd: HOME,
 		env: { HOME, USER: "agent", LOGNAME: "agent" },
-		// just-bash blocks parts of the runtime while a script runs, Node's own `fetch` among what breaks. The request
-		// is the host's code, not the script's: the allow-list is inside it.
+		// just-bash blocks parts of the runtime while a script runs, and Node's TLS is among what then breaks. The
+		// request is the host's code, not the script's: the allow-list is inside it.
 		fetch: (url, options) => DefenseInDepthBox.runTrustedAsync(() => net.shell(url, options)),
 		customCommands: [gitCommand(vfs, { http: net.git, author })],
 	});

@@ -83,38 +83,39 @@ test("git is held to the same list, redirects included", async (t) => {
 	assert.equal((await sh("ls -A")).out, "");
 });
 
-test("the list is exact: https, that host, that port", async (t) => {
+test("the list is exact: https, that host, that port", async () => {
 	const sent = [];
-	const realFetch = globalThis.fetch;
-	globalThis.fetch = async (url) => {
-		sent.push(String(url));
-		return new Response("ok");
+	const transport = async (url) => {
+		sent.push(url);
+		return { status: 200, statusText: "OK", headers: {}, body: new Uint8Array(0) };
 	};
-	t.after(() => {
-		globalThis.fetch = realFetch;
-	});
-	const net = network(["github.com", "Example.org:8443"]);
+	const net = network(["github.com", "Example.org:8443"], transport);
 	for (const url of ["https://github.com/arpagon/bzz", "https://example.org:8443/x"]) assert.equal((await net.request(url)).status, 200, url);
 	for (const url of ["http://github.com/arpagon/bzz", "https://api.github.com/", "https://github.com.evil.example/", "https://github.com:8443/", "https://example.org/", "https://github.com@evil.example/",
 		"https://evil.example/?github.com", "ssh://git@github.com/arpagon/bzz.git", "git@github.com:arpagon/bzz.git", "file:///etc/passwd", "http://127.0.0.1/", "http://169.254.169.254/latest/meta-data/"])
 		await assert.rejects(net.request(url), /^Error: network: /, url);
+	// Nothing was sent anywhere for a refused address.
 	assert.deepEqual(sent, ["https://github.com/arpagon/bzz", "https://example.org:8443/x"]);
-	await assert.rejects(network([]).request("https://github.com/"), /allow-list \(it is empty\)/);
+	await assert.rejects(network([], transport).request("https://github.com/"), /allow-list \(it is empty\)/);
 	assert.match(String(await net.request("ssh://git@github.com/x").catch((error) => error)), /SSH remotes are not supported/);
 	// An entry is a host, not a URL or a pattern.
 	for (const entry of ["https://github.com", "*.github.com", "github.com/arpagon", "", 7]) assert.throws(() => network([entry]), /takes host names/, String(entry));
 });
 
-test("credentials given for one host do not follow a redirect to another", async (t) => {
+test("credentials given for one host do not follow a redirect to another", async () => {
 	const seen = [];
-	const realFetch = globalThis.fetch;
-	globalThis.fetch = async (url, init) => {
-		seen.push([String(url), init.headers.authorization]);
-		return String(url).includes("first") ? new Response(null, { status: 302, headers: { location: "https://second.example/x" } }) : new Response("ok");
+	const transport = async (url, { headers }) => {
+		seen.push([url, headers.authorization]);
+		return url.includes("first") ? { status: 302, statusText: "Found", headers: { location: "https://second.example/x" }, body: new Uint8Array(0) } : { status: 200, statusText: "OK", headers: {}, body: new Uint8Array(0) };
 	};
-	t.after(() => {
-		globalThis.fetch = realFetch;
-	});
-	await network(["first.example", "second.example"]).request("https://first.example/x", { headers: { authorization: "Basic abc" } });
+	await network(["first.example", "second.example"], transport).request("https://first.example/x", { headers: { authorization: "Basic abc" } });
 	assert.deepEqual(seen, [["https://first.example/x", "Basic abc"], ["https://second.example/x", undefined]]);
+});
+
+test("a compressed answer is given to the caller as its content", async (t) => {
+	const { gzipSync } = await import("node:zlib");
+	const server = await serve(t, (_request, response) => response.writeHead(200, { "content-encoding": "gzip", "x-many": ["a", "b"] }).end(gzipSync("plain again\n")));
+	const answer = await network([server.host]).request(`http://${server.host}/z`);
+	assert.equal(Buffer.from(answer.body).toString(), "plain again\n");
+	assert.equal(answer.headers["x-many"], "a, b");
 });
