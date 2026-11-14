@@ -57,7 +57,7 @@ a harness's saved session, a cancelled turn, macOS, Windows.
 (`docs/agent-host-protocol.md`, sections 2 to 5 and 7). bzz's side of M2, the
 install on first use and the tests "against bzz itself", is not part of it.
 
-**Run on:** Linux x86_64, commit `25a0590`, 2026-11-14. No network, no real
+**Run on:** Linux x86_64, commit `e7dbba3`, 2026-11-14. No network, no real
 model, no relay, no Buzz: a scripted client stands in for bzz, a scripted
 module for the model (`BZZ_AGENT_HOST_SCRIPTED_MODEL`), and a script for the
 `buzz` command.
@@ -70,7 +70,7 @@ cd agent-host && npm ci --ignore-scripts && npm test
 |---|---|
 | 26.5.0 | 78 tests, 78 pass, 0 skipped, 39 s |
 | 22.19.0, the minimum (official build, run from a temporary folder) | 78 pass, 0 skipped |
-| 24.15.0 (at `ec722dc`) | 78 pass, 0 skipped |
+| 24.15.0 | 78 pass, 0 skipped |
 
 Also green with `npm ci --ignore-scripts --omit=dev --omit=optional` (176
 packages instead of 204). `npm audit --omit=dev`: 0 advisories.
@@ -78,7 +78,7 @@ packages instead of 204). `npm audit --omit=dev`: 0 advisories.
 **Red runs.** Every test was seen failing: the fault named below was planted
 in the source, the test was run alone (`node --test --test-name-pattern=…
 test/<file>`), failed as shown, and the fault was removed. 55 red runs for M2
-and M3 together, all on `25a0590`. Pi Durable's suite counts as one test here.
+and M3 together, all on `e7dbba3`. Pi Durable's suite counts as one test here.
 
 | Claim | Test (`agent-host/test/`) | Fault planted | How it failed |
 |---|---|---|---|
