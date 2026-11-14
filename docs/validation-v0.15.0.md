@@ -49,7 +49,7 @@ a harness's saved session, a cancelled turn, macOS, Windows.
 | Experiment 2: how Buzz 1.0 shows an agent whose `runtime` it does not know | not run |
 | Experiment 3: the role Buzz 1.0 gives an agent it adds to a channel, and whether bzz v0.14 lists that agent | not run |
 | Baselines fixed in the repository: the host's `package.json` and lock file, Node detection | not done |
-| ADR "local agents" | not written |
+| ADR "local agents" and the agent host protocol | written 2026-11-14: `adr-v0.15-local-agents.md`, `agent-host-protocol.md` |
 
 ## Evidence gathered before the plan (2026-11-13)
 

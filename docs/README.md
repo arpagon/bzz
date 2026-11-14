@@ -42,6 +42,7 @@ Releasing: [releasing.md](releasing.md). End-to-end checks: [e2e-manual.md](e2e-
 
 ## Design records
 
+- [ADR: v0.15 local agents](adr-v0.15-local-agents.md), with the [agent host protocol](agent-host-protocol.md)
 - [ADR: compositor and TUI source for promotional films](adr-promo-video-compositor.md)
 - [ADR: v0.4 interaction design clean-room boundary](adr-v0.4-clean-room-interaction.md)
 - [ADR: v0.5 clean-room workspace visual language](adr-v0.5-workspace-visual-language.md)
