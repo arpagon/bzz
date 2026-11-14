@@ -1002,7 +1002,7 @@ async fn a_turn_that_fails_posts_one_notice_named_by_kind() {
         json!([
             {"match": "silence", "steps": []},
             {"match": "refusal", "steps": [{"stop": "refusal"}]},
-            {"match": "sign-in", "steps": [{"error": {"code": -32000, "message": "Authentication required: token sk-secret-1234 expired"}}]},
+            {"match": "sign-in", "steps": [{"error": {"code": -32000, "message": "token sk-secret-1234 has expired"}}]},
             {"match": "limit", "steps": [{"text": "partial"}, {"error": {"code": -32603, "message": "You have hit your usage limit"}}]},
             {"match": "provider", "steps": [send("working on it", false), {"error": {"code": -32603, "message": "upstream connect error at 10.1.2.3"}}]},
         ]),
