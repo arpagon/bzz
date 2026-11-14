@@ -288,6 +288,10 @@ move and when the agent has been idle for a while.
   never sends it: it asks with `_bzz/approve` (section 9).
 - Notifications in a namespace bzz does not know, such as `_x.ai/…`, are
   ignored. A request bzz does not know gets error `-32601`.
+- The requests of bzz's own host (`_bzz/tool`, `_bzz/credential`,
+  `_bzz/approve`) carry string ids: `h1`, `h2`, and so on. Several may be
+  open at once, and bzz may answer them in any order. An answer to a request
+  the host no longer waits for is dropped.
 
 ## 5. Tools over the pipe: `_bzz/tool`
 
