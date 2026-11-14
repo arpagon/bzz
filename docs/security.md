@@ -314,6 +314,9 @@ trusted with anything of bzz's:
     his MCP servers, with their arguments and environment, in a notification
     to its client. bzz ignores what it does not know and writes none of it,
     not to a log and not to a recorded transcript.
+  - **Its log is the program's own.** `harness.log` holds what the program
+    wrote to its standard error, for the owner only. bzz writes nothing of
+    its own there, and cannot say what a program of the owner's writes.
 - **bzz's own agent host (`pi-durable`).** A Node program inside the bzz
   binary, run with the owner's Node. bzz installs it on first use from the
   lock file inside the binary with `npm ci --ignore-scripts --omit=optional

@@ -4497,8 +4497,12 @@ async fn real_relay_coding_harnesses_answer_once_remember_and_stay_in_their_fold
 
     let wanted = std::env::var("BZZ_REAL_HARNESSES").unwrap_or_default();
     if wanted.trim().is_empty() {
-        eprintln!(
-            "skipped: real_relay_coding_harnesses_answer_once_remember_and_stay_in_their_folders: it uses your own installed grok, codex and claude with your sign-ins, so it runs only when asked: BZZ_REAL_HARNESSES=grok,codex,claude-code"
+        // Written to the terminal itself: the test harness hides what a
+        // passing test prints, and a skip must be seen.
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED real_relay_coding_harnesses_answer_once_remember_and_stay_in_their_folders: it uses your own installed grok, codex and claude with your sign-ins, so it runs only when asked: BZZ_REAL_HARNESSES=grok,codex,claude-code"
         );
         return;
     }

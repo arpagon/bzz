@@ -4,7 +4,7 @@
 below (2026-11-14): M1, the agent runtime in bzz; M2, the Pi Durable host,
 on both sides; M3, the agent's disk, with credentials for a private remote on
 both sides; M4, creating and managing an agent; M7, hands on this machine, on
-both sides. Not in this document yet: M5 (move), M6 (the other harnesses). Plan:
+both sides; M6, the other harnesses. Not in this document yet: M5 (move). Plan:
 [`docs/planning/2026-11-13/v0.15.0.md`](planning/2026-11-13/v0.15.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
 
@@ -1278,6 +1278,275 @@ own tests ran on `d902505`; `agent-host/` has not changed since `f76bfc3`.
 | Pinned relay | `BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh` | 19 passed (the 18 of M4 and the journey above) in 456 s, then `agent_host_test`, 6 passed. It had passed the same way on `d902505`, before the last change. The other agent's work uses the same harness: the run waited for it to be free |
 | Agent host | `cd agent-host && npm ci --ignore-scripts --omit=optional && npm test` | 99 tests, 99 pass, 0 skipped (the 98 of the second pass and the one for `--check-model`); `npm ci` reports 0 vulnerabilities |
 | Supply chain | `cargo deny check`; `cargo audit` | `advisories ok, bans ok, licenses ok, sources ok`; the 4 allowed warnings of v0.14. `Cargo.lock` gains one package, `close_fds` 0.3.2 (MIT), whose own dependencies were there already |
+
+## M6 — The other harnesses
+
+**Scope:** Grok, Codex and Claude Code as harnesses: finding and starting
+the owner's own program, the two adapters, the guard bzz sets, the answer to
+every permission request, version ranges, creation and the records, and the
+tests: with a scripted harness, with transcripts recorded from the real
+programs, and with the real programs on the pinned relay.
+
+Linux x86_64, Rust 1.98.1, Node 26.5.0, Buzz pin `bf3bdd0eaefe`, 2026-11-14.
+Commits `2a77e06..` on `v0.15.0`. The programs: Grok Build 1.0.77, Codex
+0.166.0 with `codex-acp` 2.5.0, Claude Code 2.1.322 with `claude-agent-acp`
+0.101.0, each with the owner's own sign-in.
+
+**Where it is.**
+
+| What | Where |
+|---|---|
+| Each program: where it is, its versions, its launch, its guard, how it takes a session; the adapters and their install; what `doctor` says | `src/agents/runtime/coding.rs` |
+| The lock files of the two adapters | `agent-adapters/claude-code/`, `agent-adapters/codex/` |
+| What a request asks leave for, and the rule: paths, commands, never "always" | `src/agents/runtime/permission.rs` |
+| The guard on a session, the answer to a request, a command put to the owner | `src/agents/runtime/agent/guard.rs` |
+| The launch, the session, the tool calls a harness reported, a turn that ends after a refusal | `src/agents/runtime/agent.rs` |
+| A transcript of one harness process | `src/agents/runtime/record.rs`, `src/agents/runtime/acp.rs` |
+| The capability records | `src/agents/capability.rs` |
+| Creation, the checks before it, what a harness lacks, `agent show`, `agent doctor` | `src/agents/manage.rs`, `src/cli_agent.rs` |
+| A coding harness's command in the dialog | `src/ui/approval.rs`, `src/agents/runtime/approval.rs`, `src/agents/activity.rs` |
+| bzz's memory kept from other processes | `src/agents/runtime/process.rs` |
+| The scripted harness as a coding program, and as a player of transcripts | `examples/scripted_harness.rs` |
+| The transcripts | `tests/fixtures/agents/transcripts/<harness>/` |
+
+**How to repeat.**
+
+```sh
+. runs/env.sh
+cargo build --locked --example scripted_harness
+cargo test --locked --all-features --lib -- agents::runtime::coding agents::runtime::permission \
+  agents::runtime::record agents::capability agents::activity ui::approval memory_tests
+cargo test --locked --all-features --test agent_coding_test    # the rules, the launches, the transcripts
+cargo test --locked --all-features --test agent_manage_test    # creation
+cargo test --locked --all-features --test secret_scan_test     # the three launches
+# With your own grok, codex and claude, signed in. Three short prompts of
+# each, on the cheapest model. Never part of a default run or of CI:
+BZZ_REAL_HARNESSES=grok,codex,claude-code BZZ_RELAY_TEST_FILTER=real_relay_coding_harnesses \
+  BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh
+```
+
+To record the transcripts again, the same command with a folder for them:
+
+```sh
+BZZ_AGENT_RECORD=$PWD/target/m6-transcripts BZZ_REAL_HARNESSES=grok,codex,claude-code \
+  BZZ_RELAY_TEST_FILTER=real_relay_coding_harnesses BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh
+# target/m6-transcripts/<harness>/ then holds two files per harness, in the
+# order they were written: copy the first to
+# tests/fixtures/agents/transcripts/<harness>/first-run.ndjson and the second
+# to after-restart.ndjson. Read them before you commit them: they hold what a
+# model wrote.
+```
+
+Red runs: one fault planted in bzz, the named test seen failing as quoted,
+the fault removed (`git checkout`). All of them were run on `89dfe92` by one
+script, 35 runs, each of which failed. `U:` is a unit test, `C:`
+`tests/agent_coding_test.rs`, `M:` `tests/agent_manage_test.rs`, `S:`
+`tests/secret_scan_test.rs`. `replay` is
+`C: bzz_answers_what_each_real_program_sent_as_it_did_when_recorded`.
+
+### Finding and starting the program, and its version (points 1 and 4, D16, D17)
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| The version is read as each program prints it | `U: coding::versions_are_read_as_each_program_prints_them` | not run | pass |
+| A version outside the range is refused by the checks before a creation, by `doctor` and by the start, each saying the version found, the versions known and what to do. Nothing is started | `U: coding::a_program_is_found_asked_for_its_version_and_held_to_its_range`, `…a_version_outside_the_tested_range_is_refused_with_both_versions`; `M: an_agent_on_a_coding_harness_is_checked_before_its_key_is_made`; `C: bzz_starts_the_owners_own_grok_and_only_a_version_it_knows` | the range check always yes: ``called `Result::unwrap_err()` on an `Ok` value: Ready {…`` (unit); `…on an `Ok` value: "Grok Build 1.1.0 at …"` (creation); `left: None right: Some("unavailable")` (the start: the agent answered) | pass |
+| A missing program starts nothing; the owner reads which program, how to sign in and which variable names another copy; the people in the chat are told the agent is not available | same three; `M: the_checks_before_a_creation_say_what_to_do` | covered by the row above for the start | pass |
+| Grok is started as `grok agent --no-leader stdio`, in the agent's working folder, with `GROK_SANDBOX` and nothing of bzz's | `C: bzz_starts_the_owners_own_grok…` (a stand-in `grok` that becomes the scripted harness) | a key of bzz's environment handed on: `{"argv":[…"agent","--no-leader","stdio"],…"env":{"ANTHROPIC_API_KEY":"mu…` | pass |
+| Codex and Claude Code are started as `node <adapter entry>`, with the owner's own program in `CODEX_PATH` or `CLAUDE_CODE_EXECUTABLE`, links followed | `C: an_adapter_is_installed_at_the_first_start_and_pointed_at_the_owners_program` | below | pass |
+| On Linux Grok needs bubblewrap, and bzz says so before it starts a Grok that would stop | `U: coding::a_program_is_found…` | not run | pass |
+
+### The adapters (point 2, rule 13)
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| **Both adapters run without their optional packages.** Installed with `npm ci --ignore-scripts --omit=optional --omit=dev` they are 77 MB (107 packages) and 21 MB (24 packages), against 836 MB with the copies of `claude` and `codex`; both answered `initialize` and `session/new`, and then whole turns, when pointed at the owner's programs | by hand, then the real runs below | none: it is a finding | seen |
+| The lock files pin exactly the versions the code names, and every package comes from the npm registry with a hash | `U: coding::the_lock_files_pin_the_adapters_the_code_names` | not run | pass |
+| An adapter is installed once, by a rename of a whole install, also when two bzz start it at once; a failed or half install is never used and leaves nothing; npm runs as rule 13 says with nothing of bzz's in its environment | `U: coding::an_adapter_is_installed_once_whole_and_at_the_pinned_version` | below | pass |
+| An install that holds another version than the pinned one is not kept | same | the version not compared: ``called `Result::unwrap_err()` on an `Ok` value: Ready { spec: ProgramSpec { harness: Codex…`` | pass |
+| A missing adapter is installed at the first start; when it cannot be (no npm), nothing starts and the owner reads why | `C: an_adapter_is_installed_at_the_first_start…` | an adapter taken as installed without looking: `ClaudeCode left: None right: Some("unavailable")` (a harness was started from a folder that is not there) | pass |
+| `agent doctor` reports each program, its version and range, its adapter and which sign-in is in use, and opens no session | `U: coding::an_adapter_is_installed_once…` (the report), `…a_program_is_found…`; on the relay below | not run | pass |
+| `npm audit --omit=dev --omit=optional` on both lock files | by hand, 2026-11-14; a CI job (`agent-adapters`) | none | 0 vulnerabilities |
+
+### The guard, before a session is prompted (point 3)
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| The mode is set on every session before its first prompt, on a new session and on a loaded one: `default` for Claude Code, `workspace-write` for Codex, whatever mode the session starts in (the scripted harness starts in `auto`). Also when a loaded session lists no modes | `C: the_mode_is_set_before_the_first_prompt_on_a_new_and_on_a_loaded_session`; `replay` | `session/set_mode` not sent: `no session/set_mode number 0 in ["initialize", "session/new", "session/prompt"]`; `replay`: `Codex, a mention: bzz did not send what it sent when this was recorded` | pass |
+| A session that does not take the mode is never prompted: the mode is not on its list, it has no modes, or it refuses. The chat is told, the owner reads why, and no credential stays behind | `C: a_session_that_does_not_take_the_mode_is_never_prompted` | a refusal of the mode passed over: `it has no modes at all left: None right: Some("not-guarded")` (the agent was prompted and answered) | pass |
+| Grok is sent no mode. Its guard is a profile bzz writes in its working folder before every start, **in place of whatever the agent left there**, with the folders granted for writing and bzz's keys hidden, and the variable that names it | `C: the_mode_is_set…` (last part); `U: coding::the_guard_is_in_the_environment_and_the_profile_replaces_what_was_there`, `…groks_profile_extends_workspace…` | the profile not written: `left: "[profiles.bzz-agent]\nextends = \"devbox\"\nread_write = [\"/\"]\n"` (what the agent had left was still there) | pass |
+| The model the owner chose is set on the session before the first prompt, and the thinking level; a model the program does not offer ends the turn with a notice and the owner reads which it offers; a thinking level it lacks is passed over | `C: the_owners_model_is_set_on_the_session_or_the_turn_says_it_is_not_offered`; `U: coding::a_model_is_set_only_when_the_harness_offers_it` | a model that is not offered passed over: `left: None right: Some("model-unavailable")` (another model answered) | pass |
+| The rules of the chat, the instructions and the folders go to each program in the way it takes them: `systemPrompt` and `additionalDirectories` for the adapters, `_meta.rules` for Grok; Codex is told only of folders it may write; Claude Code is told to load none of the owner's settings; a loaded session is told the same; the instructions then travel in no message | `C: a_session_is_told_its_prompt_and_its_folders_as_its_program_takes_them`; `U: coding::a_session_is_told_its_prompt_and_folders…`, `…the_system_prompt_says_where_the_agent_works…`; `replay` | the options for Claude Code left empty: `left: Object {} right: Object {"settingSources": Array [], "strictMcpConfig": Bool(true)}`; `replay`: `ClaudeCode, a mention: bzz did not send what it sent…` | pass |
+
+### What a harness asks leave for (point 3)
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| Each kind of request is read as the three programs send it: the chat tools under their three names, an edit with its path in three places, a read, a command as text or as words with where it starts; anything else is unclear | `U: permission::each_kind_of_request_is_read_as_the_three_programs_send_it` | not run | pass |
+| **A file edit is allowed only inside the working folder and folders granted for writing.** Refused: a folder granted for reading, any other folder, the agent's own folder above its working folder, a sibling whose name starts alike, a link that leaves (to a folder, to a file, to nowhere), a path with `..`, a path that is not absolute, no path, and two paths of which one is outside | `U: permission::an_edit_is_allowed_only_inside…`; `C: each_thing_a_coding_harness_asks_leave_for_is_answered_by_rule` (23 requests in one turn); `replay` | every path taken as inside: `assertion failed: read(docs.join("a.md")) && !write(docs.join("a.md"))`; `an edit in a folder granted for reading left: "allow-once" right: "reject"`; `replay`: `Codex, the two writes: bzz did not send what it sent…` | pass |
+| bzz's own chat tools are allowed; a read, inside the working folder and any granted folder; a fetch, a deletion, a tool of another server, a command dressed as the chat tool, a request with no kind: refused | `C: each_thing…` | covered by the rows above and below | pass |
+| **Never "always".** The option that allows once or refuses once is chosen by its kind; with only "always" on offer the request is cancelled, also for an edit bzz would allow | `U: permission::an_answer_is_once_by_kind_and_never_always`, `agent::only_the_chat_tools_are_allowed_and_only_once`; `C: each_thing…` | "always" chosen for a yes: `left: …"optionId": String("always")… right: …String("yes")`; `bzz's chat tool, as Claude Code names it left: "allow-with-updates" right: "allow-once"` | pass |
+| What is refused is in the agent's activity with its path and the reason; what is allowed is not | `C: each_thing…`; `U: activity::a_question_and_its_answer_are_kept_as_one_line_each` | not run | pass |
+| A request that names only the id of a call (Codex) is read from what the harness reported under that id: bzz's chat tool is allowed, a tool of another server and a call never reported are not, and a file change is held to the files of the reported diffs. A file's text is not kept | `U: permission::a_request_that_names_only_its_call_is_read_from_what_was_reported`; `C: a_request_that_names_only_its_call_is_answered_from_what_was_reported`; `replay` | nothing kept of a reported call: `left: ["cancel", "cancel", "cancel", "cancel", "cancel"] right: ["allow_once", "cancel", "cancel", "allow_once", "cancel"]`; `replay`: `Codex, a mention: bzz did not send…` (bzz refused Codex its own `send`) | pass |
+| **A shell command follows the folders granted for commands and the owner's answer.** With none granted it is refused. With one that asks, the owner is given the command, where it would start and that a coding harness asks; his yes allows it once and his no refuses it; each step is in the activity | `C: a_command_runs_only_by_the_folders_granted_and_the_owners_answer`; `U: permission::a_command_follows_the_folders_granted_for_commands` | the owner never asked: `timed out waiting for a question for the owner`; a command with no grant let through: `left: Ok(CommandPlace { folders: [], … asks: false }) right: Err("no folder is granted for commands")`, `a shell command, with no folder granted for commands left: "allow-once" right: "reject"` | pass |
+| With nobody at bzz a folder that asks refuses; a folder allowed without asking lets it run; one folder that asks among several decides for a command that starts in the working folder; an agent anyone may wake is always asked about; a command that would start in a folder not granted for commands, or anywhere that is neither the agent's nor granted, is refused | `C: a_command_runs_only…` (seven cases) | covered by the row above | pass |
+| The dialog shows a coding harness's command with its real folder, as its program reports it, and says that the program starts it | `U: ui::approval::a_coding_harness_command_is_shown_with_its_real_folder_and_whose_word_it_is`, `…the_banner_says…` | not run | pass |
+| A turn that ends with nothing after a refusal tells the chat that the agent needed something its owner has not allowed; without a refusal it says only that there was no answer | `C: a_turn_that_ends_with_nothing_after_a_refusal_says_so` | the refusal not noted on the turn: `left: Some("no-reply") right: Some("not-allowed")` | pass |
+| What the owner takes away while bzz runs is refused at once: a folder's writing and its commands | `C: what_the_owner_takes_away_from_a_coding_harness_is_refused_at_once` | the settings file not read again: `left: ["allow-once", "allow-once"] right: ["reject", "reject"]` | pass |
+
+### Creation and the records (point 5, D18, D19, rule 12)
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| `agent new --harness grok\|codex\|claude-code` checks the program, its version and the adapter (installing it) before a key is made, and says which program, which sign-in is in use, when the model is checked and where its sessions also appear | `M: an_agent_on_a_coding_harness_is_checked_before_its_key_is_made`; on the relay below | above (the range) | pass |
+| What these harnesses do not have is refused where it would be set, with the reason: a list of hosts, Pi packages (on or off), a folder for commands for Grok, in `agent new` and in `agent edit`; a git credential; a move with memory (`manage::lacks`, for the command that moves) | same; `M: a_creation_that_fails_on_this_machine_publishes_nothing` | the check always yes: ``called `Result::unwrap_err()` on an `Ok` value: Created {…`` (an agent with a list of hosts was made) | pass |
+| A model is written as the program names it, with or without the harness before it | same | not run | pass |
+| The records: offered; no disk, no git without a process, no move; D19's words; for each rule who holds it; what each can read apart from what it can write; what the owner's own settings give it; with which version and system it was seen. D18's warning exactly where there is no sandbox: Claude Code, and Grok on Windows | `U: capability::every_harness_states…`, `…the_records_say…`, `…an_agents_record_says…`; `M: an_agent_on_a_coding_harness…` (`agent show`) | Claude Code given a sandbox: `assertion failed: record_on(Harness::ClaudeCode, false).warning.is_some()`; `` `Warning: this harness has no sandbox of its own here…` in: `` (`agent show` without it) | pass |
+| Codex and Claude Code are marked experimental wherever a harness is shown: the record, `agent show`, `agent list`, `agent doctor`, the panel, the status line | `M: an_agent_on_a_coding_harness…` (`harness_label`, `agent show`) | not run | pass |
+
+### The key rule (rule 10)
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| The secret scan covers the three launches as bzz makes them (the program found on `PATH`, the adapter installed, Node): no agent key, owner key or broker credential in a harness's environment, arguments, messages, tool results, log, folder, sandbox profile, adapter install, the database or a transcript. Its environment holds the four variables, its guard, where its adapter finds the program, and the owner's proxy: nothing else, and no API key of bzz's environment | `S: no_key_reaches_a_harness_environment_arguments_or_logs`; `U: coding::the_guard_is_in_the_environment…`; `C: bzz_starts_the_owners_own_grok…`, `…a_session_is_told…` | three API keys handed on: `a key of bzz's environment leaked into grok harness log`; `[("GROK_HOME", "/srv/grok"), ("XAI_API_KEY", "must not pass"), …` | pass |
+| A transcript holds no session credential, no path of the machine, no notification's content but `session/update`, nothing of an answer that bzz does not read, and nothing a tool gave back | `U: record::a_transcript_holds_no_credential_no_path_and_nothing_bzz_does_not_read`; `S:` above | the credential not written over: `` `bzzs_secret` in: `` …; `a session credential leaked into …/transcripts/grok-….ndjson` | pass |
+| On Linux a bzz that runs agents cannot be read by another process of the same user: its memory files are root's, and a `sh` it starts cannot read its environment | `U: process::memory_tests::a_bzz_that_runs_agents_is_not_readable_by_other_processes_of_the_user` | the call left out: `left: Dumpable right: NotDumpable` | pass |
+
+### Recorded transcripts
+
+`tests/fixtures/agents/transcripts/<harness>/first-run.ndjson` and
+`after-restart.ndjson`, six files, 233 KB: what Grok 1.0.77, Codex 0.166.0
+and Claude Code 2.1.322 sent over ACP on 2026-11-14 in the run on the pinned
+relay below, and what bzz sent them. For each program: one answered mention;
+what it did and asked when told to write inside and outside its folders; and,
+in a second process, its saved session loaded and asked what it remembered.
+
+The test (`replay`) runs bzz's real runtime with the scripted harness in the
+program's place. The harness sends what the program sent, calls bzz's tools
+through the real `bzz agent-tools` where the program did, and ends at the
+first message of bzz that is not what bzz sent when it was recorded. So CI,
+which has no sign-in, tests bzz against each program's real messages. Four of
+the red runs above are caught by it and by nothing else of the real
+programs.
+
+What the transcripts hold that a hand-written script did not:
+
+- Codex asks leave for a tool of an MCP server by the id of a call it
+  reported before, with `kind: execute`; and for a file change with
+  `kind: edit` and the file in `locations`.
+- Codex ends its turn (`stopReason: cancelled`) when a request is refused.
+- A loaded session of each program sends its past again, tool calls and
+  all, before `session/load` is answered. bzz ignores it: no reply is
+  published twice.
+- A loaded Codex session comes back on the owner's default model, and says
+  so in an `agent_message_chunk`; bzz sets the model again before the
+  prompt.
+- Grok sends more than fifty notifications of its own (`_x.ai/…`) around
+  one turn; Claude Code asks leave for bzz's own tool every time.
+
+What was changed in them after recording, by the rule the recorder now
+applies itself: what a tool gave back was removed (Grok's tool search listed
+the owner's own tools). By hand: two sentences of a Codex warning that named
+a setting in the owner's own Codex configuration.
+
+### With the real programs, on the pinned relay
+
+`real_relay_coding_harnesses_answer_once_remember_and_stay_in_their_folders`
+(`tests/relay_integration.rs`). It runs only with `BZZ_REAL_HARNESSES`;
+without it, it prints that it was skipped and why. An agent is made by
+`bzz agent new --harness <name>` with a folder granted `:rw`, added to a
+channel, and run by the runtime in the test's process as the TUI runs it,
+with nobody to ask. Models: `grok-4.5` (low), `gpt-5.6-luna` (low), `haiku`.
+
+| Claim | Grok 1.0.77 | Codex 0.166.0 | Claude Code 2.1.322 |
+|---|---|---|---|
+| `agent doctor` names the program and its version as in range, and the sign-in in use | pass | pass | pass |
+| A version outside the range is refused by `agent new` before a key is made (the real program behind a script that reports 99.0.0) | pass | pass | pass |
+| `agent new` creates the agent, with its record, D19's words and D18's warning only for Claude Code | pass | pass | pass |
+| A mention is answered exactly once | "noted." | "noted" | "noted" |
+| A file in the folder granted for writing is written | pass | pass | pass (bzz allowed the edit) |
+| A file in a folder that is not granted is not written | pass: Grok's sandbox, `Permission denied (os error 13)`; Grok asked nothing | pass: Codex asked, bzz refused, Codex ended its turn; the chat got "I could not finish: I needed something on my owner's machine that my owner has not allowed." | pass: Claude Code asked, bzz refused; it answered that the write was refused |
+| A file in the folder of bzz's keys is not read | pass: `Permission denied` | not asked | not asked |
+| Its process is running, and stops when the runtime stops | pass | pass | pass |
+| After bzz and the program have stopped and started again, the next message in the thread is answered from the saved session: `session/load`, no `session/new`, no `read` of the thread, 21 messages between so that the word is not in what the message shows | "heron" | "heron" | "heron" |
+| Still exactly one reply to each of the three messages | pass | pass | pass |
+| The mode is set before the first prompt of each session, new and loaded | no modes | `workspace-write` | `default` |
+| No credential and no key in what was recorded | pass | pass | pass |
+
+Passing runs: Grok alone in 63 s, then Codex and Claude Code together in
+121 s, on `f3ff49f` with the test as committed there, 2026-11-14.
+
+Red runs, with the real programs, are the runs that failed on the way:
+
+| What failed | How it showed | What changed |
+|---|---|---|
+| Codex, told to write outside its folders, **wrote there** | `FILES inside=true outside=true`, with bzz and Codex 0.166.0 and a recorded relay | the folder was under `/tmp`, which Codex's sandbox lets it write. The record now says "and the machine's temporary folders", and the test's folder is elsewhere |
+| Codex answered in plain text, never through `send` | the same run: three requests answered `cancel`, the activity `a command bzz could not read · refused` three times | Codex asks leave for an MCP tool by the id of a call. bzz now keeps reported calls |
+| Grok did not answer a mention | `grok, a mention: no reply` after 240 s on the pinned relay | the test started the test's own program as `bzz agent-tools`. `service::serve_with_tools` names bzz. What Grok did meanwhile is below |
+
+### The plan's exit gate for M6
+
+"Each harness answers a mention once on the pinned relay, survives a restart
+with its own saved session, and refuses versions outside its range."
+
+- [x] Grok, Codex and Claude Code each answer a mention exactly once on the
+  pinned relay, with the owner's own program and sign-in.
+- [x] Each survives a restart of bzz and of the program with its own saved
+  session, and answers from it.
+- [x] Each refuses a version outside its range: at `agent new`, in `agent
+  doctor` and at the start.
+- [x] A write outside the granted folders does not happen, for each of the
+  three, and a write inside does.
+- [ ] **Each harness in the panel on the release binary** (the plan's Herdr
+  column): not run.
+
+### Not proven in M6
+
+| Item | State |
+|---|---|
+| macOS and Windows | not compiled or run here. Grok's and Codex's sandboxes on macOS, and what the three do on Windows, are read from their documents, not seen. The records say "not tried" |
+| Any version but the three named | the ranges accept later versions of the same line (Grok below 1.1.0, Claude Code below 2.2.0, Codex below 0.167.0). None was run |
+| An allow rule in the owner's own Claude settings | bzz starts Claude Code with no settings source, so that none is read. Whether such a rule would let an edit through without a request was not tried: the owner's settings were not mine to change. A settings file in the agent's working folder that allowed `Write`, `Edit` and `Bash` did not: Claude Code still asked (one run, before bzz set the option) |
+| An MCP server of the owner's own under Codex | Codex asked leave for bzz's own tool, and a scripted request for `postgres.query` is refused. That Codex asks for every server's tools is not seen |
+| Grok's and Codex's own settings | apply as the owner has them: MCP servers, hooks, rules, plugins. bzz does not switch them off. In one run Grok read the owner's own skills folder and ran one of his scripts with `--help` |
+| A shell command of Claude Code or Codex allowed by the owner, with the real program | not run: the real runs had nobody to ask. The rule is proven with the scripted harness, the dialog with a test terminal |
+| A link put in place of a folder after bzz looked | bzz checks where a path leads when it answers. A command the owner allowed can change that afterwards |
+| The owner's key in an OS keychain | Grok's sandbox hides bzz's key folder. A key the operating system keeps for the user is reachable by any program of that user |
+| Reading under Codex | Codex's sandbox hides nothing: a Codex agent can read bzz's key folder (the keys there are sealed or encrypted) and its database |
+| A turn cancelled half way, with the real programs | seen in the spike (all three stop at once); not in a test here |
+| Two conversations at once in one real process | seen in M0; the real runs here were one after the other |
+| A usage limit, a missing sign-in | none occurred. The notices for them are M1's, by kind, from a scripted error |
+| Codex's warnings as text | Codex writes its own warnings as message text. In a turn with no `send` and no other text, such a warning would be published as the answer. Seen only while a session was loading, where bzz ignores it |
+
+### Found on the way
+
+- **A harness's own messages can hold the owner's secrets.** Grok's
+  `_x.ai/mcp/servers_updated` notification lists the owner's MCP servers with
+  their arguments and environment. On this machine that held two live
+  credentials, which were printed into the log of the work session that made
+  this milestone before the cause was known. bzz never read them: it ignores
+  the notification. The recorder keeps such a notification by its name only.
+- **A model that cannot post looks for another way.** In the failed Grok run
+  above, its `send` tool did not work. In four minutes Grok ran fifty tool
+  calls: it read the owner's own skill for posting to his real Buzz and ran
+  that script with `--help`, listed processes, read bzz's source to learn how
+  `agent-tools` works, searched its own session files, `/tmp` and its
+  parent's memory map for the session credential, read the test profile's
+  key files and its passphrase file, and queried bzz's database. It posted
+  nothing anywhere and found no credential; everything it reached belonged
+  to the disposable profile, the passphrase included. The transcript was
+  deleted. Three changes followed: Grok's sandbox is told to hide bzz's key
+  folder (shown above), every coding harness is told what to do when `send`
+  fails, and bzz keeps its memory from other processes on Linux.
+- **"Enforced by bzz only" was the tightest of the three in these runs.**
+  Claude Code, with no folder granted for commands, could write and read only
+  in its folders. Grok and Codex, with sandboxes of their own, read
+  everything and run commands without asking.
+- **Buzz's relay script fails on a busy machine**: it takes Postgres as ready
+  before its first start has made the database. `scripts/test-relay.sh` now
+  waits for the database itself.
+- `tests/agent_host_test.rs` failed once in a full run under a load of 13
+  (`a new host is running`), and passed four times alone and in the next full
+  runs. It is M2's test and was not changed.
 
 ## Evidence gathered before the plan (2026-11-13)
 
