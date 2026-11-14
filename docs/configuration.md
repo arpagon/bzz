@@ -283,13 +283,25 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   - `instructions`, `network` (hosts the agent may reach) and `folders`
     (`name`, absolute `path`, `write = false`): real folders granted to the
     agent, read-only unless said.
+  - `exec` on a folder (v0.15 M7): whether real commands of this machine may
+    run there. Absent: none. `"ask"`: each command waits for your yes in the
+    TUI, and is refused when bzz runs without it. `"without-asking"`:
+    commands run without you; not for an agent with `wake = "anyone"`,
+    whose commands are always asked about. Anything else is refused when the
+    file is read. A command runs as your user and is not held in the folder; `write`
+    binds the agent's file tools only. `--folder name=/path:exec` writes
+    `"ask"`, `:exec-without-asking` the other.
+  - `packages` (default `true`): whether the agent's host loads the Pi
+    packages named in Pi's `settings.json`. Their code runs inside the host
+    with your rights. `false` is written by `--no-packages` and `bzz agent
+    edit --packages off`.
   - `state`: `active` (default), `paused` or `moved-away`. Only an active,
     unpaused agent is ever started. `moved-away` is written by
     `bzz agent move` and `bzz agent launch-kit`, with `move.json` in the
     agent's folder, which is what a bzz that is already running reads. Every
     `bzz agent` command makes this setting agree with that file.
   - `packages`: whether the Pi Durable host loads your Pi packages for this
-    agent. Written only when `false` (`bzz agent edit --no-packages`); the
+    agent. Written only when `false` (`bzz agent edit --packages off`); the
     choice moves with the agent.
   - `picture`: the HTTPS address of the agent's picture, kept so that an edit
     can publish its profile and the owner's record again.
@@ -298,11 +310,35 @@ Cache/concurrency settings are validated against hard safety ceilings. See
     made by `bzz agent new`: a `pi-durable` agent is then started as
     `node <data>/agent-host/<id>/main.mjs <agent folder>`.
 
+  ```toml
+  [[hosted_agents.local.folders]]
+  name = "work"
+  path = "/home/ann/work"
+  write = true
+  exec = "ask"
+  ```
+
+  **Not in this file: git credentials.** `bzz agent credential set <agent>
+  <host>` stores a user name and a token sealed to your key in
+  `<data>/keys/agent-<id>.git/`. Which hosts have one is shown by `bzz agent
+  credential list` and `bzz agent show`.
+
   bzz runs local agents while your identity is unlocked in the TUI
   (`:agents` shows each one; `:broker` keeps one status line each) and under
   `bzz agent run`. Their processes are recorded in `<data>/agents/run/`,
   their folders are `<data>/agents/<id>/`, and each harness's standard error
-  goes to `harness.log` there. See
+  goes to `harness.log` there. Beside it, `activity.jsonl` holds each
+  command an agent asked to run and each credential it asked for, with the
+  answer, and `started.json` what its host reported at its last start.
+
+  **Saving.** bzz writes this file under a lock (`config.toml.lock`, beside
+  it) and writes only what its own copy changed since it last read or wrote
+  the file, over what the file holds at that moment. So a command (`bzz
+  agent edit`, `pause`, `new`) and a TUI that is open do not write over each
+  other. An entry either removed stays removed. A bzz that is running keeps
+  the settings it started with, with one exception: before it allows an
+  agent a real command or gives it a credential, it reads this file again,
+  and refuses what you have taken away since. See
   [`adr-v0.15-local-agents.md`](adr-v0.15-local-agents.md).
 
   `bzz agent move` and `bzz agent receive` ask for the passphrase of the

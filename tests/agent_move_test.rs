@@ -163,6 +163,7 @@ impl Home {
                 name: "site".into(),
                 path: site,
                 write: true,
+                exec: bzz::config::ExecGrant::Ask,
             }],
             network: vec!["git.example.org:8443".into(), "github.com".into()],
             command: self.script.command(),

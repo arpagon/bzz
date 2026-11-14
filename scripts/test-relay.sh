@@ -9,6 +9,18 @@
 # Herdr pane with BZZ_HERDR_PANE set; see docs/e2e-herdr.md).
 set -euo pipefail
 : "${BZZ_BUZZ_SOURCE:?set BZZ_BUZZ_SOURCE to the pinned block/buzz checkout}"
+# One run at a time on a machine: the harness has one port (3030) and one
+# Docker project, and a second run's cleanup would remove the first's
+# containers. The lock is shared by every checkout of this user.
+if command -v flock >/dev/null 2>&1 && [[ -z "${BZZ_RELAY_LOCK_HELD:-}" ]]; then
+  lock="${TMPDIR:-/tmp}/bzz-test-relay-$(id -u).lock"
+  echo "waiting for the relay harness lock ($lock)" >&2
+  BZZ_RELAY_LOCK_HELD=1 exec flock "$lock" "$0" "$@"
+fi
+# A run from a checkout that has no lock yet: wait until its harness is gone.
+while docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^buzz-harness'; do
+  echo "the relay harness is in use; waiting" >&2; sleep 20
+done
 PROFILE=default
 if [[ "${1:-}" == "--nip-fi" ]]; then PROFILE=nip-fi; fi
 if [[ "${1:-}" == "--herdr" ]]; then PROFILE=herdr; fi

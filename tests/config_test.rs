@@ -342,3 +342,299 @@ fn hosted_agents_of_v013_load_unchanged_and_local_agents_add_settings() {
         );
     }
 }
+
+/// v0.15 M7: a folder grant says whether real commands may run there, and
+/// whether the owner is asked; an agent says whether Pi packages are loaded.
+/// A file written before either existed means no commands, and packages on.
+#[test]
+fn a_folder_grant_carries_exec_and_an_agent_its_packages_switch() {
+    use bzz::config::ExecGrant;
+    let identity = uuid::Uuid::new_v4();
+    let community = uuid::Uuid::new_v4();
+    let key = "b".repeat(64);
+    let granted = if cfg!(windows) {
+        r"C:\Users\ann\site"
+    } else {
+        "/home/ann/site"
+    };
+    let agent = format!(
+        "[[identities]]\nid = \"{identity}\"\nlabel = \"owner\"\npubkey = \"{key}\"\nbackend = \"encrypted-file\"\nkey_ref = \"k\"\n\n\
+         [[hosted_agents]]\nid = \"{community}\"\nlabel = \"Scout\"\npubkey = \"{key}\"\ncommunity = \"{community}\"\n\
+         owner_identity = \"{identity}\"\nauth_tag = \"[]\"\ncredential_hash = \"{}\"\n\n\
+         [hosted_agents.local]\nharness = \"pi-durable\"\n",
+        "c".repeat(64)
+    );
+    let folder = |more: &str| {
+        format!("\n[[hosted_agents.local.folders]]\nname = \"site\"\npath = '{granted}'\n{more}")
+    };
+    let read = |text: &str| {
+        let config = toml::from_str::<Config>(text).unwrap();
+        config.validate().unwrap();
+        config.hosted_agents[0].local.clone().unwrap()
+    };
+    // As v0.15.0 before M7 wrote it: no commands, and packages on.
+    let before = read(&format!("{agent}{}", folder("write = true\n")));
+    assert_eq!(before.folders[0].exec, ExecGrant::No);
+    assert!(before.folders[0].write && before.packages);
+    let again = toml::to_string_pretty(
+        &toml::from_str::<Config>(&format!("{agent}{}", folder(""))).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !again.contains("exec") && !again.contains("packages"),
+        "what is the default is not written: {again}"
+    );
+
+    for (word, exec) in [
+        ("ask", ExecGrant::Ask),
+        ("without-asking", ExecGrant::WithoutAsking),
+        ("no", ExecGrant::No),
+    ] {
+        let local = read(&format!(
+            "{agent}{}",
+            folder(&format!("exec = \"{word}\"\n"))
+        ));
+        assert_eq!(local.folders[0].exec, exec, "{word}");
+        assert!(!local.folders[0].write, "exec is apart from write");
+        assert_eq!(exec.granted(), word != "no");
+    }
+    let off = read(&format!(
+        "{agent}packages = false\n{}",
+        folder("exec = \"ask\"\n")
+    ));
+    assert!(!off.packages);
+    let mut config = toml::from_str::<Config>(&format!(
+        "{agent}packages = false\n{}",
+        folder("exec = \"ask\"\n")
+    ))
+    .unwrap();
+    let text = toml::to_string_pretty(&config).unwrap();
+    assert!(
+        text.contains("exec = \"ask\"") && text.contains("packages = false"),
+        "{text}"
+    );
+    assert_eq!(toml::from_str::<Config>(&text).unwrap(), config);
+    // Anything else is refused, as every unknown setting is: never read as
+    // a yes.
+    for wrong in [
+        "exec = true\n",
+        "exec = \"yes\"\n",
+        "exec = \"always\"\n",
+        "run = true\n",
+    ] {
+        assert!(
+            toml::from_str::<Config>(&format!("{agent}{}", folder(wrong))).is_err(),
+            "{wrong}"
+        );
+    }
+    assert!(toml::from_str::<Config>(&format!("{agent}packages = \"off\"\n")).is_err());
+    // A folder's name is one the host takes: it starts with a letter or a digit.
+    config.hosted_agents[0].local.as_mut().unwrap().folders[0].name = "-site".into();
+    assert!(config.validate().is_err());
+}
+
+/// One writer for the settings: a copy that saves writes only what it
+/// changed since it last read or wrote the file, over what the file holds
+/// now. So a command's edit survives a later save by a bzz that was open
+/// all along (a TUI), and the reverse.
+#[test]
+fn a_save_does_not_write_over_what_another_bzz_saved_meanwhile() {
+    use bzz::config::{
+        Harness, HostedAgentConfig, IdentityConfig, KeyBackend, LocalAgentConfig, LocalAgentState,
+    };
+    let temporary = TempDir::new().unwrap();
+    let paths = Paths {
+        config_dir: temporary.path().join("config"),
+        data_dir: temporary.path().join("data"),
+        cache_dir: temporary.path().join("cache"),
+    };
+    let key = "b".repeat(64);
+    let identity = IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "owner".into(),
+        pubkey: key.clone(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "k".into(),
+    };
+    let agent = |label: &str| HostedAgentConfig {
+        id: uuid::Uuid::new_v4(),
+        label: label.into(),
+        pubkey: key.clone(),
+        community: uuid::Uuid::new_v4(),
+        owner_identity: identity.id,
+        auth_tag: "[]".into(),
+        credential_hash: "c".repeat(64),
+        allowed: Vec::new(),
+        paused: false,
+        local: Some(LocalAgentConfig::new(Harness::PiDurable)),
+    };
+    let (scout, ranger) = (agent("Scout"), agent("Ranger"));
+    let mut first = Config::default();
+    first.identities.push(identity.clone());
+    first.hosted_agents = vec![scout.clone(), ranger.clone()];
+    first.save(&paths).unwrap();
+    let local = |config: &Config, id| {
+        config
+            .hosted_agents
+            .iter()
+            .find(|agent| agent.id == id)
+            .and_then(|agent| agent.local.clone())
+    };
+    fn find(config: &mut Config, id: uuid::Uuid) -> &mut HostedAgentConfig {
+        config
+            .hosted_agents
+            .iter_mut()
+            .find(|agent| agent.id == id)
+            .unwrap()
+    }
+
+    // A TUI that is open, and a command that starts later: each has its
+    // own copy of the settings.
+    let mut tui = Config::load(&paths).unwrap();
+    let mut command = Config::load(&paths).unwrap();
+    // The command edits an agent (`bzz agent edit Scout --allow-host …`),
+    // and creates another (`bzz agent new`).
+    find(&mut command, scout.id).local.as_mut().unwrap().network = vec!["github.com".into()];
+    let created = agent("Courier");
+    command.hosted_agents.push(created.clone());
+    command.save(&paths).unwrap();
+    // Later the TUI saves a change of its own: a pane's width, and a pause
+    // of the very agent the command edited.
+    tui.ui.sidebar_width = 40;
+    find(&mut tui, scout.id).local.as_mut().unwrap().state = LocalAgentState::Paused;
+    tui.save(&paths).unwrap();
+    let saved = Config::load(&paths).unwrap();
+    assert_eq!(saved.ui.sidebar_width, 40, "the TUI's change is there");
+    let scouts = local(&saved, scout.id).unwrap();
+    assert_eq!(
+        (scouts.network.clone(), scouts.state),
+        (vec!["github.com".to_owned()], LocalAgentState::Paused),
+        "the command's edit of an agent survived the TUI's save, with the TUI's own change of it"
+    );
+    assert!(
+        local(&saved, created.id).is_some(),
+        "the agent the command created survived the TUI's save"
+    );
+    assert_eq!(saved.hosted_agents.len(), 3);
+
+    // The reverse: the TUI saves, then the command, which read the file
+    // before that, saves a change of its own.
+    let mut command = Config::load(&paths).unwrap();
+    tui.ui.thread_width = 60;
+    find(&mut tui, ranger.id).label = "Ranger II".into();
+    tui.save(&paths).unwrap();
+    find(&mut command, created.id)
+        .local
+        .as_mut()
+        .unwrap()
+        .instructions = "Be brief.".into();
+    command.save(&paths).unwrap();
+    let saved = Config::load(&paths).unwrap();
+    assert_eq!(
+        (saved.ui.thread_width, saved.ui.sidebar_width),
+        (60, 40),
+        "the TUI's changes survived the command's save"
+    );
+    assert_eq!(
+        saved
+            .hosted_agents
+            .iter()
+            .find(|agent| agent.id == ranger.id)
+            .unwrap()
+            .label,
+        "Ranger II"
+    );
+    assert_eq!(local(&saved, created.id).unwrap().instructions, "Be brief.");
+
+    // An agent a command deleted stays deleted, whatever the TUI changed in
+    // its own copy of it: its key is gone.
+    let mut command = Config::load(&paths).unwrap();
+    command.hosted_agents.retain(|agent| agent.id != ranger.id);
+    command.save(&paths).unwrap();
+    find(&mut tui, ranger.id).local.as_mut().unwrap().state = LocalAgentState::Paused;
+    tui.save(&paths).unwrap();
+    let saved = Config::load(&paths).unwrap();
+    assert!(
+        local(&saved, ranger.id).is_none(),
+        "a deleted agent does not come back"
+    );
+    assert_eq!(saved.hosted_agents.len(), 2);
+    // And one the TUI deletes goes, whatever a command changed in it.
+    let mut command = Config::load(&paths).unwrap();
+    find(&mut command, created.id).label = "Courier II".into();
+    command.save(&paths).unwrap();
+    tui.hosted_agents
+        .retain(|agent| agent.id != created.id && agent.id != ranger.id);
+    // The TUI never heard of Courier, so for it nothing was removed.
+    tui.save(&paths).unwrap();
+    assert_eq!(Config::load(&paths).unwrap().hosted_agents.len(), 2);
+
+    // Both changed one setting: the later save wins, and only that setting.
+    let mut command = Config::load(&paths).unwrap();
+    command.ui.sidebar_width = 30;
+    command.ui.message_width = 90;
+    command.save(&paths).unwrap();
+    tui.ui.sidebar_width = 50;
+    tui.save(&paths).unwrap();
+    let saved = Config::load(&paths).unwrap();
+    assert_eq!((saved.ui.sidebar_width, saved.ui.message_width), (50, 90));
+
+    // Two changes that do not fit together are not saved: the command
+    // removed the identity a community the TUI adds would belong to.
+    let mut command = Config::load(&paths).unwrap();
+    command.hosted_agents.clear();
+    command.identities.clear();
+    command.save(&paths).unwrap();
+    tui.add_community("m".into(), "wss://relay.example".into(), identity.id, false)
+        .unwrap();
+    let error = tui.save(&paths).unwrap_err().to_string();
+    assert!(
+        error.contains("changed by another bzz meanwhile") && error.contains("nothing was saved"),
+        "{error}"
+    );
+    assert!(Config::load(&paths).unwrap().communities.is_empty());
+
+    // A copy that never read the file writes itself whole, as before.
+    let fresh = Config::default();
+    fresh.save(&paths).unwrap();
+    assert_eq!(Config::load(&paths).unwrap(), Config::default());
+    // The lock is a file beside the settings, and no temporary file stays.
+    let mut names = std::fs::read_dir(&paths.config_dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["config.toml", "config.toml.lock"]);
+}
+
+/// A save waits for another bzz that is saving, and two that save at the
+/// same moment both leave their change in the file.
+#[test]
+fn two_saves_at_once_both_land() {
+    let temporary = TempDir::new().unwrap();
+    let paths = Paths {
+        config_dir: temporary.path().join("config"),
+        data_dir: temporary.path().join("data"),
+        cache_dir: temporary.path().join("cache"),
+    };
+    Config::default().save(&paths).unwrap();
+    let mut widths = Vec::new();
+    for round in 0..20_u16 {
+        let (mut one, mut two) = (Config::load(&paths).unwrap(), Config::load(&paths).unwrap());
+        one.ui.sidebar_width = 20 + round;
+        two.ui.thread_width = 31 + round;
+        let (paths_one, paths_two) = (paths.clone(), paths.clone());
+        let first = std::thread::spawn(move || one.save(&paths_one).unwrap());
+        let second = std::thread::spawn(move || two.save(&paths_two).unwrap());
+        first.join().unwrap();
+        second.join().unwrap();
+        let saved = Config::load(&paths).unwrap();
+        widths.push((saved.ui.sidebar_width, saved.ui.thread_width));
+        assert_eq!(
+            (saved.ui.sidebar_width, saved.ui.thread_width),
+            (20 + round, 31 + round),
+            "round {round}: neither save wrote over the other"
+        );
+    }
+}

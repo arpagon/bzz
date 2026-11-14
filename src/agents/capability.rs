@@ -4,12 +4,16 @@
 //! a given harness can reach.
 //!
 //! The record for Pi Durable states what bzz's own host does and its tests
-//! show (`docs/validation-v0.15.0.md`, M2 and M3). The records for Grok,
+//! show (`docs/validation-v0.15.0.md`, M2, M3 and M7). What one agent may do
+//! beyond the harness's default (real commands in a granted folder, Pi
+//! packages) is in [`record_for`], from that agent's own settings. The records for Grok,
 //! Codex and Claude Code state what was seen with the owner's installed
 //! programs in the M6 groundwork (2026-11-14, Linux); bzz does not start
 //! those harnesses yet.
 
-use crate::config::Harness;
+use std::borrow::Cow;
+
+use crate::config::{ExecGrant, Harness, LocalAgentConfig};
 
 /// What v0.15.0 promises for a harness (D16).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -78,12 +82,16 @@ pub struct CapabilityRecord {
     pub real_folders: &'static str,
     pub move_with_memory: (bool, &'static str),
     /// What runs on the machine for this agent, and as whom.
-    pub runs: &'static str,
+    pub runs: Cow<'static, str>,
     /// Its own sandbox on this platform, or `None`.
     pub sandbox: Option<&'static str>,
     pub rules: Vec<Rule>,
     /// D18: shown where the harness has no sandbox of its own.
     pub warning: Option<&'static str>,
+    /// What this one agent's settings add to the harness's record: folders
+    /// where it may run real commands, and Pi packages. Empty for the
+    /// harness as such.
+    pub notes: Vec<String>,
 }
 
 /// D19, word for word what bzz says of a coding harness.
@@ -95,6 +103,68 @@ pub const NO_SANDBOX_WARNING: &str = "Warning: this harness has no sandbox of it
 
 /// D18, where the harness has no sandbox and never asks either.
 pub const NO_BOUNDARY_WARNING: &str = "Warning: this harness has no sandbox of its own here and never asks before it acts. It runs as your user, and nothing keeps it in its folders.";
+
+/// What runs for a Pi Durable agent that has no folder granted for
+/// commands.
+pub const PI_DURABLE_RUNS: &str = "no program of this machine, unless you grant a folder for commands: its shell and its git run inside its own host process";
+
+/// Said of every agent that may run real commands: a command is not held
+/// in the folder it starts in (`docs/agent-host-protocol.md`, section 9).
+pub const REAL_COMMAND_WARNING: &str = "Warning: a real command runs as your user and can reach whatever you can. The folder is where it starts, not a wall, and `read-only` binds the agent's file tools, not a command.";
+
+/// The record of the harness of one agent, with what that agent's own
+/// settings add: the folders where it may run real commands and whether
+/// you are asked, and whether Pi packages are loaded.
+pub fn record_for(local: &LocalAgentConfig) -> CapabilityRecord {
+    let mut record = record(local.harness);
+    if local.harness != Harness::PiDurable {
+        return record;
+    }
+    let in_folders = |wanted: ExecGrant| {
+        local
+            .folders
+            .iter()
+            .filter(|folder| folder.exec == wanted)
+            .map(|folder| format!("/mnt/{}", folder.name))
+            .collect::<Vec<_>>()
+    };
+    let (asked, unasked) = (
+        in_folders(ExecGrant::Ask),
+        in_folders(ExecGrant::WithoutAsking),
+    );
+    if asked.is_empty() && unasked.is_empty() {
+        record.runs =
+            "no program of this machine: its shell and its git run inside its own host process, and no folder is granted for commands"
+                .into();
+    } else {
+        let mut all = asked.clone();
+        all.extend(unasked.iter().cloned());
+        record.runs = format!(
+            "real commands of this machine, as your user, started in {}; its shell and its git still run inside its own host process",
+            all.join(", ")
+        )
+        .into();
+        if !asked.is_empty() {
+            record.notes.push(format!(
+                "In {} each command waits for your yes in the TUI. Without the TUI (`bzz agent run`) it is refused.",
+                asked.join(", ")
+            ));
+        }
+        if !unasked.is_empty() {
+            record.notes.push(format!(
+                "Warning: in {} commands run WITHOUT asking you, also when bzz runs without the TUI. Whoever may wake this agent can make it run them, as you.",
+                unasked.join(", ")
+            ));
+        }
+        record.notes.push(REAL_COMMAND_WARNING.into());
+    }
+    record.notes.push(if local.packages {
+        "Pi packages: on. A package named in Pi's settings runs inside its host, with your rights and outside its sandbox.".into()
+    } else {
+        "Pi packages: off. No package's code runs for this agent.".into()
+    });
+    record
+}
 
 const ONE_REPLY: Rule = Rule {
     rule: "one final reply per mention",
@@ -136,7 +206,7 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
                 false,
                 "its memory belongs to its own program and stays on this machine",
             ),
-            runs: CODING_HARNESS_RUNS,
+            runs: CODING_HARNESS_RUNS.into(),
             sandbox,
             rules: vec![
                 ONE_REPLY,
@@ -150,6 +220,7 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
                 (None, Enforcer::Nobody) => Some(NO_BOUNDARY_WARNING),
                 (None, _) => Some(NO_SANDBOX_WARNING),
             },
+            notes: Vec::new(),
         };
     match harness {
         Harness::PiDurable => CapabilityRecord {
@@ -167,7 +238,7 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
                 true,
                 "`bzz agent move` seals its key, its memory and its disk in one file for another bzz, and `bzz agent launch-kit` writes a folder for a machine with Buzz's buzz-acp; granted folders and git credentials stay on this machine",
             ),
-            runs: "no program of this machine: its shell and its git run inside its own host process",
+            runs: PI_DURABLE_RUNS.into(),
             sandbox: Some("its own disk, shell and git, with a list of hosts it may reach"),
             rules: vec![
                 ONE_REPLY,
@@ -185,11 +256,12 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
                 },
                 Rule {
                     rule: "real commands on this machine",
-                    by: Enforcer::Harness,
-                    how: "there are none: nothing of the machine is started for it",
+                    by: Enforcer::Bzz,
+                    how: "none, unless you grant a folder for commands; there its host asks bzz before each one, and bzz asks you in the TUI unless you allowed that folder without asking",
                 },
             ],
             warning: None,
+            notes: Vec::new(),
         },
         Harness::Grok => {
             let sandbox = (!windows).then_some("Grok's own sandbox, profile `workspace`");
@@ -287,6 +359,7 @@ impl CapabilityRecord {
                 .iter()
                 .map(|rule| format!("    {}: {} ({})", rule.rule, rule.by.as_str(), rule.how)),
         );
+        lines.extend(self.notes.iter().map(|note| format!("  {note}")));
         if let Some(warning) = self.warning {
             lines.push(format!("  {warning}"));
         }
@@ -390,6 +463,18 @@ mod tests {
         );
         assert_eq!(pi.promise, Promise::Full);
         assert!(pi.runs.contains("no program of this machine"));
+        // Real commands: none by default, and bzz is asked before each one.
+        let commands = pi
+            .rules
+            .iter()
+            .find(|rule| rule.rule == "real commands on this machine")
+            .unwrap();
+        assert_eq!(commands.by, Enforcer::Bzz);
+        assert!(
+            commands
+                .how
+                .contains("unless you grant a folder for commands")
+        );
         // The three coding harnesses: not offered yet, no disk of their own,
         // no move with memory, and D19's wording.
         for harness in [Harness::Grok, Harness::Codex, Harness::ClaudeCode] {
@@ -438,5 +523,52 @@ mod tests {
         );
         assert_eq!(folders(Harness::Grok, true), Some(Enforcer::Nobody));
         assert!(record_on(Harness::Codex, true).warning.is_none());
+    }
+
+    #[test]
+    fn an_agents_record_says_where_it_may_run_commands_and_whether_you_are_asked() {
+        use crate::config::FolderGrant;
+        let grant = |name: &str, exec| FolderGrant {
+            name: name.into(),
+            path: "/x".into(),
+            write: false,
+            exec,
+        };
+        let mut local = LocalAgentConfig::new(Harness::PiDurable);
+        // By default: nothing of the machine runs, and packages are on.
+        let plain = record_for(&local);
+        assert!(plain.runs.contains("no program of this machine"));
+        assert!(plain.runs.contains("no folder is granted for commands"));
+        let text = plain.lines().join("\n");
+        assert!(!text.contains("Warning:"), "{text}");
+        assert!(text.contains("Pi packages: on."), "{text}");
+        assert!(text.contains("with your rights and outside its sandbox"));
+
+        // A folder for reading only changes nothing; folders for commands
+        // are named, each with whether the owner is asked.
+        local.folders = vec![
+            grant("docs", ExecGrant::No),
+            grant("work", ExecGrant::Ask),
+            grant("ops", ExecGrant::WithoutAsking),
+        ];
+        local.packages = false;
+        let granted = record_for(&local);
+        let text = granted.lines().join("\n");
+        assert!(!granted.runs.contains("no program of this machine"));
+        for stated in [
+            "real commands of this machine, as your user, started in /mnt/work, /mnt/ops",
+            "In /mnt/work each command waits for your yes in the TUI.",
+            "Without the TUI (`bzz agent run`) it is refused.",
+            "Warning: in /mnt/ops commands run WITHOUT asking you",
+            REAL_COMMAND_WARNING,
+            "Pi packages: off.",
+            "real commands on this machine: bzz",
+        ] {
+            assert!(text.contains(stated), "`{stated}` in:\n{text}");
+        }
+        assert!(!text.contains("/mnt/docs"), "{text}");
+        // Another harness's record is not changed by these settings.
+        local.harness = Harness::Codex;
+        assert_eq!(record_for(&local), record(Harness::Codex));
     }
 }

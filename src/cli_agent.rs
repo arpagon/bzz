@@ -114,6 +114,29 @@ pub enum AgentCommand {
         #[arg(long, default_value_t = 30)]
         wait: u64,
     },
+    /// Store, list or remove what an agent's git uses for a private remote:
+    /// a user name and a token per host. They are sealed to your own key,
+    /// never written to the settings, and given to the agent's host only
+    /// when its git is asked for them by a host on its allow-list.
+    #[command(subcommand)]
+    Credential(CredentialCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CredentialCommand {
+    /// Store a user name and a token for one host, in place of what was
+    /// stored for it. Both are asked for without echo; nothing of them is
+    /// an argument. When standard input is not a terminal, they are read
+    /// from it: the user name on the first line, the token on the second.
+    Set {
+        agent: String,
+        /// The host of the remote, as in --allow-host: host or host:port.
+        host: String,
+    },
+    /// List the hosts a credential is stored for. Never the credentials.
+    List { agent: String },
+    /// Remove what is stored for one host.
+    Remove { agent: String, host: String },
 }
 
 /// The questions of `agent new`, each also a flag. Without `--yes`, on a
@@ -147,9 +170,11 @@ pub struct NewArgs {
     /// `--wake allowlist`.
     #[arg(long = "allow", value_name = "PUBKEY")]
     pub allow: Vec<String>,
-    /// A folder of this machine it may read: name=/path, or name=/path:rw
-    /// to let it write. Repeat for more.
-    #[arg(long = "folder", value_name = "NAME=PATH[:rw]")]
+    /// A folder of this machine it may read: name=/path. Add :rw to let
+    /// its file tools write there, and :exec to let it run real commands
+    /// there, each asked of you first (:exec-without-asking: never asked).
+    /// Repeat for more.
+    #[arg(long = "folder", value_name = "NAME=PATH[:rw][:exec]")]
     pub folders: Vec<String>,
     /// A host it may reach (host or host:port). Repeat for more.
     #[arg(long = "allow-host", value_name = "HOST")]
@@ -157,6 +182,10 @@ pub struct NewArgs {
     /// An HTTPS address of its picture.
     #[arg(long)]
     pub picture: Option<String>,
+    /// Do not load the Pi packages named in Pi's settings: their code would
+    /// run inside the agent's host, with your rights.
+    #[arg(long)]
+    pub no_packages: bool,
     /// Ask nothing: use the defaults for what was not given, and sign the
     /// owner authorization without asking.
     #[arg(long)]
@@ -192,10 +221,12 @@ pub struct EditArgs {
     /// `--wake allowlist`.
     #[arg(long = "allow", value_name = "PUBKEY")]
     pub allow: Vec<String>,
-    /// The folders it may reach, replacing the list.
+    /// The folders it may reach, replacing the list: name=/path, with :rw
+    /// to let its file tools write, and :exec to let it run real commands
+    /// there, each asked of you first (:exec-without-asking: never asked).
     #[arg(
         long = "folder",
-        value_name = "NAME=PATH[:rw]",
+        value_name = "NAME=PATH[:rw][:exec]",
         conflicts_with = "no_folders"
     )]
     pub folders: Vec<String>,
@@ -214,17 +245,14 @@ pub struct EditArgs {
     /// Take its picture away.
     #[arg(long)]
     pub no_picture: bool,
+    /// Whether its host loads the Pi packages named in Pi's settings: on
+    /// or off. Their code runs inside the host, with your rights.
+    #[arg(long, value_name = "on|off")]
+    pub packages: Option<String>,
     /// Publish the agent's profile and your record of it again, whatever
     /// changed.
     #[arg(long)]
     pub republish: bool,
-    /// Load your Pi packages for it again (the default).
-    #[arg(long, conflicts_with = "no_packages")]
-    pub packages: bool,
-    /// Load no Pi package for it: none of their code runs in its host. The
-    /// choice moves with the agent.
-    #[arg(long)]
-    pub no_packages: bool,
 }
 
 fn environment() -> Environment {
@@ -357,6 +385,11 @@ fn answers(args: &NewArgs, interactive: bool, name: &str) -> Result<manage::NewA
     };
     let hosts = listed(&args.hosts, 7)?;
     let picture = asked(&args.picture, 8, "")?;
+    let packages = if args.no_packages {
+        "off".to_owned()
+    } else {
+        asked(&None, 9, "on")?
+    };
     manage::Answers {
         name: name.to_owned(),
         harness,
@@ -368,6 +401,7 @@ fn answers(args: &NewArgs, interactive: bool, name: &str) -> Result<manage::NewA
         folders,
         hosts,
         picture,
+        packages,
     }
     .read()
 }
@@ -435,7 +469,13 @@ async fn new_agent(paths: &Paths, config: &mut Config, args: NewArgs) -> Result<
         "agent {} ({}) created in {}",
         created.agent.label, created.agent.pubkey, community.label
     );
-    for line in capability::record(new.harness).lines() {
+    for line in created
+        .agent
+        .local
+        .as_ref()
+        .map_or_else(|| capability::record(new.harness), capability::record_for)
+        .lines()
+    {
         println!("{line}");
     }
     println!(
@@ -580,10 +620,12 @@ async fn edit(paths: &Paths, config: &mut Config, args: EditArgs) -> Result<()> 
             (None, true) => Some(None),
             (None, false) => None,
         },
-        packages: match (args.packages, args.no_packages) {
-            (true, _) => Some(true),
-            (_, true) => Some(false),
-            _ => None,
+        packages: match args.packages.as_deref().map(manage::parse_switch) {
+            Some(Ok(Some(packages))) => Some(packages),
+            Some(Ok(None)) | Some(Err(_)) => {
+                return Err(Error::Config("--packages takes on or off".into()));
+            }
+            None => None,
         },
     };
     if change == manage::Edit::default() && !args.republish {
@@ -608,6 +650,8 @@ async fn edit(paths: &Paths, config: &mut Config, args: EditArgs) -> Result<()> 
     {
         let mut probe = manage::NewAgent::named(&agent.label);
         probe.model = settings.model.clone();
+        // As its host will load them, or not, when it starts.
+        probe.packages = settings.packages;
         if let Err(error) = manage::preflight(
             &paths.data_dir,
             &probe,
@@ -623,6 +667,20 @@ async fn edit(paths: &Paths, config: &mut Config, args: EditArgs) -> Result<()> 
     }
     config.save(paths)?;
     println!("{} saved", agent.label);
+    // A change to what the agent may do on this machine is said back.
+    if (change.folders.is_some() || change.packages.is_some())
+        && let Some(settings) = &agent.local
+    {
+        for line in manage::settings_lines(settings)
+            .into_iter()
+            .filter(|line| line.starts_with("folder") || line.starts_with("Pi packages"))
+        {
+            println!("{line}");
+        }
+        for note in capability::record_for(settings).notes {
+            println!("{note}");
+        }
+    }
     if republish.any() {
         let (owner, relay) = owner_relay(paths, config, &agent).await?;
         let federated = adapter_of(config, agent.community);
@@ -820,12 +878,26 @@ async fn doctor(paths: &Paths, config: &Config, models: bool) -> Result<()> {
             && settings.harness == Harness::PiDurable
             && let (Ok(node), true, Some(pi)) = (&report.node, report.installed, &report.pi_dir)
         {
-            match install::check_model(node, &report.host_dir, pi, settings.model.as_ref(), lookup)
-                .await
+            match install::check_model(
+                node,
+                &report.host_dir,
+                pi,
+                settings.model.as_ref(),
+                settings.packages,
+                lookup,
+            )
+            .await
             {
                 ModelCheck::Available { .. } => {}
-                ModelCheck::Unavailable { kind, message } => {
-                    missing.push(format!("its model cannot be used ({kind}): {message}"));
+                ModelCheck::Unavailable {
+                    kind,
+                    message,
+                    package,
+                } => {
+                    missing.push(format!(
+                        "its model cannot be used ({kind}): {message}{}",
+                        manage::missing_provider_note(&kind, package.as_deref(), settings.packages)
+                    ));
                 }
                 ModelCheck::Unknown(why) => {
                     missing.push(format!("its model could not be checked: {why}"));
@@ -844,6 +916,22 @@ async fn doctor(paths: &Paths, config: &Config, models: bool) -> Result<()> {
                 format!("not ready: {}", missing.join("; "))
             }
         );
+        // What its host said when it last started: where it offers `run`,
+        // and the Pi packages it loaded or left out.
+        if settings.harness == Harness::PiDurable {
+            match install::StartReport::read(&paths.data_dir, agent.id) {
+                Some(started) => {
+                    for line in started.lines(&manage::exec_folders(settings)) {
+                        println!("          {line}");
+                    }
+                }
+                None => println!("          its host: not started yet on this machine"),
+            }
+            let stored = bzz::agents::git_credentials::hosts(&paths.keys_dir(), agent.id);
+            for line in manage::credential_lines(settings, &stored) {
+                println!("          git credential stored for {line}");
+            }
+        }
     }
     if problems == 0 {
         Ok(())
@@ -1166,6 +1254,98 @@ async fn show(paths: &Paths, config: &Config, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// One secret from the terminal, without echo; or, when standard input is
+/// not a terminal, its next line. It is wiped from memory when dropped.
+fn read_secret(prompt: &str) -> Result<zeroize::Zeroizing<String>> {
+    let text = if std::io::stdin().is_terminal() {
+        rpassword::prompt_password(prompt)
+            .map_err(|error| Error::io("controlling terminal", error))?
+    } else {
+        let mut line = String::new();
+        std::io::stdin()
+            .read_line(&mut line)
+            .map_err(|error| Error::io("stdin", error))?;
+        line
+    };
+    let text = zeroize::Zeroizing::new(text);
+    Ok(zeroize::Zeroizing::new(
+        text.trim_end_matches(['\r', '\n']).to_owned(),
+    ))
+}
+
+async fn credential(command: CredentialCommand, paths: &Paths, config: &Config) -> Result<()> {
+    use bzz::agents::git_credentials;
+    let keys = paths.keys_dir();
+    match command {
+        CredentialCommand::Set { agent, host } => {
+            let agent = manage::find(config, &agent)?.clone();
+            let settings = agent
+                .local
+                .as_ref()
+                .ok_or_else(|| Error::Config("this agent is not run by bzz".into()))?;
+            if settings.harness != Harness::PiDurable {
+                return Err(Error::Config(format!(
+                    "{} runs on {}, which uses your own git and its credentials; bzz stores a git credential only for a pi-durable agent",
+                    agent.label,
+                    settings.harness.as_str()
+                )));
+            }
+            let host = git_credentials::host_name(&host)?;
+            let identity = find_identity(config, agent.owner_identity)?.clone();
+            let passphrase = identity_passphrase(&identity, "Owner identity passphrase: ", false)?;
+            let owner = IdentityManager::new(paths).signer(&identity, passphrase.as_ref())?;
+            let stored = async {
+                let username = read_secret(&format!("User name for {host} (not shown): "))?;
+                let token = read_secret(&format!("Token for {host} (not shown): "))?;
+                git_credentials::set(&keys, &owner, agent.id, &host, &username, &token).await
+            }
+            .await;
+            owner.lock().await;
+            stored?;
+            println!(
+                "stored a git credential for {} at {host}, sealed to your key",
+                agent.label
+            );
+            if !settings.network.contains(&host) {
+                println!(
+                    "{host} is not on its list of allowed hosts, so it is never given: allow the host with `bzz agent edit {} --allow-host {host}` (with the hosts it has already; the flag replaces the list)",
+                    shell_word(&agent.label)
+                );
+            }
+            Ok(())
+        }
+        CredentialCommand::List { agent } => {
+            let agent = manage::find(config, &agent)?.clone();
+            let hosts = git_credentials::hosts(&keys, agent.id);
+            if hosts.is_empty() {
+                println!("no git credential is stored for {}", agent.label);
+            }
+            let lines = agent.local.as_ref().map_or_else(
+                || hosts.clone(),
+                |local| manage::credential_lines(local, &hosts),
+            );
+            for line in lines {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        CredentialCommand::Remove { agent, host } => {
+            let agent = manage::find(config, &agent)?.clone();
+            let host = git_credentials::host_name(&host)?;
+            if git_credentials::remove(&keys, agent.id, &host)? {
+                println!("removed the git credential of {} for {host}", agent.label);
+                Ok(())
+            } else {
+                Err(Error::Config(format!(
+                    "no git credential is stored for {} at {host}; `bzz agent credential list {}` shows the hosts",
+                    agent.label,
+                    shell_word(&agent.label)
+                )))
+            }
+        }
+    }
+}
+
 pub async fn command(command: AgentCommand, paths: &Paths, config: &mut Config) -> Result<()> {
     // An agent whose folder says it was moved away is moved away, whatever
     // an older copy of the settings said when it was written back.
@@ -1178,6 +1358,7 @@ pub async fn command(command: AgentCommand, paths: &Paths, config: &mut Config) 
     }
     match command {
         AgentCommand::Run { community } => crate::agent_run(paths, config, community).await,
+        AgentCommand::Credential(command) => credential(command, paths, config).await,
         AgentCommand::New(args) => new_agent(paths, config, *args).await,
         AgentCommand::List => {
             list(paths, config);

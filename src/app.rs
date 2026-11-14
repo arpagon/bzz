@@ -540,8 +540,20 @@ pub struct App {
     local_agent_refreshed: Option<Instant>,
     /// `:agent new`: the form, while it is open.
     agent_form: Option<crate::ui::local_agents::NewAgentForm>,
+    /// The real commands that wait for the owner's answer (v0.15 M7), as
+    /// the agent runtime last listed them; read again every tick.
+    approvals: Vec<crate::agents::runtime::approval::Asked>,
+    /// The dialog that shows one of them.
+    approval: crate::ui::approval::ApprovalState,
+    /// What was open before that dialog, shown again when it closes.
+    approval_return: Option<Overlay>,
+    /// The seconds left that the line at the top last showed.
+    approval_clock: Option<u64>,
     /// How bzz's own environment is read to find Node for an agent's host.
     agent_environment: crate::agents::runtime::agent::Environment,
+    /// Tests read which agent the panel asked to add to which channel.
+    #[cfg(test)]
+    agent_additions: Vec<(Uuid, Uuid)>,
     /// Tests publish an agent's records to a recorded relay.
     #[cfg(test)]
     agent_publisher: Option<std::sync::Arc<dyn crate::agents::manage::Publisher>>,
@@ -996,8 +1008,14 @@ impl App {
             local_agent_panel: crate::ui::local_agents::PanelState::default(),
             local_agent_turns: HashMap::new(),
             local_agent_refreshed: None,
+            approvals: Vec::new(),
+            approval: crate::ui::approval::ApprovalState::default(),
+            approval_return: None,
+            approval_clock: None,
             agent_form: None,
             agent_environment: std::sync::Arc::new(|name| std::env::var(name).ok()),
+            #[cfg(test)]
+            agent_additions: Vec::new(),
             #[cfg(test)]
             agent_publisher: None,
             preview_index: 0,
@@ -2747,6 +2765,7 @@ impl App {
             self.spawn_search();
             changed = true;
         }
+        changed |= self.refresh_approvals();
         // The agents panel shows what runs now: it is read again every
         // second while it is open.
         if self.presentation.overlay == Some(Overlay::LocalAgents)
@@ -3157,6 +3176,14 @@ impl App {
             }
             return Ok(());
         }
+        // A paste never answers a question: it only adds to the reason of a
+        // refusal that is being written.
+        if self.presentation.overlay == Some(Overlay::Approval) {
+            if let Ok(text) = sanitize_pasted_text(&text) {
+                self.approval.type_reason(&text);
+            }
+            return Ok(());
+        }
         if self.presentation.overlay.is_some() || self.presentation.composer_target.is_none() {
             return Ok(());
         }
@@ -3178,6 +3205,9 @@ impl App {
         guard: &mut TerminalGuard,
         terminal: &mut Tui,
     ) -> Result<()> {
+        if self.global_key(key) {
+            return Ok(());
+        }
         match self.presentation.overlay {
             Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) => {
                 if self.presentation.route == Route::Inbox {
@@ -3364,6 +3394,7 @@ impl App {
             Some(Overlay::Agents) => self.agent_directory_key(key).await?,
             Some(Overlay::LocalAgents) => self.local_agents_key(key).await?,
             Some(Overlay::AgentNew) => self.agent_form_key(key).await?,
+            Some(Overlay::Approval) => self.approval_key(key),
             Some(Overlay::Artifacts) => self.artifact_panel_key(key).await?,
             Some(Overlay::Huddle) => self.huddle_key(key).await?,
             Some(Overlay::Profile) => self.profile_key(key),
@@ -4795,6 +4826,9 @@ impl App {
                 owner_identity: runtime.identity_id,
                 federated,
                 limits: crate::agents::runtime::Limits::default(),
+                // The owner is here to be asked before a real command runs.
+                owner_present: true,
+                environment: Some(self.agent_environment.clone()),
             })
             .await;
         match served {
@@ -7878,6 +7912,7 @@ impl App {
                         )
                     }),
                     settings: crate::agents::manage::settings_lines(local),
+                    record: crate::agents::capability::record_for(local).lines(),
                 })
             })
             .collect()
@@ -7976,6 +8011,12 @@ impl App {
                     }
                 }
             }
+            // Add it to the channel that is open, as its owner.
+            KeyCode::Char('i') => {
+                if let Some((id, name, _)) = selected {
+                    self.add_selected_agent_to_open_channel(id, &name);
+                }
+            }
             // Stop what it is answering now; the agent itself stays.
             KeyCode::Char('x') => {
                 if let Some((id, name, _)) = selected {
@@ -7993,6 +8034,288 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    // ---- a real command waits for the owner (v0.15 M7) --------------------
+
+    /// Reads again which commands wait for the owner. `true`: what the
+    /// screen shows of them changed.
+    fn refresh_approvals(&mut self) -> bool {
+        let waiting = self
+            .local_agents
+            .as_ref()
+            .map(|agents| agents.host.approvals())
+            .unwrap_or_default();
+        let ids = |list: &[crate::agents::runtime::approval::Asked]| {
+            list.iter().map(|asked| asked.id).collect::<Vec<_>>()
+        };
+        let mut changed = ids(&waiting) != ids(&self.approvals);
+        self.approvals = waiting;
+        // A notice that nothing waits is no longer true.
+        if !self.approvals.is_empty() && self.status_error.as_deref() == Some(NOTHING_WAITS) {
+            self.status_error = None;
+        }
+        // The time left is on screen: it is drawn again each second.
+        let clock = self.approvals.first().map(seconds_left);
+        changed |= clock != self.approval_clock;
+        self.approval_clock = clock;
+        changed
+    }
+
+    /// The conversation a command was asked for in, as the owner knows it.
+    fn conversation_label(&self, asked: &crate::agents::runtime::approval::Asked) -> String {
+        let thread = if asked.place.contains('/') {
+            " (a thread)"
+        } else {
+            ""
+        };
+        match self
+            .channels
+            .iter()
+            .find(|channel| channel.id == asked.channel)
+        {
+            Some(channel) if channel.kind.is_dm() => "a direct message".to_owned(),
+            Some(channel) => format!("#{}{thread}", channel.name),
+            None => format!("a channel that is not open here{thread}"),
+        }
+    }
+
+    /// Who wrote the message the agent is answering.
+    fn requester_label(&self, asked: &crate::agents::runtime::approval::Asked) -> String {
+        if self.self_pubkey() == Some(asked.requester.as_str()) {
+            return "you".to_owned();
+        }
+        self.profiles.get(&asked.requester).map_or_else(
+            || crate::domain::abbreviated_pubkey(&asked.requester),
+            crate::domain::Profile::label,
+        )
+    }
+
+    /// The key that works on every screen: Ctrl-Y opens the dialog of the
+    /// command that waits. `true`: the key was taken.
+    fn global_key(&mut self, key: KeyEvent) -> bool {
+        let asks = key.code == KeyCode::Char('y')
+            && key.modifiers == KeyModifiers::CONTROL
+            && !self.approvals.is_empty()
+            && self.presentation.overlay != Some(Overlay::Approval);
+        if asks {
+            self.open_approval();
+        }
+        asks
+    }
+
+    /// Opens the dialog on the command that has waited longest. It is
+    /// opened by the owner only, never by an agent's asking.
+    fn open_approval(&mut self) {
+        self.refresh_approvals();
+        let Some(first) = self.approvals.first() else {
+            self.status_error = Some(NOTHING_WAITS.into());
+            return;
+        };
+        self.approval.show(first.id);
+        // What was open is shown again afterwards: a form half filled in
+        // is not lost to a question.
+        self.approval_return = self
+            .presentation
+            .overlay
+            .filter(|overlay| !matches!(overlay, Overlay::Approval | Overlay::Command));
+        self.presentation.open_overlay(Overlay::Approval);
+    }
+
+    fn close_approval(&mut self) {
+        self.approval = crate::ui::approval::ApprovalState::default();
+        match self.approval_return.take() {
+            Some(overlay) => self.presentation.return_to_overlay(overlay),
+            None => self.presentation.close_overlay(),
+        }
+    }
+
+    /// Gives the owner's answer to the agent runtime, which passes it on
+    /// when the question still waits, and says what happened.
+    fn answer_approval(&mut self, id: u64, answer: crate::agents::runtime::approval::Answer) {
+        let allowed = answer == crate::agents::runtime::approval::Answer::Allow;
+        let asked = self.approvals.iter().find(|asked| asked.id == id).cloned();
+        let taken = self
+            .local_agents
+            .as_ref()
+            .is_some_and(|agents| agents.host.answer_approval(id, answer));
+        self.status_error = Some(match (taken, asked) {
+            (true, Some(asked)) if allowed => format!(
+                "allowed: {} runs its command in /mnt/{}",
+                asked.agent_name, asked.folder
+            ),
+            (true, Some(asked)) => format!(
+                "refused: {} was told no, and nothing was started",
+                asked.agent_name
+            ),
+            _ => {
+                "that command no longer waits (it timed out, or its turn ended); it was not started"
+                    .to_owned()
+            }
+        });
+        self.approvals.retain(|asked| asked.id != id);
+        self.close_approval();
+    }
+
+    fn approval_key(&mut self, key: KeyEvent) {
+        use crate::agents::runtime::approval::Answer;
+        let Some(id) = self.approval.selected else {
+            self.close_approval();
+            return;
+        };
+        let waits = self.approvals.iter().any(|asked| asked.id == id);
+        let control = key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        // Writing why: every key is text, but for the three that end it.
+        if self.approval.reason.is_some() {
+            match key.code {
+                KeyCode::Esc => self.approval.reason = None,
+                KeyCode::Enter => {
+                    let reason = self.approval.reason.take().unwrap_or_default();
+                    self.answer_approval(id, Answer::Refuse(Some(reason)));
+                }
+                KeyCode::Backspace => {
+                    if let Some(reason) = &mut self.approval.reason {
+                        reason.pop();
+                    }
+                }
+                KeyCode::Char(character) if !control => {
+                    self.approval
+                        .type_reason(character.encode_utf8(&mut [0; 4]));
+                }
+                _ => {}
+            }
+            return;
+        }
+        let page = isize::try_from(self.approval.page.max(1)).unwrap_or(1);
+        match key.code {
+            // The question keeps waiting: the line at the top stays.
+            KeyCode::Esc | KeyCode::Char('q') => self.close_approval(),
+            KeyCode::Char('j') | KeyCode::Down => self.approval.scroll_by(1),
+            KeyCode::Char('k') | KeyCode::Up => self.approval.scroll_by(-1),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.approval.scroll_by(page),
+            KeyCode::PageUp => self.approval.scroll_by(-page),
+            KeyCode::Char('G') | KeyCode::End => self.approval.scroll_by(isize::MAX),
+            KeyCode::Char('g') | KeyCode::Home => self.approval.scroll_by(isize::MIN),
+            KeyCode::Tab => {
+                let next = self
+                    .approvals
+                    .iter()
+                    .position(|asked| asked.id == id)
+                    .map_or(0, |index| (index + 1) % self.approvals.len().max(1));
+                if let Some(next) = self.approvals.get(next) {
+                    self.approval.show(next.id);
+                }
+            }
+            KeyCode::Char('a' | 'y') if !control => {
+                if !waits {
+                    self.answer_approval(id, Answer::Allow);
+                } else if !self.approval.seen_end {
+                    // What is approved is what was shown.
+                    self.approval.notice = Some(
+                        "scroll to the end of the command first (j, PgDn): a yes is for all of it"
+                            .into(),
+                    );
+                } else {
+                    self.answer_approval(id, Answer::Allow);
+                }
+            }
+            KeyCode::Char('r' | 'n') if !control => {
+                if waits {
+                    self.approval.reason = Some(String::new());
+                    self.approval.notice = None;
+                } else {
+                    self.answer_approval(id, Answer::Refuse(None));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The agents panel's key: adds the selected agent to the channel that
+    /// is open, as its owner (a member; the `bot` role in a Solo chat).
+    fn add_selected_agent_to_open_channel(&mut self, id: Uuid, name: &str) {
+        use crate::agents::manage;
+        let Some(agent) = self
+            .config
+            .hosted_agents
+            .iter()
+            .find(|agent| agent.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        let Some((channel, channel_name)) = self
+            .current_channel()
+            .map(|channel| (channel.id, channel.name.clone()))
+        else {
+            self.status_error = Some("open a channel first: the agent is added to it".into());
+            return;
+        };
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some(
+                "adding an agent needs your identity unlocked: restart bzz and unlock it".into(),
+            );
+            return;
+        };
+        let Some(community) = self
+            .config
+            .communities
+            .iter()
+            .find(|entry| entry.id == runtime.community_id)
+            .cloned()
+        else {
+            return;
+        };
+        let federated = runtime
+            .evidence
+            .is_set()
+            .then(|| runtime.identity_adapter.clone())
+            .flatten();
+        let relay = match manage::OwnerRelay::from_runtime(
+            &self.paths,
+            &community,
+            runtime.identity_id,
+            runtime.signer.clone(),
+            runtime.http.clone(),
+            runtime.supervisor.clone(),
+            federated,
+            self.diagnostics.clone(),
+        ) {
+            Ok(relay) => relay,
+            Err(error) => {
+                self.status_error = Some(error.to_string());
+                return;
+            }
+        };
+        self.status_error = Some(format!("adding {name} to #{channel_name}…"));
+        #[cfg(test)]
+        self.agent_additions.push((id, channel));
+        let (store, tx, name) = (
+            self.store.clone(),
+            self.background_tx.clone(),
+            name.to_owned(),
+        );
+        tokio::spawn(async move {
+            let added = manage::add_to_channel(&relay, &store, &agent, channel).await;
+            relay.close().await;
+            let notice = match added {
+                Ok(added) if added.already => {
+                    format!("{name} was already a member of #{}", added.channel_name)
+                }
+                Ok(added) => format!(
+                    "{name} added to #{} {}; mention it there to wake it",
+                    added.channel_name,
+                    match added.role {
+                        Some(role) => format!("with the {role} role (a Solo chat)"),
+                        None => "as a member".to_owned(),
+                    }
+                ),
+                Err(error) => format!("{name} was not added to #{channel_name}: {error}"),
+            };
+            let _ = tx.send(Background::Notice(notice)).await;
+        });
     }
 
     fn open_agent_form(&mut self, name: &str) {
@@ -8202,7 +8525,17 @@ impl App {
                     "agent {} ({}) created in {}",
                     created.agent.label, created.agent.pubkey, community.label
                 )];
-                lines.extend(crate::agents::capability::record(new.harness).lines());
+                lines.extend(
+                    created
+                        .agent
+                        .local
+                        .as_ref()
+                        .map_or_else(
+                            || crate::agents::capability::record(new.harness),
+                            crate::agents::capability::record_for,
+                        )
+                        .lines(),
+                );
                 lines.push(String::new());
                 lines.push(format!(
                     "Next: add it to a channel with `bzz agent add {} <channel>`, then mention it there. It answers while bzz is open.",
@@ -9120,6 +9453,10 @@ impl App {
                     }
                 }
             }
+            crate::ui::command::Command::Approvals => {
+                self.presentation.close_overlay();
+                self.open_approval();
+            }
             crate::ui::command::Command::DmHide => self.hide_current_dm(),
             crate::ui::command::Command::DmAdd => {
                 let channel = self
@@ -9477,6 +9814,26 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) {
+        self.render_app(frame);
+        // A command that waits for the owner is said on every screen,
+        // whatever is open, until he has seen it.
+        let area = frame.area();
+        if let Some(first) = self.approvals.first()
+            && self.presentation.overlay != Some(Overlay::Approval)
+            && area.width >= 50
+            && area.height >= 12
+        {
+            let text = crate::ui::approval::banner_text(
+                first,
+                &self.conversation_label(first),
+                self.approvals.len(),
+                seconds_left(first),
+            );
+            crate::ui::approval::render_banner(frame, area, &text, &self.theme);
+        }
+    }
+
+    fn render_app(&mut self, frame: &mut Frame<'_>) {
         self.render_generation = self.render_generation.wrapping_add(1);
         let mut hit_map = HitMap::new(self.render_generation);
         let area = frame.area();
@@ -10051,6 +10408,7 @@ impl App {
             Some(Overlay::DmPicker) => "DM",
             Some(Overlay::Agents | Overlay::LocalAgents) => "AGENTS",
             Some(Overlay::AgentNew) => "NEW AGENT",
+            Some(Overlay::Approval) => "APPROVE",
             Some(Overlay::Artifacts) => "ARTIFACTS",
             Some(Overlay::Broker) => "BROKER",
             Some(Overlay::Profile) => "PROFILE",
@@ -10430,6 +10788,27 @@ impl App {
                     self.local_agents.is_some(),
                     &self.theme,
                 );
+            }
+            Some(Overlay::Approval) => {
+                let popup = centered(area, 96, area.height.saturating_sub(2).min(40));
+                let asked = self
+                    .approval
+                    .selected
+                    .and_then(|id| self.approvals.iter().find(|asked| asked.id == id))
+                    .cloned();
+                let labels = asked
+                    .as_ref()
+                    .map(|asked| (self.conversation_label(asked), self.requester_label(asked)));
+                let view = asked.as_ref().zip(labels.as_ref()).map(|(asked, labels)| {
+                    crate::ui::approval::ApprovalView {
+                        asked,
+                        conversation: &labels.0,
+                        requester: &labels.1,
+                        others: self.approvals.len().saturating_sub(1),
+                        seconds_left: seconds_left(asked),
+                    }
+                });
+                crate::ui::approval::render(frame, popup, view, &mut self.approval, &self.theme);
             }
             Some(Overlay::AgentNew) => {
                 if let Some(form) = &self.agent_form {
@@ -10932,6 +11311,17 @@ fn read_tail(path: &std::path::Path, bytes: u64) -> String {
     let mut tail = Vec::new();
     let _ = file.take(bytes).read_to_end(&mut tail);
     String::from_utf8_lossy(&tail).into_owned()
+}
+
+/// What `:approvals` says when no agent asks for anything.
+const NOTHING_WAITS: &str = "no command waits for your answer";
+
+/// The whole seconds before a command that waits counts as refused.
+fn seconds_left(asked: &crate::agents::runtime::approval::Asked) -> u64 {
+    asked
+        .expires
+        .saturating_duration_since(Instant::now())
+        .as_secs()
 }
 
 fn centered(area: Rect, percent: u16, height: u16) -> Rect {
@@ -11770,7 +12160,7 @@ mod tests {
         wait_for(&app, Phase::Idle).await;
         let shown = screen(&mut app);
         for expected in [
-            "local agents · j/k select · space pause/resume · x stop the running turn · l log",
+            "local agents · j/k select · space pause/resume · x stop its turn · i add to this channel · l log",
             "› Scout · pi-durable · idle",
             "state:        idle",
             "doing now:    nothing",
@@ -11945,6 +12335,689 @@ mod tests {
             agents.stop().await;
         }
         owner.lock().await;
+    }
+
+    /// A profile with an unlocked owner, one channel open, and local agents
+    /// whose harness is a shell script that speaks just enough of the
+    /// protocol: it answers `initialize`, `session/new` and the prompt, and
+    /// puts `commands` to bzz one after the other, as bzz's own host does
+    /// before it starts one. Each answer is written to `<out>/answer-<n>`;
+    /// a yes also writes `<out>/ran-<n>`, which stands for the command.
+    #[cfg(unix)]
+    struct HandsWorld {
+        temporary: TempDir,
+        paths: Paths,
+        owner_keys: Keys,
+        owner: crate::auth::signer::SignerHandle,
+        channel: Uuid,
+        agents: Vec<crate::config::HostedAgentConfig>,
+        app: super::App,
+    }
+
+    #[cfg(unix)]
+    impl HandsWorld {
+        /// `agents`: each a name and the commands its harness asks for, as
+        /// JSON strings without their quotes.
+        async fn new(agents: &[(&str, &[&str])]) -> Self {
+            use crate::config::{ExecGrant, FolderGrant, Harness, LocalAgentConfig};
+            let temporary = TempDir::new().unwrap();
+            let paths = Paths {
+                config_dir: temporary.path().join("config"),
+                data_dir: temporary.path().join("data"),
+                cache_dir: temporary.path().join("cache"),
+            };
+            paths.ensure().unwrap();
+            let owner_keys = Keys::generate();
+            let owner = crate::auth::signer::SignerHandle::spawn(owner_keys.clone());
+            let mut config = Config::default();
+            let identity = crate::config::IdentityConfig {
+                id: Uuid::new_v4(),
+                label: "ann".into(),
+                pubkey: owner_keys.public_key().to_hex(),
+                backend: crate::config::KeyBackend::EncryptedFile,
+                key_ref: "owner".into(),
+            };
+            config.identities.push(identity.clone());
+            // A loopback port nothing listens on: no relay is needed.
+            let community = config
+                .add_community("rikuy".into(), "ws://127.0.0.1:9".into(), identity.id, true)
+                .unwrap();
+            let work = temporary.path().join("work");
+            std::fs::create_dir_all(&work).unwrap();
+            let mut made = Vec::new();
+            for (name, commands) in agents {
+                let (mut agent, _) = crate::broker::custody::create(
+                    &paths.keys_dir(),
+                    &owner,
+                    identity.id,
+                    community,
+                    name,
+                )
+                .await
+                .unwrap();
+                let out = temporary.path().join(format!("out-{name}"));
+                std::fs::create_dir_all(&out).unwrap();
+                let mut script = String::from(
+                    "read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"_meta\":{\"bzz\":{\"host\":\"sh\",\"tools\":\"pipe\",\"run\":[\"work\"],\"packages\":[]}}}}'\n\
+                     read line; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}'\n\
+                     read line\n",
+                );
+                for (index, command) in commands.iter().enumerate() {
+                    let number = index + 1;
+                    script.push_str(&format!(
+                        "printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":\"h{number}\",\"method\":\"_bzz/approve\",\"params\":{{\"sessionId\":\"s1\",\"kind\":\"exec\",\"mount\":\"work\",\"command\":\"{command}\"}}}}'\n\
+                         read answer; printf '%s\\n' \"$answer\" > '{out}/answer-{number}'\n\
+                         case \"$answer\" in *'\"allow\":true'*) echo ran > '{out}/ran-{number}';; esac\n",
+                        out = out.display()
+                    ));
+                }
+                script.push_str("cat > /dev/null\n");
+                let program = temporary.path().join(format!("harness-{name}.sh"));
+                std::fs::write(&program, script).unwrap();
+                let mut local = LocalAgentConfig::new(Harness::PiDurable);
+                local.command = vec!["/bin/sh".into(), program.display().to_string()];
+                local.folders = vec![FolderGrant {
+                    name: "work".into(),
+                    path: work.clone(),
+                    write: false,
+                    exec: ExecGrant::Ask,
+                }];
+                agent.local = Some(local);
+                config.hosted_agents.push(agent.clone());
+                made.push(agent);
+            }
+            config.save(&paths).unwrap();
+            let mut store = Store::open(paths.database_file()).unwrap();
+            store.sync_config(&config).unwrap();
+            store.pin_relay_pubkey(community, &"d".repeat(64)).unwrap();
+            let handle = StoreHandle::spawn(store).unwrap();
+            let mut app = super::App::new(Config::default(), paths.clone(), handle.clone())
+                .await
+                .unwrap();
+            app.config = config;
+            app.runtime = Some(
+                super::Runtime::build(
+                    &app.config,
+                    0,
+                    &paths,
+                    handle,
+                    Some(owner.clone()),
+                    crate::diagnostics::DiagnosticHandle::disabled(),
+                )
+                .unwrap(),
+            );
+            let channel = Uuid::new_v4();
+            app.channels = vec![Channel {
+                id: channel,
+                name: "general".into(),
+                about: String::new(),
+                kind: ChannelKind::Stream,
+                visibility: Visibility::Public,
+                is_member: true,
+                is_hidden: false,
+                member_count: 3,
+                last_event_at: None,
+                facts: Default::default(),
+            }];
+            app.selected_channel = 0;
+            Self {
+                temporary,
+                paths,
+                owner_keys,
+                owner,
+                channel,
+                agents: made,
+                app,
+            }
+        }
+
+        fn out(&self, name: &str, file: &str) -> std::path::PathBuf {
+            self.temporary.path().join(format!("out-{name}")).join(file)
+        }
+
+        /// Starts the agents, as a tick does, and waits until each can be
+        /// handed a request.
+        async fn start_agents(&mut self) {
+            self.app.reconcile_local_agents().await;
+            assert_eq!(self.app.status_error, None);
+            let wanted = self.agents.len();
+            Self::until("the agents to be ready", || {
+                self.app.local_agents.as_ref().is_some_and(|agents| {
+                    agents.host.status().len() == wanted
+                        && self.agents.iter().all(|agent| agents.host.runs(agent.id))
+                })
+            })
+            .await;
+        }
+
+        /// The owner mentions `agent` at the top of the channel.
+        async fn mention(&self, agent: usize) {
+            use crate::agents::runtime::{
+                admission::{ChannelFacts, PlaceKind},
+                host::Offer,
+            };
+            let agent = &self.agents[agent];
+            let event = buzz_sdk::build_message(
+                self.channel,
+                "please build",
+                None,
+                &[agent.pubkey.as_str()],
+                false,
+                &[],
+                &[],
+            )
+            .unwrap()
+            .sign_with_keys(&self.owner_keys)
+            .unwrap();
+            let facts = ChannelFacts {
+                id: self.channel,
+                name: "general".into(),
+                kind: PlaceKind::Channel,
+                members: vec![self.owner_keys.public_key().to_hex(), agent.pubkey.clone()],
+            };
+            let host = &self.app.local_agents.as_ref().unwrap().host;
+            assert_eq!(host.offer(agent.id, &event, &facts).await, Offer::Queued);
+        }
+
+        async fn until(what: &str, mut check: impl FnMut() -> bool) {
+            for _ in 0..1500 {
+                if check() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("timed out waiting for {what}");
+        }
+
+        /// Waits until `count` commands wait for the owner, and reads them
+        /// as a tick does.
+        async fn waiting(&mut self, count: usize) {
+            let host = self.app.local_agents.as_ref().unwrap().host.clone();
+            Self::until(&format!("{count} command(s) to wait"), || {
+                host.approvals().len() == count
+            })
+            .await;
+            self.app.refresh_approvals();
+            assert_eq!(self.app.approvals.len(), count);
+        }
+
+        fn screen(&mut self) -> Vec<String> {
+            let mut terminal = Terminal::new(TestBackend::new(150, 40)).unwrap();
+            terminal.draw(|frame| self.app.render(frame)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            (0..buffer.area.height)
+                .map(|row| {
+                    (0..buffer.area.width)
+                        .map(|column| buffer[(column, row)].symbol())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_owned()
+                })
+                .collect()
+        }
+
+        async fn stop(mut self) {
+            if let Some(agents) = self.app.local_agents.take() {
+                agents.stop().await;
+            }
+            self.owner.lock().await;
+        }
+    }
+
+    /// v0.15 M7, in the TUI: a real command an agent wants to run is said
+    /// on every screen, whatever is open; the owner opens it when he
+    /// chooses and sees which agent asks, in which conversation, for which
+    /// folder, and the whole command as it will run; his yes starts it and
+    /// his no, with his reason, does not. Two agents each have one open.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_waits_for_the_owner_on_every_screen_and_runs_only_on_his_yes() {
+        // Scout's command has two lines, a tab and a terminal escape.
+        // Ranger's first is longer than the screen; its second is asked
+        // after the first was answered.
+        let long = (1..=60)
+            .map(|line| format!("echo step {line}"))
+            .collect::<Vec<_>>()
+            .join("\\n");
+        let mut world = HandsWorld::new(&[
+            (
+                "Scout",
+                &["cd app &&\\n  npm test -- --watch=false\\t# \\u001b[2K"],
+            ),
+            ("Ranger", &[long.as_str(), "make deploy"]),
+        ])
+        .await;
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let ctrl_y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        world.start_agents().await;
+        // Nothing waits: the key is not taken, and no line says otherwise.
+        assert!(!world.app.global_key(ctrl_y));
+        assert!(!world.screen()[0].contains("asks to run a command"));
+        world.app.command = "approvals".into();
+        world.app.execute_command().await.unwrap();
+        assert_eq!(
+            world.app.status_error.as_deref(),
+            Some("no command waits for your answer")
+        );
+
+        world.mention(0).await;
+        world.waiting(1).await;
+        world.mention(1).await;
+        world.waiting(2).await;
+
+        // ---- seen from anywhere -------------------------------------------
+        let banner = "Scout asks to run a command in /mnt/work (#general (a thread)) · and 1 more · Ctrl-Y to see and answer it";
+        let top = world.screen()[0].clone();
+        assert!(top.contains(banner), "the workspace: {top}");
+        assert!(top.contains("refused in "), "{top}");
+        // Not only in the agents panel: with the directory of other
+        // people's agents open, with the help, a search, the Inbox, and
+        // while a message is being written.
+        for command in ["agents directory", "search", "broker", "agents"] {
+            world.app.command = command.into();
+            world.app.execute_command().await.unwrap();
+            assert!(
+                world.app.presentation.overlay.is_some(),
+                "`:{command}` opened something"
+            );
+            let top = world.screen()[0].clone();
+            assert!(top.contains(banner), "`:{command}`: {top}");
+            if command != "agents" {
+                world.app.presentation.close_overlay();
+            }
+        }
+        // In the agents panel the agent's own line says what it waits for.
+        let shown = world.screen().join("\n");
+        assert!(
+            shown.contains("waiting for your answer: run in /mnt/work: cd app &&"),
+            "{shown}"
+        );
+        // Under the help, which fills the screen; and in the Inbox.
+        world.app.presentation.open_overlay(Overlay::Help);
+        assert!(world.screen()[0].contains(banner), "the help");
+        world.app.presentation.close_overlay();
+        world.app.open_inbox();
+        assert!(world.screen()[0].contains(banner), "the Inbox");
+        world.app.presentation.route = Route::Workspace;
+        world.app.presentation.focus = FocusSurface::Timeline;
+        // The dialog never opens by itself, and a plain `y` or `a` typed
+        // anywhere answers nothing.
+        assert_eq!(world.app.presentation.overlay, None);
+        assert!(!world.app.global_key(key(KeyCode::Char('y'))));
+        assert!(!world.app.global_key(key(KeyCode::Char('a'))));
+        assert_eq!(world.app.approvals.len(), 2);
+
+        // ---- the command, whole --------------------------------------------
+        // Opened from inside another panel, which is there again afterwards.
+        world.app.command = "agents".into();
+        world.app.execute_command().await.unwrap();
+        assert!(world.app.global_key(ctrl_y));
+        assert_eq!(world.app.presentation.overlay, Some(Overlay::Approval));
+        let shown = world.screen().join("\n");
+        for expected in [
+            "a real command waits for your answer · a allow · r refuse",
+            "agent:        Scout",
+            "conversation: #general (a thread) · it is answering you",
+            &format!(
+                "folder:       /mnt/work = {}",
+                world.temporary.path().join("work").display()
+            ),
+            "It runs as your user, starting in that folder, and can reach whatever you can.",
+            "then it counts as refused · 1 more wait (Tab)",
+            "the command, exactly as /bin/sh will get it (2 line(s), 44 bytes):",
+            "It holds characters that would not show; each is written out",
+            " 1 │ cd app &&",
+            " 2 │   npm test -- --watch=false\\t# \\x1b[2K",
+            "that is the whole command",
+        ] {
+            assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
+        }
+        assert!(!shown.contains('\u{1b}'), "the escape itself is not drawn");
+        assert!(
+            !world.screen()[0].contains("asks to run a command"),
+            "the dialog is the notice while it is open"
+        );
+        // Nothing has started while it was only looked at.
+        assert!(!world.out("Scout", "answer-1").exists());
+
+        // ---- yes ------------------------------------------------------------
+        world.app.approval_key(key(KeyCode::Char('a')));
+        assert_eq!(
+            world.app.status_error.as_deref(),
+            Some("allowed: Scout runs its command in /mnt/work")
+        );
+        assert_eq!(
+            world.app.presentation.overlay,
+            Some(Overlay::LocalAgents),
+            "back where the owner was"
+        );
+        let ran = world.out("Scout", "ran-1");
+        HandsWorld::until("Scout's command to start", || ran.exists()).await;
+        let answer = std::fs::read_to_string(world.out("Scout", "answer-1")).unwrap();
+        assert!(answer.contains("\"id\":\"h1\""), "{answer}");
+        assert!(answer.contains("\"result\":{\"allow\":true}"), "{answer}");
+        world.app.presentation.close_overlay();
+        world.waiting(1).await;
+        let top = world.screen()[0].clone();
+        assert!(
+            top.contains(
+                "Ranger asks to run a command in /mnt/work (#general (a thread)) · Ctrl-Y"
+            ),
+            "{top}"
+        );
+
+        // ---- a command longer than the screen ------------------------------
+        world.app.command = "approvals".into();
+        world.app.execute_command().await.unwrap();
+        assert_eq!(world.app.presentation.overlay, Some(Overlay::Approval));
+        let shown = world.screen().join("\n");
+        assert!(shown.contains("agent:        Ranger"), "{shown}");
+        assert!(shown.contains(" 1 │ echo step 1"), "{shown}");
+        assert!(!shown.contains("echo step 60"), "{shown}");
+        assert!(
+            shown.contains("of 60 · scroll to the end before you allow"),
+            "{shown}"
+        );
+        // A yes for a command whose end was never on screen is not taken.
+        world.app.approval_key(key(KeyCode::Char('a')));
+        assert_eq!(world.app.presentation.overlay, Some(Overlay::Approval));
+        assert!(
+            world
+                .screen()
+                .join("\n")
+                .contains("scroll to the end of the command first"),
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !world.out("Ranger", "answer-1").exists(),
+            "nothing was answered"
+        );
+        world.app.approval_key(key(KeyCode::PageDown));
+        world.screen();
+        world.app.approval_key(key(KeyCode::Char('G')));
+        let shown = world.screen().join("\n");
+        assert!(shown.contains("60 │ echo step 60"), "{shown}");
+        assert!(shown.contains("of 60: the end"), "{shown}");
+
+        // ---- no, with a reason ----------------------------------------------
+        world.app.approval_key(key(KeyCode::Char('r')));
+        for character in "not on a Friday".chars() {
+            world.app.approval_key(key(KeyCode::Char(character)));
+        }
+        // While the reason is written, `a` is a letter of it.
+        assert!(
+            world
+                .screen()
+                .join("\n")
+                .contains("refuse, and tell the agent why (optional): not on a Friday▏"),
+        );
+        assert!(!world.out("Ranger", "answer-1").exists());
+        world.app.approval_key(key(KeyCode::Enter));
+        assert_eq!(
+            world.app.status_error.as_deref(),
+            Some("refused: Ranger was told no, and nothing was started")
+        );
+        assert_eq!(world.app.presentation.overlay, None);
+        let refused = world.out("Ranger", "answer-1");
+        HandsWorld::until("Ranger to be told no", || refused.exists()).await;
+        let answer = std::fs::read_to_string(&refused).unwrap();
+        assert!(answer.contains("\"allow\":false"), "{answer}");
+        assert!(
+            answer.contains("Your owner refused this command, and says: not on a Friday"),
+            "{answer}"
+        );
+        assert!(
+            !world.out("Ranger", "ran-1").exists(),
+            "a refused command does not start"
+        );
+
+        // ---- a question that goes away while it is looked at ----------------
+        world.waiting(1).await;
+        assert!(world.app.global_key(ctrl_y));
+        assert!(world.screen().join("\n").contains(" 1 │ make deploy"));
+        let ranger = world.agents[1].id;
+        let host = world.app.local_agents.as_ref().unwrap().host.clone();
+        assert_eq!(host.stop_turns(ranger).await, 1);
+        world.app.refresh_approvals();
+        assert!(world.app.approvals.is_empty());
+        assert!(
+            world
+                .screen()
+                .join("\n")
+                .contains("That command no longer waits")
+        );
+        // A yes now starts nothing, and says so.
+        world.app.approval_key(key(KeyCode::Char('a')));
+        assert!(
+            world
+                .app
+                .status_error
+                .as_deref()
+                .is_some_and(
+                    |notice| notice.contains("no longer waits") && notice.contains("not started")
+                ),
+            "{:?}",
+            world.app.status_error
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!world.out("Ranger", "ran-2").exists());
+        assert!(!world.screen()[0].contains("asks to run a command"));
+
+        // Each agent's activity has its questions and their answers.
+        let lines = |agent: Uuid| {
+            crate::agents::activity::recent(&world.paths.data_dir, agent, 10)
+                .iter()
+                .map(|entry| entry.answer.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            lines(world.agents[0].id),
+            ["asked of you", "allowed by you"]
+        );
+        assert_eq!(
+            lines(ranger),
+            [
+                "asked of you",
+                "refused by you: not on a Friday",
+                "asked of you",
+                "void: its owner stopped the turn",
+            ]
+        );
+        world.stop().await;
+    }
+
+    /// v0.15 M7: locking, which stops the agents, leaves no question
+    /// behind; and the panel's key adds the selected agent to the channel
+    /// that is open.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_question_is_void_when_bzz_locks_and_the_panel_adds_an_agent_to_the_open_channel() {
+        let mut world = HandsWorld::new(&[("Scout", &["make deploy"])]).await;
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        world.start_agents().await;
+        world.mention(0).await;
+        world.waiting(1).await;
+        let scout = world.agents[0].id;
+
+        // The panel's key: the agent selected, into the channel open.
+        world.app.command = "agents".into();
+        world.app.execute_command().await.unwrap();
+        assert!(world.screen().join("\n").contains("i add to this channel"));
+        world
+            .app
+            .local_agents_key(key(KeyCode::Char('i')))
+            .await
+            .unwrap();
+        assert_eq!(world.app.agent_additions, [(scout, world.channel)]);
+        assert_eq!(
+            world.app.status_error.as_deref(),
+            Some("adding Scout to #general…")
+        );
+        // No relay answers here, and the owner is told that it failed.
+        let notice = loop {
+            match tokio::time::timeout(Duration::from_secs(30), world.app.background_rx.recv())
+                .await
+                .expect("the addition answers")
+            {
+                Some(super::Background::Notice(notice)) => break notice,
+                Some(_) => {}
+                None => panic!("the background channel closed"),
+            }
+        };
+        assert!(
+            notice.starts_with("Scout was not added to #general: "),
+            "{notice}"
+        );
+        // With no channel open there is nothing to add it to.
+        let channels = std::mem::take(&mut world.app.channels);
+        world
+            .app
+            .local_agents_key(key(KeyCode::Char('i')))
+            .await
+            .unwrap();
+        assert_eq!(
+            world.app.status_error.as_deref(),
+            Some("open a channel first: the agent is added to it")
+        );
+        assert_eq!(world.app.agent_additions.len(), 1);
+        world.app.channels = channels;
+
+        // Locked: the agents stop, and the question with them.
+        let host = world.app.local_agents.as_ref().unwrap().host.clone();
+        let asked = host.approvals()[0].id;
+        world.app.presentation.close_overlay();
+        world.app.command = "lock".into();
+        world.app.execute_command().await.unwrap();
+        assert!(world.app.local_agents.is_none());
+        assert!(host.approvals().is_empty());
+        assert!(!host.answer_approval(asked, crate::agents::runtime::approval::Answer::Allow));
+        world.app.refresh_approvals();
+        assert!(!world.screen()[0].contains("asks to run a command"));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!world.out("Scout", "ran-1").exists());
+        let kept = crate::agents::activity::recent(&world.paths.data_dir, scout, 10);
+        assert!(
+            kept.last()
+                .is_some_and(|entry| entry.answer.starts_with("void: ")),
+            "{kept:?}"
+        );
+        world.stop().await;
+    }
+
+    /// One writer for the settings: a command that edits the settings
+    /// while a TUI is open is not written over by the TUI's next save, and
+    /// the TUI's change is not written over by a command that read the
+    /// settings before it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_commands_edit_survives_a_save_by_the_running_tui_and_the_reverse() {
+        use crate::agents::manage;
+        use crate::config::LocalAgentState;
+        let mut world = HandsWorld::new(&[("Scout", &[]), ("Ranger", &[])]).await;
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let (scout, ranger) = (world.agents[0].id, world.agents[1].id);
+        let local = |config: &Config, id: Uuid| {
+            config
+                .hosted_agents
+                .iter()
+                .find(|agent| agent.id == id)
+                .and_then(|agent| agent.local.clone())
+                .unwrap()
+        };
+        // `bzz agent edit Scout --allow-host github.com --packages off`,
+        // from another terminal, as the command does it: read, change, save.
+        let mut command = Config::load(&world.paths).unwrap();
+        manage::apply_edit(
+            &mut command,
+            scout,
+            &manage::Edit {
+                network: Some(vec!["github.com".into()]),
+                packages: Some(false),
+                ..manage::Edit::default()
+            },
+        )
+        .unwrap();
+        command.save(&world.paths).unwrap();
+        // The TUI, open all along, knows nothing of it; its owner pauses
+        // Ranger, and then Scout itself, in the agents panel.
+        assert!(local(&world.app.config, scout).network.is_empty());
+        world.app.command = "agents".into();
+        world.app.execute_command().await.unwrap();
+        world
+            .app
+            .local_agents_key(key(KeyCode::Char('j')))
+            .await
+            .unwrap();
+        world
+            .app
+            .local_agents_key(key(KeyCode::Char(' ')))
+            .await
+            .unwrap();
+        assert_eq!(world.app.status_error.as_deref(), Some("Ranger paused"));
+        world
+            .app
+            .local_agents_key(key(KeyCode::Char('k')))
+            .await
+            .unwrap();
+        world
+            .app
+            .local_agents_key(key(KeyCode::Char(' ')))
+            .await
+            .unwrap();
+        assert_eq!(world.app.status_error.as_deref(), Some("Scout paused"));
+        let saved = Config::load(&world.paths).unwrap();
+        let scouts = local(&saved, scout);
+        assert_eq!(
+            (scouts.network.clone(), scouts.packages, scouts.state),
+            (
+                vec!["github.com".to_owned()],
+                false,
+                LocalAgentState::Paused
+            ),
+            "the command's edit survived the TUI's saves, with the TUI's own change of that agent"
+        );
+        assert_eq!(local(&saved, ranger).state, LocalAgentState::Paused);
+
+        // The reverse: a command reads the settings, the TUI saves a change
+        // (the owner resumes Ranger), and then the command saves its own.
+        let mut command = Config::load(&world.paths).unwrap();
+        world
+            .app
+            .local_agents_key(key(KeyCode::Char('j')))
+            .await
+            .unwrap();
+        world
+            .app
+            .local_agents_key(key(KeyCode::Char(' ')))
+            .await
+            .unwrap();
+        assert_eq!(world.app.status_error.as_deref(), Some("Ranger resumed"));
+        manage::apply_edit(
+            &mut command,
+            scout,
+            &manage::Edit {
+                instructions: Some("Be brief.".into()),
+                ..manage::Edit::default()
+            },
+        )
+        .unwrap();
+        command.save(&world.paths).unwrap();
+        let saved = Config::load(&world.paths).unwrap();
+        assert_eq!(
+            local(&saved, ranger).state,
+            LocalAgentState::Active,
+            "the TUI's change survived the command's save"
+        );
+        let scouts = local(&saved, scout);
+        assert_eq!(
+            (
+                scouts.instructions.as_str(),
+                scouts.network.len(),
+                scouts.state
+            ),
+            ("Be brief.", 1, LocalAgentState::Paused)
+        );
+        world.stop().await;
     }
 
     /// v0.15 M1: the `:broker` panel has one status line per local agent,

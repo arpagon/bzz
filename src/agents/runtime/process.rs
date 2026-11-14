@@ -82,6 +82,29 @@ pub fn base_environment(
     env
 }
 
+/// Marks every descriptor this process holds beyond its three standard
+/// streams as not to be handed to a program it starts, also the ones bzz
+/// itself inherited from whatever started it. Called before a harness, or
+/// anything else of the agent runtime, is started.
+///
+/// A harness must get its three streams and nothing else: a real command an
+/// agent runs would inherit the rest (`docs/agent-host-protocol.md`, section
+/// 2). What Rust opens is marked this way already; what bzz was born with,
+/// and what a C library opened, is not.
+///
+/// What this does not close: a descriptor another thread opens without the
+/// mark between this call and the start of the program.
+#[cfg(unix)]
+pub fn keep_descriptors_to_ourselves() {
+    close_fds::set_fds_cloexec_threadsafe(3, &[]);
+}
+
+/// On Windows a handle is handed on only when it was made inheritable, and
+/// Rust makes none that way. One that bzz itself inherited as inheritable
+/// cannot be told apart in safe Rust; it is left as it is.
+#[cfg(not(unix))]
+pub fn keep_descriptors_to_ourselves() {}
+
 /// What tells one process from every other, now and after a restart.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProcessIdentity {
@@ -433,6 +456,8 @@ impl Harness {
         command.process_group(0);
         #[cfg(windows)]
         command.creation_flags(0x0000_0200); // CREATE_NEW_PROCESS_GROUP
+        // Its three streams and no other open descriptor of bzz.
+        keep_descriptors_to_ourselves();
         let mut child = command.spawn().map_err(|error| {
             Error::Config(format!(
                 "the agent's harness could not be started ({}): {error}",
@@ -752,6 +777,44 @@ mod tests {
         assert!(!run.join("torn.json.tmp").exists());
         kept.stop(move || drop(kept_stdin), STOP_GRACE).await;
         let _ = owner.kill().await;
+    }
+
+    /// Protocol section 2: the harness gets its three streams and no other
+    /// open descriptor, also none that bzz itself was born with.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_harness_inherits_no_descriptor_but_its_three_streams() {
+        use std::os::fd::AsRawFd as _;
+        let temporary = tempfile::TempDir::new().unwrap();
+        // A descriptor as bzz inherits one from the terminal it was started
+        // in: open, with a high number, and not marked to stay behind.
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let leaked = rustix::io::fcntl_dupfd_cloexec(&file, 200).unwrap();
+        rustix::io::fcntl_setfd(&leaked, rustix::io::FdFlags::empty()).unwrap();
+        let number = leaked.as_raw_fd();
+        assert!(number >= 200);
+        let result = temporary.path().join("descriptors");
+        // What the harness itself has open, by number (`/dev/fd` is there
+        // on Linux and on macOS). Looked at before anything is redirected.
+        let script = format!(
+            "r=; for fd in 0 1 2 {number}; do if [ -e /dev/fd/$fd ]; then r=\"$r$fd open,\"; else r=\"$r$fd closed,\"; fi; done; echo \"$r\" > {}; cat >/dev/null",
+            result.display()
+        );
+        let (harness, stdin, _stdout) = Harness::spawn(
+            &launch(temporary.path(), &script),
+            &run_dir(temporary.path()),
+            Uuid::new_v4(),
+        )
+        .unwrap();
+        let seen = wait_for(&result).await;
+        harness.stop(move || drop(stdin), STOP_GRACE).await;
+        assert_eq!(
+            seen,
+            format!("0 open,1 open,2 open,{number} closed,"),
+            "the harness has its three streams and nothing else of bzz's"
+        );
+        // It is still open here: bzz's own use of it is not disturbed.
+        assert!(rustix::io::fcntl_getfd(&leaked).is_ok());
     }
 
     #[cfg(unix)]

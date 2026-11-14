@@ -16,6 +16,8 @@ pub enum Command {
     Agents(String),
     /// `:agent new [name]`: the form that creates a local agent.
     Agent(String),
+    /// `:approvals`: the real commands that wait for the owner's answer.
+    Approvals,
     AddCommunity,
     RemoveCommunity,
     PurgeCache,
@@ -73,6 +75,7 @@ pub fn parse(input: &str) -> Command {
         value if value == "agent" || value.starts_with("agent ") => {
             Command::Agent(value.trim_start_matches("agent").trim().to_owned())
         }
+        "approvals" | "approval" | "approve" => Command::Approvals,
         "community add" => Command::AddCommunity,
         "community remove" => Command::RemoveCommunity,
         "purge-cache" => Command::PurgeCache,
@@ -122,6 +125,8 @@ mod tests {
         assert_eq!(parse(":theme reload"), Command::ThemeReload);
         assert_eq!(parse(":media reload"), Command::MediaReload);
         assert_eq!(parse(":agents"), Command::Agents(String::new()));
+        assert_eq!(parse(":approvals"), Command::Approvals);
+        assert_eq!(parse(":approve"), Command::Approvals);
         assert_eq!(
             parse(":agents directory"),
             Command::Agents("directory".into())

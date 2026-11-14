@@ -15,7 +15,10 @@
 //!   tools over the pipe (`_bzz/tool`). Otherwise start the MCP server
 //!   listed in `session/new` and call tools through it, as a coding harness
 //!   does. An own host also treats a request id it has finished as the same
-//!   submission and does nothing for it.
+//!   submission and does nothing for it. Its requests carry string ids
+//!   (`h1`, `h2`, …), as the real host's do.
+//! - `run`, `packages`: what an own host reports in `_meta.bzz` of its
+//!   answer to `initialize`.
 //! - `log`: every message received, every tool result and the process's own
 //!   arguments and environment, one JSON object per line.
 //! - `state`: what survives a restart: which turns were used, which requests
@@ -25,7 +28,12 @@
 //!
 //! Steps: `{"tool": "send", "arguments": {…}, "nowait": false}`,
 //! `{"text": "…"}`, `{"update": {…}}`, `{"notify": {"method": …}}`,
-//! `{"request": {"method": …}}`, `{"sleep_ms": 50}`, `{"stall": true}`
+//! `{"request": {"method": …}}` (`"$session"` as its `sessionId` is the
+//! turn's session; with `"then_touch": "<file>"` the file is written when
+//! the answer is `{"allow": true}`, as a command that starts),
+//! `{"requests": [{"method": …}, …]}` (all sent at once, then all awaited;
+//! the log has `answered`, the order in which the answers came),
+//! `{"sleep_ms": 50}`, `{"stall": true}`
 //! (`"deaf": true` ignores a cancel), `{"flood": {"chunks": 1000, "garbage":
 //! 10, "long_line_bytes": 5000000}}`, `{"exit": 1}`, `{"touch": "<file>"}`,
 //! `{"wait_for": "<file>"}`, `{"spawn": ["sleep", "600"], "pid_file":
@@ -119,7 +127,9 @@ struct Harness {
     state_file: Option<PathBuf>,
     state: Mutex<Value>,
     next_id: AtomicU64,
-    waiting: Mutex<HashMap<u64, mpsc::Sender<Value>>>,
+    waiting: Mutex<HashMap<String, mpsc::Sender<Value>>>,
+    /// The ids of answered requests, in the order the answers came.
+    answered: Mutex<Vec<Value>>,
     servers: Mutex<HashMap<String, Arc<Mutex<McpServer>>>>,
     cancelled: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
@@ -168,12 +178,25 @@ impl Harness {
         self.write(&json!({"jsonrpc": "2.0", "method": method, "params": params}));
     }
 
+    /// Sends a request to bzz and returns its id and where its answer
+    /// arrives. An own host names its requests `h1`, `h2`, …, as bzz's real
+    /// host does; another harness numbers them.
+    fn send_request(&self, method: &str, params: Value) -> (Value, mpsc::Receiver<Value>) {
+        let number = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let id = if self.own_host() {
+            json!(format!("h{number}"))
+        } else {
+            json!(number)
+        };
+        let (sender, receiver) = mpsc::channel();
+        self.waiting.lock().unwrap().insert(id.to_string(), sender);
+        self.write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
+        (id, receiver)
+    }
+
     /// Sends a request to bzz. With `wait`, returns its whole answer.
     fn request(&self, method: &str, params: Value, wait: bool) -> Option<Value> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (sender, receiver) = mpsc::channel();
-        self.waiting.lock().unwrap().insert(id, sender);
-        self.write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
+        let (_, receiver) = self.send_request(method, params);
         wait.then(|| receiver.recv().ok()).flatten()
     }
 
@@ -313,7 +336,47 @@ impl Harness {
                 }
                 let response =
                     self.request(message["method"].as_str().unwrap_or("x"), params, true);
+                // As a command that starts only on a yes.
+                if let Some(path) = step.get("then_touch").and_then(Value::as_str)
+                    && response
+                        .as_ref()
+                        .and_then(|response| response.pointer("/result/allow"))
+                        == Some(&json!(true))
+                {
+                    let _ = std::fs::write(path, "started\n");
+                }
                 self.log(json!({"response": response, "to": message["method"]}));
+            } else if let Some(messages) = step.get("requests").and_then(Value::as_array) {
+                // All sent before any answer is read: several are open at
+                // once, and bzz answers them in whatever order they end.
+                let open = messages
+                    .iter()
+                    .map(|message| {
+                        let mut params = message.get("params").cloned().unwrap_or(Value::Null);
+                        if params.get("sessionId") == Some(&json!("$session")) {
+                            params["sessionId"] = json!(session);
+                        }
+                        let method = message["method"].as_str().unwrap_or("x").to_owned();
+                        let (id, receiver) = self.send_request(&method, params);
+                        (id, method, receiver)
+                    })
+                    .collect::<Vec<_>>();
+                let ids = open.iter().map(|(id, ..)| id.clone()).collect::<Vec<_>>();
+                let responses = open
+                    .into_iter()
+                    .map(|(id, method, receiver)| {
+                        json!({"id": id, "to": method, "response": receiver.recv().ok()})
+                    })
+                    .collect::<Vec<_>>();
+                let answered = self
+                    .answered
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|id| ids.contains(id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                self.log(json!({"responses": responses, "sent": ids, "answered": answered}));
             } else if let Some(millis) = step.get("sleep_ms").and_then(Value::as_u64) {
                 stop = pause(Some(Duration::from_millis(millis)), false);
             } else if step.get("stall").is_some() {
@@ -403,12 +466,15 @@ impl Harness {
         let id = message.get("id").cloned();
         if method.is_empty() {
             // An answer to a request of ours.
-            if let Some(waiting) = id
-                .as_ref()
-                .and_then(Value::as_u64)
-                .and_then(|id| self.waiting.lock().unwrap().remove(&id))
-            {
-                let _ = waiting.send(message);
+            let key = id.as_ref().map(Value::to_string).unwrap_or_default();
+            self.answered
+                .lock()
+                .unwrap()
+                .push(id.clone().unwrap_or(Value::Null));
+            match self.waiting.lock().unwrap().remove(&key) {
+                Some(waiting) if waiting.send(message.clone()).is_ok() => {}
+                // Nobody waits for it any more.
+                _ => self.log(json!({"unclaimed": message})),
             }
             return;
         }
@@ -435,7 +501,12 @@ impl Harness {
                     "agentCapabilities": {"loadSession": self.script.get("load_session").and_then(Value::as_bool).unwrap_or(false)},
                 });
                 if self.own_host() {
-                    result["_meta"] = json!({"bzz": {"host": "scripted", "tools": "pipe"}});
+                    result["_meta"] = json!({"bzz": {
+                        "host": "scripted",
+                        "tools": "pipe",
+                        "run": self.script.get("run").cloned().unwrap_or(json!([])),
+                        "packages": self.script.get("packages").cloned().unwrap_or(json!([])),
+                    }});
                 }
                 answer(result);
             }
@@ -536,6 +607,7 @@ fn main() {
         state: Mutex::new(state),
         next_id: AtomicU64::new(1),
         waiting: Mutex::new(HashMap::new()),
+        answered: Mutex::new(Vec::new()),
         servers: Mutex::new(HashMap::new()),
         cancelled: Mutex::new(HashMap::new()),
         script,

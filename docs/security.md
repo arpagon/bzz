@@ -245,7 +245,8 @@ trusted with anything of bzz's:
   bzz. The message answered comes from the calling session's live turn, never
   from an argument; one final reply per message is kept in bzz's database
   before anything is published. A permission request for anything but those
-  tools is refused.
+  tools is refused. bzz's own host may also ask for a git credential and for
+  leave to start a real command (below); no other harness may.
 - **`bzz agent-tools`.** A harness that is not bzz's own host reaches the
   tools through this MCP server and a loopback endpoint, with a credential
   made for one session, held in memory as a hash and revoked when the agent's
@@ -255,7 +256,11 @@ trusted with anything of bzz's:
   by default, listed people or anyone when the owner says so, and only the
   owner in a DM.
 - **Processes.** Each agent runs in its own process group and is stopped as a
-  group. A coding harness (Grok, Codex, Claude Code) is the owner's own
+  group. It is handed its three standard streams and no other open
+  descriptor: before a start, bzz marks everything it holds above them as
+  not to be passed on, also what bzz itself inherited from the terminal it
+  was started in (on Linux and macOS; on Windows a handle bzz inherited as
+  inheritable is passed on). A coding harness (Grok, Codex, Claude Code) is the owner's own
   program: it runs a real shell as the owner's user, and bzz cannot promise
   the key is out of its reach, only that bzz never gives it. bzz does not
   start those three in this version; `bzz agent show` prints each harness's
@@ -273,6 +278,71 @@ trusted with anything of bzz's:
   the sign-in. A granted folder is checked, then used: another program of
   the machine that swaps a link in between can win that race; the agent
   cannot.
+- **Real commands (`:exec`).** A `pi-durable` agent starts a program of the
+  machine only in a folder its owner granted for commands, and only after
+  bzz said yes to that very command:
+  - bzz says yes only for a folder its own settings grant for commands, in
+    the settings it started with and in the settings file at that moment, so
+    a grant taken away holds at once; only for a turn that is running; and,
+    unless the owner allowed that folder without asking, only after he
+    answered yes in the TUI.
+  - The owner is shown the whole command as `/bin/sh` will get it. Every
+    line is numbered, a long line goes on without a number, and a character
+    that would not show (a terminal escape, a carriage return, a
+    right-to-left override, an invisible space) is written out. A yes is
+    taken only after the command's end has been on screen. The dialog opens
+    only when the owner asks for it (`Ctrl-Y`), so nothing typed elsewhere
+    answers it. What it cannot show: a letter that looks like another one;
+    it says when a command holds characters outside ASCII.
+  - Without the TUI there is nobody to ask and the answer is no. A question
+    is refused after 300 s, and is void when its turn is cancelled, the
+    agent paused or stopped, or bzz locked or closed. It is answered once.
+  - bzz answers yes or no and passes nothing of the command back.
+  - **The folder is where a command starts, not a wall.** The command runs
+    as the owner's user, with `PATH`, `HOME`, `LANG` and `TMPDIR` and nothing
+    else in its environment, and can reach whatever the owner can. Nothing
+    in bzz or its host confines it. `write = false` binds the agent's file
+    tools only.
+  - **A folder allowed without asking** (`exec = "without-asking"`) lets
+    whoever may wake the agent run commands as its owner, also under `bzz
+    agent run`. It is never the default. `bzz agent new` and `edit` refuse
+    it for an agent that anyone may wake, and bzz asks the owner about every
+    command of such an agent whatever the settings file says.
+  - Each question and its answer is kept in
+    `<data>/agents/<id>/activity.jsonl`: when, the folder, the command's
+    first line, the answer. `bzz agent show` prints it.
+- **Git credentials.** A user name and a token, stored per agent and host
+  with `bzz agent credential set`. They are read without echo, never taken
+  as arguments, and sealed with NIP-44 to the owner's own key in
+  `<data>/keys/agent-<id>.git/`, so they open only while the owner is
+  unlocked. They are never in `config.toml`. What is sealed names the agent
+  and the host: a file moved to another agent or host opens for nobody.
+  - bzz gives one to the agent's host only as the answer to its request,
+    only for a host on that agent's list of allowed hosts (as bzz started
+    with it, and as the settings file has it at that moment), only from that
+    agent's own store, and only to a session with a turn running. The owner
+    is not asked at that moment: storing it was the grant.
+  - It is in no log, no database, no activity line and no tool result. The
+    host uses it for one git command, keeps it nowhere and stars it out of
+    what a remote echoes back; the model never sees it.
+    `tests/secret_scan_test.rs` and the tests with the real host search
+    every file of a profile for it, in four forms.
+  - What it does not give: the token stays in the memory of bzz and of the
+    host until each frees it, and it lets the agent do at that host whatever
+    the token allows. Give an agent a token made for it.
+- **Pi packages.** A package named in Pi's `settings.json` with a Pi Durable
+  entry is loaded by the agent's host. **Its code runs inside the host, with
+  the owner's rights, outside the agent's sandbox**: it can read the owner's
+  files and Pi's sign-in. They are on by default, as in Pi; `packages =
+  false` (`--no-packages`) switches them off for an agent. Checking a model
+  for `agent new` loads them too, unless they are off. A package that hangs
+  at its start is left out after 10 s; one that never gives the thread back
+  holds the host, and bzz stops a host that has not answered in 30 s.
+- **The settings file has one writer at a time.** A save takes a lock on
+  `config.toml.lock`, reads the file as it is, and writes that with only
+  what its own copy changed. A command no longer loses an edit to a TUI that
+  was open, and a setting that makes an agent safer (a grant taken away, a
+  pause) is not undone by another bzz's save.
 - **Creating and deleting.** `bzz agent new` publishes two records: the
   agent's profile, signed by the agent, and the owner's record of it, signed
   by the owner after a confirmation. Creation is all or nothing; a failure
@@ -288,7 +358,9 @@ trusted with anything of bzz's:
 - **What bzz keeps.** The text of each request and of each signed reply stays
   in bzz's database for 30 days after the turn (at most 1000 per agent), then
   is removed. An agent's memory and disk are its two files; `bzz agent
-  delete` removes them with its key and its rows.
+  delete` removes them with its key, its stored git credentials, its
+  activity and its rows. What a real command printed is kept by the agent as
+  it was printed, so paths of the machine can be in its memory.
 
 **Moving an agent.** An agent's key leaves bzz's custody only by one of two
 explicit acts of its owner, each of which needs the owner's identity
@@ -335,7 +407,7 @@ unlocked. The owner's guide is [`agents.md`](agents.md#moving-an-agent).
     and keep doing so after the owner took the agent back: a key that was in
     the clear somewhere cannot be taken back. Only a new agent has a new key.
   - On the other machine a Pi package runs inside the agent's host and can
-    read the key from the environment. `bzz agent edit --no-packages` before
+    read the key from the environment. `bzz agent edit --packages off` before
     the kit is made keeps every package off there.
   - A kit whose last step fails is removed, so that no key is left in the
     clear for an agent that did not move.
@@ -446,6 +518,14 @@ Invalid leaves degrade independently with warnings; invalid TOML falls back to
 the selected compiled theme so appearance customization cannot block cache-only
 recovery. A theme cannot alter layout geometry, protocol behavior, SQLite, or
 signing state.
+
+## Dependencies added in v0.15.0
+
+`close_fds` 0.3 (MIT; it depends on `cfg-if` and `libc`, which bzz had
+already), on Unix only. bzz uses one function of it,
+`set_fds_cloexec_threadsafe`, to mark the descriptors it holds as not to be
+handed to an agent's harness. Safe Rust cannot name a descriptor it did not
+open, and `unsafe` is forbidden in bzz.
 
 ## Dependency advisory
 

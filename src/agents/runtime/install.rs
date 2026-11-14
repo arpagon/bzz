@@ -300,6 +300,27 @@ fn tool_environment(
     env
 }
 
+/// Runs `command` to its end. A program that another process has open for
+/// writing at this moment cannot be started ("text file busy"): it is tried
+/// again shortly, a few times. That moment is short, and a program that was
+/// just written or updated is otherwise reported as missing.
+async fn run_to_end(
+    command: &mut tokio::process::Command,
+) -> std::io::Result<std::process::Output> {
+    // The owner's own programs get nothing of bzz's but what is named.
+    process::keep_descriptors_to_ourselves();
+    let mut tries = 0;
+    loop {
+        match command.output().await {
+            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 20 => {
+                tries += 1;
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            output => return output,
+        }
+    }
+}
+
 async fn output_of(
     program: &Path,
     args: &[&str],
@@ -315,7 +336,7 @@ async fn output_of(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    tokio::time::timeout(limit, command.output())
+    tokio::time::timeout(limit, run_to_end(&mut command))
         .await
         .ok()?
         .ok()
@@ -557,7 +578,7 @@ async fn install_into(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let output = match tokio::time::timeout(limits.timeout, command.output()).await {
+    let output = match tokio::time::timeout(limits.timeout, run_to_end(&mut command)).await {
         Ok(Ok(output)) => output,
         Ok(Err(error)) => return Err(failed(format!("npm could not be started: {error}"))),
         Err(_) => {
@@ -631,6 +652,224 @@ pub fn remove_unused_installs(data_dir: &Path) -> Vec<PathBuf> {
     removed
 }
 
+/// One Pi package as the host reports it: at `initialize`
+/// (`_meta.bzz.packages`) and from `main.mjs --check-model`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PackageReport {
+    /// As Pi's settings name it.
+    pub source: String,
+    pub loaded: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<String>,
+    /// Why it was left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl PackageReport {
+    /// Reads the host's list. What is not a report is left out, and every
+    /// text is bounded and made safe to print: a package's own words are in
+    /// it.
+    pub fn list(value: Option<&serde_json::Value>) -> Vec<Self> {
+        let clean = |text: &str, limit| crate::protocol::artifact::display(text, limit);
+        let names = |entry: &serde_json::Value, field: &str| {
+            entry
+                .get(field)
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .take(64)
+                .map(|name| clean(name, 80))
+                .collect::<Vec<_>>()
+        };
+        value
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .take(64)
+            .filter_map(|entry| {
+                Some(Self {
+                    source: clean(entry.get("source")?.as_str()?, 300),
+                    loaded: entry.get("loaded")?.as_bool()?,
+                    extensions: names(entry, "extensions"),
+                    providers: names(entry, "providers"),
+                    error: entry
+                        .get("error")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|error| clean(error, 300)),
+                })
+            })
+            .collect()
+    }
+
+    /// One line for `agent show` and `agent doctor`.
+    pub fn line(&self) -> String {
+        if self.loaded {
+            let list = |what: &str, names: &[String]| {
+                if names.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {what}: {}", names.join(", "))
+                }
+            };
+            format!(
+                "{} · loaded{}{}",
+                self.source,
+                list("providers", &self.providers),
+                list("extensions", &self.extensions)
+            )
+        } else {
+            format!(
+                "{} · not loaded: {}",
+                self.source,
+                self.error.as_deref().unwrap_or("no reason given")
+            )
+        }
+    }
+}
+
+/// What bzz's own host said when it last started for an agent: the answer
+/// to `initialize` that is worth keeping (`_meta.bzz`). Kept in the agent's
+/// folder, so that `bzz agent show` and `bzz agent doctor` can print it
+/// without starting anything.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StartReport {
+    /// Unix seconds.
+    pub at: u64,
+    /// The host's version.
+    pub host: String,
+    /// The granted folders, by name, where the agent has the `run` tool.
+    pub run: Vec<String>,
+    /// Whether bzz had switched Pi packages off for that start.
+    #[serde(default)]
+    pub packages_off: bool,
+    pub packages: Vec<PackageReport>,
+}
+
+impl StartReport {
+    /// Reads the host's answer to `initialize`. Only what is a simple
+    /// name is taken as a folder: the host's words are printed later.
+    pub fn from_initialize(response: &serde_json::Value, packages_on: bool) -> Self {
+        let bzz = response.pointer("/_meta/bzz");
+        let simple = |name: &&str| {
+            !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        };
+        Self {
+            at: unix_now(),
+            host: bzz
+                .and_then(|bzz| bzz.get("host"))
+                .and_then(serde_json::Value::as_str)
+                .map(|version| crate::protocol::artifact::display(version, 40))
+                .unwrap_or_default(),
+            run: bzz
+                .and_then(|bzz| bzz.get("run"))
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .filter(simple)
+                .take(64)
+                .map(str::to_owned)
+                .collect(),
+            packages_off: !packages_on,
+            packages: PackageReport::list(bzz.and_then(|bzz| bzz.get("packages"))),
+        }
+    }
+
+    pub fn path(data_dir: &Path, agent: uuid::Uuid) -> PathBuf {
+        process::agent_dir(data_dir, agent).join("started.json")
+    }
+
+    /// Keeps the report, in place of the one before. Best effort.
+    pub fn write(&self, data_dir: &Path, agent: uuid::Uuid) {
+        let path = Self::path(data_dir, agent);
+        let temporary = path.with_extension("json.tmp");
+        if let Ok(bytes) = serde_json::to_vec(self)
+            && std::fs::write(&temporary, bytes).is_ok()
+            && crate::paths::set_private_permissions(&temporary).is_ok()
+        {
+            let _ = std::fs::rename(&temporary, &path);
+        }
+    }
+
+    pub fn read(data_dir: &Path, agent: uuid::Uuid) -> Option<Self> {
+        serde_json::from_slice(&std::fs::read(Self::path(data_dir, agent)).ok()?).ok()
+    }
+
+    /// The report as `agent show` and `agent doctor` print it, beside the
+    /// folders the settings grant for commands now (`granted`, by name).
+    pub fn lines(&self, granted: &[String]) -> Vec<String> {
+        let mut lines = vec![format!(
+            "its host, at its last start ({}): version {}",
+            crate::agents::manage::when(self.at),
+            if self.host.is_empty() {
+                "unknown"
+            } else {
+                &self.host
+            }
+        )];
+        lines.push(format!(
+            "  real commands: {}",
+            if self.run.is_empty() {
+                "none: the agent has no `run` tool".to_owned()
+            } else {
+                format!(
+                    "the `run` tool, in {}",
+                    self.run
+                        .iter()
+                        .map(|name| format!("/mnt/{name}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        ));
+        // What the settings grant and the host does not offer, or the
+        // other way round: a start with other settings, or a system where
+        // the host offers no `run` (Windows).
+        let missing = granted
+            .iter()
+            .filter(|name| !self.run.contains(name))
+            .map(|name| format!("/mnt/{name}"))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            lines.push(format!(
+                "  granted for commands now, but not offered at that start: {} (it starts again with the settings as they are; on Windows the host offers no `run`)",
+                missing.join(", ")
+            ));
+        }
+        let stale = self
+            .run
+            .iter()
+            .filter(|name| !granted.contains(name))
+            .map(|name| format!("/mnt/{name}"))
+            .collect::<Vec<_>>();
+        if !stale.is_empty() {
+            lines.push(format!(
+                "  offered at that start, but no longer granted: {} (bzz refuses a command there whatever the host offers)",
+                stale.join(", ")
+            ));
+        }
+        if self.packages_off {
+            lines.push("  Pi packages: switched off for this agent".into());
+        } else if self.packages.is_empty() {
+            lines.push("  Pi packages: none named in Pi's settings".into());
+        }
+        lines.extend(
+            self.packages
+                .iter()
+                .map(|package| format!("  Pi package: {}", package.line())),
+        );
+        lines
+    }
+}
+
 /// What the host says of a model, asked without starting an agent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ModelCheck {
@@ -640,35 +879,35 @@ pub enum ModelCheck {
         thinking_level: Option<String>,
     },
     /// `kind` is the host's own (`provider_unavailable`, `model_unavailable`,
-    /// `sign_in_needed`, `no_model`); `message` says what to do.
-    Unavailable { kind: String, message: String },
+    /// `sign_in_needed`, `no_model`); `message` says what to do. For a
+    /// provider that is missing, `package` is a Pi package of Pi's settings
+    /// that names the provider and has no Pi Durable entry, when the host
+    /// found one.
+    Unavailable {
+        kind: String,
+        message: String,
+        package: Option<String>,
+    },
     /// The question could not be asked.
     Unknown(String),
 }
 
-/// The question of [`check_model`], asked in the host's own Node.
-const MODEL_PROBE: &str = r#"
-import { pathToFileURL } from "node:url";
-const [modelFile, piDir, wanted] = process.argv.slice(-3);
-const say = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
-try {
-	const { openModels } = await import(pathToFileURL(modelFile).href);
-	const { choose } = await openModels({ piDir });
-	const chosen = await choose(JSON.parse(wanted));
-	say({ ok: true, provider: chosen.model.provider, modelId: chosen.model.modelId, thinkingLevel: chosen.thinkingLevel ?? null });
-} catch (error) {
-	say({ ok: false, kind: typeof error?.kind === "string" ? error.kind : "error", message: String(error?.message ?? error) });
-}
-"#;
+/// The host loads Pi's packages for this question, each with 10 s, at the
+/// same time: the answer may take that long, and a little more.
+const MODEL_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Asks the installed host's own code whether `model` can be used with Pi's
-/// login in `pi_dir`: the same check a turn makes, before anything exists.
-/// It reads Pi's login as the host does and starts no agent.
+/// Asks the installed host whether `model` can be used with Pi's login in
+/// `pi_dir`: the same check a turn makes, before anything exists. It is the
+/// host's own entry, `node main.mjs --check-model`, so nothing here names a
+/// file inside the host. It reads Pi's login as the host does and starts no
+/// agent. With `packages`, the Pi packages of Pi's settings are loaded as
+/// at an agent's start: their providers count, and their code runs.
 pub async fn check_model(
     node: &Node,
     host: &Path,
     pi_dir: &Path,
     model: Option<&AgentModelConfig>,
+    packages: bool,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> ModelCheck {
     let wanted = match model {
@@ -682,13 +921,16 @@ pub async fn check_model(
     .to_string();
     // As the host itself is started: an environment built from nothing.
     let env = process::base_environment(host, &lookup);
-    let model_file = host.join("src").join("model.mjs");
     let mut command = tokio::process::Command::new(&node.program);
     command
-        .args(["--input-type=module", "-e", MODEL_PROBE, "--"])
-        .arg(&model_file)
+        .arg(host.join("main.mjs"))
+        .arg("--check-model")
         .arg(pi_dir)
-        .arg(&wanted)
+        .arg(&wanted);
+    if !packages {
+        command.arg("--no-packages");
+    }
+    command
         .current_dir(host)
         .env_clear()
         .envs(env.iter().map(|(name, value)| (name, value)))
@@ -696,7 +938,8 @@ pub async fn check_model(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let Ok(Ok(output)) = tokio::time::timeout(PROBE_TIMEOUT, command.output()).await else {
+    let Ok(Ok(output)) = tokio::time::timeout(MODEL_CHECK_TIMEOUT, run_to_end(&mut command)).await
+    else {
         return ModelCheck::Unknown("the host did not answer in time".into());
     };
     let text = String::from_utf8_lossy(&output.stdout);
@@ -704,6 +947,7 @@ pub async fn check_model(
         .lines()
         .rev()
         .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|answer| answer.get("ok").is_some_and(serde_json::Value::is_boolean))
     else {
         return ModelCheck::Unknown("the host gave no answer".into());
     };
@@ -724,8 +968,10 @@ pub async fn check_model(
             kind: field("kind").unwrap_or_else(|| "error".into()),
             message: crate::protocol::artifact::display(
                 &field("message").unwrap_or_else(|| "the model cannot be used".into()),
-                400,
+                600,
             ),
+            package: field("package")
+                .map(|package| crate::protocol::artifact::display(&package, 300)),
         }
     }
 }

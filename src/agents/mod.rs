@@ -10,8 +10,10 @@
 //! `buzz-acp` ([`launch_kit`]); [`remote`] reads a moved agent's presence
 //! and stops it.
 
+pub mod activity;
 pub mod bundle;
 pub mod capability;
+pub mod git_credentials;
 pub mod launch_kit;
 pub mod manage;
 pub mod moving;

@@ -1,6 +1,7 @@
 pub mod action;
 pub mod actions;
 pub mod agents;
+pub mod approval;
 pub mod artifacts;
 pub mod broker;
 pub mod command;

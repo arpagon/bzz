@@ -33,6 +33,8 @@ pub struct AgentRow {
     pub last: Option<String>,
     /// Its settings, as `bzz agent show` prints them.
     pub settings: Vec<String>,
+    /// Its capability record, with what its own settings add to it.
+    pub record: Vec<String>,
 }
 
 /// What the panel remembers between frames.
@@ -91,7 +93,7 @@ pub fn render(
         .border_style(theme.style(HighlightGroup::ModalBorder))
         .title_style(theme.style(HighlightGroup::ModalTitle))
         .title(format!(
-            " local agents{} · j/k select · space pause/resume · x stop the running turn · l log · n new · Tab directory · Esc ",
+            " local agents{} · j/k select · space pause/resume · x stop its turn · i add to this channel · l log · n new · Tab directory · Esc ",
             if running { "" } else { " · not running: unlock to run them" }
         ));
     let inner = block.inner(area);
@@ -198,10 +200,9 @@ pub fn render(
             .map(|line| Line::from(sanitize::single_line(line))),
     );
     detail.extend(
-        crate::agents::capability::record(row.harness)
-            .lines()
-            .into_iter()
-            .map(Line::from),
+        row.record
+            .iter()
+            .map(|line| Line::from(sanitize::single_line(line))),
     );
     frame.render_widget(
         Paragraph::new(detail)
@@ -305,6 +306,7 @@ impl NewAgentForm {
             folders: manage::split_commas(&self.fields[6]),
             hosts: list(&self.fields[7]),
             picture: self.fields[8].clone(),
+            packages: self.fields[9].clone(),
         }
     }
 }
@@ -424,6 +426,7 @@ mod tests {
                 "model:       scripted/scripted".into(),
                 "wakes for:   its owner only".into(),
             ],
+            record: crate::agents::capability::record(Harness::PiDurable).lines(),
         }
     }
 
@@ -444,7 +447,7 @@ mod tests {
             render(frame, frame.area(), &rows, &state, true, &theme)
         });
         for expected in [
-            "local agents · j/k select · space pause/resume · x stop the running turn · l log · n new",
+            "local agents · j/k select · space pause/resume · x stop its turn · i add to this channel · l log · n new",
             "› Scout · pi-durable · answering 1 · bash",
             "  Ranger · pi-durable · paused · paused by its owner",
             "state:        answering 1",

@@ -1101,6 +1101,7 @@ mod tests {
                     name: "site".into(),
                     path: "/home/ann/private-site".into(),
                     write: true,
+                    exec: crate::config::ExecGrant::Ask,
                 }],
                 network: vec!["github.com".into()],
                 command: vec!["/home/ann/checkout/host".into()],

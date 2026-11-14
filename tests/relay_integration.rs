@@ -5349,6 +5349,8 @@ async fn real_relay_local_agent_answers_a_mention_exactly_once() {
                 owner_identity: identity.id,
                 federated: None,
                 limits,
+                owner_present: false,
+                environment: None,
             })
             .await
             .unwrap()
@@ -6530,6 +6532,491 @@ async fn real_relay_agent_new_to_delete_on_the_pi_durable_host() {
         .unwrap();
     assert_eq!(rows, 0, "its rows in bzz's database are gone");
     assert!(ok(&["agent", "list"]).contains("no local agents"));
+    owner_supervisor.shutdown().await;
+    owner.lock().await;
+}
+
+/// v0.15 M7 exit gate and the credentials line of M3, on the pinned relay,
+/// with bzz's real Pi Durable host on its stand-in model. The agent is made
+/// by `bzz agent new` with a folder granted for commands.
+///
+/// With the owner there (the runtime as the TUI runs it): a real command
+/// waits for him, is shown as it will run, runs after his yes, and its
+/// output reaches the chat; a refused one does not run. A clone from a
+/// private remote that demands a credential fails with a clear message
+/// without one and works once `bzz agent credential set` has stored it.
+/// Without him (`bzz agent run`): a command that needs his approval is
+/// refused with a reason for the people in the chat, and one in a folder
+/// allowed without asking runs. The secret is nowhere on disk in the clear.
+///
+/// Needs Node.js 22.19 or newer and a git with `http-backend`; without
+/// them the test says so and skips (`BZZ_TEST_REQUIRE_NODE=1` makes that a
+/// failure).
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_agent_runs_a_real_command_and_clones_a_private_remote() {
+    use bzz::{
+        agents::runtime::{Limits, approval::Answer, service},
+        auth::IdentityManager,
+        diagnostics::DiagnosticHandle,
+        paths::Paths,
+    };
+    use serde_json::json;
+    use std::io::Write as _;
+    use support::{agent_harness::until, pi_host};
+
+    let test = "real_relay_agent_runs_a_real_command";
+    let Some(node) = pi_host::node_or_skip(test).await else {
+        return;
+    };
+    const WAIT: Duration = Duration::from_secs(60);
+    const USER: &str = "scout-bot";
+    const TOKEN: &str = "ghp_NotARealTokenOnlyAMarkerForTheRelayTest000";
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let temporary = tempfile::TempDir::new().unwrap();
+    let dirs = temporary.path();
+    let Some(remote) = pi_host::git_remote(test, &node, &dirs.join("remote"), USER, TOKEN) else {
+        return;
+    };
+    let passphrase = "c4 disposable passphrase";
+    std::fs::write(dirs.join("pass"), format!("{passphrase}\n")).unwrap();
+    let pi_dir = dirs.join("pi");
+    let stand_in = pi_host::scripted_node(&dirs.join("bin"), &node);
+    let variables = pi_host::variables(&stand_in, &pi_dir);
+    let bzz = |args: &[&str], output: Option<&std::path::Path>| {
+        let mut command = bzz_on_profile(dirs, args, output);
+        command.envs(variables.iter().cloned());
+        command
+    };
+    let said = |args: &[&str]| {
+        let output = bzz(args, None).output().unwrap();
+        (
+            output.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    };
+    let ok = |args: &[&str]| {
+        let (success, text) = said(args);
+        assert!(success, "bzz {args:?}: {text}");
+        text
+    };
+
+    // ---- the profile, and an agent with hands -----------------------------
+    ok(&[
+        "identity",
+        "new",
+        "--label",
+        "owner",
+        "--backend",
+        "encrypted-file",
+    ]);
+    let paths = Paths {
+        config_dir: dirs.join("c"),
+        data_dir: dirs.join("d"),
+        cache_dir: dirs.join("k"),
+    };
+    let mut config = Config::load(&paths).unwrap();
+    let identity = config.identities[0].clone();
+    config
+        .add_community("c4".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    config.save(&paths).unwrap();
+    let _ = seed_member(&source, &identity.pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let secret = secrecy::SecretString::from(passphrase.to_owned());
+    let owner = IdentityManager::new(&paths)
+        .signer(&identity, Some(&secret))
+        .unwrap();
+    let owner_supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        owner.clone(),
+    );
+    let owner_http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        owner.clone(),
+    )
+    .unwrap();
+    let publish = |builder: EventBuilder| {
+        let (supervisor, owner) = (owner_supervisor.clone(), owner.clone());
+        async move {
+            let event = owner.sign(builder).await.unwrap();
+            let ack = supervisor.publish(event.clone()).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+            event
+        }
+    };
+    let (work, ops) = (dirs.join("work"), dirs.join("ops"));
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(&ops).unwrap();
+    let text = ok(&[
+        "agent",
+        "new",
+        "Scout",
+        "--model",
+        "scripted/scripted",
+        "--folder",
+        &format!("work={}:exec", work.display()),
+        "--folder",
+        &format!("ops={}:exec-without-asking", ops.display()),
+        "--allow-host",
+        &remote.host,
+        "--yes",
+    ]);
+    // The capability record printed at creation says where it has hands.
+    for expected in [
+        "created in c4",
+        "real commands of this machine, as your user, started in /mnt/work, /mnt/ops",
+        "In /mnt/work each command waits for your yes in the TUI.",
+        "Warning: in /mnt/ops commands run WITHOUT asking you",
+        "The folder is where it starts, not a wall",
+        "Pi packages: on.",
+    ] {
+        assert!(text.contains(expected), "`{expected}` in:\n{text}");
+    }
+    let config = Config::load(&paths).unwrap();
+    let agent = config.hosted_agents[0].clone();
+    let agent_hex = agent.pubkey.clone();
+    let shown = ok(&["agent", "show", "Scout"]);
+    for expected in [
+        &format!(
+            "folder:      /mnt/work = {} (read-only; real commands, each asked of you first)",
+            work.display()
+        ),
+        &format!(
+            "folder:      /mnt/ops = {} (read-only; real commands, WITHOUT asking you)",
+            ops.display()
+        ),
+        "git credentials: none stored",
+        "its host: not started yet on this machine",
+        "activity:    no command asked for and no credential asked for yet",
+    ] {
+        assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
+    }
+    let channel = uuid::Uuid::new_v4();
+    let channel_name = format!("c4-{}", &channel.simple().to_string()[..8]);
+    publish(
+        buzz_sdk::build_create_channel(
+            channel,
+            &channel_name,
+            Some(buzz_sdk::Visibility::Open),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    ok(&["agent", "add", "Scout", &channel_name]);
+
+    let mention = |text: String| {
+        let (agent, publish) = (agent_hex.clone(), &publish);
+        async move {
+            publish(
+                buzz_sdk::build_message(channel, &text, None, &[agent.as_str()], false, &[], &[])
+                    .unwrap(),
+            )
+            .await
+        }
+    };
+    let run = |folder: &str, command: &str| {
+        mention(format!(
+            "do: {}",
+            json!([["run", {"folder": folder, "command": command}], ["report"]])
+        ))
+    };
+    // The agent's one reply to `request`, as the relay holds it.
+    let reply_to = |request: nostr::Event, what: &'static str| {
+        let (http, agent) = (owner_http.clone(), agent_hex.clone());
+        async move {
+            let id = request.id.to_hex();
+            let replies = || {
+                let (http, agent, id) = (http.clone(), agent.clone(), id.clone());
+                async move {
+                    http.query_raw(&[json!({"kinds": [9], "#h": [channel.to_string()], "authors": [agent], "limit": 500})])
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .filter(|event| bzz::protocol::events::event_references(event).contains(&id))
+                        .map(|event| event.content)
+                        .collect::<Vec<_>>()
+                }
+            };
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while replies().await.is_empty() {
+                assert!(tokio::time::Instant::now() < deadline, "{what}: no reply");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let all = replies().await;
+            assert_eq!(all.len(), 1, "{what}: {all:?}");
+            all.into_iter().next().unwrap()
+        }
+    };
+
+    // ---- with the owner there: the runtime as the TUI runs it -------------
+    let mut store = Store::open(paths.database_file()).unwrap();
+    store.sync_config(&config).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let running = service::serve(service::ServeOptions {
+        paths: &paths,
+        store,
+        diagnostics: DiagnosticHandle::disabled(),
+        community: &config.communities[0],
+        agents: &config.hosted_agents,
+        owner: &owner,
+        owner_identity: identity.id,
+        federated: None,
+        limits: Limits {
+            stop_grace: Duration::from_millis(500),
+            ..Limits::default()
+        },
+        owner_present: true,
+        environment: Some(std::sync::Arc::new(pi_host::environment(
+            &stand_in, &pi_dir,
+        ))),
+    })
+    .await
+    .unwrap()
+    .expect("one local agent");
+    assert!(running.problems.is_empty(), "{:?}", running.problems);
+    until("the agent's intake to subscribe", WAIT, || {
+        running.listening().then_some(())
+    })
+    .await;
+    let one_question = || {
+        let host = running.host.clone();
+        async move {
+            until("a command to wait for the owner", WAIT, move || {
+                let mut waiting = host.approvals();
+                (waiting.len() == 1).then(|| waiting.remove(0))
+            })
+            .await
+        }
+    };
+
+    // Allowed: it runs as the owner saw it, and its output reaches the chat.
+    let command = "printf 'made by a real %s\\n' command > made.txt &&\n  cat made.txt && pwd";
+    let request = run("work", command).await;
+    let asked = one_question().await;
+    assert_eq!(asked.command, command);
+    assert_eq!(
+        (asked.agent, asked.folder.as_str(), asked.channel),
+        (agent.id, "work", channel)
+    );
+    assert_eq!(asked.requester, identity.pubkey);
+    assert!(
+        !work.join("made.txt").exists(),
+        "nothing ran while it waited"
+    );
+    assert!(running.host.answer_approval(asked.id, Answer::Allow));
+    let reply = reply_to(request, "an approved command").await;
+    assert!(
+        reply.contains("made by a real command") && reply.contains(&work.display().to_string()),
+        "the output of the command reached the chat: {reply}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(work.join("made.txt")).unwrap(),
+        "made by a real command\n"
+    );
+
+    // Refused: it does not run, and the agent says why in the chat.
+    let request = run("work", "touch refused.txt").await;
+    let asked = one_question().await;
+    assert!(
+        running
+            .host
+            .answer_approval(asked.id, Answer::Refuse(Some("not in this folder".into())))
+    );
+    let reply = reply_to(request, "a refused command").await;
+    assert!(
+        reply.contains("Your owner refused this command, and says: not in this folder"),
+        "{reply}"
+    );
+    assert!(
+        !work.join("refused.txt").exists(),
+        "a refused command does not run"
+    );
+
+    // A private remote, with no credential stored: a clear message.
+    let clone = |into: &str| {
+        mention(format!(
+            "do: {}",
+            json!([
+                ["bash", {"command": format!("{{ git clone {} {into} && cat {into}/notes.txt; }} 2>&1; echo \"exit $?\"", remote.origin)}],
+                ["report"],
+            ])
+        ))
+    };
+    let request = clone("first").await;
+    let reply = reply_to(request, "a clone without a credential").await;
+    assert!(
+        reply.contains(&format!(
+            "No credential is stored for {host}. Your owner can store one with `bzz agent credential set Scout {host}`.",
+            host = remote.host
+        )) && reply.contains("exit 128"),
+        "{reply}"
+    );
+    // The owner stores one, with the command, while the agent runs.
+    let stored = {
+        let mut child = bzz(&["agent", "credential", "set", "Scout", &remote.host], None)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(format!("{USER}\n{TOKEN}\n").as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    assert!(
+        stored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stored.stderr)
+    );
+    let said_on_set = format!(
+        "{}{}",
+        String::from_utf8_lossy(&stored.stdout),
+        String::from_utf8_lossy(&stored.stderr)
+    );
+    assert!(said_on_set.contains("sealed to your key"), "{said_on_set}");
+    assert_eq!(
+        ok(&["agent", "credential", "list", "Scout"]).trim(),
+        remote.host
+    );
+    let request = clone("second").await;
+    let reply = reply_to(request, "a clone with the stored credential").await;
+    assert!(
+        reply.contains("Cloned into")
+            && reply.contains("alpha\nbeta\ngamma")
+            && reply.contains("exit 0"),
+        "{reply}"
+    );
+    running.stop().await;
+
+    // ---- without the owner: `bzz agent run` -------------------------------
+    let log = dirs.join("agent-run.log");
+    let mut headless = bzz(&["agent", "run"], Some(&log)).spawn().unwrap();
+    until("bzz agent run to be running", WAIT, || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("Scout · pi-durable · idle")
+            .then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let request = run("work", "touch headless.txt").await;
+    let reply = reply_to(request, "a command with nobody to ask").await;
+    assert!(
+        reply.contains("needs your owner's approval")
+            && reply.contains("your owner must open bzz to approve the command"),
+        "the people in the chat are told what is needed: {reply}"
+    );
+    assert!(!work.join("headless.txt").exists());
+    let request = run("ops", "echo restarted > done.txt && cat done.txt").await;
+    let reply = reply_to(request, "a command allowed without asking").await;
+    assert!(reply.contains("restarted"), "{reply}");
+    assert!(ops.join("done.txt").exists());
+
+    // `agent show`, beside the running bzz: what the host reported, the
+    // host a credential is stored for, and every question with its answer.
+    let shown = ok(&["agent", "show", "Scout"]);
+    for expected in [
+        "git credentials stored for (the host only is shown):",
+        &format!("  {}", remote.host),
+        "its host, at its last start (",
+        "real commands: the `run` tool, in /mnt/work, /mnt/ops",
+        "Pi packages: none named in Pi's settings",
+        "· command in /mnt/work · printf 'made by a real %s\\n' command > made.txt && (and 1 more line(s)) · asked of you",
+        "· allowed by you",
+        "· command in /mnt/work · touch refused.txt · refused by you: not in this folder",
+        &format!("· git credential for {} · none is stored", remote.host),
+        &format!("· git credential for {} · given", remote.host),
+        "· command in /mnt/work · touch headless.txt · refused: nobody was at bzz to ask",
+        "· command in /mnt/ops · echo restarted > done.txt && cat done.txt · allowed without asking",
+    ] {
+        assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
+    }
+    let report = ok(&["agent", "doctor"]);
+    assert!(
+        report.contains("real commands: the `run` tool, in /mnt/work, /mnt/ops")
+            && report.contains(&format!("git credential stored for {}", remote.host)),
+        "{report}"
+    );
+    let status = Command::new("kill")
+        .args(["-TERM", &headless.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(
+        headless.wait().unwrap().success(),
+        "{}",
+        std::fs::read_to_string(&log).unwrap()
+    );
+
+    // ---- the secret scan ---------------------------------------------------
+    // Every file of the profile: the settings, bzz's database, the agent's
+    // two SQLite files, its host's log, its activity, the sealed credential.
+    let mut files = Vec::new();
+    for folder in ["c", "d", "k"] {
+        files.extend(pi_host::files_under(&dirs.join(folder)));
+    }
+    files.push(log.clone());
+    for expected in [
+        "config.toml",
+        "bzz.db",
+        "memory.sqlite",
+        "files.sqlite",
+        "harness.log",
+        "activity.jsonl",
+    ] {
+        assert!(
+            files.iter().any(|file| file.ends_with(expected)),
+            "{expected} was searched"
+        );
+    }
+    for file in &files {
+        for (form, secret) in pi_host::secret_forms(USER, TOKEN) {
+            assert!(
+                !pi_host::file_holds(file, &secret),
+                "{} holds {form}",
+                file.display()
+            );
+        }
+        assert!(!pi_host::file_holds(file, passphrase), "{}", file.display());
+    }
+    for (what, text) in [("agent show", &shown), ("credential set", &said_on_set)] {
+        assert!(!text.contains(TOKEN) && !text.contains(USER), "{what}");
+    }
+    let agent_folder = bzz::agents::runtime::process::agent_dir(&paths.data_dir, agent.id);
+    assert!(
+        pi_host::file_holds(&agent_folder.join("files.sqlite"), "alpha\nbeta\ngamma"),
+        "the search sees what is on the agent's disk"
+    );
+
+    // ---- delete ------------------------------------------------------------
+    let text = ok(&["agent", "delete", "Scout", "--yes"]);
+    assert!(
+        text.contains("removed: its 1 stored git credential(s)"),
+        "{text}"
+    );
+    let left = std::fs::read_dir(paths.keys_dir())
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("agent-"))
+        .collect::<Vec<_>>();
+    assert!(left.is_empty(), "{left:?}");
     owner_supervisor.shutdown().await;
     owner.lock().await;
 }

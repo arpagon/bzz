@@ -3,12 +3,13 @@
 // extensions. The packages here are written into temporary folders; Pi's
 // folder is a temporary one too, never the real `~/.pi`.
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { openModels } from "../src/model.mjs";
 import { loadPackages, NO_ENTRY, packagesNaming } from "../src/packages.mjs";
-import { bareEnv, MODEL, script, sleep, startHost, tempDir, within } from "./support/client.mjs";
+import { bareEnv, MAIN, MODEL, script, sleep, startHost, tempDir, within } from "./support/client.mjs";
 
 const THREAD = "5b1e0c9e-7a34-4c53-9d0e-0f6c1a2b3c4d/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -230,7 +231,7 @@ test("in the host: a package's model answers, its tool, section and hook work, a
 		return other.prompt(await other.session(THREAD), "e1").catch((error) => error);
 	};
 	const missing = await failure({ provider: "acme-cloud", modelId: "big" });
-	assert.equal(missing.code, -32000);
+	assert.equal(missing.code, -32010);
 	assert.deepEqual(missing.data, { kind: "provider_unavailable", package: piOnly });
 	assert.match(missing.message, /^The provider "acme-cloud" is not available: .* The package \S+pi-acme-cloud in Pi's settings names "acme-cloud" but has no Pi Durable entry /);
 	assert.deepEqual((await failure({ provider: "acme", modelId: "acme-9" })).data, { kind: "model_unavailable" });
@@ -290,7 +291,7 @@ test("bzz can switch package loading off for an agent, and a moved agent keeps t
 	// The provider of a package is not there either, and the error says why.
 	const off = startHost(t, join(tempDir(t, "off"), "agent"), { home: root });
 	await off.initialize({ packages: false, model: { provider: "acme", modelId: "acme-1" }, piDir: pi });
-	await assert.rejects(off.prompt(await off.session(THREAD), "e1"), { code: -32000, message: /no Pi package loaded for this agent adds it\. Pi packages are switched off for this agent\. Choose another model/ });
+	await assert.rejects(off.prompt(await off.session(THREAD), "e1"), { code: -32010, message: /no Pi package loaded for this agent adds it\. Pi packages are switched off for this agent\. Choose another model/ });
 
 	// A remote copy reads Pi's settings on the machine it runs on, and `"packages": false` in agent.json keeps them off.
 	const remote = (agentFile) => {
@@ -302,4 +303,58 @@ test("bzz can switch package loading off for an agent, and a moved agent keeps t
 	};
 	assert.deepEqual((await remote({}))._meta.bzz, { host: answer._meta.bzz.host, tools: "buzz", packages: report, run: [] });
 	assert.deepEqual((await remote({ packages: false }))._meta.bzz.packages, []);
+});
+
+/**
+ * `node main.mjs --check-model <Pi's folder> <model as JSON> [--no-packages]`, as bzz runs it before an agent
+ * exists. Its arguments and the one line it prints are the contract with bzz, which imports nothing of `src/`.
+ */
+function checkModel(env, ...args) {
+	return within(30_000, new Promise((resolve, reject) => {
+		execFile(process.execPath, [MAIN, "--check-model", ...args], { env }, (error, stdout, stderr) => {
+			if (error) return reject(new Error(`--check-model ended with ${error.code ?? error.signal}: ${stderr}`));
+			const lines = stdout.split("\n").filter(Boolean);
+			resolve({ lines, answer: JSON.parse(lines.at(-1)), stderr });
+		});
+	}), "--check-model");
+}
+
+test("`main.mjs --check-model` answers, without an agent, whether a model can be used and which package names a missing provider", async (t) => {
+	const { root, pi, piOnly, report } = world(t);
+	const env = bareEnv(root, { GUARD_PRINTS: "1" });
+	const ask = async (wanted, ...flags) => (await checkModel(env, pi, JSON.stringify(wanted), ...flags)).answer;
+
+	// The stand-in model, and a model of a provider that only a package brings.
+	assert.deepEqual(await ask(MODEL), { ok: true, provider: "scripted", modelId: "scripted", thinkingLevel: "off", packages: report });
+	const first = await checkModel(env, pi, JSON.stringify({ provider: "acme", modelId: "acme-1" }));
+	assert.deepEqual(first.answer, { ok: true, provider: "acme", modelId: "acme-1", thinkingLevel: "off", packages: report });
+	// One line on standard output, whatever a package prints while it loads.
+	assert.equal(first.lines.length, 1);
+	assert.match(first.stderr, /the guard package printed this with console\.log/);
+
+	// A provider nothing has: with the package that names it and has no entry for this host.
+	const missing = await ask({ provider: "acme-cloud", modelId: "big" });
+	assert.deepEqual([missing.ok, missing.kind, missing.package], [false, "provider_unavailable", piOnly]);
+	assert.match(missing.message, /in Pi's settings names "acme-cloud" but has no Pi Durable entry/);
+	const nobody = await ask({ provider: "nobody-has-this", modelId: "big" });
+	assert.deepEqual([nobody.ok, nobody.kind, nobody.package], [false, "provider_unavailable", undefined]);
+	assert.match(nobody.message, /No package in Pi's settings without a Pi Durable entry names "nobody-has-this"\./);
+	// The other reasons, by their kind.
+	assert.equal((await ask({ provider: "acme", modelId: "acme-9" })).kind, "model_unavailable");
+	assert.equal((await ask({ provider: "openai-codex", modelId: "gpt-6-luna" })).kind, "sign_in_needed");
+	assert.equal((await ask({})).kind, "no_model");
+
+	// Switched off: no code of a package runs, and its provider is not there.
+	const off = await checkModel(env, pi, JSON.stringify({ provider: "acme", modelId: "acme-1" }), "--no-packages");
+	assert.deepEqual([off.answer.ok, off.answer.kind, off.answer.packages], [false, "provider_unavailable", []]);
+	assert.match(off.answer.message, /Pi packages are switched off for this agent\./);
+	assert.equal(off.stderr.includes("the guard package"), false);
+
+	// What cannot be asked is said in the same form. Asking leaves a Pi folder that is not there as it was.
+	assert.deepEqual(await checkModel(env, pi, "not json").then(({ answer }) => [answer.ok, answer.kind]), [false, "error"]);
+	assert.deepEqual(await checkModel(env, pi).then(({ answer }) => [answer.ok, answer.kind]), [false, "error"]);
+	const nowhere = join(root, "no-pi-here");
+	assert.equal((await ask(MODEL)).ok, true);
+	assert.equal((await checkModel(env, nowhere, JSON.stringify({ provider: "openai", modelId: "gpt-5" }))).answer.kind, "sign_in_needed");
+	assert.equal(existsSync(nowhere), false);
 });

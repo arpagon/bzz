@@ -6,6 +6,7 @@
 //! - [`acp`]: the protocol's framing and one connection.
 //! - [`admission`]: who may wake an agent, and the place of a request.
 //! - [`tools`]: `send`, `read` and `react`, their checked arguments.
+//! - [`approval`]: a real command put to the owner before it starts.
 //! - [`credentials`], [`endpoint`], [`mcp`]: `bzz agent-tools`.
 //! - [`agent`]: one agent's turns, with the reply ledger of
 //!   [`crate::store::agent_runtime`].
@@ -19,6 +20,7 @@
 pub mod acp;
 pub mod admission;
 pub mod agent;
+pub mod approval;
 pub mod credentials;
 pub mod endpoint;
 pub mod hold;
@@ -106,8 +108,9 @@ impl FailureKind {
     /// words providers use. The text itself is never shown.
     ///
     /// bzz's own host names its failures itself (`error.data.kind`) and uses
-    /// one code, -32000, for all of them. That is also ACP's code for "sign
-    /// in": with a kind, the code says nothing and the kind decides.
+    /// one code of its own for all of them ([`acp::TURN_FAILED`]). An older
+    /// host used -32000 there, which is also ACP's code for "sign in": with
+    /// a kind, the code says nothing and the kind decides.
     pub fn classify(error: &acp::RpcError) -> Self {
         let text = error.message.to_ascii_lowercase();
         let has = |words: &[&str]| words.iter().any(|word| text.contains(word));
@@ -186,7 +189,15 @@ pub struct Limits {
     /// Between two prunings of an agent's finished requests and idle
     /// sessions (`Store::agent_prune`).
     pub prune_interval: Duration,
+    /// How long a real command waits for the owner's answer before it
+    /// counts as refused (`_bzz/approve`).
+    pub approval: Duration,
 }
+
+/// How long bzz's own host gives a Pi package to load, all of them at the
+/// same time (`agent-host/src/packages.mjs`, `PACKAGE_MS`). `initialize` is
+/// answered only after that, so [`Limits::start`] must be longer.
+pub const HOST_PACKAGE_LIMIT: Duration = Duration::from_secs(10);
 
 impl Default for Limits {
     fn default() -> Self {
@@ -208,6 +219,7 @@ impl Default for Limits {
             agent_exchanges: 6,
             agent_exchange_window: Duration::from_secs(3600),
             prune_interval: Duration::from_secs(24 * 3600),
+            approval: Duration::from_secs(300),
         }
     }
 }
@@ -215,6 +227,17 @@ impl Default for Limits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_limits_fit_what_the_host_and_the_owner_need() {
+        let limits = Limits::default();
+        // `initialize` waits for the host's packages; a package that never
+        // gives the thread back holds the host, and bzz stops it then.
+        assert!(limits.start > HOST_PACKAGE_LIMIT * 2, "{:?}", limits.start);
+        // An owner has minutes to answer, and the turn outlasts the wait.
+        assert!(limits.approval >= Duration::from_secs(60));
+        assert!(limits.turn > limits.approval);
+    }
 
     #[test]
     fn failures_are_named_by_kind_from_code_and_wording() {
@@ -244,11 +267,23 @@ mod tests {
             kind(-32603, "upstream connect error"),
             FailureKind::ProviderError
         );
-        // bzz's own host: one code for every failure, and a kind that says
-        // which. The code is ACP's "sign in", and must not be read as that.
+        // bzz's own host: one code of its own for every failure, and a kind
+        // that says which.
         let named = |name: &str, message: &str| {
-            FailureKind::classify(&acp::RpcError::new(-32000, message).with_kind(name))
+            FailureKind::classify(&acp::RpcError::new(acp::TURN_FAILED, message).with_kind(name))
         };
+        // Without a kind that code is a failure of the model, never a
+        // missing sign-in.
+        assert_eq!(kind(acp::TURN_FAILED, ""), FailureKind::ProviderError);
+        // An older host used ACP's "sign in" code for every failure: with a
+        // kind, the kind decides.
+        assert_eq!(
+            FailureKind::classify(
+                &acp::RpcError::new(acp::AUTH_REQUIRED, "The turn failed: boom")
+                    .with_kind("model_error")
+            ),
+            FailureKind::ProviderError
+        );
         assert_eq!(
             named("error", "The turn failed: upstream exploded"),
             FailureKind::ProviderError

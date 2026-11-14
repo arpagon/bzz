@@ -311,7 +311,7 @@ test("a provider that fails during the turn fails the prompt with its reason", a
 	await host.initialize();
 	const session = await host.session(THREAD);
 	const failure = await host.prompt(session, "e1", script(["error", "401 the key was refused"])).catch((error) => error);
-	assert.equal(failure.code, -32000);
+	assert.equal(failure.code, -32010);
 	assert.match(failure.message, /The turn failed: .*401 the key was refused/);
 	assert.deepEqual(failure.data, { kind: "model_error" });
 	// The turn is settled: the same request handed over again gets the same error and starts no work. Only a new request is a new try.

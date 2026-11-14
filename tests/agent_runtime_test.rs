@@ -9,15 +9,20 @@ mod support;
 use std::{sync::Arc, time::Duration};
 
 use bzz::{
-    agents::runtime::{
-        Limits,
-        admission::{ChannelFacts, PlaceKind, Refusal},
-        agent::{AgentSpec, Phase},
-        host::{AgentHost, HostOptions, Offer},
-        process::{self, Leftover},
+    agents::{
+        activity, git_credentials,
+        runtime::{
+            Limits,
+            admission::{ChannelFacts, PlaceKind, Refusal},
+            agent::{AgentSpec, Phase},
+            approval::Answer,
+            host::{AgentHost, HostOptions, Offer},
+            install::StartReport,
+            process::{self, Leftover},
+        },
     },
     config::{
-        AgentModelConfig, FolderGrant, Harness, HostedAgentConfig, LocalAgentConfig,
+        AgentModelConfig, ExecGrant, FolderGrant, Harness, HostedAgentConfig, LocalAgentConfig,
         LocalAgentState, WakeRule,
     },
     store::{
@@ -54,6 +59,8 @@ fn limits() -> Limits {
         agent_exchanges: 3,
         agent_exchange_window: Duration::from_secs(3600),
         prune_interval: Duration::from_secs(24 * 3600),
+        // Longer than any test, but for the one that waits for it.
+        approval: Duration::from_secs(600),
     }
 }
 
@@ -138,13 +145,83 @@ impl World {
     }
 
     async fn host_with(&self, local: LocalAgentConfig, limits: Limits) -> AgentHost {
+        self.host_configured(local, limits, |_| {}).await
+    }
+
+    /// A host whose options `configure` may change: whether the owner is
+    /// there to be asked, and what he stored for git.
+    async fn host_configured(
+        &self,
+        local: LocalAgentConfig,
+        limits: Limits,
+        configure: impl FnOnce(&mut HostOptions),
+    ) -> AgentHost {
         let mut options = HostOptions::new(self.data_dir(), self.store.clone());
         options.limits = limits;
         options.tools_program = Some(env!("CARGO_BIN_EXE_bzz").into());
         options.pi_dir = Some("/nonexistent/pi/agent".into());
+        configure(&mut options);
         let host = AgentHost::start(options).await.unwrap();
         host.add(self.spec(local), self.relay.clone()).await;
         host
+    }
+
+    /// A host with the owner at the TUI: a command may be put to him.
+    async fn host_with_owner(&self, local: LocalAgentConfig, limits: Limits) -> AgentHost {
+        self.host_configured(local, limits, |options| options.owner_present = true)
+            .await
+    }
+
+    /// The settings of bzz's own host with folders granted as `grants`
+    /// says: `(name, exec)`. The folders are made under the test's own.
+    fn hands(&self, grants: &[(&str, ExecGrant)]) -> LocalAgentConfig {
+        let mut local = self.settings(Harness::PiDurable);
+        local.folders = grants
+            .iter()
+            .map(|(name, exec)| {
+                let path = self.temporary.path().join("granted").join(name);
+                std::fs::create_dir_all(&path).unwrap();
+                FolderGrant {
+                    name: (*name).to_owned(),
+                    path,
+                    write: false,
+                    exec: *exec,
+                }
+            })
+            .collect();
+        local
+    }
+
+    /// What the harness was answered for each request of `method` it made
+    /// with a `request` step, once there are `count`.
+    async fn answers(&self, method: &str, count: usize) -> Vec<Value> {
+        until(&format!("{count} answers to `{method}`"), WAIT, || {
+            Some(
+                self.script
+                    .log()
+                    .into_iter()
+                    .filter(|entry| entry["to"] == method && entry.get("response").is_some())
+                    .map(|entry| entry["response"].clone())
+                    .collect::<Vec<_>>(),
+            )
+            .filter(|answers| answers.len() >= count)
+        })
+        .await
+    }
+
+    /// The agent's activity, as `bzz agent show` prints it, without the
+    /// time each line starts with.
+    fn activity(&self) -> Vec<String> {
+        activity::recent(&self.data_dir(), self.agent, 50)
+            .iter()
+            .map(|entry| {
+                entry
+                    .line()
+                    .split_once(" · ")
+                    .map(|(_, rest)| rest.to_owned())
+                    .unwrap_or_default()
+            })
+            .collect()
     }
 
     /// A host running the agent on `harness` with the script as written.
@@ -297,11 +374,7 @@ async fn a_mention_is_answered_once_through_the_tool_over_the_pipe() {
         model_id: "gpt-6-luna".into(),
         thinking_level: Some("low".into()),
     });
-    local.folders = vec![FolderGrant {
-        name: "site".into(),
-        path: "/home/ann/site".into(),
-        write: false,
-    }];
+    local.folders = vec![FolderGrant::read_only("site", "/home/ann/site")];
     local.network = vec!["github.com".into()];
     let host = world.host_with(local, limits()).await;
     let earlier = world.message_in(world.channel, &world.owner, "unrelated", false, None);
@@ -370,8 +443,9 @@ async fn a_mention_is_answered_once_through_the_tool_over_the_pipe() {
             "agent": {"id": world.agent, "pubkey": world.agent_pubkey(), "name": "Scout"},
             "model": {"provider": "openai-codex", "modelId": "gpt-6-luna", "thinkingLevel": "low"},
             "instructions": "Be brief.",
-            "mounts": [{"name": "site", "path": "/home/ann/site", "write": false}],
+            "mounts": [{"name": "site", "path": "/home/ann/site", "write": false, "exec": false}],
             "network": ["github.com"],
+            "packages": true,
             "piDir": "/nonexistent/pi/agent",
         })
     );
@@ -2438,4 +2512,1084 @@ async fn an_agents_finished_requests_are_pruned_when_it_starts() {
     // What the relay holds is untouched: pruning is bzz's own bookkeeping.
     assert_eq!(world.relay.by_agent(9).len(), 2);
     host.shutdown().await;
+}
+
+// ---- hands on this machine, and git credentials (M7 and M3) ---------------
+
+/// A step that puts a command to bzz, as bzz's own host does before it
+/// starts one. `started` is written only on a yes: it stands for the
+/// command itself.
+fn approve(mount: &str, command: &str, started: &std::path::Path) -> Value {
+    json!({
+        "request": {"method": "_bzz/approve", "params": {
+            "sessionId": "$session", "kind": "exec", "mount": mount, "command": command,
+        }},
+        "then_touch": started,
+    })
+}
+
+fn credential(host: &str) -> Value {
+    json!({"request": {"method": "_bzz/credential", "params": {"sessionId": "$session", "host": host}}})
+}
+
+/// Waits for exactly one question to wait for the owner.
+async fn one_question(host: &AgentHost) -> bzz::agents::runtime::approval::Asked {
+    let host = host.clone();
+    until("a command to wait for the owner", WAIT, move || {
+        let mut waiting = host.approvals();
+        (waiting.len() == 1).then(|| waiting.remove(0))
+    })
+    .await
+}
+
+/// Protocol section 3: `initialize` says for each granted folder whether
+/// commands may start there (and never whether the owner is asked), and
+/// whether Pi packages are on. What the host answers (where it offers
+/// `run`, which packages it loaded or left out) is kept for `agent show`
+/// and `agent doctor`.
+#[tokio::test]
+async fn the_host_is_told_which_folders_take_commands_and_what_it_reports_is_kept() {
+    let world = World::new().await;
+    world.script.write(
+        json!({
+            "own_host": true,
+            "run": ["work", "ops", "../etc", 7],
+            "packages": [
+                {"source": "~/pi/guard", "loaded": true, "extensions": ["guard"], "providers": []},
+                {"source": "npm:pi-x\u{1b}[31m", "loaded": false, "error": "Only Pi packages in a local folder are loaded"},
+                "not a report",
+            ],
+        }),
+        json!([{"steps": [send("ok", true)]}]),
+    );
+    let mut local = world.hands(&[
+        ("docs", ExecGrant::No),
+        ("work", ExecGrant::Ask),
+        ("ops", ExecGrant::WithoutAsking),
+    ]);
+    local.folders[1].write = true;
+    local.packages = false;
+    let granted = local.folders.clone();
+    assert!(StartReport::read(&world.data_dir(), world.agent).is_none());
+    let host = world.host_with(local, limits()).await;
+    let request = world.ask(&host, "hello").await;
+    world.settled(&request).await;
+
+    let initialize = &world.script.received("initialize")[0]["_meta"]["bzz"];
+    assert_eq!(
+        initialize["mounts"],
+        json!([
+            {"name": "docs", "path": granted[0].path, "write": false, "exec": false},
+            {"name": "work", "path": granted[1].path, "write": true, "exec": true},
+            {"name": "ops", "path": granted[2].path, "write": false, "exec": true},
+        ]),
+        "exec is apart from write, and says nothing of asking"
+    );
+    assert_eq!(initialize["packages"], json!(false));
+    assert_eq!(initialize["piDir"], json!("/nonexistent/pi/agent"));
+
+    // What the host reported, kept in the agent's folder.
+    let report = StartReport::read(&world.data_dir(), world.agent).expect("a report");
+    assert_eq!(report.host, "scripted");
+    assert_eq!(report.run, ["work", "ops"], "only what is a folder's name");
+    assert!(report.packages_off);
+    assert_eq!(report.packages.len(), 2);
+    assert_eq!(
+        (
+            report.packages[0].source.as_str(),
+            report.packages[0].loaded
+        ),
+        ("~/pi/guard", true)
+    );
+    assert_eq!(report.packages[0].extensions, ["guard"]);
+    let shown = report
+        .lines(&["work".into(), "ops".into(), "late".into()])
+        .join("\n");
+    for expected in [
+        "version scripted",
+        "real commands: the `run` tool, in /mnt/work, /mnt/ops",
+        "granted for commands now, but not offered at that start: /mnt/late",
+        "Pi packages: switched off for this agent",
+        "Pi package: ~/pi/guard · loaded · extensions: guard",
+        "· not loaded: Only Pi packages in a local folder are loaded",
+    ] {
+        assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
+    }
+    assert!(!shown.contains('\u{1b}'), "a package's words are made safe");
+    host.shutdown().await;
+}
+
+/// M7: a real command in a folder granted for commands waits for the
+/// owner. He is shown which agent asks, in which conversation, for which
+/// folder, and the command exactly as it will run. Only his yes starts it;
+/// his no, with his reason, starts nothing. Both are in the agent's
+/// activity.
+#[tokio::test]
+async fn a_command_runs_only_after_the_owner_allows_it() {
+    let world = World::new().await;
+    let (ran, not_run) = (world.script.marker("ran"), world.script.marker("not-run"));
+    let command = "cd app &&\n  npm test -- --watch=false\t# \u{1b}[2K";
+    world.script.write(
+        json!({"own_host": true, "run": ["work"]}),
+        json!([
+            {"match": "tests", "steps": [approve("work", command, &ran), send("ran them", true)]},
+            {"match": "wipe", "steps": [approve("work", "rm -rf .", &not_run), send("refused", true)]},
+        ]),
+    );
+    let local = world.hands(&[("work", ExecGrant::Ask)]);
+    let path = local.folders[0].path.clone();
+    let host = world.host_with_owner(local, limits()).await;
+    assert!(host.approvals().is_empty());
+
+    let request = world.ask(&host, "run the tests").await;
+    let asked = one_question(&host).await;
+    assert_eq!(
+        (asked.agent, asked.agent_name.as_str(), asked.channel),
+        (world.agent, "Scout", world.channel)
+    );
+    assert_eq!(
+        asked.place,
+        format!("{}/{}", world.channel, request.id.to_hex())
+    );
+    assert_eq!(asked.requester, world.owner.public_key().to_hex());
+    assert_eq!((asked.folder.as_str(), &asked.path), ("work", &path));
+    assert_eq!(
+        asked.command, command,
+        "the command as it will run, untouched"
+    );
+    // While it waits, nothing has started and the turn says what it waits for.
+    assert!(!ran.exists());
+    assert!(
+        world
+            .script
+            .log()
+            .iter()
+            .all(|entry| entry["to"] != "_bzz/approve")
+    );
+    let doing = host.status()[0].doing().unwrap_or_default();
+    assert!(
+        doing.starts_with("waiting for your answer: run in /mnt/work: cd app &&"),
+        "{doing}"
+    );
+    assert!(host.answer_approval(asked.id, Answer::Allow));
+    world.settled(&request).await;
+    assert_eq!(
+        world.answers("_bzz/approve", 1).await[0]["result"],
+        json!({"allow": true}),
+        "bzz sends back a yes and nothing of the command"
+    );
+    assert!(ran.exists(), "the command started");
+    assert!(host.approvals().is_empty());
+    assert!(
+        !host.answer_approval(asked.id, Answer::Allow),
+        "answered once"
+    );
+
+    // Refused, with a reason for the agent.
+    let request = world.ask(&host, "wipe the folder").await;
+    let asked = one_question(&host).await;
+    assert_eq!(asked.command, "rm -rf .");
+    assert!(host.answer_approval(
+        asked.id,
+        Answer::Refuse(Some("never in this folder".into()))
+    ));
+    world.settled(&request).await;
+    let answer = world.answers("_bzz/approve", 2).await[1]["result"].clone();
+    assert_eq!(answer["allow"], json!(false));
+    let reason = answer["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("Your owner refused this command, and says: never in this folder")
+            && reason.contains("Nothing was started"),
+        "{reason}"
+    );
+    assert!(!not_run.exists(), "a refused command does not start");
+
+    // The agent's activity: each question and its answer, with the
+    // command's first line and what would not show written out.
+    assert_eq!(
+        world.activity(),
+        [
+            "command in /mnt/work · cd app && (and 1 more line(s)) · asked of you",
+            "command in /mnt/work · cd app && (and 1 more line(s)) · allowed by you",
+            "command in /mnt/work · rm -rf . · asked of you",
+            "command in /mnt/work · rm -rf . · refused by you: never in this folder",
+        ]
+    );
+    host.shutdown().await;
+}
+
+/// M7: a question waits a stated time and then counts as refused. An
+/// answer that comes after that starts nothing.
+#[tokio::test]
+async fn an_unanswered_command_counts_as_refused_and_a_late_answer_starts_nothing() {
+    let world = World::new().await;
+    let started = world.script.marker("started");
+    world.script.write(
+        json!({"own_host": true, "run": ["work"]}),
+        json!([{"steps": [approve("work", "make deploy", &started), send("no answer", true)]}]),
+    );
+    let host = world
+        .host_with_owner(
+            world.hands(&[("work", ExecGrant::Ask)]),
+            Limits {
+                approval: Duration::from_secs(1),
+                ..limits()
+            },
+        )
+        .await;
+    let request = world.ask(&host, "deploy").await;
+    let asked = one_question(&host).await;
+    assert!(asked.expires > std::time::Instant::now());
+    let answer = world.answers("_bzz/approve", 1).await[0]["result"].clone();
+    assert_eq!(answer["allow"], json!(false));
+    assert!(
+        answer["reason"]
+            .as_str()
+            .unwrap()
+            .contains("did not answer within 1 seconds, which counts as a refusal"),
+        "{answer}"
+    );
+    // The owner answers now: too late.
+    assert!(host.approvals().is_empty());
+    assert!(!host.answer_approval(asked.id, Answer::Allow));
+    world.settled(&request).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!started.exists(), "a late answer starts nothing");
+    assert_eq!(world.answers("_bzz/approve", 1).await.len(), 1);
+    assert_eq!(
+        world.activity(),
+        [
+            "command in /mnt/work · make deploy · asked of you",
+            "command in /mnt/work · make deploy · refused: no answer in 1 s",
+        ]
+    );
+    host.shutdown().await;
+}
+
+/// M7: a question is void when its turn is stopped, when the agent is
+/// paused, and when bzz quits. Whatever the owner answers afterwards, the
+/// command does not start.
+#[tokio::test]
+async fn a_waiting_command_is_void_when_its_turn_is_stopped_the_agent_paused_or_bzz_quits() {
+    for way in ["stop", "pause", "quit"] {
+        let world = World::new().await;
+        let started = world.script.marker("started");
+        world.script.write(
+            json!({"own_host": true, "run": ["work"]}),
+            json!([{"steps": [approve("work", "make deploy", &started), {"stall": true}]}]),
+        );
+        let host = world
+            .host_with_owner(world.hands(&[("work", ExecGrant::Ask)]), limits())
+            .await;
+        world.ask(&host, "deploy").await;
+        let asked = one_question(&host).await;
+        let why = match way {
+            "stop" => {
+                assert_eq!(host.stop_turns(world.agent).await, 1);
+                "its owner stopped the turn"
+            }
+            "pause" => {
+                host.set_paused(world.agent, true).await;
+                "the agent was paused"
+            }
+            _ => {
+                host.shutdown().await;
+                // Either is true of a bzz that quits; which comes first is
+                // not a promise.
+                "bzz"
+            }
+        };
+        assert!(host.approvals().is_empty(), "{way}: it no longer waits");
+        assert!(
+            !host.answer_approval(asked.id, Answer::Allow),
+            "{way}: a late yes finds nothing"
+        );
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(!started.exists(), "{way}: the command did not start");
+        // Whatever the harness was told, it was never told yes.
+        for entry in world.script.log() {
+            assert_ne!(
+                entry.pointer("/response/result/allow"),
+                Some(&json!(true)),
+                "{way}"
+            );
+        }
+        let activity = world.activity();
+        assert_eq!(activity.len(), 2, "{way}: {activity:?}");
+        assert!(
+            activity[1].starts_with("command in /mnt/work · make deploy · void: ")
+                && (activity[1].contains(why)
+                    || activity[1].contains("nobody is at bzz to answer any more")),
+            "{way}: {activity:?}"
+        );
+        if way == "stop" {
+            // The host is told no, with why, and the turn ends as stopped.
+            let answer = world.answers("_bzz/approve", 1).await[0]["result"].clone();
+            assert_eq!(answer["allow"], json!(false));
+            assert!(
+                answer["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("was withdrawn: its owner stopped the turn"),
+                "{answer}"
+            );
+        }
+        host.shutdown().await;
+    }
+}
+
+/// M7: without the TUI there is nobody to ask. A command in a folder that
+/// is allowed without asking runs; any other is refused with a reason that
+/// tells the agent, and through it the people in the chat, that its owner
+/// must be at bzz. With the owner there, a folder allowed without asking
+/// is still not asked about, and a folder not granted for commands takes
+/// none, whatever the host was told.
+#[tokio::test]
+async fn without_the_tui_a_command_is_refused_and_one_allowed_without_asking_runs() {
+    for owner_present in [false, true] {
+        let world = World::new().await;
+        let marker = |name: &str| world.script.marker(name);
+        world.script.write(
+            json!({"own_host": true, "run": ["work", "ops", "docs"]}),
+            json!([{"steps": [
+                approve("ops", "systemctl --user restart site", &marker("ops")),
+                approve("docs", "touch here", &marker("docs")),
+                approve("nowhere", "touch here", &marker("nowhere")),
+                approve("ops", "", &marker("empty")),
+                approve("ops", "printf 'a\u{0}b'", &marker("nul")),
+                approve("work", "npm test", &marker("work")),
+                send("done", true),
+            ]}]),
+        );
+        let local = world.hands(&[
+            ("docs", ExecGrant::No),
+            ("work", ExecGrant::Ask),
+            ("ops", ExecGrant::WithoutAsking),
+        ]);
+        let host = world
+            .host_configured(local, limits(), |options| {
+                options.owner_present = owner_present
+            })
+            .await;
+        let request = world.ask(&host, "do things").await;
+        if owner_present {
+            // Only the folder that asks reaches the owner.
+            let asked = one_question(&host).await;
+            assert_eq!(
+                (asked.folder.as_str(), asked.command.as_str()),
+                ("work", "npm test")
+            );
+            assert!(host.answer_approval(asked.id, Answer::Refuse(None)));
+        }
+        world.settled(&request).await;
+        let answers = world.answers("_bzz/approve", 6).await;
+        let result = |index: usize| answers[index]["result"].clone();
+        let reason = |index: usize| {
+            result(index)["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        };
+        assert_eq!(result(0), json!({"allow": true}), "allowed without asking");
+        assert!(marker("ops").exists());
+        for (index, name) in [
+            (1, "docs"),
+            (2, "nowhere"),
+            (3, "empty"),
+            (4, "nul"),
+            (5, "work"),
+        ] {
+            assert_eq!(result(index)["allow"], json!(false), "{name}");
+            assert!(!marker(name).exists(), "{name} did not start");
+        }
+        assert!(
+            reason(1).contains("has not granted that folder for commands"),
+            "{}",
+            reason(1)
+        );
+        assert!(
+            reason(2).contains("No real command may run in /mnt/nowhere"),
+            "{}",
+            reason(2)
+        );
+        assert!(
+            reason(3).contains("A command is not empty"),
+            "{}",
+            reason(3)
+        );
+        assert!(
+            reason(4).contains("holds no NUL character"),
+            "{}",
+            reason(4)
+        );
+        if owner_present {
+            assert!(
+                reason(5).starts_with("Your owner refused this command."),
+                "{}",
+                reason(5)
+            );
+        } else {
+            assert!(host.approvals().is_empty(), "nothing waits for nobody");
+            for said in [
+                "needs your owner's approval",
+                "your owner is not at bzz",
+                "Tell the people in this conversation that your owner must open bzz",
+                "Nothing was started",
+            ] {
+                assert!(reason(5).contains(said), "`{said}` in: {}", reason(5));
+            }
+        }
+        let activity = world.activity();
+        assert_eq!(
+            activity[0],
+            "command in /mnt/ops · systemctl --user restart site · allowed without asking"
+        );
+        assert!(
+            activity.contains(
+                &"command in /mnt/docs · touch here · refused: the folder is not granted for commands"
+                    .to_owned()
+            ),
+            "{activity:?}"
+        );
+        assert_eq!(
+            activity.last().map(String::as_str),
+            Some(if owner_present {
+                "command in /mnt/work · npm test · refused by you"
+            } else {
+                "command in /mnt/work · npm test · refused: nobody was at bzz to ask"
+            })
+        );
+        host.shutdown().await;
+    }
+}
+
+/// Protocol section 4: the host's requests carry string ids, several are
+/// open at once, and bzz answers them in whatever order they end. While a
+/// command waits for the owner, a credential and a chat tool of the same
+/// turn are answered; and a second conversation has a question of its own
+/// open. One conversation has one question at a time.
+#[tokio::test]
+async fn several_requests_of_the_host_are_open_at_once_and_answered_in_any_order() {
+    let world = World::new().await;
+    let owner = bzz::auth::signer::SignerHandle::spawn(world.owner.clone());
+    let keys = world.data_dir().join("keys");
+    git_credentials::set(
+        &keys,
+        &owner,
+        world.agent,
+        "github.com",
+        "scout-bot",
+        "t0ken-marker",
+    )
+    .await
+    .unwrap();
+    let session = "$session";
+    world.script.write(
+        json!({"own_host": true, "run": ["work"]}),
+        json!([
+            {"match": "first", "steps": [
+                {"requests": [
+                    {"method": "_bzz/approve", "params": {"sessionId": session, "kind": "exec", "mount": "work", "command": "make one"}},
+                    {"method": "_bzz/approve", "params": {"sessionId": session, "kind": "exec", "mount": "work", "command": "make again"}},
+                    {"method": "_bzz/credential", "params": {"sessionId": session, "host": "github.com"}},
+                    {"method": "_bzz/tool", "params": {"sessionId": session, "name": "send", "arguments": {"text": "working on it"}}},
+                ]},
+                send("first done", true),
+            ]},
+            {"match": "second", "steps": [
+                {"request": {"method": "_bzz/approve", "params": {"sessionId": session, "kind": "exec", "mount": "work", "command": "make two"}}},
+                send("second done", true),
+            ]},
+        ]),
+    );
+    let mut local = world.hands(&[("work", ExecGrant::Ask)]);
+    local.network = vec!["github.com".into()];
+    let host = world
+        .host_configured(local, limits(), |options| {
+            options.owner_present = true;
+            options.git_credentials = Some(Arc::new(git_credentials::SealedGitCredentials {
+                keys_dir: keys.clone(),
+                owner: owner.clone(),
+            }));
+        })
+        .await;
+    let first = world.ask(&host, "the first question").await;
+    let second = world.ask(&host, "the second question").await;
+    // Two conversations, each with one question open.
+    let waiting = until("both questions to wait", WAIT, || {
+        Some(host.approvals()).filter(|waiting| waiting.len() == 2)
+    })
+    .await;
+    let commands = waiting
+        .iter()
+        .map(|asked| asked.command.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(commands, ["make one", "make two"].into());
+    assert_ne!(waiting[0].place, waiting[1].place);
+    // The credential and the chat tool were answered while the command
+    // still waits: the progress message is on the relay.
+    until("the progress message", WAIT, || {
+        world
+            .relay
+            .by_agent(9)
+            .iter()
+            .any(|event| event.content == "working on it")
+            .then_some(())
+    })
+    .await;
+    assert_eq!(host.approvals().len(), 2);
+    // Answered in the other order than they were asked.
+    for command in ["make two", "make one"] {
+        let asked = waiting
+            .iter()
+            .find(|asked| asked.command == command)
+            .unwrap();
+        assert!(host.answer_approval(asked.id, Answer::Allow));
+    }
+    world.settled(&first).await;
+    world.settled(&second).await;
+    let all = world
+        .script
+        .log()
+        .into_iter()
+        .find(|entry| entry.get("responses").is_some())
+        .expect("the answers to the requests sent at once");
+    let (sent, answered) = (
+        all["sent"].as_array().unwrap().clone(),
+        all["answered"].as_array().unwrap().clone(),
+    );
+    assert!(
+        sent.iter()
+            .all(|id| id.as_str().is_some_and(|id| id.starts_with('h'))),
+        "string ids, as the real host's: {sent:?}"
+    );
+    assert_eq!(answered.len(), 4, "each answered once: {answered:?}");
+    assert_eq!(
+        answered.last(),
+        Some(&sent[0]),
+        "the first one asked was the last one answered: {answered:?}"
+    );
+    let responses = all["responses"].as_array().unwrap();
+    assert_eq!(responses[0]["response"]["result"], json!({"allow": true}));
+    assert_eq!(
+        responses[0]["response"]["id"], sent[0],
+        "answered under its own id"
+    );
+    // One question at a time in one conversation.
+    assert_eq!(responses[1]["response"]["result"]["allow"], json!(false));
+    assert!(
+        responses[1]["response"]["result"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("One at a time"),
+        "{}",
+        responses[1]
+    );
+    assert_eq!(
+        responses[2]["response"]["result"],
+        json!({"username": "scout-bot", "password": "t0ken-marker"})
+    );
+    assert_eq!(
+        responses[3]["response"]["result"]["text"]
+            .as_str()
+            .map(|text| text.starts_with("sent as ")),
+        Some(true)
+    );
+    assert_eq!(
+        world
+            .contents(&world.relay.replies_to(&first))
+            .last()
+            .map(String::as_str),
+        Some("first done")
+    );
+    host.shutdown().await;
+    owner.lock().await;
+}
+
+/// M3, protocol section 8: bzz answers `_bzz/credential` only for a host
+/// on that agent's list of allowed hosts and only for that agent, from what
+/// the owner stored. Otherwise the host gets an error whose message tells
+/// the model what its owner can do. Nothing of the secret is kept in the
+/// agent's activity.
+#[tokio::test]
+async fn a_git_credential_is_given_for_a_listed_host_of_this_agent_only() {
+    const TOKEN: &str = "ghp_NotARealTokenOnlyAMarkerForThisTest0000";
+    let world = World::new().await;
+    let owner = bzz::auth::signer::SignerHandle::spawn(world.owner.clone());
+    let keys = world.data_dir().join("keys");
+    let other_agent = Uuid::new_v4();
+    // Stored: for this agent, a listed host and an unlisted one; for
+    // another agent, a host this agent lists too.
+    for (agent, host, token) in [
+        (world.agent, "github.com", TOKEN),
+        (world.agent, "unlisted.example", "tok-unlisted-marker"),
+        (other_agent, "gitlab.com", "tok-of-another-agent"),
+    ] {
+        git_credentials::set(&keys, &owner, agent, host, "scout-bot", token)
+            .await
+            .unwrap();
+    }
+    world.script.write(
+        json!({"own_host": true}),
+        json!([{"steps": [
+            credential("GitHub.com"),
+            credential("unlisted.example"),
+            credential("gitlab.com"),
+            credential("git.example.org:8443"),
+            {"request": {"method": "_bzz/credential", "params": {"sessionId": "not-a-session", "host": "github.com"}}},
+            {"request": {"method": "_bzz/credential", "params": {"sessionId": "$session"}}},
+            send("done", true),
+        ]}]),
+    );
+    let mut local = world.settings(Harness::PiDurable);
+    local.network = vec![
+        "git.example.org:8443".into(),
+        "github.com".into(),
+        "gitlab.com".into(),
+    ];
+    let host = world
+        .host_configured(local, limits(), |options| {
+            options.git_credentials = Some(Arc::new(git_credentials::SealedGitCredentials {
+                keys_dir: keys.clone(),
+                owner: owner.clone(),
+            }));
+        })
+        .await;
+    let request = world.ask(&host, "clone it").await;
+    world.settled(&request).await;
+    let answers = world.answers("_bzz/credential", 6).await;
+    // The listed host of this agent: the stored value, and nothing else.
+    assert_eq!(
+        answers[0]["result"],
+        json!({"username": "scout-bot", "password": TOKEN})
+    );
+    let message = |index: usize| {
+        assert!(answers[index].get("result").is_none(), "{}", answers[index]);
+        assert_eq!(answers[index]["error"]["code"], json!(-32011));
+        answers[index]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    // Stored, but the host is not on the agent's allow-list.
+    assert!(
+        message(1).contains("not on this agent's list of allowed hosts")
+            && message(1).contains("bzz agent edit Scout --allow-host unlisted.example"),
+        "{}",
+        message(1)
+    );
+    // Listed, but stored for another agent only.
+    assert_eq!(
+        message(2),
+        "No credential is stored for gitlab.com. Your owner can store one with `bzz agent credential set Scout gitlab.com`."
+    );
+    // Listed, nothing stored.
+    assert!(message(3).contains("No credential is stored for git.example.org:8443"));
+    // A session that has no turn running, and a request without a host.
+    assert!(message(4).contains("No message is being answered in this session"));
+    assert!(message(5).contains("needs `sessionId` and `host`"));
+    for answer in &answers[1..6] {
+        assert!(!answer.to_string().contains("tok-"), "{answer}");
+    }
+
+    // The activity names the host and what happened, never the secret.
+    assert_eq!(
+        world.activity(),
+        [
+            "git credential for github.com · given",
+            "git credential for unlisted.example · refused: the host is not on its list of allowed hosts",
+            "git credential for gitlab.com · none is stored",
+            "git credential for git.example.org:8443 · none is stored",
+        ]
+    );
+    let kept = std::fs::read_to_string(activity::path(&world.data_dir(), world.agent)).unwrap();
+    for secret in [
+        TOKEN,
+        "scout-bot",
+        "tok-unlisted-marker",
+        "tok-of-another-agent",
+    ] {
+        assert!(!kept.contains(secret), "the activity holds {secret}");
+    }
+    host.shutdown().await;
+
+    // Without a store, as when nothing can be opened: none is given.
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([{"steps": [credential("github.com"), send("done", true)]}]),
+    );
+    let mut local = world.settings(Harness::PiDurable);
+    local.network = vec!["github.com".into()];
+    let host = world.host_with(local, limits()).await;
+    let request = world.ask(&host, "clone it").await;
+    world.settled(&request).await;
+    assert!(
+        world.answers("_bzz/credential", 1).await[0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot open stored credentials")
+    );
+    host.shutdown().await;
+    owner.lock().await;
+}
+
+/// Another harness is not bzz's own host: its `_bzz/approve` and
+/// `_bzz/credential` are requests bzz does not know.
+#[tokio::test]
+async fn only_bzzs_own_host_may_ask_for_a_command_or_a_credential() {
+    let world = World::new().await;
+    let started = world.script.marker("started");
+    world.script.write(
+        json!({"own_host": false}),
+        json!([{"steps": [approve("work", "id", &started), credential("github.com"), send("done", true)]}]),
+    );
+    let mut local = world.hands(&[("work", ExecGrant::WithoutAsking)]);
+    local.harness = Harness::Codex;
+    local.network = vec!["github.com".into()];
+    let host = world.host_with_owner(local, limits()).await;
+    let request = world.ask(&host, "try").await;
+    world.settled(&request).await;
+    for method in ["_bzz/approve", "_bzz/credential"] {
+        assert_eq!(
+            world.answers(method, 1).await[0]["error"]["code"],
+            json!(-32601),
+            "{method}"
+        );
+    }
+    assert!(!started.exists());
+    assert!(world.activity().is_empty());
+    host.shutdown().await;
+}
+
+/// M7: two agents may each have a command waiting for the owner. Each is
+/// answered by itself, and an answer for one does nothing to the other.
+#[tokio::test]
+async fn two_agents_may_each_have_a_command_waiting() {
+    let world = World::new().await;
+    let ran = |name: &str| world.script.marker(name);
+    world.script.write(
+        json!({"own_host": true, "run": ["work"]}),
+        json!([{"steps": [approve("work", "make scout", &ran("scout")), send("scout done", true)]}]),
+    );
+    let host = world
+        .host_with_owner(world.hands(&[("work", ExecGrant::Ask)]), limits())
+        .await;
+    // A second agent of the same owner, on the same host, with a harness
+    // and a relay connection of its own.
+    let ranger_keys = Keys::generate();
+    let auth_tag = bzz::auth::signer::SignerHandle::spawn(world.owner.clone())
+        .owner_auth_tag(ranger_keys.public_key(), "")
+        .await
+        .unwrap();
+    let ranger_relay = RecordedRelay::new(
+        ranger_keys.clone(),
+        bzz::broker::relay::auth_tag(&auth_tag).unwrap(),
+    );
+    let facts = ChannelFacts {
+        id: world.channel,
+        name: "general".into(),
+        kind: PlaceKind::Channel,
+        members: vec![
+            world.owner.public_key().to_hex(),
+            ranger_keys.public_key().to_hex(),
+        ],
+    };
+    ranger_relay.set_channel(facts.clone());
+    let ranger_script = Script::new(&world.temporary.path().join("harness-ranger"));
+    ranger_script.write(
+        json!({"own_host": true, "run": ["work"]}),
+        json!([{"steps": [approve("work", "make ranger", &ran("ranger")), send("ranger done", true)]}]),
+    );
+    let ranger = Uuid::new_v4();
+    let mut local = world.hands(&[("work", ExecGrant::Ask)]);
+    local.command = ranger_script.command();
+    host.add(
+        AgentSpec {
+            id: ranger,
+            name: "Ranger".into(),
+            pubkey: ranger_keys.public_key().to_hex(),
+            owner: world.owner.public_key().to_hex(),
+            community: Uuid::nil(),
+            local,
+        },
+        ranger_relay.clone(),
+    )
+    .await;
+    world.ask(&host, "scout, build").await;
+    let to_ranger = buzz_sdk::build_message(
+        world.channel,
+        "ranger, build",
+        None,
+        &[ranger_keys.public_key().to_hex().as_str()],
+        false,
+        &[],
+        &[],
+    )
+    .unwrap()
+    .sign_with_keys(&world.owner)
+    .unwrap();
+    ranger_relay.seed(&to_ranger);
+    assert_eq!(host.offer(ranger, &to_ranger, &facts).await, Offer::Queued);
+
+    let waiting = until("both agents to ask", WAIT, || {
+        Some(host.approvals()).filter(|waiting| waiting.len() == 2)
+    })
+    .await;
+    let of = |name: &str| {
+        waiting
+            .iter()
+            .find(|asked| asked.agent_name == name)
+            .unwrap()
+    };
+    assert_eq!(
+        (of("Scout").agent, of("Scout").command.as_str()),
+        (world.agent, "make scout")
+    );
+    assert_eq!(
+        (of("Ranger").agent, of("Ranger").command.as_str()),
+        (ranger, "make ranger")
+    );
+    // Ranger's is refused: Scout's still waits, and nothing has started.
+    assert!(host.answer_approval(of("Ranger").id, Answer::Refuse(None)));
+    until("ranger's turn to end", WAIT, || {
+        (!ranger_relay.replies_to(&to_ranger).is_empty()).then_some(())
+    })
+    .await;
+    assert_eq!(host.approvals().len(), 1);
+    assert_eq!(host.approvals()[0].agent, world.agent);
+    assert!(!ran("scout").exists() && !ran("ranger").exists());
+    assert!(host.answer_approval(of("Scout").id, Answer::Allow));
+    until("scout's command to start", WAIT, || {
+        ran("scout").exists().then_some(())
+    })
+    .await;
+    assert!(
+        !ran("ranger").exists(),
+        "a yes for one is not a yes for the other"
+    );
+    // Each agent's activity is its own.
+    assert!(
+        world
+            .activity()
+            .iter()
+            .all(|line| line.contains("make scout"))
+    );
+    let rangers = activity::recent(&world.data_dir(), ranger, 10);
+    assert_eq!(rangers.len(), 2);
+    assert!(rangers[1].line().ends_with("make ranger · refused by you"));
+    host.shutdown().await;
+}
+
+/// M7 and M3: an agent runs on the settings bzz started with, but what its
+/// owner takes away afterwards is refused at once, by the bzz that is
+/// running: a folder that is no longer granted for commands, a folder that
+/// now asks, a host that is no longer allowed, and an agent that is paused
+/// or gone from the settings. In doubt (a settings file that cannot be
+/// read) nothing is allowed and nothing is given.
+#[tokio::test]
+async fn what_the_owner_takes_away_is_refused_at_once_by_a_running_bzz() {
+    let world = World::new().await;
+    let owner = bzz::auth::signer::SignerHandle::spawn(world.owner.clone());
+    let keys = world.data_dir().join("keys");
+    git_credentials::set(
+        &keys,
+        &owner,
+        world.agent,
+        "github.com",
+        "bot",
+        "t0ken-marker",
+    )
+    .await
+    .unwrap();
+    let marker = |name: &str| world.script.marker(name);
+    let steps = (1..=6)
+        .flat_map(|round| {
+            vec![
+                approve(
+                    "ops",
+                    &format!("make {round}"),
+                    &marker(&format!("ran-{round}")),
+                ),
+                credential("github.com"),
+                json!({"touch": marker(&format!("asked-{round}"))}),
+                json!({"wait_for": marker(&format!("go-{round}"))}),
+            ]
+        })
+        .chain([send("done", true)])
+        .collect::<Vec<_>>();
+    world.script.write(
+        json!({"own_host": true, "run": ["ops"]}),
+        json!([{"steps": steps}]),
+    );
+    let mut local = world.hands(&[("ops", ExecGrant::WithoutAsking)]);
+    local.network = vec!["github.com".into()];
+    // The settings file, as `bzz agent edit` writes it.
+    let settings_file = world.temporary.path().join("config.toml");
+    let write = |local: Option<&LocalAgentConfig>, paused: bool| {
+        let config = bzz::config::Config {
+            hosted_agents: vec![HostedAgentConfig {
+                id: world.agent,
+                label: "Scout".into(),
+                pubkey: world.agent_pubkey(),
+                community: Uuid::nil(),
+                owner_identity: Uuid::nil(),
+                auth_tag: "[]".into(),
+                credential_hash: "c".repeat(64),
+                allowed: Vec::new(),
+                paused,
+                local: local.cloned(),
+            }],
+            ..bzz::config::Config::default()
+        };
+        std::fs::write(&settings_file, toml::to_string_pretty(&config).unwrap()).unwrap();
+    };
+    write(Some(&local), false);
+    let host = world
+        .host_configured(local.clone(), limits(), |options| {
+            options.settings_file = Some(settings_file.clone());
+            options.git_credentials = Some(Arc::new(git_credentials::SealedGitCredentials {
+                keys_dir: keys.clone(),
+                owner: owner.clone(),
+            }));
+        })
+        .await;
+    let request = world.ask(&host, "build").await;
+    // One round: what the harness was answered for its command and for its
+    // credential, then the next change of the settings.
+    let round = async |number: usize| {
+        let asked = marker(&format!("asked-{number}"));
+        until(&format!("round {number}"), WAIT, || {
+            asked.exists().then_some(())
+        })
+        .await;
+        let command = world.answers("_bzz/approve", number).await[number - 1].clone();
+        let credential = world.answers("_bzz/credential", number).await[number - 1].clone();
+        (
+            command["result"]["allow"].as_bool().unwrap(),
+            command["result"]["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            credential.get("result").is_some(),
+        )
+    };
+    let next = |number: usize| std::fs::write(marker(&format!("go-{number}")), "go\n").unwrap();
+
+    // 1. As bzz started: the command runs, the credential is given.
+    let (allowed, _, given) = round(1).await;
+    assert!(allowed && given && marker("ran-1").exists());
+
+    // 2. The owner takes the host off the list, and makes the folder ask.
+    //    Nobody is at this bzz to ask, so the command is refused.
+    let mut edited = local.clone();
+    edited.network.clear();
+    edited.folders[0].exec = ExecGrant::Ask;
+    write(Some(&edited), false);
+    next(1);
+    let (allowed, reason, given) = round(2).await;
+    assert!(!allowed && !given, "{reason}");
+    assert!(reason.contains("your owner is not at bzz"), "{reason}");
+    assert!(!marker("ran-2").exists());
+
+    // 3. The grant for commands is taken away; the host is allowed again.
+    edited.network = vec!["github.com".into()];
+    edited.folders[0].exec = ExecGrant::No;
+    write(Some(&edited), false);
+    next(2);
+    let (allowed, reason, given) = round(3).await;
+    assert!(!allowed && given, "{reason}");
+    assert!(
+        reason.contains("your owner has taken that grant away"),
+        "{reason}"
+    );
+
+    // 4. The folder is granted again, but it is another folder of the
+    //    machine under the same name: not the one this bzz told the host of.
+    edited.folders[0].exec = ExecGrant::WithoutAsking;
+    edited.folders[0].path = world.temporary.path().join("elsewhere");
+    write(Some(&edited), false);
+    next(3);
+    let (allowed, reason, _) = round(4).await;
+    assert!(!allowed, "{reason}");
+
+    // 5. The settings cannot be read: in doubt, nothing.
+    std::fs::write(&settings_file, "this is [not toml").unwrap();
+    next(4);
+    let (allowed, reason, given) = round(5).await;
+    assert!(!allowed && !given, "{reason}");
+    assert!(reason.contains("could not read its settings"), "{reason}");
+
+    // 6. The agent is paused in the settings, by a command.
+    write(Some(&local), true);
+    next(5);
+    let (allowed, reason, given) = round(6).await;
+    assert!(!allowed && !given, "{reason}");
+    assert!(reason.contains("no longer one that bzz runs"), "{reason}");
+    for number in 2..=6 {
+        assert!(!marker(&format!("ran-{number}")).exists(), "round {number}");
+    }
+    next(6);
+    world.settled(&request).await;
+    let activity = world.activity();
+    assert!(
+        activity.contains(
+            &"command in /mnt/ops · make 3 · refused: the folder is no longer granted for commands"
+                .to_owned()
+        ),
+        "{activity:?}"
+    );
+    host.shutdown().await;
+    owner.lock().await;
+}
+
+/// M7: "without asking" holds only while the people who may wake the agent
+/// are ones its owner named. An agent that anyone may wake would otherwise
+/// run commands for anyone, as its owner: there the owner is asked, whatever
+/// the folder's grant says, and with nobody to ask the answer is no.
+#[tokio::test]
+async fn a_folder_allowed_without_asking_still_asks_when_anyone_may_wake_the_agent() {
+    for owner_present in [false, true] {
+        let world = World::new().await;
+        let started = world.script.marker("started");
+        world.script.write(
+            json!({"own_host": true, "run": ["ops"]}),
+            json!([{"steps": [approve("ops", "systemctl restart site", &started), send("done", true)]}]),
+        );
+        let mut local = world.hands(&[("ops", ExecGrant::WithoutAsking)]);
+        local.wake = WakeRule::Anyone;
+        let host = world
+            .host_configured(local, limits(), |options| {
+                options.owner_present = owner_present
+            })
+            .await;
+        // Someone who is not the owner wakes it.
+        let request = world.message_in(
+            world.channel,
+            &world.stranger,
+            "restart the site",
+            true,
+            None,
+        );
+        assert_eq!(world.offer(&host, &request).await, Offer::Queued);
+        if owner_present {
+            let asked = one_question(&host).await;
+            assert_eq!(asked.requester, world.stranger.public_key().to_hex());
+            assert!(!started.exists(), "it waits for the owner");
+            assert!(host.answer_approval(asked.id, Answer::Refuse(None)));
+        }
+        world.settled(&request).await;
+        let answer = world.answers("_bzz/approve", 1).await[0]["result"].clone();
+        assert_eq!(answer["allow"], json!(false), "{answer}");
+        assert!(!started.exists());
+        assert_eq!(
+            world.activity().last().map(String::as_str),
+            Some(if owner_present {
+                "command in /mnt/ops · systemctl restart site · refused by you"
+            } else {
+                "command in /mnt/ops · systemctl restart site · refused: nobody was at bzz to ask"
+            })
+        );
+        host.shutdown().await;
+    }
 }
