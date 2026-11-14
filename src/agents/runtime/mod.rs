@@ -137,7 +137,9 @@ pub struct Limits {
     /// started again until the window has passed.
     pub crash_window: Duration,
     pub max_crashes: usize,
-    /// The most times one request is handed to a harness.
+    /// The most times one request is handed to a harness. Fewer than
+    /// `max_crashes`, so that one request a harness cannot survive ends with
+    /// its notice and leaves the agent available to the others.
     pub max_attempts: u32,
     /// Before a start is tried again after one failed.
     pub restart_backoff: Duration,
@@ -162,7 +164,7 @@ impl Default for Limits {
             stop_grace: process::STOP_GRACE,
             typing_interval: Duration::from_secs(5),
             crash_window: Duration::from_secs(300),
-            max_crashes: 3,
+            max_crashes: 5,
             max_attempts: 3,
             restart_backoff: Duration::from_secs(1),
             publish: Duration::from_secs(15),
