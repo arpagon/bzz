@@ -4778,14 +4778,40 @@ async fn real_relay_agent_moves_to_another_bzz_and_to_buzz_acp() {
                 .join("\n")
         )
     };
+    // One reply under buzz-acp. With none, the guard says what that means.
+    let under_acp = |request: String, what: &'static str, log: std::path::PathBuf| {
+        let (replies, exactly_one, guard) = (&replies, &exactly_one, &guard);
+        async move {
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while replies(request.clone()).await.is_empty() {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "{what}: no reply {}",
+                    guard(&log)
+                );
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            exactly_one(request, what).await
+        }
+    };
     // The next message in the same thread, answered by buzz-acp's agent with
     // the same memory: the place and the request were found in its prompt.
     let third = message("and under buzz-acp?".into(), Some(hello.id)).await;
-    let reply = exactly_one(third.id.to_hex(), "under buzz-acp, the same thread").await;
+    let reply = under_acp(
+        third.id.to_hex(),
+        "under buzz-acp, the same thread",
+        acp_log.clone(),
+    )
+    .await;
     assert_eq!(reply, pong(3), "{}", guard(&acp_log));
     // A new thread there is a new conversation.
     let one = message("ping one".into(), None).await;
-    let reply = exactly_one(one.id.to_hex(), "under buzz-acp, a new thread").await;
+    let reply = under_acp(
+        one.id.to_hex(),
+        "under buzz-acp, a new thread",
+        acp_log.clone(),
+    )
+    .await;
     assert_eq!(reply, pong(1), "{}", guard(&acp_log));
     // buzz-acp is killed with everything it started, and started again: it
     // hands the mention over again, and the host knows the request.
@@ -4793,10 +4819,10 @@ async fn real_relay_agent_moves_to_another_bzz_and_to_buzz_acp() {
     let acp_log = work.join("buzz-acp-2.log");
     let mut acp = start_kit(acp_log.clone()).await;
     let two = message("ping two, same thread".into(), Some(one.id)).await;
-    let reply = exactly_one(two.id.to_hex(), "after buzz-acp restarted").await;
+    let reply = under_acp(two.id.to_hex(), "after buzz-acp restarted", acp_log.clone()).await;
     assert_eq!(reply, pong(2), "{}", guard(&acp_log));
     let three = message("ping three, a new thread".into(), None).await;
-    let reply = exactly_one(three.id.to_hex(), "another new thread").await;
+    let reply = under_acp(three.id.to_hex(), "another new thread", acp_log.clone()).await;
     assert_eq!(reply, pong(1), "{}", guard(&acp_log));
     assert_eq!(
         replies(one.id.to_hex()).await.len(),
