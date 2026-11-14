@@ -92,6 +92,7 @@ test("a folder granted for writing is changed on the machine", async (t) => {
 	assert.equal((await sh("rm -r /mnt/drop/a && ls -1 /mnt/drop")).out, "deep\nshort\n");
 	// The folder itself is the owner's: it can be emptied, not removed or renamed.
 	assert.notEqual((await sh("rmdir /mnt/drop")).code, 0);
+	assert.notEqual((await sh("chmod 000 /mnt/drop")).code, 0);
 	assert.notEqual((await sh("mv /mnt/drop /mnt/other")).code, 0);
 	assert.equal(existsSync(join(root, "drop")), true);
 });

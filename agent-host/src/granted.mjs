@@ -259,6 +259,8 @@ export class Granted {
 	chmod(path, mode) {
 		this.#writable("chmod", path);
 		const real = this.#real(path, "chmod");
+		// The granted folder itself stays as its owner set it: a mode of 000 would lock him out of it.
+		if (real === this.root) throw new FsError("EPERM", "chmod", path);
 		this.#try("chmod", path, () => fs.chmodSync(real, mode));
 	}
 

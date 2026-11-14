@@ -312,16 +312,17 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 			const settings = bzz
 				? { local: true, agent: bzz.agent ?? {}, model: bzz.model, instructions: bzz.instructions ?? "", mounts: bzz.mounts ?? [], network: bzz.network ?? [], piDir: bzz.piDir }
 				: { local: false, ...(await readAgentFile(folder)), mounts: [], network: [] };
-			const net = network(settings.network);
-			models = await openModels({ piDir: settings.piDir ?? defaultPiDir(env), env });
-			disk = new SqliteFs(join(folder, "files.sqlite"));
+			let net;
 			try {
+				net = network(settings.network);
+				disk = new SqliteFs(join(folder, "files.sqlite"));
 				vfs = new Vfs(disk, settings.mounts);
 				shell = createShell(vfs, { net, author: { name: settings.agent.name ?? "agent", email: "agent@bzz.invalid" } });
 			} catch (error) {
-				disk.close();
+				disk?.close();
 				throw new RpcError(INVALID, error.message);
 			}
+			models = await openModels({ piDir: settings.piDir ?? defaultPiDir(env), env });
 			config = { ...settings, network: net.hosts };
 			await ready();
 			log(`ready: ${config.local ? "started by bzz" : "remote copy"}, ${settings.mounts.length} granted folder(s), ${net.hosts.length} allowed host(s)`);

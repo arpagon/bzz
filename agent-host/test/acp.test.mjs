@@ -370,6 +370,7 @@ test("grants and the allow-list arrive in initialize, apply to the tools, and le
 	}));
 	const host = start();
 	await assert.rejects(host.initialize({ mounts: [{ name: "../site", path: join(root, "site") }] }), { code: -32602, message: /simple name/ });
+	await assert.rejects(host.initialize({ network: ["https://github.com/"] }), { code: -32602, message: /takes host names/ });
 	await host.initialize({ mounts: [{ name: "site", path: join(root, "site"), write: false }, { name: "drop", path: join(root, "drop"), write: true }], network: [servers[0]] });
 	const session = await host.session(THREAD);
 	const run = async (request, command) => {

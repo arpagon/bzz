@@ -18,6 +18,8 @@ if (!folder) {
 	process.exit(2);
 }
 
+// Standard output carries the protocol and nothing else: what a package prints there would break it.
+console.log = console.info = console.debug = (...args) => console.error(...args);
 // Prompts and messages are never logged: the log names what happened, not what was said.
 const log = (line) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
 const { serve, VERSION } = await import("./src/host.mjs");
