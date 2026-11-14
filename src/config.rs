@@ -203,6 +203,10 @@ pub struct LocalAgentConfig {
     /// command, for a harness run from a checkout. Empty: the default.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command: Vec<String>,
+    /// The picture of the agent's profile and of the owner's record: an
+    /// HTTPS address. Kept so that an edit can publish both again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
 }
 
 impl LocalAgentConfig {
@@ -217,6 +221,7 @@ impl LocalAgentConfig {
             network: Vec::new(),
             state: LocalAgentState::default(),
             command: Vec::new(),
+            picture: None,
         }
     }
 }

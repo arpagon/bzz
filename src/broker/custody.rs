@@ -119,6 +119,11 @@ pub async fn unlock(
     ))
 }
 
+/// Whether the agent's sealed key is where bzz keeps it.
+pub fn has_key(keys_dir: &Path, agent: &HostedAgentConfig) -> bool {
+    key_file(keys_dir, agent.id).is_file()
+}
+
 /// Replaces the credential; the old one stops resolving immediately.
 pub fn rotate(agent: &mut HostedAgentConfig) -> String {
     let credential = new_credential();

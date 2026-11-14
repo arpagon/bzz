@@ -4,9 +4,11 @@
 //! interoperability with agents that something else runs: a remote agent is
 //! only a set of signed public relay records, scoped later by community
 //! membership. [`runtime`] (v0.15) runs local agents: bzz holds the key and
-//! starts the process; [`capability`] says what each harness can do.
+//! starts the process; [`manage`] creates and manages them, and
+//! [`capability`] says what each harness can do.
 
 pub mod capability;
+pub mod manage;
 pub mod policy;
 pub mod protocol;
 pub mod runtime;

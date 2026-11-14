@@ -75,7 +75,13 @@ impl CommunityAgents {
     }
 }
 
-async fn relay_pubkey(store: &StoreHandle, community: Uuid, http: &HttpClient) -> Result<String> {
+/// The relay's own signing key: the one pinned for the community, or the one
+/// its NIP-11 document names, pinned now.
+pub(crate) async fn relay_pubkey(
+    store: &StoreHandle,
+    community: Uuid,
+    http: &HttpClient,
+) -> Result<String> {
     if let Some(pinned) = store
         .call(move |store| store.pinned_relay_pubkey(community))
         .await?
