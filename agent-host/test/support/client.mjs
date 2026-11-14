@@ -1,5 +1,6 @@
 // A small ACP client that stands in for bzz: it starts the host as bzz does,
-// with an environment built from nothing, and serves `_bzz/tool`.
+// with an environment built from nothing, and serves `_bzz/tool` and, when a
+// test says how, the host's other requests.
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -42,9 +43,16 @@ export function within(ms, promise, what) {
  * Starts `node main.mjs <folder>`.
  * @param options.onTool answers `_bzz/tool`: `(params) => result`. Default: "sent as <n>", final as asked.
  * @param options.command another command line, for a host started through something else
+ * @param options.descriptors open files the host is born with beside its three streams, as `number -> descriptor of
+ *   this process`: what a careless parent leaves open to its children
  */
-export function startHost(t, folder, { env, onTool, command = [process.execPath, MAIN, folder], home = folder } = {}) {
-	const child = spawn(command[0], command.slice(1), { stdio: ["pipe", "pipe", "pipe"], env: env ?? bareEnv(home) });
+export function startHost(t, folder, { env, onTool, command = [process.execPath, MAIN, folder], home = folder, descriptors = {} } = {}) {
+	const stdio = ["pipe", "pipe", "pipe"];
+	for (const [number, descriptor] of Object.entries(descriptors)) {
+		while (stdio.length < Number(number)) stdio.push("ignore");
+		stdio[Number(number)] = descriptor;
+	}
+	const child = spawn(command[0], command.slice(1), { stdio, env: env ?? bareEnv(home) });
 	let stderr = "";
 	child.stderr.on("data", (chunk) => { stderr += chunk; });
 	const pending = new Map();
@@ -53,6 +61,10 @@ export function startHost(t, folder, { env, onTool, command = [process.execPath,
 		child,
 		/** Every `_bzz/tool` request received, in order. */
 		tools: [],
+		/** Every other request the host made, in order: `{ method, params }`. */
+		asked: [],
+		/** Answers to those: `method -> (params) => result`. What it throws is answered as a JSON-RPC error; `undefined` leaves the request unanswered. */
+		on: {},
 		/** Every `session/update`, in order: `{ sessionId, update }`. */
 		updates: [],
 		/** Every line the host wrote, as text: for checks that something never appears on the pipe. */
@@ -95,7 +107,17 @@ export function startHost(t, folder, { env, onTool, command = [process.execPath,
 			const result = await host.onTool(message.params);
 			// `undefined` leaves the call unanswered, for a test that kills the host inside it.
 			if (result !== undefined) host.write({ id: message.id, result });
-		} else if (message.method !== undefined && message.id !== undefined) host.write({ id: message.id, error: { code: -32601, message: `Method not found: ${message.method}` } });
+		} else if (message.method !== undefined && message.id !== undefined) {
+			host.asked.push({ method: message.method, params: message.params });
+			// As bzz answers a request it does not know.
+			if (!host.on[message.method]) return void host.write({ id: message.id, error: { code: -32601, message: `Method not found: ${message.method}` } });
+			try {
+				const result = await host.on[message.method](message.params);
+				if (result !== undefined) host.write({ id: message.id, result });
+			} catch (error) {
+				host.write({ id: message.id, error: { code: error.code ?? -32000, message: error.message } });
+			}
+		}
 		else if (message.method === undefined) {
 			const call = pending.get(message.id);
 			pending.delete(message.id);

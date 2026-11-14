@@ -4,6 +4,7 @@
 // with the `buzz` command. A stand-in `buzz` records what it is asked.
 import assert from "node:assert/strict";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -19,6 +20,8 @@ const [first, replayed, reply, another] = expected.prompts;
 const KEY = "nsec1notarealkeyonlyamarkerforthistest0000000000000000000000";
 const CHANNEL = "0d9c7b6a-1234-4abc-8def-0123456789ab";
 const id = (letter) => letter.repeat(64);
+/** A recorded prompt of buzz-acp with a script for the stand-in model after it. */
+const mention = (file, ...steps) => `${recorded(file)}\ndo: ${JSON.stringify(steps)}`;
 
 /** A folder as `agent move` leaves it on the other machine, and the host started there as buzz-acp starts it. */
 function remote(t, { agentFile = { name: "Scout", model: MODEL, instructions: "Be brief." }, env = {} } = {}) {
@@ -144,7 +147,6 @@ test("read and react go through buzz too, and a failure of buzz reaches the mode
 	const host = start();
 	await host.open();
 	const session = await host.session();
-	const mention = (file, ...steps) => `${recorded(file)}\ndo: ${JSON.stringify(steps)}`;
 	await host.prompt(session, mention(first.file, ["buzz_react", { emoji: "👀" }], ["buzz_read", { limit: 5 }], ["report"]));
 	assert.deepEqual(posts().map((post) => post.args), [
 		["reactions", "add", "--event", first.request, "--emoji", "👀"],
@@ -219,6 +221,52 @@ test("a move: a conversation and a file made under bzz continue under buzz-acp",
 	await host.prompt(session, `${recorded(reply.file)}\ndo: ${JSON.stringify([["bash", { command: "cat notes/plan.md" }], ["report"]])}`);
 	await host.prompt(session, recorded(reply.file).replaceAll(reply.request, id("c")));
 	assert.deepEqual(posts().map((post) => post.stdin), ["made before the move\n", "pong: this conversation holds 3 message(s) from people"]);
+});
+
+test("a moved agent keeps its allowed hosts, and gets no folder of the machine it lands on", async (t) => {
+	const reached = [];
+	const servers = await Promise.all([0, 1].map(async (n) => {
+		const server = createServer((request, response) => {
+			reached.push(n);
+			response.end(`server ${n} answered ${request.url}\n`);
+		});
+		await new Promise((done) => server.listen(0, "127.0.0.1", done));
+		t.after(() => new Promise((done) => (server.closeAllConnections(), server.close(done))));
+		return `127.0.0.1:${server.address().port}`;
+	}));
+	const there = tempDir(t, "there");
+	writeFileSync(join(there, "theirs.txt"), "a file of the other machine\n");
+	// agent.json as bzz writes it, and with what bzz never writes: a folder, with leave to run commands in it.
+	const agentFile = { name: "Scout", model: MODEL, instructions: "Be brief.", network: [servers[0]], mounts: [{ name: "there", path: there, write: true, exec: true }] };
+	const { start, posts } = remote(t, { agentFile });
+	const host = start();
+	// No folder, so no hands: `run` is not there, whatever agent.json says.
+	assert.deepEqual((await host.open())._meta.bzz.run, []);
+	const command = `curl -s http://${servers[0]}/a; curl -sS http://${servers[1]}/b; ls /mnt; cat /mnt/there/theirs.txt; echo end`;
+	await host.prompt(await host.session(), mention(first.file, ["bash", { command }], ["report"]));
+	// The shell's own output first, then what it wrote to standard error.
+	assert.equal(posts()[0].stdin, `server 0 answered /a\nend\ncurl: (1) network: ${servers[1]} is not on this agent's allow-list (${servers[0]}). The owner sets it in bzz.\ncat: /mnt/there/theirs.txt: No such file or directory\n`);
+	assert.equal(posts()[0].stdin.includes("a file of the other machine"), false);
+	assert.deepEqual(reached, [0]);
+	assert.match(host.stderr(), /remote copy, 0 granted folder\(s\), 1 allowed host\(s\)/);
+	await host.prompt(await host.session(), mention(reply.file, ["describe"]));
+	const told = JSON.parse(posts().at(-1).stdin);
+	assert.deepEqual(told.tools, ["read", "write", "edit", "bash", "buzz_send", "buzz_read", "buzz_react"]);
+	assert.match(told.system, /No folder of the owner's machine is granted to you\./);
+	await host.stop();
+
+	// A list that is not host names stops the start: it is never read as "everything".
+	for (const network of [["https://github.com/"], "github.com", ["*"]]) {
+		const bad = remote(t, { agentFile: { ...agentFile, network } }).start();
+		await assert.rejects(bad.open(), { code: -32602, message: /allow-list/ }, JSON.stringify(network));
+	}
+	// Without the field, as an agent moved by an older bzz: no host is allowed.
+	const none = remote(t, { agentFile: { name: "Scout", model: MODEL } });
+	const closed = none.start();
+	await closed.open();
+	await closed.prompt(await closed.session(), mention(first.file, ["bash", { command: `curl -sS http://${servers[0]}/c` }], ["report"]));
+	assert.match(none.posts()[0].stdin, /is not on this agent's allow-list \(it is empty\)/);
+	assert.deepEqual(reached, [0]);
 });
 
 test("BZZ_AGENT_HOST_RECORD saves the prompts of buzz-acp, for recording the fixtures again", async (t) => {

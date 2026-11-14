@@ -47,8 +47,11 @@ pub const HOST_FILES: &[(&str, &str)] = host_files![
     "src/host.mjs",
     "src/model.mjs",
     "src/network.mjs",
+    "src/packages.mjs",
     "src/remote.mjs",
     "src/rpc.mjs",
+    "src/run-child.mjs",
+    "src/run.mjs",
     "src/vfs.mjs",
 ];
 

@@ -400,6 +400,86 @@ Red on the relay: a turn cut off by the kill never handed over again
   written (`.github/workflows/integration.yml`) and has not run yet.
 - `_bzz/checkpoint` with the real host after 60 s idle: scripted only (M1).
 
+### Pi packages, and what a moved agent carries (second pass)
+
+**Scope:** providers and extensions from the Pi Durable entries of Pi
+packages (`agent-host/src/packages.mjs`, protocol section 10), the switch
+`_meta.bzz.packages`, and `network` and `packages` in `agent.json` (protocol
+sections 1 and 7). bzz's side, which sends the switch and writes `agent.json`,
+is not part of it.
+
+**Run on:** Linux x86_64, commit `3658e52`, 2026-11-14. As above: no
+network, no real model, no relay, no Buzz. Pi's folder and every package are
+written into temporary folders by the tests; the real `~/.pi` is never read.
+
+```sh
+cd agent-host && npm ci --ignore-scripts --omit=optional --omit=dev && npm test
+```
+
+| Node | Result |
+|---|---|
+| 26.5.0 | 98 tests, 98 pass, 0 skipped, 49 s |
+| 22.19.0, the minimum (official build, checksum verified, run from a temporary folder) | 98 pass, 0 skipped |
+| 24.15.0 | 98 pass, 0 skipped |
+
+176 packages are installed that way. `npm audit --omit=dev`: 0 advisories.
+The 98 are the 78 above and 20 new: 6 in `packages.test.mjs`, 1 in
+`remote.test.mjs`, 4 in `credentials.test.mjs` (M3) and 9 in `run.test.mjs`
+(M7).
+
+**Red runs**, as above: the fault planted, the one test run alone, the
+failure read, the fault removed, all on `3658e52`. 53 red runs for the second
+pass: 16 here, 10 in M3 and 27 in M7.
+
+| Claim | Test (`agent-host/test/`) | Fault planted | How it failed |
+|---|---|---|---|
+| A package's Pi Durable entry brings providers, and they join Pi's own | `packages.test.mjs` "providers and extensions come from…" | the providers of packages are not added to Pi's | `The provider "acme" is not available: it is not one of Pi's built-in providers, and no Pi package loaded for this agent adds it` |
+| A package gets the host's copies of the `@earendil-works` packages and installs none itself | same test | no redirection of those imports | the report says of `acme`: `Cannot find package '@earendil-works/pi-ai' imported from …/acme/durable.ts` |
+| A package may be TypeScript, also in a dependency under its own `node_modules` | same test | types are not stripped there | the report says of `guard`: `Stripping types is currently unsupported for files under node_modules` |
+| A package that hangs, at import or in its setup, is left out after its time limit, and two that hang cost one limit | `packages.test.mjs` "a package that fails is left out…" (limit 1.5 s; observed 1.5 s for both) | no time limit | the test never ends: stopped after 15 s |
+| A package that throws, returns what cannot be installed, or is not in a local folder is left out with its reason, and the packages before and after it load (19 kinds of failure between two good packages) | same test | a failure is passed on instead of recorded | loading failed as a whole: `It took over 1.5 seconds to load` |
+| A package cannot take the name of one of bzz's tools (`run`, `buzz_…`) | same test | the names are not checked | the package `tool-run` loaded: `true !== false` |
+| A provider that is missing is traced to a package without a Pi Durable entry that names it, in the message and in `data.package` | `packages.test.mjs` "a provider that is missing is traced…" | the search of the package's files finds nothing | `[]` where `…/pi-acme-cloud` was expected |
+| In the host: a turn runs on a package's model; its tool, prompt section and hook work; `initialize` reports each package | `packages.test.mjs` "in the host…" | extensions are not installed for the agent | `Tool word_count is not available` |
+| What a package prints goes to the log; the pipe carries only the protocol | same test | standard output is not redirected | the client read the package's line as a message: `"the guard p"... is not valid JSON` |
+| `_meta.bzz.packages: false`: no code of any package runs, its tools and providers are not there, and the error for its provider says packages are off | `packages.test.mjs` "bzz can switch package loading off…" | the switch is ignored | `_meta.bzz.packages` lists `acme` and the others where `[]` was expected |
+| `"packages": false` in `agent.json` keeps them off in a moved copy | same test | the field is not read | the same, for the moved copy |
+| What a package leaves uncaught after it loaded does not end the host: a promise that fails at import, one that fails later with no file of the package in its stack, an exception from a timer. The other package's tool and its own still work | `packages.test.mjs` "what a package leaves uncaught…" | the two handlers in `main.mjs` are not installed | the host ended before it answered: `timed out after 30000 ms: initialize` |
+| The limit of that: an exception that no stack traces to a package still ends the host, with code 1 | same test | every exception is survived | `timed out after 5000 ms: the host to end` |
+| A moved agent keeps its allowed hosts: `network` in `agent.json` | `remote.test.mjs` "a moved agent keeps its allowed hosts, and gets no folder…" | the list is not read from the file | `curl` to the listed server refused: `is not on this agent's allow-list (it is empty)` |
+| A moved agent gets no folder of the machine it lands on, whatever `agent.json` says | same test | `mounts` is read from the file | `ls /mnt` shows `there`, and `a file of the other machine` is read |
+| …and never has `run` | same test | also `exec` is honoured without bzz | `_meta.bzz.run` is `['there']` where `[]` was expected |
+
+**Not proven here:**
+
+- A real Pi package. Every package that ran was written by a test. The
+  owner's own packages are in Pi's folder, which no test may read. A
+  provider from a package with a real sign-in, and its token refresh, did
+  not run.
+- A package that never gives the thread back (an endless loop). It cannot be
+  timed out and holds the host: `initialize` is never answered. bzz needs a
+  time limit of its own there. Not tested, because the test would be that
+  hang.
+- A package that calls `process.exit`, or throws something that carries no
+  stack (a string), ends the host. The second is shown by the test above as
+  the limit it is.
+- macOS and Windows: the CI job has not run with these tests. On Windows a
+  package's path and the import redirection are unproven.
+- "`agent new` says so when the chosen model is not available" (plan, M2) is
+  bzz's side. The host gives it the words and `data.package`.
+
+**Found on the way (second pass):**
+
+- A promise that a package left to fail ended the host with code 1, at every
+  start: Node's default. The first version of the package code had tests for
+  a setup that throws and one that hangs, all of which the host awaits, and
+  none for what nobody awaits. A probe with `Promise.reject(…)` at the top of
+  a package's file showed it; `main.mjs` now survives it, and the test above
+  is its proof.
+- A later package's tool silently replaces an earlier package's tool of the
+  same name, as a package's `bash` replaces Pi's. It is said in the protocol
+  (section 10) and the README; nothing refuses it.
+
 ## M3 — The agent's disk
 
 **Scope:** `files.sqlite`, the shell, git, granted folders and the network
@@ -457,7 +537,7 @@ allow-list, in `agent-host/src/`. Same commit, machine and command as M2.
 - macOS and Windows, as above. On Windows, links can be made only by some
   accounts: the link cases say so and are skipped when they cannot run.
 - Credentials for a private remote "from bzz at the moment of use" (plan,
-  M3): not built. The protocol has no message for it.
+  M3): not built in the first pass. Built in the second, below.
 - A repository of several hundred MB, files of hundreds of MB, many agents at
   once.
 - HTTPS from `curl` is not in `npm test`: it would need the network or a
@@ -491,6 +571,45 @@ allow-list, in `agent-host/src/`. Same commit, machine and command as M2.
   with 18 advisories. `package.json` overrides it to 7.30.2.
 - The lock file holds one LGPL-3.0 package, `node-liblzma`, optional and
   never built. `--omit=optional` leaves it out; the tests pass without it.
+
+### Credentials for a private remote (second pass)
+
+**Scope:** `_bzz/credential` (protocol section 8), in
+`agent-host/src/git.mjs` and `host.mjs`. Same commit, machine and command as
+the second pass of M2. The remote is the real `git http-backend` behind a
+server on this machine that answers 401 without the right `Authorization`
+header. The secret is a marker, not a token. bzz's side, which keeps the
+credentials and answers, is not part of it.
+
+| Claim | Test (`agent-host/test/`) | Fault planted | How it failed |
+|---|---|---|---|
+| When a listed remote asks who is calling, git asks bzz for that host on the turn's session, and the clone, the push (read back with real `git`) and the fetch succeed with the answer | `credentials.test.mjs` "a private remote: bzz is asked…" | the shell's git is given nobody to ask | `asks for credentials, and this copy of the agent has none`, `exit 128` |
+| Nothing is kept from one git command to the next: each asks again | same test | the answer is remembered per host | `1 !== 2` questions after the clone and the push |
+| Wrong credentials: the remote refuses, git says so, and bzz is not asked a second time for that command. Half an answer, an error of bzz and a bzz that does not know the request each end the command with the reason; a failed clone leaves nothing | same test | no handler for the remote's refusal | `git: HTTP Error: 401 Unauthorized`, `exit 1` where `refused the credentials bzz has for it`, `exit 128` was expected |
+| The secret is not in the log | same test (after `_bzz/checkpoint` and a clean exit, both files, the log and every line the host wrote on the pipe are searched for five forms of two secrets; a marker the model wrote is found in both files, so the search sees what is there) | the answer is logged | `the log holds the secret, as ghp_NotARealToken…` |
+| The secret is not in `files.sqlite` | same test | the answer is written to a file on the agent's disk | `files.sqlite holds the secret, as ghp_NotARealToken…` |
+| The secret is not in `memory.sqlite` | same test | the answer is put in a document of the conversation store | `memory.sqlite holds the secret, as ghp_NotARealToken…` |
+| A cancelled turn does not wait for bzz's answer: the command ends and its half-made clone is removed | `credentials.test.mjs` "a cancelled turn does not wait…" (bzz never answers) | the question ignores the stop | the clone still waits and its folder stays: `'1' !== '0'` entries |
+| Under `buzz-acp` there is nobody to ask: git says that this copy has no credentials, and `buzz-acp` is asked nothing | `credentials.test.mjs` "under buzz-acp there is nobody to ask…" | a remote copy asks too | `bzz gave none: Method not found: _bzz/credential` where `this copy of the agent has none` was expected |
+| A host that is not on the allow-list never causes the request. In the host: an unlisted private remote receives no request and bzz is not asked ("a private remote…"). And where the challenge got through by a fault in the transport, the question has its own check | `credentials.test.mjs` "a remote that is not on the list is never asked about…" | no check where the question is asked | git went on to `other.example refused the credentials bzz has for it` where the allow-list's refusal was expected: bzz had been asked |
+| A remote that repeats what it was sent does not get the secret into what git prints | same test | nothing is starred out | `403 Forbidden for Basic c2NvdXQt…` where `Basic ***` was expected |
+
+Credentials do not follow a redirect to another host: that is the first
+pass's "credentials given for one host…" in `network.test.mjs`, above.
+
+**Not proven here:**
+
+- A real private remote. No token of any forge was used, and nothing went
+  over HTTPS: the test remote speaks plain HTTP on this machine. GitHub and
+  GitLab with a token as the password, the 203 that Azure DevOps sends in
+  place of 401, and a forge that answers 404 for a private repository (bzz
+  is then never asked) did not run.
+- bzz's side of `_bzz/credential`: where the credentials are kept, and the
+  owner being asked. A scripted client answered.
+- The answer stays in this process's memory until Node frees it. Nothing
+  wipes it. "Passes through memory only" is what is shown, not "is erased".
+- macOS and Windows: the CI job has not run with these tests. They need
+  `git` with `http-backend` and say so when they are skipped.
 
 ## M4 — Creating and managing an agent
 
@@ -685,6 +804,120 @@ Two faults CI found on `5791420`, both in tests, are fixed in `8b78d05`:
 - On Windows the folder grant `/home/ann/site` of `config_test` is not an
   absolute path. The test now grants a path that is absolute where it runs.
   Not run on Windows here; CI will show it.
+
+## M7 — Hands on this machine (host side)
+
+**Scope:** the `run` tool and `_bzz/approve` (protocol section 9), in
+`agent-host/src/run.mjs`, `run-child.mjs` and `host.mjs`. bzz's side is not
+part of it: the grant with `exec` in bzz's configuration, the question in the
+TUI and "allowed without asking" are not built. A scripted client answers
+`_bzz/approve`.
+
+**Run on:** Linux x86_64 (`/bin/sh` is dash), commit `3658e52`, 2026-11-14,
+with the command and the results of the second pass of M2: 98 pass on Node
+26.5.0, 22.19.0 and 24.15.0. The 9 tests of `run.test.mjs` start real
+commands (`sh`, `sleep`, `seq`, `env`, `ps`, `node`) in temporary folders and
+take about 17 s together.
+
+**Red runs:** 27, as in M2.
+
+| Claim | Test (`agent-host/test/run.test.mjs`) | Fault planted | How it failed |
+|---|---|---|---|
+| bzz is asked before anything starts, with the turn's session, the folder's name and the command | "an approved command runs in the granted folder, exactly as approved…" | the question is skipped | no request reached the client: `[]` where the `_bzz/approve` was expected |
+| What was approved is what runs: the shell is started with the approved string, whole and alone, as its one command | same test (the command prints its own shell's arguments) | `cd . && ` is put before the string | `/bin/sh -c -- cd . && ps -o args= -p $$` |
+| The string cannot be read as an option of the shell | same test | no `--` before it | `/bin/sh -c ps -o args= -p $$` |
+| The environment is built from nothing: `PATH`, `HOME`, `LANG`, `TMPDIR`, and what the shell adds | same test | the host's environment is handed on | `A_SECRET_OF_THE_HOST`, `BZZ_AGENT_HOST_SCRIPTED_MODEL` and `USERPROFILE` in the command's environment |
+| The command starts in the granted folder | same test | no working directory is given | `pwd` printed the host's own folder, and `made.txt` was written there |
+| It runs in a process group of its own, which is neither the host's nor the caller's | same test | the shell is not made a group leader | its group is not its own id: `99142 !== 99149` (the numbers vary) |
+| It has no terminal and an empty standard input | same test | the keeper's input is handed on | `cat: -: Resource temporarily unavailable` before `end of input` |
+| The model is told that it has `run`, where, and that the owner may be asked | same test | the sentence is left out | the system prompt holds no `run` sentence |
+| On Linux a command has no open file but its three streams: a descriptor the host was born with is closed | "a command gets its three streams and no other open file of the host" (the host is started with a file open as number 200) | the keeper closes nothing | `200 is open` where `200: EBADF` was expected |
+| Only `{"allow": true}` starts a command: `false` with a reason, `{}`, `"true"`, `1`, `null` and a string do not, and the reason reaches the model | "a refused command does not start, and the model is told why" | only `allow: false` refuses | `{}` started the command: the result was empty where the refusal was expected |
+| An error of bzz, or a bzz that does not know the request, is a no | same test | an error is taken as a yes | the command ran: `''` where `The command was not started: bzz did not approve it (…)` was expected |
+| Two commands in one answer of the model are put to bzz one after the other | same test | the calls of a round run at once | the second was asked while the first had not run: `first has run: false` |
+| A command that outlives its time limit is stopped | "a command that outlives its time limit is stopped, with the children it started" (limit 1 s) | no timer | the test never ends: stopped after 20 s |
+| …with the children it started | same test | the signal goes to the shell, not to its group | its two children are alive |
+| …and one that ignores TERM, children included, is killed after the grace | same test | no KILL after the grace | `these processes are still there after 1000 ms`, all three |
+| What a command leaves running ends with it, also a child of a child | "what a command leaves running ends with it, and a turn that is cancelled ends its command" | the group is not killed when the command returns | `these processes are still there after 1000 ms`, both |
+| A cancelled turn ends its command, and the prompt answers `cancelled` | same test | the tool does not listen to the stop | `timed out after 8000 ms: the cancelled prompt` |
+| A turn cancelled while bzz is being asked starts nothing | same test | the question ignores the stop | `timed out after 8000 ms: the prompt cancelled during the question` |
+| A long output comes back as its end, within Pi's bound | "a long output comes back bounded, and the whole of it is on the agent's disk" (5000 lines; 9 MB) | no rule to keep the end | the last line, `5000`, is not in the result |
+| …and the whole of it, up to 8 MiB, is on the agent's disk, where the agent reads it with its own tools; the result says where | same test (the file is read back from `files.sqlite` after a clean exit) | nothing is saved | no `Full output: /tmp/run-….log` in the result |
+| A grant without `exec` gives no command there, also when it allows writes | "without a folder granted for it there is no `run`, and a grant without `exec` gives none" | `write` counts as `exec` | the command ran in `docs`: an empty result where the refusal was expected |
+| Only `"exec": true` is a grant: without one the tool does not exist and the model is not told of it | same test | any value that is not empty counts | `_meta.bzz.run` is `['docs']` for `"exec": "true"` |
+| A folder that is not there is said, and bzz is not asked | same test | the folder is not looked at | the command ran, in the host's own folder: `x` |
+| A host that is killed outright does not leave its command behind: the keeper sees it go | "a command does not outlive a host that is killed, and is not started again after a restart" | the keeper does not watch its input | `these processes are still there after 5000 ms`, all three |
+| A command cut off by a restart is not started again, and bzz is not asked again: the model is told it was interrupted | same test | the tool is marked safe to run again | it was put to bzz again: `The command was not allowed: not a second time` where `Tool run was interrupted` was expected |
+| Under a killed host, a command that ignores TERM is killed by the keeper after the grace | same test | no KILL after the grace | `these processes are still there after 5000 ms`, all three |
+| A host stopped by the end of its input leaves within 2 s with code 0, and its command ends with it | "a host stopped by the end of its input leaves in time, and its command ends with it" | the keeper does not watch its input | `these processes are still there after 5000 ms`, all three |
+
+A remote copy never has `run`: that is `remote.test.mjs` "a moved agent
+keeps its allowed hosts, and gets no folder…", in the second pass of M2.
+
+**The plan's exit gate** ("an approved command runs in a granted folder and
+its result is on the agent's disk; a refused one does not run"):
+
+- [x] The host's half, against a scripted client: an approved command runs
+  in the granted folder; a refused one does not start. A result too long for
+  the model is on the agent's disk; a file a command made is brought to the
+  agent's disk by the agent's own `cp` and read back from `files.sqlite`. A
+  short result is in the conversation, which is `memory.sqlite`, not on the
+  disk.
+- [ ] Against bzz itself: pending bzz's side of `_bzz/approve` and of `exec`
+  on a grant.
+- [ ] Approve and refuse in the TUI, on the release binary: pending.
+
+**Not proven here:**
+
+- macOS. Nothing ran there. `/bin/sh` is another shell there, and the tests
+  lean on `sh -c --`, `ps -o args=` and process groups as Linux has them.
+  The CI job has not run with these tests.
+- On macOS a command inherits the descriptors the host was started with:
+  only Linux tells a process which those are. The test says so and asserts
+  nothing there. bzz must start the host with none.
+- Windows: the host does not offer `run`, and the tests are skipped.
+- The host and the keeper killed at the same moment: the command goes on.
+  Not tested; it is a limit, written in the protocol and the README.
+- A process that leaves the group (`setsid`) is not ended. The test shows
+  it as the limit it is.
+- A real workload: a build, a test suite that runs for minutes, output of
+  gigabytes. The longest limit tested is 1 s, the largest output 9 MB.
+- Linux without `/proc`: the keeper then closes nothing.
+- The folder is where a command starts, not a wall. Nothing here confines a
+  command, and no test claims it.
+
+**Found on the way:**
+
+- A command inherited every descriptor that whoever started bzz had left
+  open. A probe that listed a command's descriptors showed about 80 of the
+  application this terminal runs in: its database files, sockets and the
+  master side of a terminal. They were numbered 23 and up; number 3 did not
+  get through. That fits what Node does at start: it marks the descriptors
+  it finds as not to be passed on, and stops at the first gap above 15. What
+  lies after the gap goes through the host and the keeper to the command.
+  The keeper now closes those on Linux, and the protocol (section 2) asks
+  bzz to hand the host none.
+- `agent-host/made.txt` was in the tree: a test command had once run in the
+  host's own folder, and its file was committed. It is removed. The red run
+  for "starts in the granted folder" writes it again, which is how its
+  origin was found.
+- The red run for "the secret is not in `files.sqlite`" first stayed green.
+  The fault kept the answer in one file, and the last answer the test gave
+  was half an answer with no password, which replaced it. The test now ends
+  with a whole answer, and that fault is caught.
+- The tests' cleanup of leftover processes ran after the temporary folder
+  was removed, and it read the process ids from a file in that folder. A
+  failing test therefore left its `sleep 300` processes behind and held the
+  test runner for five minutes. The cleanup is now registered first.
+- The red run for "not started again after a restart" first failed by a
+  30 s time-out: the command was approved again and ran. The test's client
+  now refuses a second question, so the fault shows in 1 s and by name.
+- With `run?.stopAll()` removed from the host's close, the tests stay green:
+  the keeper sees the host's end of the pipe close in any case. The call
+  only gives the order sooner. It is not a claim, and it has no red run.
+- `replay` was not set on the tool. Pi Durable's default is "not safe to run
+  again", which is what kept a cut-off command from starting twice. It is
+  now set by name.
 
 ## Evidence gathered before the plan (2026-11-13)
 
