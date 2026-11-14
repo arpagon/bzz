@@ -565,6 +565,9 @@ impl Agent {
                 Some(Hold::MovedAway { .. }) => {
                     self.stop().await;
                     self.state().problem = Some(hold::MOVED_AWAY.into());
+                    // It is another home's agent now: this bzz keeps neither
+                    // a connection as the agent nor its key in memory.
+                    self.relay.close().await;
                     break;
                 }
                 Some(Hold::Moving { .. }) => {

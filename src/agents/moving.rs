@@ -37,10 +37,9 @@ use crate::{
         bundle::{self, Kdf},
         capability, launch_kit, manage,
         runtime::{
-            agent::Environment,
             hold::{self, Destination, Held, Hold},
             process,
-            settle::{self, HostCommand, SettleLimits},
+            settle::{self, HostAccess},
         },
     },
     auth::signer::SignerHandle,
@@ -343,13 +342,9 @@ pub struct Mover<'a> {
     pub store: &'a StoreHandle,
     /// The signer of the agent's owner, unlocked.
     pub owner: &'a SignerHandle,
-    pub environment: Environment,
-    /// Pi's own folder, told to the agent's host; never read here.
-    pub pi_dir: Option<PathBuf>,
+    /// The agent's host, which makes its files whole.
+    pub host: HostAccess,
     pub kdf: Kdf,
-    pub settle: SettleLimits,
-    /// A test's stand-in for the agent's host.
-    pub host_command: HostCommand,
     /// How long the bzz that runs the agent has to stop it.
     pub release_limit: Duration,
 }
@@ -360,11 +355,8 @@ impl<'a> Mover<'a> {
             paths,
             store,
             owner,
-            environment: std::sync::Arc::new(|name| std::env::var(name).ok()),
-            pi_dir: crate::agents::runtime::install::pi_dir(|name| std::env::var(name).ok()),
+            host: HostAccess::of_this_process(),
             kdf: Kdf::default(),
-            settle: SettleLimits::default(),
-            host_command: None,
             release_limit: RELEASE_LIMIT,
         }
     }
@@ -470,16 +462,7 @@ pub async fn prepare(mover: &Mover<'_>, config: &Config, id: Uuid) -> Result<Pre
     if open > 0 {
         return Err(still_answering(&agent.label, open));
     }
-    settle::settle(
-        data_dir,
-        id,
-        &agent.label,
-        mover.pi_dir.as_deref(),
-        &mover.environment,
-        &mover.host_command,
-        mover.settle,
-    )
-    .await?;
+    settle::settle(data_dir, id, &agent.label, &mover.host).await?;
     Ok(Prepared {
         held,
         carried,
@@ -808,8 +791,9 @@ pub async fn open_file(file: &Path, passphrase: &SecretString) -> Result<Arrival
     })
 }
 
-/// Reads a launch kit that came back from the machine it ran on. The agent
-/// must be stopped there: a write-ahead file in the kit means it was not.
+/// Reads a launch kit that came back from the machine it ran on. Stop the
+/// agent there first: nothing here can tell whether a copy of the folder
+/// is still being run.
 pub fn open_kit(folder: &Path) -> Result<Arrival> {
     let (mut carried, key) = launch_kit::read(folder)?;
     carried.key = key.to_string();
@@ -821,12 +805,6 @@ pub fn open_kit(folder: &Path) -> Result<Arrival> {
                 launch_kit::AGENT_FOLDER
             )));
         }
-    }
-    if let Some(left) = settle::write_ahead_files(&files).first() {
-        return Err(Error::Config(format!(
-            "the agent was not stopped cleanly where this kit ran: {} is still there. Stop it there (`bzz agent shutdown`, or stop buzz-acp), copy the folder again, and receive it then. Nothing was received",
-            left.display()
-        )));
     }
     Ok(Arrival {
         carried,
@@ -858,12 +836,17 @@ fn copy_private(from: &Path, to: &Path) -> Result<()> {
 /// agent this bzz had moved away is taken back: its files are replaced by
 /// what arrives, and it is active again. `owner` is the signer of the
 /// identity [`plan`] named.
+///
+/// `host` is used only for a launch kit whose files came with write-ahead
+/// files: `buzz-acp` does not give the host time to close them. The host
+/// makes a copy of them whole here; the kit itself is not changed.
 pub async fn receive(
     paths: &Paths,
     store: &StoreHandle,
     owner: &SignerHandle,
     config: &mut Config,
     arrival: Arrival,
+    host: &HostAccess,
 ) -> Result<Received> {
     let Arrival { carried, source } = arrival;
     let plan = plan(config, &carried)?;
@@ -901,8 +884,37 @@ pub async fn receive(
                 .map_err(|error| Error::Config(format!("unpacking the file failed: {error}")))??;
             }
             Source::Folder(from) => {
-                for (name, staged) in settle::FILES.iter().zip(&staged) {
-                    copy_private(&from.join(name), staged)?;
+                let open = settle::write_ahead_files(&from);
+                if open.is_empty() {
+                    for (name, staged) in settle::FILES.iter().zip(&staged) {
+                        copy_private(&from.join(name), staged)?;
+                    }
+                } else {
+                    // Not closed where they ran: a copy of the files and of
+                    // what is beside them, made whole by the agent's host.
+                    let apart = folder.join(format!("{token:016x}.incoming"));
+                    let made_whole = async {
+                        process::create_private_dir(&apart)?;
+                        for file in settle::FILES
+                            .iter()
+                            .map(|name| from.join(name))
+                            .chain(open.iter().cloned())
+                        {
+                            if let Some(name) = file.file_name() {
+                                copy_private(&file, &apart.join(name))?;
+                            }
+                        }
+                        settle::settle_folder(data_dir, &apart, plan.id, &carried.name, host)
+                            .await?;
+                        for (name, staged) in settle::FILES.iter().zip(&staged) {
+                            std::fs::rename(apart.join(name), staged)
+                                .map_err(|error| Error::io(staged, error))?;
+                        }
+                        Ok::<_, Error>(())
+                    }
+                    .await;
+                    let _ = std::fs::remove_dir_all(&apart);
+                    made_whole?;
                 }
             }
         }

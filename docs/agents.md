@@ -213,13 +213,16 @@ bzz agent edit Scout --name Ranger --wake anyone
 bzz agent edit Scout --model openai-codex/gpt-6-luna
 bzz agent edit Scout --folder site=/home/ann/site --allow-host github.com
 bzz agent edit Scout --no-folders --no-hosts --default-model --no-picture
+bzz agent edit Scout --no-packages     # and --packages to load them again
 bzz agent edit Scout --republish
 ```
 
 `--folder`, `--allow-host` and `--allow` replace the whole list. A name or a
 picture is published again in the agent's profile and in your record of it;
-who may wake it, in your record. The model, the instructions, the folders and
-the hosts are bzz's own and publish nothing. A model you name is checked
+who may wake it, in your record. The model, the instructions, the folders, the
+hosts and the switch for Pi packages are bzz's own and publish nothing. With
+`--no-packages` no code of a Pi package runs in the agent's host; the choice
+moves with the agent. A model you name is checked
 before it is saved. A running bzz uses the new settings at its next start.
 
 ## Delete it
@@ -242,6 +245,151 @@ machine anyway and tells you what is left on the relay. An agent that is
 running is not deleted: close bzz or pause it first. A deleted key cannot be
 recovered.
 
+## Moving an agent
+
+A `pi-durable` agent can leave this machine with its key, its memory and its
+disk. A move is one explicit act of yours, and it ends with the agent marked
+**moved away** here: this bzz keeps its entry and no longer starts it.
+
+There are two places an agent can go:
+
+| To | Command | The key travels |
+|---|---|---|
+| another bzz of yours | `bzz agent move`, then `bzz agent receive` there | sealed with a passphrase |
+| a machine without bzz, under Buzz's `buzz-acp` | `bzz agent launch-kit` | **in the clear**, in one file |
+
+### What moves, and what does not
+
+| Moves | Stays on this machine |
+|---|---|
+| its key | the folders you granted it |
+| its memory (`memory.sqlite`) and its disk (`files.sqlite`) | git credentials |
+| its name, picture and your authorization of it | a launch override (`command`) |
+| its community's relay | its log, and bzz's record of its past turns |
+| its harness, model and instructions | your Pi sign-in: the other machine needs its own |
+| who may wake it, the hosts it may reach, whether Pi packages are on | |
+
+Nothing changes on the relay. The agent keeps its key, so it is the same
+member of the same channels.
+
+Only an agent whose capability record says "a move with memory: yes" can be
+moved. In this version that is `pi-durable`.
+
+### To another bzz
+
+```sh
+bzz agent move Scout --to scout.bzzagent
+```
+
+bzz asks for your identity's passphrase, then for a passphrase for the file,
+twice. That passphrase is all that protects the agent's key in the file: at
+least 12 characters. Then, in this order:
+
+1. It stops the agent, wherever a bzz of this data folder runs it: the TUI or
+   `bzz agent run` lets go of it within a second.
+2. It starts the agent's host for a moment and has it finish its writes, so
+   that the two files are whole.
+3. It seals the key, the two files and the settings into the file, and reads
+   the file back.
+4. It marks the agent moved away.
+
+If anything fails before step 4, the agent is as it was, and running again if
+it was running. An agent that is in the middle of an answer is not moved: let
+it finish first. The file must not exist: bzz never writes over one.
+
+On the other machine, as the same owner in the same community:
+
+```sh
+bzz agent receive scout.bzzagent
+```
+
+- bzz checks the whole file before it uses any of it. A file that was cut
+  short, a file that was changed and a wrong passphrase are each refused, and
+  bzz says which it is.
+- The file is refused unless your authorization inside it names the identity
+  this bzz uses in the agent's community. Add that community first, with that
+  identity (`bzz identity import-backup`, `bzz community add`).
+- The agent arrives active, with its key sealed to you and **no folder
+  granted**. Grant folders of that machine with `bzz agent edit --folder`.
+- Receiving the same file again does not make a second agent.
+
+The file still opens with its passphrase after it was received. Delete it
+when you no longer need it.
+
+### To a machine without bzz
+
+```sh
+bzz agent launch-kit Scout --to scout-kit
+```
+
+It writes a folder that Buzz's own `buzz-acp` runs the agent from:
+
+| In the folder | What |
+|---|---|
+| `README.md` | the steps on the other machine |
+| `buzz-acp.env` (mode 600) | **the agent's key**, your authorization, the relay, and how `buzz-acp` starts the host |
+| `agent/` | `memory.sqlite`, `files.sqlite`, and `agent.json` with its settings |
+| `host/` | bzz's agent host and its lock file |
+| `start.sh`, `bzz-agent.service` | how to start it, and an example of a service unit |
+| `bzz-agent.json` | its settings, for `bzz agent receive` when the folder comes back |
+
+**The key is in that folder in the clear.** Under `buzz-acp` the key sits
+beside the agent: that is Buzz's rule for a remote agent, and bzz says so and
+asks before it writes. Whoever can read the folder can act as the agent. Copy
+it only over a channel you trust, and delete it from every place it only
+passed through.
+
+On the other machine you need Node.js 22.19 or newer, the host's packages
+(`npm ci --ignore-scripts --omit=optional --omit=dev` in `host/`), `buzz-acp`
+and `buzz` built from Buzz at the revision the kit's README names, and a Pi
+sign-in for the agent's model. Then `./start.sh`.
+
+What differs there:
+
+- It has no granted folder, no real commands and no git credentials.
+- It posts with Buzz's `buzz` command, and its key is in its host's
+  environment. A Pi package runs inside that host and can read the key. Switch
+  packages off before you make the kit if you do not trust what is installed
+  there: `bzz agent edit Scout --no-packages`.
+- A conversation in a Solo chat is not found again there. Threads and direct
+  messages are.
+- The "one reply per mention" rule is the host's own there, not bzz's. If the
+  machine dies between a reply and its record, the reply can be repeated.
+
+### See it, stop it, take it back
+
+```sh
+bzz agent show Scout       # why it is not started here, and whether it is present on the relay
+bzz agent shutdown Scout   # Buzz's own stop command, as its owner
+```
+
+- **Its presence on the relay is its status.** bzz has no other line to a
+  moved agent. A copy that crashed still shows as present for up to three
+  minutes.
+- **`bzz agent shutdown`** sends `!shutdown` as you, in a direct message or
+  Solo chat you share with the agent, or else in one of its channels
+  (`--channel` names one). `buzz-acp` then leaves, and bzz says whether the
+  agent's presence went. It stops a copy under `buzz-acp`; a copy in another
+  bzz is stopped there, with `bzz agent pause` or by moving it again.
+- **To take it back**, bring back what it left in:
+  - from another bzz: `bzz agent move` there, and `bzz agent receive <file>`
+    here;
+  - from a launch kit: stop it, copy the folder back, and
+    `bzz agent receive <folder>`. Then delete the folder: it still holds the
+    key.
+
+  An agent this bzz had moved away is taken back by `receive`: its files here
+  are replaced by the ones that arrive, the folders this machine had granted
+  it are as they were, and it is active again. What was said to it while it
+  was away is not answered afterwards.
+
+**Run it in one place only.** Nothing can stop two copies of one key from
+running in two places, and Buzz cannot either: both would answer. bzz only
+refuses to run what it has moved away. A moved-away agent keeps its sealed
+key and its files here until you `bzz agent delete` it; deleting it also
+removes your record of it from the relay, so do that only when no copy
+should be listed any more.
+
 ## Where things are
 
 | Path | What |
@@ -251,6 +399,8 @@ recovered.
 | `<data>/agents/<id>/memory.sqlite` | its conversations |
 | `<data>/agents/<id>/files.sqlite` | its disk |
 | `<data>/agents/<id>/harness.log` | its host's log |
+| `<data>/agents/<id>/move.json` | present while it is being moved, and for as long as it is moved away |
+| `<data>/agents/<id>/move.log` | what its host wrote when a move could not make its files whole |
 | `<data>/agents/run/<id>.json` | its running process, while it runs |
 | `<data>/agent-host/<id>/` | the agent host and its packages |
 
@@ -261,7 +411,10 @@ signed, for 30 days after the turn is over (at most 1000 per agent), so that
 ## Limits of this version
 
 - One harness, `pi-durable`. Grok, Codex and Claude Code are not offered yet.
-- An agent cannot be moved to another machine yet.
+- A move is cold: the agent is stopped, carried and started elsewhere. It is
+  not kept in step between two places while it runs.
+- A launch kit runs on Linux and macOS (a shell script and a systemd unit as
+  an example). It was run on Linux only.
 - The agent's `git` has no credentials for a private remote.
 - An agent cannot run a program of your machine, even in a granted folder.
 - Changing an agent from the command line while a bzz TUI is open: the TUI
@@ -282,3 +435,9 @@ signed, for 30 days after the turn is over (at most 1000 per agent), so that
 | The agent says "I am not available right now" | its host could not start or keeps stopping: `:agents` shows why, and `l` its log |
 | The agent does not answer at all | it is not a member of the channel (`bzz agent add`), it is paused, bzz is not running, or the author may not wake it (`bzz agent show`) |
 | `:agents` says "not running: unlock to run them" | bzz was started locked; restart it and unlock |
+| "stopped · moved away: it runs elsewhere" | you moved it: `bzz agent show` says when and how, and `bzz agent receive` takes it back |
+| "the file was cut short", "the file was changed after bzz made it" | copy the file again from where `bzz agent move` wrote it |
+| "the passphrase is wrong" | the file is whole: type the passphrase you gave `bzz agent move` |
+| "this agent is owned by …, and this bzz's identity in … is …" | receive it with the identity that owns it: bring that identity here first |
+| "… has N request(s) it has not finished answering" | let it answer (open bzz, or `bzz agent run`), then move it |
+| `bzz agent shutdown` says it is still present | a copy hears the command only where it is a member: name a channel with `--channel`, or stop it on its machine |

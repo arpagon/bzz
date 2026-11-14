@@ -54,6 +54,11 @@ pub trait AgentRelay: Send + Sync + 'static {
     async fn query(&self, filters: Vec<Value>) -> Result<Vec<Event>>;
     /// The relay's own records of one channel.
     async fn channel(&self, channel: Uuid) -> Result<ChannelFacts>;
+    /// Ends the agent's connection and forgets its key, for an agent this
+    /// bzz will not run again (it was moved away). A relay counts a key as
+    /// present while a connection of it is open: an agent that runs
+    /// elsewhere must not look present because of a bzz that let it go.
+    async fn close(&self) {}
 }
 
 fn newest_first(events: &mut Vec<Event>) {
@@ -345,6 +350,12 @@ impl AgentRelay for RelayPort {
         self.cache()
             .insert(channel, (Instant::now(), facts.clone()));
         Ok(facts)
+    }
+
+    async fn close(&self) {
+        self.listening.store(false, Ordering::Release);
+        self.supervisor.shutdown().await;
+        self.signer.lock().await;
     }
 }
 

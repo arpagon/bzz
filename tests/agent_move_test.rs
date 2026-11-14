@@ -1,10 +1,15 @@
-//! v0.15 M5: moving an agent, against a scripted harness
-//! (`examples/scripted_harness.rs`) that stands in for bzz's own host, a
-//! recorded relay, and two data folders that stand for two machines. Nothing
-//! here needs Node, a model or a network. The same journey with the real
-//! host, the pinned relay and Buzz's own `buzz-acp` is
-//! `real_relay_agent_moves_to_another_bzz_and_to_buzz_acp` in
-//! `tests/relay_integration.rs`.
+//! v0.15 M5: moving an agent, against a recorded relay and two data folders
+//! that stand for two machines.
+//!
+//! All tests but the last use a scripted harness
+//! (`examples/scripted_harness.rs`) in the place of bzz's own host and need
+//! no Node, model or network. The last one runs the real Pi Durable host on
+//! its stand-in model: it needs Node.js 22.19 or newer and, the first time,
+//! the npm registry, and says so when it skips.
+//!
+//! The same journey on the pinned relay, with the `bzz` binary and Buzz's
+//! own `buzz-acp`, is `real_relay_agent_moves_to_another_bzz_and_to_buzz_acp`
+//! in `tests/relay_integration.rs`.
 #![cfg(unix)]
 
 mod support;
@@ -28,7 +33,7 @@ use bzz::{
             hold::{self, Destination, Hold},
             host::{AgentHost, HostOptions, Offer},
             process,
-            settle::SettleLimits,
+            settle::{HostAccess, SettleLimits},
         },
     },
     auth::signer::SignerHandle,
@@ -47,7 +52,10 @@ use bzz::{
 use nostr::{Event, JsonUtil as _, Keys, ToBech32 as _};
 use secrecy::SecretString;
 use serde_json::{Value, json};
-use support::agent_harness::{RecordedRelay, Script, running, until};
+use support::{
+    agent_harness::{RecordedRelay, Script, running, until},
+    pi_host,
+};
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -219,15 +227,23 @@ fn mover_of<'a>(
 ) -> Mover<'a> {
     Mover {
         kdf: QUICK,
-        host_command: Some(script.command()),
+        host: scripted_host(script),
+        release_limit: Duration::from_secs(10),
+        ..Mover::new(paths, store, owner)
+    }
+}
+
+/// The scripted harness in the place of the agent's host.
+fn scripted_host(script: &Script) -> HostAccess {
+    HostAccess {
+        command: Some(script.command()),
         pi_dir: Some("/nonexistent/pi/agent".into()),
-        settle: SettleLimits {
+        limits: SettleLimits {
             start: Duration::from_secs(10),
             checkpoint: Duration::from_secs(10),
             stop_grace: Duration::from_millis(400),
         },
-        release_limit: Duration::from_secs(10),
-        ..Mover::new(paths, store, owner)
+        ..HostAccess::of_this_process()
     }
 }
 
@@ -389,6 +405,7 @@ async fn an_agent_moves_to_another_bzz_with_its_key_its_files_and_its_settings()
         &there.owner,
         &mut there.config,
         arrival,
+        &scripted_host(&there.script),
     )
     .await
     .unwrap();
@@ -476,6 +493,7 @@ async fn an_agent_moves_to_another_bzz_with_its_key_its_files_and_its_settings()
         &there.owner,
         &mut there.config,
         arrival,
+        &scripted_host(&there.script),
     )
     .await
     .unwrap_err()
@@ -560,6 +578,7 @@ async fn a_file_that_is_not_whole_or_not_the_owners_is_refused_and_leaves_nothin
         &stranger.owner,
         &mut stranger.config,
         arrival,
+        &scripted_host(&stranger.script),
     )
     .await
     .unwrap_err()
@@ -576,6 +595,7 @@ async fn a_file_that_is_not_whole_or_not_the_owners_is_refused_and_leaves_nothin
         &elsewhere.owner,
         &mut elsewhere.config,
         arrival,
+        &scripted_host(&elsewhere.script),
     )
     .await
     .unwrap_err()
@@ -597,6 +617,7 @@ async fn a_file_that_is_not_whole_or_not_the_owners_is_refused_and_leaves_nothin
         &taken.owner,
         &mut taken.config,
         arrival,
+        &scripted_host(&taken.script),
     )
     .await
     .unwrap_err()
@@ -618,6 +639,7 @@ async fn a_file_that_is_not_whole_or_not_the_owners_is_refused_and_leaves_nothin
             &failing.owner,
             &mut failing.config,
             arrival,
+            &scripted_host(&failing.script),
         )
         .await
         .is_err()
@@ -642,6 +664,8 @@ struct Running {
     owner: Keys,
     agent: HostedAgentConfig,
     channel: Uuid,
+    /// How long an answer may take: the real host is installed on first use.
+    wait: Duration,
 }
 
 impl Running {
@@ -657,10 +681,34 @@ impl Running {
             kind: PlaceKind::Channel,
             members: vec![owner.public_key().to_hex(), agent.pubkey.clone()],
         });
+        Self::start_on(home, owner, agent, relay, channel, None).await
+    }
+
+    /// The same on a relay and a channel that exist: another bzz of the
+    /// owner's sees the same relay. `real_host` is the Node and Pi's folder
+    /// of a test that runs bzz's real host.
+    async fn start_on(
+        home: &Home,
+        owner: &Keys,
+        agent: &HostedAgentConfig,
+        relay: Arc<RecordedRelay>,
+        channel: Uuid,
+        real_host: Option<(&Path, &Path)>,
+    ) -> Self {
         let mut options = HostOptions::new(home.paths.data_dir.clone(), home.store.clone());
         options.limits = limits();
         options.tools_program = Some(env!("CARGO_BIN_EXE_bzz").into());
         options.pi_dir = Some("/nonexistent/pi/agent".into());
+        if let Some((node, pi_dir)) = real_host {
+            options.limits = Limits {
+                stop_grace: Duration::from_millis(500),
+                restart_backoff: Duration::from_millis(100),
+                typing_interval: Duration::from_millis(200),
+                ..Limits::default()
+            };
+            options.pi_dir = Some(pi_dir.to_path_buf());
+            options.environment = Arc::new(pi_host::environment(node, pi_dir));
+        }
         let host = AgentHost::start(options).await.unwrap();
         assert!(host.runnable(agent));
         host.add(
@@ -685,14 +733,28 @@ impl Running {
             owner: owner.clone(),
             agent: agent.clone(),
             channel,
+            wait: if real_host.is_some() {
+                Duration::from_secs(120)
+            } else {
+                WAIT
+            },
         }
     }
 
     fn mention(&self, text: &str) -> Event {
+        self.mention_in(text, None)
+    }
+
+    /// A mention by the owner: top level, or in the thread `root` started.
+    fn mention_in(&self, text: &str, root: Option<&Event>) -> Event {
+        let thread = root.map(|root| buzz_sdk::ThreadRef {
+            root_event_id: root.id,
+            parent_event_id: root.id,
+        });
         let event = buzz_sdk::build_message(
             self.channel,
             text,
-            None,
+            thread.as_ref(),
             &[self.agent.pubkey.as_str()],
             false,
             &[],
@@ -715,9 +777,15 @@ impl Running {
 
     /// Asks, and returns the one reply.
     async fn answered(&self, home: &Home, text: &str) -> String {
+        self.answered_in(home, text, None).await.1
+    }
+
+    /// Asks at the top level or in a thread, and returns the request with
+    /// its one reply.
+    async fn answered_in(&self, home: &Home, text: &str, root: Option<&Event>) -> (Event, String) {
         // After a move that failed the agent listens again within a moment.
-        let event = self.mention(text);
-        let deadline = tokio::time::Instant::now() + WAIT;
+        let event = self.mention_in(text, root);
+        let deadline = tokio::time::Instant::now() + self.wait;
         while self.offer(&event).await != Offer::Queued {
             assert!(
                 tokio::time::Instant::now() < deadline,
@@ -727,7 +795,7 @@ impl Running {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let (agent, id) = (self.agent.id, event.id.to_hex());
-        until("the request to be answered", WAIT, || {
+        until("the request to be answered", self.wait, || {
             let replies = self.relay.replies_to(&event);
             (!replies.is_empty()).then_some(replies)
         })
@@ -741,7 +809,8 @@ impl Running {
         assert_eq!(state, Some(RequestState::Replied));
         let replies = self.relay.replies_to(&event);
         assert_eq!(replies.len(), 1, "one reply per mention");
-        replies[0].content.clone()
+        let reply = replies[0].content.clone();
+        (event, reply)
     }
 
     fn line(&self) -> String {
@@ -841,7 +910,7 @@ async fn a_move_that_fails_before_its_last_step_leaves_the_agent_running_as_it_w
 
     // Its files cannot be made whole: the host does not start.
     let mut mover = mover!(here);
-    mover.host_command = Some(vec!["/bin/sh".into(), "-c".into(), "exit 3".into()]);
+    mover.host.command = Some(vec!["/bin/sh".into(), "-c".into(), "exit 3".into()]);
     let failed = moving::move_to_file(&mover, &mut here.config, agent.id, &passphrase(), &file)
         .await
         .unwrap_err()
@@ -910,8 +979,18 @@ async fn a_move_that_fails_before_its_last_step_leaves_the_agent_running_as_it_w
     .await
     .unwrap();
     assert!(!running(before_the_move), "stopped for the move");
+    assert!(
+        !live.relay.closed(),
+        "it kept its connection while the move could fail"
+    );
     until("the running bzz to see the move", WAIT, || {
         live.line().contains("stopped · moved away").then_some(())
+    })
+    .await;
+    // It is another home's agent now: the bzz it left keeps no connection
+    // as the agent, so the relay does not count the agent present for it.
+    until("the agent's connection to be closed", WAIT, || {
+        live.relay.closed().then_some(())
     })
     .await;
     let starts = here.script.starts().len();
@@ -1070,7 +1149,8 @@ async fn a_bzz_takes_back_the_agent_it_moved_away() {
             &here.store,
             &here.owner,
             &mut here.config,
-            arrival
+            arrival,
+            &scripted_host(&here.script),
         )
         .await
         .is_err()
@@ -1097,6 +1177,7 @@ async fn a_bzz_takes_back_the_agent_it_moved_away() {
         &here.owner,
         &mut here.config,
         arrival,
+        &scripted_host(&here.script),
     )
     .await
     .unwrap();
@@ -1277,6 +1358,9 @@ async fn a_launch_kit_holds_what_buzz_acp_needs_and_the_key_in_one_file_only() {
         "BUZZ_ACP_AGENT_COMMAND='node'".to_owned(),
         "BUZZ_ACP_AGENT_ARGS='host/main.mjs,agent'".to_owned(),
         "BUZZ_ACP_SESSION_POLICY='thread'".to_owned(),
+        "BUZZ_ACP_MULTIPLE_EVENT_HANDLING='queue'".to_owned(),
+        "BUZZ_ACP_NO_BASE_PROMPT='true'".to_owned(),
+        "BUZZ_ACP_NO_MEMORY='true'".to_owned(),
         "BUZZ_ACP_RESPOND_TO='allowlist'".to_owned(),
         format!("BUZZ_ACP_RESPOND_TO_ALLOWLIST='{allowed}'"),
     ] {
@@ -1352,12 +1436,50 @@ async fn a_launch_kit_holds_what_buzz_acp_needs_and_the_key_in_one_file_only() {
     // The kit comes back: `receive` takes the agent in from the folder, in
     // another bzz of the owner's, with the key from the kit's one file.
     let mut there = Home::new(&owner, RELAY);
-    // Not while the agent may still be running where the kit is.
-    std::fs::write(kit.join("agent/memory.sqlite-wal"), b"open").unwrap();
-    let running_there = moving::open_kit(&kit).unwrap_err().to_string();
+    there.script.write(json!({"own_host": true}), json!([]));
+    // buzz-acp does not give the host time to close its files: a kit comes
+    // back with write-ahead files beside them. The agent's host makes a copy
+    // whole before anything is taken. The stand-in host here does nothing,
+    // so the copy is not whole, and nothing is received.
+    std::fs::write(kit.join("agent/memory.sqlite-wal"), b"not yet in the file").unwrap();
+    let arrival = moving::open_kit(&kit).unwrap();
+    let not_whole = moving::receive(
+        &there.paths,
+        &there.store,
+        &there.owner,
+        &mut there.config,
+        arrival,
+        &scripted_host(&there.script),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
     assert!(
-        running_there.contains("was not stopped cleanly"),
-        "{running_there}"
+        not_whole.contains("a write-ahead file is still beside the agent's files"),
+        "{not_whole}"
+    );
+    assert_eq!(
+        there.script.received("_bzz/checkpoint").len(),
+        1,
+        "the host was asked to make them whole"
+    );
+    assert_eq!(
+        (
+            there.on_disk().hosted_agents.len(),
+            std::fs::read_dir(there.paths.keys_dir()).unwrap().count(),
+            there.folder(agent.id).exists(),
+        ),
+        (0, 0, false),
+        "nothing of it arrived"
+    );
+    // The kit itself is not touched.
+    assert_eq!(
+        std::fs::read(kit.join("agent/memory.sqlite-wal")).unwrap(),
+        b"not yet in the file"
+    );
+    assert_eq!(
+        std::fs::read(kit.join("agent/memory.sqlite")).unwrap(),
+        memory_of("Scout")
     );
     std::fs::remove_file(kit.join("agent/memory.sqlite-wal")).unwrap();
     let arrival = moving::open_kit(&kit).unwrap();
@@ -1367,6 +1489,7 @@ async fn a_launch_kit_holds_what_buzz_acp_needs_and_the_key_in_one_file_only() {
         &there.owner,
         &mut there.config,
         arrival,
+        &scripted_host(&there.script),
     )
     .await
     .unwrap();
@@ -1438,4 +1561,160 @@ async fn only_a_harness_whose_record_says_so_is_moved() {
         .await
         .is_err()
     );
+}
+
+/// The plan's M5 exit, with the real host and without the pinned relay: an
+/// agent answers here and makes a file; it is moved while the bzz that runs
+/// it is open; another bzz of the owner's receives it, and the next message
+/// in the same thread shows the conversation's memory and the file. The
+/// first bzz no longer runs it.
+#[tokio::test]
+async fn the_real_host_continues_a_conversation_in_another_bzz_after_a_move() {
+    let Some(node) = pi_host::node_or_skip("agent_move_test (the real host)").await else {
+        return;
+    };
+    let owner = Keys::generate();
+    let mut here = Home::new(&owner, RELAY);
+    let scripted = pi_host::scripted_node(&here.temporary.path().join("bin"), &node);
+    let pi_dir = here.temporary.path().join("pi");
+    // The agent as `bzz agent new` leaves one: the default launch, the
+    // stand-in model, no file yet.
+    let mut agent = here.agent("Scout").await;
+    {
+        let local = agent.local.as_mut().unwrap();
+        local.command = Vec::new();
+        local.model.as_mut().unwrap().thinking_level = None;
+        local.wake = WakeRule::OwnerOnly;
+        local.wake_allowlist = Vec::new();
+        local.packages = true;
+    }
+    here.config.hosted_agents[0] = agent.clone();
+    here.config.save(&here.paths).unwrap();
+    let folder = here.folder(agent.id);
+    for file in ["memory.sqlite", "files.sqlite"] {
+        std::fs::remove_file(folder.join(file)).unwrap();
+    }
+    let real = Some((scripted.as_path(), pi_dir.as_path()));
+    let relay = RecordedRelay::new(
+        here.key_of(&agent).await,
+        bzz::broker::relay::auth_tag(&agent.auth_tag).unwrap(),
+    );
+    let channel = Uuid::new_v4();
+    relay.set_channel(ChannelFacts {
+        id: channel,
+        name: "general".into(),
+        kind: PlaceKind::Channel,
+        members: vec![owner.public_key().to_hex(), agent.pubkey.clone()],
+    });
+    let live = Running::start_on(&here, &owner, &agent, relay.clone(), channel, real).await;
+
+    let (hello, reply) = live.answered_in(&here, "hello there", None).await;
+    assert_eq!(
+        reply,
+        "pong: this conversation holds 1 message(s) from people"
+    );
+    assert_eq!(
+        live.answered(
+            &here,
+            r#"do: [["bash", {"command": "echo made before the move > /home/agent/note.txt && cat /home/agent/note.txt"}], ["report"]]"#,
+        )
+        .await
+        .trim(),
+        "made before the move"
+    );
+    let pid = live.pid().expect("the host is running");
+    // While the host runs its files are not whole by themselves: a
+    // write-ahead file is beside at least one of them.
+    let write_ahead = || bzz::agents::runtime::settle::write_ahead_files(&folder);
+    assert!(
+        !write_ahead().is_empty(),
+        "the running host keeps write-ahead files; a copy made now would be torn"
+    );
+
+    // The move, while that bzz is open.
+    let file = here.temporary.path().join("scout.bzzagent");
+    let real_host = HostAccess {
+        environment: Arc::new(pi_host::environment(&scripted, &pi_dir)),
+        pi_dir: Some(pi_dir.clone()),
+        ..HostAccess::of_this_process()
+    };
+    let mover = Mover {
+        kdf: QUICK,
+        host: real_host.clone(),
+        ..Mover::new(&here.paths, &here.store, &here.owner)
+    };
+    moving::move_to_file(&mover, &mut here.config, agent.id, &passphrase(), &file)
+        .await
+        .unwrap();
+    drop(mover);
+    assert!(!running(pid), "its process was stopped for the move");
+    assert_eq!(
+        write_ahead(),
+        Vec::<PathBuf>::new(),
+        "the files were made whole"
+    );
+    assert_eq!(
+        here.state_on_disk(agent.id),
+        Some(LocalAgentState::MovedAway)
+    );
+    until("the running bzz to see the move", WAIT, || {
+        live.line().contains("stopped · moved away").then_some(())
+    })
+    .await;
+
+    // Another bzz of the owner's, on the same relay.
+    let mut there = Home::new(&owner, RELAY);
+    let arrival = moving::open_file(&file, &passphrase()).await.unwrap();
+    moving::receive(
+        &there.paths,
+        &there.store,
+        &there.owner,
+        &mut there.config,
+        arrival,
+        &scripted_host(&there.script),
+    )
+    .await
+    .unwrap();
+    let arrived = there.on_disk().hosted_agents[0].clone();
+    assert!(arrived.runs_locally() && arrived.local.as_ref().unwrap().folders.is_empty());
+    let moved = Running::start_on(&there, &owner, &arrived, relay.clone(), channel, real).await;
+    // The next message in the same thread: the conversation's memory came.
+    let (_, reply) = moved.answered_in(&there, "and now?", Some(&hello)).await;
+    assert_eq!(
+        reply, "pong: this conversation holds 2 message(s) from people",
+        "the conversation continued where it was"
+    );
+    // The file the agent had made is on the disk that came.
+    assert_eq!(
+        moved
+            .answered(
+                &there,
+                r#"do: [["bash", {"command": "cat /home/agent/note.txt"}], ["report"]]"#,
+            )
+            .await
+            .trim(),
+        "made before the move"
+    );
+    assert!(moved.pid().is_some_and(|there_pid| there_pid != pid));
+    // Throughout: one reply to each of the four mentions, and none from the
+    // bzz it left, which takes no request for it.
+    assert_eq!(relay.by_agent(9).len(), 4);
+    let late = live.mention_in("are you still here?", Some(&hello));
+    assert_eq!(live.offer(&late).await, Offer::NotRunning);
+    assert_eq!(live.pid(), None);
+    // Nothing of the agent's key is in what the host wrote in either home.
+    let key = there.key_of(&arrived).await;
+    for home in [&here, &there] {
+        for (path, bytes) in files_below(&home.folder(agent.id)) {
+            for (form, secret) in forms_of(&key) {
+                assert!(
+                    !holds(&bytes, &secret),
+                    "the key ({form}) is in {}",
+                    path.display()
+                );
+            }
+        }
+    }
+    moved.host.shutdown().await;
+    live.host.shutdown().await;
 }

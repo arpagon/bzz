@@ -56,6 +56,10 @@ only: nothing stops two copies of one key from answering twice.
   instructions, the hosts it may reach (@HOSTS@), and Pi packages @PACKAGES@.
 - Who may wake it: `@WAKE@`, as in bzz (`BUZZ_ACP_RESPOND_TO` in
   `@ENV_FILE@`).
+- Its own tools and its own memory. Buzz's orientation for agents and Buzz's
+  relay-side memory are switched off in `@ENV_FILE@`: they tell an agent to
+  work with the `buzz` command in a shell, which this agent's sandbox does
+  not have.
 
 What it does not have there, because it belongs to your machine and did not
 move:

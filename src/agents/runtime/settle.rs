@@ -52,6 +52,29 @@ impl Default for SettleLimits {
 /// and its first arguments. The agent's folder is added.
 pub type HostCommand = Option<Vec<String>>;
 
+/// How bzz reaches the agent's host to make files whole.
+#[derive(Clone)]
+pub struct HostAccess {
+    /// How bzz's own environment is read, to find Node.
+    pub environment: Environment,
+    /// Pi's own folder, told to the host; never read here.
+    pub pi_dir: Option<PathBuf>,
+    pub command: HostCommand,
+    pub limits: SettleLimits,
+}
+
+impl HostAccess {
+    /// The installed host, found through this process's environment.
+    pub fn of_this_process() -> Self {
+        Self {
+            environment: std::sync::Arc::new(|name| std::env::var(name).ok()),
+            pi_dir: install::pi_dir(|name| std::env::var(name).ok()),
+            command: None,
+            limits: SettleLimits::default(),
+        }
+    }
+}
+
 /// Write-ahead files that are beside the agent's two files now.
 pub fn write_ahead_files(folder: &Path) -> Vec<PathBuf> {
     FILES
@@ -62,18 +85,31 @@ pub fn write_ahead_files(folder: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Makes the agent's two files whole. On success both exist and nothing
-/// else of SQLite's is beside them.
-pub async fn settle(
+/// Makes the agent's two files whole, in its own folder. On success both
+/// exist and nothing else of SQLite's is beside them.
+pub async fn settle(data_dir: &Path, agent: Uuid, name: &str, host: &HostAccess) -> Result<()> {
+    let folder = process::agent_dir(data_dir, agent);
+    settle_folder(data_dir, &folder, agent, name, host).await
+}
+
+/// The same for `folder`, wherever it is: an agent's own folder, or the
+/// files of one that arrives with their write-ahead files, as a host that
+/// was not stopped cleanly leaves them.
+pub async fn settle_folder(
     data_dir: &Path,
+    folder: &Path,
     agent: Uuid,
     name: &str,
-    pi_dir: Option<&Path>,
-    environment: &Environment,
-    command: &HostCommand,
-    limits: SettleLimits,
+    host: &HostAccess,
 ) -> Result<()> {
-    let folder = process::agent_dir(data_dir, agent);
+    let HostAccess {
+        environment,
+        pi_dir,
+        command,
+        limits,
+    } = host;
+    let limits = *limits;
+    let folder = folder.to_path_buf();
     process::create_private_dir(&folder)?;
     let lookup = |variable: &str| environment(variable);
     let (program, mut args) = match command.as_deref().and_then(<[String]>::split_first) {
@@ -85,12 +121,12 @@ pub async fn settle(
                 ))
             };
             let node = install::find_node(lookup).await.map_err(unavailable)?;
-            let host = install::ensure_installed(data_dir, &node, lookup)
+            let installed = install::ensure_installed(data_dir, &node, lookup)
                 .await
                 .map_err(unavailable)?;
             (
                 node.program.display().to_string(),
-                vec![host.join("main.mjs").display().to_string()],
+                vec![installed.join("main.mjs").display().to_string()],
             )
         }
     };
@@ -167,6 +203,7 @@ pub async fn settle(
             )));
         }
     }
+    let _ = std::fs::remove_file(folder.join("move.log"));
     if let Some(left) = write_ahead_files(&folder).first() {
         return Err(Error::Config(format!(
             "a write-ahead file is still beside the agent's files ({}): something else has them open",

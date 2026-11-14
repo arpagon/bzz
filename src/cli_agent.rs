@@ -941,7 +941,17 @@ async fn receive(paths: &Paths, config: &mut Config, source: &Path) -> Result<()
     let identity = find_identity(config, plan.identity)?.clone();
     let owner = unlock_owner(paths, config, plan.identity)?;
     let received = match open_store(paths, config) {
-        Ok(store) => moving::receive(paths, &store, &owner, config, arrival).await,
+        Ok(store) => {
+            moving::receive(
+                paths,
+                &store,
+                &owner,
+                config,
+                arrival,
+                &bzz::agents::runtime::settle::HostAccess::of_this_process(),
+            )
+            .await
+        }
         Err(error) => Err(error),
     };
     owner.lock().await;
@@ -1103,7 +1113,7 @@ async fn shutdown(
             Ok(())
         }
         Some(false) => Err(Error::Timeout(format!(
-            "{} is still present on the relay {wait} s after the command. A copy hears it only in a channel it is a member of, and only from its owner; a copy that crashed stays present for up to {} s. Try `--channel`, or stop it on its machine",
+            "{} is still present on the relay {wait} s after the command. A copy hears it only in a channel it is a member of, and only from its owner. It also stays present while another copy of it is connected, and for up to {} s after a copy crashed. Try `--channel`, or stop it on its machine",
             agent.label,
             bzz::protocol::presence::PRESENCE_TTL_SECONDS
         ))),

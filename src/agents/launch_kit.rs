@@ -84,6 +84,13 @@ pub fn environment_file(carried: &Carried) -> Result<Zeroizing<String>> {
     text.push_str("# One conversation per thread, and one turn per message, as under bzz.\n");
     text.push_str(&assignment("BUZZ_ACP_SESSION_POLICY", "thread")?);
     text.push_str(&assignment("BUZZ_ACP_MULTIPLE_EVENT_HANDLING", "queue")?);
+    text.push_str(
+        "# Buzz's own orientation for agents and its relay-side memory are off: they tell\n\
+         # an agent to work with the `buzz` command in a shell, and this agent has its own\n\
+         # tools, its own disk and its own memory.\n",
+    );
+    text.push_str(&assignment("BUZZ_ACP_NO_BASE_PROMPT", "true")?);
+    text.push_str(&assignment("BUZZ_ACP_NO_MEMORY", "true")?);
     text.push_str("# Who may wake it, as you set it in bzz.\n");
     text.push_str(&assignment(
         "BUZZ_ACP_RESPOND_TO",
