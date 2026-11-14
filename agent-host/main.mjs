@@ -26,6 +26,32 @@ console.log = console.info = console.debug = (...args) => console.error(...args)
 // Prompts and messages are never logged: the log names what happened, not what was said.
 const log = (line) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
 const { serve, VERSION } = await import("./src/host.mjs");
+const { packageOf, packagesRan } = await import("./src/packages.mjs");
+
+/**
+ * A Pi package is code of the owner's inside this process, and one package must not be able to end the agent. What a
+ * package leaves uncaught is logged, and the host goes on:
+ *   - an exception thrown from a timer or an event, when its stack names a package's file;
+ *   - a promise that failed with nobody waiting for it, whenever a package's code is in this process: such a failure
+ *     often names no file at all, as when a package fetches something at start and the machine is offline.
+ * Anything else is the host's own fault, and Node's rule stands: the process ends, and the next one continues from
+ * storage.
+ */
+const goesOn = (what, error, source) => log(`${what}${source ? ` in package ${source}` : ""}, and the host goes on: ${String(error?.message ?? error).split("\n")[0].slice(0, 300)}`);
+const ends = (error) => {
+	process.stderr.write(`${error?.stack ?? error}\n`);
+	process.exit(1);
+};
+process.on("uncaughtException", (error) => {
+	const source = packageOf(error);
+	if (source === undefined) return ends(error);
+	goesOn("an uncaught exception", error, source);
+});
+process.on("unhandledRejection", (reason) => {
+	const source = packageOf(reason);
+	if (source === undefined && !packagesRan()) return ends(reason);
+	goesOn("a promise failed with nobody waiting for it", reason, source);
+});
 const host = serve({ folder: resolve(folder), input: process.stdin, output: protocol, log });
 
 /**

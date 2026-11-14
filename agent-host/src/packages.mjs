@@ -15,11 +15,11 @@
 // bzz's own tools; a package without a Pi Durable entry is remembered, so
 // that a missing provider can be traced to it; and what loaded is reported
 // per package.
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { registerHooks, stripTypeScriptTypes } from "node:module";
 import { homedir } from "node:os";
-import { extname, join, resolve } from "node:path";
+import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRegistry } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
@@ -62,8 +62,24 @@ function hookPackages() {
 	});
 }
 
+/** The folders this process has run a package's code from, each with the package's name in Pi's settings. */
+const ran = new Map();
+
+/** Whether any package's code is in this process. */
+export const packagesRan = () => ran.size > 0;
+
+/**
+ * The package an error came from, as Pi's settings name it: the one whose folder is in the error's stack. `undefined`
+ * when the stack names none, which says little: a promise that a package left to fail often has no frame of its own.
+ */
+export function packageOf(error) {
+	const stack = typeof error?.stack === "string" ? error.stack : "";
+	for (const [root, source] of ran) if (stack.includes(`${pathToFileURL(root).href}/`) || stack.includes(`${root}${sep}`)) return source;
+	return undefined;
+}
+
 /** What the package in a folder adds, from each of its Pi Durable entries. `undefined` when it has no such entry. */
-async function loadPackage(root) {
+async function loadPackage(root, source) {
 	let manifest;
 	try {
 		manifest = JSON.parse((await readFile(join(root, "package.json"), "utf8")).replace(/^\uFEFF/, ""));
@@ -74,6 +90,12 @@ async function loadPackage(root) {
 	if (entries === undefined) return undefined;
 	if (!Array.isArray(entries) || !entries.every((entry) => typeof entry === "string")) throw new Error('"pi.durable" in its package.json must list files');
 	const made = { extensions: [], providers: [] };
+	// Node names a module by where its file really is, so that is the name a stack holds.
+	let real = root;
+	try {
+		real = realpathSync(root);
+	} catch {}
+	ran.set(real, source);
 	for (const entry of entries) {
 		const { default: setup } = await import(pathToFileURL(resolve(root, entry)).href);
 		if (typeof setup !== "function") throw new Error(`${entry} has no default export to call`);
@@ -89,7 +111,8 @@ async function loadPackage(root) {
  *
  * Only a package in a local folder is loaded. A package that throws, takes longer than `limit`, or returns something
  * the host cannot install is left out, with the reason; the others still load. A setup that never gives the thread
- * back, such as an endless loop, cannot be timed out: it holds the whole host.
+ * back, such as an endless loop, cannot be timed out: it holds the whole host. What a package leaves uncaught
+ * outside its setup, such as a promise nobody awaits, is main.mjs's to survive (`packageOf`, `packagesRan`).
  *
  * @param piDir Pi's folder
  * @param options.limit milliseconds each package has
@@ -118,7 +141,7 @@ export async function loadPackages(piDir, { limit = PACKAGE_MS, reservedTools = 
 		// A timer the host waits for: a setup that never settles may hold nothing else that keeps Node running.
 		let timer;
 		const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`It took over ${limit / 1000} seconds to load`)), limit); });
-		return { source, root, made: Promise.race([loadPackage(root), late]).finally(() => clearTimeout(timer)) };
+		return { source, root, made: Promise.race([loadPackage(root, source), late]).finally(() => clearTimeout(timer)) };
 	});
 	// Every attempt is awaited below; until then a rejection is not "unhandled".
 	for (const attempt of attempts) attempt.made.catch(() => undefined);

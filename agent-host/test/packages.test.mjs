@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { openModels } from "../src/model.mjs";
 import { loadPackages, NO_ENTRY, packagesNaming } from "../src/packages.mjs";
-import { bareEnv, MODEL, script, startHost, tempDir } from "./support/client.mjs";
+import { bareEnv, MODEL, script, sleep, startHost, tempDir, within } from "./support/client.mjs";
 
 const THREAD = "5b1e0c9e-7a34-4c53-9d0e-0f6c1a2b3c4d/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -234,6 +234,42 @@ test("in the host: a package's model answers, its tool, section and hook work, a
 	assert.deepEqual(missing.data, { kind: "provider_unavailable", package: piOnly });
 	assert.match(missing.message, /^The provider "acme-cloud" is not available: .* The package \S+pi-acme-cloud in Pi's settings names "acme-cloud" but has no Pi Durable entry /);
 	assert.deepEqual((await failure({ provider: "acme", modelId: "acme-9" })).data, { kind: "model_unavailable" });
+});
+
+test("what a package leaves uncaught does not end the host, and the other packages work", async (t) => {
+	const root = tempDir(t, "stray");
+	const pkg = (name, source) => writePackage(root, name, { durable: ["./durable.mjs"] }, { "durable.mjs": source });
+	// A package that loads, and leaves three things behind: a promise that fails at once, one that fails later with
+	// no file of the package in its stack (as a fetch at start does on a machine that is offline), and a timer that throws.
+	const stray = pkg("stray", `${extension("stray", `tool("stray_tool")`)}
+Promise.reject(new Error("rejected at import, with nobody waiting"));
+import("node:fs/promises").then((fs) => fs.readFile(${JSON.stringify(join(root, "no-such-file"))}));
+setTimeout(() => { throw new Error("thrown from a timer of the package"); }, 40);
+`);
+	const fine = pkg("fine", extension("fine", `tool("fine_tool")`));
+	const pi = writeSettings(root, [stray, fine]);
+	const host = startHost(t, join(root, "agent"), { home: root });
+	const answer = await host.initialize({ piDir: pi });
+	assert.deepEqual(answer._meta.bzz.packages, [{ source: stray, loaded: true, extensions: ["stray"], providers: [] }, { source: fine, loaded: true, extensions: ["fine"], providers: [] }]);
+	await within(5_000, (async () => { while (!host.stderr().includes("thrown from a timer")) await sleep(20); })(), `the timer's exception in the log\n${host.stderr()}`);
+	// Each is in the log, with the package where the stack names it, and the host is still there.
+	assert.match(host.stderr(), / a promise failed with nobody waiting for it in package \S+stray, and the host goes on: rejected at import, with nobody waiting\n/);
+	assert.match(host.stderr(), / a promise failed with nobody waiting for it, and the host goes on: ENOENT: no such file or directory, open \S+no-such-file'\n/);
+	assert.match(host.stderr(), / an uncaught exception in package \S+stray, and the host goes on: thrown from a timer of the package\n/);
+	assert.equal(host.child.exitCode, null);
+	const session = await host.session(THREAD);
+	for (const [request, tool] of [["e1", "fine_tool"], ["e2", "stray_tool"]]) {
+		await host.prompt(session, request, script([tool, {}], ["report"]));
+		assert.equal(host.tools.at(-1).arguments.text, "a package's tool ran");
+	}
+	await host.stop();
+
+	// The limit, shown as it is: an exception that no stack traces to a package is taken for the host's own, and ends it.
+	const silent = pkg("throws-a-string", `setTimeout(() => { throw "a string, which names no file"; }, 40);\nexport default () => ({});`);
+	const ended = startHost(t, join(tempDir(t, "ended"), "agent"), { home: root });
+	await ended.initialize({ piDir: writeSettings(tempDir(t, "pi"), [silent]) });
+	assert.deepEqual(await within(5_000, ended.exited, "the host to end"), { code: 1, signal: null });
+	assert.match(ended.stderr(), /a string, which names no file\n$/);
 });
 
 test("bzz can switch package loading off for an agent, and a moved agent keeps the switch", async (t) => {
