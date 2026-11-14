@@ -23,10 +23,16 @@ faux.setResponses(Array(64).fill(answer));
 const provider: Provider = faux.provider;
 export default async () => ({ providers: [provider] });
 `;
-/** An extension package: a tool, a prompt section, and a hook that blocks a command. Asked to, it prints, as packages do. */
+/** A dependency the guard package installed in its own folder, in TypeScript: Node itself strips no types under `node_modules`. */
+const WORDS = `export const count = (text: string): number => text.trim().split(/\\s+/).filter(Boolean).length;\n`;
+/**
+ * An extension package: a tool, a prompt section, and a hook that blocks a command. Asked to, it prints, as packages
+ * do. Pi's own packages it has not installed: it gets the host's.
+ */
 const GUARD = `
 import { defineExtension, defineTool, hook, section, ToolTask } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
+import { count } from "words";
 
 if (process.env.GUARD_PRINTS) {
 	console.log("the guard package printed this with console.log");
@@ -36,7 +42,7 @@ const wordCount = defineTool({
 	name: "word_count",
 	description: "Count the words in a text",
 	parameters: obj({ text: str() }),
-	execute: async (args) => ({ output: [{ type: "text", text: \`\${args.text.trim().split(/\\s+/).filter(Boolean).length} words\` }] }),
+	execute: async (args) => ({ output: [{ type: "text", text: \`\${count(args.text)} words\` }] }),
 });
 export default () => ({
 	extensions: [defineExtension({
@@ -75,7 +81,11 @@ function writeSettings(root, packages, more = {}) {
 function world(t) {
 	const root = tempDir(t, "packages");
 	const acme = writePackage(root, "acme", { durable: ["./durable.ts"] }, { "durable.ts": PROVIDER });
-	writePackage(root, "guard", { durable: ["./src/durable.mjs"] }, { "src/durable.mjs": GUARD });
+	writePackage(root, "guard", { durable: ["./src/durable.mjs"] }, {
+		"src/durable.mjs": GUARD,
+		"node_modules/words/package.json": JSON.stringify({ name: "words", type: "module", exports: "./index.ts" }),
+		"node_modules/words/index.ts": WORDS,
+	});
 	const throws = writePackage(root, "throws", { durable: ["./durable.mjs"] }, { "durable.mjs": `export default () => { throw new Error("boom at setup\\nwith a second line that is not passed on"); };` });
 	// Written for the \`pi\` command only: it registers a provider there, and has nothing for this host.
 	const piOnly = writePackage(root, "pi-acme-cloud", { extensions: ["./extensions/index.ts"] }, { "extensions/index.ts": `export default (pi) => { pi.registerProvider("acme-cloud", { baseUrl: "https://llm.example.invalid/v1", models: [] }); };` });

@@ -90,6 +90,8 @@ test("an approved command runs in the granted folder, exactly as approved, in an
 	// Also a line that begins like an option of the shell: it is the command, not an option.
 	assert.match(await host.run({ folder: "site", command: "-x; echo after the dash" }), /-x: (command )?not found\nafter the dash\n/);
 
+	// No terminal and nothing to read: a command that waits for input gets the end of it at once.
+	assert.equal(await host.run({ folder: "site", command: "cat; echo end of input; test -t 0 || echo no terminal" }), "end of input\nno terminal\n");
 	// A process group of its own: the shell leads it, and it is neither the host's group nor this test's.
 	const [pid, pgid] = (await host.run({ folder: "site", command: "ps -o pid= -o pgid= -p $$" })).trim().split(/\s+/).map(Number);
 	const groupOf = (id) => Number(execFileSync("ps", ["-o", "pgid=", "-p", String(id)], { encoding: "utf8" }).trim());

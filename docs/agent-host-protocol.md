@@ -375,7 +375,9 @@ reaches the model, so it should say what the owner can do.
   second time for it.
 - A cancelled turn does not wait for the answer, and a question that was
   open when the host exited is void.
-- Only `git` asks. The shell's `curl` does not.
+- Only `git` asks, and only on a challenge: 401, or the 203 that Azure
+  DevOps sends in its place. The shell's `curl` does not. A remote that
+  answers "not found" for a private repository never causes the request.
 - Credentials are for the host in the remote's URL. They do not follow a
   redirect to another host.
 
@@ -420,6 +422,7 @@ The command:
 - starts with the granted folder as its working directory;
 - gets an environment built from nothing: `PATH`, `HOME`, `LANG` and
   `TMPDIR` as the host has them, and nothing else;
+- has no terminal, and an empty standard input;
 - runs in a process group of its own, not bzz's and not the host's;
 - is ended, with its group, when the turn is cancelled, at its time limit,
   and when the host exits, however it exits. The group gets TERM, and KILL

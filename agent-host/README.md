@@ -135,6 +135,9 @@ What it does not give:
   credentials in it (`https://user:token@host/…`) still works as in any git,
   and is then stored in the repository's configuration by the agent's own
   doing: bzz's credentials never take that path.
+- **A remote that hides a private repository behind "not found"** (HTTP 404
+  without credentials, where git expects 401) never asks, so bzz is never
+  asked: git reports what the remote said.
 - **A remote copy has no credentials.** Under `buzz-acp` there is nobody to
   ask, and git says so.
 - **Output arrives when a command ends**, not while it runs. A long command
@@ -236,7 +239,9 @@ program for the agent, on purpose, and only by the owner's grant.
   the string the shell receives (`/bin/sh -c -- <command>`).
 - It starts with the granted folder as its working directory, in an
   environment built from nothing: `PATH`, `HOME`, `LANG` and `TMPDIR` as this
-  process has them, and nothing else of this process's environment.
+  process has them, and nothing else of this process's environment. It has
+  no terminal and its standard input is empty: a command that asks a
+  question gets no answer.
 - It runs in a process group of its own, watched by a small keeper process
   (`src/run-child.mjs`). The group is ended, TERM and then KILL after 2
   seconds, when the turn is cancelled, at the time limit, and when the host
