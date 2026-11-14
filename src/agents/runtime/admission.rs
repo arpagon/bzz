@@ -360,6 +360,17 @@ mod tests {
         let plain = world.message(&world.owner, false, None);
         let admitted = world.admit(&plain, WakeRule::OwnerOnly, &[], &dm).unwrap();
         assert_eq!(admitted.place, world.channel.to_string());
+        // Even there, a message that is not the owner's is not a request,
+        // whatever let it into the channel.
+        assert_eq!(
+            world.admit(
+                &world.message(&world.other, true, None),
+                WakeRule::Anyone,
+                &[],
+                &dm
+            ),
+            Err(Refusal::DmNotOwnerOnly)
+        );
         // Someone else in a DM with the agent, under the widest rule.
         let listed = [World::hex(&world.other)];
         let theirs = world.facts(PlaceKind::Dm, &[&world.other, &world.agent]);

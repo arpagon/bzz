@@ -732,8 +732,10 @@ mod tests {
             found.contains(&Leftover::Stale { agent: stale }),
             "{found:?}"
         );
-        let _ = left.wait().await;
-        assert!(!running(orphan_pid), "the leftover was stopped");
+        // Reaped here; had the sweep left it alone, this would never return.
+        let reaped = tokio::time::timeout(Duration::from_secs(5), left.wait()).await;
+        assert!(reaped.is_ok(), "the leftover was stopped");
+        assert!(!running(orphan_pid));
         for _ in 0..200 {
             if !running(grandchild) {
                 break;
