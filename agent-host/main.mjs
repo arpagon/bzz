@@ -3,6 +3,10 @@
 //   node main.mjs <agent folder>
 // Standard input and output carry the protocol (docs/agent-host-protocol.md);
 // standard error is a log. It ends when its input ends or its parent is gone.
+//
+// And one question that needs no agent, for `bzz agent new --model`:
+//   node main.mjs --check-model <Pi's folder> <model as JSON> [--no-packages]
+// It writes one line of JSON to standard output and exits with code 0.
 import { resolve } from "node:path";
 
 // Read before anything else loads: a parent that dies while the host starts must not be mistaken for its successor.
@@ -14,7 +18,7 @@ if (major < 22 || (major === 22 && minor < 19)) {
 }
 const folder = process.argv[2];
 if (!folder) {
-	console.error("usage: node main.mjs <agent folder>");
+	console.error("usage: node main.mjs <agent folder>\n       node main.mjs --check-model <Pi's folder> <model as JSON> [--no-packages]");
 	process.exit(2);
 }
 
@@ -23,6 +27,27 @@ if (!folder) {
 const protocol = { write: process.stdout.write.bind(process.stdout) };
 process.stdout.write = (...args) => process.stderr.write(...args);
 console.log = console.info = console.debug = (...args) => console.error(...args);
+
+if (folder === "--check-model") {
+	// The one entry bzz uses that is not the protocol. Its arguments and its answer are the contract; which module
+	// answers is this host's own business, so a rename inside `src/` cannot break bzz without a test here failing.
+	const [piDir, wanted, ...flags] = process.argv.slice(3);
+	// A package's code runs to learn its providers. What it leaves uncaught is its own failure, not the answer's.
+	for (const event of ["uncaughtException", "unhandledRejection"]) process.on(event, (error) => console.error(`while checking the model: ${String(error?.message ?? error).split("\n")[0].slice(0, 300)}`));
+	let answer;
+	try {
+		if (!piDir || wanted === undefined) throw new Error("--check-model needs Pi's folder and the model as JSON");
+		const model = JSON.parse(wanted);
+		if (!model || typeof model !== "object" || Array.isArray(model)) throw new Error("the model must be a JSON object");
+		const { checkModel } = await import("./src/host.mjs");
+		answer = await checkModel({ piDir: resolve(piDir), wanted: model, packages: !flags.includes("--no-packages") });
+	} catch (error) {
+		answer = { ok: false, kind: "error", message: String(error?.message ?? error), packages: [] };
+	}
+	await new Promise((written) => protocol.write(`${JSON.stringify(answer)}\n`, written));
+	// Whatever a package left running does not keep the answer's reader waiting.
+	process.exit(0);
+}
 // Prompts and messages are never logged: the log names what happened, not what was said.
 const log = (line) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
 const { serve, VERSION } = await import("./src/host.mjs");

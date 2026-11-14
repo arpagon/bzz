@@ -24,7 +24,36 @@ const CLOSE_MS = 1_500;
 /** The model sees the chat tools under this prefix: Pi's own file tools already own the name `read`. */
 const PREFIX = "buzz_";
 const INVALID = -32602;
-const FAILED = -32000;
+/**
+ * A turn that failed. A code of this host's own, in the range JSON-RPC leaves to a server: ACP gives -32000 the
+ * meaning "sign in" and -32002 "not found", and a turn fails for other reasons too. `data.kind` says which.
+ */
+export const TURN_FAILED = -32010;
+/** bzz's own tool names: a Pi package may not take them. */
+const reservedTool = (name) => typeof name === "string" && (name.startsWith(PREFIX) || name === "run");
+
+/**
+ * Whether a model can be used, asked without an agent: what `node main.mjs --check-model` answers, for `bzz agent
+ * new --model` before anything exists. It is the check a turn makes, with the providers a turn would have: Pi's own
+ * and, unless `packages` is `false`, those of the Pi packages in Pi's settings, whose code is run to learn them.
+ * @param wanted `{ provider?, modelId?, thinkingLevel? }`, as in `_meta.bzz.model`
+ * @returns `{ ok: true, provider, modelId, thinkingLevel, packages }`, or `{ ok: false, kind, message, package?,
+ *   packages }`, where `package` names a package without a Pi Durable entry that names the provider, and
+ *   `packages` is the report `initialize` would give
+ */
+export async function checkModel({ piDir, wanted = {}, packages: on = true, env = process.env }) {
+	let report = [];
+	try {
+		const packages = on === false ? noPackages(true) : await loadPackages(piDir, { reservedTools: reservedTool });
+		report = packages.report;
+		const { choose } = await openModels({ piDir, env, packages });
+		const chosen = await choose(wanted);
+		return { ok: true, provider: chosen.model.provider, modelId: chosen.model.modelId, thinkingLevel: chosen.thinkingLevel ?? null, packages: report };
+	} catch (error) {
+		const known = error instanceof ModelUnavailable;
+		return { ok: false, kind: known ? error.kind : "error", message: String(error?.message ?? error), ...(known && error.data.package !== undefined && { package: error.data.package }), packages: report };
+	}
+}
 
 const checkpointWhen = (_value, _ops, { deltasSinceBase }) => deltasSinceBase >= 64;
 const doc = (kind) => defineDoc({ kind, version: 1, scope: "session", initial: () => ({}), checkpointWhen });
@@ -237,9 +266,6 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 		].join("\n");
 	}
 
-	/** bzz's own tool names: a Pi package may not take them. */
-	const reservedTool = (name) => typeof name === "string" && (name.startsWith(PREFIX) || name === "run");
-
 	/**
 	 * What every conversation of this agent runs with: Pi's file tools, then what the Pi packages bring, then bzz's
 	 * own tools and section. A later tool or section replaces an earlier one of the same name, so bzz's are last.
@@ -310,7 +336,7 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 		if (turn.cancelled || settled.reason === "aborted") return { stopReason: "cancelled" };
 		if (settled.reason === "turn_limit") return { stopReason: "max_turn_requests" };
 		const detail = typeof settled.detail === "string" ? settled.detail : settled.detail?.message ?? settled.detail?.errorMessage;
-		throw new RpcError(FAILED, `The turn failed: ${detail ?? settled.reason}`, { kind: settled.reason });
+		throw new RpcError(TURN_FAILED, `The turn failed: ${detail ?? settled.reason}`, { kind: settled.reason });
 	}
 
 	async function cancel(turn) {
@@ -338,7 +364,7 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 				try {
 					chosen = await models.choose(config.model);
 				} catch (error) {
-					if (error instanceof ModelUnavailable) throw new RpcError(FAILED, error.message, error.data);
+					if (error instanceof ModelUnavailable) throw new RpcError(TURN_FAILED, error.message, error.data);
 					throw error;
 				}
 				const agent = { model: chosen.model, thinkingLevel: chosen.thinkingLevel, instructions: config.instructions || null, cwd: session.cwd };
