@@ -103,4 +103,10 @@ else
   # BZZ_RELAY_TEST_FILTER runs only the tests whose name contains it.
   BZZ_BUZZ_CLI="$BZZ_BUZZ_SOURCE/target/debug/buzz" \
   BZZ_E2E_RELAY_URL=ws://localhost:3030 cargo test --locked --test relay_integration ${BZZ_RELAY_TEST_FILTER:+"$BZZ_RELAY_TEST_FILTER"} -- --ignored --test-threads=1
+  # bzz's real agent host against a recorded relay (v0.15 M2). It needs
+  # Node.js 22.19 or newer and no relay; it runs here because this is the
+  # job that has Node (BZZ_TEST_REQUIRE_NODE=1 turns its skip into a failure).
+  if [[ -z "${BZZ_RELAY_TEST_FILTER:-}" ]]; then
+    cargo test --locked --test agent_host_test
+  fi
 fi

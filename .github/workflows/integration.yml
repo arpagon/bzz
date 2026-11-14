@@ -11,8 +11,12 @@ on:
       - 'src/service/**'
       - 'src/app.rs'
       - 'src/ui/agents.rs'
+      - 'src/main.rs'
+      - 'src/cli_agent.rs'
+      - 'agent-host/**'
       - 'migrations/**'
       - 'tests/relay_integration.rs'
+      - 'tests/agent_host_test.rs'
       - 'tests/relay_nip_fi_integration.rs'
       - 'tests/support/**'
       - 'examples/**'
@@ -31,8 +35,12 @@ on:
       - 'src/service/**'
       - 'src/app.rs'
       - 'src/ui/agents.rs'
+      - 'src/main.rs'
+      - 'src/cli_agent.rs'
+      - 'agent-host/**'
       - 'migrations/**'
       - 'tests/relay_integration.rs'
+      - 'tests/agent_host_test.rs'
       - 'tests/relay_nip_fi_integration.rs'
       - 'tests/support/**'
       - 'examples/**'
@@ -64,6 +72,15 @@ jobs:
           path: .buzz-source
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
+      # v0.15: the tests that run bzz's real agent host need Node.js 22.19 or
+      # newer. The build image has none, so the runner's is mounted into it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Find Node.js for the container
+        run: |
+          node --version && npm --version
+          echo "BZZ_NODE_HOME=$(dirname "$(dirname "$(command -v node)")")" >> "$GITHUB_ENV"
       - name: Run isolated real-relay suite (${{ matrix.profile }})
         # Actions job containers attach to an Actions bridge and cannot use
         # --network host. Run this one container explicitly so the harness
@@ -76,10 +93,12 @@ jobs:
             --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
             --volume "${CARGO_HOME:-$HOME/.cargo}:/opt/bzz-cargo" \
             --volume "${RUSTUP_HOME:-$HOME/.rustup}:/opt/bzz-rustup" \
+            --volume "$BZZ_NODE_HOME:/opt/bzz-node:ro" \
             --workdir "$GITHUB_WORKSPACE" \
             --env CARGO_HOME=/opt/bzz-cargo --env RUSTUP_HOME=/opt/bzz-rustup \
-            --env PATH=/opt/bzz-cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            --env PATH=/opt/bzz-cargo/bin:/opt/bzz-node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
             --env BZZ_BUZZ_SOURCE="$GITHUB_WORKSPACE/.buzz-source" \
+            --env BZZ_TEST_REQUIRE_NODE=1 \
             --env PROFILE \
             "$BZZ_BUILD_IMAGE" bash -ec '
               git config --global --add safe.directory "$PWD"
