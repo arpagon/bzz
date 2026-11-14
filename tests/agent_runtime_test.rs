@@ -3542,3 +3542,54 @@ async fn what_the_owner_takes_away_is_refused_at_once_by_a_running_bzz() {
     host.shutdown().await;
     owner.lock().await;
 }
+
+/// M7: "without asking" holds only while the people who may wake the agent
+/// are ones its owner named. An agent that anyone may wake would otherwise
+/// run commands for anyone, as its owner: there the owner is asked, whatever
+/// the folder's grant says, and with nobody to ask the answer is no.
+#[tokio::test]
+async fn a_folder_allowed_without_asking_still_asks_when_anyone_may_wake_the_agent() {
+    for owner_present in [false, true] {
+        let world = World::new().await;
+        let started = world.script.marker("started");
+        world.script.write(
+            json!({"own_host": true, "run": ["ops"]}),
+            json!([{"steps": [approve("ops", "systemctl restart site", &started), send("done", true)]}]),
+        );
+        let mut local = world.hands(&[("ops", ExecGrant::WithoutAsking)]);
+        local.wake = WakeRule::Anyone;
+        let host = world
+            .host_configured(local, limits(), |options| {
+                options.owner_present = owner_present
+            })
+            .await;
+        // Someone who is not the owner wakes it.
+        let request = world.message_in(
+            world.channel,
+            &world.stranger,
+            "restart the site",
+            true,
+            None,
+        );
+        assert_eq!(world.offer(&host, &request).await, Offer::Queued);
+        if owner_present {
+            let asked = one_question(&host).await;
+            assert_eq!(asked.requester, world.stranger.public_key().to_hex());
+            assert!(!started.exists(), "it waits for the owner");
+            assert!(host.answer_approval(asked.id, Answer::Refuse(None)));
+        }
+        world.settled(&request).await;
+        let answer = world.answers("_bzz/approve", 1).await[0]["result"].clone();
+        assert_eq!(answer["allow"], json!(false), "{answer}");
+        assert!(!started.exists());
+        assert_eq!(
+            world.activity().last().map(String::as_str),
+            Some(if owner_present {
+                "command in /mnt/ops · systemctl restart site · refused by you"
+            } else {
+                "command in /mnt/ops · systemctl restart site · refused: nobody was at bzz to ask"
+            })
+        );
+        host.shutdown().await;
+    }
+}

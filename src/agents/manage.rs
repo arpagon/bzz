@@ -507,6 +507,13 @@ pub fn validate_settings(
                 folder.name
             )));
         }
+        // Whoever may wake the agent makes it run commands, as its owner.
+        if wake == WakeRule::Anyone && folder.exec == ExecGrant::WithoutAsking {
+            return Err(Error::Config(format!(
+                "the folder {:?} is allowed for commands without asking, and anyone may wake this agent: anyone in its channels could then run commands as you. Grant the folder with `:exec` (you are asked each time), or let only you or listed people wake the agent",
+                folder.name
+            )));
+        }
     }
     Ok(())
 }
@@ -2383,6 +2390,37 @@ mod tests {
         assert!(
             validate_settings("Scout", WakeRule::OwnerOnly, &[], &[grant.clone(), grant]).is_err()
         );
+        // A folder allowed without asking, with an agent that anyone may
+        // wake, would let anyone run commands as the owner: refused. With
+        // the owner alone or listed people it is the owner's choice, and a
+        // folder that asks is always one.
+        let unasked = parse_folder(&format!("ops={text}:exec-without-asking")).unwrap();
+        let asked = parse_folder(&format!("work={text}:exec")).unwrap();
+        let refused = validate_settings(
+            "Scout",
+            WakeRule::Anyone,
+            &[],
+            std::slice::from_ref(&unasked),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            refused.contains("anyone in its channels could then run commands as you"),
+            "{refused}"
+        );
+        assert!(
+            validate_settings("Scout", WakeRule::Anyone, &[], std::slice::from_ref(&asked)).is_ok()
+        );
+        assert!(
+            validate_settings(
+                "Scout",
+                WakeRule::OwnerOnly,
+                &[],
+                std::slice::from_ref(&unasked)
+            )
+            .is_ok()
+        );
+        assert!(validate_settings("Scout", WakeRule::Allowlist, &friend, &[unasked]).is_ok());
     }
 
     #[test]

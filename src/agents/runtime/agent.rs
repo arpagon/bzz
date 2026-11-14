@@ -58,7 +58,7 @@ use crate::{
             tools::{self, ToolCall, ToolReply},
         },
     },
-    config::{ExecGrant, Harness as HarnessKind, LocalAgentConfig},
+    config::{ExecGrant, Harness as HarnessKind, LocalAgentConfig, WakeRule},
     error::{Error, Result},
     store::{
         agent_runtime::{InboxRow, NewRequest, ReplyOrigin, RequestState},
@@ -1835,10 +1835,14 @@ impl Agent {
         // And by the settings as they are now: what the owner has taken
         // away since this bzz started is refused at once. What he has added
         // since counts only after a restart, when the host is told of it.
-        let mut asks = folder.exec == ExecGrant::Ask;
+        // "Without asking" holds only while the people who may wake the
+        // agent are ones its owner named. An agent that anyone may wake
+        // would run commands for anyone, as its owner: there he is asked.
+        let mut asks = folder.exec == ExecGrant::Ask || self.spec.local.wake == WakeRule::Anyone;
         match self.settings_now() {
             Ok(None) => {}
             Ok(Some(now)) => {
+                asks |= now.wake == WakeRule::Anyone;
                 let still = now.folders.iter().find(|granted| {
                     granted.name == folder.name
                         && granted.path == folder.path

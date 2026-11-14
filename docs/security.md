@@ -305,7 +305,9 @@ trusted with anything of bzz's:
     tools only.
   - **A folder allowed without asking** (`exec = "without-asking"`) lets
     whoever may wake the agent run commands as its owner, also under `bzz
-    agent run`. It is never the default.
+    agent run`. It is never the default. `bzz agent new` and `edit` refuse
+    it for an agent that anyone may wake, and bzz asks the owner about every
+    command of such an agent whatever the settings file says.
   - Each question and its answer is kept in
     `<data>/agents/<id>/activity.jsonl`: when, the folder, the command's
     first line, the answer. `bzz agent show` prints it.

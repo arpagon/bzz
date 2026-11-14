@@ -286,8 +286,9 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   - `exec` on a folder (v0.15 M7): whether real commands of this machine may
     run there. Absent: none. `"ask"`: each command waits for your yes in the
     TUI, and is refused when bzz runs without it. `"without-asking"`:
-    commands run without you. Anything else is refused when the file is
-    read. A command runs as your user and is not held in the folder; `write`
+    commands run without you; not for an agent with `wake = "anyone"`,
+    whose commands are always asked about. Anything else is refused when the
+    file is read. A command runs as your user and is not held in the folder; `write`
     binds the agent's file tools only. `--folder name=/path:exec` writes
     `"ask"`, `:exec-without-asking` the other.
   - `packages` (default `true`): whether the agent's host loads the Pi

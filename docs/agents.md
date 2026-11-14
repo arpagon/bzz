@@ -219,7 +219,8 @@ What you should know before you grant it:
   `--folder ops=/srv/ops:exec-without-asking`. Commands there run without
   you, also under `bzz agent run`. Whoever may wake the agent can then make
   it run commands as you. Use it for a folder and an agent you would hand
-  your shell to, and keep `--wake owner-only`.
+  your shell to, and keep `--wake owner-only`. bzz refuses the grant for an
+  agent that anyone may wake, and such an agent is asked about in any case.
 - A command has no terminal and no input, 2 minutes unless the agent asks
   for more (at most an hour), and is ended with everything it started when
   its turn is stopped. A program that detaches itself (`setsid`, a daemon)

@@ -112,8 +112,11 @@ key, talks to the relay and starts an ACP agent beneath it.
     - the owner said yes to that command in the TUI, or he allowed that
       folder without asking.
 
-    Asking is the default of the two. Without the TUI there is nobody to
-    ask, and the answer is no, with a reason for the people in the chat. A
+    Asking is the default of the two, and it is what holds for an agent
+    that anyone may wake, whatever its folders say: such an agent would
+    otherwise run commands for anyone, as its owner. Without the TUI there
+    is nobody to ask, and the answer is no, with a reason for the people in
+    the chat. A
     question waits five minutes and then counts as refused. It is void when
     its turn is cancelled, when the agent is paused or stopped, and when bzz
     quits; an answer after that starts nothing. The owner is shown the whole

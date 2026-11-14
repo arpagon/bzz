@@ -604,7 +604,9 @@ written for the model:
 3. `command` is not empty, holds no NUL and is at most 100 000 bytes.
 4. **The folder is allowed without asking, or the owner said yes.** A folder
    that either the settings bzz started with or the settings file now says
-   to ask about is asked about.
+   to ask about is asked about. So is every folder of an agent that anyone
+   may wake: "without asking" holds only while the people who may wake the
+   agent are ones its owner named.
 
 The owner is asked in the TUI, and only there:
 

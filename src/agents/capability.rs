@@ -152,7 +152,7 @@ pub fn record_for(local: &LocalAgentConfig) -> CapabilityRecord {
         }
         if !unasked.is_empty() {
             record.notes.push(format!(
-                "Warning: in {} commands run WITHOUT asking you, also when bzz runs without the TUI.",
+                "Warning: in {} commands run WITHOUT asking you, also when bzz runs without the TUI. Whoever may wake this agent can make it run them, as you.",
                 unasked.join(", ")
             ));
         }
