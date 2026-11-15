@@ -956,6 +956,63 @@ mod tests {
         );
     }
 
+    /// A stored reply the relay never took is not published for ever: after
+    /// the time a message can be a request at all, it ends as refused.
+    #[test]
+    fn a_reply_the_relay_never_took_is_given_up_after_a_day() {
+        let mut store = Store::open_memory().unwrap();
+        let agent = Uuid::new_v4();
+        for request_id in ["old", "young", "taken"] {
+            store
+                .agent_inbox_offer(&request(agent, request_id, 10))
+                .unwrap();
+            store
+                .agent_reply_claim(agent, request_id, request_id, "{}", ReplyOrigin::Send, None)
+                .unwrap();
+        }
+        store.agent_reply_published(agent, "taken").unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE agent_replies SET stored_at=unixepoch()-90000 WHERE request_id IN ('old','taken')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .agent_replies_expire(agent, 86_400, "reply-undelivered")
+                .unwrap(),
+            1
+        );
+        let old = store.agent_inbox_get(agent, "old").unwrap().unwrap();
+        assert_eq!(
+            (old.state, old.failure.as_deref()),
+            (RequestState::Failed, Some("reply-undelivered"))
+        );
+        assert_eq!(
+            store
+                .agent_replies_unpublished(agent, 0)
+                .unwrap()
+                .iter()
+                .map(|reply| reply.request_id.as_str())
+                .collect::<Vec<_>>(),
+            ["young"]
+        );
+        assert!(
+            store
+                .agent_reply_get(agent, "taken")
+                .unwrap()
+                .unwrap()
+                .published
+        );
+        assert_eq!(
+            store
+                .agent_replies_expire(agent, 86_400, "reply-undelivered")
+                .unwrap(),
+            0
+        );
+    }
+
     #[test]
     fn a_failure_reply_marks_the_request_failed_with_its_kind() {
         let mut store = Store::open_memory().unwrap();

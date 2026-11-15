@@ -685,7 +685,9 @@ impl Agent {
             {
                 // No longer an agent of this bzz at all: it was deleted.
                 None => SettingsSay::Gone,
-                Some(agent) if agent.local.is_none() => SettingsSay::Gone,
+                // There, and not as an agent bzz runs: nothing a `bzz
+                // agent` command writes. Nothing is concluded from it.
+                Some(agent) if agent.local.is_none() => return None,
                 Some(agent) if agent.runs_locally() => SettingsSay::Active,
                 // Moved away is the business of `move.json`.
                 Some(agent)
