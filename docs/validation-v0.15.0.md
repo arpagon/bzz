@@ -2678,6 +2678,15 @@ fails with `left: 2, right: 1`).
 | Release TUI (Herdr), `--herdr` | `8159dac`, release build of `f3734e2` | all harness scenarios passed in one run. The first run failed in `t15-agent-new-form`: the scenarios waited for "verified remote agents", and the directory's title is "verified agents" since it lists the owner's own. Three strings of the scenario file changed; nothing else |
 | The coding harnesses with the owner's own programs: `BZZ_REAL_HARNESSES=grok,codex,claude-code BZZ_RELAY_TEST_FILTER=real_relay_coding_harnesses ./scripts/test-relay.sh` | `8159dac` | 1 passed in 182 s. This closes the cell "M6, pinned relay" on the final code, with the Codex change of `3d7d5b7` in it |
 
+CI on `ca7f44e` then showed what this machine could not: `upgrade` failed
+on macOS and on Windows (`left: 0, right: 17` at the check of the backup),
+and passed on Linux. The v0.14.0 profile carries a backup v0.14.0 itself
+made when it created the database, at schema 0; the test took the first
+`.bak` file the folder listed, and the order of a folder differs by system.
+The test now takes the newest backup by its name, as bzz orders them. Red on
+Linux, with the oldest taken instead: `left: 0, right: 17`. The upgrade
+itself was never at fault.
+
 Not run again after the merge: the benchmarks, `cargo deny`, `cargo audit`
 and `npm audit` (no dependency and no lock file changed), and the by-hand
 checks of the release binary that have no Herdr scenario.

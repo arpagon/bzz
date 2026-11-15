@@ -282,11 +282,15 @@ async fn v0140_profile_upgrades_with_its_hosted_agent_served_and_nothing_lost() 
     drop(upgraded);
     // The backup made before the migration is a readable database at the
     // old version, with the old history in it.
+    // The newest one: the profile may carry a backup v0.14.0 itself made
+    // when it created the database, and a folder is listed in no fixed order.
     let backup = std::fs::read_dir(&paths.data_dir)
         .unwrap()
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .find(|path| path.to_string_lossy().ends_with(".bak"))
+        .filter(|path| path.to_string_lossy().ends_with(".bak"))
+        // Its name ends in the second it was made, as bzz itself orders them.
+        .max_by_key(|path| path.file_name().map(std::ffi::OsStr::to_os_string))
         .expect("a backup made before the migration");
     let backed_up = rusqlite::Connection::open(&backup).unwrap();
     assert_eq!(schema_version(&backup), before);
