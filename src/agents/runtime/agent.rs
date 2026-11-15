@@ -1279,8 +1279,9 @@ impl Agent {
         self.shared
             .approvals
             .void_agent(self.spec.id, "the agent's process stopped");
-        // Its credentials stop resolving before anything else happens.
-        self.shared.credentials.revoke_agent(self.spec.id);
+        // Its credentials stop resolving before anything else happens. Only
+        // this run's: a process started in its place has its own.
+        self.shared.credentials.revoke_run(self.spec.id, run.id);
         let deliberate = run.deliberate.load(Ordering::Acquire) || self.halted();
         if let Some(harness) = run.harness.lock().await.take() {
             let connection = run.connection.clone();

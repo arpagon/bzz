@@ -78,6 +78,16 @@ impl Credentials {
         before - grants.len()
     }
 
+    /// Revokes the credentials of one start of an agent's process: that
+    /// process exited. A process started in its place keeps its own, however
+    /// late the old one's end is noticed.
+    pub fn revoke_run(&self, agent: Uuid, run: u64) -> usize {
+        let mut grants = self.lock();
+        let before = grants.len();
+        grants.retain(|_, grant| grant.agent != agent || grant.run != run);
+        before - grants.len()
+    }
+
     /// Who an `Authorization` header speaks for.
     pub fn resolve(&self, authorization: Option<&str>) -> Result<(Uuid, u64, String), Refused> {
         let token = authorization
@@ -175,6 +185,26 @@ mod tests {
         assert!(credentials.resolve(Some(&bearer(&foreign))).is_ok());
         credentials.forget(&foreign);
         assert!(credentials.is_empty());
+    }
+
+    #[test]
+    fn the_end_of_one_run_leaves_the_credentials_of_the_next() {
+        let credentials = Credentials::default();
+        let scout = Uuid::new_v4();
+        let old = credentials.mint(scout, 1);
+        credentials.bind(&old, "s-old");
+        // The process is started again before the old one's end is noticed.
+        let new = credentials.mint(scout, 2);
+        credentials.bind(&new, "s-new");
+        assert_eq!(credentials.revoke_run(scout, 1), 1);
+        assert_eq!(
+            credentials.resolve(Some(&format!("Bearer {old}"))),
+            Err(Refused::UnknownOrRevoked)
+        );
+        assert_eq!(
+            credentials.resolve(Some(&format!("Bearer {new}"))),
+            Ok((scout, 2, "s-new".to_owned()))
+        );
     }
 
     #[test]
