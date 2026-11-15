@@ -104,7 +104,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 id = "operator-remote-agents"
 kind = "operator"
 description = "Disposable public-only agent fixture: verified directory wide/narrow layout, owner/policy/freshness detail, keyboard/mouse selection, refresh, exact composer insertion, community/lock invalidation, and terminal restoration."
-ready = "verified remote agents"
+ready = "verified agents"
 exit = ""
 
 [[scenario.step]]
@@ -1101,7 +1101,7 @@ timeout = 30000
 # should the relay's member list have come a moment later.
 [[scenario.step]]
 keys = ["tab"]
-visible = "verified remote agents"
+visible = "verified agents"
 
 [[scenario.step]]
 pause = 1500
@@ -1208,7 +1208,7 @@ timeout = 30000
 # As for Pilot: the directory is refreshed before Garnet is mentioned.
 [[scenario.step]]
 keys = ["tab"]
-visible = "verified remote agents"
+visible = "verified agents"
 
 [[scenario.step]]
 pause = 1500
