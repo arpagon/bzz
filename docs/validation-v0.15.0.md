@@ -1414,9 +1414,9 @@ script, 35 runs, each of which failed. `U:` is a unit test, `C:`
 ### Recorded transcripts
 
 `tests/fixtures/agents/transcripts/<harness>/first-run.ndjson` and
-`after-restart.ndjson`, six files, 233 KB: what Grok 1.0.77, Codex 0.166.0
-and Claude Code 2.1.322 sent over ACP on 2026-11-14 in the run on the pinned
-relay below, and what bzz sent them. For each program: one answered mention;
+`after-restart.ndjson`, six files, 227 KB: what Grok 1.0.77, Codex 0.166.0
+and Claude Code 2.1.322 sent over ACP on 2026-11-14 in the last run on the
+pinned relay below (`b5515ac`), and what bzz sent them. For each program: one answered mention;
 what it did and asked when told to write inside and outside its folders; and,
 in a second process, its saved session loaded and asked what it remembered.
 
@@ -1443,10 +1443,11 @@ What the transcripts hold that a hand-written script did not:
 - Grok sends more than fifty notifications of its own (`_x.ai/…`) around
   one turn; Claude Code asks leave for bzz's own tool every time.
 
-What was changed in them after recording, by the rule the recorder now
-applies itself: what a tool gave back was removed (Grok's tool search listed
-the owner's own tools). By hand: two sentences of a Codex warning that named
-a setting in the owner's own Codex configuration.
+They are as the recorder wrote them, with one change by hand: two sentences
+of a Codex warning that named a setting in the owner's own Codex
+configuration. An earlier recording showed why the recorder keeps nothing a
+tool gave back: Grok's search for bzz's tools listed the owner's own tools
+beside them.
 
 ### With the real programs, on the pinned relay
 
@@ -1462,7 +1463,7 @@ with nobody to ask. Models: `grok-4.5` (low), `gpt-5.6-luna` (low), `haiku`.
 | `agent doctor` names the program and its version as in range, and the sign-in in use | pass | pass | pass |
 | A version outside the range is refused by `agent new` before a key is made (the real program behind a script that reports 99.0.0) | pass | pass | pass |
 | `agent new` creates the agent, with its record, D19's words and D18's warning only for Claude Code | pass | pass | pass |
-| A mention is answered exactly once | "noted." | "noted" | "noted" |
+| A mention is answered exactly once | "noted" | "noted." | "noted" |
 | A file in the folder granted for writing is written | pass | pass | pass (bzz allowed the edit) |
 | A file in a folder that is not granted is not written | pass: Grok's sandbox, `Permission denied (os error 13)`; Grok asked nothing | pass: Codex asked, bzz refused, Codex ended its turn; the chat got "I could not finish: I needed something on my owner's machine that my owner has not allowed." | pass: Claude Code asked, bzz refused; it answered that the write was refused |
 | A file in the folder of bzz's keys is not read | pass: `Permission denied` | not asked | not asked |
@@ -1472,8 +1473,12 @@ with nobody to ask. Models: `grok-4.5` (low), `gpt-5.6-luna` (low), `haiku`.
 | The mode is set before the first prompt of each session, new and loaded | no modes | `workspace-write` | `default` |
 | No credential and no key in what was recorded | pass | pass | pass |
 
-Passing runs: Grok alone in 63 s, then Codex and Claude Code together in
-121 s, on `f3ff49f` with the test as committed there, 2026-11-14.
+Passing runs, 2026-11-14: the three in one run of 179 s on `b5515ac`, which
+is the run the transcripts are from. Before it, on the tree that became
+`f3ff49f`: Grok alone in 63 s, then Codex and Claude Code together in 121 s.
+Nine prompts each time, and the three failed runs below: about thirty short
+prompts in all on the owner's accounts, with the experiments that found how
+each program asks.
 
 Red runs, with the real programs, are the runs that failed on the way:
 
