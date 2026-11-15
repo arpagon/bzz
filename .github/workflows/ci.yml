@@ -84,7 +84,7 @@ jobs:
           ${{ matrix.binary }} identity verify "$identity_id"
           ${{ matrix.binary }} identity remove "$identity_id" --yes
   upgrade:
-    # Release acceptance: a real v0.12.1 data directory opened by this build.
+    # Release acceptance: a real profile of the last release (v0.14.0) opened by this build.
     strategy:
       fail-fast: false
       matrix:
@@ -97,7 +97,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
-      - name: Open a v0.12.1 data directory with this build
+      - name: Open a v0.14.0 profile with this build
         shell: bash
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
