@@ -8314,6 +8314,13 @@ impl App {
         });
     }
 
+    /// The agents of the open community whose key this bzz holds itself.
+    fn own_agents(&self) -> HashMap<String, crate::agents::Own> {
+        self.active_community_id()
+            .map(|community| crate::agents::own_agents(&self.config.hosted_agents, community))
+            .unwrap_or_default()
+    }
+
     fn open_agent_form(&mut self, name: &str) {
         if self.active_community_id().is_none() {
             self.status_error = Some("configure a community before creating an agent".into());
@@ -10392,7 +10399,13 @@ impl App {
                         hit_map.push(row, HitTarget::MentionCandidate(index));
                     }
                 }
-                crate::ui::mention_picker::render(frame, mention_area, picker, &self.theme);
+                crate::ui::mention_picker::render(
+                    frame,
+                    mention_area,
+                    picker,
+                    &self.own_agents(),
+                    &self.theme,
+                );
             }
         }
     }
@@ -10848,6 +10861,7 @@ impl App {
                     frame,
                     popup,
                     &self.agent_directory,
+                    &self.own_agents(),
                     &self.profiles,
                     self.self_pubkey(),
                     &self.theme,
@@ -13795,7 +13809,7 @@ mod tests {
                 .map(|cell| cell.symbol())
                 .collect::<String>();
             assert!(screen.contains("Verified Worker"));
-            assert!(screen.contains("remote agents"));
+            assert!(screen.contains("verified agents"));
         }
     }
 

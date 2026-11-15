@@ -41,7 +41,8 @@ enum Command {
         #[command(subcommand)]
         command: CommunityCommand,
     },
-    /// Inspect verified remote managed agents; bzz does not control their runtimes.
+    /// Inspect the verified agents of a community: other people's, whose
+    /// runtimes bzz does not control, and your own, marked as yours.
     Agents {
         #[command(subcommand)]
         command: AgentsCommand,
@@ -255,14 +256,15 @@ enum BrokerCommand {
 
 #[derive(Debug, Subcommand)]
 enum AgentsCommand {
-    /// List verified remote agents in one configured community.
+    /// List the verified agents of one configured community. An agent
+    /// this bzz holds the key of is marked as yours.
     List {
         #[arg(long)]
         community: Option<Uuid>,
         #[arg(long)]
         json: bool,
     },
-    /// Show one verified remote agent and its public policy.
+    /// Show one verified agent and its public policy.
     Show {
         agent_pubkey: String,
         #[arg(long)]
@@ -1022,27 +1024,35 @@ async fn agents_command(command: AgentsCommand, paths: &Paths, config: &Config) 
             let mut store = Store::open(paths.database_file())?;
             store.sync_config(config)?;
             let agents = store.list_remote_agents(community.id, &identity.pubkey)?;
+            // The agents of the list this bzz holds the key of: the owner's
+            // own, which are not remote to him.
+            let own = bzz::agents::own_agents(&config.hosted_agents, community.id);
             if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
                         "schema_version": 1,
                         "community_id": community.id,
+                        // Of every agent that is not in `own`.
                         "runtime_control": "remote",
                         "agents": agents,
+                        "own": own,
                     }))
                     .map_err(|error| Error::Serialization(error.to_string()))?
                 );
             } else if agents.is_empty() {
                 println!(
-                    "no verified remote agents cached for {}; run `bzz agents refresh --community {}`",
+                    "no verified agents cached for {}; run `bzz agents refresh --community {}`",
                     community.label, community.id
                 );
             } else {
-                println!("verified remote agents — bzz does not control their runtimes");
+                println!(
+                    "verified agents of {} — bzz controls the runtime only of those marked as yours",
+                    community.label
+                );
                 for agent in agents {
                     println!(
-                        "{}\t{}\towner={}\t{}\t{}\tpolicy={}\tchannels={}",
+                        "{}\t{}\towner={}\t{}\t{}\tpolicy={}\tchannels={}\t{}",
                         agent.pubkey,
                         agent.name,
                         bzz::domain::abbreviated_pubkey(&agent.owner_pubkey),
@@ -1052,6 +1062,8 @@ async fn agents_command(command: AgentsCommand, paths: &Paths, config: &Config) 
                             .respond_to
                             .map_or("unknown", bzz::agents::RespondTo::as_str),
                         agent.channel_ids.len(),
+                        own.get(&agent.pubkey)
+                            .map_or("remote", |standing| standing.label()),
                     );
                 }
             }
@@ -1074,7 +1086,7 @@ async fn agents_command(command: AgentsCommand, paths: &Paths, config: &Config) 
                 if let Some(agent) =
                     store.remote_agent(community.id, &agent_pubkey, &identity.pubkey, None)?
                 {
-                    matches.push((community.label.clone(), agent));
+                    matches.push((community.label.clone(), community.id, agent));
                 }
             } else {
                 for community in &config.communities {
@@ -1082,7 +1094,7 @@ async fn agents_command(command: AgentsCommand, paths: &Paths, config: &Config) 
                     if let Some(agent) =
                         store.remote_agent(community.id, &agent_pubkey, &identity.pubkey, None)?
                     {
-                        matches.push((community.label.clone(), agent));
+                        matches.push((community.label.clone(), community.id, agent));
                     }
                 }
                 if matches.len() > 1 {
@@ -1091,23 +1103,33 @@ async fn agents_command(command: AgentsCommand, paths: &Paths, config: &Config) 
                     ));
                 }
             }
-            let Some((community_label, agent)) = matches.into_iter().next() else {
+            let Some((community_label, community_id, agent)) = matches.into_iter().next() else {
                 return Err(Error::Config(
-                    "verified remote agent is not cached in the selected community".into(),
+                    "verified agent is not cached in the selected community".into(),
                 ));
             };
+            // An agent this bzz holds the key of is the owner's own.
+            let own = bzz::agents::own(&config.hosted_agents, community_id, &agent.pubkey);
             if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
                         "schema_version": 1,
-                        "runtime_control": "remote",
+                        "runtime_control": if own.is_some() { "local" } else { "remote" },
+                        "own": own,
                         "agent": agent,
                     }))
                     .map_err(|error| Error::Serialization(error.to_string()))?
                 );
             } else {
-                println!("remote managed agent — runtime is not controlled by bzz");
+                match own {
+                    Some(standing) => {
+                        let [first, second] = standing.says();
+                        println!("your own agent — {}", standing.label());
+                        println!("{first} {second}");
+                    }
+                    None => println!("remote managed agent — runtime is not controlled by bzz"),
+                }
                 println!("community:   {community_label}");
                 println!("name:        {}", agent.name);
                 println!("pubkey:      {}", agent.pubkey);
