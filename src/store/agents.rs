@@ -238,6 +238,18 @@ impl Store {
         community_id: Uuid,
         active_pubkey: &str,
     ) -> Result<Vec<RemoteAgentView>> {
+        self.verified_agents(community_id, active_pubkey, None)
+    }
+
+    /// The verified agents of a community, or only `only`. One agent is
+    /// asked for when a mention of it is checked before a send: listing
+    /// every agent for that made the check as slow as the whole directory.
+    fn verified_agents(
+        &self,
+        community_id: Uuid,
+        active_pubkey: &str,
+        only: Option<&str>,
+    ) -> Result<Vec<RemoteAgentView>> {
         PublicKey::from_hex(active_pubkey)
             .map_err(|_| Error::Config("active identity has an invalid pubkey".into()))?;
         let mut statement = self.connection.prepare(&format!(
@@ -245,13 +257,15 @@ impl Store {
                     respond_to_allowlist_json,last_verified_at
              FROM remote_agents a
              WHERE community_id=?1 AND verification_state='verified'
+               AND (?2 IS NULL OR agent_pubkey=?2)
                AND EXISTS(SELECT 1 FROM memberships m
                  JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
                  WHERE m.community_id=a.community_id AND m.pubkey=a.agent_pubkey
                    AND {AGENT_MEMBERSHIP})
              ORDER BY name COLLATE NOCASE,agent_pubkey LIMIT 5000"
         ))?;
-        let rows = statement.query_map([community_id.to_string()], |row| {
+        let only = only.map(str::to_ascii_lowercase);
+        let rows = statement.query_map(params![community_id.to_string(), only], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -419,7 +433,7 @@ impl Store {
         active_pubkey: &str,
         channel_id: Option<Uuid>,
     ) -> Result<Option<RemoteAgentView>> {
-        let mut agents = self.list_remote_agents(community_id, active_pubkey)?;
+        let mut agents = self.verified_agents(community_id, active_pubkey, Some(agent_pubkey))?;
         let Some(mut agent) = agents
             .drain(..)
             .find(|agent| agent.pubkey.eq_ignore_ascii_case(agent_pubkey))
@@ -795,6 +809,59 @@ mod tests {
             .unwrap();
         assert!(stale.stale);
         assert_eq!(stale.eligibility, Eligibility::Ineligible);
+    }
+
+    /// One agent asked for by its key is the entry the whole list has for
+    /// it, whatever the case of the key, and not another agent's.
+    #[test]
+    fn one_agent_asked_for_is_its_entry_of_the_list() {
+        let (mut store, community_id, viewer, owner, agent, channel_id) = setup();
+        let other = Keys::generate();
+        store.connection.execute(
+            "INSERT INTO memberships(community_id,channel_id,pubkey,role,source_event_id) VALUES(?1,?2,?3,'bot',?4)",
+            params![community_id.to_string(),channel_id.to_string(),other.public_key().to_hex(),"b".repeat(64)],
+        ).unwrap();
+        for keys in [&agent, &other] {
+            let (profile, declaration, policy) = public_events(&owner, keys, "anyone");
+            for event in [&profile, &declaration, &policy] {
+                store.apply_event(community_id, event).unwrap();
+            }
+        }
+        store.reconcile_remote_agents(community_id).unwrap();
+        let viewer = viewer.public_key().to_hex();
+        let listed = store.list_remote_agents(community_id, &viewer).unwrap();
+        assert_eq!(listed.len(), 2);
+        for keys in [&agent, &other] {
+            let hex = keys.public_key().to_hex();
+            let expected = listed.iter().find(|entry| entry.pubkey == hex).unwrap();
+            for asked in [hex.clone(), hex.to_ascii_uppercase()] {
+                let one = store
+                    .remote_agent(community_id, &asked, &viewer, Some(channel_id))
+                    .unwrap()
+                    .expect("the agent is found by its key");
+                assert_eq!(&one, expected);
+            }
+        }
+        // A key that is no agent's, and an agent asked for in a channel it
+        // is not in, are nobody.
+        let stranger = Keys::generate().public_key().to_hex();
+        assert_eq!(
+            store
+                .remote_agent(community_id, &stranger, &viewer, None)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .remote_agent(
+                    community_id,
+                    &agent.public_key().to_hex(),
+                    &viewer,
+                    Some(Uuid::new_v4())
+                )
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
