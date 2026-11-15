@@ -7734,13 +7734,32 @@ async fn real_relay_agent_keeps_to_its_access_and_a_delete_or_a_pause_reaches_th
     let relay_key = bzz::protocol::http::relay_signing_pubkey(&owner_http.nip11().await.unwrap())
         .expect("the relay names its key")
         .to_owned();
+    // The owner's own connection is between two attempts now and then: a
+    // `bzz` command of the same owner has just used the relay too.
     let publish = |builder: EventBuilder| {
         let (supervisor, owner) = (owner_supervisor.clone(), owner.clone());
         async move {
             let event = owner.sign(builder).await.unwrap();
-            let ack = supervisor.publish(event.clone()).await.unwrap();
-            assert!(ack.accepted, "{}", ack.message);
-            event
+            let deadline = tokio::time::Instant::now() + WAIT;
+            loop {
+                match supervisor.publish(event.clone()).await {
+                    Ok(ack) => {
+                        assert!(
+                            ack.accepted || ack.message.starts_with("duplicate:"),
+                            "{}",
+                            ack.message
+                        );
+                        return event;
+                    }
+                    Err(error) => {
+                        assert!(
+                            tokio::time::Instant::now() < deadline,
+                            "the owner could not publish: {error}"
+                        );
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            }
         }
     };
     let query = |filter: serde_json::Value| {

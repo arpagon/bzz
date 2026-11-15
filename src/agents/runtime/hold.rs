@@ -283,9 +283,14 @@ fn serving_path(data_dir: &Path, agent: Uuid, pid: u32) -> PathBuf {
 /// Says that this bzz holds `agent`'s key and its connection from now on.
 /// Written before either is used.
 pub fn serve(data_dir: &Path, agent: Uuid) -> Result<()> {
+    // Asked once: where a process's start time is not a file to read,
+    // finding it starts a program.
+    static ME: std::sync::OnceLock<Option<ProcessIdentity>> = std::sync::OnceLock::new();
     let folder = serving_dir(data_dir);
     process::create_private_dir(&folder)?;
-    let me = process::identity_of(std::process::id())
+    let me = ME
+        .get_or_init(|| process::identity_of(std::process::id()))
+        .clone()
         .ok_or_else(|| Error::Config("this process could not identify itself".into()))?;
     let path = serving_path(data_dir, agent, me.pid);
     let bytes = serde_json::to_vec(&me).map_err(|error| Error::Serialization(error.to_string()))?;

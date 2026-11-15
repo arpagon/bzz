@@ -180,7 +180,9 @@ pub async fn serve_with_tools(
         };
         // Said before the key is opened: a `bzz agent delete` in another
         // process waits for every bzz that holds an agent's key.
-        crate::agents::runtime::hold::serve(&options.paths.data_dir, agent.id)?;
+        // (Where that cannot be written, the agent runs all the same, and
+        // a deletion learns of it from the settings.)
+        let _ = crate::agents::runtime::hold::serve(&options.paths.data_dir, agent.id);
         let built = async {
             let signer = crate::broker::custody::unlock(&keys_dir, options.owner, agent).await?;
             let auth_tag = crate::broker::relay::auth_tag(&agent.auth_tag)?;
