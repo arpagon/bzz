@@ -32,6 +32,7 @@ if [[ "$HEAD" != "$PIN" && "${BZZ_ALLOW_UNPINNED_RELAY:-}" != 1 ]]; then
 fi
 RELAY_ENV=(
   BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC
+  BUZZ_RATE_LIMIT_HUMAN_API_CALLS_PER_MIN
   BUZZ_MEMBERSHIP_SNAPSHOT_ENABLED BUZZ_MEMBERSHIP_PUBLIC_ENABLED BUZZ_NIP_FI_MODE BUZZ_NIP_FI_ISSUERS
   BUZZ_NIP_FI_COMMUNITIES BUZZ_NIP_FI_MAX_CONNECTION_LIFETIME_SECS
 )
@@ -56,6 +57,15 @@ trap cleanup EXIT INT TERM
 # production human quota inside this isolated, disposable harness.
 export BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN=5000
 export BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC=5000
+# The Herdr run starts bzz more than twenty times in a few minutes as one
+# person, each start a whole sync: its first six starts, twenty seconds
+# apart in all, made about 190 queries and the relay's quota for a person
+# refused the next. No person starts bzz like that. The other two profiles
+# keep the relay's own quota, which is how a client that asks in a loop is
+# caught (v0.15 M1).
+if [[ "$PROFILE" == herdr ]]; then
+  export BUZZ_RATE_LIMIT_HUMAN_API_CALLS_PER_MIN=5000
+fi
 # v0.13 exercises optional relay capabilities that are off by default.
 export BUZZ_MEMBERSHIP_SNAPSHOT_ENABLED=true
 export BUZZ_MEMBERSHIP_PUBLIC_ENABLED=true

@@ -143,9 +143,10 @@ visible = "message"
 # fixture's folder. `profile = "second"` is the fixture's second profile of
 # the same owner. In `keys`, `type:<text>` is typed one key event per
 # character. A step may name text that must not be on the screen (`absent`),
-# its own time limit in milliseconds (`timeout`), and `regex = true` when
-# `visible` is a pattern. The `t15-*` scenarios
-# run in the order written here: later ones use what earlier ones made.
+# its own time limit in milliseconds (`timeout`), `regex = true` when
+# `visible` is a pattern, and `pause`, milliseconds to wait before its keys
+# are sent. The `t15-*` scenarios run in the order written here: later ones
+# use what earlier ones made.
 
 [[scenario]]
 id = "t9-system-group-read-only"
@@ -315,7 +316,11 @@ visible = "Generated custom emoji"
 keys = ["i", "e", "d", "i", "t", "space", "m", "e", "enter"]
 visible = "edit me"
 
+# A message can be edited once the relay has taken it: pressed at once, `e`
+# says "wait until the message is delivered", which this step did one run in
+# five.
 [[scenario.step]]
+pause = 2000
 keys = ["esc", "3", "G", "e"]
 visible = "edit message · Enter save · Esc cancel"
 
@@ -444,10 +449,10 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t15-cli-agent-doctor"
 kind = "harness"
-description = "v0.15 M2: agent doctor reports Node, npm, the installed host, Pi's folder and each agent's readiness, and installs nothing."
+description = "v0.15 M2 and M6: agent doctor reports Node, npm, the installed host, Pi's folder, each coding program with what is missing and what to set, and each agent's readiness; it installs nothing, and ends with code 1 because three programs are not there."
 args = ["agent", "doctor"]
 ready = "Node.js:"
-exit = "__BZZ_HERDR_EXIT__:0"
+exit = "__BZZ_HERDR_EXIT__:1"
 
 [[scenario.step]]
 keys = []
@@ -455,11 +460,31 @@ visible = "host:     installed in"
 
 [[scenario.step]]
 keys = []
+visible = "grok:     not ready:"
+
+[[scenario.step]]
+keys = []
+visible = "Set BZZ_CODEX to the path of `codex`, or unset it to use the one on PATH"
+
+[[scenario.step]]
+keys = []
+visible = "adapter @agentclientprotocol/claude-agent-acp 0.101.0 · not installed yet"
+
+[[scenario.step]]
+keys = []
 visible = "agent:    Scout · pi-durable · active · ready"
 
 [[scenario.step]]
 keys = []
-visible = "__BZZ_HERDR_EXIT__:0"
+visible = "agent:    Coral · claude-code (experimental) · active · not ready:"
+
+[[scenario.step]]
+keys = []
+visible = "3 thing(s) are not ready"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:1"
 
 [[scenario]]
 id = "t15-cli-agent-new"
@@ -1070,6 +1095,20 @@ keys = ["j", "i"]
 visible = "Pilot added to #t15-agents"
 timeout = 30000
 
+# The mention chooser offers a member it knows as an agent, and bzz learns
+# that of an agent added while it is open when the directory is next
+# refreshed. Tab shows the directory, which refreshes it; r does it again,
+# should the relay's member list have come a moment later.
+[[scenario.step]]
+keys = ["tab"]
+visible = "verified remote agents"
+
+[[scenario.step]]
+pause = 1500
+keys = ["r"]
+visible = "◆ Pilot"
+timeout = 30000
+
 [[scenario.step]]
 keys = ["esc"]
 visible = "NORMAL"
@@ -1164,6 +1203,17 @@ visible = "its own sandbox:     none that bzz can switch on here"
 [[scenario.step]]
 keys = ["k", "k", "i"]
 visible = "Garnet added to #t15-agents"
+timeout = 30000
+
+# As for Pilot: the directory is refreshed before Garnet is mentioned.
+[[scenario.step]]
+keys = ["tab"]
+visible = "verified remote agents"
+
+[[scenario.step]]
+pause = 1500
+keys = ["r"]
+visible = "◆ Garnet"
 timeout = 30000
 
 [[scenario.step]]

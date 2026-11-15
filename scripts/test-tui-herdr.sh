@@ -106,8 +106,8 @@ for scenario in values:
         raise SystemExit("Herdr scenario manifest contains unsupported control characters")
     print("\t".join(["H"] + safe[:4] + [encoded(safe[4]), profile, encoded("\x1f".join(args))]))
     for step in steps:
-        if not {"keys", "visible"} <= set(step) or set(step) - {"keys", "visible", "absent", "timeout", "regex"}:
-            raise SystemExit("Herdr scenario step takes keys, visible, absent, timeout and regex")
+        if not {"keys", "visible"} <= set(step) or set(step) - {"keys", "visible", "absent", "timeout", "regex", "pause"}:
+            raise SystemExit("Herdr scenario step takes keys, visible, absent, timeout, regex and pause")
         keys = step["keys"]
         visible = step["visible"]
         absent = step.get("absent", "")
@@ -117,6 +117,11 @@ for scenario in values:
         pattern = step.get("regex", False)
         if not isinstance(pattern, bool):
             raise SystemExit("Herdr scenario has an invalid regex flag")
+        # `pause`: milliseconds to wait before the keys are sent, for what
+        # the relay must send back first and no screen shows arriving.
+        pause = step.get("pause", 0)
+        if not isinstance(pause, int) or isinstance(pause, bool) or not 0 <= pause <= 30000:
+            raise SystemExit("Herdr scenario has an invalid pause")
         # No keys: the step only waits for what a command prints next.
         if not isinstance(keys, list) or not all(isinstance(key, str) and key for key in keys):
             raise SystemExit("Herdr scenario has invalid keys")
@@ -135,7 +140,7 @@ for scenario in values:
                 events.extend("space" if character == " " else character for character in text)
             else:
                 events.append(key)
-        print("\t".join(["S", encoded("\x1f".join(events)), visible, str(timeout), encoded(absent), "regex" if pattern else "match"]))
+        print("\t".join(["S", encoded("\x1f".join(events)), visible, str(timeout), encoded(absent), "regex" if pattern else "match", str(pause)]))
 PY
 )
 
@@ -315,6 +320,9 @@ for row in "${scenarios[@]}"; do
             [[ -n $active_identifier ]] || { echo "malformed manifest step" >&2; exit 2; }
             mapfile -d $'\x1f' -t keys < <(decoded "$first")
             fixture_text=${BZZ_HERDR_FIXTURE:-}
+            if ((sixth > 0)); then
+                sleep "$(printf '%d.%03d' $((sixth / 1000)) $((sixth % 1000)))"
+            fi
             # Deliberately never use `send-text`: this is key-event coverage.
             # Herdr takes a bounded number of keys at a time.
             for ((index = 0; index < ${#keys[@]}; index += 40)); do

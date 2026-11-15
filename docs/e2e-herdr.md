@@ -106,6 +106,7 @@ What a `t15-*` scenario may use, besides keys and visible text:
 | `absent = "text"` | text that must not be on the screen or in the pane's recent output after the step: what was typed at a prompt that does not echo, or a pane that must have closed |
 | `timeout = <ms>` | the step's own time limit (default 15 s) |
 | `regex = true` | `visible` is a pattern, for text a pane may wrap in more than one place |
+| `pause = <ms>` | wait before the step's keys are sent, for what the relay must send back first and no screen shows arriving |
 
 The scenarios run in the order of the manifest and later ones use what
 earlier ones made (`Rover` is created, given a credential, moved and
