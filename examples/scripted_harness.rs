@@ -294,13 +294,25 @@ impl Harness {
         Some(steps.unwrap_or_default())
     }
 
-    fn prompt(self: &Arc<Self>, id: Value, params: Value) {
-        let session = params["sessionId"].as_str().unwrap_or_default().to_owned();
+    /// The steps for a prompt as it arrives. Called by the one thread that
+    /// reads bzz's requests, so that prompts take their turns of the script
+    /// in the order they came: two prompts of two sessions run at once, and
+    /// when each chose its turn on its own thread both could take the same
+    /// one (seen in CI, v0.15.0: the first turn ran twice and the second
+    /// never).
+    fn steps_of_prompt(&self, params: &Value) -> Vec<Value> {
         let text = params
             .pointer("/prompt/0/text")
             .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
+            .unwrap_or_default();
+        let request = params
+            .pointer("/_meta/bzz~1request")
+            .and_then(Value::as_str);
+        self.steps_for(text, request).unwrap_or_default()
+    }
+
+    fn prompt(self: &Arc<Self>, id: Value, params: Value, steps: Vec<Value>) {
+        let session = params["sessionId"].as_str().unwrap_or_default().to_owned();
         let request = params
             .pointer("/_meta/bzz~1request")
             .and_then(Value::as_str)
@@ -324,10 +336,7 @@ impl Harness {
             }
             false
         };
-        for step in self
-            .steps_for(&text, request.as_deref())
-            .unwrap_or_default()
-        {
+        for step in steps {
             let mut stop = false;
             if let Some(name) = step.get("tool").and_then(Value::as_str) {
                 let wait = !step.get("nowait").and_then(Value::as_bool).unwrap_or(false);
@@ -657,8 +666,9 @@ impl Harness {
                 }
             }
             "session/prompt" => {
+                let steps = self.steps_of_prompt(&params);
                 let (harness, id) = (self.clone(), id.unwrap_or(Value::Null));
-                std::thread::spawn(move || harness.prompt(id, params));
+                std::thread::spawn(move || harness.prompt(id, params, steps));
             }
             // bzz's own host checkpoints its files; this one only says so.
             "_bzz/checkpoint" if self.own_host() => answer(json!({})),

@@ -2797,6 +2797,24 @@ real Pi package.
   not be made to happen again, so this is a reading of it, not a red run.
   What the test is for, that nothing outlives the host, held in that run.
 
+- After the release, `ci.yml` on the merge commit `f9fc97b` (run
+  43758350267) failed in `test`: `secret_scan_test`,
+  `no_key_reaches_a_harness_environment_arguments_or_logs`, the failure seen
+  once before at `ccfa1c6` and not explained then. This time the test said
+  what it saw: "codex: both turns did not end in 30 s. Replies to each
+  request: [2, 2]; the harness was answered for 6 of 3 sends", with one
+  harness process and two sessions in its log. **The fault was in the
+  test's stand-in harness, not in bzz.** bzz ran the two requests as two
+  sessions at once, as it should. The stand-in chose a prompt's turn of its
+  script on that prompt's own thread, reading which turns were used and
+  marking its own in two steps, so both prompts could take the first turn:
+  it ran twice, the "fail" turn never, and the test waited for exactly
+  three sends. Red, by widening that window with a 50 ms pause: the same
+  message, word for word but for the harness's name. The stand-in now
+  chooses the turn on the one thread that reads bzz's requests, in the
+  order they arrive; green with the pause still in, then without it. The
+  runs on `8f6f30c` (the same tree as the merge) and on `bf203c8` passed.
+
 ### Still pending after release
 
 The owner approved publishing v0.15.0 on 2026-11-15 with these items open.
