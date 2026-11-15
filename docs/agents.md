@@ -773,6 +773,7 @@ should be listed any more.
 | `<data>/agents/<id>/started.json` | what its host reported when it last started |
 | `<data>/keys/agent-<id>.git/` | its git credentials, each sealed to your key |
 | `<data>/agents/run/<id>.json` | its running process, while it runs |
+| `<data>/agents/serving/<id>.<pid>.json` | which bzz holds its key and its connection now; `bzz agent delete` waits for it to be gone |
 | `<data>/agent-host/<id>/` | the agent host and its packages |
 
 bzz's database keeps each request an agent was woken by, and the reply it
