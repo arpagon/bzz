@@ -84,16 +84,25 @@ pub fn render(
         ));
     }
     for (index, agent) in agents.iter().enumerate().take(8) {
+        // An agent that `agent move` took away is neither active nor run here.
+        let moved_away = agent
+            .local
+            .as_ref()
+            .is_some_and(|local| local.state == crate::config::LocalAgentState::MovedAway);
         lines.push(Line::from(format!(
             "{} {} · {}{}",
             if index == selected { "›" } else { " " },
             crate::protocol::artifact::display(&agent.label, 32),
-            if agent.paused || (paused_all && agent.local.is_none()) {
+            if moved_away {
+                "moved away"
+            } else if agent.paused || (paused_all && agent.local.is_none()) {
                 "paused"
             } else {
                 "active"
             },
-            if agent.local.is_some() {
+            if moved_away {
+                " · local: it runs elsewhere"
+            } else if agent.local.is_some() {
                 " · local: bzz runs it"
             } else {
                 ""

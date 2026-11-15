@@ -13061,9 +13061,12 @@ mod tests {
             paused: false,
             local,
         };
+        let mut moved = LocalAgentConfig::new(Harness::PiDurable);
+        moved.state = crate::config::LocalAgentState::MovedAway;
         let agents = [
             agent("helper", None),
             agent("Scout", Some(LocalAgentConfig::new(Harness::PiDurable))),
+            agent("Rover", Some(moved)),
         ];
         let status = |phase, turns, activity: Option<&str>, problem: Option<&str>| AgentStatus {
             id: agents[1].id,
@@ -13121,6 +13124,11 @@ mod tests {
         assert!(screen.contains("helper · active  "), "{screen}");
         assert!(
             screen.contains("Scout · active · local: bzz runs it"),
+            "{screen}"
+        );
+        // An agent that was moved away is not called active, nor run by bzz.
+        assert!(
+            screen.contains("Rover · moved away · local: it runs elsewhere"),
             "{screen}"
         );
         assert!(screen.contains("local agents"), "{screen}");
