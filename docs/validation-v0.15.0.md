@@ -2718,6 +2718,49 @@ Not run again after the merge: the benchmarks, `cargo deny`, `cargo audit`
 and `npm audit` (no dependency and no lock file changed), and the by-hand
 checks of the release binary that have no Herdr scenario.
 
+### A recorded run with real models (2026-11-15)
+
+Asked for by the owner, as proof he could watch on a phone. The release
+build of `b68398f` on a fresh pinned relay with generated people, two
+profiles of one generated owner on this machine (`here`, `there`), and real
+models through the owner's own sign-ins: `openai-codex/gpt-6-luna` through
+Pi, `grok-4.5` (Grok Build 1.0.77), `gpt-5.6-luna` (Codex 0.166.0) and
+`haiku` (Claude Code 2.1.322); about 45 short turns with one rehearsal.
+Every shot is a tape of the terminal's own output, and 37 checks of what the
+tapes show pass (`tape-expect.py`). The film, its tapes and its method are
+in the ignored experiment `runs/experiments/v015-proof/proof-reel/`; the
+owner watched the film.
+
+| Shown, with a real model answering | Result |
+|---|---|
+| `:agent new` from its form: checks, signature, creation, running without a restart, `i` adds it to the channel, a mention, one reply | as designed |
+| After bzz was closed and opened: the conversation's memory; a file written on the agent's own disk; a public repository cloned from GitHub by the sandbox's git; a host that is not allowed, refused; `/notes` absent on the machine | as designed |
+| A folder granted `:rw:exec`: the line at the top, `Ctrl-Y`, the exact command, `a` and the command's output in the reply; then `r` with a reason, nothing run, the folder intact, four lines of activity | as designed |
+| An agent on Grok, on Codex and on Claude Code, created from the command line with the adapters installed on first use; one message mentioning the three, three replies | as designed |
+| Another person mentions an owner-only agent: no reply in 14 s. After `--wake anyone`, that person is answered | as designed, with the finding below |
+| `Space` pauses and resumes; `x` stops a Codex turn, which says "My owner stopped this answer."; `agent delete` | as designed |
+| `agent move`, a wrong passphrase refused, `agent receive` in the other profile; there the agent recalls the word and still has its file and its clone | as designed |
+| `agent launch-kit`, `npm ci` in the kit, `start.sh` under the pinned `buzz-acp`; a reply from there with its memory; `agent shutdown`; `agent receive` of the folder; a reply at home | as designed |
+
+Found by it:
+
+- **A mention refused for its author is answered later** when the rule is
+  widened and bzz starts again within the ten minutes a start catches up
+  (`CATCH_UP`): bzz keeps no record of that refusal. Not changed; it is a
+  known limit in the release notes, and the owner's to decide.
+- The launch kit's README named a flag that does not exist
+  (`agent edit --no-packages`). Fixed: `--packages off`
+  (`tests/launch_kit_readme_test.rs` asks `bzz agent <command> --help` for
+  every flag the README names; red with the old text: "`bzz agent edit`
+  takes no --no-packages").
+- `agent edit --wake` prints "saved" before it asks for the passphrase to
+  publish the record again. Not changed.
+- bzz's default theme draws inline code with the terminal's faint style,
+  which is hard to read on a near-black terminal. Not changed.
+
+Not shown by it: macOS and Windows, a second machine, a private remote, a
+real Pi package.
+
 ### Still pending, and what the owner decides
 
 Nothing below was done, by design: publishing is the owner's decision.
@@ -2725,7 +2768,7 @@ Nothing below was done, by design: publishing is the owner's decision.
 | Item | Whose |
 |---|---|
 | Push the branch and let CI run on the candidate: four platforms with `bzz 0.15.0`, both relay jobs, `agent-host` and the new `upgrade` from v0.14.0 on three systems. Watch `test`: it failed once at `ccfa1c6` in the secret scan and could not be made to fail here ("CI at the last pushed commit") | owner |
-| Production acceptance: one agent created with a real model, answering in the real community, and moved to his VM with a launch kit (plan, acceptance 4; `e2e-manual.md` section 13) | owner |
+| Production acceptance: one agent answering in the real community, and moved to his VM with a launch kit (plan, acceptance 4; `e2e-manual.md` section 13). A real model, a move and a launch kit were seen on the test relay in the recorded run above; the real community and a second machine were not | owner |
 | The film and the hero of getbzz.dev still show v0.14; the page's "new in v0.15.0" section is written and not deployed | owner |
 | Merge, tag `v0.15.0`, the release workflow, the checks of the published archive, the site | owner, as in v0.14.0's "Publication" |
 | Carried from v0.14: production check of edits, mentions, Solo and sections on the real community; upgrade from v0.12.1; the huddle's backing channel in the sidebar | owner / operator |

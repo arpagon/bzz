@@ -71,7 +71,7 @@ move:
 There the agent posts with the `buzz` command, and its key is in its host's
 environment. A Pi package runs inside that host and can read the key. Install
 only packages you trust on that machine, or switch them off before you make
-the kit (`bzz agent edit <name> --no-packages`).
+the kit (`bzz agent edit <name> --packages off`).
 
 ## Stop it, and take it back
 

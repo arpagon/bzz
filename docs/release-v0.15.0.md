@@ -142,6 +142,9 @@ Found while the release was closed:
   1 MiB. The release build did not. bzz now runs on a thread whose stack it
   sets itself.
 
+- The launch kit's README named `bzz agent edit <name> --no-packages`,
+  which does not exist. It now says `--packages off`.
+
 Found by running bzz's agents against the real Buzz 1.0.1
 ([`validation-v0.15.0.md`](validation-v0.15.0.md), "After the run against
 Buzz 1.0"):
@@ -245,14 +248,25 @@ What v0.15.0 does not do, and what was not seen. Every item is in
   agent was run there: not a turn, not a move, not a coding harness. On
   Windows the host offers no real commands, a launch kit does not run (it
   is a shell script and a systemd unit), and Grok has no sandbox.
-- No test ran a **real model**: the tests may not read your Pi sign-in. The
-  host answered through a real model once, in an experiment before the plan.
-  A token refresh, a provider from a real Pi package, a usage limit and a
-  missing sign-in were not seen with a real provider.
+- No test runs a **real model**: the tests may not read your Pi sign-in.
+  Real models answered in one recorded run of the release candidate, with
+  the owner's own sign-ins: a `pi-durable` agent on `openai-codex/gpt-6-luna`
+  and one agent on each coding program, through creation, a restart, a
+  command approved and refused, a move to another profile, and a launch kit
+  under `buzz-acp` (`validation-v0.15.0.md`, "A recorded run with real
+  models"). A token refresh, a provider from a real Pi package, a usage
+  limit and a missing sign-in were not seen with a real provider.
 - The three coding programs were run at **one version each**, with short
   prompts, on Linux. Later versions inside the ranges were not run.
 - Communities with **federated identity**: an agent enrolls with the adapter
   by the code the broker's agents use; no local agent ran against one.
+
+**Who may wake it**
+
+- bzz keeps no record of a mention it did not hand to an agent because of
+  its author. If you widen the rule (`bzz agent edit --wake anyone`) and
+  bzz starts again within ten minutes, the start's catch-up reads that
+  mention again and the agent answers it. Seen in the recorded run.
 
 **What Buzz 1.0 shows of an agent made by bzz** (seen with Buzz 1.0.1)
 
