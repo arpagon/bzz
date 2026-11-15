@@ -116,6 +116,10 @@ harness = false
 name = "media"
 harness = false
 
+[[bench]]
+name = "agents"
+harness = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
