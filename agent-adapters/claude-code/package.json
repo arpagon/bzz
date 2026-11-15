@@ -1,0 +1,14 @@
+{
+  "name": "bzz-adapter-claude-code",
+  "version": "0.15.0",
+  "private": true,
+  "description": "The ACP adapter bzz starts for an agent on the claude-code harness. It runs the owner's own `claude`.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.101.0"
+  }
+}

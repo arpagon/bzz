@@ -93,10 +93,54 @@ fn mention_picker_marks_present_members() {
     );
     let mut terminal = Terminal::new(TestBackend::new(60, 6)).unwrap();
     terminal
-        .draw(|frame| mention_picker::render(frame, frame.area(), &picker, &Theme::default()))
+        .draw(|frame| {
+            mention_picker::render(
+                frame,
+                frame.area(),
+                &picker,
+                &std::collections::HashMap::new(),
+                &Theme::default(),
+            )
+        })
         .unwrap();
     let text = screen(&terminal);
     assert!(text.contains("● @ada"), "{text}");
     assert!(text.contains("◐ @bob"), "{text}");
     assert!(text.contains(" @cy") && !text.contains("● @cy"), "{text}");
+}
+
+/// From the run against Buzz 1.0: the picker offered the owner's own local
+/// agent as "remote agent". An agent this bzz holds the key of is offered
+/// as his; anyone else's agent is remote.
+#[test]
+fn mention_picker_offers_an_agent_this_bzz_holds_as_the_owners_own() {
+    let candidate = |label: &str, key: &str| MentionCandidate {
+        pubkey: key.repeat(64),
+        label: label.into(),
+        is_agent: true,
+        agent_eligibility: Some(bzz::agents::Eligibility::Eligible),
+        verified: false,
+        presence: None,
+    };
+    let picker = mention_picker::MentionPicker::new(
+        0..1,
+        String::new(),
+        vec![candidate("Scout", "a"), candidate("Bee", "b")],
+    );
+    let own = std::collections::HashMap::from([("a".repeat(64), bzz::agents::Own::RunsHere)]);
+    let mut terminal = Terminal::new(TestBackend::new(70, 6)).unwrap();
+    terminal
+        .draw(|frame| mention_picker::render(frame, frame.area(), &picker, &own, &Theme::default()))
+        .unwrap();
+    let text = screen(&terminal);
+    assert!(
+        text.lines()
+            .any(|line| line.contains("@Scout") && line.contains("◆ your agent · eligible")),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|line| line.contains("@Bee") && line.contains("◆ remote agent · eligible")),
+        "{text}"
+    );
 }

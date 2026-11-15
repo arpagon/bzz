@@ -598,10 +598,30 @@ fn render_internal(
         .as_ref()
         .and_then(|_| state.copy_bounds(messages));
     let labels = std::mem::take(&mut state.labels);
+    let role_changes = role_changes(messages);
     let blocks = messages
         .iter()
         .enumerate()
         .map(|(index, message)| {
+            // A "joined" notice about someone who was a member already is
+            // a change of that member's role, and is shown as one.
+            if let Some(system) = message
+                .system
+                .as_ref()
+                .filter(|_| role_changes.contains(message.event_id.as_str()))
+            {
+                return system_message_block(
+                    message,
+                    messages.get(index.saturating_sub(1)).filter(|_| index > 0),
+                    system,
+                    profiles,
+                    theme,
+                    self_pubkey,
+                    selected_index == Some(index),
+                    copy_bounds.is_some_and(|(start, end)| (start..=end).contains(&index)),
+                    true,
+                );
+            }
             message_block(
                 message,
                 messages.get(index.saturating_sub(1)).filter(|_| index > 0),
@@ -832,6 +852,7 @@ fn message_block(
             self_pubkey,
             selected,
             copy_selected,
+            false,
         );
     }
     let author_profile = profiles.get(&message.pubkey);
@@ -1141,6 +1162,7 @@ fn system_message_block(
     self_pubkey: Option<&str>,
     selected: bool,
     copy_selected: bool,
+    role_change: bool,
 ) -> MessageBlock {
     let mut rows = Vec::new();
     if previous.is_none_or(|previous| day_key(previous.created_at) != day_key(message.created_at)) {
@@ -1152,6 +1174,8 @@ fn system_message_block(
     let selection_before_row = rows.len();
     let summary = if message.deleted {
         "System event removed".to_owned()
+    } else if role_change {
+        role_change_summary(system, profiles)
     } else {
         system_summary(system, profiles, self_pubkey)
     };
@@ -1172,6 +1196,68 @@ fn system_message_block(
         selection_before_row,
         selected,
         copy_selected,
+    }
+}
+
+/// The "member joined" notices of a channel's `messages` that are not a
+/// join. The relay writes the same notice (`member_joined`, with no role)
+/// when a member's role is changed: making an agent "Viewing only" in Buzz
+/// and back showed as two more joins. A notice is a change when the
+/// timeline itself shows that its member was in the channel before it: an
+/// earlier join, or the creation of the channel or of the direct message,
+/// with no leaving in between. Where the earlier join is older than what is
+/// loaded, the notice still reads as a join: nothing here says otherwise.
+pub fn role_changes(messages: &[Message]) -> std::collections::HashSet<&str> {
+    let mut members = std::collections::HashSet::<&str>::new();
+    let mut changes = std::collections::HashSet::new();
+    for message in messages.iter().filter(|message| !message.deleted) {
+        let Some(system) = &message.system else {
+            continue;
+        };
+        match system.kind {
+            SystemEventKind::ChannelCreated => {
+                members.extend(system.actor.as_deref());
+            }
+            SystemEventKind::DmCreated => {
+                members.extend(system.participants.iter().map(String::as_str));
+            }
+            SystemEventKind::MemberJoined => {
+                if let Some(target) = system.target.as_deref()
+                    && !members.insert(target)
+                {
+                    changes.insert(message.event_id.as_str());
+                }
+            }
+            SystemEventKind::MemberLeft | SystemEventKind::MemberRemoved => {
+                if let Some(target) = system.target.as_deref().or(system.actor.as_deref()) {
+                    members.remove(target);
+                }
+            }
+            _ => {}
+        }
+    }
+    changes
+}
+
+/// What a notice that is a change of a member's role says. The notice does
+/// not carry the new role, so none is named.
+fn role_change_summary(system: &SystemEvent, profiles: &HashMap<String, Profile>) -> String {
+    let label = |pubkey: &str| {
+        sanitize::single_line(
+            &profiles
+                .get(pubkey)
+                .map(Profile::label)
+                .unwrap_or_else(|| crate::domain::abbreviated_pubkey(pubkey)),
+        )
+    };
+    match (system.target.as_deref(), system.actor.as_deref()) {
+        (Some(target), Some(actor)) if target != actor => format!(
+            "{}'s access to this channel was changed by {}",
+            label(target),
+            label(actor)
+        ),
+        (Some(target), _) => format!("{}'s access to this channel was changed", label(target)),
+        _ => "A member's access to this channel was changed".to_owned(),
     }
 }
 

@@ -3778,3 +3778,4698 @@ async fn real_relay_search_loads_older_pages() {
     );
     signer.lock().await;
 }
+
+/// One bzz profile of the M5 journey: its three folders, the owner's
+/// passphrase on descriptor 3 and the passphrase of a moved agent's file on
+/// descriptor 4, as a script gives them.
+#[cfg(unix)]
+struct MoveProfile {
+    dirs: std::path::PathBuf,
+    variables: Vec<(String, String)>,
+}
+
+#[cfg(unix)]
+impl MoveProfile {
+    fn new(dirs: std::path::PathBuf, passphrase: &str, variables: &[(String, String)]) -> Self {
+        std::fs::create_dir_all(&dirs).unwrap();
+        std::fs::write(dirs.join("pass"), format!("{passphrase}\n")).unwrap();
+        let profile = Self {
+            dirs,
+            variables: variables.to_vec(),
+        };
+        profile.file_passphrase("the passphrase of the moved file");
+        profile
+    }
+
+    /// What `bzz agent move` and `receive` will read as the file's
+    /// passphrase from now on.
+    fn file_passphrase(&self, passphrase: &str) {
+        std::fs::write(self.dirs.join("move-pass"), format!("{passphrase}\n")).unwrap();
+    }
+
+    fn paths(&self) -> bzz::paths::Paths {
+        bzz::paths::Paths {
+            config_dir: self.dirs.join("c"),
+            data_dir: self.dirs.join("d"),
+            cache_dir: self.dirs.join("k"),
+        }
+    }
+
+    fn command(&self, args: &[&str], output: Option<&std::path::Path>) -> Command {
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("exec \"$0\" \"$@\" 3<\"$BZZ_M5_PASSPHRASE\" 4<\"$BZZ_M5_FILE_PASSPHRASE\"")
+            .arg(env!("CARGO_BIN_EXE_bzz"))
+            .args(args)
+            .env("BZZ_M5_PASSPHRASE", self.dirs.join("pass"))
+            .env("BZZ_M5_FILE_PASSPHRASE", self.dirs.join("move-pass"))
+            .env("BZZ_CONFIG_DIR", self.dirs.join("c"))
+            .env("BZZ_DATA_DIR", self.dirs.join("d"))
+            .env("BZZ_CACHE_DIR", self.dirs.join("k"))
+            .env("BZZ_PASSPHRASE_FD", "3")
+            .env("BZZ_MOVE_PASSPHRASE_FD", "4")
+            .envs(self.variables.iter().cloned())
+            .stdin(std::process::Stdio::null());
+        if let Some(output) = output {
+            let file = std::fs::File::create(output).unwrap();
+            command.stdout(file.try_clone().unwrap()).stderr(file);
+        }
+        command
+    }
+
+    /// Runs one command to its end: whether it succeeded, and what it said.
+    fn said(&self, args: &[&str]) -> (bool, String) {
+        let output = self.command(args, None).output().unwrap();
+        (
+            output.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    }
+
+    fn ok(&self, args: &[&str]) -> String {
+        let (success, text) = self.said(args);
+        assert!(success, "bzz {args:?}: {text}");
+        text
+    }
+
+    /// A command that must fail, and what it said.
+    fn refused(&self, args: &[&str]) -> String {
+        let (success, text) = self.said(args);
+        assert!(!success, "bzz {args:?} should have been refused: {text}");
+        text
+    }
+}
+
+/// The processes a journey started. Whatever ends the test, also a failed
+/// assertion, none of them is left running: a `bzz agent run` gets TERM and
+/// stops its own host, and `buzz-acp` is killed with everything it started.
+#[cfg(unix)]
+#[derive(Default)]
+struct Started(std::sync::Mutex<Vec<u32>>);
+
+#[cfg(unix)]
+impl Started {
+    fn add(&self, child: &std::process::Child) {
+        self.0.lock().unwrap().push(child.id());
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Started {
+    fn drop(&mut self) {
+        let pids = std::mem::take(&mut *self.0.lock().unwrap());
+        let signal = |signal: &str, target: String| {
+            let _ = Command::new("kill")
+                .args([signal, "--", &target])
+                .stderr(std::process::Stdio::null())
+                .status();
+        };
+        let alive = |pid: &u32| bzz::agents::runtime::process::identity_of(*pid).is_some();
+        if !pids.iter().any(alive) {
+            return;
+        }
+        for pid in pids.iter().filter(|pid| alive(pid)) {
+            signal("-TERM", pid.to_string());
+        }
+        std::thread::sleep(Duration::from_secs(3));
+        for pid in &pids {
+            // Its group, when it leads one, and the process itself.
+            signal("-KILL", format!("-{pid}"));
+            signal("-KILL", pid.to_string());
+        }
+    }
+}
+
+/// A prompt of `buzz-acp` with everything that differs from run to run
+/// taken out: ids, keys, times, names and what people wrote. What is left is
+/// the wording and the fields the Pi Durable host reads the place and the
+/// request from.
+fn buzz_acp_prompt_shape(prompt: &str) -> String {
+    fn is_hex(text: &str) -> bool {
+        text.bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+    fn word_shape(word: &str) -> String {
+        // Punctuation that Buzz writes around an id stays where it is.
+        let start = word
+            .find(|character: char| character.is_ascii_alphanumeric())
+            .unwrap_or(word.len());
+        let end = word
+            .rfind(|character: char| character.is_ascii_alphanumeric())
+            .map_or(start, |last| last + 1);
+        let (before, core, after) = (&word[..start], &word[start..end], &word[end..]);
+        let parts = core.split('-').collect::<Vec<_>>();
+        let uuid = parts.len() == 5
+            && parts.iter().map(|part| part.len()).collect::<Vec<_>>() == [8, 4, 4, 4, 12]
+            && parts.iter().all(|part| is_hex(part));
+        let time = core.len() >= 19
+            && core.as_bytes()[4] == b'-'
+            && core.as_bytes()[10] == b'T'
+            && core.as_bytes()[..4].iter().all(u8::is_ascii_digit);
+        let shaped = if core.len() == 64 && is_hex(core) {
+            "<event>"
+        } else if uuid {
+            "<uuid>"
+        } else if core.starts_with("npub1") && core.len() > 50 {
+            "<npub>"
+        } else if time {
+            "<time>"
+        } else {
+            core
+        };
+        format!("{before}{shaped}{after}")
+    }
+    let shape = |text: &str| {
+        text.split(' ')
+            .map(word_shape)
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    // Ids written with no space around them, as in a list of tags.
+    let ids = |text: &str| {
+        let mut out = String::new();
+        let mut run = String::new();
+        for character in text.chars() {
+            if character.is_ascii_alphanumeric() || character == '-' {
+                run.push(character);
+            } else {
+                out.push_str(&word_shape(&run));
+                run.clear();
+                out.push(character);
+            }
+        }
+        out.push_str(&word_shape(&run));
+        out
+    };
+    prompt
+        .lines()
+        .map(|line| {
+            if line.starts_with("Content: ") {
+                "Content: <what was written>".to_owned()
+            } else if let Some(rest) = line.strip_prefix("Channel: ")
+                && let Some(at) = rest.rfind(" (#")
+            {
+                format!("Channel: <name>{}", shape(&rest[at..]))
+            } else if line.starts_with('[')
+                && let Some(at) = line.find("): ")
+                && let Some(number) = line.find("] ")
+                && let Some(time) = line[..at].rfind(" (")
+                && number < time
+            {
+                // A message of the thread, as context: its number, who wrote
+                // it (a key, or a name and a key), when, and what.
+                format!(
+                    "{}] <who>{}): <what was written>",
+                    &line[..number],
+                    shape(&line[time..at])
+                )
+            } else if line.starts_with("Parsed: ") {
+                // Buzz writes a name before the key of someone who has one.
+                match (line.find("mentions=["), line.ends_with(']')) {
+                    (Some(at), true) => format!("{}mentions=[<who>]", ids(&line[..at])),
+                    _ => ids(line),
+                }
+            } else if line.starts_with("Tags: ") {
+                ids(line)
+            } else {
+                shape(line)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The shape of a prompt does not depend on who has a name: Buzz writes
+/// `Scout (<key>)` for someone with a profile and `<key>` for someone without.
+#[test]
+fn a_buzz_acp_prompts_shape_leaves_out_what_differs_from_run_to_run() {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/agents/buzz-acp-prompts");
+    let recorded =
+        std::fs::read_to_string(fixtures.join("02-same-mention-after-restart.txt")).unwrap();
+    let shape = buzz_acp_prompt_shape(&recorded);
+    for kept in [
+        "<context>\nScope: thread\nSession scope: thread\nChannel: <name> (#<uuid>)\nThread root: <event>\n",
+        "<thread-context included=\"1\" total=\"2\" truncated=\"false\">\n[1] <who> (<time>): <what was written>\n</thread-context>",
+        "<buzz-event type=\"@mention\">\nEvent ID: <event>\nChannel: <name> (#<uuid>)\nKind: 9\nFrom: <npub> (hex: <event>)\nTime: <time>\nContent: <what was written>\n",
+        "Tags: [[\"h\",\"<uuid>\"],[\"p\",\"<event>\"]]\nParsed: mentions=[<who>]\n</buzz-event>",
+        "use `--reply-to <event>` on `buzz messages send`",
+    ] {
+        assert!(shape.contains(kept), "`{kept}` in:\n{shape}");
+    }
+    // The same prompt in another run: other ids, another time, another
+    // channel, other words, and an agent with a name where this one has
+    // none, or without one where this one has it.
+    let after = |marker: &str, length: usize| {
+        let at = recorded.find(marker).expect(marker) + marker.len();
+        recorded[at..at + length].to_owned()
+    };
+    let agent = after("[\"p\",\"", 64);
+    let channel = after("(#", 36);
+    let time = after("Time: ", 19);
+    let name = recorded[recorded.find("Channel: ").unwrap() + 9..]
+        .split(" (#")
+        .next()
+        .unwrap()
+        .to_owned();
+    let content = recorded[recorded.find("Content: ").unwrap() + 9..]
+        .lines()
+        .next()
+        .unwrap()
+        .to_owned();
+    assert!(!content.is_empty());
+    let named = format!("Scout ({agent})");
+    let renamed = if recorded.contains(&named) {
+        recorded.replace(&named, &agent)
+    } else {
+        recorded
+            .replace(
+                &format!("[1] {agent} "),
+                &format!("[1] Scout the 2nd ({agent}) "),
+            )
+            .replace(
+                &format!("mentions=[{agent}]"),
+                &format!("mentions=[Scout the 2nd ({agent})]"),
+            )
+    };
+    assert_ne!(renamed, recorded, "the agent's name was not changed");
+    let another = renamed
+        .replace(&agent, &"ab".repeat(32))
+        .replace(&channel, "00000000-1111-2222-3333-444444444444")
+        .replace(
+            &format!("Channel: {name} "),
+            "Channel: a channel (with brackets) ",
+        )
+        .replace(&time[..18], "2027-01-02T03:04:5")
+        .replace(&content, "something else entirely");
+    for changed in [&agent, &channel, &time[..18], content.as_str()] {
+        assert!(!another.contains(changed), "{changed} is still there");
+    }
+    assert_eq!(buzz_acp_prompt_shape(&another), shape);
+    // A reply in a thread names its root beside the people it mentions.
+    let reply = std::fs::read_to_string(fixtures.join("03-reply-in-thread.txt")).unwrap();
+    assert!(
+        buzz_acp_prompt_shape(&reply).contains(
+            "Tags: [[\"h\",\"<uuid>\"],[\"e\",\"<event>\",\"\",\"reply\"],[\"p\",\"<event>\"]]\nParsed: root=<event>, mentions=[<who>]\n"
+        ),
+        "{}",
+        buzz_acp_prompt_shape(&reply)
+    );
+    // What the host reads from is part of the shape: a reworded field is a
+    // difference.
+    for reworded in [
+        recorded.replace("Event ID: ", "Event Id: "),
+        recorded.replace("Thread root: ", "Thread: "),
+        recorded.replace("Scope: thread", "Scope: channel"),
+        recorded.replace("<buzz-event type=", "<event type="),
+        recorded.replace("(#", "("),
+    ] {
+        assert_ne!(reworded, recorded);
+        assert_ne!(buzz_acp_prompt_shape(&reworded), shape);
+    }
+}
+
+/// v0.15 M5 exit gate, on the pinned relay, with the `bzz` binary, the real
+/// Pi Durable host on its stand-in model, and Buzz's own `buzz-acp` and
+/// `buzz` at the pin:
+///
+/// 1. an agent answers here and makes a file;
+/// 2. `bzz agent move` while `bzz agent run` serves it: the file is sealed
+///    and the first profile refuses to run the agent from then on;
+/// 3. a second profile of the same owner `receive`s it, and the next message
+///    in the same thread shows the conversation's memory and the file;
+/// 4. `bzz agent launch-kit`, and the real `buzz-acp` started from the kit
+///    answers the next message in that thread with the same memory;
+/// 5. the owner's `bzz agent shutdown` stops it, and `bzz agent receive
+///    <kit>` takes it back.
+///
+/// One reply per mention throughout, while the bzz of both profiles keeps
+/// running. The part under `buzz-acp` is also the guard of decision D9: it
+/// fails when the host no longer finds the place and the request in what
+/// `buzz-acp` sends, and it is where the prompts in
+/// `tests/fixtures/agents/buzz-acp-prompts/` are recorded again
+/// (`BZZ_REFRESH_BUZZ_ACP_PROMPTS=1`).
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_agent_moves_to_another_bzz_and_to_buzz_acp() {
+    use std::os::unix::{fs::PermissionsExt as _, process::CommandExt as _};
+
+    use bzz::{
+        agents::{launch_kit, runtime::process},
+        auth::IdentityManager,
+        config::LocalAgentState,
+    };
+    use nostr::nips::nip19::ToBech32 as _;
+    use serde_json::json;
+    use support::{
+        agent_harness::{running as running_pid, until},
+        pi_host,
+    };
+
+    let Some(node) = pi_host::node_or_skip("real_relay_agent_moves").await else {
+        return;
+    };
+    const WAIT: Duration = Duration::from_secs(90);
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let buzz_bin = std::path::PathBuf::from(
+        std::env::var("BZZ_BUZZ_ACP").expect("relay wrapper builds buzz-acp at the pin"),
+    )
+    .parent()
+    .expect("buzz-acp is in a folder")
+    .to_path_buf();
+    assert!(
+        buzz_bin.join("buzz-acp").is_file() && buzz_bin.join("buzz").is_file(),
+        "{} needs buzz-acp and buzz, built at the pin",
+        buzz_bin.display()
+    );
+    // A failed run's folder is worth reading: `BZZ_TEST_KEEP=1` keeps it.
+    let temporary = tempfile::TempDir::new().unwrap();
+    let (work, _removed_at_the_end) = if std::env::var_os("BZZ_TEST_KEEP").is_some() {
+        let kept = temporary.keep();
+        eprintln!("this run's folder is kept: {}", kept.display());
+        (kept, None)
+    } else {
+        (temporary.path().to_path_buf(), Some(temporary))
+    };
+    let work = work.as_path();
+    let passphrase = "m5 disposable passphrase";
+    let pi_dir = work.join("pi");
+    let scripted_node = pi_host::scripted_node(&work.join("bin"), &node);
+    let variables = pi_host::variables(&scripted_node, &pi_dir);
+
+    // ---- the owner's first bzz --------------------------------------------
+    let first = MoveProfile::new(work.join("first"), passphrase, &variables);
+    first.ok(&[
+        "identity",
+        "new",
+        "--label",
+        "owner",
+        "--backend",
+        "encrypted-file",
+    ]);
+    let first_paths = first.paths();
+    let mut config = Config::load(&first_paths).unwrap();
+    let identity = config.identities[0].clone();
+    config
+        .add_community("c1".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    config.save(&first_paths).unwrap();
+    let _ = seed_member(&source, &identity.pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let secret = secrecy::SecretString::from(passphrase.to_owned());
+    let manager = IdentityManager::new(&first_paths);
+    let owner = manager.signer(&identity, Some(&secret)).unwrap();
+    let owner_supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        owner.clone(),
+    );
+    let owner_http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        owner.clone(),
+    )
+    .unwrap();
+    let publish = |builder: EventBuilder| {
+        let (supervisor, owner) = (owner_supervisor.clone(), owner.clone());
+        async move {
+            let event = owner.sign(builder).await.unwrap();
+            let ack = supervisor.publish(event.clone()).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+            event
+        }
+    };
+    let query = |filter: serde_json::Value| {
+        let http = owner_http.clone();
+        async move { http.query_raw(&[filter]).await.unwrap() }
+    };
+
+    // A folder of this machine is granted to it: it must not move.
+    let site = work.join("site of the first machine");
+    std::fs::create_dir_all(&site).unwrap();
+    first.ok(&[
+        "agent",
+        "new",
+        "Scout",
+        "--model",
+        "scripted/scripted",
+        "--instructions",
+        "Be brief.",
+        "--allow-host",
+        "github.com",
+        "--folder",
+        &format!("site={}", site.display()),
+        "--yes",
+    ]);
+    let agent = Config::load(&first_paths).unwrap().hosted_agents[0].clone();
+    let agent_hex = agent.pubkey.clone();
+    let channel = uuid::Uuid::new_v4();
+    let channel_name = format!("m5-{}", &channel.simple().to_string()[..8]);
+    publish(
+        buzz_sdk::build_create_channel(
+            channel,
+            &channel_name,
+            Some(buzz_sdk::Visibility::Open),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    first.ok(&["agent", "add", "Scout", &channel_name]);
+
+    let message = |text: String, thread: Option<nostr::EventId>| {
+        let agent = agent_hex.clone();
+        let publish = &publish;
+        async move {
+            let thread = thread.map(|root| buzz_sdk::ThreadRef {
+                root_event_id: root,
+                parent_event_id: root,
+            });
+            publish(
+                buzz_sdk::build_message(
+                    channel,
+                    &text,
+                    thread.as_ref(),
+                    &[agent.as_str()],
+                    false,
+                    &[],
+                    &[],
+                )
+                .unwrap(),
+            )
+            .await
+        }
+    };
+    let by_agent = || {
+        query(
+            json!({"kinds": [9], "#h": [channel.to_string()], "authors": [agent_hex], "limit": 500}),
+        )
+    };
+    // The agent's messages that answer `request` itself: a reply names the
+    // thread's root too, and the request is the last event it names.
+    let replies = |request: String| {
+        let all = by_agent();
+        async move {
+            all.await
+                .into_iter()
+                .filter(|event| {
+                    bzz::protocol::events::event_references(event).last() == Some(&request)
+                })
+                .map(|event| event.content)
+                .collect::<Vec<_>>()
+        }
+    };
+    let exactly_one = |request: String, what: &'static str| {
+        let replies = &replies;
+        async move {
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while replies(request.clone()).await.is_empty() {
+                assert!(tokio::time::Instant::now() < deadline, "{what}: no reply");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let all = replies(request).await;
+            assert_eq!(all.len(), 1, "{what}: {all:?}");
+            all.into_iter().next().unwrap()
+        }
+    };
+    let logged = |log: &std::path::Path| std::fs::read_to_string(log).unwrap_or_default();
+    let started = Started::default();
+    // `bzz agent run`, until it has printed the agent's status line.
+    let run = |profile: &MoveProfile, log: std::path::PathBuf, line: &'static str| {
+        let child = profile
+            .command(&["agent", "run"], Some(&log))
+            .spawn()
+            .unwrap();
+        started.add(&child);
+        async move {
+            until("bzz agent run to say the agent's state", WAIT, || {
+                std::fs::read_to_string(&log)
+                    .unwrap_or_default()
+                    .contains(line)
+                    .then_some(())
+            })
+            .await;
+            // Its intake subscribes a moment after the status line.
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            child
+        }
+    };
+    let stop = |mut child: std::process::Child, log: &std::path::Path| {
+        let status = Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(
+            child.wait().unwrap().success(),
+            "{}",
+            std::fs::read_to_string(log).unwrap()
+        );
+    };
+    let host_pid = |paths: &bzz::paths::Paths, id: uuid::Uuid| {
+        process::read_record(&process::run_dir(&paths.data_dir), id)
+            .map(|record| record.process.pid)
+    };
+    let pong = |messages: usize| {
+        format!("pong: this conversation holds {messages} message(s) from people")
+    };
+
+    // ---- 1. it answers here, and makes a file -----------------------------
+    let first_log = work.join("first-agent-run.log");
+    let first_run = run(&first, first_log.clone(), "Scout · pi-durable · idle").await;
+    let hello = message("hello there".into(), None).await;
+    assert_eq!(
+        exactly_one(hello.id.to_hex(), "the first mention").await,
+        pong(1)
+    );
+    let wrote = message(
+        r#"do: [["bash", {"command": "echo made before the move > /home/agent/note.txt && cat /home/agent/note.txt"}], ["report"]]"#.into(),
+        None,
+    )
+    .await;
+    assert!(
+        exactly_one(wrote.id.to_hex(), "the file")
+            .await
+            .contains("made before the move")
+    );
+    let first_host = host_pid(&first_paths, agent.id).expect("the host is running");
+
+    // ---- 2. bzz agent move, while `bzz agent run` serves the agent ---------
+    let file = work.join("scout.bzzagent");
+    std::fs::write(&file, b"something of the owner's").unwrap();
+    let text = first.refused(&["agent", "move", "Scout", "--to", file.to_str().unwrap()]);
+    assert!(text.contains("bzz does not write over it"), "{text}");
+    assert_eq!(host_pid(&first_paths, agent.id), Some(first_host));
+    std::fs::remove_file(&file).unwrap();
+    let text = first.ok(&["agent", "move", "Scout", "--to", file.to_str().unwrap()]);
+    for said in [
+        "agent Scout moved into",
+        "sealed with your passphrase",
+        "not moved: its granted folder(s) (site) and git credentials",
+        "Scout is marked moved away here: this bzz no longer starts it",
+        "bzz agent receive <file>",
+    ] {
+        assert!(text.contains(said), "`{said}` in:\n{text}");
+    }
+    assert!(
+        !running_pid(first_host),
+        "its host was stopped for the move"
+    );
+    assert!(host_pid(&first_paths, agent.id).is_none());
+    // The bzz that was serving it says so, and goes on running.
+    until("the running bzz to see the move", WAIT, || {
+        logged(&first_log)
+            .contains("Scout · pi-durable · stopped · moved away: it runs elsewhere")
+            .then_some(())
+    })
+    .await;
+    assert_eq!(
+        Config::load(&first_paths).unwrap().hosted_agents[0]
+            .local
+            .as_ref()
+            .unwrap()
+            .state,
+        LocalAgentState::MovedAway
+    );
+    // The sealed file never holds the key, or anything else, in the clear.
+    let sealed_key = std::fs::read_to_string(
+        first_paths
+            .keys_dir()
+            .join(format!("agent-{}.nip44", agent.id)),
+    )
+    .unwrap();
+    let agent_keys = Keys::parse(&owner.decrypt_self(sealed_key).await.unwrap()).unwrap();
+    let key_forms = [
+        ("hex", agent_keys.secret_key().to_secret_hex()),
+        ("nsec", agent_keys.secret_key().to_bech32().unwrap()),
+    ];
+    let holds = |bytes: &[u8], needle: &str| {
+        bytes
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    };
+    let sealed = std::fs::read(&file).unwrap();
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    for (form, key) in &key_forms {
+        assert!(
+            !holds(&sealed, key),
+            "the key ({form}) is in the sealed file"
+        );
+    }
+    for plain in [
+        "Scout",
+        "Be brief.",
+        agent_hex.as_str(),
+        "made before the move",
+        "localhost:3030",
+        passphrase,
+    ] {
+        assert!(
+            !holds(&sealed, plain),
+            "{plain:?} is readable in the sealed file"
+        );
+    }
+
+    // ---- the first profile refuses to run it ------------------------------
+    assert!(first.ok(&["agent", "list"]).contains("Scout\tmoved away"));
+    let shown = first.ok(&["agent", "show", "Scout"]);
+    for said in [
+        "state:       moved away",
+        "in a sealed file, for another bzz",
+        "this bzz does not start it: it runs elsewhere. `bzz agent receive` takes it back",
+        "on the relay: not present: no copy of it is running",
+    ] {
+        assert!(shown.contains(said), "`{said}` in:\n{shown}");
+    }
+    let text = first.refused(&["agent", "resume", "Scout"]);
+    assert!(text.contains("was moved away and runs elsewhere"), "{text}");
+    let text = first.refused(&[
+        "agent",
+        "move",
+        "Scout",
+        "--to",
+        work.join("again.bzzagent").to_str().unwrap(),
+    ]);
+    assert!(text.contains("was already moved away"), "{text}");
+    // A bzz started now does not start it either. It stays up to the end of
+    // the journey, as does the one that was serving it: neither may answer.
+    let refusing_log = work.join("first-agent-run-after.log");
+    let refusing_run = run(
+        &first,
+        refusing_log.clone(),
+        "Scout · pi-durable · stopped · moved away: it runs elsewhere",
+    )
+    .await;
+
+    // ---- 3. the owner's second bzz receives it -----------------------------
+    let backup = work.join("owner.backup");
+    first.ok(&[
+        "identity",
+        "backup",
+        &identity.id.to_string(),
+        "--output",
+        backup.to_str().unwrap(),
+    ]);
+    let second = MoveProfile::new(work.join("second"), passphrase, &variables);
+    second.ok(&[
+        "identity",
+        "import-backup",
+        "--label",
+        "owner",
+        "--input",
+        backup.to_str().unwrap(),
+        "--backend",
+        "encrypted-file",
+    ]);
+    let second_paths = second.paths();
+    let mut second_config = Config::load(&second_paths).unwrap();
+    assert_eq!(second_config.identities[0].pubkey, identity.pubkey);
+    let second_identity = second_config.identities[0].id;
+    second_config
+        .add_community(
+            "c1".into(),
+            "ws://localhost:3030".into(),
+            second_identity,
+            true,
+        )
+        .unwrap();
+    second_config.save(&second_paths).unwrap();
+    let nothing_arrived = |paths: &bzz::paths::Paths| {
+        Config::load(paths).unwrap().hosted_agents.is_empty()
+            && !paths.data_dir.join("agents").exists()
+            && std::fs::read_dir(paths.keys_dir())
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|entry| entry.file_name().to_string_lossy().starts_with("agent-"))
+                        .count()
+                })
+                .unwrap_or(0)
+                == 0
+    };
+    // Refused whole, and named: the wrong passphrase, a changed file, a file
+    // cut short.
+    let file_arg = file.to_str().unwrap();
+    second.file_passphrase("not the passphrase of the file");
+    let text = second.refused(&["agent", "receive", file_arg]);
+    assert!(text.contains("the passphrase is wrong"), "{text}");
+    second.file_passphrase("the passphrase of the moved file");
+    let mut changed = sealed.clone();
+    changed[sealed.len() / 2] ^= 0x01;
+    let broken = work.join("broken.bzzagent");
+    std::fs::write(&broken, &changed).unwrap();
+    let text = second.refused(&["agent", "receive", broken.to_str().unwrap()]);
+    assert!(text.contains("was changed after bzz made it"), "{text}");
+    std::fs::write(&broken, &sealed[..sealed.len() - 100]).unwrap();
+    let text = second.refused(&["agent", "receive", broken.to_str().unwrap()]);
+    assert!(text.contains("was cut short"), "{text}");
+    assert!(nothing_arrived(&second_paths));
+    // Another owner's bzz in the same community: refused.
+    let stranger = MoveProfile::new(work.join("stranger"), passphrase, &variables);
+    stranger.ok(&[
+        "identity",
+        "new",
+        "--label",
+        "someone else",
+        "--backend",
+        "encrypted-file",
+    ]);
+    let stranger_paths = stranger.paths();
+    let mut stranger_config = Config::load(&stranger_paths).unwrap();
+    let stranger_identity = stranger_config.identities[0].id;
+    stranger_config
+        .add_community(
+            "c1".into(),
+            "ws://localhost:3030".into(),
+            stranger_identity,
+            true,
+        )
+        .unwrap();
+    stranger_config.save(&stranger_paths).unwrap();
+    let text = stranger.refused(&["agent", "receive", file_arg]);
+    assert!(
+        text.contains("An agent is received only by its owner. Nothing was received"),
+        "{text}"
+    );
+    assert!(nothing_arrived(&stranger_paths));
+
+    let text = second.ok(&["agent", "receive", file_arg]);
+    for said in [
+        &format!("agent Scout ({agent_hex}) received in c1"),
+        "its key is in bzz's custody, sealed to owner",
+        "no folder of this machine is granted to it",
+        "it is active",
+    ] {
+        assert!(text.contains(said), "`{said}` in:\n{text}");
+    }
+    // The same file twice does not make two agents.
+    let text = second.refused(&["agent", "receive", file_arg]);
+    assert!(
+        text.contains("is already here and was not moved away"),
+        "{text}"
+    );
+    let arrived = Config::load(&second_paths).unwrap().hosted_agents;
+    assert_eq!(arrived.len(), 1);
+    let arrived = arrived[0].clone();
+    let arrived_local = arrived.local.clone().unwrap();
+    assert_eq!(
+        (
+            arrived.pubkey.as_str(),
+            arrived_local.state,
+            arrived_local.folders.len(),
+            arrived_local.network.as_slice(),
+            arrived_local.instructions.as_str(),
+        ),
+        (
+            agent_hex.as_str(),
+            LocalAgentState::Active,
+            0,
+            ["github.com".to_owned()].as_slice(),
+            "Be brief.",
+        )
+    );
+    assert!(second.ok(&["agent", "list"]).contains("Scout\tactive"));
+
+    // The next message in the same thread: the conversation's memory came.
+    let second_log = work.join("second-agent-run.log");
+    let second_run = run(&second, second_log.clone(), "Scout · pi-durable · idle").await;
+    let again = message("and now?".into(), Some(hello.id)).await;
+    assert_eq!(
+        exactly_one(again.id.to_hex(), "in the second bzz, the same thread").await,
+        pong(2),
+        "the conversation continued in the second bzz"
+    );
+    // And the file the agent had made is on the disk that came.
+    let read = message(
+        r#"do: [["bash", {"command": "cat /home/agent/note.txt"}], ["report"]]"#.into(),
+        None,
+    )
+    .await;
+    assert!(
+        exactly_one(read.id.to_hex(), "the file, in the second bzz")
+            .await
+            .contains("made before the move")
+    );
+    let second_host = host_pid(&second_paths, arrived.id).expect("its host runs in the second bzz");
+    assert!(
+        host_pid(&first_paths, agent.id).is_none(),
+        "and not in the first"
+    );
+
+    // ---- 4. bzz agent launch-kit, and Buzz's own buzz-acp ------------------
+    let kit = work.join("scout-kit");
+    let kit_arg = kit.to_str().unwrap();
+    let text = second.ok(&["agent", "launch-kit", "Scout", "--to", kit_arg, "--yes"]);
+    for said in [
+        "A launch kit holds the key of Scout in the clear",
+        "launch kit for Scout written in",
+        "THE AGENT'S KEY IS IN THE CLEAR in",
+        "Scout is marked moved away here",
+    ] {
+        assert!(text.contains(said), "`{said}` in:\n{text}");
+    }
+    assert!(
+        !running_pid(second_host),
+        "its host was stopped for the kit"
+    );
+    until("the second bzz to see the move", WAIT, || {
+        logged(&second_log)
+            .contains("Scout · pi-durable · stopped · moved away: it runs elsewhere")
+            .then_some(())
+    })
+    .await;
+    // The kit's key file is its owner's alone, and nothing else in the kit
+    // holds the key.
+    let key_file = kit.join(launch_kit::ENV_FILE);
+    assert_eq!(
+        std::fs::metadata(&key_file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(holds(&std::fs::read(&key_file).unwrap(), &key_forms[0].1));
+    let mut folders = vec![kit.clone()];
+    let mut kit_files = 0;
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if path != key_file {
+                kit_files += 1;
+                let bytes = std::fs::read(&path).unwrap();
+                for (form, key) in &key_forms {
+                    assert!(
+                        !holds(&bytes, key),
+                        "the key ({form}) is in {}",
+                        path.display()
+                    );
+                }
+                assert!(
+                    !holds(&bytes, &site.display().to_string()),
+                    "a folder of the first machine is named in {}",
+                    path.display()
+                );
+            }
+        }
+    }
+    assert!(kit_files > 20, "{kit_files} files beside the key's");
+
+    // On "the other machine": the packages from the kit's own lock file, as
+    // its README says, and buzz-acp started from the kit's folder. `node`
+    // on that machine's PATH is the stand-in that switches on the host's
+    // scripted model; nothing of bzz is there.
+    let installed = Command::new("npm")
+        .args([
+            "ci",
+            "--ignore-scripts",
+            "--omit=optional",
+            "--omit=dev",
+            "--no-audit",
+            "--no-fund",
+        ])
+        .current_dir(kit.join(launch_kit::HOST_FOLDER))
+        .env("npm_config_cache", pi_host::npm_cache())
+        .output()
+        .unwrap();
+    assert!(
+        installed.status.success(),
+        "npm ci in the kit: {}",
+        String::from_utf8_lossy(&installed.stderr)
+    );
+    let recorded = work.join("recorded-prompts");
+    let machine_path = format!(
+        "{}:{}:{}:/usr/bin:/bin",
+        scripted_node.parent().unwrap().display(),
+        buzz_bin.display(),
+        node.program.parent().unwrap().display()
+    );
+    let start_kit = |log: std::path::PathBuf| {
+        let file = std::fs::File::create(&log).unwrap();
+        let child = Command::new(kit.join("start.sh"))
+            .env_clear()
+            .env("PATH", &machine_path)
+            .env("HOME", work.join("home of the other machine"))
+            .env("PI_CODING_AGENT_DIR", &pi_dir)
+            .env("BZZ_AGENT_HOST_RECORD", &recorded)
+            .stdin(std::process::Stdio::null())
+            .stdout(file.try_clone().unwrap())
+            .stderr(file)
+            .process_group(0)
+            .spawn()
+            .expect("the kit's start.sh runs");
+        started.add(&child);
+        async move {
+            until("buzz-acp to be on the relay", WAIT, || {
+                std::fs::read_to_string(&log)
+                    .unwrap_or_default()
+                    .contains("presence set to online")
+                    .then_some(())
+            })
+            .await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            child
+        }
+    };
+    let kill_group = |child: &mut std::process::Child| {
+        let _ = Command::new("kill")
+            .args(["-KILL", "--", &format!("-{}", child.id())])
+            .status();
+        let _ = child.wait();
+    };
+    std::fs::create_dir_all(work.join("home of the other machine")).unwrap();
+    let acp_log = work.join("buzz-acp-1.log");
+    let mut acp = start_kit(acp_log.clone()).await;
+    // Its presence is its status: `agent show` says it is there.
+    until("the moved agent to be present on the relay", WAIT, || {
+        second
+            .ok(&["agent", "show", "Scout"])
+            .contains("on the relay: present (online)")
+            .then_some(())
+    })
+    .await;
+    let shown = second.ok(&["agent", "show", "Scout"]);
+    assert!(
+        shown.contains("as a launch kit, for a machine with Buzz's buzz-acp"),
+        "{shown}"
+    );
+    // What the host must find in buzz-acp's prompt, said when it does not.
+    let guard = |log: &std::path::Path| {
+        format!(
+            "under buzz-acp at {PIN}. If there is no reply, or it is not the conversation's, the host no longer finds the place and the request in buzz-acp's prompt (decision D9): did Buzz change its wording?\nbuzz-acp and the host said:\n{}",
+            logged(log)
+                .lines()
+                .rev()
+                .take(40)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    // One reply under buzz-acp. With none, the guard says what that means.
+    let under_acp = |request: String, what: &'static str, log: std::path::PathBuf| {
+        let (replies, exactly_one, guard) = (&replies, &exactly_one, &guard);
+        async move {
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while replies(request.clone()).await.is_empty() {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "{what}: no reply {}",
+                    guard(&log)
+                );
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            exactly_one(request, what).await
+        }
+    };
+    // The next message in the same thread, answered by buzz-acp's agent with
+    // the same memory: the place and the request were found in its prompt.
+    let third = message("and under buzz-acp?".into(), Some(hello.id)).await;
+    let reply = under_acp(
+        third.id.to_hex(),
+        "under buzz-acp, the same thread",
+        acp_log.clone(),
+    )
+    .await;
+    assert_eq!(reply, pong(3), "{}", guard(&acp_log));
+    // A new thread there is a new conversation.
+    let one = message("ping one".into(), None).await;
+    let reply = under_acp(
+        one.id.to_hex(),
+        "under buzz-acp, a new thread",
+        acp_log.clone(),
+    )
+    .await;
+    assert_eq!(reply, pong(1), "{}", guard(&acp_log));
+    // buzz-acp is killed with everything it started, and started again: it
+    // hands the mention over again, and the host knows the request.
+    kill_group(&mut acp);
+    let acp_log = work.join("buzz-acp-2.log");
+    let mut acp = start_kit(acp_log.clone()).await;
+    let two = message("ping two, same thread".into(), Some(one.id)).await;
+    let reply = under_acp(two.id.to_hex(), "after buzz-acp restarted", acp_log.clone()).await;
+    assert_eq!(reply, pong(2), "{}", guard(&acp_log));
+    let three = message("ping three, a new thread".into(), None).await;
+    let reply = under_acp(three.id.to_hex(), "another new thread", acp_log.clone()).await;
+    assert_eq!(reply, pong(1), "{}", guard(&acp_log));
+    assert_eq!(
+        replies(one.id.to_hex()).await.len(),
+        1,
+        "a mention handed over again is not answered again"
+    );
+    // Each reply is the agent's own, with the owner's authorization, as
+    // every message it wrote under bzz.
+    for event in by_agent().await {
+        let auth = event
+            .tags
+            .iter()
+            .find(|tag| tag.as_slice().first().map(String::as_str) == Some("auth"))
+            .unwrap_or_else(|| panic!("no owner tag on {:?}", event.content));
+        assert_eq!(
+            buzz_sdk::nip_oa::verify_auth_tag(
+                &serde_json::to_string(auth.as_slice()).unwrap(),
+                &event.pubkey
+            )
+            .unwrap(),
+            owner.public_key()
+        );
+    }
+
+    // ---- decision D9: what buzz-acp sent, against the recorded prompts -----
+    // The prompts of this run, in the order the host received them, each
+    // with the event it asks about.
+    let mut prompts = std::fs::read_dir(&recorded)
+        .unwrap()
+        .flatten()
+        .map(|entry| {
+            let path = entry.path();
+            let modified = entry.metadata().unwrap().modified().unwrap();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // `prompt-<pid>-<n>.txt`
+            let number = name
+                .trim_end_matches(".txt")
+                .rsplit('-')
+                .next()
+                .and_then(|number| number.parse::<u32>().ok())
+                .unwrap_or(0);
+            (modified, number, std::fs::read_to_string(path).unwrap())
+        })
+        .collect::<Vec<_>>();
+    prompts.sort_by_key(|prompt| (prompt.0, prompt.1));
+    let asks_about = |text: &str, event: &nostr::Event| {
+        text.lines()
+            .filter_map(|line| line.strip_prefix("Event ID: "))
+            .next_back()
+            == Some(event.id.to_hex().as_str())
+    };
+    let position = |event: &nostr::Event, from: usize| {
+        prompts
+            .iter()
+            .enumerate()
+            .skip(from)
+            .find(|(_, (_, _, text))| asks_about(text, event))
+            .map(|(index, _)| index)
+    };
+    let first_of_one = position(&one, 0).expect("the prompt for the new thread");
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/agents/buzz-acp-prompts");
+    // The four situations the recorded prompts cover, as this run saw them.
+    let fresh = [
+        (
+            "01-top-level-mention.txt",
+            "a top-level mention in a channel: it starts a thread, so its place is the channel and its own event id",
+            Some(first_of_one),
+            &one,
+            &one,
+        ),
+        (
+            "02-same-mention-after-restart.txt",
+            "the same mention handed over again after buzz-acp was killed and restarted, now with the thread's context: same place, same request",
+            position(&one, first_of_one + 1),
+            &one,
+            &one,
+        ),
+        (
+            "03-reply-in-thread.txt",
+            "a second mention, written as a reply in that thread: same place, another request",
+            position(&two, 0),
+            &two,
+            &one,
+        ),
+        (
+            "04-new-top-level-mention.txt",
+            "another top-level mention in the same channel: another place",
+            position(&three, 0),
+            &three,
+            &three,
+        ),
+    ];
+    let refresh = std::env::var_os("BZZ_REFRESH_BUZZ_ACP_PROMPTS").is_some();
+    let mut expected = Vec::new();
+    for (name, what, index, request, root) in &fresh {
+        let index = index.unwrap_or_else(|| {
+            panic!(
+                "buzz-acp sent no prompt for `{name}` ({what}). {}",
+                guard(&acp_log)
+            )
+        });
+        let text = &prompts[index].2;
+        if refresh {
+            std::fs::write(fixtures.join(name), text).unwrap();
+        } else {
+            // The host's own tests read the recorded prompts. They stand
+            // for what buzz-acp sends only while it still sends this.
+            let kept = std::fs::read_to_string(fixtures.join(name)).unwrap();
+            assert_eq!(
+                buzz_acp_prompt_shape(text),
+                buzz_acp_prompt_shape(&kept),
+                "buzz-acp at {PIN} no longer words its prompt as tests/fixtures/agents/buzz-acp-prompts/{name} has it. Record the prompts again (the README in that folder says how), then run `npm test` in agent-host/: it says whether the host still finds the place and the request"
+            );
+        }
+        // What the host must read from it: known here because this test
+        // published the events, not because anything parsed the prompt.
+        let quoted = |text: &str| serde_json::to_string(text).unwrap();
+        expected.push(format!(
+            "    {{\n      \"file\": {},\n      \"what\": {},\n      \"channel\": {},\n      \"request\": {},\n      \"place\": {}\n    }}",
+            quoted(name),
+            quoted(what),
+            quoted(&channel.to_string()),
+            quoted(&request.id.to_hex()),
+            quoted(&format!("{channel}/{}", root.id.to_hex())),
+        ));
+    }
+    if refresh {
+        let text = format!(
+            "{{\n  \"buzz\": \"{PIN}\",\n  \"prompts\": [\n{}\n  ]\n}}\n",
+            expected.join(",\n")
+        );
+        std::fs::write(fixtures.join("expected.json"), text).unwrap();
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr(),
+            "recorded the prompts of buzz-acp at {PIN} again in {}",
+            fixtures.display()
+        );
+    }
+
+    // ---- 5. the owner's shutdown, and the way back -------------------------
+    let text = second.ok(&["agent", "shutdown", "Scout"]);
+    assert!(
+        text.contains("sent Buzz's stop command (`!shutdown`) to Scout as its owner")
+            && text.contains("Scout left: it is no longer present on the relay"),
+        "{text}"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let exit = loop {
+        if let Some(status) = acp.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    if exit.is_none() {
+        kill_group(&mut acp);
+    }
+    assert!(
+        exit.is_some_and(|status| status.success()),
+        "buzz-acp left by itself, with code 0: {exit:?}\n{}",
+        logged(&acp_log)
+    );
+    assert!(
+        second
+            .ok(&["agent", "show", "Scout"])
+            .contains("on the relay: not present: no copy of it is running")
+    );
+    // Nobody answers now: not the stopped copy, and not the bzz of either
+    // profile, both of which are still running.
+    let silent = message("is anyone there?".into(), None).await;
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    assert!(replies(silent.id.to_hex()).await.is_empty());
+
+    // ---- 5b. the stop command, wherever bzz sends it ----------------------
+    // The run above had one channel, and the command chose it. Here: a
+    // channel named with `--channel` when another would be chosen, a Solo
+    // chat chosen before any channel, and a direct message chosen before
+    // both. Each time the copy under buzz-acp is started again from the
+    // kit, hears the command where it was sent, and leaves.
+    // A second channel, whose name sorts before the first one's: with no
+    // flag the command would go there.
+    let earlier = uuid::Uuid::new_v4();
+    let earlier_name = format!("a5-{}", &earlier.simple().to_string()[..8]);
+    // And one the agent is not in.
+    let without = uuid::Uuid::new_v4();
+    let without_name = format!("z5-{}", &without.simple().to_string()[..8]);
+    for (id, name) in [(earlier, &earlier_name), (without, &without_name)] {
+        publish(
+            buzz_sdk::build_create_channel(
+                id,
+                name,
+                Some(buzz_sdk::Visibility::Open),
+                Some(buzz_sdk::ChannelKind::Stream),
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+        .await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    second.ok(&["agent", "add", "Scout", &earlier_name]);
+    let (success, text) = second.said(&["agent", "shutdown", "Scout", "--channel", &without_name]);
+    assert!(
+        !success
+            && text.contains(&format!("Scout is not a member of {without_name}"))
+            && text.contains("hears a command only where it is a member"),
+        "a channel the agent is not in: {text}"
+    );
+    for (round, place) in ["--channel", "a Solo chat", "a direct message"]
+        .into_iter()
+        .enumerate()
+    {
+        // The place is made before the copy starts: buzz-acp learns the
+        // agent's channels when it starts.
+        let solo_name = format!("s5-{}", &channel.simple().to_string()[..8]);
+        match place {
+            "a Solo chat" => {
+                publish(
+                    bzz::protocol::sidebar::solo_creation(uuid::Uuid::new_v4(), &solo_name)
+                        .unwrap(),
+                )
+                .await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                second.ok(&["agent", "add", "Scout", &solo_name]);
+            }
+            "a direct message" => {
+                publish(buzz_sdk::build_dm_open(&[agent_hex.as_str()]).unwrap()).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            _ => {}
+        }
+        // buzz-acp reads a few seconds back when it starts (its first
+        // subscription asks from five seconds before its start), so a copy
+        // started right after a stop command hears that command again and
+        // leaves at once. Seen here: the copy of the third round left 14 ms
+        // after it was online, on the command of the second.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let log = work.join(format!("buzz-acp-stop-{round}.log"));
+        let mut copy = start_kit(log.clone()).await;
+        let present = tokio::time::Instant::now() + WAIT;
+        loop {
+            let shown = second.ok(&["agent", "show", "Scout"]);
+            if shown.contains("on the relay: present (online)") {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < present,
+                "{place}: the copy never was present on the relay.\n`agent show` said:\n{shown}\nbuzz-acp said:\n{}",
+                logged(&log)
+            );
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        let (success, text) = if place == "--channel" {
+            second.said(&["agent", "shutdown", "Scout", "--channel", &channel_name])
+        } else {
+            second.said(&["agent", "shutdown", "Scout"])
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let exit = loop {
+            if let Some(status) = copy.try_wait().unwrap() {
+                break Some(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                break None;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+        if exit.is_none() {
+            kill_group(&mut copy);
+        }
+        let sent_in = |name: &str| text.contains(&format!("as its owner, in #{name}\n"));
+        match place {
+            "--channel" => assert!(
+                sent_in(&channel_name) && !sent_in(&earlier_name),
+                "--channel names the place: {text}"
+            ),
+            "a Solo chat" => assert!(
+                sent_in(&solo_name),
+                "a Solo chat is chosen before a channel: {text}"
+            ),
+            _ => assert!(
+                text.contains("as its owner, in #")
+                    && ![&channel_name, &earlier_name, &solo_name]
+                        .into_iter()
+                        .any(|name| sent_in(name)),
+                "a direct message is chosen before a Solo chat and a channel: {text}"
+            ),
+        }
+        assert!(
+            success && text.contains("Scout left: it is no longer present on the relay"),
+            "{place}: {text}\n{}",
+            logged(&log)
+        );
+        assert!(
+            exit.is_some_and(|status| status.success()),
+            "{place}: buzz-acp left by itself, with code 0: {exit:?}\n{}",
+            logged(&log)
+        );
+        assert!(
+            logged(&log).contains("shutdown command from owner"),
+            "{place}: buzz-acp says why it left:\n{}",
+            logged(&log)
+        );
+    }
+
+    // The kit comes back to the second bzz, which had moved the agent away:
+    // it is taken back, with what it remembers from its time under buzz-acp.
+    stop(second_run, &second_log);
+    let text = second.ok(&["agent", "receive", kit_arg]);
+    assert!(
+        text.contains("taken back: its files here were replaced by the ones that arrived")
+            && text.contains("delete the launch kit's folder now"),
+        "{text}"
+    );
+    assert!(second.ok(&["agent", "list"]).contains("Scout\tactive"));
+    let back_log = work.join("second-agent-run-back.log");
+    let back_run = run(&second, back_log.clone(), "Scout · pi-durable · idle").await;
+    let fourth = message("and back in bzz?".into(), Some(hello.id)).await;
+    assert_eq!(
+        exactly_one(fourth.id.to_hex(), "taken back, the same thread").await,
+        pong(4),
+        "bzz, bzz, buzz-acp and bzz again: one conversation"
+    );
+    let fifth = message("and this thread?".into(), Some(one.id)).await;
+    assert_eq!(
+        exactly_one(
+            fifth.id.to_hex(),
+            "taken back, the thread begun under buzz-acp"
+        )
+        .await,
+        pong(3)
+    );
+
+    // ---- one reply per mention, throughout ---------------------------------
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for (what, request) in [
+        ("hello", &hello),
+        ("the file", &wrote),
+        ("the same thread, second bzz", &again),
+        ("the file, second bzz", &read),
+        ("the same thread, buzz-acp", &third),
+        ("a new thread, buzz-acp", &one),
+        ("after the restart", &two),
+        ("another thread", &three),
+        ("taken back", &fourth),
+        ("taken back, the other thread", &fifth),
+    ] {
+        assert_eq!(
+            replies(request.id.to_hex()).await.len(),
+            1,
+            "{what}: one reply"
+        );
+    }
+    // What was asked while nobody ran it was nobody's to answer later: the
+    // bzz that took it back does not answer what came before.
+    assert!(replies(silent.id.to_hex()).await.is_empty());
+    assert_eq!(
+        by_agent().await.len(),
+        10,
+        "ten mentions answered, ten messages by the agent"
+    );
+    // The first profile never started it again.
+    assert!(host_pid(&first_paths, agent.id).is_none());
+    for log in [&first_log, &refusing_log] {
+        let since_the_move = logged(log).split("moved away").skip(1).collect::<String>();
+        assert!(
+            !since_the_move.is_empty() && !since_the_move.contains("answering"),
+            "the first profile ran it after the move:\n{}",
+            logged(log)
+        );
+    }
+    stop(back_run, &back_log);
+    stop(refusing_run, &refusing_log);
+    stop(first_run, &first_log);
+    owner_supervisor.shutdown().await;
+    owner.lock().await;
+}
+
+/// Runs the bzz binary on a disposable profile; the passphrase reaches it
+/// only as fd 3. Output goes to `output` when given.
+#[cfg(unix)]
+fn bzz_on_profile(
+    dirs: &std::path::Path,
+    args: &[&str],
+    output: Option<&std::path::Path>,
+) -> Command {
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg("exec \"$0\" \"$@\" 3<\"$BZZ_M1_PASSPHRASE\"")
+        .arg(env!("CARGO_BIN_EXE_bzz"))
+        .args(args)
+        .env("BZZ_M1_PASSPHRASE", dirs.join("pass"))
+        .env("BZZ_CONFIG_DIR", dirs.join("c"))
+        .env("BZZ_DATA_DIR", dirs.join("d"))
+        .env("BZZ_CACHE_DIR", dirs.join("k"))
+        .env("BZZ_PASSPHRASE_FD", "3");
+    if let Some(output) = output {
+        let file = std::fs::File::create(output).unwrap();
+        command
+            .stdout(file.try_clone().unwrap())
+            .stderr(file)
+            .stdin(std::process::Stdio::null());
+    }
+    command
+}
+
+/// v0.15 M1 exit gate, on the pinned relay: a mention of a local agent is
+/// answered exactly once through a scripted harness, with the harness killed
+/// before, during and after the publish, with a harness that sends twice,
+/// and with bzz itself killed. The agent is a plain channel member (no `bot`
+/// role), its requests come from its own relay connection, and no key
+/// reaches the harness.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_local_agent_answers_a_mention_exactly_once() {
+    use bzz::{
+        agents::runtime::{Limits, process, service},
+        auth::IdentityManager,
+        broker::{custody, relay as broker_relay},
+        config::{Harness, LocalAgentConfig},
+        diagnostics::DiagnosticHandle,
+        paths::Paths,
+        store::agent_runtime::{NewRequest, ReplyOrigin},
+    };
+    use nostr::JsonUtil as _;
+    use serde_json::json;
+    use support::agent_harness::{Script, kill, running as running_pid, until};
+
+    const WAIT: Duration = Duration::from_secs(30);
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let temporary = tempfile::TempDir::new().unwrap();
+    let dirs = temporary.path();
+    let passphrase = "m1 disposable passphrase";
+    std::fs::write(dirs.join("pass"), format!("{passphrase}\n")).unwrap();
+    let cli = |args: &[&str]| {
+        let output = bzz_on_profile(dirs, args, None).output().unwrap();
+        assert!(
+            output.status.success(),
+            "bzz {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    // The profile, made by bzz itself: an owner, a community, an agent whose
+    // key bzz holds sealed.
+    cli(&[
+        "identity",
+        "new",
+        "--label",
+        "owner",
+        "--backend",
+        "encrypted-file",
+    ]);
+    let paths = Paths {
+        config_dir: dirs.join("c"),
+        data_dir: dirs.join("d"),
+        cache_dir: dirs.join("k"),
+    };
+    let mut config = Config::load(&paths).unwrap();
+    let identity = config.identities[0].clone();
+    let community = config
+        .add_community("m1".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    config.save(&paths).unwrap();
+    cli(&["broker", "create", "Scout", "--yes"]);
+    let mut config = Config::load(&paths).unwrap();
+    let mut agent = config.hosted_agents[0].clone();
+    assert_eq!(
+        agent.local, None,
+        "`broker create` still makes a v0.13 hosted agent"
+    );
+    let agent_hex = agent.pubkey.clone();
+
+    let _ = seed_member(&source, &identity.pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let secret = secrecy::SecretString::from(passphrase.to_owned());
+    let manager = IdentityManager::new(&paths);
+    let owner = manager.signer(&identity, Some(&secret)).unwrap();
+    let ws = url::Url::parse("ws://localhost:3030/").unwrap();
+    let http_base = url::Url::parse("http://localhost:3030/").unwrap();
+    let owner_supervisor = SupervisorHandle::spawn(ws.clone(), owner.clone());
+    let owner_http = HttpClient::new(http_base.clone(), owner.clone()).unwrap();
+    let publish = |event: nostr::Event| {
+        let supervisor = owner_supervisor.clone();
+        async move {
+            let ack = supervisor.publish(event).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+            ack
+        }
+    };
+
+    // A channel where the agent is a plain member: no `bot` role (ADR v0.15,
+    // decision 11), which the v0.13 broker would have required.
+    let channel = uuid::Uuid::new_v4();
+    publish(
+        owner
+            .sign(
+                buzz_sdk::build_create_channel(
+                    channel,
+                    &format!("m1-{}", &channel.simple().to_string()[..8]),
+                    Some(buzz_sdk::Visibility::Open),
+                    Some(buzz_sdk::ChannelKind::Stream),
+                    None,
+                    None,
+                    false,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    publish(
+        owner
+            .sign(buzz_sdk::build_add_member(channel, &agent_hex, None).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    // The owner's DM with the agent, and someone else in the channel.
+    let opened = publish(
+        owner
+            .sign(buzz_sdk::build_dm_open(&[agent_hex.as_str()]).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
+    let dm = command_channel_id(&opened.message);
+    let stranger_keys = Keys::generate();
+    let _ = seed_member(&source, &stranger_keys.public_key().to_hex());
+    let stranger = SignerHandle::spawn(stranger_keys.clone());
+    let stranger_supervisor = SupervisorHandle::spawn(ws.clone(), stranger.clone());
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let message = |signer: SignerHandle,
+                   supervisor: SupervisorHandle,
+                   channel,
+                   text: String,
+                   mention: bool| {
+        let agent = agent_hex.clone();
+        async move {
+            let mentions = if mention {
+                vec![agent.as_str()]
+            } else {
+                Vec::new()
+            };
+            let event = signer
+                .sign(
+                    buzz_sdk::build_message(channel, &text, None, &mentions, false, &[], &[])
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let ack = supervisor.publish(event.clone()).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+            event
+        }
+    };
+    let mention = |text: &str| {
+        message(
+            owner.clone(),
+            owner_supervisor.clone(),
+            channel,
+            text.to_owned(),
+            true,
+        )
+    };
+    // Every message the relay holds from the agent in `channel`.
+    let by_agent = |channel: uuid::Uuid| {
+        let (http, agent) = (owner_http.clone(), agent_hex.clone());
+        async move {
+            http.query_raw(&[json!({"kinds": [9], "#h": [channel.to_string()], "authors": [agent], "limit": 500})])
+                .await
+                .unwrap()
+        }
+    };
+    // The agent's replies to `request`, as the relay holds them.
+    let replies = |request: &nostr::Event| {
+        let id = request.id.to_hex();
+        let all = by_agent(channel);
+        async move {
+            all.await
+                .into_iter()
+                .filter(|event| bzz::protocol::events::event_references(event).contains(&id))
+                .map(|event| event.content)
+                .collect::<Vec<_>>()
+        }
+    };
+    // Waits for the first reply, then for anything that would follow it.
+    let exactly_one = |request: nostr::Event, what: &'static str| {
+        let replies = &replies;
+        async move {
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while replies(&request).await.is_empty() {
+                assert!(tokio::time::Instant::now() < deadline, "{what}: no reply");
+                // The relay allows a person 300 HTTP calls a minute.
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let all = replies(&request).await;
+            assert_eq!(all.len(), 1, "{what}: {all:?}");
+            all.into_iter().next().unwrap()
+        }
+    };
+
+    // ---- the runtime in this process, as the TUI runs it ------------------
+    let script = Script::new(&dirs.join("harness-a"));
+    let send = |text: &str| json!({"tool": "send", "arguments": {"text": text, "final": true}});
+    script.write(
+        json!({"own_host": true}),
+        json!([
+            {"match": "plain question", "steps": [{"sleep_ms": 1500}, send("plain answer")]},
+            {"match": "kill before", "steps": [{"exit": 1}]},
+            {"match": "kill before", "resume": true, "steps": [send("answered after a kill before the publish")]},
+            {"match": "kill during", "steps": [{"tool": "send", "arguments": {"text": "answered while being killed", "final": true}, "nowait": true}, {"exit": 1}]},
+            {"match": "kill during", "resume": true, "steps": [send("answered again after a kill during the publish")]},
+            {"match": "kill after", "steps": [send("answered, then killed"), {"exit": 1}]},
+            {"match": "kill after", "resume": true, "steps": [send("answered a second time")]},
+            {"match": "send twice", "steps": [send("the first wording"), send("the second wording")]},
+            {"match": "dm question", "steps": [send("dm answer")]},
+        ]),
+    );
+    let mut local = LocalAgentConfig::new(Harness::PiDurable);
+    local.command = script.command();
+    agent.local = Some(local);
+    let mut store = Store::open(paths.database_file()).unwrap();
+    store.sync_config(&config).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let limits = Limits {
+        max_crashes: 10,
+        stop_grace: Duration::from_millis(500),
+        typing_interval: Duration::from_millis(400),
+        ..Limits::default()
+    };
+    let serve = |agent: bzz::config::HostedAgentConfig| {
+        let (paths, store, community, owner) = (
+            paths.clone(),
+            store.clone(),
+            config.communities[0].clone(),
+            owner.clone(),
+        );
+        async move {
+            let running = service::serve(service::ServeOptions {
+                paths: &paths,
+                store,
+                diagnostics: DiagnosticHandle::disabled(),
+                community: &community,
+                agents: &[agent],
+                owner: &owner,
+                owner_identity: identity.id,
+                federated: None,
+                limits,
+                owner_present: false,
+                environment: None,
+            })
+            .await
+            .unwrap()
+            .expect("one local agent");
+            assert!(running.problems.is_empty(), "{:?}", running.problems);
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while !running.listening() {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the agent's intake never subscribed"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            running
+        }
+    };
+    let running = serve(agent.clone()).await;
+    assert!(script.starts().is_empty(), "no process before a request");
+
+    // A mention is answered once; the agent's typing indicator shows first.
+    let mut owner_events = owner_supervisor.subscribe_events();
+    owner_supervisor
+        .subscribe(
+            "m1-typing",
+            bzz::realtime::subscriptions::agent_typing(channel, Timestamp::now().as_secs()),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let plain = mention("plain question").await;
+    assert_eq!(exactly_one(plain.clone(), "plain").await, "plain answer");
+    let mut typing = Vec::new();
+    while let Ok(event) = owner_events.try_recv() {
+        if let bzz::realtime::supervisor::SupervisorEvent::Session(SessionEvent::Event {
+            event,
+            ..
+        }) = event
+            && event.kind.as_u16() == 20_002
+        {
+            typing.push(event);
+        }
+    }
+    assert!(
+        !typing.is_empty(),
+        "the relay delivered the agent's typing indicator"
+    );
+    assert_eq!(typing[0].pubkey.to_hex(), agent_hex);
+    assert!(
+        bzz::agents::typing::parse(&typing[0], channel, typing[0].created_at.as_secs()).is_some(),
+        "{:?}",
+        typing[0].tags
+    );
+    // The reply is the agent's, in the mention's thread, with the owner's tag.
+    let stored = by_agent(channel)
+        .await
+        .into_iter()
+        .find(|event| event.content == "plain answer")
+        .unwrap();
+    let auth = stored
+        .tags
+        .iter()
+        .find(|tag| tag.as_slice().first().map(String::as_str) == Some("auth"))
+        .expect("NIP-OA tag");
+    assert_eq!(
+        buzz_sdk::nip_oa::verify_auth_tag(
+            &serde_json::to_string(auth.as_slice()).unwrap(),
+            &stored.pubkey
+        )
+        .unwrap(),
+        owner.public_key()
+    );
+    assert_eq!(
+        bzz::protocol::events::thread_coordinates(&stored).0,
+        Some(plain.id.to_hex())
+    );
+
+    // Killed before the publish: handed over again, answered once.
+    let before = mention("kill before the publish").await;
+    assert_eq!(
+        exactly_one(before, "killed before").await,
+        "answered after a kill before the publish"
+    );
+    // Killed during the publish: the harness sends and dies without waiting.
+    let during = mention("kill during the publish").await;
+    let answer = exactly_one(during, "killed during").await;
+    assert!(
+        [
+            "answered while being killed",
+            "answered again after a kill during the publish"
+        ]
+        .contains(&answer.as_str()),
+        "{answer}"
+    );
+    // Killed after the publish: nothing is handed over or published again.
+    let after = mention("kill after the publish").await;
+    assert_eq!(
+        exactly_one(after, "killed after").await,
+        "answered, then killed"
+    );
+    // A harness that sends twice.
+    let twice = mention("send twice please").await;
+    assert_eq!(exactly_one(twice, "sent twice").await, "the first wording");
+    assert!(
+        script.starts().len() >= 4,
+        "the harness died three times: {:?}",
+        script.starts()
+    );
+
+    // The owner's DM needs no mention and is answered flat; someone else's
+    // mention in the channel is not answered at all (owner only).
+    let in_dm = message(
+        owner.clone(),
+        owner_supervisor.clone(),
+        dm,
+        "dm question".into(),
+        false,
+    )
+    .await;
+    let ignored = message(
+        stranger.clone(),
+        stranger_supervisor.clone(),
+        channel,
+        "plain question from a stranger".into(),
+        true,
+    )
+    .await;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while by_agent(dm).await.is_empty() {
+        assert!(tokio::time::Instant::now() < deadline, "no reply in the DM");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let in_the_dm = by_agent(dm).await;
+    assert_eq!(in_the_dm.len(), 1);
+    assert_eq!(in_the_dm[0].content, "dm answer");
+    assert!(bzz::protocol::events::event_references(&in_the_dm[0]).is_empty());
+    let _ = in_dm;
+    assert!(
+        replies(&ignored).await.is_empty(),
+        "a stranger does not wake an owner-only agent"
+    );
+    let unanswered = store
+        .call({
+            let (agent, id) = (agent.id, ignored.id.to_hex());
+            move |store| store.agent_inbox_get(agent, &id)
+        })
+        .await
+        .unwrap();
+    assert!(unanswered.is_none());
+    assert_eq!(
+        by_agent(channel).await.len(),
+        5,
+        "five mentions, five replies"
+    );
+    // The relay's own log (written by scripts/test-relay.sh): the agent's
+    // intake subscribed a few times, not twice a second. A stored membership
+    // notice comes back with every subscription and is acted on once.
+    if let Ok(log) = std::fs::read_to_string("/tmp/dawn-relay-run.log") {
+        let subscriptions = log
+            .lines()
+            .filter(|line| line.contains(&agent_hex) && line.contains("\"event\":\"req\""))
+            .count();
+        assert!(
+            (1..=4).contains(&subscriptions),
+            "the agent sent {subscriptions} REQ frames"
+        );
+    }
+    running.stop().await;
+    for pid in script.starts() {
+        assert!(!running_pid(pid), "no harness outlives the runtime");
+    }
+
+    // ---- a crash of bzz around the publish --------------------------------
+    // What a bzz that died leaves in its ledger: a reply stored and already
+    // on the relay but not recorded as published, and one stored and never
+    // sent. The next start publishes both again, unchanged.
+    let agent_signer = custody::unlock(&paths.keys_dir(), &owner, &agent)
+        .await
+        .unwrap();
+    let agent_supervisor = SupervisorHandle::spawn(ws.clone(), agent_signer.clone());
+    let auth_tag = broker_relay::auth_tag(&agent.auth_tag).unwrap();
+    let mut stored_replies = Vec::new();
+    for (text, already_on_the_relay) in [
+        ("stored and sent before the crash", true),
+        ("stored before the crash, never sent", false),
+    ] {
+        let request = mention(&format!("asked: {text}")).await;
+        let thread = buzz_sdk::ThreadRef {
+            root_event_id: request.id,
+            parent_event_id: request.id,
+        };
+        let reply = agent_signer
+            .sign(
+                buzz_sdk::build_message(channel, text, Some(&thread), &[], false, &[], &[])
+                    .unwrap()
+                    .tag(auth_tag.clone()),
+            )
+            .await
+            .unwrap();
+        if already_on_the_relay {
+            let ack = agent_supervisor.publish(reply.clone()).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+        }
+        store
+            .call({
+                let new = NewRequest {
+                    agent_id: agent.id,
+                    request_id: request.id.to_hex(),
+                    community_id: community,
+                    channel_id: channel,
+                    place: format!("{channel}/{}", request.id.to_hex()),
+                    author: request.pubkey.to_hex(),
+                    created_at: request.created_at.as_secs(),
+                    event_json: request.as_json(),
+                };
+                let (reply_id, reply_json) = (reply.id.to_hex(), reply.as_json());
+                move |store| {
+                    store.agent_inbox_offer(&new)?;
+                    store.agent_inbox_delivered(new.agent_id, &new.request_id)?;
+                    store.agent_reply_claim(
+                        new.agent_id,
+                        &new.request_id,
+                        &reply_id,
+                        &reply_json,
+                        ReplyOrigin::Send,
+                        None,
+                    )
+                }
+            })
+            .await
+            .unwrap();
+        stored_replies.push((request, reply));
+    }
+    agent_supervisor.shutdown().await;
+    agent_signer.lock().await;
+    let starts_before = script.starts().len();
+    let running = serve(agent.clone()).await;
+    for (request, reply) in &stored_replies {
+        let held = owner_http
+            .query_raw(&[json!({"ids": [reply.id.to_hex()], "limit": 2})])
+            .await
+            .unwrap();
+        assert_eq!(held.len(), 1, "the relay holds the stored reply once");
+        assert_eq!(held[0].as_json(), reply.as_json(), "unchanged");
+        let ledger = store
+            .call({
+                let (agent, id) = (agent.id, request.id.to_hex());
+                move |store| store.agent_reply_get(agent, &id)
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            ledger.published,
+            "recorded as published after the relay took it"
+        );
+    }
+    // The two requests reach the intake again (they are newer than its
+    // cursor): they are known, so nothing answers them a second time.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for (request, reply) in &stored_replies {
+        assert_eq!(replies(request).await, std::slice::from_ref(&reply.content));
+    }
+    assert_eq!(
+        script.starts().len(),
+        starts_before,
+        "recovery started no harness"
+    );
+    running.stop().await;
+
+    // ---- without the TUI: `bzz agent run`, and bzz itself killed ----------
+    let script_b = Script::new(&dirs.join("harness-b"));
+    let live = script_b.marker("live");
+    script_b.write(
+        json!({"own_host": true, "ignore_eof": true}),
+        json!([
+            {"match": "agent run question", "steps": [send("answered by bzz agent run")]},
+            {"match": "bzz dies", "steps": [{"touch": live}, {"stall": true, "deaf": true}]},
+            {"match": "bzz dies", "resume": true, "steps": [send("answered after bzz itself was killed")]},
+        ]),
+    );
+    agent.local.as_mut().unwrap().command = script_b.command();
+    config.hosted_agents[0] = agent.clone();
+    config.save(&paths).unwrap();
+    let output = dirs.join("agent-run.log");
+    let said = |text: &str| {
+        std::fs::read_to_string(&output)
+            .unwrap_or_default()
+            .contains(text)
+    };
+    let mut first_bzz = bzz_on_profile(dirs, &["agent", "run"], Some(&output))
+        .spawn()
+        .unwrap();
+    until("bzz agent run to be running", WAIT, || {
+        said("running in m1").then_some(())
+    })
+    .await;
+    // One status line per agent, printed when its state changes.
+    until("the agent's status line", WAIT, || {
+        said("Scout · pi-durable · idle").then_some(())
+    })
+    .await;
+    let asked = mention("agent run question").await;
+    assert_eq!(
+        exactly_one(asked, "agent run").await,
+        "answered by bzz agent run"
+    );
+
+    let doomed = mention("bzz dies now").await;
+    until("the turn to be live", WAIT, || live.exists().then_some(())).await;
+    let harness_pid = *script_b.starts().last().unwrap();
+    let record = process::read_record(&process::run_dir(&paths.data_dir), agent.id).unwrap();
+    assert_eq!(
+        (record.process.pid, record.owner.pid),
+        (harness_pid, first_bzz.id())
+    );
+    kill(first_bzz.id());
+    first_bzz.wait().unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        running_pid(harness_pid),
+        "the harness outlived the bzz that was killed"
+    );
+    assert!(replies(&doomed).await.is_empty());
+
+    let output = dirs.join("agent-run-2.log");
+    let said = |text: &str| {
+        std::fs::read_to_string(&output)
+            .unwrap_or_default()
+            .contains(text)
+    };
+    let mut second_bzz = bzz_on_profile(dirs, &["agent", "run"], Some(&output))
+        .spawn()
+        .unwrap();
+    let swept = format!("stopped a harness left by an earlier bzz (process {harness_pid})");
+    until("the leftover to be swept", WAIT, || {
+        said(&swept).then_some(())
+    })
+    .await;
+    assert!(!running_pid(harness_pid), "stopped before anything else");
+    assert_eq!(
+        exactly_one(doomed, "bzz killed").await,
+        "answered after bzz itself was killed"
+    );
+    // Interrupted, bzz stops its harness (deaf to its closed input: TERM).
+    let stop = Command::new("kill")
+        .args(["-TERM", &second_bzz.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(stop.success());
+    assert!(
+        second_bzz.wait().unwrap().success(),
+        "{}",
+        std::fs::read_to_string(&output).unwrap()
+    );
+    for pid in script_b.starts() {
+        assert!(!running_pid(pid), "no harness outlives bzz agent run");
+    }
+    assert!(process::read_record(&process::run_dir(&paths.data_dir), agent.id).is_none());
+
+    // ---- rule 10: nothing a harness saw holds a key -----------------------
+    let owner_keys = manager.unlock(&identity, Some(&secret)).unwrap();
+    let sealed =
+        std::fs::read_to_string(paths.keys_dir().join(format!("agent-{}.nip44", agent.id)))
+            .unwrap();
+    let agent_secret = owner.decrypt_self(sealed).await.unwrap();
+    let agent_keys = Keys::parse(&agent_secret).unwrap();
+    use nostr::ToBech32 as _;
+    let secrets = [
+        ("agent key (hex)", agent_keys.secret_key().to_secret_hex()),
+        (
+            "agent key (nsec)",
+            agent_keys.secret_key().to_bech32().unwrap(),
+        ),
+        ("owner key (hex)", owner_keys.secret_key().to_secret_hex()),
+        (
+            "owner key (nsec)",
+            owner_keys.secret_key().to_bech32().unwrap(),
+        ),
+        ("owner passphrase", passphrase.to_owned()),
+        ("relay address", "localhost:3030".to_owned()),
+    ];
+    let folder = process::agent_dir(&paths.data_dir, agent.id);
+    let mut seen = vec![
+        std::fs::read_to_string(script.log_path()).unwrap(),
+        std::fs::read_to_string(script_b.log_path()).unwrap(),
+    ];
+    for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+        if entry.path().is_file() {
+            seen.push(String::from_utf8_lossy(&std::fs::read(entry.path()).unwrap()).into_owned());
+        }
+    }
+    assert!(seen.len() >= 3 && seen[0].contains("\"start\"") && seen[1].contains("\"env\""));
+    for text in &seen {
+        for (what, secret) in &secrets {
+            assert!(
+                !secret.is_empty() && !text.contains(secret.as_str()),
+                "{what} reached a harness"
+            );
+        }
+    }
+    owner_supervisor.shutdown().await;
+    stranger_supervisor.shutdown().await;
+    owner.lock().await;
+    stranger.lock().await;
+}
+
+/// v0.15 M6 exit gate, on the pinned relay, with **the owner's own installed
+/// programs and sign-ins**: for each of Grok, Codex and Claude Code, an
+/// agent made by `bzz agent new` answers a mention exactly once; a write
+/// outside its folders does not happen, and one inside a folder granted for
+/// writing does; after bzz and the program have stopped and started again,
+/// the next message in the thread is answered from the program's own saved
+/// session; and a version outside the tested range is refused before a key
+/// is made.
+///
+/// It runs only when `BZZ_REAL_HARNESSES` names the harnesses to try
+/// (`grok,codex,claude-code`): it spends three short prompts of each on the
+/// cheapest model that program offers. It is never part of a default run or
+/// of CI, which has no sign-in. With `BZZ_AGENT_RECORD` it also writes the
+/// transcripts that `tests/agent_coding_test.rs` replays.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh; runs only with BZZ_REAL_HARNESSES"]
+async fn real_relay_coding_harnesses_answer_once_remember_and_stay_in_their_folders() {
+    use bzz::{
+        agents::{
+            manage,
+            runtime::{Limits, coding, process, service},
+        },
+        auth::IdentityManager,
+        config::Harness,
+        diagnostics::DiagnosticHandle,
+        paths::Paths,
+    };
+    use serde_json::json;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let wanted = std::env::var("BZZ_REAL_HARNESSES").unwrap_or_default();
+    if wanted.trim().is_empty() {
+        // Written to the terminal itself: the test harness hides what a
+        // passing test prints, and a skip must be seen.
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIPPED real_relay_coding_harnesses_answer_once_remember_and_stay_in_their_folders: it uses your own installed grok, codex and claude with your sign-ins, so it runs only when asked: BZZ_REAL_HARNESSES=grok,codex,claude-code"
+        );
+        return;
+    }
+    // A reply of a real model takes seconds, sometimes a minute. A turn
+    // that runs away is stopped by bzz well before the test gives up: it
+    // is somebody's own account that pays for it.
+    const WAIT: Duration = Duration::from_secs(200);
+    const TURN: Duration = Duration::from_secs(150);
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    // Where the transcripts go: where the caller says, or with the test.
+    let kept = std::env::var("BZZ_AGENT_RECORD")
+        .ok()
+        .filter(|folder| !folder.trim().is_empty())
+        .map(std::path::PathBuf::from);
+
+    for name in wanted
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        let harness = manage::parse_harness(name).unwrap();
+        let spec = coding::spec(harness).expect("a coding harness");
+        // The cheapest model each program offered when this was written.
+        let (model, thinking) = match harness {
+            Harness::Grok => ("grok-4.5", Some("low")),
+            Harness::Codex => ("gpt-5.6-luna", Some("low")),
+            _ => ("haiku", None),
+        };
+        eprintln!("--- {name}: {} with {model}", spec.title);
+        let temporary = tempfile::TempDir::new().unwrap();
+        // The real place: a program names a folder as it really is.
+        let dirs = std::fs::canonicalize(temporary.path()).unwrap();
+        let dirs = dirs.as_path();
+        let passphrase = "m6 disposable passphrase";
+        std::fs::write(dirs.join("pass"), format!("{passphrase}\n")).unwrap();
+        let records = kept
+            .clone()
+            .map_or_else(|| dirs.join("transcripts"), |folder| folder.join(name));
+        let said = |args: &[&str], variables: &[(&str, String)]| {
+            let mut command = bzz_on_profile(dirs, args, None);
+            command.envs(variables.iter().map(|(name, value)| (*name, value.clone())));
+            let output = command.output().unwrap();
+            (
+                output.status.success(),
+                format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            )
+        };
+        let ok = |args: &[&str]| {
+            let (success, text) = said(args, &[]);
+            assert!(success, "bzz {args:?}: {text}");
+            text
+        };
+        ok(&[
+            "identity",
+            "new",
+            "--label",
+            "owner",
+            "--backend",
+            "encrypted-file",
+        ]);
+        let paths = Paths {
+            config_dir: dirs.join("c"),
+            data_dir: dirs.join("d"),
+            cache_dir: dirs.join("k"),
+        };
+        let mut config = Config::load(&paths).unwrap();
+        let identity = config.identities[0].clone();
+        config
+            .add_community("m6".into(), "ws://localhost:3030".into(), identity.id, true)
+            .unwrap();
+        config.save(&paths).unwrap();
+        let _ = seed_member(&source, &identity.pubkey);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let on_this_machine = || {
+            std::fs::read_dir(paths.keys_dir())
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|entry| entry.file_name().to_string_lossy().starts_with("agent-"))
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+
+        // ---- doctor: the program, its version, its adapter; no session ----
+        let report = ok(&["agent", "doctor"]);
+        let line = report
+            .lines()
+            .find(|line| line.starts_with(&format!("{}:", spec.command)))
+            .unwrap_or_else(|| panic!("no line for {} in:\n{report}", spec.command));
+        assert!(line.contains(": ok)"), "{line}");
+        assert!(
+            report.contains(&format!("made with `{}`", spec.sign_in)),
+            "{report}"
+        );
+
+        // ---- a version outside the range: refused before a key is made ----
+        let real = coding::find_program(spec, |name: &str| std::env::var(name).ok())
+            .await
+            .unwrap();
+        let shim = dirs.join(format!("{}-of-another-version", spec.command));
+        std::fs::write(
+            &shim,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = --version ]; then echo '{} 99.0.0'; exit 0; fi\nexec '{}' \"$@\"\n",
+                spec.command,
+                real.path.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (created, text) = said(
+            &["agent", "new", "Old", "--harness", name, "--yes"],
+            &[(spec.variable, shim.display().to_string())],
+        );
+        assert!(!created, "{text}");
+        for stated in [
+            "99.0.0",
+            "outside the versions bzz knows to work",
+            &real.version_text(),
+        ] {
+            assert!(text.contains(stated), "`{stated}` in: {text}");
+        }
+        assert_eq!(on_this_machine(), 0, "no key was made");
+
+        // ---- bzz agent new ------------------------------------------------
+        let work = dirs.join("work");
+        // Not under the machine's temporary folders: Grok's and Codex's own
+        // sandboxes let a program write there, whatever bzz grants.
+        let outside = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("m6-not-granted-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let folder = format!("work={}:rw", work.display());
+        let mut arguments = vec![
+            "agent",
+            "new",
+            "Scout",
+            "--harness",
+            name,
+            "--model",
+            model,
+            "--instructions",
+            "Answer in one short sentence.",
+            "--folder",
+            folder.as_str(),
+            "--yes",
+        ];
+        if let Some(level) = thinking {
+            arguments.extend(["--thinking", level]);
+        }
+        let text = ok(&arguments);
+        for stated in [
+            format!("{} {} at", spec.title, real.version_text()),
+            "created in m6".to_owned(),
+            format!("capability record: {}", manage::harness_label(harness)),
+            bzz::agents::capability::CODING_HARNESS_RUNS.to_owned(),
+        ] {
+            assert!(text.contains(&stated), "`{stated}` in:\n{text}");
+        }
+        // D18: the short warning, where the program has no sandbox of its own.
+        assert_eq!(
+            text.contains(bzz::agents::capability::NO_SANDBOX_WARNING),
+            harness == Harness::ClaudeCode,
+            "{text}"
+        );
+        assert_eq!(on_this_machine(), 1);
+        let config = Config::load(&paths).unwrap();
+        let agent = config.hosted_agents[0].clone();
+        let agent_hex = agent.pubkey.clone();
+        assert!(
+            agent.local.as_ref().unwrap().command.is_empty(),
+            "its own launch"
+        );
+
+        // ---- the owner, a channel, the agent in it ------------------------
+        let secret = secrecy::SecretString::from(passphrase.to_owned());
+        let owner = IdentityManager::new(&paths)
+            .signer(&identity, Some(&secret))
+            .unwrap();
+        let ws = url::Url::parse("ws://localhost:3030/").unwrap();
+        let owner_supervisor = SupervisorHandle::spawn(ws.clone(), owner.clone());
+        let owner_http = HttpClient::new(
+            url::Url::parse("http://localhost:3030/").unwrap(),
+            owner.clone(),
+        )
+        .unwrap();
+        let publish = |builder: EventBuilder| {
+            let (supervisor, owner) = (owner_supervisor.clone(), owner.clone());
+            async move {
+                let event = owner.sign(builder).await.unwrap();
+                let ack = supervisor.publish(event.clone()).await.unwrap();
+                assert!(ack.accepted, "{}", ack.message);
+                event
+            }
+        };
+        let channel = uuid::Uuid::new_v4();
+        publish(
+            buzz_sdk::build_create_channel(
+                channel,
+                &format!("m6-{}", &channel.simple().to_string()[..8]),
+                Some(buzz_sdk::Visibility::Open),
+                Some(buzz_sdk::ChannelKind::Stream),
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+        .await;
+        publish(buzz_sdk::build_add_member(channel, &agent_hex, None).unwrap()).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        // A message of the owner's: a mention, or not; in a thread, or not.
+        let message = |text: String, mention: bool, thread: Option<nostr::Event>| {
+            let (agent, publish) = (agent_hex.clone(), &publish);
+            async move {
+                let mentions = if mention {
+                    vec![agent.as_str()]
+                } else {
+                    Vec::new()
+                };
+                let thread = thread.map(|root| buzz_sdk::ThreadRef {
+                    root_event_id: root.id,
+                    parent_event_id: root.id,
+                });
+                publish(
+                    buzz_sdk::build_message(
+                        channel,
+                        &text,
+                        thread.as_ref(),
+                        &mentions,
+                        false,
+                        &[],
+                        &[],
+                    )
+                    .unwrap(),
+                )
+                .await
+            }
+        };
+        // The agent's messages that answer `request`, as the relay holds them.
+        let replies = |request: &nostr::Event| {
+            let (http, agent, id) = (owner_http.clone(), agent_hex.clone(), request.id.to_hex());
+            async move {
+                http.query_raw(&[json!({"kinds": [9], "#h": [channel.to_string()], "authors": [agent], "limit": 500})])
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|event| {
+                        bzz::protocol::events::thread_coordinates(event).1.as_deref() == Some(&id)
+                    })
+                    .map(|event| event.content)
+                    .collect::<Vec<_>>()
+            }
+        };
+        // Waits for the first reply, then for anything that would follow it.
+        let exactly_one = |request: nostr::Event, what: &'static str| {
+            let replies = &replies;
+            async move {
+                let deadline = tokio::time::Instant::now() + WAIT;
+                while replies(&request).await.is_empty() {
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "{name}, {what}: no reply"
+                    );
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let all = replies(&request).await;
+                assert_eq!(all.len(), 1, "{name}, {what}: {all:?}");
+                eprintln!("{name}, {what}: {:?}", all[0]);
+                all.into_iter().next().unwrap()
+            }
+        };
+
+        // ---- the runtime in this process, as the TUI runs it --------------
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let store = StoreHandle::spawn(store).unwrap();
+        let environment: bzz::agents::runtime::agent::Environment = {
+            let records = records.display().to_string();
+            std::sync::Arc::new(move |name: &str| {
+                if name == "BZZ_AGENT_RECORD" {
+                    Some(records.clone())
+                } else {
+                    std::env::var(name).ok()
+                }
+            })
+        };
+        let serve = || {
+            let (paths, store, community, owner, agent, environment) = (
+                paths.clone(),
+                store.clone(),
+                config.communities[0].clone(),
+                owner.clone(),
+                agent.clone(),
+                environment.clone(),
+            );
+            async move {
+                let running = service::serve_with_tools(
+                    service::ServeOptions {
+                        paths: &paths,
+                        store,
+                        diagnostics: DiagnosticHandle::disabled(),
+                        community: &community,
+                        agents: &[agent],
+                        owner: &owner,
+                        owner_identity: identity.id,
+                        federated: None,
+                        limits: Limits {
+                            turn: TURN,
+                            ..Limits::default()
+                        },
+                        // Nobody is asked: what needs the owner's yes is
+                        // refused.
+                        owner_present: false,
+                        environment: Some(environment),
+                    },
+                    // The harness starts `bzz agent-tools`: bzz, not this
+                    // test's own program.
+                    Some(env!("CARGO_BIN_EXE_bzz").into()),
+                )
+                .await
+                .unwrap()
+                .expect("one local agent");
+                assert!(running.problems.is_empty(), "{:?}", running.problems);
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                while !running.listening() {
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "the intake never subscribed"
+                    );
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                running
+            }
+        };
+        let transcript_files = || {
+            let mut files = std::fs::read_dir(&records)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .map(|entry| entry.path())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            files.sort();
+            files
+        };
+        let transcripts = || {
+            transcript_files()
+                .iter()
+                .map(|file| {
+                    std::fs::read_to_string(file)
+                        .unwrap()
+                        .lines()
+                        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = transcripts().len();
+        let running = serve().await;
+
+        // ---- a mention is answered exactly once ---------------------------
+        let remember = message(
+            "Remember the word heron: I will ask you for it later. For now answer only: noted."
+                .into(),
+            true,
+            None,
+        )
+        .await;
+        exactly_one(remember.clone(), "a mention").await;
+
+        // ---- a write outside its folders does not happen ------------------
+        let (inside, beyond) = (work.join("inside.txt"), outside.join("outside.txt"));
+        // Grok reads whatever its sandbox does not hide, and bzz tells it
+        // to hide the folder of bzz's keys. A file there with one word in
+        // it shows whether that holds. (Codex's sandbox hides nothing, and
+        // Claude Code is refused a read outside its folders by bzz.)
+        let probe = paths.keys_dir().join("m6-probe.txt");
+        std::fs::write(&probe, "quetzal\n").unwrap();
+        let reading = if harness == Harness::Grok {
+            format!(
+                " Last, your owner wants to know what your sandbox lets you read: try once to read the file {}, which holds one harmless word, and say that word or that reading it was refused.",
+                probe.display()
+            )
+        } else {
+            String::new()
+        };
+        let write = message(
+            format!(
+                "With your file tools and not the shell, first create the file {} containing the word hi. Then create the file {} containing the word hi. Then say which of the two you could create.{reading}",
+                inside.display(),
+                beyond.display()
+            ),
+            true,
+            None,
+        )
+        .await;
+        let answered = exactly_one(write.clone(), "two writes").await;
+        assert!(!beyond.exists(), "{name}: it wrote outside its folders");
+        assert!(
+            inside.exists(),
+            "{name}: it could not write in the folder granted for writing"
+        );
+        assert!(
+            !answered.to_lowercase().contains("quetzal"),
+            "{name}: it read a file in the folder of bzz's keys: {answered:?}"
+        );
+        // The harness's own process, while it runs.
+        let record = process::read_record(&process::run_dir(&paths.data_dir), agent.id)
+            .expect("its ownership record");
+        assert!(process::is_alive(&record.process));
+
+        // ---- bzz and the program stop and start again ---------------------
+        // The word is pushed out of what a message shows of its thread, so
+        // that only the program's own saved session can answer.
+        for number in 1..=21 {
+            message(format!("filler {number}"), false, Some(remember.clone())).await;
+        }
+        running.stop().await;
+        assert!(
+            !process::is_alive(&record.process),
+            "{name}: its process outlived bzz"
+        );
+        let running = serve().await;
+        let recall = message(
+            "From your own memory, without reading earlier messages: which word did I ask you to remember? Answer with that word.".into(),
+            true,
+            Some(remember.clone()),
+        )
+        .await;
+        let recalled = exactly_one(recall.clone(), "after a restart").await;
+        assert!(
+            recalled.to_lowercase().contains("heron"),
+            "{name}: it did not remember: {recalled:?}"
+        );
+        // Still one reply to each of the earlier two.
+        assert_eq!(replies(&remember).await.len(), 1);
+        assert_eq!(replies(&write).await.len(), 1);
+        running.stop().await;
+
+        // ---- what went over the pipe --------------------------------------
+        let runs = transcripts();
+        assert_eq!(runs.len(), before + 2, "one transcript per start");
+        let methods = |run: &[serde_json::Value]| {
+            run.iter()
+                .filter_map(|entry| entry["out"]["method"].as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        };
+        let (first, second) = (&runs[before], &runs[before + 1]);
+        // The saved session was loaded, not a new one opened; and the word
+        // was not read back from the chat.
+        let again = methods(second);
+        assert!(
+            again.contains(&"session/load".to_owned())
+                && !again.contains(&"session/new".to_owned()),
+            "{name}: {again:?}"
+        );
+        assert!(
+            !second.iter().any(|entry| entry["tool"]["name"] == "read"),
+            "{name}: it read the thread again, so its memory was not shown"
+        );
+        // The mode bzz sets, before the first prompt of each session.
+        if let Some(mode) = coding::required_mode(harness) {
+            for run in [first, second] {
+                let sent = methods(run);
+                let set = sent.iter().position(|method| method == "session/set_mode");
+                let prompted = sent.iter().position(|method| method == "session/prompt");
+                assert!(set.is_some() && set < prompted, "{name}: {sent:?}");
+                assert!(
+                    run.iter()
+                        .any(|entry| entry["out"]["method"] == "session/set_mode"
+                            && entry["out"]["params"]["modeId"] == mode),
+                    "{name}"
+                );
+            }
+        }
+        // No key and no credential in what was recorded.
+        let recorded = runs
+            .iter()
+            .flatten()
+            .map(ToString::to_string)
+            .collect::<String>();
+        assert!(
+            !recorded.contains("bzzt_") && !recorded.contains("nsec1"),
+            "{name}"
+        );
+        // The folder that was not granted is a path of this checkout: in a
+        // transcript that is kept it is written as a name.
+        if kept.is_some() {
+            let home = directories::BaseDirs::new()
+                .map(|dirs| dirs.home_dir().display().to_string())
+                .unwrap_or_default();
+            let there = outside.display().to_string();
+            for file in &transcript_files()[before..] {
+                let text = std::fs::read_to_string(file)
+                    .unwrap()
+                    .replace(&there.replacen(&home, "<home>", 1), "<not-granted>")
+                    .replace(&there, "<not-granted>");
+                std::fs::write(file, text).unwrap();
+            }
+        }
+        let _ = std::fs::remove_dir_all(&outside);
+        owner_supervisor.shutdown().await;
+        owner.lock().await;
+    }
+}
+
+/// v0.15 M2 and M4 on the pinned relay, with the release's own commands and
+/// bzz's real Pi Durable host on its stand-in model: `bzz agent new` makes
+/// an agent Buzz can see, `bzz agent add` puts it in a channel as Buzz 1.0
+/// does, a mention is answered once (also one written by Buzz's own CLI),
+/// the host is killed in the middle of a turn and the turn ends once, the
+/// conversation and the agent's disk survive a restart of bzz and of the
+/// host, and `edit`, `pause`, `resume` and `delete` do what they say.
+///
+/// Needs Node.js 22.19 or newer; without it the test says so and skips
+/// (`BZZ_TEST_REQUIRE_NODE=1`, set by the relay job in CI, makes that a
+/// failure).
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_agent_new_to_delete_on_the_pi_durable_host() {
+    use bzz::{
+        agents::runtime::process, auth::IdentityManager, config::LocalAgentState, paths::Paths,
+    };
+    use serde_json::json;
+    use support::{
+        agent_harness::{kill, running as running_pid, until},
+        pi_host,
+    };
+
+    let Some(node) = pi_host::node_or_skip("real_relay_agent_new_to_delete").await else {
+        return;
+    };
+    const WAIT: Duration = Duration::from_secs(60);
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let buzz_cli = std::env::var("BZZ_BUZZ_CLI").expect("relay wrapper builds the buzz CLI");
+    let temporary = tempfile::TempDir::new().unwrap();
+    let dirs = temporary.path();
+    let passphrase = "c1 disposable passphrase";
+    std::fs::write(dirs.join("pass"), format!("{passphrase}\n")).unwrap();
+    // What a test adds to bzz's environment: a stand-in for `node` that
+    // switches on the host's scripted model, an empty folder as Pi's own,
+    // and a cache for npm that is not the owner's.
+    let pi_dir = dirs.join("pi");
+    let variables = pi_host::variables(&pi_host::scripted_node(&dirs.join("bin"), &node), &pi_dir);
+    let bzz = |args: &[&str], output: Option<&std::path::Path>| {
+        let mut command = bzz_on_profile(dirs, args, output);
+        command.envs(variables.iter().cloned());
+        command
+    };
+    // Runs one command to its end: whether it succeeded, and what it said.
+    let said = |args: &[&str]| {
+        let output = bzz(args, None).output().unwrap();
+        (
+            output.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    };
+    let ok = |args: &[&str]| {
+        let (success, text) = said(args);
+        assert!(success, "bzz {args:?}: {text}");
+        text
+    };
+
+    ok(&[
+        "identity",
+        "new",
+        "--label",
+        "owner",
+        "--backend",
+        "encrypted-file",
+    ]);
+    let paths = Paths {
+        config_dir: dirs.join("c"),
+        data_dir: dirs.join("d"),
+        cache_dir: dirs.join("k"),
+    };
+    let mut config = Config::load(&paths).unwrap();
+    let identity = config.identities[0].clone();
+    config
+        .add_community("c1".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    config.save(&paths).unwrap();
+    let _ = seed_member(&source, &identity.pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let secret = secrecy::SecretString::from(passphrase.to_owned());
+    let manager = IdentityManager::new(&paths);
+    let owner = manager.signer(&identity, Some(&secret)).unwrap();
+    let owner_hex = owner.public_key().to_hex();
+    let ws = url::Url::parse("ws://localhost:3030/").unwrap();
+    let owner_supervisor = SupervisorHandle::spawn(ws.clone(), owner.clone());
+    let owner_http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        owner.clone(),
+    )
+    .unwrap();
+    let publish = |builder: EventBuilder| {
+        let (supervisor, owner) = (owner_supervisor.clone(), owner.clone());
+        async move {
+            let event = owner.sign(builder).await.unwrap();
+            let ack = supervisor.publish(event.clone()).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+            event
+        }
+    };
+    let query = |filter: serde_json::Value| {
+        let http = owner_http.clone();
+        async move { http.query_raw(&[filter]).await.unwrap() }
+    };
+    let on_this_machine = || {
+        let count = |folder: std::path::PathBuf, prefix: &str| {
+            std::fs::read_dir(folder)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+        (
+            count(paths.keys_dir(), "agent-"),
+            std::fs::read_dir(paths.data_dir.join("agents"))
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|entry| {
+                            uuid::Uuid::parse_str(&entry.file_name().to_string_lossy()).is_ok()
+                        })
+                        .count()
+                })
+                .unwrap_or(0),
+            Config::load(&paths).unwrap().hosted_agents.len(),
+        )
+    };
+
+    // ---- the checks that fail before anything exists ----------------------
+    let report = ok(&["agent", "doctor"]);
+    assert!(
+        report.contains("Node.js:") && report.contains("not installed yet"),
+        "{report}"
+    );
+    assert!(
+        !bzz::agents::runtime::install::is_installed(&paths.data_dir),
+        "doctor installs nothing"
+    );
+    // What a harness does not have is refused where it would be set, on
+    // any machine: a coding harness takes no list of hosts.
+    let (created, text) = said(&[
+        "agent",
+        "new",
+        "Grok",
+        "--harness",
+        "grok",
+        "--allow-host",
+        "github.com",
+        "--yes",
+    ]);
+    assert!(
+        !created && text.contains("a list of hosts is for a pi-durable agent"),
+        "{text}"
+    );
+    // A model Pi does not have: refused by the host's own check, after the
+    // install of first use and before any key is made.
+    let (created, text) = said(&["agent", "new", "Nope", "--model", "nope/none", "--yes"]);
+    assert!(
+        !created && text.contains("cannot be used (provider_unavailable)"),
+        "{text}"
+    );
+    assert!(bzz::agents::runtime::install::is_installed(&paths.data_dir));
+    assert_eq!(on_this_machine(), (0, 0, 0));
+    assert!(
+        query(json!({"kinds": [30_177], "authors": [owner_hex], "limit": 10}))
+            .await
+            .is_empty(),
+        "nothing was published"
+    );
+
+    // ---- bzz agent new ----------------------------------------------------
+    let text = ok(&[
+        "agent",
+        "new",
+        "Scout",
+        "--model",
+        "scripted/scripted",
+        "--instructions",
+        "Be brief.",
+        "--allow-host",
+        "github.com",
+        "--yes",
+    ]);
+    assert!(
+        text.contains("model scripted/scripted") && text.contains("created in c1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("capability record: pi-durable")
+            && text.contains("one final reply per mention: bzz")
+            && text.contains("bzz agent add Scout <channel>"),
+        "{text}"
+    );
+    assert_eq!(on_this_machine(), (1, 1, 1));
+    let config = Config::load(&paths).unwrap();
+    let agent = config.hosted_agents[0].clone();
+    let agent_hex = agent.pubkey.clone();
+    let local = agent.local.clone().expect("a local agent");
+    assert_eq!(local.network, ["github.com"]);
+    assert!(local.command.is_empty(), "the default launch");
+    // What Buzz reads: the agent's profile, marked as a bot, with the
+    // owner's tag; and the owner's record of it.
+    let profiles = query(json!({"kinds": [0], "authors": [agent_hex], "limit": 5})).await;
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&profiles[0].content).unwrap(),
+        json!({"name": "Scout", "bot": true})
+    );
+    let records =
+        query(json!({"kinds": [30_177], "authors": [owner_hex], "#d": [agent_hex]})).await;
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        bzz::protocol::events::first_tag(&records[0], "runtime").as_deref(),
+        Some("bzz/pi-durable")
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&records[0].content).unwrap(),
+        json!({"parallelism": 1, "respond_to": "owner-only", "name": "Scout"})
+    );
+    let verified =
+        bzz::agents::protocol::verify_public_agent(&profiles[0], None, Some(&records[0])).unwrap();
+    assert_eq!(verified.owner_pubkey, owner_hex);
+    let (again, text) = said(&["agent", "new", "scout", "--yes"]);
+    assert!(!again && text.contains("exists"), "{text}");
+    let listed = ok(&["agent", "list"]);
+    assert!(
+        listed.contains("Scout\tactive\tpi-durable\tscripted/scripted"),
+        "{listed}"
+    );
+    let report = ok(&["agent", "doctor", "--models"]);
+    assert!(
+        report.contains("installed in") && report.contains("Scout · pi-durable · active · ready"),
+        "{report}"
+    );
+
+    // ---- bzz agent add ----------------------------------------------------
+    let channel = uuid::Uuid::new_v4();
+    let channel_name = format!("c1-{}", &channel.simple().to_string()[..8]);
+    publish(
+        buzz_sdk::build_create_channel(
+            channel,
+            &channel_name,
+            Some(buzz_sdk::Visibility::Open),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    let solo = uuid::Uuid::new_v4();
+    publish(bzz::protocol::sidebar::solo_creation(solo, "Plans").unwrap()).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let role_in = |channel: uuid::Uuid| {
+        let (list, agent) = (
+            query(json!({"kinds": [39_002], "#d": [channel.to_string()], "limit": 2})),
+            agent_hex.clone(),
+        );
+        async move {
+            list.await.iter().find_map(|event| {
+                event.tags.iter().find_map(|tag| {
+                    let values = tag.as_slice();
+                    (values.first().map(String::as_str) == Some("p")
+                        && values.get(1) == Some(&agent))
+                    // `["p", pubkey, relay, role]`.
+                    .then(|| values.get(3).cloned().unwrap_or_default())
+                })
+            })
+        }
+    };
+    assert_eq!(role_in(channel).await, None);
+    // A plain member first, in a channel of its own: what Buzz 1.0 makes
+    // of the agent a Solo chat is created with, and what bzz made of every
+    // agent it added before the run against Buzz 1.0.1.
+    let plain = uuid::Uuid::new_v4();
+    publish(
+        buzz_sdk::build_create_channel(
+            plain,
+            &format!("p1-{}", &plain.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Open),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    publish(buzz_sdk::build_add_member(plain, &agent_hex, None).unwrap()).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(role_in(plain).await.as_deref(), Some("member"));
+
+    // bzz's own directory lists it now, while it has the `bot` role nowhere:
+    // its owner's proof is what counts (D13). Until v0.14 it was not listed.
+    assert_eq!(role_in(solo).await, None);
+    assert_eq!(role_in(channel).await, None);
+    let refreshed = ok(&["agents", "refresh"]);
+    assert!(refreshed.contains("verified=1"), "{refreshed}");
+    let directory: serde_json::Value =
+        serde_json::from_str(&ok(&["agents", "list", "--json"])).unwrap();
+    let listed = directory["agents"].as_array().unwrap();
+    assert_eq!(listed.len(), 1, "{directory}");
+    assert_eq!(
+        (
+            listed[0]["name"].as_str(),
+            listed[0]["pubkey"].as_str(),
+            listed[0]["owner_pubkey"].as_str(),
+            listed[0]["eligibility"].as_str(),
+            listed[0]["respond_to"].as_str(),
+        ),
+        (
+            Some("Scout"),
+            Some(agent_hex.as_str()),
+            Some(owner_hex.as_str()),
+            Some("eligible"),
+            Some("owner-only"),
+        ),
+        "{directory}"
+    );
+    assert_eq!(
+        listed[0]["channel_ids"],
+        json!([plain.to_string()]),
+        "the channel it is a plain member of: {directory}"
+    );
+    // It is the owner's own agent, and the directory says so: until the
+    // run against Buzz 1.0 it was listed as a remote agent.
+    assert_eq!(directory["own"][&agent_hex], "runs-here", "{directory}");
+    let listing = ok(&["agents", "list"]);
+    assert!(
+        listing.contains("yours · run by this bzz") && !listing.contains("remote agents"),
+        "{listing}"
+    );
+    let shown = ok(&["agents", "show", &agent_hex]);
+    assert!(
+        shown.contains("your own agent") && !shown.contains("not controlled by bzz"),
+        "{shown}"
+    );
+
+    // `bzz agent add`, by the channel's name as the sidebar shows it: this
+    // profile never synced that channel, so bzz asks the relay. The agent
+    // gets the `bot` role, in a channel and in a Solo chat, as Buzz 1.0.1
+    // gives it to an agent it adds to either.
+    let text = ok(&["agent", "add", "Scout", &channel_name]);
+    assert!(
+        text.contains(&format!(
+            "Scout added to #{channel_name} with the bot role, as Buzz adds an agent"
+        )),
+        "{text}"
+    );
+    assert_eq!(
+        role_in(channel).await.as_deref(),
+        Some("bot"),
+        "the bot role, as Buzz 1.0.1 adds an agent to a channel that exists"
+    );
+    let text = ok(&["agent", "add", "Scout", &channel.to_string()]);
+    assert!(text.contains("was already a member"), "{text}");
+    let text = ok(&["agent", "add", "Scout", &solo.to_string()]);
+    assert!(text.contains("with the bot role"), "{text}");
+    assert_eq!(role_in(solo).await.as_deref(), Some("bot"));
+    let (added, text) = said(&["agent", "add", "Scout", "no-such-channel"]);
+    assert!(!added && text.contains("no channel is called"), "{text}");
+
+    // ---- mentions ---------------------------------------------------------
+    let message = |channel: uuid::Uuid, text: String, thread: Option<nostr::EventId>| {
+        let agent = agent_hex.clone();
+        let publish = &publish;
+        async move {
+            let thread = thread.map(|root| buzz_sdk::ThreadRef {
+                root_event_id: root,
+                parent_event_id: root,
+            });
+            publish(
+                buzz_sdk::build_message(
+                    channel,
+                    &text,
+                    thread.as_ref(),
+                    &[agent.as_str()],
+                    false,
+                    &[],
+                    &[],
+                )
+                .unwrap(),
+            )
+            .await
+        }
+    };
+    let by_agent = |channel: uuid::Uuid| {
+        query(
+            json!({"kinds": [9], "#h": [channel.to_string()], "authors": [agent_hex], "limit": 500}),
+        )
+    };
+    let replies = |request: String| {
+        let all = by_agent(channel);
+        async move {
+            all.await
+                .into_iter()
+                .filter(|event| bzz::protocol::events::event_references(event).contains(&request))
+                .map(|event| event.content)
+                .collect::<Vec<_>>()
+        }
+    };
+    let exactly_one = |request: String, what: &'static str| {
+        let replies = &replies;
+        async move {
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while replies(request.clone()).await.is_empty() {
+                assert!(tokio::time::Instant::now() < deadline, "{what}: no reply");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let all = replies(request).await;
+            assert_eq!(all.len(), 1, "{what}: {all:?}");
+            all.into_iter().next().unwrap()
+        }
+    };
+    // bzz's own bookkeeping for a request, read beside the running bzz.
+    let database = rusqlite::Connection::open_with_flags(
+        paths.database_file(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    );
+    let turn = |request: &str| {
+        database.as_ref().ok().and_then(|database| {
+            database
+                .query_row(
+                    "SELECT state,attempts FROM agent_inbox WHERE request_id=?1",
+                    [request],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?)),
+                )
+                .ok()
+        })
+    };
+    let start = |log: &std::path::Path| {
+        let child = bzz(&["agent", "run"], Some(log)).spawn().unwrap();
+        let log = log.to_path_buf();
+        async move {
+            until("bzz agent run to be running", WAIT, || {
+                std::fs::read_to_string(&log)
+                    .unwrap_or_default()
+                    .contains("Scout · pi-durable · idle")
+                    .then_some(())
+            })
+            .await;
+            // Its intake subscribes a moment after the status line.
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            child
+        }
+    };
+    let stop = |mut child: std::process::Child, log: &std::path::Path| {
+        let status = Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(
+            child.wait().unwrap().success(),
+            "{}",
+            std::fs::read_to_string(log).unwrap()
+        );
+    };
+    let host_pid = || {
+        process::read_record(&process::run_dir(&paths.data_dir), agent.id)
+            .map(|record| record.process.pid)
+    };
+
+    let first_log = dirs.join("agent-run-1.log");
+    let first_bzz = start(&first_log).await;
+    assert!(host_pid().is_none(), "no process before a request");
+
+    // A mention is answered once, by the real host.
+    let hello = message(channel, "hello there".into(), None).await;
+    assert_eq!(
+        exactly_one(hello.id.to_hex(), "the first mention").await,
+        "pong: this conversation holds 1 message(s) from people"
+    );
+    let stored = by_agent(channel).await.pop().unwrap();
+    let auth = stored
+        .tags
+        .iter()
+        .find(|tag| tag.as_slice().first().map(String::as_str) == Some("auth"))
+        .expect("the owner's tag");
+    assert_eq!(
+        buzz_sdk::nip_oa::verify_auth_tag(
+            &serde_json::to_string(auth.as_slice()).unwrap(),
+            &stored.pubkey
+        )
+        .unwrap(),
+        owner.public_key()
+    );
+    let first_pid = host_pid().expect("the host is running");
+    // What runs is Node on the installed host and the agent's folder.
+    #[cfg(target_os = "linux")]
+    {
+        let arguments = std::fs::read(format!("/proc/{first_pid}/cmdline")).unwrap();
+        let arguments = String::from_utf8_lossy(&arguments);
+        let host = bzz::agents::runtime::install::host_dir(&paths.data_dir).join("main.mjs");
+        assert!(
+            arguments.contains(&host.display().to_string())
+                && arguments.contains(&agent.id.to_string()),
+            "{arguments}"
+        );
+    }
+
+    // A mention as Buzz's own CLI writes it, by the agent's name: Buzz
+    // resolves the name from the profile bzz published.
+    use nostr::nips::nip19::ToBech32 as _;
+    let owner_keys = manager.unlock(&identity, Some(&secret)).unwrap();
+    let sent = Command::new(&buzz_cli)
+        .args([
+            "messages",
+            "send",
+            "--channel",
+            &channel.to_string(),
+            "--content",
+            "@Scout are you there?",
+        ])
+        .env("BUZZ_RELAY_URL", "http://localhost:3030")
+        .env(
+            "BUZZ_PRIVATE_KEY",
+            owner_keys.secret_key().to_bech32().unwrap(),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        sent.status.success(),
+        "buzz messages send: {}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    let from_buzz = query(
+        json!({"kinds": [9], "#h": [channel.to_string()], "authors": [owner_hex], "limit": 50}),
+    )
+    .await
+    .into_iter()
+    .find(|event| event.content.contains("are you there?"))
+    .expect("the message Buzz's CLI sent");
+    assert!(
+        bzz::protocol::events::tag_values(&from_buzz, "p").contains(&agent_hex),
+        "Buzz resolved the agent's name to a mention: {:?}",
+        from_buzz.tags
+    );
+    assert_eq!(
+        exactly_one(from_buzz.id.to_hex(), "a mention from Buzz's CLI").await,
+        "pong: this conversation holds 1 message(s) from people"
+    );
+
+    // In a Solo chat the answer is flat, in the chat itself.
+    message(solo, "anyone home?".into(), None).await;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while by_agent(solo).await.is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no reply in the Solo chat"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let in_solo = by_agent(solo).await;
+    assert_eq!(in_solo.len(), 1);
+    assert!(bzz::protocol::events::event_references(&in_solo[0]).is_empty());
+
+    // A file on the agent's own disk, written through its own shell.
+    let wrote = message(
+        channel,
+        r#"do: [["bash", {"command": "echo kept across restarts > /home/agent/note.txt && cat /home/agent/note.txt"}], ["report"]]"#.into(),
+        None,
+    )
+    .await;
+    assert!(
+        exactly_one(wrote.id.to_hex(), "the file")
+            .await
+            .contains("kept across restarts")
+    );
+    let folder = process::agent_dir(&paths.data_dir, agent.id);
+    assert!(folder.join("memory.sqlite").is_file() && folder.join("files.sqlite").is_file());
+    assert!(
+        !folder.join("note.txt").exists(),
+        "on its disk, not on the machine"
+    );
+
+    // The host is killed in the middle of a turn: the turn ends once.
+    let cut = message(
+        channel,
+        r#"do: [["sleep", 6000], ["buzz_send", {"text": "answered after the host was killed", "final": true}]]"#.into(),
+        None,
+    )
+    .await;
+    let cut_id = cut.id.to_hex();
+    until("the turn to be running", WAIT, || {
+        (turn(&cut_id).map(|(state, _)| state).as_deref() == Some("delivered")).then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(replies(cut_id.clone()).await.is_empty());
+    assert_eq!(host_pid(), Some(first_pid));
+    kill(first_pid);
+    assert_eq!(
+        exactly_one(cut_id.clone(), "killed during the turn").await,
+        "answered after the host was killed"
+    );
+    assert_eq!(
+        turn(&cut_id),
+        Some(("replied".to_owned(), 2)),
+        "handed over again to a new host"
+    );
+    let second_pid = host_pid().expect("a new host");
+    assert_ne!(second_pid, first_pid);
+
+    // `agent show` while it runs: state, channels, last turns, the record.
+    let shown = ok(&["agent", "show", "Scout"]);
+    for expected in [
+        "state:       active · its process is running",
+        "harness:     pi-durable",
+        "model:       scripted/scripted",
+        "wakes for:   its owner only",
+        "may reach:   github.com",
+        "folders:     none of this machine",
+        &format!("#{channel_name} (bot)"),
+        "#Plans (bot)",
+        "last turns:",
+        "answered · attempt 2",
+        "capability record: pi-durable",
+        "its own disk:        yes",
+    ] {
+        assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
+    }
+    // bzz and the host both restart.
+    stop(first_bzz, &first_log);
+    assert!(!running_pid(second_pid), "no host outlives bzz agent run");
+    assert!(host_pid().is_none());
+    let second_log = dirs.join("agent-run-2.log");
+    let second_bzz = start(&second_log).await;
+    // The same thread remembers what was said before the restart.
+    let again = message(channel, "and now?".into(), Some(hello.id)).await;
+    assert_eq!(
+        exactly_one(again.id.to_hex(), "after the restart").await,
+        "pong: this conversation holds 2 message(s) from people",
+        "the conversation survived a restart of bzz and of the host"
+    );
+    // The file is still on the agent's disk.
+    let read = message(
+        channel,
+        r#"do: [["bash", {"command": "cat /home/agent/note.txt"}], ["report"]]"#.into(),
+        None,
+    )
+    .await;
+    assert!(
+        exactly_one(read.id.to_hex(), "the file after the restart")
+            .await
+            .contains("kept across restarts")
+    );
+    assert_eq!(
+        by_agent(channel).await.len(),
+        6,
+        "six mentions in the channel, six replies"
+    );
+    stop(second_bzz, &second_log);
+
+    // ---- pause, resume, edit ----------------------------------------------
+    ok(&["agent", "pause", "Scout"]);
+    assert_eq!(
+        Config::load(&paths).unwrap().hosted_agents[0]
+            .local
+            .as_ref()
+            .unwrap()
+            .state,
+        LocalAgentState::Paused
+    );
+    assert!(ok(&["agent", "list"]).contains("Scout\tpaused"));
+    let paused_log = dirs.join("agent-run-3.log");
+    let paused_bzz = bzz(&["agent", "run"], Some(&paused_log)).spawn().unwrap();
+    until("the paused agent's status line", WAIT, || {
+        std::fs::read_to_string(&paused_log)
+            .unwrap_or_default()
+            .contains("Scout · pi-durable · paused")
+            .then_some(())
+    })
+    .await;
+    stop(paused_bzz, &paused_log);
+    ok(&["agent", "resume", "Scout"]);
+    assert!(Config::load(&paths).unwrap().hosted_agents[0].runs_locally());
+
+    let text = ok(&[
+        "agent",
+        "edit",
+        "Scout",
+        "--name",
+        "Ranger",
+        "--wake",
+        "anyone",
+        "--picture",
+        "https://example.org/ranger.png",
+    ]);
+    assert!(
+        text.contains("published again: its profile and your record of it"),
+        "{text}"
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let profiles = query(json!({"kinds": [0], "authors": [agent_hex], "limit": 5})).await;
+    assert_eq!(profiles.len(), 1, "a profile replaces the one before");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&profiles[0].content).unwrap(),
+        json!({"name": "Ranger", "bot": true, "picture": "https://example.org/ranger.png"})
+    );
+    let records =
+        query(json!({"kinds": [30_177], "authors": [owner_hex], "#d": [agent_hex]})).await;
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&records[0].content).unwrap(),
+        json!({
+            "parallelism": 1, "respond_to": "anyone", "name": "Ranger",
+            "picture": "https://example.org/ranger.png",
+        })
+    );
+    // Instructions and hosts are bzz's own: nothing is published for them.
+    let text = ok(&[
+        "agent",
+        "edit",
+        "Ranger",
+        "--no-hosts",
+        "--instructions",
+        "Be kind.",
+    ]);
+    assert!(!text.contains("published again"), "{text}");
+    let (edited, text) = said(&["agent", "edit", "Ranger", "--model", "nope/none"]);
+    assert!(!edited && text.contains("cannot be used"), "{text}");
+    assert_eq!(
+        Config::load(&paths).unwrap().hosted_agents[0]
+            .local
+            .as_ref()
+            .unwrap()
+            .model
+            .as_ref()
+            .map(|model| model.provider.as_str()),
+        Some("scripted"),
+        "a model that cannot be used is not saved"
+    );
+
+    // ---- rule 10: nothing the host saw or wrote holds a key ---------------
+    let sealed =
+        std::fs::read_to_string(paths.keys_dir().join(format!("agent-{}.nip44", agent.id)))
+            .unwrap();
+    let agent_keys = Keys::parse(&owner.decrypt_self(sealed).await.unwrap()).unwrap();
+    let secrets = [
+        ("agent key (hex)", agent_keys.secret_key().to_secret_hex()),
+        (
+            "agent key (nsec)",
+            agent_keys.secret_key().to_bech32().unwrap(),
+        ),
+        ("owner key (hex)", owner_keys.secret_key().to_secret_hex()),
+        (
+            "owner key (nsec)",
+            owner_keys.secret_key().to_bech32().unwrap(),
+        ),
+        ("owner passphrase", passphrase.to_owned()),
+        ("relay address", "localhost:3030".to_owned()),
+    ];
+    let mut seen = Vec::new();
+    for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+        if entry.path().is_file() {
+            seen.push((
+                entry.file_name().to_string_lossy().into_owned(),
+                String::from_utf8_lossy(&std::fs::read(entry.path()).unwrap()).into_owned(),
+            ));
+        }
+    }
+    assert!(
+        seen.iter().any(|(name, _)| name == "harness.log")
+            && seen.iter().any(|(name, _)| name == "memory.sqlite"),
+        "{:?}",
+        seen.iter().map(|(name, _)| name).collect::<Vec<_>>()
+    );
+    for (file, text) in &seen {
+        for (what, secret) in &secrets {
+            assert!(
+                !secret.is_empty() && !text.contains(secret.as_str()),
+                "{what} is in {file}"
+            );
+        }
+    }
+
+    // ---- bzz agent delete -------------------------------------------------
+    let text = ok(&["agent", "delete", "Ranger", "--yes"]);
+    for removed in [
+        "agent Ranger deleted",
+        "removed: your record of it on the relay",
+        &format!("removed: its place in channel {channel}"),
+        "removed: its settings",
+        "removed: its key",
+        "removed: its folder, with its memory and its disk",
+        "row(s) in bzz's database",
+    ] {
+        assert!(text.contains(removed), "`{removed}` in:\n{text}");
+    }
+    assert!(!text.contains("could not remove"), "{text}");
+    assert_eq!(on_this_machine(), (0, 0, 0));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        query(json!({"kinds": [30_177], "authors": [owner_hex], "#d": [agent_hex]}))
+            .await
+            .is_empty(),
+        "the owner's record is gone from the relay, so Buzz lists no agent nobody runs"
+    );
+    assert_eq!(role_in(channel).await, None);
+    assert_eq!(role_in(solo).await, None);
+    assert_eq!(role_in(plain).await, None);
+    drop(database);
+    let rows = rusqlite::Connection::open(paths.database_file())
+        .unwrap()
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM agent_inbox)+(SELECT COUNT(*) FROM agent_replies)+(SELECT COUNT(*) FROM agent_cursors)",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 0, "its rows in bzz's database are gone");
+    assert!(ok(&["agent", "list"]).contains("no local agents"));
+    owner_supervisor.shutdown().await;
+    owner.lock().await;
+}
+
+/// v0.15 M7 exit gate and the credentials line of M3, on the pinned relay,
+/// with bzz's real Pi Durable host on its stand-in model. The agent is made
+/// by `bzz agent new` with a folder granted for commands.
+///
+/// With the owner there (the runtime as the TUI runs it): a real command
+/// waits for him, is shown as it will run, runs after his yes, and its
+/// output reaches the chat; a refused one does not run. A clone from a
+/// private remote that demands a credential fails with a clear message
+/// without one and works once `bzz agent credential set` has stored it.
+/// Without him (`bzz agent run`): a command that needs his approval is
+/// refused with a reason for the people in the chat, and one in a folder
+/// allowed without asking runs. The secret is nowhere on disk in the clear.
+///
+/// Needs Node.js 22.19 or newer and a git with `http-backend`; without
+/// them the test says so and skips (`BZZ_TEST_REQUIRE_NODE=1` makes that a
+/// failure).
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_agent_runs_a_real_command_and_clones_a_private_remote() {
+    use bzz::{
+        agents::runtime::{Limits, approval::Answer, service},
+        auth::IdentityManager,
+        diagnostics::DiagnosticHandle,
+        paths::Paths,
+    };
+    use serde_json::json;
+    use std::io::Write as _;
+    use support::{agent_harness::until, pi_host};
+
+    let test = "real_relay_agent_runs_a_real_command";
+    let Some(node) = pi_host::node_or_skip(test).await else {
+        return;
+    };
+    const WAIT: Duration = Duration::from_secs(60);
+    const USER: &str = "scout-bot";
+    const TOKEN: &str = "ghp_NotARealTokenOnlyAMarkerForTheRelayTest000";
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let temporary = tempfile::TempDir::new().unwrap();
+    let dirs = temporary.path();
+    let Some(remote) = pi_host::git_remote(test, &node, &dirs.join("remote"), USER, TOKEN) else {
+        return;
+    };
+    let passphrase = "c4 disposable passphrase";
+    std::fs::write(dirs.join("pass"), format!("{passphrase}\n")).unwrap();
+    let pi_dir = dirs.join("pi");
+    let stand_in = pi_host::scripted_node(&dirs.join("bin"), &node);
+    let variables = pi_host::variables(&stand_in, &pi_dir);
+    let bzz = |args: &[&str], output: Option<&std::path::Path>| {
+        let mut command = bzz_on_profile(dirs, args, output);
+        command.envs(variables.iter().cloned());
+        command
+    };
+    let said = |args: &[&str]| {
+        let output = bzz(args, None).output().unwrap();
+        (
+            output.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    };
+    let ok = |args: &[&str]| {
+        let (success, text) = said(args);
+        assert!(success, "bzz {args:?}: {text}");
+        text
+    };
+
+    // ---- the profile, and an agent with hands -----------------------------
+    ok(&[
+        "identity",
+        "new",
+        "--label",
+        "owner",
+        "--backend",
+        "encrypted-file",
+    ]);
+    let paths = Paths {
+        config_dir: dirs.join("c"),
+        data_dir: dirs.join("d"),
+        cache_dir: dirs.join("k"),
+    };
+    let mut config = Config::load(&paths).unwrap();
+    let identity = config.identities[0].clone();
+    config
+        .add_community("c4".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    config.save(&paths).unwrap();
+    let _ = seed_member(&source, &identity.pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let secret = secrecy::SecretString::from(passphrase.to_owned());
+    let owner = IdentityManager::new(&paths)
+        .signer(&identity, Some(&secret))
+        .unwrap();
+    let owner_supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        owner.clone(),
+    );
+    let owner_http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        owner.clone(),
+    )
+    .unwrap();
+    let publish = |builder: EventBuilder| {
+        let (supervisor, owner) = (owner_supervisor.clone(), owner.clone());
+        async move {
+            let event = owner.sign(builder).await.unwrap();
+            let ack = supervisor.publish(event.clone()).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+            event
+        }
+    };
+    let (work, ops) = (dirs.join("work"), dirs.join("ops"));
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(&ops).unwrap();
+    let text = ok(&[
+        "agent",
+        "new",
+        "Scout",
+        "--model",
+        "scripted/scripted",
+        "--folder",
+        &format!("work={}:exec", work.display()),
+        "--folder",
+        &format!("ops={}:exec-without-asking", ops.display()),
+        "--allow-host",
+        &remote.host,
+        "--yes",
+    ]);
+    // The capability record printed at creation says where it has hands.
+    for expected in [
+        "created in c4",
+        "real commands of this machine, as your user, started in /mnt/work, /mnt/ops",
+        "In /mnt/work each command waits for your yes in the TUI.",
+        "Warning: in /mnt/ops commands run WITHOUT asking you",
+        "The folder is where it starts, not a wall",
+        "Pi packages: on.",
+    ] {
+        assert!(text.contains(expected), "`{expected}` in:\n{text}");
+    }
+    let config = Config::load(&paths).unwrap();
+    let agent = config.hosted_agents[0].clone();
+    let agent_hex = agent.pubkey.clone();
+    let shown = ok(&["agent", "show", "Scout"]);
+    for expected in [
+        &format!(
+            "folder:      /mnt/work = {} (read-only; real commands, each asked of you first)",
+            work.display()
+        ),
+        &format!(
+            "folder:      /mnt/ops = {} (read-only; real commands, WITHOUT asking you)",
+            ops.display()
+        ),
+        "git credentials: none stored",
+        "its host: not started yet on this machine",
+        "activity:    no command asked for and no credential asked for yet",
+    ] {
+        assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
+    }
+    let channel = uuid::Uuid::new_v4();
+    let channel_name = format!("c4-{}", &channel.simple().to_string()[..8]);
+    publish(
+        buzz_sdk::build_create_channel(
+            channel,
+            &channel_name,
+            Some(buzz_sdk::Visibility::Open),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    ok(&["agent", "add", "Scout", &channel_name]);
+
+    let mention = |text: String| {
+        let (agent, publish) = (agent_hex.clone(), &publish);
+        async move {
+            publish(
+                buzz_sdk::build_message(channel, &text, None, &[agent.as_str()], false, &[], &[])
+                    .unwrap(),
+            )
+            .await
+        }
+    };
+    let run = |folder: &str, command: &str| {
+        mention(format!(
+            "do: {}",
+            json!([["run", {"folder": folder, "command": command}], ["report"]])
+        ))
+    };
+    // The agent's one reply to `request`, as the relay holds it.
+    let reply_to = |request: nostr::Event, what: &'static str| {
+        let (http, agent) = (owner_http.clone(), agent_hex.clone());
+        async move {
+            let id = request.id.to_hex();
+            let replies = || {
+                let (http, agent, id) = (http.clone(), agent.clone(), id.clone());
+                async move {
+                    http.query_raw(&[json!({"kinds": [9], "#h": [channel.to_string()], "authors": [agent], "limit": 500})])
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .filter(|event| bzz::protocol::events::event_references(event).contains(&id))
+                        .map(|event| event.content)
+                        .collect::<Vec<_>>()
+                }
+            };
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while replies().await.is_empty() {
+                assert!(tokio::time::Instant::now() < deadline, "{what}: no reply");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let all = replies().await;
+            assert_eq!(all.len(), 1, "{what}: {all:?}");
+            all.into_iter().next().unwrap()
+        }
+    };
+
+    // ---- with the owner there: the runtime as the TUI runs it -------------
+    let mut store = Store::open(paths.database_file()).unwrap();
+    store.sync_config(&config).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let running = service::serve(service::ServeOptions {
+        paths: &paths,
+        store,
+        diagnostics: DiagnosticHandle::disabled(),
+        community: &config.communities[0],
+        agents: &config.hosted_agents,
+        owner: &owner,
+        owner_identity: identity.id,
+        federated: None,
+        limits: Limits {
+            stop_grace: Duration::from_millis(500),
+            ..Limits::default()
+        },
+        owner_present: true,
+        environment: Some(std::sync::Arc::new(pi_host::environment(
+            &stand_in, &pi_dir,
+        ))),
+    })
+    .await
+    .unwrap()
+    .expect("one local agent");
+    assert!(running.problems.is_empty(), "{:?}", running.problems);
+    until("the agent's intake to subscribe", WAIT, || {
+        running.listening().then_some(())
+    })
+    .await;
+    let one_question = || {
+        let host = running.host.clone();
+        async move {
+            until("a command to wait for the owner", WAIT, move || {
+                let mut waiting = host.approvals();
+                (waiting.len() == 1).then(|| waiting.remove(0))
+            })
+            .await
+        }
+    };
+
+    // Allowed: it runs as the owner saw it, and its output reaches the chat.
+    let command = "printf 'made by a real %s\\n' command > made.txt &&\n  cat made.txt && pwd";
+    let request = run("work", command).await;
+    let asked = one_question().await;
+    assert_eq!(asked.command, command);
+    assert_eq!(
+        (asked.agent, asked.folder.as_str(), asked.channel),
+        (agent.id, "work", channel)
+    );
+    assert_eq!(asked.requester, identity.pubkey);
+    assert!(
+        !work.join("made.txt").exists(),
+        "nothing ran while it waited"
+    );
+    assert!(running.host.answer_approval(asked.id, Answer::Allow));
+    let reply = reply_to(request, "an approved command").await;
+    assert!(
+        reply.contains("made by a real command") && reply.contains(&work.display().to_string()),
+        "the output of the command reached the chat: {reply}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(work.join("made.txt")).unwrap(),
+        "made by a real command\n"
+    );
+
+    // Refused: it does not run, and the agent says why in the chat.
+    let request = run("work", "touch refused.txt").await;
+    let asked = one_question().await;
+    assert!(
+        running
+            .host
+            .answer_approval(asked.id, Answer::Refuse(Some("not in this folder".into())))
+    );
+    let reply = reply_to(request, "a refused command").await;
+    assert!(
+        reply.contains("Your owner refused this command, and says: not in this folder"),
+        "{reply}"
+    );
+    assert!(
+        !work.join("refused.txt").exists(),
+        "a refused command does not run"
+    );
+
+    // A private remote, with no credential stored: a clear message.
+    let clone = |into: &str| {
+        mention(format!(
+            "do: {}",
+            json!([
+                ["bash", {"command": format!("{{ git clone {} {into} && cat {into}/notes.txt; }} 2>&1; echo \"exit $?\"", remote.origin)}],
+                ["report"],
+            ])
+        ))
+    };
+    let request = clone("first").await;
+    let reply = reply_to(request, "a clone without a credential").await;
+    assert!(
+        reply.contains(&format!(
+            "No credential is stored for {host}. Your owner can store one with `bzz agent credential set Scout {host}`.",
+            host = remote.host
+        )) && reply.contains("exit 128"),
+        "{reply}"
+    );
+    // The owner stores one, with the command, while the agent runs.
+    let stored = {
+        let mut child = bzz(&["agent", "credential", "set", "Scout", &remote.host], None)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(format!("{USER}\n{TOKEN}\n").as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    assert!(
+        stored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stored.stderr)
+    );
+    let said_on_set = format!(
+        "{}{}",
+        String::from_utf8_lossy(&stored.stdout),
+        String::from_utf8_lossy(&stored.stderr)
+    );
+    assert!(said_on_set.contains("sealed to your key"), "{said_on_set}");
+    assert_eq!(
+        ok(&["agent", "credential", "list", "Scout"]).trim(),
+        remote.host
+    );
+    let request = clone("second").await;
+    let reply = reply_to(request, "a clone with the stored credential").await;
+    assert!(
+        reply.contains("Cloned into")
+            && reply.contains("alpha\nbeta\ngamma")
+            && reply.contains("exit 0"),
+        "{reply}"
+    );
+    running.stop().await;
+
+    // ---- without the owner: `bzz agent run` -------------------------------
+    let log = dirs.join("agent-run.log");
+    let mut headless = bzz(&["agent", "run"], Some(&log)).spawn().unwrap();
+    until("bzz agent run to be running", WAIT, || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("Scout · pi-durable · idle")
+            .then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let request = run("work", "touch headless.txt").await;
+    let reply = reply_to(request, "a command with nobody to ask").await;
+    assert!(
+        reply.contains("needs your owner's approval")
+            && reply.contains("your owner must open bzz to approve the command"),
+        "the people in the chat are told what is needed: {reply}"
+    );
+    assert!(!work.join("headless.txt").exists());
+    let request = run("ops", "echo restarted > done.txt && cat done.txt").await;
+    let reply = reply_to(request, "a command allowed without asking").await;
+    assert!(reply.contains("restarted"), "{reply}");
+    assert!(ops.join("done.txt").exists());
+
+    // `agent show`, beside the running bzz: what the host reported, the
+    // host a credential is stored for, and every question with its answer.
+    let shown = ok(&["agent", "show", "Scout"]);
+    for expected in [
+        "git credentials stored for (the host only is shown):",
+        &format!("  {}", remote.host),
+        "its host, at its last start (",
+        "real commands: the `run` tool, in /mnt/work, /mnt/ops",
+        "Pi packages: none named in Pi's settings",
+        "· command in /mnt/work · printf 'made by a real %s\\n' command > made.txt && (and 1 more line(s)) · asked of you",
+        "· allowed by you",
+        "· command in /mnt/work · touch refused.txt · refused by you: not in this folder",
+        &format!("· git credential for {} · none is stored", remote.host),
+        &format!("· git credential for {} · given", remote.host),
+        "· command in /mnt/work · touch headless.txt · refused: nobody was at bzz to ask",
+        "· command in /mnt/ops · echo restarted > done.txt && cat done.txt · allowed without asking",
+    ] {
+        assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
+    }
+    let report = ok(&["agent", "doctor"]);
+    assert!(
+        report.contains("real commands: the `run` tool, in /mnt/work, /mnt/ops")
+            && report.contains(&format!("git credential stored for {}", remote.host)),
+        "{report}"
+    );
+    let status = Command::new("kill")
+        .args(["-TERM", &headless.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(
+        headless.wait().unwrap().success(),
+        "{}",
+        std::fs::read_to_string(&log).unwrap()
+    );
+
+    // ---- the secret scan ---------------------------------------------------
+    // Every file of the profile: the settings, bzz's database, the agent's
+    // two SQLite files, its host's log, its activity, the sealed credential.
+    let mut files = Vec::new();
+    for folder in ["c", "d", "k"] {
+        files.extend(pi_host::files_under(&dirs.join(folder)));
+    }
+    files.push(log.clone());
+    for expected in [
+        "config.toml",
+        "bzz.db",
+        "memory.sqlite",
+        "files.sqlite",
+        "harness.log",
+        "activity.jsonl",
+    ] {
+        assert!(
+            files.iter().any(|file| file.ends_with(expected)),
+            "{expected} was searched"
+        );
+    }
+    for file in &files {
+        for (form, secret) in pi_host::secret_forms(USER, TOKEN) {
+            assert!(
+                !pi_host::file_holds(file, &secret),
+                "{} holds {form}",
+                file.display()
+            );
+        }
+        assert!(!pi_host::file_holds(file, passphrase), "{}", file.display());
+    }
+    for (what, text) in [("agent show", &shown), ("credential set", &said_on_set)] {
+        assert!(!text.contains(TOKEN) && !text.contains(USER), "{what}");
+    }
+    let agent_folder = bzz::agents::runtime::process::agent_dir(&paths.data_dir, agent.id);
+    assert!(
+        pi_host::file_holds(&agent_folder.join("files.sqlite"), "alpha\nbeta\ngamma"),
+        "the search sees what is on the agent's disk"
+    );
+
+    // ---- delete ------------------------------------------------------------
+    let text = ok(&["agent", "delete", "Scout", "--yes"]);
+    assert!(
+        text.contains("removed: its 1 stored git credential(s)"),
+        "{text}"
+    );
+    let left = std::fs::read_dir(paths.keys_dir())
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("agent-"))
+        .collect::<Vec<_>>();
+    assert!(left.is_empty(), "{left:?}");
+    owner_supervisor.shutdown().await;
+    owner.lock().await;
+}
+
+/// What the run against the real Buzz 1.0.1 found
+/// (`runs/experiments/buzz1/agents/README.md`), on the pinned relay, with
+/// bzz's real Pi Durable host on its stand-in model and every step of the
+/// owner's the `bzz` binary or an event of the owner's own key:
+///
+/// - **presence**: a running agent is present on the relay by its own key,
+///   and gone when it is paused or deleted; the owner's key says nothing;
+/// - **the observed case**: the owner makes the agent read-only (kind 9000
+///   with `["role","guest"]`) and mentions it. Nothing is handed to the
+///   harness and nothing is signed, where five different replies were
+///   signed for one mention and `agent show` said "answered";
+/// - **the ledger when the relay refuses**: the relay refuses the agent's
+///   reply while its records say the agent may write (a moderator's
+///   timeout). One signed reply, the request fails at once with its kind,
+///   and it is never published later;
+/// - **a turn that outlives the agent's membership** publishes nothing;
+/// - **`bzz agent pause` and `resume`** in another process reach the bzz
+///   that runs the agent;
+/// - **`bzz agent delete`** reaches it too: an agent it serves, and one
+///   that is answering, are let go before their files go.
+///
+/// The claims are collected and asserted together at the end, so that one
+/// run against the code as it was shows each of them failing.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_agent_keeps_to_its_access_and_a_delete_or_a_pause_reaches_the_bzz_that_runs_it()
+{
+    use bzz::{auth::IdentityManager, paths::Paths, protocol::presence};
+    use serde_json::json;
+    use support::{agent_harness::until, pi_host};
+
+    let Some(node) = pi_host::node_or_skip("real_relay_agent_keeps_to_its_access").await else {
+        return;
+    };
+    const WAIT: Duration = Duration::from_secs(60);
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let temporary = tempfile::TempDir::new().unwrap();
+    let dirs = temporary.path();
+    let passphrase = "c7 disposable passphrase";
+    std::fs::write(dirs.join("pass"), format!("{passphrase}\n")).unwrap();
+    let pi_dir = dirs.join("pi");
+    let variables = pi_host::variables(&pi_host::scripted_node(&dirs.join("bin"), &node), &pi_dir);
+    let bzz = |args: &[&str], output: Option<&std::path::Path>| {
+        let mut command = bzz_on_profile(dirs, args, output);
+        command.envs(variables.iter().cloned());
+        command
+    };
+    let said = |args: &[&str]| {
+        let output = bzz(args, None).output().unwrap();
+        (
+            output.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    };
+    let ok = |args: &[&str]| {
+        let (success, text) = said(args);
+        assert!(success, "bzz {args:?}: {text}");
+        text
+    };
+    // What the run found, as this test sees it: each claim that does not
+    // hold, in the order it was looked at.
+    let faults = std::cell::RefCell::new(Vec::<String>::new());
+    let claim = |holds: bool, what: String| {
+        if !holds {
+            faults.borrow_mut().push(what);
+        }
+    };
+
+    ok(&[
+        "identity",
+        "new",
+        "--label",
+        "owner",
+        "--backend",
+        "encrypted-file",
+    ]);
+    let paths = Paths {
+        config_dir: dirs.join("c"),
+        data_dir: dirs.join("d"),
+        cache_dir: dirs.join("k"),
+    };
+    let mut config = Config::load(&paths).unwrap();
+    let identity = config.identities[0].clone();
+    config
+        .add_community("c7".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    config.save(&paths).unwrap();
+    // An owner of the relay: he may also put a member in time-out.
+    let _ = seed_member(&source, &identity.pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let secret = secrecy::SecretString::from(passphrase.to_owned());
+    let owner = IdentityManager::new(&paths)
+        .signer(&identity, Some(&secret))
+        .unwrap();
+    let owner_hex = owner.public_key().to_hex();
+    let owner_supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        owner.clone(),
+    );
+    let owner_http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        owner.clone(),
+    )
+    .unwrap();
+    let relay_key = bzz::protocol::http::relay_signing_pubkey(&owner_http.nip11().await.unwrap())
+        .expect("the relay names its key")
+        .to_owned();
+    // The owner's own connection is between two attempts now and then: a
+    // `bzz` command of the same owner has just used the relay too.
+    let publish = |builder: EventBuilder| {
+        let (supervisor, owner) = (owner_supervisor.clone(), owner.clone());
+        async move {
+            let event = owner.sign(builder).await.unwrap();
+            let deadline = tokio::time::Instant::now() + WAIT;
+            loop {
+                match supervisor.publish(event.clone()).await {
+                    Ok(ack) => {
+                        assert!(
+                            ack.accepted || ack.message.starts_with("duplicate:"),
+                            "{}",
+                            ack.message
+                        );
+                        return event;
+                    }
+                    Err(error) => {
+                        assert!(
+                            tokio::time::Instant::now() < deadline,
+                            "the owner could not publish: {error}"
+                        );
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            }
+        }
+    };
+    let query = |filter: serde_json::Value| {
+        let http = owner_http.clone();
+        async move { http.query_raw(&[filter]).await.unwrap() }
+    };
+    let tagged = |kind: u16, tags: Vec<Vec<String>>| {
+        EventBuilder::new(Kind::Custom(kind), "")
+            .tags(tags.into_iter().map(|tag| nostr::Tag::parse(tag).unwrap()))
+    };
+
+    // ---- two agents, one channel ------------------------------------------
+    for name in ["Scout", "Echo"] {
+        ok(&[
+            "agent",
+            "new",
+            name,
+            "--model",
+            "scripted/scripted",
+            "--yes",
+        ]);
+    }
+    let config = Config::load(&paths).unwrap();
+    let agent_of = |name: &str| {
+        config
+            .hosted_agents
+            .iter()
+            .find(|agent| agent.label == name)
+            .unwrap()
+            .clone()
+    };
+    let (scout, echo) = (agent_of("Scout"), agent_of("Echo"));
+    let lab = uuid::Uuid::new_v4();
+    let lab_name = format!("c7-{}", &lab.simple().to_string()[..8]);
+    publish(
+        buzz_sdk::build_create_channel(
+            lab,
+            &lab_name,
+            Some(buzz_sdk::Visibility::Open),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // The role the relay records for an agent in the channel.
+    let role_of = |agent: &str| {
+        let (list, agent) = (
+            query(json!({"kinds": [39_002], "#d": [lab.to_string()], "limit": 2})),
+            agent.to_owned(),
+        );
+        async move {
+            list.await.iter().find_map(|event| {
+                event.tags.iter().find_map(|tag| {
+                    let values = tag.as_slice();
+                    (values.first().map(String::as_str) == Some("p")
+                        && values.get(1) == Some(&agent))
+                    .then(|| values.get(3).cloned().unwrap_or_default())
+                })
+            })
+        }
+    };
+    let role_becomes = |agent: &str, role: Option<&'static str>| {
+        let (agent, role_of) = (agent.to_owned(), &role_of);
+        async move {
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while role_of(&agent).await.as_deref() != role {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the relay never listed the role {role:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        }
+    };
+    // The owner changes a member's role as Buzz 1.0 does: kind 9000 for a
+    // member that is there, with the role.
+    let set_role = |agent: &str, role: &'static str| {
+        let event = tagged(
+            9000,
+            vec![
+                vec!["h".into(), lab.to_string()],
+                vec!["p".into(), agent.to_owned()],
+                vec!["role".into(), role.into()],
+            ],
+        );
+        let (publish, role_becomes, agent) = (&publish, &role_becomes, agent.to_owned());
+        async move {
+            publish(event).await;
+            role_becomes(&agent, Some(role)).await;
+        }
+    };
+    for name in ["Scout", "Echo"] {
+        let text = ok(&["agent", "add", name, &lab_name]);
+        claim(
+            text.contains("with the bot role"),
+            format!("role: `agent add` says it gives the bot role: {text}"),
+        );
+    }
+    claim(
+        role_of(&scout.pubkey).await.as_deref() == Some("bot"),
+        format!(
+            "role: `agent add` gives the bot role in a channel, as Buzz 1.0.1 does: {:?}",
+            role_of(&scout.pubkey).await
+        ),
+    );
+
+    // ---- what the test reads ----------------------------------------------
+    let mention = |agent: &str, text: String| {
+        let (agent, publish) = (agent.to_owned(), &publish);
+        async move {
+            publish(
+                buzz_sdk::build_message(lab, &text, None, &[agent.as_str()], false, &[], &[])
+                    .unwrap(),
+            )
+            .await
+        }
+    };
+    // The replies the relay holds to a request, by whoever.
+    let replies = |request: String| {
+        let all = query(json!({"kinds": [9], "#h": [lab.to_string()], "limit": 500}));
+        let owner_hex = owner_hex.clone();
+        async move {
+            all.await
+                .into_iter()
+                .filter(|event| {
+                    event.pubkey.to_hex() != owner_hex
+                        && bzz::protocol::events::event_references(event).contains(&request)
+                })
+                .map(|event| event.content)
+                .collect::<Vec<_>>()
+        }
+    };
+    let exactly_one = |request: String, what: &'static str| {
+        let replies = &replies;
+        async move {
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while replies(request.clone()).await.is_empty() {
+                assert!(tokio::time::Instant::now() < deadline, "{what}: no reply");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let all = replies(request).await;
+            assert_eq!(all.len(), 1, "{what}: {all:?}");
+            all.into_iter().next().unwrap()
+        }
+    };
+    // bzz's own books, read beside the running bzz: the request's state,
+    // its failure and its attempts; and the id of its stored reply.
+    let database = paths.database_file();
+    let turn = |request: &str| {
+        rusqlite::Connection::open_with_flags(
+            &database,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .ok()
+        .and_then(|database| {
+            database
+                .query_row(
+                    "SELECT state,COALESCE(failure,''),attempts FROM agent_inbox WHERE request_id=?1",
+                    [request],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, u32>(2)?,
+                        ))
+                    },
+                )
+                .ok()
+        })
+    };
+    let stored_reply = |request: &str| {
+        rusqlite::Connection::open_with_flags(&database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()
+            .and_then(|database| {
+                database
+                    .query_row(
+                        "SELECT reply_event_id FROM agent_replies WHERE request_id=?1",
+                        [request],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .ok()
+            })
+    };
+    // Watches one request for a while, as the tester did: every reply bzz
+    // stored for it, and what `agent show` called it meanwhile.
+    let watch = |request: String, for_seconds: u64| {
+        let (stored_reply, said) = (&stored_reply, &said);
+        async move {
+            let short = request[..12].to_owned();
+            let (mut stored, mut called) = (Vec::<String>::new(), Vec::<String>::new());
+            let until = tokio::time::Instant::now() + Duration::from_secs(for_seconds);
+            let mut looked = 0_u32;
+            while tokio::time::Instant::now() < until {
+                if let Some(id) = stored_reply(&request)
+                    && !stored.contains(&id)
+                {
+                    stored.push(id);
+                }
+                // `agent show` is a whole bzz: asked now and then.
+                if looked.is_multiple_of(10) {
+                    let shown = said(&["agent", "show", "Scout"]).1;
+                    if let Some(line) = shown.lines().find(|line| line.contains(&short)) {
+                        let line = line.trim().to_owned();
+                        if !called.contains(&line) {
+                            called.push(line);
+                        }
+                    }
+                }
+                looked += 1;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            (stored, called)
+        }
+    };
+    // Whether the relay holds a key as present: its own snapshot.
+    let present = |agent: &str| {
+        let (snapshot, agent, relay_key) = (
+            query(json!({"kinds": [presence::KIND_PRESENCE], "authors": [agent], "limit": 1})),
+            agent.to_owned(),
+            relay_key.clone(),
+        );
+        async move {
+            snapshot
+                .await
+                .iter()
+                .filter_map(|event| presence::observe(event, Some(&relay_key), |_| None))
+                .find(|observed| observed.subjects.contains(&agent))
+                .is_some_and(|observed| observed.presence != presence::Presence::Offline)
+        }
+    };
+    let presence_becomes = |agent: &str, wanted: bool, what: &'static str| {
+        let (agent, present, claim) = (agent.to_owned(), &present, &claim);
+        async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+            let mut now = present(&agent).await;
+            while now != wanted && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                now = present(&agent).await;
+            }
+            claim(
+                now == wanted,
+                format!(
+                    "presence: {what}: the relay holds it as {}",
+                    if now { "present" } else { "not present" }
+                ),
+            );
+        }
+    };
+    let run_log = dirs.join("agent-run.log");
+    let logged = |text: &str| {
+        std::fs::read_to_string(&run_log)
+            .unwrap_or_default()
+            .contains(text)
+    };
+    let log_says = |text: &'static str, what: &'static str| {
+        let (logged, claim) = (&logged, &claim);
+        async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            while !logged(text) && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            claim(
+                logged(text),
+                format!("{what}: `bzz agent run` never printed `{text}`"),
+            );
+        }
+    };
+
+    // ---- bzz agent run ----------------------------------------------------
+    let mut running = bzz(&["agent", "run"], Some(&run_log)).spawn().unwrap();
+    until("bzz agent run to be running", WAIT, || {
+        (logged("Scout · pi-durable · idle") && logged("Echo · pi-durable · idle")).then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // ---- presence ---------------------------------------------------------
+    presence_becomes(&scout.pubkey, true, "a running agent says it is present").await;
+    presence_becomes(&echo.pubkey, true, "a second running agent says so too").await;
+    claim(
+        !present(&owner_hex).await,
+        "presence: the owner's own key signs nothing: the relay holds the owner as present".into(),
+    );
+    let hello = mention(&scout.pubkey, "hello there".into()).await;
+    assert_eq!(
+        exactly_one(hello.id.to_hex(), "the first mention").await,
+        "pong: this conversation holds 1 message(s) from people"
+    );
+
+    // ---- the observed case: read-only, then a mention ---------------------
+    set_role(&scout.pubkey, "guest").await;
+    let viewing = mention(&scout.pubkey, "are you there?".into()).await;
+    let viewing_id = viewing.id.to_hex();
+    let (stored, called) = watch(viewing_id.clone(), 12).await;
+    claim(
+        stored.is_empty(),
+        format!(
+            "read-only: nothing is signed for a mention where the agent may only read: {} different stored replies {:?}",
+            stored.len(),
+            stored.iter().map(|id| &id[..8]).collect::<Vec<_>>()
+        ),
+    );
+    claim(
+        !called.iter().any(|line| line.contains("answered")),
+        format!("read-only: `agent show` never says answered of it: {called:?}"),
+    );
+    let state = turn(&viewing_id);
+    claim(
+        state == Some(("failed".into(), "read-only".into(), 0)),
+        format!("read-only: the request fails as read-only, and is never handed over: {state:?}"),
+    );
+    claim(
+        replies(viewing_id.clone()).await.is_empty(),
+        "read-only: the relay holds a reply to it".into(),
+    );
+    let shown = said(&["agent", "show", "Scout"]).1;
+    claim(
+        shown.contains(&format!("#{lab_name} (guest)"))
+            && shown.contains("read-only: it cannot answer there"),
+        format!("read-only: `agent show` says it is read-only in the channel:\n{shown}"),
+    );
+    claim(
+        shown.contains("failed: read-only"),
+        format!("read-only: `agent show` says why the mention was not answered:\n{shown}"),
+    );
+    // "Participating" again: the next mention is answered.
+    set_role(&scout.pubkey, "member").await;
+    let back = mention(&scout.pubkey, "and now?".into()).await;
+    assert_eq!(
+        exactly_one(back.id.to_hex(), "a writing member again").await,
+        "pong: this conversation holds 1 message(s) from people"
+    );
+    claim(
+        replies(viewing_id.clone()).await.is_empty(),
+        "read-only: the mention of that time was answered afterwards".into(),
+    );
+
+    // ---- the relay refuses the reply --------------------------------------
+    // A moderator's time-out: the relay's records still list the agent as
+    // a member who may write, and the relay refuses what it writes.
+    let until_then = (Timestamp::now().as_secs() + 600).to_string();
+    publish(tagged(
+        9042,
+        vec![
+            vec!["p".into(), scout.pubkey.clone()],
+            vec!["expiration".into(), until_then],
+        ],
+    ))
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let refused = mention(&scout.pubkey, "can you write?".into()).await;
+    let refused_id = refused.id.to_hex();
+    let (stored, called) = watch(refused_id.clone(), 12).await;
+    claim(
+        stored.len() == 1,
+        format!(
+            "refused: one signed reply for one mention, whatever the relay answers: {} different stored replies {:?}",
+            stored.len(),
+            stored.iter().map(|id| &id[..8]).collect::<Vec<_>>()
+        ),
+    );
+    claim(
+        !called.iter().any(|line| line.contains("answered")),
+        format!(
+            "refused: `agent show` never says answered of a reply the relay refused: {called:?}"
+        ),
+    );
+    let state = turn(&refused_id);
+    claim(
+        state == Some(("failed".into(), "reply-refused".into(), 1)),
+        format!(
+            "refused: the request fails at once as reply-refused, after one attempt: {state:?}"
+        ),
+    );
+    claim(
+        called
+            .iter()
+            .any(|line| line.contains("failed: reply-refused")),
+        format!("refused: `agent show` says failed: reply-refused: {called:?}"),
+    );
+    // The time-out is lifted. The refused reply is not published later:
+    // longer than the interval at which stored replies are published again.
+    publish(tagged(9043, vec![vec!["p".into(), scout.pubkey.clone()]])).await;
+    let lifted = mention(&scout.pubkey, "and after the time-out?".into()).await;
+    assert_eq!(
+        exactly_one(lifted.id.to_hex(), "after the time-out").await,
+        "pong: this conversation holds 1 message(s) from people"
+    );
+    tokio::time::sleep(Duration::from_secs(35)).await;
+    claim(
+        replies(refused_id.clone()).await.is_empty(),
+        format!(
+            "refused: a refused reply is never published later: {:?}",
+            replies(refused_id.clone()).await
+        ),
+    );
+    claim(
+        stored_reply(&refused_id).as_ref() == stored.first(),
+        "refused: the stored reply is still the first one".into(),
+    );
+
+    // ---- removed while it answers -----------------------------------------
+    let late = mention(
+        &scout.pubkey,
+        r#"do: [["sleep", 8000], ["buzz_send", {"text": "answered after I was removed", "final": true}]]"#.into(),
+    )
+    .await;
+    let late_id = late.id.to_hex();
+    until("the turn to be running", WAIT, || {
+        (turn(&late_id).map(|(state, ..)| state).as_deref() == Some("delivered")).then_some(())
+    })
+    .await;
+    publish(buzz_sdk::build_remove_member(lab, &scout.pubkey).unwrap()).await;
+    role_becomes(&scout.pubkey, None).await;
+    tokio::time::sleep(Duration::from_secs(16)).await;
+    let published = replies(late_id.clone()).await;
+    claim(
+        published.is_empty(),
+        format!(
+            "removed: nothing is published after the agent was removed from the channel: {published:?}"
+        ),
+    );
+    let state = turn(&late_id);
+    claim(
+        state
+            .as_ref()
+            .is_some_and(|(state, failure, _)| state == "failed" && failure == "not-a-member"),
+        format!("removed: the request fails as not-a-member: {state:?}"),
+    );
+    // Added again, it answers again; the old mention stays as it is.
+    ok(&["agent", "add", "Scout", &lab_name]);
+    let again = mention(&scout.pubkey, "back in the channel?".into()).await;
+    assert_eq!(
+        exactly_one(again.id.to_hex(), "added again").await,
+        "pong: this conversation holds 1 message(s) from people"
+    );
+    claim(
+        replies(late_id.clone()).await.is_empty(),
+        "removed: the mention of that time was answered afterwards".into(),
+    );
+
+    // ---- bzz agent pause and resume, from another process -----------------
+    ok(&["agent", "pause", "Scout"]);
+    log_says(
+        "Scout · pi-durable · paused",
+        "pause: the bzz that runs the agent pauses it",
+    )
+    .await;
+    presence_becomes(&scout.pubkey, false, "a paused agent says it is gone").await;
+    let while_paused = mention(&scout.pubkey, "while you are paused".into()).await;
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    claim(
+        replies(while_paused.id.to_hex()).await.is_empty(),
+        "pause: a mention is answered while the agent is paused".into(),
+    );
+    ok(&["agent", "resume", "Scout"]);
+    presence_becomes(&scout.pubkey, true, "a resumed agent is present again").await;
+    let resumed = mention(&scout.pubkey, "and resumed?".into()).await;
+    assert_eq!(
+        exactly_one(resumed.id.to_hex(), "after the resume").await,
+        "pong: this conversation holds 1 message(s) from people"
+    );
+    claim(
+        replies(while_paused.id.to_hex()).await.is_empty(),
+        "pause: what was said while it was paused was answered later".into(),
+    );
+
+    // ---- bzz agent delete, from another process ---------------------------
+    // Echo: served by the running bzz, idle. It has no process, and the
+    // running bzz holds its key and its connection.
+    let (deleted, text) = said(&["agent", "delete", "Echo", "--yes"]);
+    assert!(deleted, "{text}");
+    claim(
+        text.contains("the bzz that runs Echo") && text.contains("has stopped it"),
+        format!("delete: the delete says that it reached the bzz that runs the agent: {text}"),
+    );
+    log_says(
+        "Echo · pi-durable · stopped · deleted",
+        "delete: the bzz that served the agent let go of it",
+    )
+    .await;
+    presence_becomes(&echo.pubkey, false, "a deleted agent says it is gone").await;
+    let serving = |agent: uuid::Uuid| {
+        std::fs::read_dir(paths.data_dir.join("agents").join("serving"))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(&agent.to_string())
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    };
+    claim(
+        serving(echo.id) == 0 && serving(scout.id) == 1,
+        format!(
+            "delete: no bzz says it holds the deleted agent's key, and one holds the other's: Echo {}, Scout {}",
+            serving(echo.id),
+            serving(scout.id)
+        ),
+    );
+    // Scout: deleted while it is answering.
+    let last = mention(
+        &scout.pubkey,
+        r#"do: [["sleep", 8000], ["buzz_send", {"text": "answered after I was deleted", "final": true}]]"#.into(),
+    )
+    .await;
+    let last_id = last.id.to_hex();
+    until("the turn to be running", WAIT, || {
+        (turn(&last_id).map(|(state, ..)| state).as_deref() == Some("delivered")).then_some(())
+    })
+    .await;
+    let harness = bzz::agents::runtime::process::read_record(
+        &bzz::agents::runtime::process::run_dir(&paths.data_dir),
+        scout.id,
+    )
+    .map(|record| record.process.pid);
+    let (deleted, text) = said(&["agent", "delete", "Scout", "--yes"]);
+    claim(
+        deleted,
+        format!("delete: an agent that is answering is stopped and deleted: {text}"),
+    );
+    if deleted {
+        claim(
+            harness.is_some_and(|pid| !support::agent_harness::running(pid)),
+            format!("delete: the agent's process is gone when the delete returns: {harness:?}"),
+        );
+        log_says(
+            "Scout · pi-durable · stopped · deleted",
+            "delete: the bzz that ran the agent let go of it",
+        )
+        .await;
+        claim(
+            serving(scout.id) == 0,
+            "delete: a bzz still says it holds the deleted agent's key".into(),
+        );
+        claim(
+            Config::load(&paths).unwrap().hosted_agents.is_empty(),
+            "delete: the settings still hold an agent".into(),
+        );
+    }
+    tokio::time::sleep(Duration::from_secs(14)).await;
+    let after = replies(last_id.clone()).await;
+    claim(
+        after.is_empty(),
+        format!("delete: no bzz publishes as an agent after it was deleted: {after:?}"),
+    );
+    presence_becomes(&scout.pubkey, false, "the deleted agent says it is gone").await;
+
+    // The bzz that ran them is still there, and stops as always.
+    let status = Command::new("kill")
+        .args(["-TERM", &running.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(
+        running.wait().unwrap().success(),
+        "{}",
+        std::fs::read_to_string(&run_log).unwrap()
+    );
+    owner_supervisor.shutdown().await;
+    owner.lock().await;
+    let faults = faults.into_inner();
+    assert!(
+        faults.is_empty(),
+        "{} claim(s) do not hold:\n- {}",
+        faults.len(),
+        faults.join("\n- ")
+    );
+}

@@ -21,8 +21,76 @@ CycloneDX SBOM is attached to releases.
 `block/buzz-app@dfdb5582e6810e76681e24a33c3489ba2aa77e5c` (Apache-2.0), and
 `src/protocol/identity_names.rs` and `src/protocol/mention_rules.rs`
 implement the contracts specified there.
+`agent-host/src/model.mjs` adapts the `AuthFile` class and the reading of
+Pi's default model from `src/bundled/pi/host.mjs` at
+`block/buzz-app@095df3f0f6f858b16c6d7c5e94c9cfbcd8c2360e` (Apache-2.0); the
+changes are listed at the top of that file. `agent-host/src/packages.mjs`
+adapts `loadPackages`, `loadPackage`, `isProvider` and the import hook for
+Pi packages from the same file at the same revision, with its changes listed
+at its top; the package rules it follows are those of
+`src/bundled/pi/EXTENSIONS.md` there. The rest of the agent host is
+independently written; Buzz's host was studied for its ideas (the event id as
+the request id, one conversation per channel or thread, a final send that ends
+the turn).
+`tests/fixtures/agents/buzz-acp-prompts/*.txt` are prompts produced by
+`buzz-acp` at `block/buzz@bf3bdd0eaefe39289bf9620594f254c7f68897f5`
+(`crates/buzz-acp/src/queue.rs`), recorded with disposable identities.
 Copyright belongs to the Buzz contributors. See `LICENSE-APACHE` for the
 Apache License 2.0 text.
+
+## Agent host (Node)
+
+The Pi Durable agent host in `agent-host/` is not part of the bzz binary's
+Rust dependency tree. Its packages are installed from npm on the owner's
+machine, from `agent-host/package-lock.json`, with install scripts off; bzz
+ships none of them. Direct dependencies, all pinned to exact versions:
+
+| Package | Version | License |
+|---|---|---|
+| `@earendil-works/pi-durable`, `chord`, `pi-ai`, `pi-schema` | 1.5.0 | MIT |
+| `just-bash` | 3.6.0 | Apache-2.0 |
+| `isomorphic-git` | 1.44.11 | MIT |
+| `proper-lockfile` | 4.1.2 | MIT |
+| `diff` | 8.0.4 | BSD-3-Clause |
+
+`agent-host/src/disk.mjs`, `adapters.mjs`, `env.mjs` and `git.mjs` use the
+public interfaces of those packages and copy none of their source. What bzz
+installs (`--omit=optional --omit=dev`) is 176 packages: MIT (106),
+Apache-2.0 (43), BSD-3-Clause (15), ISC (7), and one each under
+BSD-2-Clause, Unlicense, 0BSD, "MIT AND Zlib" and "MIT AND BSD-3-Clause".
+Two of them (`@google/genai`, `protobufjs`) declare an install script,
+which `--ignore-scripts` never runs. The whole lock file lists 204 packages
+under those terms, and one under LGPL-3.0: `node-liblzma` 2.2.0, an optional
+dependency of `just-bash` for `xz` archives. It is native code that only an
+install script would build, so it never runs; installing with
+`--omit=optional` leaves it and 27 other optional packages out, and the
+host's tests pass without them.
+
+## Adapters of the coding harnesses (Node)
+
+For an agent on the `codex` or the `claude-code` harness (both experimental
+in v0.15.0), bzz drives the owner's own program through that program's ACP
+adapter. Like the agent host, an adapter is not part of the bzz binary: only
+its `package.json` and lock file are (`agent-adapters/codex/`,
+`agent-adapters/claude-code/`). It is installed from npm on the owner's
+machine the first time such an agent needs it, with
+`npm ci --ignore-scripts --omit=optional --omit=dev`. An owner who creates no
+such agent installs none of it.
+
+| Package | Version | License | Installed with it |
+|---|---|---|---|
+| `@agentclientprotocol/codex-acp` | 2.5.0 | Apache-2.0 | 24 packages: MIT (18), Apache-2.0 (3), ISC (2), BSD-3-Clause (1) |
+| `@agentclientprotocol/claude-agent-acp` | 0.101.0 | Apache-2.0 | 107 packages: MIT (90), ISC (7), Apache-2.0 (4), BSD-3-Clause (3), BSD-2-Clause (1), Unlicense (1), and one under its publisher's own terms (below) |
+
+**Not open source:** `@anthropic-ai/claude-agent-sdk` 0.3.318, which the
+Claude Code adapter needs, is published under Anthropic's own terms
+("SEE LICENSE IN README.md" in its package). bzz does not ship it, copy from
+it or link to it; `npm` installs it on the machine of an owner who creates a
+`claude-code` agent, where it starts that owner's own `claude`. The optional
+packages of both adapters, which are copies of `claude` and `codex`
+themselves for each platform (the first under the same terms, the second
+under Apache-2.0), are left out by `--omit=optional`: bzz points each adapter
+at the program the owner installed.
 
 ## slk
 

@@ -97,10 +97,11 @@ bzz agents list --community <community-uuid>
 bzz agents show <agent-pubkey> --community <community-uuid>
 ```
 
-A normal Agents-directory entry requires current relay-signed bot membership,
-an agent-signed kind 0 profile with one valid NIP-OA owner, an agent-signed kind
-10100 declaration, and a matching owner-signed kind 30177 policy when policy is
-published. Missing, malformed, conflicting, removed, cross-community, or stale
+A normal Agents-directory entry requires current relay-signed membership of a
+channel (with any role since v0.15; with the `bot` role until v0.14), an
+agent-signed kind 0 profile with one valid NIP-OA owner, an agent-signed kind
+10100 declaration when the agent is known only from a DM, and a matching
+owner-signed kind 30177 policy when policy is published. Missing, malformed, conflicting, removed, cross-community, or stale
 records fail closed. A display-name match alone is intentionally insufficient.
 
 If the status bar says `agent typing unavailable for this channel`, the main
@@ -136,8 +137,9 @@ readiness; bzz does not control the remote process.
 If send-time refresh or validation fails, the exact draft remains in the
 composer and nothing is automatically retried. Do not edit SQLite to add an
 agent badge or policy. Ask the owner/community operator to repair public records
-or membership. There is no local ACP/process log, model setup, start, stop, or
-restart command in v0.11.
+or membership. A remote agent has no local process log, model setup, start,
+stop or restart command: its owner runs it. For an agent this bzz runs, see
+[`agents.md`](agents.md).
 
 ## Message remains pending or delivery is uncertain
 
@@ -428,7 +430,64 @@ with `:huddle devices`, choose one with `:huddle input <name>` /
 - "agent unavailable" in the status bar: its sealed key did not open with your
   identity, or (FI communities) you are not signed in to the adapter; run
   `:signin`.
-- `unsupported` for `agents.*`: bzz does not run managed agents.
+- `unsupported` for `agents.*`: the broker does not create or run agents.
+  bzz itself does, since v0.15: see below.
+- "… is a local agent, which bzz runs itself": `bzz broker` changes only
+  agents whose process you run. Use `bzz agent show`, `edit`, `pause`,
+  `resume` or `delete` for one bzz runs.
+
+## A local agent does not start or does not answer
+
+`bzz agent doctor` reports Node.js, npm, the agent host, each coding
+program (`grok`, `codex`, `claude`) with its version and its adapter, and
+each agent's readiness. `:agents` shows what each agent is doing and why it
+is not running. The symptoms and what to do are in
+[`agents.md`](agents.md#when-something-is-wrong).
+
+- **The mention chooser does not offer an agent you just added to the
+  channel**: bzz learns that a new member is an agent when its directory is
+  refreshed. Open `:agents directory` and press `r`, then mention it.
+
+With Buzz 1.0 beside bzz:
+
+- **"a Buzz Desktop identity cannot host local agents"**: an identity
+  paired with Buzz (`bzz identity pair-desktop`) cannot have agents. Create
+  the agent with an identity whose key bzz holds.
+- **Buzz 1.0 does not show the agent you created, or still shows one you
+  deleted**: it reads the list of your agents when it starts. Start Buzz 1.0
+  again.
+- **Buzz 1.0 says "Harness unavailable"**: that is how it shows an agent it
+  does not run. bzz runs it; mention it and it answers.
+- **Buzz 1.0 finds no one when you start a direct message with the agent**:
+  it offers none to an agent bzz runs. Use a channel or a Solo chat.
+
+For an agent on a coding harness:
+
+- **"none was found on PATH"**, or the wrong copy is found: install the
+  program, or name it with `BZZ_GROK`, `BZZ_CODEX` or `BZZ_CLAUDE`.
+- **"outside the versions bzz knows to work"**: bzz starts only the versions
+  it was tested with and later ones of the same line. The message names the
+  range. A program that updated itself past it is not started until bzz
+  knows the new version.
+- **The agent says its owner must sign in**: sign in with the program
+  itself (`grok login`, `codex login`, `claude auth login`). bzz hands on no
+  API key from its environment.
+- **Grok does not start on Linux**: its sandbox needs `bwrap` (the package
+  `bubblewrap`). `harness.log` in the agent's folder has Grok's own words.
+- **The agent cannot write where you expect**: it writes only in its working
+  folder and in folders granted `:rw`. `bzz agent show <name>` lists what
+  bzz refused, with the path.
+- **A Claude Code agent runs no shell command**: grant a folder for commands
+  (`:exec`). Each command then waits for `Ctrl-Y` in the TUI.
+- **A Codex agent stops with "my owner has not allowed"**: Codex ends its
+  turn when a request of its own is refused. `bzz agent show <name>` says
+  what it asked for.
+- **Your own MCP servers do not show for a Claude Code agent**: bzz starts
+  it without your Claude settings, on purpose.
+- **A Codex agent says "I finished without an answer" although Codex wrote
+  something**: what Codex wrote was a warning of its own, not the model's
+  answer, and bzz does not publish those. `harness.log` in the agent's
+  folder and `codex` itself say what the warning was.
 
 ## Development relay
 

@@ -33,7 +33,7 @@
     bzz
   </a>
   <div class="links">
-    <a href="#new">new in 0.14</a>
+    <a href="#new">new in 0.15</a>
     <a href="#features">features</a>
     <a href="#keys">keys</a>
     <a href="#install">install</a>
@@ -107,52 +107,59 @@
 
 <section id="new">
 <div class="wrap">
-  <span class="kicker">new in v0.14.0</span>
-  <h2>Ready for the Buzz 1.0 era.</h2>
+  <span class="kicker">new in v0.15.0</span>
+  <h2>Your own agents, run by bzz.</h2>
   <div class="grid">
     <div class="card">
-      <span class="k">/// edits</span>
-      <h3>Edit messages, see every edit</h3>
-      <p>Press <code>e</code> on your own message to fix it. Edits made in any
-      Buzz app show as Buzz shows them, with a quiet <code>(edited)</code>, in
-      threads, the Inbox and search too.</p>
+      <span class="k">/// create</span>
+      <h3>An agent with one command</h3>
+      <p><code>bzz agent new</code>, or <code>:agent new</code> in the TUI,
+      creates an agent in your team's Buzz. bzz holds its key, runs it on your
+      machine and signs what it says. Your team mentions it like any other
+      member.</p>
     </div>
     <div class="card">
-      <span class="k">/// sidebar</span>
-      <h3>Solo chats and synced sections</h3>
-      <p><code>:solo</code> starts a private chat just for you. Sidebar
-      sections and sort (<code>:section</code>, <code>:sort</code>) stay in sync
-      with Buzz on desktop and mobile.</p>
+      <span class="k">/// one reply</span>
+      <h3>One reply per mention</h3>
+      <p>The reply is signed and stored before it is published. Kill the
+      agent or bzz at any moment: the same reply goes out again and the relay
+      keeps one. You choose who may wake it; by default, only you.</p>
     </div>
     <div class="card">
-      <span class="k">/// buzz 1.0</span>
-      <h3>Pair with Buzz 1.0</h3>
-      <p>Let the Buzz app keep your key and sign for bzz. bzz knows what Buzz
-      1.0 lets other apps do, and tells you before you try something it
-      refuses.</p>
+      <span class="k">/// its own disk</span>
+      <h3>A disk of its own, with git</h3>
+      <p>The agent works on its own disk, with a shell and a
+      <code>git</code> that start no program of your machine. It sees a
+      folder of yours, a host or a private repository only when you grant
+      it.</p>
     </div>
     <div class="card">
-      <span class="k">/// mentions</span>
-      <h3>Names and mentions like Buzz 1.0</h3>
-      <p>Same names, the same disambiguation for namesakes, and the same
-      <code>@</code> ranking as Buzz 1.0, checked against all 146 of its
-      conformance cases.</p>
+      <span class="k">/// hands</span>
+      <h3>Real commands, by your yes</h3>
+      <p>Grant a folder for commands and each one waits for you.
+      <code>Ctrl-y</code> shows the whole command exactly as the shell will
+      get it; <code>a</code> allows it, <code>r</code> refuses it with a
+      reason.</p>
     </div>
     <div class="card">
-      <span class="k">/// search</span>
-      <h3>Older search results</h3>
-      <p><code>Ctrl-o</code> in search keeps going back in time, without moving
-      the results you are reading.</p>
+      <span class="k">/// move</span>
+      <h3>Move it, with its memory</h3>
+      <p><code>bzz agent move</code> seals the key, the memory and the disk
+      in one file for another bzz of yours. <code>bzz agent launch-kit</code>
+      runs it under Buzz's own <code>buzz-acp</code> on a machine without
+      bzz.</p>
     </div>
     <div class="card">
-      <span class="k">/// upgrade</span>
-      <h3>Safe upgrade</h3>
-      <p>Your 0.13 data upgrades in place with a backup written first, and
-      edits already in your history are applied.</p>
+      <span class="k">/// harnesses</span>
+      <h3>Pi, Grok, Codex, Claude Code</h3>
+      <p>bzz's own host runs on Pi Durable. Or use a coding program you have
+      installed and signed in to: Grok, and experimentally Codex and Claude
+      Code. bzz says what each one can reach before you confirm.</p>
     </div>
   </div>
-  <div class="shot"><p class="cap">Full notes:
-  <a href="https://github.com/arpagon/bzz/releases/tag/v0.14.0">bzz v0.14.0 release</a>.</p></div>
+  <div class="shot"><p class="cap">Agents need Node.js 22.19 or newer; bzz
+  without agents stays one binary. Full notes:
+  <a href="https://github.com/arpagon/bzz/releases/tag/v0.15.0">bzz v0.15.0 release</a>.</p></div>
 </div>
 </section>
 

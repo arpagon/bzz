@@ -20,6 +20,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
+      # `--all-targets` builds the examples as tests and leaves no
+      # target/debug/examples/scripted_harness, which the tests of the agent
+      # runtime start as a program.
+      - run: cargo build --locked --example scripted_harness
       - run: cargo test --locked --all-targets
       - run: cargo install cargo-deny --version 0.20.2 --locked
       - run: cargo deny check
@@ -80,7 +84,7 @@ jobs:
           ${{ matrix.binary }} identity verify "$identity_id"
           ${{ matrix.binary }} identity remove "$identity_id" --yes
   upgrade:
-    # Release acceptance: a real v0.12.1 data directory opened by this build.
+    # Release acceptance: a real profile of the last release (v0.14.0) opened by this build.
     strategy:
       fail-fast: false
       matrix:
@@ -93,7 +97,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
-      - name: Open a v0.12.1 data directory with this build
+      - name: Open a v0.14.0 profile with this build
         shell: bash
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -128,3 +132,59 @@ jobs:
       - name: Tone round trip and device release through a virtual device
         shell: bash
         run: ./scripts/test-audio-loopback.sh
+  agent-host:
+    # v0.15.0 M2 and M3: the Pi Durable agent host (agent-host/). Node only:
+    # no Rust, no relay, no model and no network beyond this machine.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: agent-host
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --version && git --version
+      # As bzz installs it on first use: from the lock file, with install scripts off.
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - name: Audit the packages an agent runs with
+        if: runner.os == 'Linux'
+        run: npm audit --omit=dev
+      - name: The same tests without optional packages (no native builds, no LGPL xz binding)
+        if: runner.os == 'Linux'
+        run: |
+          rm -rf node_modules
+          npm ci --ignore-scripts --omit=dev --omit=optional
+          npm test
+  agent-adapters:
+    # v0.15.0 M6: the two ACP adapters bzz installs for the codex and
+    # claude-code harnesses (agent-adapters/). Installed as bzz installs
+    # them on first use: from the lock file, without install scripts and
+    # without their optional packages. No sign-in, no model, no session.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        adapter:
+          - { folder: claude-code, package: '@agentclientprotocol/claude-agent-acp' }
+          - { folder: codex, package: '@agentclientprotocol/codex-acp' }
+    defaults:
+      run:
+        shell: bash
+        working-directory: agent-adapters/${{ matrix.adapter.folder }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts --omit=optional --omit=dev
+      - name: The adapter's entry is there
+        run: test -f "node_modules/${{ matrix.adapter.package }}/dist/index.js"
+      - name: Audit the packages an agent runs with
+        run: npm audit --omit=dev --omit=optional

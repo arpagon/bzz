@@ -88,11 +88,16 @@ relay-signed kind 39002 source event so the exact four-field `bot` role converge
 without clearing the database. Duplicate current snapshots can repair the same
 projection drift and are true no-ops afterward.
 
-Outside DMs, exact current `bot` membership remains mandatory. Buzz represents
+Until v0.14, exact current `bot` membership was mandatory outside DMs. Since
+v0.15 it is not: Buzz 1.0 leaves the agent a Solo chat is created with a plain
+member, so a member of a channel is listed as an agent when its kind 0
+profile carries its owner's valid NIP-OA proof, whatever its role. A member
+without that proof is a person and never enters the directory. Buzz represents
 DM participants with operational role `member`, so a bounded current DM
 participant can be recognized only after kind 0 NIP-OA ownership plus either
-exact bot authority elsewhere in the community or a signed kind 10100
-declaration validate; only the exact verified owner may invoke it in a DM.
+exact bot authority or proven channel membership elsewhere in the community,
+or a signed kind 10100 declaration, validate; only the exact verified owner
+may invoke it in a DM.
 Any present public owner policy must validate. When no policy is published,
 non-owners remain policy-unknown. This adds no manual trust setting. It does not add
 an agent key to `[[identities]]` or revive retired `[[local_agents]]` values.
@@ -265,5 +270,121 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   never stored. Manage agents with `bzz broker
   create|list|allow|rotate|pause|resume|delete`. While bzz is unlocked the
   broker listens on `127.0.0.1` and writes its port to `<data>/broker.port`.
+- **`[hosted_agents.local]`** (v0.15): present on a **local agent**, one
+  whose process bzz itself starts; absent on an agent you run yourself, which
+  stays what v0.13 made it. Written by `bzz agent new` and changed by
+  `bzz agent edit|pause|resume` and `:agents`; the owner's guide is
+  [`agents.md`](agents.md). Never secrets. Fields:
+  - `harness`: `pi-durable`, `grok`, `codex` or `claude-code`. The last
+    three are coding harnesses: your own installed program
+    ([`agents.md`](agents.md#coding-harnesses)).
+  - `wake`: who may wake the agent. `owner-only` (default), `allowlist` (the
+    public keys in `wake_allowlist`) or `anyone`. A DM is always owner only.
+  - `model` (`provider`, `model_id`, `thinking_level`): absent means the
+    harness's own default. bzz stores no provider key. For a coding harness
+    `provider` is the harness's name and `model_id` a model its program
+    offers; bzz sets it on every session, and the thinking level with it.
+  - `instructions`, `network` (hosts the agent may reach) and `folders`
+    (`name`, absolute `path`, `write = false`): real folders granted to the
+    agent, read-only unless said. A coding harness takes no `network`: bzz
+    refuses to write one.
+  - `exec` on a folder (v0.15 M7): whether real commands of this machine may
+    run there. Absent: none. `"ask"`: each command waits for your yes in the
+    TUI, and is refused when bzz runs without it. `"without-asking"`:
+    commands run without you; not for an agent with `wake = "anyone"`,
+    whose commands are always asked about. Anything else is refused when the
+    file is read. A command runs as your user and is not held in the folder; `write`
+    binds the agent's file tools only. `--folder name=/path:exec` writes
+    `"ask"`, `:exec-without-asking` the other. For Codex and Claude Code it
+    decides what a command they ask leave for is answered; Grok never asks,
+    and bzz refuses `exec` for it.
+  - `packages` (default `true`): whether the agent's host loads the Pi
+    packages named in Pi's `settings.json`. Their code runs inside the host
+    with your rights. `false` is written by `--no-packages` and `bzz agent
+    edit --packages off`. Only for `pi-durable`.
+  - `state`: `active` (default), `paused` or `moved-away`. Only an active,
+    unpaused agent is ever started. `moved-away` is written by
+    `bzz agent move` and `bzz agent launch-kit`, with `move.json` in the
+    agent's folder, which is what a bzz that is already running reads. Every
+    `bzz agent` command makes this setting agree with that file.
+  - `packages`: whether the Pi Durable host loads your Pi packages for this
+    agent. Written only when `false` (`bzz agent edit --packages off`); the
+    choice moves with the agent.
+  - `picture`: the HTTPS address of the agent's picture, kept so that an edit
+    can publish its profile and the owner's record again.
+  - `command`: program and arguments to start instead of the harness's own
+    launch command, for a harness run from a checkout. Empty for an agent
+    made by `bzz agent new`: a `pi-durable` agent is then started as
+    `node <data>/agent-host/<id>/main.mjs <agent folder>`, and a coding
+    harness as its own program is started
+    ([`agent-host-protocol.md`](agent-host-protocol.md), section 12). With
+    `command`, a coding harness's program, its version and its adapter are
+    not looked for; its guard is still set.
+
+  ```toml
+  [[hosted_agents.local.folders]]
+  name = "work"
+  path = "/home/ann/work"
+  write = true
+  exec = "ask"
+  ```
+
+  **Not in this file: git credentials.** `bzz agent credential set <agent>
+  <host>` stores a user name and a token sealed to your key in
+  `<data>/keys/agent-<id>.git/`. Which hosts have one is shown by `bzz agent
+  credential list` and `bzz agent show`.
+
+  bzz runs local agents while your identity is unlocked in the TUI
+  (`:agents` shows each one; `:broker` keeps one status line each) and under
+  `bzz agent run`. Their processes are recorded in `<data>/agents/run/`,
+  their folders are `<data>/agents/<id>/`, and each harness's standard error
+  goes to `harness.log` there. Beside it, `activity.jsonl` holds each
+  command an agent asked to run and each credential it asked for, with the
+  answer, and `started.json` what its host reported at its last start.
+
+  **Saving.** bzz writes this file under a lock (`config.toml.lock`, beside
+  it) and writes only what its own copy changed since it last read or wrote
+  the file, over what the file holds at that moment. So a command (`bzz
+  agent edit`, `pause`, `new`) and a TUI that is open do not write over each
+  other. An entry either removed stays removed. A bzz that is running keeps
+  the settings it started with, with one exception: before it allows an
+  agent a real command or gives it a credential, it reads this file again,
+  and refuses what you have taken away since. See
+  [`adr-v0.15-local-agents.md`](adr-v0.15-local-agents.md).
+
+  `bzz agent move` and `bzz agent receive` ask for the passphrase of the
+  moved agent's file on the terminal. A script gives it on an inherited
+  descriptor named by `BZZ_MOVE_PASSPHRASE_FD`, as `BZZ_PASSPHRASE_FD` names
+  the one for an identity's passphrase.
+
+  Some variables of bzz's own environment matter to agents, and none is a
+  setting:
+
+  | Variable | What |
+  |---|---|
+  | `BZZ_NODE` | the Node.js that runs the agent host and the adapters of Codex and Claude Code. Default: the first `node` on `PATH` that is 22.19 or newer |
+  | `PI_CODING_AGENT_DIR` | Pi's folder, where the `pi-durable` host reads the model's sign-in. Default `~/.pi/agent` |
+  | `BZZ_GROK`, `BZZ_CODEX`, `BZZ_CLAUDE` | the program of a coding harness. Default: the first `grok`, `codex` or `claude` on `PATH` |
+  | `GROK_HOME`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` | handed on to the program whose it is: where its own sign-in is, when you moved it |
+  | `HTTPS_PROXY` and the like, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `XDG_*_HOME` | handed on to a coding harness, so that it reaches its provider as you do |
+  | `BZZ_AGENT_RECORD` | for the tests: a folder where bzz writes a transcript of each start of a coding harness. It holds the conversation's text, never a credential ([`agent-host-protocol.md`](agent-host-protocol.md), section 12) |
+
+  No other variable reaches a harness, and no API key does
+  (`XAI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`): a coding harness
+  uses the sign-in you made with the program itself.
+
+  The host and its packages are installed on first use in
+  `<data>/agent-host/<id>/`, where `<id>` names the exact host files inside
+  this bzz; the adapters of Codex and Claude Code in
+  `<data>/agent-adapters/<name>-<id>/`, where `<id>` names the lock file
+  inside this bzz. An install another bzz made is removed when no agent
+  runs.
+
+  bzz's database keeps each request a local agent was woken by, with the
+  reply it signed, for 30 days after its turn is over and at most 1000 per
+  agent; a stored session id of a harness, for 30 days after its last use.
+  They are removed when the agent starts and once a day while it runs. A
+  request that is queued, being answered, or whose reply the relay has not
+  acknowledged is never removed.
 - **Cargo feature `huddles-audio`** (default on): microphone capture, playback
   and Opus. Builds with `--no-default-features` show huddles view-only.

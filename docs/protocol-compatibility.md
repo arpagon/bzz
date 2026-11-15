@@ -1,6 +1,6 @@
 # Protocol compatibility
 
-The v0.14.0 compatibility baseline is `block/buzz` revision
+The compatibility baseline of v0.14.0 and v0.15.0 is `block/buzz` revision
 `bf3bdd0eaefe39289bf9620594f254c7f68897f5`, with revision-pinned `buzz-core`,
 `buzz-sdk` and (feature `huddles-audio`) `buzz-audio-client`, built with Rust
 1.98.1. v0.13.0 artifacts remain pinned to
@@ -8,6 +8,9 @@ The v0.14.0 compatibility baseline is `block/buzz` revision
 `9f55bf67456be10ff7c8238bf0d9e12e582848f6`; v0.10.0 to
 `ede26863345a518ec46edd6d7692e0281883491b`. The v0.13.0 surfaces are listed in
 [v0.13.0 additions](#v0130-additions) below.
+
+v0.15.0 keeps that revision and adds what local agents need beside it; see
+[v0.15.0 additions](#v0150-additions).
 
 Implemented MVP protocol surface:
 
@@ -28,9 +31,18 @@ Implemented MVP protocol surface:
   `search_mode`, author, channel, and UTC-time filters;
 - p-gated mention and read-only workflow status (`46010`–`46012`) Inbox
   projection;
-- relay-authored kind `39002` bot membership, agent-authored kind `0` NIP-OA
-  ownership profiles and kind `10100` declarations, and owner-authored kind
-  `30177` public policy for verified remote managed-agent discovery;
+- relay-authored kind `39002` membership (any role since v0.15; the `bot`
+  role until v0.14), agent-authored kind `0` NIP-OA ownership profiles and
+  kind `10100` declarations, and owner-authored kind `30177` public policy for
+  verified remote managed-agent discovery;
+- for a local agent (v0.15), what Buzz 1.0 itself publishes for one: the
+  agent's kind `0` profile with `"bot": true` and the owner's NIP-OA tag, the
+  owner's kind `30177` record with `runtime` `bzz/<harness>`, `name`,
+  `picture`, `respond_to` and `parallelism`, its NIP-09 removal by coordinate,
+  and the owner's kind `9000` addition of the agent to a channel with the
+  `bot` role, as Buzz 1.0.1 was seen to add one; and, signed by the agent
+  itself while bzz runs it, kind `20001` presence (`online`, then `offline`
+  when it is paused, stopped, deleted or moved away);
 - relay-authored kind `40099` control events through a bounded semantic parser,
   never raw authored-message rendering;
 - transient relay-authored kind `39005` thread summaries for the selected
@@ -76,8 +88,10 @@ DM participants operational role `member`; bzz therefore permits an exact
 current participant to enter bounded agent verification only when NIP-OA ownership plus
 either exact bot authority elsewhere in the community or signed kind 10100
 validate. DM-only members require the declaration. DM invocation remains
-verified-owner-only; an absent public policy never enables a non-owner. Every
-non-DM destination continues to require exact relay-signed `bot` role.
+verified-owner-only; an absent public policy never enables a non-owner. Until
+v0.14 every non-DM destination required the exact relay-signed `bot` role;
+since v0.15 a member of the channel whose profile carries its owner's valid
+NIP-OA proof is an agent there, as Buzz 1.0 adds agents as plain members.
 
 Inbox is a composed local projection rather than a new relay object. It groups
 p-tagged mentions, relevant NIP-10 replies, workspace DM activity, local
@@ -212,3 +226,46 @@ contract (see below and
   Desktop picks the newest edit that carries `imeta` and keeps the original's
   otherwise; bzz follows the relay, which authorizes media by the latest
   edit.
+
+## v0.15.0 additions
+
+The Buzz revision does not move. What v0.15.0 adds is on bzz's own side of
+the relay, and beside the relay: the programs a local agent runs on.
+
+| What | Version bzz is held to | Where it is pinned |
+|---|---|---|
+| Buzz relay, `buzz-core`, `buzz-sdk` | `bf3bdd0eaefe39289bf9620594f254c7f68897f5` | `Cargo.toml`, `scripts/test-relay.sh` |
+| Buzz's `buzz-acp` and `buzz` CLI, for an agent moved with a launch kit | the same revision; the kit's README names it | `src/agents/launch_kit.rs`, held to `Cargo.toml` by a test |
+| Agent Client Protocol (ACP) over stdio | protocol version 1 | [`agent-host-protocol.md`](agent-host-protocol.md) |
+| `@earendil-works/pi-durable`, `pi-ai`, `chord`, `pi-schema` | 1.5.0 | `agent-host/package-lock.json`, inside the bzz binary |
+| Node.js, for agents only | 22.19 or newer | `agent-host/package.json`, checked at each start |
+| Grok Build | 1.0.77 and later below 1.1.0 | `src/agents/runtime/coding.rs` |
+| Codex, through `@agentclientprotocol/codex-acp` 2.5.0 | 0.166.0 and later below 0.167.0 | the same, and `agent-adapters/codex/package-lock.json` |
+| Claude Code, through `@agentclientprotocol/claude-agent-acp` 0.101.0 | 2.1.322 and later below 2.2.0 | the same, and `agent-adapters/claude-code/package-lock.json` |
+
+- **What a local agent publishes** is listed above with the MVP surface: its
+  kind `0` profile marked as a bot with the owner's NIP-OA tag, the owner's
+  kind `30177` record with `runtime` `bzz/<harness>`, and the owner's kind
+  `9000` addition to a channel. Its replies are kind `9` messages with the
+  owner's tag, and its typing indicator is kind `20002`, as a v0.13 hosted
+  agent's.
+- **The agent directory** takes a member of a channel whose profile carries
+  its owner's valid NIP-OA proof as an agent, with or without the `bot`
+  role. A refresh asks for the profiles of members that have none stored,
+  at most 2000 a refresh.
+- **A moved agent under `buzz-acp`.** bzz's host reads the place and the
+  request from the text of `buzz-acp`'s prompt (decision D9). Four prompts
+  recorded from `buzz-acp` at the pin are in
+  `tests/fixtures/agents/buzz-acp-prompts/`, and the relay test compares what
+  `buzz-acp` sends with them at every run. When the Buzz revision moves,
+  record them again. The launch kit switches off `buzz-acp`'s own
+  orientation text and its `<core-memory>` section, which describe a `buzz`
+  command the agent's model does not have.
+- **Stopping a moved agent** is Buzz's own owner command: a kind `9`
+  message from the owner whose body is exactly `!shutdown`, with the agent
+  in a `p` tag.
+- **A program outside its range is not started.** bzz says which version it
+  found and which it knows. The ranges start at the version the tests ran
+  with and end before the next minor line.
+- **`bzz broker`** (`buzz-sdk::broker`, v0.13) is unchanged, and serves only
+  agents whose process the user runs.

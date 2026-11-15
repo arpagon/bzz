@@ -72,6 +72,58 @@ the report confirmation, `:presence`, the broker panel and a huddle (start,
 join muted, unmute, mute, leave). The runner refuses to start a scenario
 while a TUI is still in the foreground of the target pane.
 
+### Harness scenarios for local agents (v0.15.0)
+
+The same run also proves local agents on the release binary: the `t15-*`
+scenarios. They need Node.js 22.19 or newer and, the first time, the npm
+registry; without such a Node the fixture says so, makes no agent, and those
+scenarios fail.
+
+The fixture gives the viewer:
+
+- `Scout`, a local agent on bzz's real Pi Durable host, a member of the
+  viewer's own `#t15-agents`, with one folder granted for commands
+  (`work`). Its model is the host's stand-in: bzz is given, as `BZZ_NODE`, a
+  small program that sets the host's own switch and runs the real Node, and
+  an empty folder as Pi's. No real model is called and `~/.pi` is never
+  read.
+- `Garnet`, `Cobalt` and `Coral`, one agent on each coding harness, with
+  `BZZ_GROK`, `BZZ_CODEX` and `BZZ_CLAUDE` naming a file that does not
+  exist. No program of your own is ever started; the panel shows what bzz
+  says of each harness and of a program that is missing.
+- a second profile of the same viewer (`second/`), to receive an agent in.
+
+Those paths are in the fixture's `env` file, which the runner adds to bzz's
+environment. It holds paths and never a secret.
+
+What a `t15-*` scenario may use, besides keys and visible text:
+
+| Field | Meaning |
+|---|---|
+| `args = [...]` | run `bzz <args>` on the fixture's profile instead of the TUI, and answer what it asks on the terminal with keys. Its output is read from the pane's recent lines, unwrapped |
+| `profile = "second"` | the second profile |
+| `type:<text>` in `keys` | the text, one key event per character; `{fixture}` is the fixture's folder |
+| `absent = "text"` | text that must not be on the screen or in the pane's recent output after the step: what was typed at a prompt that does not echo, or a pane that must have closed |
+| `timeout = <ms>` | the step's own time limit (default 15 s) |
+| `regex = true` | `visible` is a pattern, for text a pane may wrap in more than one place |
+| `pause = <ms>` | wait before the step's keys are sent, for what the relay must send back first and no screen shows arriving |
+
+The scenarios run in the order of the manifest and later ones use what
+earlier ones made (`Rover` is created, given a credential, moved and
+received; the panel later shows it as moved away). They cover: `--version`,
+`agent doctor`, `agent new` asking its questions, `agent credential set`
+without echo, `agent show`, `agent move` with the passphrase typed twice (and
+a second one that differs), `agent receive` in the second profile; an agent
+answering a mention and remembering; the agents panel while a turn runs,
+`x` stopping that turn, `Space` pausing; a real command approved and
+refused, with the waiting line seen from the Inbox, the broker panel and the
+agents panel; `:agent new` from its form to an answer; a moved-away agent in
+the panel; and each coding harness in the panel.
+
+Two things to know when writing one. Never follow `esc` with another key in
+the same step: a terminal reads Esc and a key sent together as Alt and that
+key. And a line bzz draws in a narrow pane wraps: match a short piece of it.
+
 ### Manual disposable-fixture journey
 
 Create `.env` from the template and set only non-secret values:
@@ -295,7 +347,7 @@ herdr pane send-keys "$BZZ_PANE" enter
 Capture sanitized wide and narrow visible states. Exercise `j`/`k`, mouse row
 selection, `r`, `m`, resize, `esc`, community switch, and `:lock`. `m` must only
 insert an exact mention into the visible human composer; it must not publish.
-Verify the `◆ remote agent` marker, owner/policy/freshness explanation, and
+Verify the `◆ agent` marker, owner/policy/freshness explanation, and
 remote-runtime disclaimer without retaining pubkeys or channel content in
 screenshots.
 

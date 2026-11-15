@@ -524,7 +524,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "bzz"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "arboard",
  "argon2",
@@ -537,6 +537,7 @@ dependencies = [
  "chacha20poly1305",
  "clap",
  "clap_complete",
+ "close_fds",
  "cpal",
  "criterion",
  "crossterm",
@@ -792,6 +793,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "052af7878466feccda12ba7a6a67d019d712f296809559b47c12c8cc196d3a9a"
 dependencies = [
  "error-code",
+]
+
+[[package]]
+name = "close_fds"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bc416f33de9d59e79e57560f450d21ff8393adcf1cdfc3e6d8fb93d5f88a2ed"
+dependencies = [
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]

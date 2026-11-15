@@ -9,6 +9,19 @@
 # Herdr pane with BZZ_HERDR_PANE set; see docs/e2e-herdr.md).
 set -euo pipefail
 : "${BZZ_BUZZ_SOURCE:?set BZZ_BUZZ_SOURCE to the pinned block/buzz checkout}"
+# One run at a time on a machine: the harness has one port (3030) and one
+# Docker project, and a second run's cleanup would remove the first's
+# containers. The lock is shared by every checkout of this user.
+if command -v flock >/dev/null 2>&1 && [[ -z "${BZZ_RELAY_LOCK_HELD:-}" ]]; then
+  # A fixed path: two shells with different TMPDIR must meet at one lock.
+  lock="/tmp/bzz-test-relay-$(id -u).lock"
+  echo "waiting for the relay harness lock ($lock)" >&2
+  BZZ_RELAY_LOCK_HELD=1 exec flock "$lock" "$0" "$@"
+fi
+# A run from a checkout that has no lock yet: wait until its harness is gone.
+while docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^buzz-harness'; do
+  echo "the relay harness is in use; waiting" >&2; sleep 20
+done
 PROFILE=default
 if [[ "${1:-}" == "--nip-fi" ]]; then PROFILE=nip-fi; fi
 if [[ "${1:-}" == "--herdr" ]]; then PROFILE=herdr; fi
@@ -19,6 +32,7 @@ if [[ "$HEAD" != "$PIN" && "${BZZ_ALLOW_UNPINNED_RELAY:-}" != 1 ]]; then
 fi
 RELAY_ENV=(
   BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC
+  BUZZ_RATE_LIMIT_HUMAN_API_CALLS_PER_MIN
   BUZZ_MEMBERSHIP_SNAPSHOT_ENABLED BUZZ_MEMBERSHIP_PUBLIC_ENABLED BUZZ_NIP_FI_MODE BUZZ_NIP_FI_ISSUERS
   BUZZ_NIP_FI_COMMUNITIES BUZZ_NIP_FI_MAX_CONNECTION_LIFETIME_SECS
 )
@@ -43,6 +57,15 @@ trap cleanup EXIT INT TERM
 # production human quota inside this isolated, disposable harness.
 export BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN=5000
 export BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC=5000
+# The Herdr run starts bzz more than twenty times in a few minutes as one
+# person, each start a whole sync: its first six starts, twenty seconds
+# apart in all, made about 190 queries and the relay's quota for a person
+# refused the next. No person starts bzz like that. The other two profiles
+# keep the relay's own quota, which is how a client that asks in a loop is
+# caught (v0.15 M1).
+if [[ "$PROFILE" == herdr ]]; then
+  export BUZZ_RATE_LIMIT_HUMAN_API_CALLS_PER_MIN=5000
+fi
 # v0.13 exercises optional relay capabilities that are off by default.
 export BUZZ_MEMBERSHIP_SNAPSHOT_ENABLED=true
 export BUZZ_MEMBERSHIP_PUBLIC_ENABLED=true
@@ -80,6 +103,22 @@ tmux new-session -d -s "$BZZ_TMUX_KEEPALIVE" "sleep 3600"
 for name in "${RELAY_ENV[@]}"; do
   if [[ -n "${!name:-}" ]]; then tmux set-environment -g "$name" "${!name}"; fi
 done
+# Buzz's script takes Postgres as ready as soon as it accepts a connection,
+# which on its first start is before its database exists: on a busy machine
+# the next step then fails with `database "buzz" does not exist`. Bring
+# Postgres up here and wait for the database itself, twice in a row, because
+# the first start stops and starts the server once more.
+harness_compose=(docker compose -p buzz-harness -f "$BZZ_BUZZ_SOURCE/docker-compose.harness.yml")
+"${harness_compose[@]}" up -d postgres
+ready=0
+for _ in $(seq 1 90); do
+  if "${harness_compose[@]}" exec -T postgres psql -U buzz -d buzz -c 'select 1' >/dev/null 2>&1; then
+    ready=$((ready + 1)); [[ $ready -ge 2 ]] && break
+  else
+    ready=0
+  fi
+  sleep 2
+done
 (cd "$BZZ_BUZZ_SOURCE" && ./scripts/start-isolated-test-relay.sh --profile dev)
 for _ in $(seq 1 60); do curl -fsS http://localhost:3030/ >/dev/null && break; sleep 1; done
 if [[ "$PROFILE" == nip-fi ]]; then
@@ -96,8 +135,21 @@ elif [[ "$PROFILE" == herdr ]]; then
   rm -rf -- "$fixture"
   exit "$status"
 else
-  # The `buzz` CLI at the pin, for sidebar interop (v0.14 M4).
-  (cd "$BZZ_BUZZ_SOURCE" && cargo build -p buzz-cli)
+  # The `buzz` CLI at the pin, for sidebar interop (v0.14 M4), and Buzz's
+  # own `buzz-acp`, which runs a moved agent from a launch kit (v0.15 M5).
+  (cd "$BZZ_BUZZ_SOURCE" && cargo build -p buzz-cli -p buzz-acp)
+  # The scripted agent harness (v0.15 M1); `cargo test --test` does not build examples.
+  cargo build --locked --example scripted_harness
+  # BZZ_RELAY_TEST_FILTER runs only the tests whose name contains it.
   BZZ_BUZZ_CLI="$BZZ_BUZZ_SOURCE/target/debug/buzz" \
-  BZZ_E2E_RELAY_URL=ws://localhost:3030 cargo test --locked --test relay_integration -- --ignored --test-threads=1
+  BZZ_BUZZ_ACP="$BZZ_BUZZ_SOURCE/target/debug/buzz-acp" \
+  BZZ_E2E_RELAY_URL=ws://localhost:3030 cargo test --locked --test relay_integration ${BZZ_RELAY_TEST_FILTER:+"$BZZ_RELAY_TEST_FILTER"} -- --ignored --test-threads=1
+  # bzz's real agent host against a recorded relay (v0.15 M2). It needs
+  # Node.js 22.19 or newer and no relay; it runs here because this is the
+  # job that has Node (BZZ_TEST_REQUIRE_NODE=1 turns its skip into a failure).
+  if [[ -z "${BZZ_RELAY_TEST_FILTER:-}" ]]; then
+    cargo test --locked --test agent_host_test
+    # A move with the real host between two data folders (v0.15 M5).
+    cargo test --locked --test agent_move_test
+  fi
 fi

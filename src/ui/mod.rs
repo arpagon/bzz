@@ -1,6 +1,7 @@
 pub mod action;
 pub mod actions;
 pub mod agents;
+pub mod approval;
 pub mod artifacts;
 pub mod broker;
 pub mod command;
@@ -15,6 +16,7 @@ pub mod inbox;
 pub mod input;
 pub mod keymap;
 pub mod layout;
+pub mod local_agents;
 pub mod mention_picker;
 pub mod profile;
 pub mod reaction_picker;

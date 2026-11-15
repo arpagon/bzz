@@ -66,7 +66,11 @@ fn write_owner_only(path: &Path, contents: &str) -> Result<()> {
         .map_err(|error| Error::io(path, error))
 }
 
-async fn respond(stream: &mut TcpStream, status: &str, body: &[u8]) -> std::io::Result<()> {
+pub(crate) async fn respond(
+    stream: &mut TcpStream,
+    status: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
     let head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
@@ -76,7 +80,19 @@ async fn respond(stream: &mut TcpStream, status: &str, body: &[u8]) -> std::io::
     stream.shutdown().await
 }
 
-async fn connection(mut stream: TcpStream, host: Host) -> std::io::Result<()> {
+/// The head of one request on a loopback binding, and what of its body
+/// arrived with it.
+pub(crate) struct Head {
+    pub method: Option<String>,
+    pub path: Option<String>,
+    pub authorization: Option<String>,
+    pub length: Option<usize>,
+    body: Vec<u8>,
+}
+
+/// Reads a request head. `None`: the peer closed, or the head was too large
+/// and has been answered.
+pub(crate) async fn read_head(stream: &mut TcpStream) -> std::io::Result<Option<Head>> {
     let mut buffer = Vec::with_capacity(4096);
     let head_end = loop {
         let mut chunk = [0_u8; 4096];
@@ -85,14 +101,15 @@ async fn connection(mut stream: TcpStream, host: Host) -> std::io::Result<()> {
                 .await
                 .map_err(|_| std::io::ErrorKind::TimedOut)??;
         if read == 0 {
-            return Ok(());
+            return Ok(None);
         }
         buffer.extend_from_slice(&chunk[..read]);
         if let Some(position) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
             break position + 4;
         }
         if buffer.len() > MAX_HEAD_BYTES {
-            return respond(&mut stream, "431 Request Header Fields Too Large", b"{}").await;
+            respond(stream, "431 Request Header Fields Too Large", b"{}").await?;
+            return Ok(None);
         }
     };
     let head = String::from_utf8_lossy(&buffer[..head_end]).into_owned();
@@ -110,17 +127,22 @@ async fn connection(mut stream: TcpStream, host: Host) -> std::io::Result<()> {
         }
     }
     let mut parts = request_line.split_whitespace();
-    let (method, path) = (parts.next(), parts.next());
-    if path != Some(buzz_sdk::broker::BROKER_ACTION_PATH) {
-        return respond(&mut stream, "404 Not Found", b"{}").await;
-    }
-    if method != Some("POST") {
-        return respond(&mut stream, "405 Method Not Allowed", b"{}").await;
-    }
-    let Some(length) = length.filter(|length| *length <= MAX_BODY_BYTES) else {
-        return respond(&mut stream, "413 Content Too Large", b"{}").await;
-    };
-    let mut body = buffer[head_end..].to_vec();
+    Ok(Some(Head {
+        method: parts.next().map(str::to_owned),
+        path: parts.next().map(str::to_owned),
+        authorization,
+        length,
+        body: buffer[head_end..].to_vec(),
+    }))
+}
+
+/// Reads the `length` bytes of a request body. `None`: the peer closed.
+pub(crate) async fn read_body(
+    stream: &mut TcpStream,
+    head: Head,
+    length: usize,
+) -> std::io::Result<Option<Vec<u8>>> {
+    let mut body = head.body;
     while body.len() < length {
         let mut chunk = vec![0_u8; (length - body.len()).min(64 * 1024)];
         let read =
@@ -128,11 +150,31 @@ async fn connection(mut stream: TcpStream, host: Host) -> std::io::Result<()> {
                 .await
                 .map_err(|_| std::io::ErrorKind::TimedOut)??;
         if read == 0 {
-            return Ok(());
+            return Ok(None);
         }
         body.extend_from_slice(&chunk[..read]);
     }
     body.truncate(length);
+    Ok(Some(body))
+}
+
+async fn connection(mut stream: TcpStream, host: Host) -> std::io::Result<()> {
+    let Some(head) = read_head(&mut stream).await? else {
+        return Ok(());
+    };
+    if head.path.as_deref() != Some(buzz_sdk::broker::BROKER_ACTION_PATH) {
+        return respond(&mut stream, "404 Not Found", b"{}").await;
+    }
+    if head.method.as_deref() != Some("POST") {
+        return respond(&mut stream, "405 Method Not Allowed", b"{}").await;
+    }
+    let Some(length) = head.length.filter(|length| *length <= MAX_BODY_BYTES) else {
+        return respond(&mut stream, "413 Content Too Large", b"{}").await;
+    };
+    let authorization = head.authorization.clone();
+    let Some(body) = read_body(&mut stream, head, length).await? else {
+        return Ok(());
+    };
     let response = host.handle(authorization.as_deref(), &body).await;
     let bytes = serde_json::to_vec(&response).unwrap_or_else(|_| b"{}".to_vec());
     // Every host verdict is HTTP 200; the envelope carries the result.

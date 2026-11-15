@@ -10,7 +10,14 @@ pub enum Command {
     Dm,
     DmHide,
     DmAdd,
-    Agents,
+    /// `:agents`: the local agents of the open community when it has any,
+    /// else the directory of verified remote agents. `:agents local` and
+    /// `:agents directory` name one.
+    Agents(String),
+    /// `:agent new [name]`: the form that creates a local agent.
+    Agent(String),
+    /// `:approvals`: the real commands that wait for the owner's answer.
+    Approvals,
     AddCommunity,
     RemoveCommunity,
     PurgeCache,
@@ -62,7 +69,13 @@ pub fn parse(input: &str) -> Command {
         "dm" => Command::Dm,
         "dm hide" => Command::DmHide,
         "dm add" => Command::DmAdd,
-        "agents" => Command::Agents,
+        value if value == "agents" || value.starts_with("agents ") => {
+            Command::Agents(value.trim_start_matches("agents").trim().to_owned())
+        }
+        value if value == "agent" || value.starts_with("agent ") => {
+            Command::Agent(value.trim_start_matches("agent").trim().to_owned())
+        }
+        "approvals" | "approval" | "approve" => Command::Approvals,
         "community add" => Command::AddCommunity,
         "community remove" => Command::RemoveCommunity,
         "purge-cache" => Command::PurgeCache,
@@ -111,7 +124,18 @@ mod tests {
     fn theme_reload_is_an_explicit_command() {
         assert_eq!(parse(":theme reload"), Command::ThemeReload);
         assert_eq!(parse(":media reload"), Command::MediaReload);
-        assert_eq!(parse(":agents"), Command::Agents);
+        assert_eq!(parse(":agents"), Command::Agents(String::new()));
+        assert_eq!(parse(":approvals"), Command::Approvals);
+        assert_eq!(parse(":approve"), Command::Approvals);
+        assert_eq!(
+            parse(":agents directory"),
+            Command::Agents("directory".into())
+        );
+        assert_eq!(
+            parse(":agent new Scout"),
+            Command::Agent("new Scout".into())
+        );
+        assert_eq!(parse(":agent"), Command::Agent(String::new()));
         assert!(matches!(parse(":theme watch"), Command::Unknown(_)));
         assert_eq!(
             parse(":status --expires 2h lunch"),

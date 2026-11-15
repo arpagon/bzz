@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use crate::{
-    agents::Eligibility,
+    agents::{Eligibility, Own},
     domain::Profile,
     render::sanitize,
     store::agents::RemoteAgentView,
@@ -58,10 +58,14 @@ impl AgentDirectoryState {
     }
 }
 
+/// `own`: the agents of the list whose key this bzz holds itself, by key.
+/// They are the owner's own, and are shown as his, not as remote.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     frame: &mut Frame<'_>,
     area: Rect,
     state: &AgentDirectoryState,
+    own: &HashMap<String, Own>,
     profiles: &HashMap<String, Profile>,
     self_pubkey: Option<&str>,
     theme: &Theme,
@@ -69,7 +73,7 @@ pub fn render(
 ) {
     frame.render_widget(Clear, area);
     let title = format!(
-        " verified remote agents · ↑/↓ select · m mention · r refresh · Esc close{} ",
+        " verified agents · ↑/↓ select · m mention · r refresh · Tab yours · Esc close{} ",
         if state.loading {
             " · refreshing…"
         } else {
@@ -90,7 +94,7 @@ pub fn render(
             Paragraph::new(if state.loading {
                 "Refreshing public relay records…"
             } else {
-                "No verified remote agents are cached for this community. Press r to refresh."
+                "No verified agents are cached for this community. Press r to refresh."
             })
             .style(theme.style(HighlightGroup::Normal))
             .wrap(Wrap { trim: true }),
@@ -104,11 +108,12 @@ pub fn render(
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(43), Constraint::Percentage(57)])
             .split(inner);
-        render_list(frame, panes[0], state, theme, hit_map);
+        render_list(frame, panes[0], state, own, theme, hit_map);
         render_detail(
             frame,
             panes[1],
             state.selected(),
+            own,
             profiles,
             self_pubkey,
             theme,
@@ -118,11 +123,12 @@ pub fn render(
             .direction(Direction::Vertical)
             .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
             .split(inner);
-        render_list(frame, panes[0], state, theme, hit_map);
+        render_list(frame, panes[0], state, own, theme, hit_map);
         render_detail(
             frame,
             panes[1],
             state.selected(),
+            own,
             profiles,
             self_pubkey,
             theme,
@@ -134,6 +140,7 @@ fn render_list(
     frame: &mut Frame<'_>,
     area: Rect,
     state: &AgentDirectoryState,
+    own: &HashMap<String, Own>,
     theme: &Theme,
     hit_map: &mut HitMap,
 ) {
@@ -162,6 +169,11 @@ fn render_list(
                     _ => "",
                 }),
                 Span::raw(format!("  {eligibility}")),
+                Span::raw(
+                    own.get(&agent.pubkey)
+                        .map(|standing| format!("  {}", standing.label()))
+                        .unwrap_or_default(),
+                ),
             ]))
         })
         .collect::<Vec<_>>();
@@ -197,6 +209,7 @@ fn render_detail(
     frame: &mut Frame<'_>,
     area: Rect,
     selected: Option<&RemoteAgentView>,
+    own: &HashMap<String, Own>,
     profiles: &HashMap<String, Profile>,
     self_pubkey: Option<&str>,
     theme: &Theme,
@@ -231,6 +244,15 @@ fn render_detail(
             .collect::<Vec<_>>()
             .join(", ")
     };
+    // Whose runtime it is: this bzz's own agent, or one that something
+    // else runs.
+    let runtime = match own.get(&agent.pubkey) {
+        Some(standing) => standing.says(),
+        None => [
+            "This process and its private key are controlled remotely.",
+            "bzz can mention it, but cannot start, stop, inspect, or recover its runtime.",
+        ],
+    };
     let detail = vec![
         Line::from(Span::styled(
             format!("◆ {}", sanitize::single_line(&agent.name)),
@@ -260,8 +282,8 @@ fn render_detail(
         Line::from(format!("shared channels: {channels}")),
         Line::from(format!("verified at: {}", agent.last_verified_at)),
         Line::from(""),
-        Line::from("This process and its private key are controlled remotely."),
-        Line::from("bzz can mention it, but cannot start, stop, inspect, or recover its runtime."),
+        Line::from(runtime[0]),
+        Line::from(runtime[1]),
     ];
     frame.render_widget(
         Paragraph::new(detail)
@@ -290,6 +312,91 @@ mod tests {
         state.agents.reverse();
         state.reconcile();
         assert_eq!(state.selected_pubkey, Some("b".repeat(64)));
+    }
+
+    /// From the run against Buzz 1.0: the directory said of an agent that
+    /// the same bzz held and ran, "This process and its private key are
+    /// controlled remotely. bzz … cannot start, stop, inspect, or recover
+    /// its runtime." An agent this bzz holds the key of is shown as the
+    /// owner's own; anyone else's is still remote.
+    #[test]
+    fn an_agent_this_bzz_holds_is_shown_as_its_own() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut state = AgentDirectoryState {
+            agents: vec![agent("a"), agent("b"), agent("d")],
+            selected_pubkey: Some("a".repeat(64)),
+            loading: false,
+        };
+        let own = HashMap::from([
+            ("a".repeat(64), Own::RunsHere),
+            ("d".repeat(64), Own::MovedAway),
+        ]);
+        let screen = |state: &AgentDirectoryState| {
+            let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
+            terminal
+                .draw(|frame| {
+                    render(
+                        frame,
+                        frame.area(),
+                        state,
+                        &own,
+                        &HashMap::new(),
+                        None,
+                        &Theme::default(),
+                        &mut HitMap::default(),
+                    );
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            (0..buffer.area.height)
+                .map(|row| {
+                    (0..buffer.area.width)
+                        .map(|column| buffer[(column, row)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let shown = screen(&state);
+        assert!(shown.contains(" verified agents "), "{shown}");
+        assert!(!shown.contains("remote agents"), "{shown}");
+        // In the list: its own, and one that is not.
+        assert!(
+            shown.contains("a  policy unknown  yours · run by this bzz"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("d  policy unknown  yours · moved away"),
+            "{shown}"
+        );
+        assert!(
+            shown
+                .lines()
+                .any(|line| line.contains("◆ b  policy unknown") && !line.contains("yours")),
+            "{shown}"
+        );
+        // Its detail says whose runtime it is.
+        assert!(
+            shown.contains("This is your own agent: this bzz holds its key and runs it."),
+            "{shown}"
+        );
+        assert!(
+            !shown.contains("controlled remotely") && !shown.contains("cannot start"),
+            "{shown}"
+        );
+        state.selected_pubkey = Some("b".repeat(64));
+        let shown = screen(&state);
+        assert!(
+            shown.contains("This process and its private key are controlled remotely."),
+            "{shown}"
+        );
+        assert!(!shown.contains("This is your own agent"), "{shown}");
+        state.selected_pubkey = Some("d".repeat(64));
+        let shown = screen(&state);
+        assert!(
+            shown.contains("This is your own agent, moved away"),
+            "{shown}"
+        );
     }
 
     fn agent(value: &str) -> RemoteAgentView {

@@ -16,6 +16,8 @@ use secrecy::ExposeSecret as _;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+mod cli_agent;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "bzz",
@@ -39,17 +41,28 @@ enum Command {
         #[command(subcommand)]
         command: CommunityCommand,
     },
-    /// Inspect verified remote managed agents; bzz does not control their runtimes.
+    /// Inspect the verified agents of a community: other people's, whose
+    /// runtimes bzz does not control, and your own, marked as yours.
     Agents {
         #[command(subcommand)]
         command: AgentsCommand,
     },
-    /// Manage agents whose keys bzz holds for the local broker; bzz never
-    /// runs agent processes.
+    /// Manage agents whose keys bzz holds for the local broker, for a
+    /// process you run yourself.
     Broker {
         #[command(subcommand)]
         command: BrokerCommand,
     },
+    /// Create, run and manage local agents: bzz holds each key and starts
+    /// each process.
+    Agent {
+        #[command(subcommand)]
+        command: cli_agent::AgentCommand,
+    },
+    /// The chat tools of one agent session, as an MCP server on standard
+    /// streams. Started by an agent's harness, never by hand.
+    #[command(name = "agent-tools", hide = true)]
+    AgentTools,
     /// Manage cached conversation data.
     Cache {
         #[command(subcommand)]
@@ -243,14 +256,15 @@ enum BrokerCommand {
 
 #[derive(Debug, Subcommand)]
 enum AgentsCommand {
-    /// List verified remote agents in one configured community.
+    /// List the verified agents of one configured community. An agent
+    /// this bzz holds the key of is marked as yours.
     List {
         #[arg(long)]
         community: Option<Uuid>,
         #[arg(long)]
         json: bool,
     },
-    /// Show one verified remote agent and its public policy.
+    /// Show one verified agent and its public policy.
     Show {
         agent_pubkey: String,
         #[arg(long)]
@@ -374,11 +388,34 @@ enum ThemeCommand {
     Path,
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(error) = run().await {
-        eprintln!("bzz: {error}");
-        std::process::exit(1);
+/// The stack bzz's own work runs on. Windows gives a program's first thread
+/// 1 MiB, and a debug build of `bzz broker list` overflowed it once the
+/// commands for agents were added; Linux and macOS give 8 MiB.
+const MAIN_STACK: usize = 8 * 1024 * 1024;
+
+fn main() {
+    let work = std::thread::Builder::new()
+        .name("main".into())
+        .stack_size(MAIN_STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| Error::io("tokio runtime", error))
+                .and_then(|runtime| runtime.block_on(run()))
+        });
+    let outcome = match work {
+        Ok(work) => work.join(),
+        Err(error) => Ok(Err(Error::io("main thread", error))),
+    };
+    match outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            eprintln!("bzz: {error}");
+            std::process::exit(1);
+        }
+        // It panicked, and the panic hook has already said why.
+        Err(_) => std::process::exit(101),
     }
 }
 
@@ -398,6 +435,11 @@ async fn run() -> Result<()> {
             return Err(Error::io("stdout", error));
         }
         return Ok(());
+    }
+    // Before anything of bzz's own is read: this runs inside a harness's
+    // environment and only passes tool calls to the bzz that started it.
+    if matches!(cli.command, Some(Command::AgentTools)) {
+        return bzz::agents::runtime::mcp::run_stdio().await;
     }
     let paths = Paths::discover()?;
     paths.ensure()?;
@@ -422,6 +464,8 @@ async fn run() -> Result<()> {
         }
         Some(Command::Agents { command }) => agents_command(command, &paths, &config).await,
         Some(Command::Broker { command }) => broker_command(command, &paths, &mut config).await,
+        Some(Command::Agent { command }) => cli_agent::command(command, &paths, &mut config).await,
+        Some(Command::AgentTools) => Ok(()),
         Some(Command::Cache { command }) => cache_command(command, &paths, &mut config),
         Some(Command::Media { command }) => media_command(command, &paths, &config),
         Some(Command::Diagnostics { command }) => diagnostics_command(command, &paths),
@@ -741,12 +785,21 @@ fn confirm(prompt: &str) -> Result<bool> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 
+/// A hosted agent of the broker: one whose process the user runs himself.
+/// An agent bzz runs (`bzz agent new`) is not the broker's to change: its
+/// records on the relay, its folder and its credentials are `bzz agent`'s.
 fn hosted_agent_index(config: &Config, label: &str) -> Result<usize> {
-    config
+    let index = config
         .hosted_agents
         .iter()
         .position(|agent| agent.label == label)
-        .ok_or_else(|| Error::Config(format!("no hosted agent named {label}")))
+        .ok_or_else(|| Error::Config(format!("no hosted agent named {label}")))?;
+    if config.hosted_agents[index].local.is_some() {
+        return Err(Error::Config(format!(
+            "{label} is a local agent, which bzz runs itself: manage it with `bzz agent` (`bzz agent show|edit|pause|resume|delete {label}`). `bzz broker` is for an agent whose process you run"
+        )));
+    }
+    Ok(index)
 }
 
 async fn broker_command(command: BrokerCommand, paths: &Paths, config: &mut Config) -> Result<()> {
@@ -801,10 +854,16 @@ async fn broker_command(command: BrokerCommand, paths: &Paths, config: &mut Conf
             Ok(())
         }
         BrokerCommand::List => {
-            if config.hosted_agents.is_empty() {
+            // Agents bzz runs itself are `bzz agent list`'s.
+            let hosted = config
+                .hosted_agents
+                .iter()
+                .filter(|agent| agent.local.is_none())
+                .collect::<Vec<_>>();
+            if hosted.is_empty() {
                 println!("no hosted agents; create one with `bzz broker create <label>`");
             }
-            for agent in &config.hosted_agents {
+            for agent in hosted {
                 println!(
                     "{}\t{}\t{}\t{}",
                     agent.label,
@@ -890,6 +949,111 @@ async fn broker_command(command: BrokerCommand, paths: &Paths, config: &mut Conf
     }
 }
 
+/// `bzz agent run`: the local agents of one community, without the TUI. It
+/// needs the owner's identity unlocked, as the TUI does, because each agent
+/// key is sealed to it.
+async fn agent_run(paths: &Paths, config: &Config, community: Option<Uuid>) -> Result<()> {
+    use bzz::agents::runtime::{Limits, service};
+    let community = selected_community(config, community)?.clone();
+    let identity = find_identity(config, community.identity_id)?.clone();
+    if !config.hosted_agents.iter().any(|agent| {
+        agent.local.is_some()
+            && agent.community == community.id
+            && agent.owner_identity == identity.id
+    }) {
+        return Err(Error::Config(format!(
+            "{} has no local agents",
+            community.label
+        )));
+    }
+    let passphrase = identity_passphrase(&identity, "Owner identity passphrase: ", false)?;
+    let owner = IdentityManager::new(paths).signer(&identity, passphrase.as_ref())?;
+    let mut store = Store::open(paths.database_file())?;
+    store.sync_config(config)?;
+    let store = StoreHandle::spawn(store)?;
+    let diagnostics =
+        bzz::diagnostics::DiagnosticHandle::start(paths, config.diagnostics.local_journal, None)?;
+    // A federated community: the agents enroll under the owner's stored
+    // adapter session, as the broker's agents do.
+    let federated = community
+        .identity_adapter
+        .as_deref()
+        .map(url::Url::parse)
+        .transpose()
+        .map_err(|_| Error::Config("identity_adapter is not a URL".into()))?;
+    let running = service::serve(service::ServeOptions {
+        paths,
+        store,
+        diagnostics,
+        community: &community,
+        agents: &config.hosted_agents,
+        owner: &owner,
+        owner_identity: identity.id,
+        federated,
+        limits: Limits::default(),
+        // Nobody is here to be asked: a command that needs the owner's
+        // approval is refused, and the agent says so.
+        owner_present: false,
+        environment: None,
+    })
+    .await;
+    let running = match running {
+        Ok(Some(running)) => running,
+        Ok(None) => {
+            owner.lock().await;
+            return Ok(());
+        }
+        Err(error) => {
+            owner.lock().await;
+            return Err(error);
+        }
+    };
+    for leftover in running.host.leftovers() {
+        if let bzz::agents::runtime::process::Leftover::Stopped { pid, .. } = leftover {
+            println!("stopped a harness left by an earlier bzz (process {pid})");
+        }
+    }
+    for problem in &running.problems {
+        eprintln!("bzz: {problem}");
+    }
+    let lines = |host: &bzz::agents::runtime::host::AgentHost| {
+        host.status()
+            .iter()
+            .map(bzz::agents::runtime::agent::AgentStatus::line)
+            .collect::<Vec<_>>()
+    };
+    let mut shown = lines(&running.host);
+    for line in &shown {
+        println!("{line}");
+    }
+    println!("running in {}; interrupt to stop", community.label);
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    #[cfg(unix)]
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|error| Error::io("signal handler", error))?;
+    loop {
+        #[cfg(unix)]
+        let terminated = terminate.recv();
+        #[cfg(not(unix))]
+        let terminated = std::future::pending::<Option<()>>();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            _ = terminated => break,
+            _ = tick.tick() => {
+                let now = lines(&running.host);
+                for line in now.iter().filter(|line| !shown.contains(line)) {
+                    println!("{line}");
+                }
+                shown = now;
+            }
+        }
+    }
+    println!("stopping");
+    running.stop().await;
+    owner.lock().await;
+    Ok(())
+}
+
 async fn agents_command(command: AgentsCommand, paths: &Paths, config: &Config) -> Result<()> {
     match command {
         AgentsCommand::List { community, json } => {
@@ -898,27 +1062,35 @@ async fn agents_command(command: AgentsCommand, paths: &Paths, config: &Config) 
             let mut store = Store::open(paths.database_file())?;
             store.sync_config(config)?;
             let agents = store.list_remote_agents(community.id, &identity.pubkey)?;
+            // The agents of the list this bzz holds the key of: the owner's
+            // own, which are not remote to him.
+            let own = bzz::agents::own_agents(&config.hosted_agents, community.id);
             if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
                         "schema_version": 1,
                         "community_id": community.id,
+                        // Of every agent that is not in `own`.
                         "runtime_control": "remote",
                         "agents": agents,
+                        "own": own,
                     }))
                     .map_err(|error| Error::Serialization(error.to_string()))?
                 );
             } else if agents.is_empty() {
                 println!(
-                    "no verified remote agents cached for {}; run `bzz agents refresh --community {}`",
+                    "no verified agents cached for {}; run `bzz agents refresh --community {}`",
                     community.label, community.id
                 );
             } else {
-                println!("verified remote agents — bzz does not control their runtimes");
+                println!(
+                    "verified agents of {} — bzz controls the runtime only of those marked as yours",
+                    community.label
+                );
                 for agent in agents {
                     println!(
-                        "{}\t{}\towner={}\t{}\t{}\tpolicy={}\tchannels={}",
+                        "{}\t{}\towner={}\t{}\t{}\tpolicy={}\tchannels={}\t{}",
                         agent.pubkey,
                         agent.name,
                         bzz::domain::abbreviated_pubkey(&agent.owner_pubkey),
@@ -928,6 +1100,8 @@ async fn agents_command(command: AgentsCommand, paths: &Paths, config: &Config) 
                             .respond_to
                             .map_or("unknown", bzz::agents::RespondTo::as_str),
                         agent.channel_ids.len(),
+                        own.get(&agent.pubkey)
+                            .map_or("remote", |standing| standing.label()),
                     );
                 }
             }
@@ -950,7 +1124,7 @@ async fn agents_command(command: AgentsCommand, paths: &Paths, config: &Config) 
                 if let Some(agent) =
                     store.remote_agent(community.id, &agent_pubkey, &identity.pubkey, None)?
                 {
-                    matches.push((community.label.clone(), agent));
+                    matches.push((community.label.clone(), community.id, agent));
                 }
             } else {
                 for community in &config.communities {
@@ -958,7 +1132,7 @@ async fn agents_command(command: AgentsCommand, paths: &Paths, config: &Config) 
                     if let Some(agent) =
                         store.remote_agent(community.id, &agent_pubkey, &identity.pubkey, None)?
                     {
-                        matches.push((community.label.clone(), agent));
+                        matches.push((community.label.clone(), community.id, agent));
                     }
                 }
                 if matches.len() > 1 {
@@ -967,23 +1141,33 @@ async fn agents_command(command: AgentsCommand, paths: &Paths, config: &Config) 
                     ));
                 }
             }
-            let Some((community_label, agent)) = matches.into_iter().next() else {
+            let Some((community_label, community_id, agent)) = matches.into_iter().next() else {
                 return Err(Error::Config(
-                    "verified remote agent is not cached in the selected community".into(),
+                    "verified agent is not cached in the selected community".into(),
                 ));
             };
+            // An agent this bzz holds the key of is the owner's own.
+            let own = bzz::agents::own(&config.hosted_agents, community_id, &agent.pubkey);
             if json {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
                         "schema_version": 1,
-                        "runtime_control": "remote",
+                        "runtime_control": if own.is_some() { "local" } else { "remote" },
+                        "own": own,
                         "agent": agent,
                     }))
                     .map_err(|error| Error::Serialization(error.to_string()))?
                 );
             } else {
-                println!("remote managed agent — runtime is not controlled by bzz");
+                match own {
+                    Some(standing) => {
+                        let [first, second] = standing.says();
+                        println!("your own agent — {}", standing.label());
+                        println!("{first} {second}");
+                    }
+                    None => println!("remote managed agent — runtime is not controlled by bzz"),
+                }
                 println!("community:   {community_label}");
                 println!("name:        {}", agent.name);
                 println!("pubkey:      {}", agent.pubkey);

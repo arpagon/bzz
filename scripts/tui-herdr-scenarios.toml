@@ -104,7 +104,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 id = "operator-remote-agents"
 kind = "operator"
 description = "Disposable public-only agent fixture: verified directory wide/narrow layout, owner/policy/freshness detail, keyboard/mouse selection, refresh, exact composer insertion, community/lock invalidation, and terminal restoration."
-ready = "verified remote agents"
+ready = "verified agents"
 exit = ""
 
 [[scenario.step]]
@@ -137,6 +137,16 @@ visible = "message"
 # Harness scenarios: `scripts/test-relay.sh --herdr` starts a fresh pinned
 # relay, writes a disposable profile and generated content
 # (examples/harness_fixture.rs) and runs these against the release binary.
+#
+# A scenario with `args` runs `bzz <args>` on that profile instead of the
+# TUI, and answers what it asks on the terminal with keys. `{fixture}` is the
+# fixture's folder. `profile = "second"` is the fixture's second profile of
+# the same owner. In `keys`, `type:<text>` is typed one key event per
+# character. A step may name text that must not be on the screen (`absent`),
+# its own time limit in milliseconds (`timeout`), `regex = true` when
+# `visible` is a pattern, and `pause`, milliseconds to wait before its keys
+# are sent. The `t15-*` scenarios run in the order written here: later ones
+# use what earlier ones made.
 
 [[scenario]]
 id = "t9-system-group-read-only"
@@ -306,7 +316,11 @@ visible = "Generated custom emoji"
 keys = ["i", "e", "d", "i", "t", "space", "m", "e", "enter"]
 visible = "edit me"
 
+# A message can be edited once the relay has taken it: pressed at once, `e`
+# says "wait until the message is delivered", which this step did one run in
+# five.
 [[scenario.step]]
+pause = 2000
 keys = ["esc", "3", "G", "e"]
 visible = "edit message · Enter save · Esc cancel"
 
@@ -406,6 +420,844 @@ visible = "older result"
 [[scenario.step]]
 keys = ["esc"]
 visible = "online"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# ---- v0.15.0: local agents ------------------------------------------------
+# The fixture gives the viewer a local agent, Scout, on bzz's real Pi Durable
+# host with the host's stand-in model, in the viewer's own #t15-agents, and a
+# folder granted for commands. No real model, no program of the user's own.
+
+[[scenario]]
+id = "t15-cli-version"
+kind = "harness"
+description = "v0.15 M0: the release binary says which version it is."
+args = ["--version"]
+ready = "bzz 0.15.0"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t15-cli-agent-doctor"
+kind = "harness"
+description = "v0.15 M2 and M6: agent doctor reports Node, npm, the installed host, Pi's folder, each coding program with what is missing and what to set, and each agent's readiness; it installs nothing, and ends with code 1 because three programs are not there."
+args = ["agent", "doctor"]
+ready = "Node.js:"
+exit = "__BZZ_HERDR_EXIT__:1"
+
+[[scenario.step]]
+keys = []
+visible = "host:     installed in"
+
+[[scenario.step]]
+keys = []
+visible = "grok:     not ready:"
+
+[[scenario.step]]
+keys = []
+visible = "Set BZZ_CODEX to the path of `codex`, or unset it to use the one on PATH"
+
+[[scenario.step]]
+keys = []
+visible = "adapter @agentclientprotocol/claude-agent-acp 0.101.0 · not installed yet"
+
+[[scenario.step]]
+keys = []
+visible = "agent:    Scout · pi-durable · active · ready"
+
+[[scenario.step]]
+keys = []
+visible = "agent:    Coral · claude-code (experimental) · active · not ready:"
+
+[[scenario.step]]
+keys = []
+visible = "3 thing(s) are not ready"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:1"
+
+[[scenario]]
+id = "t15-cli-agent-new"
+kind = "harness"
+description = "v0.15 M4: agent new asks its questions on a terminal, runs its checks, asks for the owner authorization and creates the agent with its capability record."
+args = ["agent", "new"]
+ready = "Name:"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["type:Rover", "enter"]
+visible = "Harness (pi-durable, grok, codex (experimental) or claude-code (experimental); empty: pi-durable) [pi-durable]:"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Model (pi-durable: provider/model as Pi names them"
+
+[[scenario.step]]
+keys = ["type:scripted/scripted", "enter"]
+visible = "Instructions (one line"
+
+[[scenario.step]]
+keys = ["type:Be brief.", "enter"]
+visible = "Who may wake it (owner-only, allowlist or anyone; empty: owner-only) [owner-only]:"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Folders it may read (name=/path"
+
+[[scenario.step]]
+keys = ["type:work={fixture}/work:rw", "enter"]
+visible = "Hosts it may reach (pi-durable only"
+
+[[scenario.step]]
+keys = ["type:github.com", "enter"]
+visible = "Picture (an HTTPS address; empty: none):"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Pi packages (pi-durable only"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Sign an owner authorization (NIP-OA) letting agent \"Rover\" act for harness-viewer, and publish its profile and your record of it in harness? [y/N]"
+timeout = 60000
+
+[[scenario.step]]
+keys = ["y", "enter"]
+visible = "created in harness"
+timeout = 60000
+
+[[scenario.step]]
+keys = []
+visible = "capability record: pi-durable"
+
+[[scenario.step]]
+keys = []
+visible = "one final reply per mention: bzz"
+
+[[scenario.step]]
+keys = []
+visible = "next: add it to a channel with `bzz agent add Rover <channel>`"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t15-cli-agent-credential"
+kind = "harness"
+description = "v0.15 M3: agent credential set asks for the user name and the token on a terminal and shows neither."
+args = ["agent", "credential", "set", "Rover", "github.com"]
+ready = "User name for github.com (not shown):"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["type:rover-bot", "enter"]
+visible = "Token for github.com (not shown):"
+absent = "rover-bot"
+
+[[scenario.step]]
+keys = ["type:ghp_NotARealTokenTypedInHerdr", "enter"]
+visible = "stored a git credential for Rover at github.com, sealed to your key"
+absent = "ghp_NotARealToken"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+absent = "rover-bot"
+
+[[scenario]]
+id = "t15-cli-agent-show"
+kind = "harness"
+description = "v0.15 M3 and M4: agent show lists the granted folder with its real path and rights, the hosts, the host a git credential is stored for, and the capability record."
+args = ["agent", "show", "Rover"]
+ready = "name:        Rover"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = []
+visible = "/mnt/work = {fixture}/work"
+
+[[scenario.step]]
+keys = []
+visible = "git credentials stored for (the host only is shown):"
+absent = "ghp_NotARealToken"
+
+[[scenario.step]]
+keys = []
+visible = "capability record: pi-durable"
+
+[[scenario.step]]
+keys = []
+visible = "a move with memory:"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t15-cli-agent-move-mismatch"
+kind = "harness"
+description = "v0.15 M5: agent move asks for the file's passphrase twice on a terminal; a second one that differs writes nothing."
+args = ["agent", "move", "Rover", "--to", "{fixture}/out/rover.bzzagent"]
+ready = "Passphrase for the file (at least 12 characters"
+exit = "__BZZ_HERDR_EXIT__:1"
+
+[[scenario.step]]
+keys = ["type:a disposable passphrase", "enter"]
+visible = "Confirm passphrase:"
+absent = "a disposable passphrase"
+
+[[scenario.step]]
+keys = ["type:another disposable passphrase", "enter"]
+visible = "passphrases did not match"
+absent = "another disposable passphrase"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:1"
+
+[[scenario]]
+id = "t15-cli-agent-move"
+kind = "harness"
+description = "v0.15 M5: agent move, with the passphrase typed twice and never shown, seals the agent in one file and marks it moved away."
+args = ["agent", "move", "Rover", "--to", "{fixture}/out/rover.bzzagent"]
+ready = "Passphrase for the file (at least 12 characters"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["type:a disposable passphrase", "enter"]
+visible = "Confirm passphrase:"
+absent = "a disposable passphrase"
+
+[[scenario.step]]
+keys = ["type:a disposable passphrase", "enter"]
+visible = "agent Rover moved into {fixture}/out/rover.bzzagent"
+absent = "a disposable passphrase"
+timeout = 60000
+
+[[scenario.step]]
+keys = []
+visible = "not moved: its granted folder(s) (work) and git credentials"
+
+[[scenario.step]]
+keys = []
+visible = "Rover is marked moved away here: this bzz no longer starts it"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t15-cli-agent-receive"
+kind = "harness"
+description = "v0.15 M5: a second profile of the same owner receives the agent from the file, with the passphrase typed and never shown."
+profile = "second"
+args = ["agent", "receive", "{fixture}/out/rover.bzzagent"]
+ready = "Passphrase of the file:"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["type:a disposable passphrase", "enter"]
+visible = "received in harness"
+absent = "a disposable passphrase"
+timeout = 60000
+
+[[scenario.step]]
+keys = []
+visible = "no folder of this machine is granted to it"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# ---- v0.15.0: the TUI, with the real agent host on its stand-in model -----
+# The stand-in answers "pong: this conversation holds N message(s) from
+# people", or follows a line `do: [...]` in the message
+# (agent-host/test/support/scripted-model.mjs). Ctrl-j adds a line in the
+# composer. A step never follows Esc with another key: a terminal reads
+# Esc and a key sent together as Alt and that key.
+
+[[scenario]]
+id = "t15-agent-answers-mention"
+kind = "harness"
+description = "v0.15 M2: an agent run by this bzz answers a mention in the TUI, once, in the thread the mention starts; a second mention in that thread shows the conversation's memory."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t15-ag", "enter"]
+visible = "Generated agents channel"
+
+[[scenario.step]]
+keys = ["i", "type:@Sco"]
+visible = "@Scout"
+
+[[scenario.step]]
+keys = ["tab", "space", "type:are you there?", "enter"]
+visible = "↳ 1 reply"
+timeout = 90000
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Scout · managed by you"
+
+[[scenario.step]]
+keys = []
+visible = "pong: this conversation holds 1"
+
+[[scenario.step]]
+keys = ["i", "type:@Sco"]
+visible = "reply in #t15-agents"
+
+[[scenario.step]]
+# An answer made in the same second as its mention may be listed above it,
+# and the pane then wraps it elsewhere: either line is the answer.
+keys = ["tab", "space", "type:and again", "enter"]
+visible = 'holds 2|  2 message\(s\) from people'
+regex = true
+timeout = 60000
+
+[[scenario.step]]
+keys = ["q"]
+visible = "↳ 3 replies"
+absent = "q close"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t15-agents-panel-turn-stop-pause"
+kind = "harness"
+description = "v0.15 M1 and M4: while a turn runs the agents panel shows the agent, its state and what it is doing; x stops that turn, which ends once with a notice in the thread; Space pauses and resumes the agent."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t15-ag", "enter"]
+visible = "Generated agents channel"
+
+[[scenario.step]]
+keys = ["i", "type:@Sco", "tab", "space", "ctrl+j", 'type:do: [["bash", {"command": "sleep 120; echo slept"}], ["report"]]']
+visible = "echo slept"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "NORMAL"
+absent = "INSERT"
+
+[[scenario.step]]
+keys = [":", "type:agents", "enter"]
+visible = "Scout · pi-durable · answering 1 · bash: sleep 120; echo slept"
+timeout = 90000
+
+[[scenario.step]]
+keys = []
+visible = "state:        answering 1"
+
+[[scenario.step]]
+keys = []
+visible = "doing now:    bash: sleep 120; echo slept"
+
+[[scenario.step]]
+keys = []
+visible = "capability record: pi-durable (everything in v0.15.0)"
+
+[[scenario.step]]
+keys = ["x"]
+visible = "Scout: its running turn was stopped"
+
+[[scenario.step]]
+keys = []
+visible = "last outcome: failed: stopped"
+
+[[scenario.step]]
+keys = ["x"]
+visible = "Scout is not answering anything now"
+
+[[scenario.step]]
+keys = ["space"]
+visible = "Scout paused"
+
+[[scenario.step]]
+keys = []
+visible = "Scout · pi-durable · paused"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["space"]
+visible = "Scout resumed"
+
+[[scenario.step]]
+keys = ["l"]
+visible = "log (what its harness wrote, newest last; no key is ever in it)"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "NORMAL"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "My owner stopped this answer."
+
+[[scenario.step]]
+keys = ["q"]
+visible = "↳ 1 reply"
+absent = "q close"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t15-approval-approve-refuse"
+kind = "harness"
+description = "v0.15 M7: a real command an agent asks to run waits for the owner: a line at the top of every screen, the dialog with the whole command, a yes after which the command's output arrives in the chat, and a no with a reason, which the agent passes on."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t15-ag", "enter"]
+visible = "Generated agents channel"
+
+[[scenario.step]]
+keys = ["i", "type:@Sco", "tab", "space", "ctrl+j", 'type:do: [["run", {"folder": "work", "command": "tr a-z A-Z < README.txt > made.txt; cat made.txt"}], ["report"]]']
+visible = "cat made.txt"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Scout asks to run a command in /mnt/work (#t15-agents (a thread)) · Ctrl-Y to see and answer it · refused in"
+timeout = 90000
+
+# The line is on every screen: the Inbox, the broker panel, the agents panel.
+# The line takes the first row, where the Inbox has its title.
+[[scenario.step]]
+keys = [":", "type:inbox", "enter"]
+visible = "INBOX"
+
+[[scenario.step]]
+keys = []
+visible = "Scout asks to run a command in /mnt/work"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "NORMAL"
+
+[[scenario.step]]
+keys = [":", "type:broker", "enter"]
+visible = "agent broker"
+
+[[scenario.step]]
+keys = []
+visible = "Scout asks to run a command in /mnt/work"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "NORMAL"
+
+[[scenario.step]]
+keys = [":", "type:agents", "enter"]
+visible = "waiting for your answer: run in /mnt/work"
+
+# A plain `a` answers nothing: the dialog opens only when the owner asks.
+[[scenario.step]]
+keys = ["esc"]
+visible = "NORMAL"
+
+[[scenario.step]]
+keys = ["ctrl+y"]
+visible = "a real command waits for your answer · a allow · r refuse"
+
+[[scenario.step]]
+keys = []
+visible = "agent:        Scout"
+
+[[scenario.step]]
+keys = []
+visible = "conversation: #t15-agents (a thread) · it is answering you"
+
+[[scenario.step]]
+keys = []
+visible = "folder:       /mnt/work = {fixture}/work"
+
+[[scenario.step]]
+keys = []
+visible = "It runs as your user, starting in that folder, and can reach whatever you can."
+
+[[scenario.step]]
+keys = []
+visible = "the command, exactly as /bin/sh will get it (1 line(s), 48 bytes):"
+
+[[scenario.step]]
+keys = []
+visible = " 1 │ tr a-z A-Z < README.txt > made.txt; cat made.txt"
+
+[[scenario.step]]
+keys = []
+visible = "that is the whole command"
+
+[[scenario.step]]
+keys = ["a"]
+visible = "allowed: Scout runs its command in /mnt/work"
+
+# The turn ends with its answer; the agents panel says when.
+[[scenario.step]]
+keys = [":", "type:agents", "enter"]
+visible = "last outcome: answered"
+timeout = 60000
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "NORMAL"
+
+# The command's own output, which is nowhere in what was typed.
+[[scenario.step]]
+keys = ["enter"]
+visible = "A FOLDER OF THE FIXTURE"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "↳ 1 reply"
+absent = "q close"
+
+[[scenario.step]]
+keys = ["i", "type:@Sco", "tab", "space", "ctrl+j", 'type:do: [["run", {"folder": "work", "command": "echo it ran > refused.txt"}], ["report"]]']
+visible = "refused.txt"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Scout asks to run a command in /mnt/work"
+timeout = 60000
+
+[[scenario.step]]
+keys = ["ctrl+y"]
+visible = " 1 │ echo it ran > refused.txt"
+
+[[scenario.step]]
+keys = ["r"]
+visible = "refuse, and tell the agent why (optional):"
+
+[[scenario.step]]
+keys = ["type:not today"]
+visible = "refuse, and tell the agent why (optional): not today"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "refused: Scout was told no, and nothing was started"
+
+[[scenario.step]]
+keys = [":", "type:agents", "enter"]
+visible = "last outcome: answered"
+timeout = 60000
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "NORMAL"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "says: not today"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "NORMAL"
+absent = "q close"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t15-cli-agent-activity"
+kind = "harness"
+description = "v0.15 M7: agent show lists each command the agent asked to run, with the owner's answer."
+args = ["agent", "show", "Scout"]
+ready = "name:        Scout"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = []
+visible = "allowed by you"
+
+[[scenario.step]]
+keys = []
+visible = "refused by you: not today"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t15-agent-new-form"
+kind = "harness"
+description = "v0.15 M4: :agent new, from its form to an answer: the checks, the owner's confirmation, the creation with its capability record, the agent started without a restart, added to the open channel from the panel, mentioned and answered. A moved-away agent is shown as that in the same panel."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t15-ag", "enter"]
+visible = "Generated agents channel"
+
+[[scenario.step]]
+keys = [":", "type:agent new Pilot", "enter"]
+visible = "new local agent · Tab/↑/↓ move · Enter next · Ctrl-S check and continue · Esc cancel"
+
+[[scenario.step]]
+keys = []
+visible = "Name: Pilot"
+
+[[scenario.step]]
+keys = ["type:scripted/scripted", "enter", "type:Be brief."]
+visible = "Instructions: Be brief."
+
+[[scenario.step]]
+keys = ["ctrl+s"]
+visible = "new local agent · Enter sign and create · e edit the answers · Esc cancel"
+timeout = 90000
+
+[[scenario.step]]
+keys = []
+visible = "model scripted/scripted (thinking: off), with Pi's own sign-in"
+
+[[scenario.step]]
+keys = []
+visible = "Enter signs an owner authorization (NIP-OA) letting agent \"Pilot\" act for harness-viewer"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "created in harness"
+timeout = 90000
+
+[[scenario.step]]
+keys = []
+visible = "capability record: pi-durable (everything in v0.15.0)"
+
+# Enter leaves the form for the agents panel: the new agent is running.
+[[scenario.step]]
+keys = ["enter"]
+visible = "Pilot · pi-durable · idle"
+timeout = 60000
+
+# The agent that `bzz agent move` took away, as the panel shows it. It is
+# the fifth: Scout, the three on coding harnesses, Rover, Pilot.
+[[scenario.step]]
+keys = ["j", "j", "j", "j"]
+visible = "Rover · pi-durable · stopped · moved away: it runs elsewhere"
+
+[[scenario.step]]
+keys = []
+visible = "doing now:    moved away: it runs elsewhere, and this bzz does not start it (`bzz agent receive` takes it back)"
+
+[[scenario.step]]
+keys = ["space"]
+visible = "Rover was moved away and runs elsewhere"
+
+[[scenario.step]]
+keys = ["j", "i"]
+visible = "Pilot added to #t15-agents"
+timeout = 30000
+
+# The mention chooser offers a member it knows as an agent, and bzz learns
+# that of an agent added while it is open when the directory is next
+# refreshed. Tab shows the directory, which refreshes it; r does it again,
+# should the relay's member list have come a moment later.
+[[scenario.step]]
+keys = ["tab"]
+visible = "verified agents"
+
+[[scenario.step]]
+pause = 1500
+keys = ["r"]
+visible = "◆ Pilot"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "NORMAL"
+
+[[scenario.step]]
+keys = ["i", "type:@Pil"]
+visible = "@Pilot"
+
+[[scenario.step]]
+keys = ["tab", "space", "type:hello", "enter"]
+visible = "NORMAL"
+absent = "INSERT"
+
+# Pilot is still the one selected in the panel: its turn ends with an answer.
+[[scenario.step]]
+keys = [":", "type:agents", "enter"]
+visible = "last outcome: answered"
+timeout = 90000
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "NORMAL"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Pilot · managed by you"
+
+[[scenario.step]]
+keys = []
+visible = "pong: this conversation holds 1"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "NORMAL"
+absent = "q close"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t15-coding-harnesses-in-panel"
+kind = "harness"
+description = "v0.15 M6: the agents panel lists an agent on each coding harness with its name of the promise (supported, experimental) and its capability record, Claude Code's with no sandbox of its own. Their programs are not on this profile: mentioned, one says so in the thread once, and the panel says what is missing and what to set. No program of the user's own is started."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t15-ag", "enter"]
+visible = "Generated agents channel"
+
+[[scenario.step]]
+keys = [":", "type:agents", "enter"]
+visible = "Garnet · grok · idle"
+
+[[scenario.step]]
+keys = []
+visible = "Cobalt · codex (experimental) · idle"
+
+[[scenario.step]]
+keys = []
+visible = "Coral · claude-code (experimental) · idle"
+
+[[scenario.step]]
+keys = ["j"]
+visible = "capability record: grok (supported)"
+
+[[scenario.step]]
+keys = []
+visible = "its own sandbox:     Grok's own"
+
+[[scenario.step]]
+keys = ["j"]
+visible = "capability record: codex (experimental)"
+
+[[scenario.step]]
+keys = ["j"]
+visible = "capability record: claude-code (experimental)"
+
+[[scenario.step]]
+keys = []
+visible = "its own sandbox:     none that bzz can switch on here"
+
+[[scenario.step]]
+keys = ["k", "k", "i"]
+visible = "Garnet added to #t15-agents"
+timeout = 30000
+
+# As for Pilot: the directory is refreshed before Garnet is mentioned.
+[[scenario.step]]
+keys = ["tab"]
+visible = "verified agents"
+
+[[scenario.step]]
+pause = 1500
+keys = ["r"]
+visible = "◆ Garnet"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "NORMAL"
+
+[[scenario.step]]
+keys = ["i", "type:@Gar"]
+visible = "@Garnet"
+
+[[scenario.step]]
+keys = ["tab", "space", "type:hello", "enter"]
+visible = "NORMAL"
+absent = "INSERT"
+
+[[scenario.step]]
+keys = [":", "type:agents", "enter"]
+visible = "Garnet · grok · unavailable"
+timeout = 60000
+
+[[scenario.step]]
+keys = []
+visible = "Set BZZ_GROK to the path of `grok`, or unset it to use the one on PATH"
+
+[[scenario.step]]
+keys = []
+visible = "last outcome: failed: unavailable"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "NORMAL"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Garnet · managed by you"
+
+[[scenario.step]]
+keys = []
+visible = "I am not available right now"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "NORMAL"
+absent = "q close"
 
 [[scenario.step]]
 keys = ["q"]

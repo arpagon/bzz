@@ -9,6 +9,20 @@
 //! relay with generated content: `t9-general` (history, a thread, a reaction,
 //! a task artifact and custom emoji), `t9-announcements` where the viewer is a
 //! guest, and the viewer's own `t9-agent-config` system channel.
+//!
+//! For v0.15 it also gives the viewer a **local agent**, `Scout`, on bzz's
+//! real Pi Durable host with the host's stand-in model, as a member of the
+//! viewer's own `#t15-agents`, with one folder granted for commands. That
+//! needs Node.js 22.19 or newer and, the first time, the npm registry; with
+//! no such Node the agent is left out and the fixture says so. The stand-in
+//! is switched on as the tests do it (`tests/support/pi_host.rs`): bzz is
+//! given, as `BZZ_NODE`, a small program that sets the host's variable and
+//! runs the real Node. Those paths are in the fixture's `env` file, which
+//! `scripts/test-tui-herdr.sh` adds to bzz's environment. `second/` is a
+//! second profile of the same owner with no agent, to receive one in.
+//! Three more agents, one on each coding harness, have no program to run
+//! on: the same file names `grok`, `codex` and `claude` as a path that does
+//! not exist, so that no program of the user's own is ever started.
 
 use std::{
     process::Command,
@@ -17,10 +31,12 @@ use std::{
 };
 
 use bzz::{
+    agents::{manage, runtime::install},
     auth::{IdentityManager, signer::SignerHandle},
-    config::{Config, KeyBackend},
+    config::{AgentModelConfig, Config, KeyBackend},
     paths::Paths,
     realtime::session::{self, SessionEvent, SessionHandle},
+    store::{Store, writer::StoreHandle},
 };
 use nostr::{EventBuilder, Keys, Kind, Tag};
 use secrecy::SecretString;
@@ -132,10 +148,200 @@ async fn main() {
     // --nip-fi`) admits nothing without evidence, so write only the viewer's
     // profile with this adapter and no relay content.
     let adapter = std::env::var("BZZ_FIXTURE_IDENTITY_ADAPTER").ok();
-    if adapter.is_none() {
+    let fi = adapter.is_some();
+    if !fi {
         publish_content(&owner, &viewer, &namesakes, history).await;
     }
-    write_profile(&root, viewer, adapter);
+    let passphrase = hex::encode(rand::random::<[u8; 16]>());
+    let (paths, config) = write_profile(&root, &root, &viewer, &passphrase, adapter);
+    if fi {
+        println!("fixture ready: FI profile (identity_adapter set, no relay content)");
+        return;
+    }
+    println!("fixture ready: #t9-general, #t9-announcements (guest), #t9-agent-config (system)");
+    // BZZ_FIXTURE_AGENTS=0: no local agent (a capture that needs none).
+    if std::env::var("BZZ_FIXTURE_AGENTS").as_deref() != Ok("0") {
+        write_profile(&root.join("second"), &root, &viewer, &passphrase, None);
+        local_agent(&root, &paths, config, &passphrase).await;
+    }
+}
+
+/// The viewer's local agent `Scout` and its channel `#t15-agents`.
+async fn local_agent(root: &std::path::Path, paths: &Paths, mut config: Config, passphrase: &str) {
+    let lookup = |name: &str| std::env::var(name).ok();
+    let node = match install::find_node(lookup).await {
+        Ok(node) => node,
+        Err(problem) => {
+            println!("fixture: no local agent ({problem})");
+            return;
+        }
+    };
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let model = repository.join("agent-host/test/support/scripted-model.mjs");
+    assert!(model.is_file(), "{} is missing", model.display());
+    // The stand-in for `node`, Pi's own folder (an empty one, never the
+    // user's) and a cache for npm that is not the user's either.
+    let stand_in = root.join("bin").join("node");
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    std::fs::write(
+        &stand_in,
+        format!(
+            "#!/bin/sh\nBZZ_AGENT_HOST_SCRIPTED_MODEL='{}'\nexport BZZ_AGENT_HOST_SCRIPTED_MODEL\nexec '{}' \"$@\"\n",
+            model.display(),
+            node.program.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let pi_dir = root.join("pi");
+    // No program of the user's own is ever started from this profile: the
+    // three coding programs are named as a file that is not there.
+    let absent = root.join("bin").join("not-installed").display().to_string();
+    let variables = [
+        ("BZZ_NODE", stand_in.display().to_string()),
+        ("PI_CODING_AGENT_DIR", pi_dir.display().to_string()),
+        ("BZZ_GROK", absent.clone()),
+        ("BZZ_CODEX", absent.clone()),
+        ("BZZ_CLAUDE", absent),
+        (
+            "npm_config_cache",
+            repository
+                .join("target/tmp/npm-cache")
+                .display()
+                .to_string(),
+        ),
+    ];
+    std::fs::write(
+        root.join("env"),
+        variables
+            .iter()
+            .map(|(name, value)| format!("{name}={value}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    // The folder Scout may run commands in, each asked of the owner first.
+    let work = root.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    // Where a scenario writes the file of a moved agent.
+    std::fs::create_dir_all(root.join("out")).unwrap();
+    std::fs::write(work.join("README.txt"), "a folder of the fixture\n").unwrap();
+
+    let identity = config.identities[0].clone();
+    let community = config.communities[0].clone();
+    let secret = SecretString::from(passphrase.to_owned());
+    let owner = IdentityManager::new(paths)
+        .signer(&identity, Some(&secret))
+        .unwrap();
+    // The viewer's own channel, so that the viewer may add members to it.
+    let session = connect(&owner).await;
+    let channel = Uuid::new_v4();
+    use buzz_sdk::{ChannelKind, Visibility};
+    for builder in [
+        create(channel, "t15-agents", Visibility::Open, ChannelKind::Stream),
+        buzz_sdk::build_message(
+            channel,
+            "Generated agents channel",
+            None,
+            &[],
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
+    ] {
+        let event = owner.sign(builder).await.unwrap();
+        let ack = session.publish(event).await.unwrap();
+        assert!(ack.accepted, "{}", ack.message);
+    }
+    session.shutdown().await;
+
+    let mut new = manage::NewAgent::named("Scout");
+    new.model = Some(AgentModelConfig {
+        provider: "scripted".into(),
+        model_id: "scripted".into(),
+        thinking_level: None,
+    });
+    new.instructions = "Be brief.".into();
+    new.folders = vec![manage::parse_folder(&format!("work={}:exec", work.display())).unwrap()];
+    let variables = variables.map(|(name, value)| (name.to_owned(), value));
+    let environment: bzz::agents::runtime::agent::Environment = std::sync::Arc::new(move |name| {
+        variables
+            .iter()
+            .find(|(variable, _)| variable == name)
+            .map(|(_, value)| value.clone())
+            .or_else(|| std::env::var(name).ok())
+    });
+    // Installs the host into the profile on this first use.
+    manage::preflight(
+        &paths.data_dir,
+        &new,
+        Some(&pi_dir),
+        &environment,
+        &|line| {
+            println!("fixture: {line}");
+        },
+    )
+    .await
+    .expect("the checks before an agent is made");
+    let relay = manage::OwnerRelay::connect(paths, &community, &identity, owner.clone())
+        .await
+        .expect("the owner's connection");
+    let created = manage::create(
+        &manage::OwnerContext {
+            paths,
+            owner: &owner,
+            owner_identity: identity.id,
+            community: community.id,
+            federated: None,
+        },
+        &mut config,
+        &new,
+        &relay,
+    )
+    .await
+    .unwrap_or_else(|failure| panic!("the agent was not made: {failure}"));
+    let mut store = Store::open(paths.database_file()).unwrap();
+    store.sync_config(&config).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let channel = relay.find_channel(&store, "t15-agents").await.unwrap();
+    manage::add_to_channel(&relay, &store, &created.agent, channel)
+        .await
+        .expect("the agent is added to its channel");
+    // One agent on each coding harness, as an owner has them whose program
+    // is no longer on the machine: the panel lists each with its record and
+    // says what is missing. Nothing is started for them (see `absent`).
+    for (name, harness) in [
+        ("Garnet", bzz::config::Harness::Grok),
+        ("Cobalt", bzz::config::Harness::Codex),
+        ("Coral", bzz::config::Harness::ClaudeCode),
+    ] {
+        let mut coding = manage::NewAgent::named(name);
+        coding.harness = harness;
+        manage::create(
+            &manage::OwnerContext {
+                paths,
+                owner: &owner,
+                owner_identity: identity.id,
+                community: community.id,
+                federated: None,
+            },
+            &mut config,
+            &coding,
+            &relay,
+        )
+        .await
+        .unwrap_or_else(|failure| panic!("the {name} agent was not made: {failure}"));
+    }
+    relay.close().await;
+    owner.lock().await;
+    println!("fixture ready: local agent Scout (pi-durable, stand-in model) in #t15-agents");
+    println!(
+        "fixture ready: Garnet (grok), Cobalt (codex), Coral (claude-code), their programs absent"
+    );
 }
 
 async fn publish_content(owner: &Keys, viewer: &Keys, namesakes: &[Keys], history: u64) {
@@ -354,16 +560,22 @@ async fn publish_content(owner: &Keys, viewer: &Keys, namesakes: &[Keys], histor
     viewer_session.shutdown().await;
 }
 
-/// The viewer's isolated bzz profile.
-fn write_profile(root: &std::path::Path, viewer: Keys, adapter: Option<String>) {
+/// An isolated bzz profile of the viewer under `root`; its passphrase is in
+/// `secrets/passphrase`.
+fn write_profile(
+    root: &std::path::Path,
+    secrets: &std::path::Path,
+    viewer: &Keys,
+    passphrase: &str,
+    adapter: Option<String>,
+) -> (Paths, Config) {
     let paths = Paths {
         config_dir: root.join("config"),
         data_dir: root.join("data"),
         cache_dir: root.join("cache"),
     };
     paths.ensure().unwrap();
-    let passphrase = hex::encode(rand::random::<[u8; 16]>());
-    let passphrase_file = root.join("passphrase");
+    let passphrase_file = secrets.join("passphrase");
     std::fs::write(&passphrase_file, format!("{passphrase}\n")).unwrap();
     #[cfg(unix)]
     {
@@ -376,8 +588,8 @@ fn write_profile(root: &std::path::Path, viewer: Keys, adapter: Option<String>) 
             &mut config,
             "harness-viewer".into(),
             KeyBackend::EncryptedFile,
-            viewer,
-            Some(&SecretString::from(passphrase)),
+            viewer.clone(),
+            Some(&SecretString::from(passphrase.to_owned())),
         )
         .unwrap();
     let community = config
@@ -388,7 +600,6 @@ fn write_profile(root: &std::path::Path, viewer: Keys, adapter: Option<String>) 
             true,
         )
         .unwrap();
-    let fi = adapter.is_some();
     if let Some(adapter) = adapter {
         config
             .communities
@@ -398,11 +609,5 @@ fn write_profile(root: &std::path::Path, viewer: Keys, adapter: Option<String>) 
             .identity_adapter = Some(adapter);
     }
     config.save(&paths).unwrap();
-    if fi {
-        println!("fixture ready: FI profile (identity_adapter set, no relay content)");
-    } else {
-        println!(
-            "fixture ready: #t9-general, #t9-announcements (guest), #t9-agent-config (system)"
-        );
-    }
+    (paths, config)
 }

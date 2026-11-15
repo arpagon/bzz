@@ -1,3 +1,4 @@
+pub mod agent_runtime;
 pub mod agents;
 pub mod artifacts;
 pub mod dm;

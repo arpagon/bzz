@@ -57,6 +57,54 @@ without an LLM or ACP process. Release CLI/TUI language must say remote and
 expose no create/start/stop/exec/log/runtime-hosting surface. Agent diagnostics
 must remain local-only and content-free.
 
+For v0.15 and later, a release with local agents must also verify, on the
+candidate's own commit:
+
+- **The agent host.** `cd agent-host && npm ci --ignore-scripts
+  --omit=optional && npm test` on the oldest supported Node (22.19) and a
+  current one; `npm audit --omit=dev` there and in each folder of
+  `agent-adapters/`, with nothing new accepted in silence. A change to
+  `agent-host/` or to a lock file changes the install's folder name, so every
+  owner installs again on first use: say so in the notes.
+- **The key rule.** `cargo test --locked --test secret_scan_test`: no agent
+  key, owner key or relay credential in a harness's environment, arguments,
+  files, logs or tool results, in a sealed file of a move, or in a launch kit
+  outside its one key file.
+- **One reply per mention on the pinned relay,** with the harness and bzz
+  killed: `./scripts/test-relay.sh`, which needs Node and builds `buzz` and
+  `buzz-acp` at the pin. It also holds decision D9: the host still reads
+  `buzz-acp`'s prompt. When the Buzz pin moves, record those prompts again
+  (`tests/fixtures/agents/buzz-acp-prompts/README.md`).
+- **The release binary in a terminal.** `./scripts/test-relay.sh --herdr`
+  runs the `t15-*` scenarios with the real agent host on its stand-in model:
+  an agent answering, the agents panel during a turn, stopping a turn,
+  `:agent new` from its form, a command approved and refused, a moved-away
+  agent and each coding harness in the panel, and from the command line
+  `agent new` on a terminal, `agent credential set` without echo, and
+  `agent move` and `agent receive` between two profiles. It needs Node.js
+  and, once, the npm registry ([`e2e-herdr.md`](e2e-herdr.md)).
+- **The benchmarks** against the last release, for a profile without agents
+  and for the agent directory: build both sides first, measure them in turn
+  more than once, and record the machine's load
+  (`docs/validation-v0.15.0.md`, "Benchmarks against v0.14.0").
+- **The coding harnesses,** only on a machine with the owner's own `grok`,
+  `codex` and `claude`, signed in, and with his consent, because it spends
+  his usage: `BZZ_REAL_HARNESSES=grok,codex,claude-code
+  BZZ_RELAY_TEST_FILTER=real_relay_coding_harnesses ./scripts/test-relay.sh`.
+  When a program's version range or an adapter's version changes, record the
+  transcripts again and read them before committing
+  (`docs/validation-v0.15.0.md`, M6). Never in CI.
+- **The upgrade.** `./scripts/upgrade-test.sh` from the last release, with a
+  hosted agent of v0.13 in the profile: it must load unchanged and still be
+  served by the broker.
+- **What is installed on first use** is in `THIRD_PARTY_LICENSES.md`: the
+  host's packages and each adapter's, with any license that is not an open
+  one named.
+- Release CLI and TUI language keeps three words apart: a *remote* agent
+  (`bzz agents`, someone else runs it), a *hosted* agent of the broker
+  (`bzz broker`, you run its process) and a *local* agent (`bzz agent`, bzz
+  runs it).
+
 For v0.4 and later interaction changes, also run the deterministic functional
 TUI harness in ordinary CI and record a controlled release-binary Herdr
 acceptance run (or an explicit release exception). See

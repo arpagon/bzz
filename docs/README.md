@@ -10,6 +10,7 @@ Start with the [README](../README.md). Everything here is plain Markdown.
 | [themes.md](themes.md) | The 60 built-in themes and `theme.toml` |
 | [media.md](media.md) | Images, avatars, attachments, terminal graphics and the media cache |
 | [inbox-dms-search.md](inbox-dms-search.md) | Inbox, direct messages and search |
+| [agents.md](agents.md) | Local agents: create one, add it to a channel, what it can touch, real commands, private repositories, moving it, and Grok, Codex and Claude Code |
 | [troubleshooting.md](troubleshooting.md) | Symptoms and fixes |
 | [security.md](security.md) | Keys, trust boundaries, diagnostics and telemetry |
 | [protocol-compatibility.md](protocol-compatibility.md) | The Buzz revision bzz is pinned to and every protocol surface it supports |
@@ -18,6 +19,7 @@ Start with the [README](../README.md). Everything here is plain Markdown.
 
 | Version | Notes | Validation | Plan |
 |---|---|---|---|
+| v0.15.0 (release candidate) | [notes](release-v0.15.0.md) | [validation](validation-v0.15.0.md) | [plan](planning/2026-11-13/v0.15.0.md) |
 | v0.14.0 | [notes](release-v0.14.0.md) | [validation](validation-v0.14.0.md) | [plan](planning/2026-11-12/v0.14.0.md) |
 | v0.13.0 | [notes](release-v0.13.0.md) | [validation](validation-v0.13.0.md) | [plan](planning/2026-11-07/v0.13.0.md) |
 | v0.12.1 | [notes](release-v0.12.1.md) | [validation](validation-v0.12.1.md) | [plan](planning/2026-08-28/v0.12.1.md) |
@@ -41,6 +43,7 @@ Releasing: [releasing.md](releasing.md). End-to-end checks: [e2e-manual.md](e2e-
 
 ## Design records
 
+- [ADR: v0.15 local agents](adr-v0.15-local-agents.md), with the [agent host protocol](agent-host-protocol.md)
 - [ADR: compositor and TUI source for promotional films](adr-promo-video-compositor.md)
 - [ADR: v0.4 interaction design clean-room boundary](adr-v0.4-clean-room-interaction.md)
 - [ADR: v0.5 clean-room workspace visual language](adr-v0.5-workspace-visual-language.md)

@@ -27,6 +27,8 @@ pub fn render(
     frame: &mut Frame<'_>,
     area: Rect,
     agents: &[HostedAgentConfig],
+    // One status line per local agent, from the runtime.
+    local: &[String],
     activity: &[Activity],
     status: BrokerStatus,
     theme: &Theme,
@@ -57,7 +59,18 @@ pub fn render(
     let panes = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(u16::try_from(agents.len().clamp(1, 8) + 3).unwrap_or(11)),
+            Constraint::Length(
+                u16::try_from(
+                    agents.len().clamp(1, 8)
+                        + 3
+                        + if local.is_empty() {
+                            0
+                        } else {
+                            local.len().min(8) + 1
+                        },
+                )
+                .unwrap_or(11),
+            ),
             Constraint::Min(1),
         ])
         .split(inner);
@@ -71,14 +84,28 @@ pub fn render(
         ));
     }
     for (index, agent) in agents.iter().enumerate().take(8) {
+        // An agent that `agent move` took away is neither active nor run here.
+        let moved_away = agent
+            .local
+            .as_ref()
+            .is_some_and(|local| local.state == crate::config::LocalAgentState::MovedAway);
         lines.push(Line::from(format!(
-            "{} {} · {}",
+            "{} {} · {}{}",
             if index == selected { "›" } else { " " },
             crate::protocol::artifact::display(&agent.label, 32),
-            if agent.paused || paused_all {
+            if moved_away {
+                "moved away"
+            } else if agent.paused || (paused_all && agent.local.is_none()) {
                 "paused"
             } else {
                 "active"
+            },
+            if moved_away {
+                " · local: it runs elsewhere"
+            } else if agent.local.is_some() {
+                " · local: bzz runs it"
+            } else {
+                ""
             },
         )));
     }
@@ -101,6 +128,21 @@ pub fn render(
                 .collect::<Vec<_>>()
                 .join("  "),
         ));
+    }
+    // What each local agent's process is doing. `:agents` is their own
+    // panel (v0.15 M4); this one stays for agents whose process the user
+    // runs himself.
+    if !local.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "local agents · manage them with :agents",
+            theme.style(HighlightGroup::Muted),
+        )));
+        lines.extend(
+            local
+                .iter()
+                .take(8)
+                .map(|line| Line::from(format!("  {line}"))),
+        );
     }
     frame.render_widget(
         Paragraph::new(lines).style(theme.style(HighlightGroup::Normal)),

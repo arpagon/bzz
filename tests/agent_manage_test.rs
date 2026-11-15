@@ -1,0 +1,1075 @@
+//! v0.15 M4: creating an agent is all or nothing (`bzz::agents::manage`).
+//! A recorded relay stands in for the real one and fails at each step in
+//! turn; whatever fails, no key, no folder, no settings and nothing on the
+//! relay is left. Nothing here needs Node, a model or a network.
+
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
+
+use async_trait::async_trait;
+use bzz::{
+    agents::{
+        manage::{self, NewAgent, OwnerContext, Publisher},
+        runtime::{process, relay::Published},
+    },
+    auth::signer::SignerHandle,
+    broker::custody,
+    config::{
+        Config, FolderGrant, Harness, HostedAgentConfig, IdentityConfig, KeyBackend,
+        LocalAgentState, WakeRule,
+    },
+    paths::Paths,
+};
+use nostr::{Event, Keys};
+use serde_json::{Value, json};
+use tempfile::TempDir;
+use uuid::Uuid;
+
+/// How the recorded relay treats one publish.
+#[derive(Clone, Debug)]
+enum Answer {
+    Accept,
+    Refuse,
+    /// No answer, and the relay does not have the event.
+    Lost,
+    /// No answer, but the relay has the event: the worst case for an undo.
+    Silent,
+}
+
+/// The owner's and the agent's side of a relay, recorded. It keeps what was
+/// published and honours a removal (kind 5) as a relay does.
+#[derive(Default)]
+struct RecordedRelay {
+    held: Mutex<Vec<Event>>,
+    /// Every publish, in order: who published, and what.
+    calls: Mutex<Vec<(&'static str, Event)>>,
+    /// The answers to the next publishes; when empty, every one is accepted.
+    answers: Mutex<VecDeque<Answer>>,
+}
+
+impl RecordedRelay {
+    fn answering(answers: &[Answer]) -> Arc<Self> {
+        Arc::new(Self {
+            answers: Mutex::new(answers.iter().cloned().collect()),
+            ..Self::default()
+        })
+    }
+
+    fn tag<'a>(event: &'a Event, name: &str) -> Option<&'a str> {
+        event.tags.iter().find_map(|tag| {
+            let values = tag.as_slice();
+            (values.first().map(String::as_str) == Some(name))
+                .then(|| values.get(1).map(String::as_str))
+                .flatten()
+        })
+    }
+
+    fn land(&self, event: &Event) {
+        let mut held = self.held.lock().unwrap();
+        if event.kind.as_u16() != 5 {
+            held.push(event.clone());
+            return;
+        }
+        let author = event.pubkey;
+        if let Some(id) = Self::tag(event, "e") {
+            held.retain(|other| !(other.pubkey == author && other.id.to_hex() == id));
+        }
+        if let Some(coordinate) = Self::tag(event, "a") {
+            held.retain(|other| {
+                let own = format!(
+                    "{}:{}:{}",
+                    other.kind.as_u16(),
+                    other.pubkey.to_hex(),
+                    Self::tag(other, "d").unwrap_or_default()
+                );
+                !(other.pubkey == author && own == coordinate)
+            });
+        }
+    }
+
+    fn publish(&self, who: &'static str, event: Event) -> Published {
+        self.calls.lock().unwrap().push((who, event.clone()));
+        match self
+            .answers
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Answer::Accept)
+        {
+            Answer::Accept => {
+                self.land(&event);
+                Published::Accepted
+            }
+            Answer::Refuse => Published::Refused("blocked: not today".into()),
+            Answer::Lost => Published::Unknown,
+            Answer::Silent => {
+                self.land(&event);
+                Published::Unknown
+            }
+        }
+    }
+
+    fn held(&self) -> Vec<Event> {
+        self.held.lock().unwrap().clone()
+    }
+
+    /// `(who, kind)` of every publish.
+    fn calls(&self) -> Vec<(&'static str, u16)> {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(who, event)| (*who, event.kind.as_u16()))
+            .collect()
+    }
+}
+
+#[async_trait]
+impl Publisher for RecordedRelay {
+    async fn as_owner(&self, event: Event) -> Published {
+        self.publish("owner", event)
+    }
+
+    async fn as_agent(
+        &self,
+        agent: &HostedAgentConfig,
+        signer: &SignerHandle,
+        event: Event,
+    ) -> Published {
+        // The agent publishes with its own key, never the owner's.
+        assert_eq!(signer.public_key().to_hex(), agent.pubkey);
+        assert_eq!(event.pubkey.to_hex(), agent.pubkey);
+        self.publish("agent", event)
+    }
+}
+
+struct World {
+    _temporary: TempDir,
+    paths: Paths,
+    owner_keys: Keys,
+    owner: SignerHandle,
+    identity: Uuid,
+    community: Uuid,
+}
+
+impl World {
+    /// The world, and the owner's settings as bzz holds them in memory.
+    fn new() -> (Self, Config) {
+        let temporary = TempDir::new().unwrap();
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        let owner_keys = Keys::generate();
+        let identity = Uuid::new_v4();
+        let mut config = Config::default();
+        config.identities.push(IdentityConfig {
+            id: identity,
+            label: "owner".into(),
+            pubkey: owner_keys.public_key().to_hex(),
+            backend: KeyBackend::EncryptedFile,
+            key_ref: "owner-key".into(),
+        });
+        let community = config
+            .add_community("test".into(), "ws://localhost:3030".into(), identity, true)
+            .unwrap();
+        config.save(&paths).unwrap();
+        (
+            Self {
+                _temporary: temporary,
+                paths,
+                owner: SignerHandle::spawn(owner_keys.clone()),
+                owner_keys,
+                identity,
+                community,
+            },
+            config,
+        )
+    }
+
+    fn context(&self) -> OwnerContext<'_> {
+        OwnerContext {
+            paths: &self.paths,
+            owner: &self.owner,
+            owner_identity: self.identity,
+            community: self.community,
+            federated: None,
+        }
+    }
+
+    /// What a creation leaves on this machine: sealed keys, agent folders,
+    /// and agents in the settings as saved.
+    fn on_this_machine(&self) -> (usize, usize, usize) {
+        let count = |folder: std::path::PathBuf, wanted: &dyn Fn(&str) -> bool| {
+            std::fs::read_dir(folder)
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|entry| wanted(&entry.file_name().to_string_lossy()))
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+        (
+            count(self.paths.keys_dir(), &|name| name.starts_with("agent-")),
+            count(self.paths.data_dir.join("agents"), &|name| {
+                Uuid::parse_str(name).is_ok()
+            }),
+            Config::load(&self.paths).unwrap().hosted_agents.len(),
+        )
+    }
+}
+
+fn content(event: &Event) -> Value {
+    serde_json::from_str(&event.content).unwrap()
+}
+
+#[tokio::test]
+async fn a_created_agent_has_its_key_folder_settings_profile_and_owners_record() {
+    let (world, mut config) = World::new();
+    let relay = RecordedRelay::answering(&[]);
+    let granted = world.paths.data_dir.clone();
+    std::fs::create_dir_all(&granted).unwrap();
+    let friend = Keys::generate().public_key().to_hex();
+    let mut new = NewAgent::named(" Scout ");
+    new.instructions = "Be brief.".into();
+    new.wake = WakeRule::Allowlist;
+    new.wake_allowlist = vec![friend.clone()];
+    new.folders = vec![FolderGrant {
+        name: "site".into(),
+        path: granted.clone(),
+        write: false,
+        exec: bzz::config::ExecGrant::No,
+    }];
+    new.network = vec!["github.com".into()];
+    new.picture = Some("https://example.org/scout.png".into());
+    let context = world.context();
+    let created = manage::create(&context, &mut config, &new, relay.as_ref())
+        .await
+        .unwrap();
+    let agent = &created.agent;
+    assert_eq!(agent.label, "Scout");
+    assert_eq!(
+        (agent.community, agent.owner_identity),
+        (world.community, world.identity)
+    );
+    // The agent's profile first, then the owner's record of it.
+    assert_eq!(relay.calls(), [("agent", 0), ("owner", 30_177)]);
+    let held = relay.held();
+    let profile = &held[0];
+    assert_eq!(profile.pubkey.to_hex(), agent.pubkey);
+    assert_eq!(
+        content(profile),
+        json!({"name": "Scout", "bot": true, "picture": "https://example.org/scout.png"})
+    );
+    let record = &held[1];
+    assert_eq!(record.pubkey, world.owner_keys.public_key());
+    assert_eq!(
+        record
+            .tags
+            .iter()
+            .map(|tag| tag.as_slice().to_vec())
+            .collect::<Vec<_>>(),
+        [
+            vec!["d".to_owned(), agent.pubkey.clone()],
+            vec!["runtime".to_owned(), "bzz/pi-durable".to_owned()],
+        ]
+    );
+    assert_eq!(
+        content(record),
+        json!({
+            "parallelism": 1, "respond_to": "allowlist", "respond_to_allowlist": [friend],
+            "name": "Scout", "picture": "https://example.org/scout.png",
+        })
+    );
+    // bzz's own reader (v0.11) takes the two as a verified agent of this
+    // owner: the profile carries the owner's authorization.
+    let verified = bzz::agents::protocol::verify_public_agent(profile, None, Some(record)).unwrap();
+    assert_eq!(
+        verified.owner_pubkey,
+        world.owner_keys.public_key().to_hex()
+    );
+    assert_eq!(verified.name, "Scout");
+
+    // On this machine: the sealed key, the folder, and the settings, saved.
+    assert_eq!(world.on_this_machine(), (1, 1, 1));
+    assert!(custody::has_key(&world.paths.keys_dir(), agent));
+    assert!(process::agent_dir(&world.paths.data_dir, agent.id).is_dir());
+    let saved = Config::load(&world.paths).unwrap();
+    assert_eq!(saved, config);
+    let entry = &saved.hosted_agents[0];
+    assert_eq!(entry.pubkey, agent.pubkey);
+    assert!(
+        entry.allowed.is_empty(),
+        "bzz runs it: the v0.13 broker serves it nothing"
+    );
+    let local = entry.local.as_ref().unwrap();
+    assert_eq!(
+        (local.harness, local.wake, local.state),
+        (
+            Harness::PiDurable,
+            WakeRule::Allowlist,
+            LocalAgentState::Active
+        )
+    );
+    assert_eq!(local.instructions, "Be brief.");
+    assert_eq!(local.folders[0].path, granted);
+    assert_eq!(local.network, ["github.com"]);
+    assert!(entry.runs_locally());
+    // The key opens only with its owner, and is the profile's author.
+    let signer = custody::unlock(&world.paths.keys_dir(), &world.owner, entry)
+        .await
+        .unwrap();
+    assert_eq!(signer.public_key().to_hex(), agent.pubkey);
+    // Neither the settings nor anything published holds a key.
+    let settings = std::fs::read_to_string(world.paths.config_file()).unwrap();
+    let secret = world.owner_keys.secret_key().to_secret_hex();
+    assert!(!settings.contains(&secret));
+
+    // A second agent of the same name is refused before anything is made.
+    let again = manage::create(&context, &mut config, &new, relay.as_ref())
+        .await
+        .unwrap_err();
+    assert!(again.to_string().contains("exists"), "{again}");
+    assert_eq!(world.on_this_machine(), (1, 1, 1));
+    assert_eq!(relay.calls().len(), 2, "nothing more was published");
+}
+
+/// One way a creation fails: what it is, the relay's answers to the profile
+/// and to the owner's record, what the error says, and every publish made,
+/// the undo's included.
+type Case = (
+    &'static str,
+    &'static [Answer],
+    &'static str,
+    &'static [(&'static str, u16)],
+);
+
+/// Whatever step fails, nothing of the attempt is left: no key, no folder,
+/// no settings, and nothing on the relay that names a key bzz no longer
+/// holds.
+#[tokio::test]
+async fn a_creation_that_fails_at_any_step_leaves_nothing() {
+    use Answer::{Accept, Lost, Refuse, Silent};
+    let cases: [Case; 6] = [
+        (
+            "the profile is refused",
+            &[Refuse],
+            "refused the agent's profile",
+            &[("agent", 0)],
+        ),
+        (
+            "the profile is lost",
+            &[Lost],
+            "did not confirm the agent's profile",
+            &[("agent", 0), ("agent", 5)],
+        ),
+        (
+            "the profile lands and is not confirmed",
+            &[Silent],
+            "did not confirm the agent's profile",
+            &[("agent", 0), ("agent", 5)],
+        ),
+        (
+            "the owner's record is refused",
+            &[Accept, Refuse],
+            "refused your record of the agent",
+            &[("agent", 0), ("owner", 30_177), ("agent", 5)],
+        ),
+        (
+            "the owner's record is lost",
+            &[Accept, Lost],
+            "did not confirm your record of the agent",
+            &[("agent", 0), ("owner", 30_177), ("owner", 5), ("agent", 5)],
+        ),
+        (
+            "the owner's record lands and is not confirmed",
+            &[Accept, Silent],
+            "did not confirm your record of the agent",
+            &[("agent", 0), ("owner", 30_177), ("owner", 5), ("agent", 5)],
+        ),
+    ];
+    for (what, answers, error, calls) in cases {
+        let (world, mut config) = World::new();
+        let relay = RecordedRelay::answering(answers);
+        let context = world.context();
+        let failure = manage::create(
+            &context,
+            &mut config,
+            &NewAgent::named("Scout"),
+            relay.as_ref(),
+        )
+        .await
+        .expect_err(what);
+        let text = failure.to_string();
+        assert!(text.contains(error), "{what}: {text}");
+        assert!(failure.left.is_empty(), "{what}: {:?}", failure.left);
+        assert!(text.contains("Nothing was left"), "{what}: {text}");
+        assert_eq!(relay.calls(), calls, "{what}");
+        assert_eq!(
+            relay.held(),
+            [],
+            "{what}: the relay holds nothing of the agent"
+        );
+        assert_eq!(world.on_this_machine(), (0, 0, 0), "{what}");
+        assert!(config.hosted_agents.is_empty(), "{what}");
+        // The removal of the profile is the agent's own, with the owner's
+        // authorization, made while bzz still held its key.
+        if let Some((_, removal)) = relay
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(who, event)| *who == "agent" && event.kind.as_u16() == 5)
+        {
+            assert!(RecordedRelay::tag(removal, "auth").is_some(), "{what}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_creation_that_fails_on_this_machine_publishes_nothing() {
+    // The agent's folder cannot be made: a file is where `agents/` should be.
+    let (world, mut config) = World::new();
+    std::fs::create_dir_all(&world.paths.data_dir).unwrap();
+    std::fs::write(world.paths.data_dir.join("agents"), "in the way").unwrap();
+    let relay = RecordedRelay::answering(&[]);
+    let context = world.context();
+    let new = NewAgent::named("Scout");
+    let failure = manage::create(&context, &mut config, &new, relay.as_ref())
+        .await
+        .unwrap_err();
+    assert!(failure.left.is_empty(), "{failure}");
+    assert_eq!(relay.calls(), []);
+    assert_eq!(world.on_this_machine(), (0, 0, 0));
+
+    // The settings cannot be saved: a folder is where their file is written.
+    let (world, mut config) = World::new();
+    std::fs::create_dir_all(world.paths.config_file().with_extension("toml.tmp")).unwrap();
+    let context = world.context();
+    let failure = manage::create(&context, &mut config, &new, relay.as_ref())
+        .await
+        .unwrap_err();
+    assert_eq!(relay.calls(), [], "{failure}");
+    assert!(failure.left.is_empty(), "{failure}");
+    std::fs::remove_dir_all(world.paths.config_file().with_extension("toml.tmp")).unwrap();
+    assert_eq!(world.on_this_machine(), (0, 0, 0), "{failure}");
+    assert!(config.hosted_agents.is_empty());
+
+    // Refused before anything is made: what a coding harness does not
+    // have, a name that is no name, and an allowlist with nobody in it.
+    let (world, mut config) = World::new();
+    let context = world.context();
+    for harness in [Harness::Grok, Harness::Codex, Harness::ClaudeCode] {
+        let mut coding = NewAgent::named("Scout");
+        coding.harness = harness;
+        coding.network = vec!["github.com".into()];
+        let failure = manage::create(&context, &mut config, &coding, relay.as_ref())
+            .await
+            .unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("a list of hosts is for a pi-durable agent"),
+            "{harness:?}: {failure}"
+        );
+    }
+    let mut listed = NewAgent::named("Scout");
+    listed.wake = WakeRule::Allowlist;
+    for wrong in [NewAgent::named(""), NewAgent::named("two\nlines"), listed] {
+        assert!(
+            manage::create(&context, &mut config, &wrong, relay.as_ref())
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(relay.calls(), []);
+    assert_eq!(world.on_this_machine(), (0, 0, 0));
+}
+
+/// When the relay will not take back what it holds, the key, the folder and
+/// the settings still go, and the failure names what could not be removed.
+#[tokio::test]
+async fn what_an_undo_cannot_take_back_is_named() {
+    use Answer::{Accept, Refuse, Silent};
+    let (world, mut config) = World::new();
+    // Profile accepted, record lands unconfirmed, both removals refused.
+    let relay = RecordedRelay::answering(&[Accept, Silent, Refuse, Refuse]);
+    let context = world.context();
+    let failure = manage::create(
+        &context,
+        &mut config,
+        &NewAgent::named("Scout"),
+        relay.as_ref(),
+    )
+    .await
+    .unwrap_err();
+    let held = relay.held();
+    assert_eq!(held.len(), 2, "the relay kept both");
+    let text = failure.to_string();
+    assert_eq!(failure.left.len(), 2, "{text}");
+    assert!(
+        text.contains(&held[0].id.to_hex()) && text.contains("kind 30177"),
+        "{text}"
+    );
+    assert!(!text.contains("Nothing was left"), "{text}");
+    assert_eq!(world.on_this_machine(), (0, 0, 0));
+}
+
+/// The checks before anything exists: a machine without Node, and one
+/// without the owner's own program of a coding harness, each with what to
+/// do.
+#[tokio::test]
+async fn the_checks_before_a_creation_say_what_to_do() {
+    let temporary = TempDir::new().unwrap();
+    let empty = temporary.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let path = empty.display().to_string();
+    let environment: bzz::agents::runtime::agent::Environment =
+        Arc::new(move |name| (name == "PATH").then(|| path.clone()));
+    let quiet = |_: &str| {};
+    let data = temporary.path().join("data");
+    let missing = manage::preflight(&data, &NewAgent::named("Scout"), None, &environment, &quiet)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        missing.contains("Node.js 22.19") && missing.contains("BZZ_NODE"),
+        "{missing}"
+    );
+    for harness in [Harness::Grok, Harness::Codex, Harness::ClaudeCode] {
+        let mut coding = NewAgent::named("Scout");
+        coding.harness = harness;
+        let refused = manage::preflight(&data, &coding, None, &environment, &quiet)
+            .await
+            .unwrap_err()
+            .to_string();
+        let spec = bzz::agents::runtime::coding::spec(harness).unwrap();
+        for stated in [
+            "none was found on PATH",
+            spec.variable,
+            spec.sign_in,
+            "bzz agent doctor",
+        ] {
+            assert!(
+                refused.contains(stated),
+                "{harness:?}: `{stated}` in: {refused}"
+            );
+        }
+    }
+    assert!(!data.exists(), "nothing was installed or made");
+}
+
+/// v0.15 M3: deleting an agent removes the git credentials stored for it,
+/// with its key, its folder and its settings, and leaves another agent's.
+#[tokio::test]
+async fn deleting_an_agent_removes_its_git_credentials() {
+    use bzz::{
+        agents::git_credentials,
+        store::{Store, writer::StoreHandle},
+    };
+    let (world, mut config) = World::new();
+    let relay = RecordedRelay::answering(&[]);
+    let context = world.context();
+    let scout = manage::create(
+        &context,
+        &mut config,
+        &NewAgent::named("Scout"),
+        relay.as_ref(),
+    )
+    .await
+    .unwrap()
+    .agent;
+    let ranger = manage::create(
+        &context,
+        &mut config,
+        &NewAgent::named("Ranger"),
+        relay.as_ref(),
+    )
+    .await
+    .unwrap()
+    .agent;
+    let keys = world.paths.keys_dir();
+    for (agent, host) in [
+        (scout.id, "github.com"),
+        (scout.id, "gitlab.com"),
+        (ranger.id, "github.com"),
+    ] {
+        git_credentials::set(&keys, &world.owner, agent, host, "bot", "a-token-marker")
+            .await
+            .unwrap();
+    }
+    assert_eq!(git_credentials::hosts(&keys, scout.id).len(), 2);
+    // `agent show` lists the hosts, and says which is never given.
+    let lines = manage::credential_lines(
+        scout.local.as_ref().unwrap(),
+        &git_credentials::hosts(&keys, scout.id),
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| line.contains("never given until you allow the host"))
+    );
+
+    let store = StoreHandle::spawn(Store::open(world.paths.database_file()).unwrap()).unwrap();
+    let removal = manage::remove_local(&world.paths, &mut config, &store, scout.id)
+        .await
+        .unwrap();
+    assert!(
+        removal
+            .removed
+            .contains(&"its 2 stored git credential(s)".to_owned()),
+        "{removal:?}"
+    );
+    assert!(removal.left.is_empty(), "{removal:?}");
+    assert!(!git_credentials::folder(&keys, scout.id).exists());
+    assert!(git_credentials::hosts(&keys, scout.id).is_empty());
+    assert_eq!(
+        git_credentials::get(&keys, &world.owner, scout.id, "github.com")
+            .await
+            .unwrap(),
+        None
+    );
+    // Ranger's is untouched.
+    assert!(
+        git_credentials::get(&keys, &world.owner, ranger.id, "github.com")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    // Nothing of Scout is left in the keys folder.
+    let left = std::fs::read_dir(&keys)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(&scout.id.to_string()))
+        .collect::<Vec<_>>();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+/// v0.15 M6: an agent on a coding harness is made only after the owner's
+/// own program was found, its version is one bzz knows to work, and (for
+/// Codex and Claude Code) the adapter is installed. Whatever is wrong is
+/// said before a key exists.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_agent_on_a_coding_harness_is_checked_before_its_key_is_made() {
+    use bzz::agents::{
+        capability,
+        manage::{Answers, Edit, Lacking},
+        runtime::coding,
+    };
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let (world, mut config) = World::new();
+    let bin = world.paths.data_dir.parent().unwrap().join("bin");
+    let program = |name: &str, script: &str| {
+        std::fs::create_dir_all(&bin).unwrap();
+        let path = bin.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let path = std::env::join_paths([bin.as_path(), "/usr/bin".as_ref(), "/bin".as_ref()])
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let environment: bzz::agents::runtime::agent::Environment =
+        Arc::new(move |name| (name == "PATH").then(|| path.clone()));
+    let said = Mutex::new(Vec::new());
+    let progress = |line: &str| said.lock().unwrap().push(line.to_owned());
+    let data = world.paths.data_dir.clone();
+    let on = |harness| {
+        let mut new = NewAgent::named("Scout");
+        new.harness = harness;
+        new
+    };
+    let check = async |new: &NewAgent| {
+        manage::preflight(&data, new, None, &environment, &progress)
+            .await
+            .map(|preflight| preflight.notes.join("\n"))
+            .map_err(|error| error.to_string())
+    };
+
+    // A version bzz does not know to work: refused, with both versions.
+    program("grok", "echo 'grok 1.1.0 (abc) [stable]'");
+    let refused = check(&on(Harness::Grok)).await.unwrap_err();
+    for stated in ["1.1.0", "1.0.77", "does not start it", "BZZ_GROK"] {
+        assert!(refused.contains(stated), "`{stated}` in: {refused}");
+    }
+    assert_eq!(world.on_this_machine(), (0, 0, 0));
+
+    // The tested one: the notes say which program, which sign-in is in
+    // use, and where its sessions also appear.
+    program("grok", "echo 'grok 1.0.77 (50ca579fa996) [stable]'");
+    // On Linux Grok's sandbox needs bubblewrap.
+    program("bwrap", "exit 0");
+    let notes = check(&on(Harness::Grok)).await.unwrap();
+    for stated in [
+        "Grok Build 1.0.77 at",
+        "known to work: 1.0.77 (tested), and later ones below 1.1.0",
+        "sign-in: your own, made with `grok login`. bzz has none of its own",
+        "model: Grok Build's own default",
+        "its sessions also appear in Grok Build's own history",
+    ] {
+        assert!(notes.contains(stated), "`{stated}` in:\n{notes}");
+    }
+
+    // Codex needs its adapter, and the adapter Node and npm.
+    program("codex", "echo 'codex-cli 0.166.0'");
+    let no_node = check(&on(Harness::Codex)).await.unwrap_err();
+    assert!(
+        no_node.contains("codex harness needs Node.js 22.19"),
+        "{no_node}"
+    );
+    program("node", "echo v22.19.0");
+    // No npm anywhere on PATH: the adapter cannot be installed.
+    let only = bin.display().to_string();
+    let lonely: bzz::agents::runtime::agent::Environment =
+        Arc::new(move |name| (name == "PATH").then(|| only.clone()));
+    let no_npm = manage::preflight(&data, &on(Harness::Codex), None, &lonely, &progress)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(no_npm.contains("npm was not found"), "{no_npm}");
+    assert!(!coding::CODEX_ADAPTER.is_installed(&data));
+    let package = format!("node_modules/{}", coding::CODEX_ADAPTER.package);
+    program(
+        "npm",
+        &format!(
+            "if [ \"$1\" = --version ]; then echo 11.0.0; exit 0; fi\nmkdir -p {package}/dist && echo '// adapter' > {package}/dist/index.js && echo '{{\"version\": \"{}\"}}' > {package}/package.json",
+            coding::CODEX_ADAPTER.version
+        ),
+    );
+    let mut with_model = on(Harness::Codex);
+    with_model.model =
+        manage::parse_model_for(Harness::Codex, "gpt-5.6-luna", Some("low")).unwrap();
+    let notes = check(&with_model).await.unwrap();
+    assert!(coding::CODEX_ADAPTER.is_installed(&data));
+    assert!(
+        said.lock().unwrap().iter().any(
+            |line| line.contains("installing the adapter @agentclientprotocol/codex-acp 2.5.0")
+        ),
+        "the owner is told of the install"
+    );
+    for stated in [
+        "Codex 0.166.0 at",
+        "adapter @agentclientprotocol/codex-acp 2.5.0 in",
+        "run by Node.js 22.19.0",
+        "`codex login`",
+        "model gpt-5.6-luna: checked when the agent is first asked",
+        "Outside its sandbox it runs no command: no folder is granted for commands.",
+    ] {
+        assert!(notes.contains(stated), "`{stated}` in:\n{notes}");
+    }
+    // Nothing of an agent exists yet: the checks made no key.
+    assert_eq!(world.on_this_machine(), (0, 0, 0));
+
+    // Created: Buzz reads its runtime, and `agent show` carries the record
+    // of its harness, with D18's warning where it has no sandbox.
+    let relay = RecordedRelay::answering(&[]);
+    let context = world.context();
+    let mut claude = on(Harness::ClaudeCode);
+    claude.name = "Clara".into();
+    let created = manage::create(&context, &mut config, &claude, relay.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(
+        RecordedRelay::tag(&created.record, "runtime"),
+        Some("bzz/claude-code")
+    );
+    let store = bzz::store::writer::StoreHandle::spawn(
+        bzz::store::Store::open(world.paths.database_file()).unwrap(),
+    )
+    .unwrap();
+    let details = manage::details(&world.paths, &store, &created.agent)
+        .await
+        .unwrap();
+    let shown = manage::show_lines(&created.agent, "home", &details).join("\n");
+    for stated in [
+        "harness:     claude-code (experimental)",
+        "capability record: claude-code (experimental)",
+        capability::NO_SANDBOX_WARNING,
+        capability::CODING_HARNESS_RUNS,
+        "it writes only in its folders: bzz only",
+        "its program: your own `claude` (Claude Code)",
+        "made with `claude auth login`",
+        "its sessions also appear in Claude Code's own history",
+        "working folder:",
+        "may reach:   whatever its own program reaches",
+        "It runs no shell command: no folder is granted for commands.",
+    ] {
+        assert!(shown.contains(stated), "`{stated}` in:\n{shown}");
+    }
+    assert!(!shown.contains("Pi packages") && !shown.contains("git credentials"));
+    assert!(shown.contains(&details.workspace.display().to_string()));
+
+    // What these harnesses do not have is refused where it would be set.
+    let answers = |harness: &str| Answers {
+        name: "Other".into(),
+        harness: harness.into(),
+        ..Answers::default()
+    };
+    let refusal = |answers: Answers| answers.read().unwrap_err().to_string();
+    for harness in ["grok", "codex", "claude-code"] {
+        assert!(answers(harness).read().is_ok(), "{harness}");
+        let hosts = refusal(Answers {
+            hosts: vec!["github.com".into()],
+            ..answers(harness)
+        });
+        assert!(hosts.contains("it takes no --allow-host"), "{hosts}");
+        for packages in ["on", "off"] {
+            let refused = refusal(Answers {
+                packages: packages.into(),
+                ..answers(harness)
+            });
+            assert!(refused.contains("Pi packages are for a pi-durable agent"));
+        }
+        for (what, said) in [
+            (Lacking::MoveWithMemory, "cannot be moved"),
+            (Lacking::GitCredentials, "your own git and its credentials"),
+            (Lacking::OwnDisk, "no disk of its own"),
+        ] {
+            let harness = manage::parse_harness(harness).unwrap();
+            assert!(manage::lacks(harness, what).unwrap().contains(said));
+            assert_eq!(manage::lacks(Harness::PiDurable, what), None);
+        }
+    }
+    // Grok never asks before a command: a folder cannot be granted for them.
+    let folder = world.paths.data_dir.display().to_string();
+    let grok = refusal(Answers {
+        folders: vec![format!("work={folder}:exec")],
+        ..answers("grok")
+    });
+    assert!(grok.contains("cannot be granted for commands to a grok agent"));
+    for harness in ["codex", "claude-code"] {
+        let granted = Answers {
+            folders: vec![format!("work={folder}:rw:exec")],
+            ..answers(harness)
+        }
+        .read()
+        .unwrap();
+        assert!(granted.folders[0].exec.granted());
+    }
+    // A model is written as the program names it, with or without the
+    // harness before it; Pi's `provider/model` is Pi's.
+    for written in ["haiku", "claude-code/haiku", "claude/haiku"] {
+        let model = manage::parse_model_for(Harness::ClaudeCode, written, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (model.provider.as_str(), model.model_id.as_str()),
+            ("claude-code", "haiku")
+        );
+    }
+    assert!(manage::parse_model_for(Harness::Grok, "", Some("low")).is_err());
+    assert!(manage::parse_model_for(Harness::Grok, "two words", None).is_err());
+    assert_eq!(
+        manage::parse_model_for(Harness::Grok, " ", None).unwrap(),
+        None
+    );
+    assert!(manage::parse_model_for(Harness::PiDurable, "haiku", None).is_err());
+    // An edit is held to the same.
+    let id = created.agent.id;
+    for (edit, said) in [
+        (
+            Edit {
+                network: Some(vec!["github.com".into()]),
+                ..Edit::default()
+            },
+            "it takes no --allow-host",
+        ),
+        (
+            Edit {
+                packages: Some(false),
+                ..Edit::default()
+            },
+            "Pi packages are for a pi-durable agent",
+        ),
+    ] {
+        let refused = manage::apply_edit(&mut config, id, &edit)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains(said), "{refused}");
+    }
+    // Wherever a harness is shown, what is promised for it is said.
+    assert_eq!(manage::harness_label(Harness::Grok), "grok");
+    assert_eq!(manage::harness_label(Harness::PiDurable), "pi-durable");
+    assert_eq!(
+        manage::harness_label(Harness::Codex),
+        "codex (experimental)"
+    );
+}
+
+/// `bzz broker` is for an agent whose process the user runs. An agent bzz
+/// runs itself is not listed by it and not changed by it: `broker delete`
+/// would remove its key and leave its records on the relay, its folder and
+/// its credentials behind. Each command says to use `bzz agent`.
+#[test]
+fn the_broker_commands_leave_an_agent_bzz_runs_alone() {
+    let temporary = TempDir::new().unwrap();
+    let paths = Paths {
+        config_dir: temporary.path().join("c"),
+        data_dir: temporary.path().join("d"),
+        cache_dir: temporary.path().join("k"),
+    };
+    paths.ensure().unwrap();
+    let agent = |label: &str, local: bool| HostedAgentConfig {
+        id: Uuid::new_v4(),
+        label: label.into(),
+        pubkey: Keys::generate().public_key().to_hex(),
+        community: Uuid::nil(),
+        owner_identity: Uuid::nil(),
+        auth_tag: "[]".into(),
+        credential_hash: "c".repeat(64),
+        allowed: vec!["channel.read".into()],
+        paused: false,
+        local: local.then(|| bzz::config::LocalAgentConfig::new(Harness::PiDurable)),
+    };
+    let config = Config {
+        hosted_agents: vec![agent("helper", false), agent("Scout", true)],
+        ..Config::default()
+    };
+    config.save(&paths).unwrap();
+    let bzz = |args: &[&str]| {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_bzz"))
+            .args(args)
+            .env("BZZ_CONFIG_DIR", &paths.config_dir)
+            .env("BZZ_DATA_DIR", &paths.data_dir)
+            .env("BZZ_CACHE_DIR", &paths.cache_dir)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    };
+    let (ok, listed) = bzz(&["broker", "list"]);
+    assert!(ok && listed.contains("helper"), "{listed}");
+    assert!(
+        !listed.contains("Scout"),
+        "an agent bzz runs is not the broker's: {listed}"
+    );
+    for args in [
+        &["broker", "delete", "Scout", "--yes"][..],
+        &["broker", "rotate", "Scout"],
+        &["broker", "allow", "Scout", "message.post"],
+        &["broker", "pause", "Scout"],
+        &["broker", "resume", "Scout"],
+    ] {
+        let (ok, said) = bzz(args);
+        assert!(!ok, "{args:?}: {said}");
+        assert!(
+            said.contains("is a local agent") && said.contains("bzz agent"),
+            "{args:?}: {said}"
+        );
+    }
+    assert_eq!(
+        Config::load(&paths).unwrap(),
+        config,
+        "nothing of either agent changed"
+    );
+    // The broker's own agent is the broker's as before.
+    let (ok, said) = bzz(&["broker", "pause", "helper"]);
+    assert!(ok, "{said}");
+    let after = Config::load(&paths).unwrap();
+    assert!(after.hosted_agents[0].paused && !after.hosted_agents[1].paused);
+    let (ok, said) = bzz(&["agent", "list"]);
+    assert!(
+        ok && said.contains("Scout") && !said.contains("helper"),
+        "{said}"
+    );
+}
+
+/// From the run against Buzz 1.0: with an identity whose key Buzz Desktop
+/// holds (a paired one), `bzz agent new` refused only after it had looked
+/// for Node, installed the agent host from npm and checked the model. It
+/// refuses first now, and says why such an identity cannot have agents.
+#[cfg(unix)]
+#[test]
+fn agent_new_with_a_paired_identity_refuses_before_anything_is_looked_for_or_installed() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let temporary = TempDir::new().unwrap();
+    let paths = Paths {
+        config_dir: temporary.path().join("c"),
+        data_dir: temporary.path().join("d"),
+        cache_dir: temporary.path().join("k"),
+    };
+    let paired = IdentityConfig {
+        id: Uuid::new_v4(),
+        label: "buzz1".into(),
+        pubkey: Keys::generate().public_key().to_hex(),
+        backend: KeyBackend::BuzzDesktop,
+        key_ref: "bzz-desktop-test".into(),
+    };
+    let mut config = Config {
+        identities: vec![paired.clone()],
+        ..Config::default()
+    };
+    config
+        .add_community("c1".into(), "ws://localhost:3030".into(), paired.id, true)
+        .unwrap();
+    config.save(&paths).unwrap();
+    // A stand-in for `node` that leaves a mark when anything starts it.
+    let looked = temporary.path().join("node-was-started");
+    let node = temporary.path().join("node");
+    std::fs::write(
+        &node,
+        format!("#!/bin/sh\ntouch '{}'\nexit 1\n", looked.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_bzz"))
+        .args([
+            "agent",
+            "new",
+            "Paired",
+            "--model",
+            "scripted/scripted",
+            "--yes",
+        ])
+        .env("BZZ_CONFIG_DIR", &paths.config_dir)
+        .env("BZZ_DATA_DIR", &paths.data_dir)
+        .env("BZZ_CACHE_DIR", &paths.cache_dir)
+        .env("BZZ_NODE", &node)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.status.success(), "{said}");
+    for expected in [
+        "buzz1 is an identity whose key Buzz Desktop holds",
+        "cannot have local agents",
+        "Buzz Desktop does not sign for a paired program",
+        "Nothing was installed and nothing was made",
+    ] {
+        assert!(said.contains(expected), "`{expected}` in: {said}");
+    }
+    assert!(
+        !looked.exists() && !said.contains("installing"),
+        "refused before Node was looked for: {said}"
+    );
+    assert!(!paths.data_dir.join("agent-host").exists());
+    assert!(Config::load(&paths).unwrap().hosted_agents.is_empty());
+
+    // An identity whose key bzz holds may.
+    assert!(
+        manage::may_own_agents(&IdentityConfig {
+            backend: KeyBackend::EncryptedFile,
+            ..paired.clone()
+        })
+        .is_ok()
+    );
+    assert!(manage::may_own_agents(&paired).is_err());
+}

@@ -25,7 +25,7 @@ debug builds deliberately use separate paths and keychain services.
 
 Expected result:
 
-- candidate version `0.14.0`;
+- candidate version `0.15.0`;
 - config, data, and cache under `BZZ_E2E_ROOT`;
 - `configuration, theme, media, diagnostics, telemetry, and database are valid`;
 - no secrets in `.env` or command output.
@@ -636,6 +636,157 @@ identities, A and B, in the same channel. The harness builds the pinned
    no community at this address; check the community URL` and stops
    retrying.
 
+## 13. v0.15.0 surfaces: local agents
+
+Use the isolated pinned harness from section 11, one disposable identity and
+a channel that identity created (it must be able to add members). You need
+Node.js 22.19 or newer. **Use no real model for the repeatable part:** give
+bzz, as `BZZ_NODE`, the stand-in that switches on the agent host's scripted
+model, and an empty folder as `PI_CODING_AGENT_DIR`, as
+`examples/harness_fixture.rs` does. The model is then `scripted/scripted`.
+It answers `pong: this conversation holds N message(s) from people`, or
+follows a line `do: [...]` in the message
+(`agent-host/test/support/scripted-model.mjs`). `Ctrl-j` adds a line in the
+composer. `./scripts/test-relay.sh --herdr` runs most of the first five
+parts on the release binary by itself (the `t15-*` scenarios,
+[`e2e-herdr.md`](e2e-herdr.md)); what it leaves to you is named in
+[`validation-v0.15.0.md`](validation-v0.15.0.md), "Manual E2E".
+
+Never point any of this at `~/.pi`, `~/.grok`, `~/.codex` or `~/.claude`,
+and never at a real community.
+
+### Create, show, add
+
+1. `bzz --version` prints `bzz 0.15.0`. `bzz agent doctor` names Node, npm
+   and whether the agent host is installed, and installs nothing.
+2. `bzz agent new` on a terminal asks its questions in order: name, harness,
+   model, instructions, who may wake it, folders, hosts, picture, Pi
+   packages. Answer `scripted/scripted` for the model and
+   `work=<a folder>:exec` for the folders. It prints the checks, asks you to
+   confirm the owner authorization, asks for the identity's passphrase, and
+   ends with `created in <community>`, the capability record and the next
+   step. The first creation installs the agent host (it needs the npm
+   registry once).
+3. `bzz agent show <name>`: state, harness, model, who may wake it, the
+   folder with its real path and its rights (`read-only; real commands,
+   each asked of you first`), `git credentials: none stored`, and the
+   capability record with
+   `one final reply per mention: bzz`.
+4. `bzz agent add <name> <channel>`: `added to #<channel>`. `bzz agents
+   list` shows it as verified.
+5. In the TUI, `:agent new <name>` opens the form with the same questions.
+   `Ctrl-s` runs the checks; `Enter` then signs and creates. The form ends
+   with the capability record. `:agents` lists the agent as `idle` within a
+   few seconds, without a restart. `i` adds it to the open channel.
+6. A creation that cannot finish leaves nothing: answer a model the host
+   does not have (`nope/none`). It is refused before the confirmation, and
+   `bzz agent list` does not show the agent.
+
+### An agent answers
+
+1. With bzz open and unlocked, in the agent's channel: `i`, `@`, the first
+   letters of its name, `Tab`, a space, a few words, `Enter`. The agent's
+   typing indicator shows, then **one** reply in the thread the mention
+   started.
+2. Open the thread (`Enter` on the message) and mention it again there: the
+   count in its reply goes up by one. That is the conversation's memory. A
+   message in the thread that does not mention it is not answered.
+3. Quit bzz and start it again; mention it in the same thread. The count
+   goes on from where it was.
+4. `bzz agent run` answers the same way with no TUI. Interrupt it: the
+   agent's process is gone (`bzz agent list` shows no process).
+
+### The agents panel, and stopping a turn
+
+1. Send `@<name>`, `Ctrl-j`, then
+   `do: [["sleep", 60000], ["buzz_send", {"text": "late", "final": true}]]`.
+2. `:agents` while it runs: the agent's row says `answering 1` and what it
+   is doing; below, `state`, `doing now`, `last outcome`, its settings and
+   its capability record. `l` shows the end of its log.
+3. `x`: `its running turn was stopped`. The thread gets one notice that you
+   stopped the answer, and `last outcome` says so. `x` again: `is not
+   answering anything now`.
+4. `Space` pauses the agent (`paused`, its process is gone) and resumes it.
+
+### A real command: approve and refuse
+
+The agent needs a folder granted with `:exec`.
+
+1. Send `@<name>`, `Ctrl-j`, then
+   `do: [["run", {"folder": "work", "command": "echo approved > made.txt; cat made.txt"}], ["report"]]`.
+2. A line appears at the top: `<name> asks to run a command in /mnt/work …
+   Ctrl-Y to see and answer it · refused in 4:5x`. Open the Inbox, the
+   broker panel, a search: the line is still there. A plain `y` or `a`
+   answers nothing.
+3. `Ctrl-y`: the dialog names the agent, the conversation and that it is
+   answering you, the folder with its real path, that the command runs as
+   your user, and the whole command with its line numbers.
+4. `a`: `allowed: <name> runs its command in /mnt/work`. The reply in the
+   thread holds the command's output (`approved`), and `made.txt` is in the
+   folder.
+5. Ask again with another command. `Ctrl-y`, `r`, write a reason, `Enter`:
+   `refused: <name> was told no, and nothing was started`. The reply says
+   `Your owner refused this command, and says: <reason>`, and the command's
+   file is not there.
+6. Ask again and wait five minutes without answering: the agent says you did
+   not answer within 300 seconds. Ask again and press `x` in `:agents`: the
+   line at the top goes, and a `Ctrl-y` afterwards says nothing waits.
+7. `bzz agent show <name>` lists each question with its answer under its
+   activity.
+8. Under `bzz agent run`, the same request is refused at once and the agent
+   tells the chat that its owner must open bzz.
+
+### Private repository, move and receive
+
+1. `bzz agent credential set <name> github.com` on a terminal: the user name
+   and the token are asked for and **not shown**. It prints `stored a git
+   credential`. `credential list` prints the host only.
+2. `bzz agent move <name> --to <file>` asks for the identity's passphrase
+   and then for a passphrase for the file, **twice**; nothing typed is
+   shown. A second passphrase that differs is refused and nothing is
+   written. It ends with `moved into <file>`, what is in it, what stays, and
+   `marked moved away here`.
+3. `bzz agent list` shows `moved away`. `:agents` shows the agent as
+   `stopped` with `moved away: it runs elsewhere`, and `bzz agent resume`
+   refuses.
+4. In a second profile of the same identity and community,
+   `bzz agent receive <file>`: `received in <community>`, `no folder of this
+   machine is granted to it`. The wrong passphrase, and a file with one byte
+   changed, are each refused by name. Receiving the file again says the
+   agent is already here.
+5. Run the second profile and mention the agent in a thread it answered in
+   before the move: the count goes on.
+6. `bzz agent launch-kit <name> --to <folder>` says the key will be in the
+   clear and asks. The steps on the other machine are in the folder's
+   `README.md`; `bzz agent shutdown <name>` stops the copy and says whether
+   it left, and `bzz agent receive <folder>` takes it back.
+
+### Coding harnesses (optional; your own programs and accounts)
+
+Only with your own `grok`, `codex` or `claude`, signed in. This spends your
+usage: a few short prompts on each program's cheapest model.
+
+1. `bzz agent doctor` names each program, its version, whether it is in the
+   range bzz starts, its adapter, and the sign-in in use.
+2. `bzz agent new <name> --harness grok --folder work=<folder>:rw` prints
+   the harness's record with "it runs a real shell as your user" before you
+   confirm; for `claude-code` also the warning that it has no sandbox. In
+   `:agents` the row reads `grok`, `codex (experimental)` or `claude-code
+   (experimental)`.
+3. Mention it: one reply. Ask it to write a file in the granted folder (it
+   does) and outside it (it does not; `bzz agent show` lists what bzz
+   refused).
+4. Quit bzz and the program, start bzz again, and ask in the same thread
+   what was said before: it answers from its own saved session.
+
+### Upgrade and the broker
+
+1. Open a v0.14.0 profile that has a `bzz broker` agent: `bzz broker list`
+   shows it as before, `bzz agent list` does not, and the agent's process
+   still posts through `:broker` with its old credential.
+2. `bzz broker delete <a local agent>` is refused and says to use
+   `bzz agent`.
+
 ## Results log
 
 | Section | Result | Evidence/notes |
@@ -654,6 +805,7 @@ identities, A and B, in the same channel. The harness builds the pinned
 | 10. Inbox/DMs/search | ☐ | |
 | 11. v0.13.0 surfaces | ☐ | |
 | 12. v0.14.0 surfaces | ☐ | |
+| 13. v0.15.0 surfaces: local agents | ☐ | |
 
 ## Cleanup
 

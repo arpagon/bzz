@@ -5,14 +5,17 @@
 # write a database with disposable keys (tests/upgrade/seed_<v>.rs), records
 # what the old release reads back, then runs tests/upgrade_from_<v>_test.rs
 # against a copy: migrations, backup, FTS, Inbox and drafts must survive.
+# From v0.14.0 the fixture is a whole profile: the settings with a hosted
+# agent of v0.13 and its sealed key travel with the database.
 #
-# BZZ_UPGRADE_FROM_VERSION selects the old release: 0130 (v0.13.0, default)
-# or 0121 (v0.12.1).
+# BZZ_UPGRADE_FROM_VERSION selects the old release: 0140 (v0.14.0, default),
+# 0130 (v0.13.0) or 0121 (v0.12.1).
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
-version=${BZZ_UPGRADE_FROM_VERSION:-0130}
+version=${BZZ_UPGRADE_FROM_VERSION:-0140}
 case "$version" in
+  0140) default_commit=80e1b0738891ca110e84b3e3458a2c73ed16d381 ;; # tag v0.14.0
   0130) default_commit=2b3429fd0f0e8667d51b4006807d31cb6cedf187 ;; # tag v0.13.0
   0121) default_commit=712803381e9f6a79f22fbaa550fb68084e90d73f ;; # v0.12.1 validated
   *) echo "unknown BZZ_UPGRADE_FROM_VERSION=$version" >&2; exit 2 ;;
