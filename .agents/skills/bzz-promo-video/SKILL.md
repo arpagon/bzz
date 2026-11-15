@@ -64,9 +64,11 @@ deliverables leave it.
 | Path | Use |
 |---|---|
 | `scripts/record-tape.py` | headless PTY recorder: fixed cell/pixel size, key timeline, marks |
+| `scripts/record-live.py` | the same tape, for a take whose timing is not yours (a real model answers): a step waits until a text is on screen, and every wait is marked |
 | `scripts/tape-peek.py` | screen text at chosen seconds (drops Sixel) |
 | `scripts/tape-expect.py` | assert `+text`/`-text` at a second or mark; exit 1 on failure |
 | `scripts/preview-tape.sh` | pixel stills of a tape through HyperFrames |
 | `assets/tape-replay.js` | `mountTape()` for compositions (xterm.js, Sixel, Unicode 11) |
 | `capture/*.sh`, `capture/shots/*.json` | relay, fixture, one script per shot, the shot list (v0.14: adds `edit` and `sync`) |
+| `promo/v0.15-launch/capture/` (repo) | the agent take of the v0.15 film as it was run: a local agent on a real model, created, mentioned, asked for a command, moved |
 | `examples/promo_fixture.rs` (repo) | community seed, agent bot role, live "director" scenes |

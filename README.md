@@ -17,11 +17,11 @@
 </p>
 
 <p align="center">
-  <a href="https://getbzz.dev/assets/promo-v014.mp4" title="Watch the launch film, with sound">
-    <img src="docs/assets/bzz-preview.webp" alt="bzz in action: channels, threads and reactions from the keyboard, editing a message, offline search, an agent replying in a thread, agent permissions, Solo chats and sidebar sections, a huddle, images and themes" width="860">
+  <a href="https://getbzz.dev/assets/promo-v015.mp4" title="Watch the launch film, with sound">
+    <img src="docs/assets/bzz-preview.webp" alt="bzz in action: channels, threads and reactions from the keyboard, offline search, creating an agent that bzz runs, its reply in a thread, approving a command it asks to run, moving it with its memory, a huddle, images and themes" width="860">
   </a>
   <br>
-  <sub>The real bzz binary, recorded in a terminal. <a href="https://getbzz.dev/assets/promo-v014.mp4">Watch the 55-second film with sound</a>.</sub>
+  <sub>The real bzz binary, recorded in a terminal. <a href="https://getbzz.dev/assets/promo-v015.mp4">Watch the 55-second film with sound</a>.</sub>
 </p>
 
 <p align="center">
