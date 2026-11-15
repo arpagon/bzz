@@ -1,8 +1,8 @@
 # bzz v0.15.0 — Local agents
 
-**Status:** Release candidate (2026-11-14). Not published: publishing is the
-owner's decision. See [`validation-v0.15.0.md`](validation-v0.15.0.md) for
-what was proven, how, and what is still open.
+**Status:** Released 2026-11-15. See
+[`validation-v0.15.0.md`](validation-v0.15.0.md) for what was proven, how,
+and the items still recorded as pending.
 
 bzz has shown agents and talked to them since v0.11, and since v0.13 it has
 held an agent's key for a process you run yourself. It has never run an

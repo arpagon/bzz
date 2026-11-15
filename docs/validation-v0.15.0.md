@@ -1,7 +1,7 @@
 # bzz v0.15.0 validation
 
-**Status:** release candidate on branch `v0.15.0` (PR #9), 2026-11-15; not
-published. Every milestone of the plan, M0 to M7, is implemented and proven
+**Status:** the owner approved publishing on 2026-11-15, after watching the
+recorded run with real models; branch `v0.15.0` (PR #9). Every milestone of the plan, M0 to M7, is implemented and proven
 below, each in its own section as it was closed; the release work around
 them (the release binary in a terminal, the upgrade from v0.14.0, the
 benchmarks, the supply chain, the plan's testing table cell by cell, and
@@ -2763,7 +2763,11 @@ real Pi package.
 
 ### Still pending, and what the owner decides
 
-Nothing below was done, by design: publishing is the owner's decision.
+The owner approved publishing v0.15.0 on 2026-11-15 with these items open.
+He was asked, and did not change, three things that therefore ship as they
+are: Grok is named "supported" and an agent on Grok or Codex may be woken by
+anyone if its owner says so; Pi packages are on by default; and the real
+commands of M7 are in this release (D20 had them in v0.15.1).
 
 | Item | Whose |
 |---|---|
