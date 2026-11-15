@@ -388,11 +388,34 @@ enum ThemeCommand {
     Path,
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(error) = run().await {
-        eprintln!("bzz: {error}");
-        std::process::exit(1);
+/// The stack bzz's own work runs on. Windows gives a program's first thread
+/// 1 MiB, and a debug build of `bzz broker list` overflowed it once the
+/// commands for agents were added; Linux and macOS give 8 MiB.
+const MAIN_STACK: usize = 8 * 1024 * 1024;
+
+fn main() {
+    let work = std::thread::Builder::new()
+        .name("main".into())
+        .stack_size(MAIN_STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| Error::io("tokio runtime", error))
+                .and_then(|runtime| runtime.block_on(run()))
+        });
+    let outcome = match work {
+        Ok(work) => work.join(),
+        Err(error) => Ok(Err(Error::io("main thread", error))),
+    };
+    match outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            eprintln!("bzz: {error}");
+            std::process::exit(1);
+        }
+        // It panicked, and the panic hook has already said why.
+        Err(_) => std::process::exit(101),
     }
 }
 

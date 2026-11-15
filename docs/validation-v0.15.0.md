@@ -2687,6 +2687,17 @@ The test now takes the newest backup by its name, as bzz orders them. Red on
 Linux, with the oldest taken instead: `left: 0, right: 17`. The upgrade
 itself was never at fault.
 
+CI on `e075336` showed one more thing, on Windows only: with the backup
+check out of its way, the upgrade test reached `bzz broker list`, and the
+debug build answered `thread 'main' has overflowed its stack`. Windows gives
+a program's first thread 1 MiB. Repeated on Linux with `ulimit -s 1024`: the
+debug build of `e075336` overflows even on `bzz --version` (exit 134); the
+release build answers with 1 MiB, 512 KiB and 256 KiB, so a published
+archive was not at risk. bzz now does its work on a thread whose stack it
+sets itself (8 MiB), whatever the first thread has
+(`tests/main_stack_test.rs`: with a 1 MiB first thread, `--version` and
+`broker list` answer; red is the overflow above).
+
 Not run again after the merge: the benchmarks, `cargo deny`, `cargo audit`
 and `npm audit` (no dependency and no lock file changed), and the by-hand
 checks of the release binary that have no Herdr scenario.

@@ -137,6 +137,11 @@ Found while the release was closed:
 - The agent directory read every membership of the community for each
   agent it listed. An index (migration 0019) answers that now.
 
+- On Windows a debug build of bzz overflowed its stack on any command once
+  the agent commands were added: Windows gives a program's first thread
+  1 MiB. The release build did not. bzz now runs on a thread whose stack it
+  sets itself.
+
 Found by running bzz's agents against the real Buzz 1.0.1
 ([`validation-v0.15.0.md`](validation-v0.15.0.md), "After the run against
 Buzz 1.0"):
