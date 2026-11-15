@@ -27,7 +27,7 @@ check $T/overview.jsonl end +'Launch post is scheduled for 9am.' +'Status page i
 check $T/keyboard.jsonl thread+2 +'context · 2 replies' +'🎉 1' -error
 check $T/offline.jsonl cut-0.3 +online -offline
 check $T/offline.jsonl open-0.2 +'offline · local results' +'Load test passed.'
-check $T/agent.jsonl pick-0.1 +'@Scout' +'remote agent · eligible'
+check $T/agent.jsonl pick-0.1 +'@Scout' +'your agent · eligible'
 check $T/agent.jsonl end +'◆ Scout · managed by you' +'One left: the macOS smoke test.' -error
 check $T/broker.jsonl toggle+0.9 +'2[ ] message.post' -error
 check $T/broker.jsonl pause+0.5 +'scout · paused'

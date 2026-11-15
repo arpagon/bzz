@@ -36,20 +36,27 @@ recorded in `public/assets/mdi-attribution.txt` and the license text is at
 
 ## Demo media
 
-The hero video `public/assets/promo-v014.webm`, `promo-v014.mp4` and
-`poster-promo-v014.png` is the v0.14 launch film: 54.9 s, 1920×1080, 30 fps,
+The hero video `public/assets/promo-v015.webm`, `promo-v015.mp4` and
+`poster-promo-v015.png` is the v0.15 launch film: 55.0 s, 1920×1080, 30 fps,
 narrated, −14 LUFS, captions burned in so it works muted. It is the v0.13
-film with the same voice, music and cut plus two v0.14 shots (editing a
-message; Solo chats and sidebar sections). Every product shot is the
-`bzz 0.14.0` Linux release build on an isolated pinned relay with generated
-people, generated illustrated avatars and a broker agent, recorded as terminal
-tapes and composed in HyperFrames. Make or remake it with the
-[`bzz-promo-video`](../.agents/skills/bzz-promo-video/SKILL.md) skill; the
-composition is in [`promo/v0.14-launch`](../promo/v0.14-launch/README.md).
+film with the same voice, music and cut. Its two agent lines now show an
+agent that bzz itself runs, and two lines are new: creating an agent, and
+moving it with its memory. Every product shot is the `bzz 0.15.0` Linux
+release build on an isolated pinned relay with generated people and
+generated illustrated avatars, recorded as terminal tapes and composed in
+HyperFrames. In the agent shots a real model answers
+(`openai-codex/gpt-6-luna` through Pi's own sign-in). Make or remake it with
+the [`bzz-promo-video`](../.agents/skills/bzz-promo-video/SKILL.md) skill;
+the composition is in [`promo/v0.15-launch`](../promo/v0.15-launch/README.md).
 Credits: voice Fish Audio Drama 3 (Fish Audio Community License; credit
 required), music generated with ACE-Step 1.5 (MIT model), avatars generated
 with gpt-image-2. Encodes: H.264 CRF 26 + AAC 128 kb/s; VP9 CRF 32 + Opus
 96 kb/s.
+
+The v0.14 film (`promo-v014.*`, `poster-promo-v014.png`,
+[`promo/v0.14-launch`](../promo/v0.14-launch/README.md): editing a message,
+Solo chats and sidebar sections) stays published so links to it keep
+working.
 
 The v0.13 film (`promo-v013.*`, `poster-promo-v013.png`,
 [`promo/v0.13-launch`](../promo/v0.13-launch/README.md)) stays published so

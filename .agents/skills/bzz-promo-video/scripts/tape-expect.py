@@ -26,7 +26,7 @@ def resolve(when: str, lines: list[dict]) -> float:
         return float(when)
     except ValueError:
         pass
-    match = re.fullmatch(r"([\w-]+)([+-][\d.]+)?", when)
+    match = re.fullmatch(r"([\w:-]+)([+-][\d.]+)?", when)
     if not match:
         raise SystemExit(f"bad time {when!r}")
     marks = {e["mark"]: e["t"] for e in lines if "mark" in e}

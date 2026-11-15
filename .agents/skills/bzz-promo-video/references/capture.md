@@ -78,6 +78,38 @@ channel appears in the sidebar after joining, so record the huddle after
 every sidebar shot;
 offline search first shows "searching the relay…" then "offline · local results".
 
+## Agent shots with a real model (v0.15)
+
+A local agent (`bzz agent`) answers through a real model, so its shots cannot
+follow a fixed timeline. `scripts/record-live.py` records the same tape
+format with steps that wait: `{"until": "text on screen", "timeout": 120}`
+(also `"gone"`, a list of texts, and `"count"`), each written as two marks,
+`<name>:wait` and `<name>:seen`. Cut or shorten exactly those spans in the
+film's `map`, and build the map from the marks
+(`promo/v0.15-launch/scripts/agent-maps.py`), not from seconds read by eye.
+
+`promo/v0.15-launch/capture/` is the take of the v0.15 film as it was run:
+`setup.sh` (a fresh relay, the generated community, two bzz profiles of one
+owner under `/tmp/bzz-demo`), `make-shots.py` (the timelines) and
+`shoot-film.sh` (the shots in story order, then what each tape must show).
+Its paths are those of the experiment it ran in; move it to an ignored
+experiment before running it.
+
+- **It spends the owner's model usage.** Ask first, name the model, use the
+  cheapest one that answers well, and keep prompts short. The v0.15 take is
+  six turns.
+- **No path of the machine in a tape.** bzz prints where it found Node.js.
+  Give it a neutral one: a folder with `bin/node`, `bin/npm` and `lib` linked
+  to the real installation, and `BZZ_NODE=<folder>/bin/node`. Then search
+  the tapes' bytes for the user's name and home folder, as well as for every
+  passphrase and generated key. A tape may be ended early (drop its last
+  events and write a new `stop` line); it may not lose events in the middle.
+- Passphrases are typed where bzz asks, without echo: write `@PASS@` in a
+  shot and let `shoot.sh` fill it in an owner-only copy of the timeline.
+- A shell shot (`SHELL_SHOT=1`, 100×24) runs `bash --noprofile --norc` with
+  the profile's variables set; `mountTape({align: "center"})` fits it.
+- Delete the profiles when the take is done: they hold the generated keys.
+
 ## Review
 
 - `scripts/tape-peek.py tape.jsonl 7.5 12` prints the screen as text.
