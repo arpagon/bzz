@@ -89,8 +89,8 @@ without clearing the database. Duplicate current snapshots can repair the same
 projection drift and are true no-ops afterward.
 
 Until v0.14, exact current `bot` membership was mandatory outside DMs. Since
-v0.15 it is not: Buzz 1.0 adds an agent to a channel as a plain member, and so
-does bzz, so a member of a channel is listed as an agent when its kind 0
+v0.15 it is not: Buzz 1.0 leaves the agent a Solo chat is created with a plain
+member, so a member of a channel is listed as an agent when its kind 0
 profile carries its owner's valid NIP-OA proof, whatever its role. A member
 without that proof is a person and never enters the directory. Buzz represents
 DM participants with operational role `member`, so a bounded current DM

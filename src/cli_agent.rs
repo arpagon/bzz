@@ -38,8 +38,9 @@ pub enum AgentCommand {
     /// Show one agent: state, model, folders, hosts, channels, last turns
     /// and its capability record.
     Show { name: String },
-    /// Add an agent to a channel, as its owner. In a Solo chat it gets the
-    /// bot role; elsewhere it is a plain member, as Buzz adds one.
+    /// Add an agent to a channel or a Solo chat, as its owner. It gets the
+    /// bot role, as Buzz gives an agent it adds; with that role or as a
+    /// plain member, it answers where it may write.
     Add {
         name: String,
         /// The channel's name or id.
@@ -424,6 +425,8 @@ async fn new_agent(paths: &Paths, config: &mut Config, args: NewArgs) -> Result<
     let name = name_answer(&args, interactive)?;
     let community = community_answer(config, &args, interactive)?;
     let identity = find_identity(config, community.identity_id)?.clone();
+    // Before any question, any look for Node and any install.
+    manage::may_own_agents(&identity)?;
     let new = answers(&args, interactive, &name)?;
     if manage::name_taken(config, &new.name, None) {
         return Err(Error::Config(format!("an agent named {} exists", new.name)));
@@ -1468,20 +1471,17 @@ pub async fn command(command: AgentCommand, paths: &Paths, config: &mut Config) 
             relay.close().await;
             owner.lock().await;
             let added = added?;
-            println!(
-                "{} {} #{} {}",
-                agent.label,
-                if added.already {
-                    "was already a member of"
-                } else {
-                    "added to"
-                },
-                added.channel_name,
-                match added.role {
-                    Some(role) => format!("with the {role} role (a Solo chat)"),
-                    None => "as a member".to_owned(),
-                }
-            );
+            if added.already {
+                println!(
+                    "{} was already a member of #{}",
+                    agent.label, added.channel_name
+                );
+            } else {
+                println!(
+                    "{} added to #{} with the {} role, as Buzz adds an agent",
+                    agent.label, added.channel_name, added.role
+                );
+            }
             println!(
                 "mention it there to wake it; it answers while bzz is open, or under `bzz agent run`"
             );

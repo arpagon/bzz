@@ -11,8 +11,10 @@
 //!   agent's key, `runtime` is `bzz/<harness>`, and the content holds the
 //!   name, the picture, `parallelism`, and who may wake it in Buzz's own
 //!   words (`respond_to`);
-//! - **adding to a channel** (kind 9000), by the owner: a member, with the
-//!   `bot` role only in a Solo chat (D13).
+//! - **adding to a channel** (kind 9000), by the owner, with the `bot` role:
+//!   what Buzz 1.0 does when it adds an agent to a channel or a Solo chat
+//!   that exists. (Seen with Buzz 1.0.1; the plan's D13 had it the other
+//!   way round. bzz answers and lists an agent with either role.)
 //!
 //! Creation is all or nothing. Used by `bzz agent …` and by the TUI.
 
@@ -1070,6 +1072,21 @@ impl Publisher for OwnerRelay {
 // ---- before anything is made ------------------------------------------------
 
 /// What the checks before a creation found.
+/// Whether `identity` can own a local agent. One whose key Buzz Desktop
+/// holds (a paired identity) cannot: the owner's key must sign the agent's
+/// authorization (NIP-OA), and Buzz Desktop signs none for a program that
+/// is paired with it. Asked first, before anything is looked for or
+/// installed.
+pub fn may_own_agents(identity: &IdentityConfig) -> Result<()> {
+    if identity.backend != KeyBackend::BuzzDesktop {
+        return Ok(());
+    }
+    Err(Error::Unsupported(format!(
+        "{} is an identity whose key Buzz Desktop holds (it was paired with `bzz identity pair-desktop`), and such an identity cannot have local agents: an agent needs its owner's authorization (NIP-OA), which Buzz Desktop does not sign for a paired program. Use an identity whose key bzz holds (`bzz identity new` or `bzz identity import`), in a community added with it. Nothing was installed and nothing was made",
+        identity.label
+    )))
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Preflight {
     /// Lines for the owner: the Node in use, the model that will answer.
@@ -1686,17 +1703,22 @@ pub struct Added {
     pub channel: Uuid,
     pub channel_name: String,
     pub kind: PlaceKind,
-    /// The role asked for: `bot` in a Solo chat, none elsewhere (D13).
-    pub role: Option<&'static str>,
+    /// The role asked for: `bot`, as Buzz 1.0 adds an agent.
+    pub role: &'static str,
     /// It was a member before; nothing was published.
     pub already: bool,
 }
 
-/// The owner's act that adds an agent to a channel, as Buzz 1.0 writes it:
-/// a member, with the `bot` role only in a Solo chat.
-pub fn add_member_builder(channel: Uuid, agent: &str, kind: PlaceKind) -> Result<EventBuilder> {
-    let role = (kind == PlaceKind::Solo).then_some(buzz_sdk::MemberRole::Bot);
-    buzz_sdk::build_add_member(channel, agent, role)
+/// The role an agent is added with.
+pub const ADDED_ROLE: &str = "bot";
+
+/// The owner's act that adds an agent to a channel, as Buzz 1.0 writes it
+/// when it adds an agent to a channel or a Solo chat that exists: with the
+/// `bot` role (`additionRole` in its `channel-members/members.ts`, "agents
+/// join as Bot"). Only the agent a Solo chat is created with is a plain
+/// member there, and bzz creates no chat with an agent.
+pub fn add_member_builder(channel: Uuid, agent: &str) -> Result<EventBuilder> {
+    buzz_sdk::build_add_member(channel, agent, Some(buzz_sdk::MemberRole::Bot))
         .map_err(|error| Error::Protocol(error.to_string()))
 }
 
@@ -1725,13 +1747,13 @@ pub async fn add_to_channel(
         channel,
         channel_name: facts.name.clone(),
         kind: facts.kind,
-        role: (facts.kind == PlaceKind::Solo).then_some("bot"),
+        role: ADDED_ROLE,
         already: is_member(&facts),
     };
     if !added.already {
         let event = relay
             .signer
-            .sign(add_member_builder(channel, &agent.pubkey, facts.kind)?)
+            .sign(add_member_builder(channel, &agent.pubkey)?)
             .await?;
         match relay.as_owner(event).await {
             Published::Accepted => {}
@@ -2534,28 +2556,30 @@ mod tests {
         );
     }
 
+    /// The run against Buzz 1.0.1: it adds an agent to an ordinary channel,
+    /// and to a Solo chat that exists, with the `bot` role. bzz had it the
+    /// other way round: a plain member in a channel.
     #[test]
-    fn an_agent_joins_as_a_member_and_as_a_bot_only_in_a_solo_chat() {
+    fn an_agent_is_added_with_the_bot_role_as_buzz_adds_one() {
         let agent = Keys::generate().public_key().to_hex();
         let channel = Uuid::new_v4();
-        let roles = |kind| {
-            add_member_builder(channel, &agent, kind)
-                .unwrap()
-                .sign_with_keys(&Keys::generate())
-                .unwrap()
-                .tags
-                .iter()
-                .map(|tag| tag.as_slice().to_vec())
-                .collect::<Vec<_>>()
-        };
-        let plain = vec![
-            vec!["h".to_owned(), channel.to_string()],
-            vec!["p".to_owned(), agent.clone()],
-        ];
-        assert_eq!(roles(PlaceKind::Channel), plain);
-        let mut solo = plain.clone();
-        solo.push(vec!["role".to_owned(), "bot".to_owned()]);
-        assert_eq!(roles(PlaceKind::Solo), solo);
+        let tags = add_member_builder(channel, &agent)
+            .unwrap()
+            .sign_with_keys(&Keys::generate())
+            .unwrap()
+            .tags
+            .iter()
+            .map(|tag| tag.as_slice().to_vec())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tags,
+            vec![
+                vec!["h".to_owned(), channel.to_string()],
+                vec!["p".to_owned(), agent.clone()],
+                vec!["role".to_owned(), "bot".to_owned()],
+            ]
+        );
+        assert_eq!(ADDED_ROLE, "bot");
     }
 
     #[test]

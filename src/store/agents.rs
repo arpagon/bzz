@@ -18,9 +18,10 @@ const AGENT_FRESHNESS_SECONDS: u64 = 10 * 60;
 /// A membership in which a verified agent is listed, with `c` as its
 /// channel: any channel that is not a DM, whatever the member's role, or a
 /// small DM the viewer is in. Since v0.15 the `bot` role is not required:
-/// Buzz 1.0 adds an agent to a channel as a plain member, and so does bzz
-/// (ADR v0.15 local agents, decision 11). What makes a member an agent is
-/// its owner's proof, checked by [`Store::reconcile_remote_agent`].
+/// Buzz 1.0 gives an agent the `bot` role when it adds it to a channel
+/// that exists, and leaves the agent a Solo chat is created with a plain
+/// member (ADR v0.15 local agents, decision 11). What makes a member an
+/// agent is its owner's proof, checked by [`Store::reconcile_remote_agent`].
 pub(crate) const AGENT_MEMBERSHIP: &str =
     "(c.channel_type!='dm' OR (c.is_member=1 AND c.member_count BETWEEN 2 AND 9))";
 
@@ -968,8 +969,8 @@ mod tests {
         }
     }
 
-    /// The membership of `setup`, as Buzz 1.0 and bzz add an agent to a
-    /// channel: a plain member.
+    /// The membership of `setup` as a plain member: what Buzz 1.0 makes of
+    /// the agent a Solo chat is created with.
     fn as_plain_member(store: &Store, community_id: Uuid, agent: &Keys) {
         store
             .connection

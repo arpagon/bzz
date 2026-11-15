@@ -8234,7 +8234,7 @@ impl App {
     }
 
     /// The agents panel's key: adds the selected agent to the channel that
-    /// is open, as its owner (a member; the `bot` role in a Solo chat).
+    /// is open, as its owner, with the `bot` role as Buzz adds an agent.
     fn add_selected_agent_to_open_channel(&mut self, id: Uuid, name: &str) {
         use crate::agents::manage;
         let Some(agent) = self
@@ -8305,12 +8305,8 @@ impl App {
                     format!("{name} was already a member of #{}", added.channel_name)
                 }
                 Ok(added) => format!(
-                    "{name} added to #{} {}; mention it there to wake it",
-                    added.channel_name,
-                    match added.role {
-                        Some(role) => format!("with the {role} role (a Solo chat)"),
-                        None => "as a member".to_owned(),
-                    }
+                    "{name} added to #{} with the {} role; mention it there to wake it",
+                    added.channel_name, added.role
                 ),
                 Err(error) => format!("{name} was not added to #{channel_name}: {error}"),
             };
@@ -8327,6 +8323,18 @@ impl App {
             self.status_error = Some(
                 "creating an agent needs your identity unlocked: restart bzz and unlock it".into(),
             );
+            return;
+        }
+        // An identity whose key Buzz Desktop holds cannot have agents: said
+        // before the form, the checks and the install of the host.
+        let owner = self.runtime.as_ref().and_then(|runtime| {
+            self.config
+                .identities
+                .iter()
+                .find(|identity| identity.id == runtime.identity_id)
+        });
+        if let Some(Err(error)) = owner.map(crate::agents::manage::may_own_agents) {
+            self.status_error = Some(error.to_string());
             return;
         }
         self.agent_form = Some(crate::ui::local_agents::NewAgentForm::new(name));
