@@ -1,6 +1,6 @@
 # bzz v0.15.0 validation
 
-**Status:** release candidate on branch `v0.15.0` (PR #9), 2026-11-14; not
+**Status:** release candidate on branch `v0.15.0` (PR #9), 2026-11-15; not
 published. Every milestone of the plan, M0 to M7, is implemented and proven
 below, each in its own section as it was closed; the release work around
 them (the release binary in a terminal, the upgrade from v0.14.0, the
@@ -2655,6 +2655,33 @@ ran them on the release binary:
 | Coding harnesses | `t15-coding-harnesses-in-panel` for what the panel shows | all four steps: they need the owner's own programs |
 | Upgrade and the broker | `scripts/upgrade-test.sh`; `agent_manage_test::the_broker_commands_leave_an_agent_bzz_runs_alone` | a person's own v0.14.0 profile |
 
+### After the merge of the fixes (2026-11-15)
+
+The gates above are of `52e8ea5`, before the fixes of "After the run against
+Buzz 1.0" were merged. They were run again by the orchestrator on the merged
+branch, one after the other, on the same machine. The merge made the fixes'
+migration number 20 (the schema ends at 20, not 19 as recorded above), and
+one more change followed it: the end of one run of a harness now revokes
+that run's session credentials only (`f3734e2`; red: with the old revocation
+by agent, `credentials::the_end_of_one_run_leaves_the_credentials_of_the_next`
+fails with `left: 2, right: 1`).
+
+| Gate | Commit | Result |
+|---|---|---|
+| `cargo fmt --check`; clippy with `-D warnings` | `33b710e`, again on `f3734e2` | clean |
+| `cargo test --locked --all-features` | `33b710e` | 732 passed, 0 failed, 30 ignored |
+| `agent_runtime_test` and the credentials unit tests | `f3734e2` | 54 and 3 passed |
+| Agent host `npm test` | `33b710e` | 99 of 99 |
+| `./scripts/upgrade-test.sh` | `33b710e` | 1 passed: a v0.14.0 profile at schema 17 opens at schema 20 |
+| Pinned relay, plain | `33b710e` | 22 passed in 851 s, then `agent_host_test` 7 and `agent_move_test` 8 |
+| Pinned relay, `--nip-fi` | `33b710e` | 4 passed |
+| Release TUI (Herdr), `--herdr` | `8159dac`, release build of `f3734e2` | all harness scenarios passed in one run. The first run failed in `t15-agent-new-form`: the scenarios waited for "verified remote agents", and the directory's title is "verified agents" since it lists the owner's own. Three strings of the scenario file changed; nothing else |
+| The coding harnesses with the owner's own programs: `BZZ_REAL_HARNESSES=grok,codex,claude-code BZZ_RELAY_TEST_FILTER=real_relay_coding_harnesses ./scripts/test-relay.sh` | `8159dac` | 1 passed in 182 s. This closes the cell "M6, pinned relay" on the final code, with the Codex change of `3d7d5b7` in it |
+
+Not run again after the merge: the benchmarks, `cargo deny`, `cargo audit`
+and `npm audit` (no dependency and no lock file changed), and the by-hand
+checks of the release binary that have no Herdr scenario.
+
 ### Still pending, and what the owner decides
 
 Nothing below was done, by design: publishing is the owner's decision.
@@ -2662,7 +2689,6 @@ Nothing below was done, by design: publishing is the owner's decision.
 | Item | Whose |
 |---|---|
 | Push the branch and let CI run on the candidate: four platforms with `bzz 0.15.0`, both relay jobs, `agent-host` and the new `upgrade` from v0.14.0 on three systems. Watch `test`: it failed once at `ccfa1c6` in the secret scan and could not be made to fail here ("CI at the last pushed commit") | owner |
-| The coding harnesses once more with his own programs, because `3d7d5b7` changed which text of Codex is kept: `BZZ_REAL_HARNESSES=grok,codex,claude-code BZZ_RELAY_TEST_FILTER=real_relay_coding_harnesses BZZ_BUZZ_SOURCE=… ./scripts/test-relay.sh` (it spends his usage; `docs/releasing.md`) | owner |
 | Production acceptance: one agent created with a real model, answering in the real community, and moved to his VM with a launch kit (plan, acceptance 4; `e2e-manual.md` section 13) | owner |
 | The film and the hero of getbzz.dev still show v0.14; the page's "new in v0.15.0" section is written and not deployed | owner |
 | Merge, tag `v0.15.0`, the release workflow, the checks of the published archive, the site | owner, as in v0.14.0's "Publication" |
