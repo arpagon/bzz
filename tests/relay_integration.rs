@@ -5000,6 +5000,140 @@ async fn real_relay_agent_moves_to_another_bzz_and_to_buzz_acp() {
     tokio::time::sleep(Duration::from_secs(8)).await;
     assert!(replies(silent.id.to_hex()).await.is_empty());
 
+    // ---- 5b. the stop command, wherever bzz sends it ----------------------
+    // The run above had one channel, and the command chose it. Here: a
+    // channel named with `--channel` when another would be chosen, a Solo
+    // chat chosen before any channel, and a direct message chosen before
+    // both. Each time the copy under buzz-acp is started again from the
+    // kit, hears the command where it was sent, and leaves.
+    // A second channel, whose name sorts before the first one's: with no
+    // flag the command would go there.
+    let earlier = uuid::Uuid::new_v4();
+    let earlier_name = format!("a5-{}", &earlier.simple().to_string()[..8]);
+    // And one the agent is not in.
+    let without = uuid::Uuid::new_v4();
+    let without_name = format!("z5-{}", &without.simple().to_string()[..8]);
+    for (id, name) in [(earlier, &earlier_name), (without, &without_name)] {
+        publish(
+            buzz_sdk::build_create_channel(
+                id,
+                name,
+                Some(buzz_sdk::Visibility::Open),
+                Some(buzz_sdk::ChannelKind::Stream),
+                None,
+                None,
+                false,
+            )
+            .unwrap(),
+        )
+        .await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    second.ok(&["agent", "add", "Scout", &earlier_name]);
+    let (success, text) = second.said(&["agent", "shutdown", "Scout", "--channel", &without_name]);
+    assert!(
+        !success
+            && text.contains(&format!("Scout is not a member of {without_name}"))
+            && text.contains("hears a command only where it is a member"),
+        "a channel the agent is not in: {text}"
+    );
+    for (round, place) in ["--channel", "a Solo chat", "a direct message"]
+        .into_iter()
+        .enumerate()
+    {
+        // The place is made before the copy starts: buzz-acp learns the
+        // agent's channels when it starts.
+        let solo_name = format!("s5-{}", &channel.simple().to_string()[..8]);
+        match place {
+            "a Solo chat" => {
+                publish(
+                    bzz::protocol::sidebar::solo_creation(uuid::Uuid::new_v4(), &solo_name)
+                        .unwrap(),
+                )
+                .await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                second.ok(&["agent", "add", "Scout", &solo_name]);
+            }
+            "a direct message" => {
+                publish(buzz_sdk::build_dm_open(&[agent_hex.as_str()]).unwrap()).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            _ => {}
+        }
+        // buzz-acp reads a few seconds back when it starts (its first
+        // subscription asks from five seconds before its start), so a copy
+        // started right after a stop command hears that command again and
+        // leaves at once. Seen here: the copy of the third round left 14 ms
+        // after it was online, on the command of the second.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let log = work.join(format!("buzz-acp-stop-{round}.log"));
+        let mut copy = start_kit(log.clone()).await;
+        let present = tokio::time::Instant::now() + WAIT;
+        loop {
+            let shown = second.ok(&["agent", "show", "Scout"]);
+            if shown.contains("on the relay: present (online)") {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < present,
+                "{place}: the copy never was present on the relay.\n`agent show` said:\n{shown}\nbuzz-acp said:\n{}",
+                logged(&log)
+            );
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        let (success, text) = if place == "--channel" {
+            second.said(&["agent", "shutdown", "Scout", "--channel", &channel_name])
+        } else {
+            second.said(&["agent", "shutdown", "Scout"])
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let exit = loop {
+            if let Some(status) = copy.try_wait().unwrap() {
+                break Some(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                break None;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+        if exit.is_none() {
+            kill_group(&mut copy);
+        }
+        let sent_in = |name: &str| text.contains(&format!("as its owner, in #{name}\n"));
+        match place {
+            "--channel" => assert!(
+                sent_in(&channel_name) && !sent_in(&earlier_name),
+                "--channel names the place: {text}"
+            ),
+            "a Solo chat" => assert!(
+                sent_in(&solo_name),
+                "a Solo chat is chosen before a channel: {text}"
+            ),
+            _ => assert!(
+                text.contains("as its owner, in #")
+                    && ![&channel_name, &earlier_name, &solo_name]
+                        .into_iter()
+                        .any(|name| sent_in(name)),
+                "a direct message is chosen before a Solo chat and a channel: {text}"
+            ),
+        }
+        assert!(
+            success && text.contains("Scout left: it is no longer present on the relay"),
+            "{place}: {text}\n{}",
+            logged(&log)
+        );
+        assert!(
+            exit.is_some_and(|status| status.success()),
+            "{place}: buzz-acp left by itself, with code 0: {exit:?}\n{}",
+            logged(&log)
+        );
+        assert!(
+            logged(&log).contains("shutdown command from owner"),
+            "{place}: buzz-acp says why it left:\n{}",
+            logged(&log)
+        );
+    }
+
     // The kit comes back to the second bzz, which had moved the agent away:
     // it is taken back, with what it remembers from its time under buzz-acp.
     stop(second_run, &second_log);
