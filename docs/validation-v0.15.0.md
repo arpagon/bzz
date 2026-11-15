@@ -2787,6 +2787,16 @@ real Pi package.
   by speech recognition and by nobody's ear: it replaces the hero and the
   README's preview when the owner has listened.
 
+- After the release, one run of `agent-host (macos-15)` (run 43758952538,
+  on PR #10, which changes nothing of the host) failed 1 of 99: "a command
+  does not outlive a host that is killed", in its part about a command that
+  ignores TERM: 300 ms after the kill one of the three processes was gone.
+  It had passed in every earlier run on macOS. The test killed the host the
+  moment the shell had written its last child's id, before that child need
+  have become `sleep`; it now lets the group settle first. The failure could
+  not be made to happen again, so this is a reading of it, not a red run.
+  What the test is for, that nothing outlives the host, held in that run.
+
 ### Still pending after release
 
 The owner approved publishing v0.15.0 on 2026-11-15 with these items open.

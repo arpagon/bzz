@@ -350,6 +350,10 @@ test("a command does not outlive a host that is killed, and is not started again
 	host = await other.start();
 	host.prompt(host.sessionId, "k3", script(["run", { folder: "site", command: `trap '' TERM; ${TREE}` }], ["report"])).catch(() => undefined);
 	ids = await other.pids(3);
+	// The shell has written the id of its last child, which may not have become `sleep` yet: between its fork and
+	// its exec a shell's child can have TERM at its default for a moment (seen once on macOS: one of the three was
+	// gone 300 ms after the kill). The group is left to settle before the host goes.
+	await sleep(300);
 	await host.kill();
 	await sleep(300);
 	assert.equal(ids.filter(alive).length, 3, "TERM was ignored: only KILL ends this group");
