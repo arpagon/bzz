@@ -331,7 +331,7 @@ mod tests {
             ("a".repeat(64), Own::RunsHere),
             ("d".repeat(64), Own::MovedAway),
         ]);
-        let mut screen = |state: &AgentDirectoryState| {
+        let screen = |state: &AgentDirectoryState| {
             let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
             terminal
                 .draw(|frame| {

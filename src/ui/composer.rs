@@ -20,20 +20,40 @@ pub struct Composer {
     pub cursor: usize,
     pub attachments: Vec<crate::media::DraftAttachment>,
     mentions: Vec<DraftMention>,
+    /// The text of a mention that an edit just turned into plain text
+    /// (`@Scout`), until the caller has told the user. A message never
+    /// loses a mention silently.
+    dropped: Option<String>,
 }
 
 impl Composer {
     pub fn insert(&mut self, character: char) {
-        if self
-            .mentions
-            .iter()
-            .any(|mention| mention.byte_end == self.cursor)
-            && !mention_boundary(character)
-        {
-            self.mentions
-                .retain(|mention| mention.byte_end != self.cursor);
+        if !mention_boundary(character) {
+            self.drop_mention_ending_at_cursor();
         }
         self.replace_range(self.cursor..self.cursor, &character.to_string());
+    }
+
+    /// Typing a letter right after a mention makes its name another word:
+    /// it is no longer that person's name, and no longer a mention.
+    fn drop_mention_ending_at_cursor(&mut self) {
+        let cursor = self.cursor;
+        if let Some(lost) = self
+            .mentions
+            .iter()
+            .find(|mention| mention.byte_end == cursor)
+        {
+            self.dropped = self
+                .body
+                .get(lost.byte_start..lost.byte_end)
+                .map(str::to_owned);
+            self.mentions.retain(|mention| mention.byte_end != cursor);
+        }
+    }
+
+    /// The text of a mention the last edit turned into plain text, once.
+    pub fn take_dropped_mention(&mut self) -> Option<String> {
+        self.dropped.take()
     }
 
     pub fn newline(&mut self) {
@@ -52,17 +72,12 @@ impl Composer {
         {
             return;
         }
-        if self
-            .mentions
-            .iter()
-            .any(|mention| mention.byte_end == self.cursor)
-            && value
-                .chars()
-                .next()
-                .is_some_and(|character| !mention_boundary(character))
+        if value
+            .chars()
+            .next()
+            .is_some_and(|character| !mention_boundary(character))
         {
-            self.mentions
-                .retain(|mention| mention.byte_end != self.cursor);
+            self.drop_mention_ending_at_cursor();
         }
         self.replace_range(self.cursor..self.cursor, value);
     }
@@ -307,6 +322,30 @@ impl Composer {
         true
     }
 
+    /// Accepts a name chosen in the mention picker, and leaves the cursor
+    /// after a space: what is typed next is the next word, not a
+    /// continuation of the name (which would turn the mention into plain
+    /// text). Before closing punctuation or the end of a line nothing is
+    /// added but the space; an existing space is stepped over.
+    pub fn accept_mention_from_picker(
+        &mut self,
+        range: Range<usize>,
+        label: &str,
+        pubkey: &str,
+    ) -> bool {
+        if !self.accept_mention(range, label, pubkey) {
+            return false;
+        }
+        match self.body[self.cursor..].chars().next() {
+            Some(' ') => self.cursor += 1,
+            Some(next)
+                if next == '\n' || crate::protocol::mention_rules::is_closing_punctuation(next) => {
+            }
+            _ => self.replace_range(self.cursor..self.cursor, " "),
+        }
+        true
+    }
+
     pub fn mentions(&self) -> &[DraftMention] {
         &self.mentions
     }
@@ -317,6 +356,7 @@ impl Composer {
         self.body.clear();
         self.cursor = 0;
         self.mentions.clear();
+        self.dropped = None;
         std::mem::take(&mut self.attachments)
     }
 
@@ -330,6 +370,7 @@ impl Composer {
         self.cursor = self.body.len();
         self.attachments = attachments;
         self.mentions = mentions;
+        self.dropped = None;
         self.normalize_mentions();
     }
 
@@ -392,6 +433,18 @@ impl Composer {
         }
         let removed = range.end.saturating_sub(range.start);
         let added = replacement.len();
+        // A mention the edit cuts into becomes plain text: its name, as it
+        // stood, is kept to be told.
+        if let Some(cut) = self
+            .mentions
+            .iter()
+            .find(|mention| mention.byte_end > range.start && mention.byte_start < range.end)
+        {
+            self.dropped = self
+                .body
+                .get(cut.byte_start..cut.byte_end)
+                .map(str::to_owned);
+        }
         self.body.replace_range(range.clone(), replacement);
         self.cursor = range.start.saturating_add(added);
         self.mentions.retain_mut(|mention| {
@@ -485,6 +538,103 @@ mod tests {
         composer.move_left();
         composer.insert('x');
         assert!(composer.mentions().is_empty());
+    }
+
+    /// A name chosen in the picker is followed by a space, so that the next
+    /// word does not run into it; where a space or closing punctuation
+    /// follows already, none is added.
+    #[test]
+    fn a_name_from_the_picker_leaves_the_cursor_after_a_space() {
+        let draft = |body: &str, cursor: usize| Composer {
+            body: body.into(),
+            cursor,
+            ..Composer::default()
+        };
+        // At the end of the text.
+        let mut composer = draft("hi @Sc", 6);
+        assert!(composer.accept_mention_from_picker(3..6, "Scout", KEY));
+        assert_eq!(
+            (composer.body.as_str(), composer.cursor),
+            ("hi @Scout ", 10)
+        );
+        composer.insert('h');
+        assert_eq!(composer.body, "hi @Scout h");
+        assert_eq!(composer.mentions().len(), 1, "the mention is kept");
+        assert_eq!(composer.take_dropped_mention(), None);
+        // Before a space: stepped over, not doubled.
+        let mut composer = draft("@Sc there", 3);
+        assert!(composer.accept_mention_from_picker(0..3, "Scout", KEY));
+        assert_eq!(
+            (composer.body.as_str(), composer.cursor),
+            ("@Scout there", 7)
+        );
+        // Before closing punctuation, and before the end of a line.
+        let mut composer = draft("ask @Sc, please", 7);
+        assert!(composer.accept_mention_from_picker(4..7, "Scout", KEY));
+        assert_eq!(
+            (composer.body.as_str(), composer.cursor),
+            ("ask @Scout, please", 10)
+        );
+        let mut composer = draft("@Sc\nnext", 3);
+        assert!(composer.accept_mention_from_picker(0..3, "Scout", KEY));
+        assert_eq!(composer.body, "@Scout\nnext");
+        // Before a word: a space is put between.
+        let mut composer = draft("@Scword", 3);
+        assert!(composer.accept_mention_from_picker(0..3, "Scout", KEY));
+        assert_eq!(
+            (composer.body.as_str(), composer.cursor),
+            ("@Scout word", 7)
+        );
+        assert_eq!(composer.mentions().len(), 1);
+        // A name that cannot be accepted adds nothing.
+        let mut composer = draft("@Sc", 3);
+        assert!(!composer.accept_mention_from_picker(0..3, "Scout", "not a key"));
+        assert_eq!(composer.body, "@Sc");
+    }
+
+    /// A mention that an edit turns into plain text is named once, for the
+    /// caller to tell the user: typed onto, cut into, or pasted onto.
+    #[test]
+    fn a_mention_an_edit_undoes_is_named_once() {
+        let accepted = || {
+            let mut composer = Composer {
+                body: "@Sc".into(),
+                cursor: 3,
+                ..Composer::default()
+            };
+            assert!(composer.accept_mention(0..3, "Scout", KEY));
+            composer
+        };
+        let mut composer = accepted();
+        composer.insert(' ');
+        composer.insert('x');
+        assert_eq!(
+            composer.take_dropped_mention(),
+            None,
+            "a space is a boundary"
+        );
+        assert_eq!(composer.mentions().len(), 1);
+
+        let mut composer = accepted();
+        composer.insert('h');
+        assert_eq!(composer.take_dropped_mention().as_deref(), Some("@Scout"));
+        assert_eq!(composer.take_dropped_mention(), None, "told once");
+        assert!(composer.mentions().is_empty());
+
+        let mut composer = accepted();
+        composer.backspace();
+        assert_eq!(composer.body, "@Scou");
+        assert_eq!(composer.take_dropped_mention().as_deref(), Some("@Scout"));
+
+        let mut composer = accepted();
+        composer.insert_text("hello");
+        assert_eq!(composer.take_dropped_mention().as_deref(), Some("@Scout"));
+
+        // Sending, or loading another draft, forgets it.
+        let mut composer = accepted();
+        composer.insert('h');
+        composer.clear();
+        assert_eq!(composer.take_dropped_mention(), None);
     }
 
     #[test]

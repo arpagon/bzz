@@ -3191,6 +3191,7 @@ impl App {
             Ok(text) if text.is_empty() => {}
             Ok(text) => {
                 self.composer.insert_text(&text);
+                self.note_dropped_mention();
                 self.refresh_mention_picker().await?;
                 self.persist_draft().await?;
             }
@@ -5697,7 +5698,24 @@ impl App {
         changed
     }
 
+    /// Says so when an edit turned a mention into plain text: a message
+    /// never loses a mention the picker put in without a word.
+    fn note_dropped_mention(&mut self) {
+        if let Some(name) = self.composer.take_dropped_mention() {
+            self.status_error = Some(format!(
+                "{} is no longer a mention: its name was edited, so nobody is notified. Type @ and choose the name again to mention",
+                crate::render::sanitize::single_line(&name)
+            ));
+        }
+    }
+
     async fn insert_action(&mut self, action: KeyAction) -> Result<()> {
+        let done = self.composer_action(action).await;
+        self.note_dropped_mention();
+        done
+    }
+
+    async fn composer_action(&mut self, action: KeyAction) -> Result<()> {
         if self.mention_picker.is_some() {
             match action {
                 KeyAction::Up => {
@@ -6122,9 +6140,11 @@ impl App {
         });
         self.mention_picker = None;
         if let Some((range, candidate)) = selected {
+            // The cursor is left after a space, as Buzz leaves it: what is
+            // typed next must not run into the name and undo the mention.
             if self
                 .composer
-                .accept_mention(range, &candidate.label, &candidate.pubkey)
+                .accept_mention_from_picker(range, &candidate.label, &candidate.pubkey)
             {
                 if let Some((_, channel, _)) = &self.mention_choices {
                     let channel = *channel;
@@ -6531,6 +6551,7 @@ impl App {
             ClipboardContents::Text(text) => {
                 self.composer.insert_text(&text);
                 self.status_error = None;
+                self.note_dropped_mention();
                 self.refresh_mention_picker().await?;
                 self.persist_draft().await?;
             }
@@ -11598,6 +11619,146 @@ mod tests {
             app.status_error
         );
         assert_eq!(app.composer.body, "@Ghost");
+    }
+
+    /// From the run against Buzz 1.0: `@Sc`, Enter, and text typed at once
+    /// gave "@Scouthello from bzz", sent with no mention tag and no warning.
+    /// Accepting a name in the picker, with Enter or with Tab, leaves the
+    /// cursor after a space; and when an edit does turn a mention into
+    /// plain text, bzz says so.
+    #[tokio::test]
+    async fn the_picker_leaves_the_cursor_after_a_space_and_a_lost_mention_is_told() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let target = app.presentation.composer_target.clone().unwrap();
+        let (community, channel) = (target.community_id, target.channel_id);
+        let relay = Keys::generate();
+        let scout = Keys::generate();
+        let events = vec![
+            EventBuilder::new(Kind::Custom(39_000), "")
+                .tags([
+                    Tag::parse(["d", &channel.to_string()]).unwrap(),
+                    Tag::parse(["name", "general"]).unwrap(),
+                    Tag::parse(["t", "stream"]).unwrap(),
+                    Tag::parse(["public"]).unwrap(),
+                ])
+                .sign_with_keys(&relay)
+                .unwrap(),
+            EventBuilder::new(Kind::Custom(39_002), "")
+                .tags([
+                    Tag::parse(["d", &channel.to_string()]).unwrap(),
+                    Tag::parse(["p", &scout.public_key().to_hex()]).unwrap(),
+                ])
+                .sign_with_keys(&relay)
+                .unwrap(),
+            EventBuilder::new(
+                Kind::Metadata,
+                serde_json::json!({ "name": "Scout" }).to_string(),
+            )
+            .sign_with_keys(&scout)
+            .unwrap(),
+        ];
+        let relay_pubkey = relay.public_key().to_hex();
+        app.store
+            .call(move |store| {
+                store.pin_relay_pubkey(community, &relay_pubkey)?;
+                for event in &events {
+                    store.apply_event(community, event)?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let scout = scout.public_key().to_hex();
+        let typed = |text: &str| {
+            text.chars()
+                .map(super::KeyAction::Character)
+                .collect::<Vec<_>>()
+        };
+
+        // Enter accepts the name, and the next word is typed at once.
+        for accept in [super::KeyAction::Submit, super::KeyAction::Complete] {
+            app.composer.clear();
+            app.status_error = None;
+            for action in typed("@Sc") {
+                app.insert_action(action).await.unwrap();
+            }
+            assert!(app.mention_picker.is_some(), "{accept:?}");
+            app.insert_action(accept).await.unwrap();
+            assert!(app.mention_picker.is_none());
+            assert_eq!(app.composer.body, "@Scout ", "{accept:?}");
+            assert_eq!(app.composer.cursor, app.composer.body.len());
+            for action in typed("hello from bzz") {
+                app.insert_action(action).await.unwrap();
+            }
+            assert_eq!(app.composer.body, "@Scout hello from bzz", "{accept:?}");
+            assert_eq!(
+                app.composer
+                    .mentions()
+                    .iter()
+                    .map(|mention| mention.pubkey.as_str())
+                    .collect::<Vec<_>>(),
+                [scout.as_str()],
+                "{accept:?}: the message still mentions Scout"
+            );
+            assert_eq!(app.status_error, None, "{accept:?}");
+        }
+
+        // The space taken away again, and a letter typed onto the name: it
+        // is no longer a mention, and bzz says so where the user looks.
+        app.composer.clear();
+        for action in typed("@Sc") {
+            app.insert_action(action).await.unwrap();
+        }
+        app.insert_action(super::KeyAction::Submit).await.unwrap();
+        app.insert_action(super::KeyAction::Backspace)
+            .await
+            .unwrap();
+        assert_eq!(app.composer.mentions().len(), 1);
+        assert_eq!(app.status_error, None, "the name itself is untouched");
+        for action in typed("h") {
+            app.insert_action(action).await.unwrap();
+        }
+        assert_eq!(app.composer.body, "@Scouth");
+        assert!(app.composer.mentions().is_empty());
+        let told = app.status_error.clone().unwrap_or_default();
+        assert!(
+            told.starts_with("@Scout is no longer a mention")
+                && told.contains("nobody is notified"),
+            "{told}"
+        );
+        let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("@Scout is no longer a mention"), "{screen}");
+
+        // Cutting into the name says the same.
+        app.composer.clear();
+        app.status_error = None;
+        for action in typed("@Sc") {
+            app.insert_action(action).await.unwrap();
+        }
+        app.insert_action(super::KeyAction::Submit).await.unwrap();
+        for _ in 0..2 {
+            app.insert_action(super::KeyAction::Backspace)
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.composer.body, "@Scou");
+        assert!(app.composer.mentions().is_empty());
+        assert!(
+            app.status_error
+                .as_deref()
+                .is_some_and(|told| told.starts_with("@Scout is no longer a mention")),
+            "{:?}",
+            app.status_error
+        );
     }
 
     #[test]
