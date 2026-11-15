@@ -193,6 +193,8 @@ pub struct RecordedRelay {
     release: tokio::sync::Notify,
     /// Set when a bzz ended the agent's connection for good.
     closed: std::sync::atomic::AtomicBool,
+    /// While set, the relay's records of a channel cannot be read.
+    unreadable: std::sync::atomic::AtomicBool,
 }
 
 impl RecordedRelay {
@@ -206,6 +208,7 @@ impl RecordedRelay {
             mode: Mutex::default(),
             release: tokio::sync::Notify::new(),
             closed: std::sync::atomic::AtomicBool::new(false),
+            unreadable: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -213,6 +216,13 @@ impl RecordedRelay {
     /// agent again.
     pub fn closed(&self) -> bool {
         self.closed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Makes the relay's records of every channel unreadable, as when the
+    /// relay cannot be reached, or readable again.
+    pub fn set_unreadable(&self, unreadable: bool) {
+        self.unreadable
+            .store(unreadable, std::sync::atomic::Ordering::Release);
     }
 
     pub fn set_mode(&self, mode: Mode) {
@@ -361,6 +371,9 @@ impl AgentRelay for RecordedRelay {
     }
 
     async fn channel(&self, channel: Uuid) -> bzz::Result<ChannelFacts> {
+        if self.unreadable.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(bzz::Error::Network("the relay cannot be reached".into()));
+        }
         self.channels
             .lock()
             .unwrap()

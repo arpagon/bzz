@@ -401,6 +401,11 @@ pub struct Agent {
     presence_changed: Notify,
     /// When this agent's rows were last pruned.
     pruned: Mutex<Option<Instant>>,
+    /// Whether the agent might write in a channel by the relay's records
+    /// as they came with the last request from it, and when that was. Used
+    /// only to decide whether a request is handed to the harness while the
+    /// relay cannot be asked again; never to publish.
+    admitted: Mutex<HashMap<Uuid, (Instant, bool)>>,
 }
 
 /// The kind a request fails with when the relay refuses its reply.
@@ -411,6 +416,9 @@ pub const REPLY_UNDELIVERED: &str = "reply-undelivered";
 /// How long bzz waits for the relay's records of a channel before it
 /// publishes there.
 const STANDING_LIMIT: Duration = Duration::from_secs(10);
+/// For how long the relay's records that came with a request may decide
+/// that it is handed to the harness, while the relay cannot be asked.
+const ADMITTED_FRESH: Duration = Duration::from_secs(60);
 
 /// What became of a reply offered to the ledger.
 enum Reply {
@@ -478,6 +486,7 @@ impl Agent {
             retired: AtomicBool::new(false),
             presence_changed: Notify::new(),
             pruned: Mutex::new(None),
+            admitted: Mutex::new(HashMap::new()),
         })
     }
 
@@ -557,6 +566,13 @@ impl Agent {
             },
             channel,
         )?;
+        self.admitted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                channel.id,
+                (Instant::now(), channel.may_write(&self.spec.pubkey).is_ok()),
+            );
         // Another agent's message wakes this one only so often in one
         // conversation: two agents that may wake each other cannot answer
         // each other for ever. Its owner and other people are not counted.
@@ -1618,10 +1634,22 @@ impl Agent {
                 self.settle_failed(&row, why.as_str()).await;
                 return;
             }
-            // The relay cannot be asked just now: the request waits.
+            // The relay cannot be asked just now. The records that came
+            // with the request say whether it may be handed over, while
+            // they are fresh; what the turn then wants to publish is asked
+            // about again, and waits for the relay. Otherwise the request
+            // waits.
             Standing::Unknown => {
-                tokio::time::sleep(self.limits().restart_backoff).await;
-                return;
+                let fresh = self
+                    .admitted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&row.channel_id)
+                    .is_some_and(|(at, may_write)| *may_write && at.elapsed() < ADMITTED_FRESH);
+                if !fresh {
+                    tokio::time::sleep(self.limits().restart_backoff).await;
+                    return;
+                }
             }
         }
         let Some(run) = self.ensure_run().await else {

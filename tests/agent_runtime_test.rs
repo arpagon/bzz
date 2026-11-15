@@ -4032,6 +4032,61 @@ async fn a_stored_reply_is_not_published_after_the_agent_was_removed_or_made_rea
     }
 }
 
+/// Bug 2, the doubt: the relay's records cannot be read. Nothing is
+/// published as the agent on a guess. A request whose own records were
+/// fresh is still handed to the harness; its reply is signed and stored,
+/// and goes out, unchanged, once the records can be read.
+#[tokio::test]
+async fn while_the_relays_records_cannot_be_read_nothing_is_published_on_a_guess() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([{"steps": [send("on it", false), send("the answer", true)]}]),
+    );
+    let host = world.host(Harness::PiDurable).await;
+    let facts = world.channel_is(PlaceKind::Channel, world.channel, true);
+    world.relay.set_unreadable(true);
+    let request = world.mention("hello");
+    assert_eq!(
+        host.offer(world.agent, &request, &facts).await,
+        Offer::Queued
+    );
+    world.state_is(&request, RequestState::Replied).await;
+    let results = world.results("send", 2).await;
+    assert_eq!(results[0]["isError"], true, "{}", results[0]);
+    assert!(
+        results[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("could not ask the relay just now"),
+        "{}",
+        results[0]
+    );
+    assert_eq!(results[1]["final"], true, "{}", results[1]);
+    assert!(
+        world.relay.calls(9).is_empty() && world.relay.calls(20_002).is_empty(),
+        "nothing was published on a guess"
+    );
+    assert_eq!(
+        world.stored(&request).await.unwrap().standing(),
+        ReplyStanding::Pending
+    );
+    assert_eq!(world.outcome(&request).await, bzz::agents::manage::SENDING);
+    // Still unreadable at a restart: still nothing.
+    world.recover(&host).await;
+    assert!(world.relay.calls(9).is_empty());
+    // Readable again: the stored reply goes out, once.
+    world.relay.set_unreadable(false);
+    world.recover(&host).await;
+    world.settled(&request).await;
+    assert_eq!(
+        world.contents(&world.relay.replies_to(&request)),
+        ["the answer"]
+    );
+    assert_eq!(world.relay.calls(9).len(), 1);
+    host.shutdown().await;
+}
+
 impl World {
     /// The agent as the settings file holds it.
     fn configured(&self, local: &LocalAgentConfig, paused: bool) -> HostedAgentConfig {
