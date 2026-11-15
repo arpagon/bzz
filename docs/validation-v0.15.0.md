@@ -2698,6 +2698,12 @@ sets itself (8 MiB), whatever the first thread has
 (`tests/main_stack_test.rs`: with a 1 MiB first thread, `--version` and
 `broker list` answer; red is the overflow above).
 
+After that change, on `b68398f`: clippy clean; `cargo test --locked
+--all-features` 734 passed, 0 failed, 30 ignored; the pinned relay 22 passed
+in 1036 s, then `agent_host_test` 7 and `agent_move_test` 8; and the release
+TUI through Herdr, with the release build of `b68398f`, all harness
+scenarios passed in one run.
+
 Not run again after the merge: the benchmarks, `cargo deny`, `cargo audit`
 and `npm audit` (no dependency and no lock file changed), and the by-hand
 checks of the release binary that have no Herdr scenario.
