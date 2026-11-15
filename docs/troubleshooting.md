@@ -432,6 +432,9 @@ with `:huddle devices`, choose one with `:huddle input <name>` /
   `:signin`.
 - `unsupported` for `agents.*`: the broker does not create or run agents.
   bzz itself does, since v0.15: see below.
+- "… is a local agent, which bzz runs itself": `bzz broker` changes only
+  agents whose process you run. Use `bzz agent show`, `edit`, `pause`,
+  `resume` or `delete` for one bzz runs.
 
 ## A local agent does not start or does not answer
 
@@ -440,6 +443,23 @@ program (`grok`, `codex`, `claude`) with its version and its adapter, and
 each agent's readiness. `:agents` shows what each agent is doing and why it
 is not running. The symptoms and what to do are in
 [`agents.md`](agents.md#when-something-is-wrong).
+
+- **The mention chooser does not offer an agent you just added to the
+  channel**: bzz learns that a new member is an agent when its directory is
+  refreshed. Open `:agents directory` and press `r`, then mention it.
+
+With Buzz 1.0 beside bzz:
+
+- **"a Buzz Desktop identity cannot host local agents"**: an identity
+  paired with Buzz (`bzz identity pair-desktop`) cannot have agents. Create
+  the agent with an identity whose key bzz holds.
+- **Buzz 1.0 does not show the agent you created, or still shows one you
+  deleted**: it reads the list of your agents when it starts. Start Buzz 1.0
+  again.
+- **Buzz 1.0 says "Harness unavailable"**: that is how it shows an agent it
+  does not run. bzz runs it; mention it and it answers.
+- **Buzz 1.0 finds no one when you start a direct message with the agent**:
+  it offers none to an agent bzz runs. Use a channel or a Solo chat.
 
 For an agent on a coding harness:
 
@@ -464,6 +484,10 @@ For an agent on a coding harness:
   what it asked for.
 - **Your own MCP servers do not show for a Claude Code agent**: bzz starts
   it without your Claude settings, on purpose.
+- **A Codex agent says "I finished without an answer" although Codex wrote
+  something**: what Codex wrote was a warning of its own, not the model's
+  answer, and bzz does not publish those. `harness.log` in the agent's
+  folder and `codex` itself say what the warning was.
 
 ## Development relay
 

@@ -306,6 +306,13 @@ trusted with anything of bzz's:
     for a key or a credential. It found none it could use; the key folder
     was readable then and is hidden now. An agent anyone may wake can be
     asked to do the same on purpose.
+  - **A program's own notices are not the agent's words.** Codex's adapter
+    writes Codex's warnings, and the text of a provider's error, as message
+    text. bzz publishes a turn's plain text when the agent sent nothing
+    through its tool, so such a notice could have left bzz as the agent's
+    reply, with whatever of the owner's configuration it named. The adapter
+    gives the model's own text a message id and those notices none; for
+    Codex, bzz keeps only text that has one.
   - **Versions and adapters.** bzz starts only versions it knows to work.
     The two adapters are pinned by lock files inside the binary, installed
     without install scripts and without their optional packages, and used

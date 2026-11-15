@@ -20,7 +20,8 @@ An agent is three things, kept apart:
 
 `bzz agents` (with an `s`) and `:agents directory` are something else: the
 list of verified agents that other people run. `bzz broker` is for an agent
-whose process you run yourself.
+whose process you run yourself: it does not list a local agent and refuses
+to change one.
 
 ## What you need
 
@@ -405,6 +406,11 @@ it. The differences:
 - For Codex this is only about commands that would leave its sandbox.
 - **Grok takes no `:exec`**: it never asks, so there is nothing to answer.
   bzz refuses the grant and says why.
+
+One more thing about Codex: it writes its own warnings into the
+conversation as if they were text of the model. bzz does not take them for
+an answer. A Codex turn that ends with nothing but such a warning says "I
+finished without an answer".
 
 ### What they do not have
 
