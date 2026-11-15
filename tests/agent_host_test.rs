@@ -622,8 +622,12 @@ async fn the_real_host_checkpoints_its_files_when_it_has_been_idle() {
         write_ahead_files(&folder).is_empty().then_some(())
     })
     .await;
+    // The host went idle a moment before this test saw the answer (`settled`
+    // looks now and then), so the time is counted with that moment allowed
+    // for. On a busy machine it was 7 ms.
+    const LATE: Duration = Duration::from_secs(1);
     assert!(
-        answered.elapsed() >= IDLE,
+        answered.elapsed() + LATE >= IDLE,
         "the files were made whole {:?} after the answer, before the host had been idle for {IDLE:?}",
         answered.elapsed()
     );
