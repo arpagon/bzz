@@ -31,13 +31,22 @@ owner's guide is [`agents.md`](agents.md), and the reasons are in
   what it may touch, and then makes the agent all or nothing: its key, its
   folder, its profile marked as a bot and your record of it, which is what
   Buzz lists an agent from. `bzz agent add Scout general` puts it in a
-  channel. If any step fails, nothing is left behind.
+  channel with the `bot` role, as Buzz 1.0 does when it adds an agent. If
+  any step fails, nothing is left behind.
 - **bzz runs it and signs for it (M1, M2).** The agent answers while bzz is
   open, or under `bzz agent run` without the TUI. bzz decides who may wake it
   (you only, listed people, or anyone) and signs what it says. **A mention
   gets one final reply, whatever is killed and whenever:** the reply is
   signed and stored before it is published, and published again unchanged
-  after a crash. The agent holds no key and no relay connection.
+  after a crash. A stored reply is never replaced: if the relay refuses it,
+  the request fails once and nothing more is signed for it. Before bzz
+  publishes anything as the agent, it checks that the agent is still a
+  member of that place and may write there. The agent holds no key and no
+  relay connection.
+- **Seen as an agent in Buzz.** Buzz 1.0 lists an agent made by bzz, offers
+  it for mention and shows its answer with the agent mark (seen with Buzz
+  1.0.1 in a sandbox). While bzz runs it, the agent says it is online with
+  its own key, and says it is gone when you pause, stop, delete or move it.
 - **Its own disk, with git (M3).** A `pi-durable` agent works on a disk of
   its own, one SQLite file, with a shell and a `git` that start no program of
   your machine. It sees a folder of yours only when you grant it
@@ -128,11 +137,38 @@ Found while the release was closed:
 - The agent directory read every membership of the community for each
   agent it listed. An index (migration 0019) answers that now.
 
+Found by running bzz's agents against the real Buzz 1.0.1
+([`validation-v0.15.0.md`](validation-v0.15.0.md), "After the run against
+Buzz 1.0"):
+
+- When the relay refused an agent's reply (the owner had made the agent
+  read-only in that channel), bzz signed a new reply for the same mention
+  again and again, and showed "answered" for a minute and a half. One
+  mention now has one signed reply, a refusal is final at once, and
+  "answered" is said only when the relay accepted the reply.
+- A reply could be published after the agent had been removed from the
+  channel. bzz now checks the agent's membership and role before every
+  publication, and before it hands a mention to the harness.
+- `bzz agent delete` removed an agent that another running bzz was still
+  serving. A delete, a pause and a resume now reach the bzz that runs the
+  agent: it stops the process and forgets the key before any file goes.
+- `bzz agent add` gave the agent no role outside a Solo chat. Buzz 1.0.1
+  gives `bot` when it adds an agent to a channel, and so does bzz now. An
+  agent answers and is listed with either role.
+- Accepting a name in the mention chooser left no space after it, so text
+  typed at once turned `@Scout` into `@Scouthello` and the mention was lost
+  without a word. A change of a member's role was shown as "joined". The
+  directory and the chooser called your own agents "remote". An identity
+  whose key Buzz holds was refused only after the agent host had been
+  installed.
+
 ## Compatibility and upgrade
 
 - Database migrations 0018 (the agent runtime: requests, stored replies,
-  sessions) and 0019 (an index of memberships by member, for the agent
-  directory) run automatically, with the usual backup made before them. A real
+  sessions), 0019 (an index of memberships by member, for the agent
+  directory) and 0020 (a stored reply the relay refused is kept and never
+  published) run automatically, with the usual backup made before them. The
+  schema ends at 20. A real
   v0.14.0 profile upgrades with its history, Inbox, search, drafts and
   sidebar sections intact (`scripts/upgrade-test.sh`).
 - **A hosted agent of v0.13 is untouched.** It loads as it was saved, bzz

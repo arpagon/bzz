@@ -68,6 +68,7 @@ fn limits() -> Limits {
         agent_exchange_window: Duration::from_secs(3600),
         prune_interval: Duration::from_secs(24 * 3600),
         approval: Duration::from_secs(600),
+        presence_interval: Duration::from_secs(60),
     }
 }
 
@@ -107,6 +108,7 @@ impl World {
         world.relay.set_channel(ChannelFacts {
             id: world.channel,
             name: "general".into(),
+            read_only: Vec::new(),
             kind: PlaceKind::Channel,
             members: vec![world.owner.public_key().to_hex(), world.agent_pubkey()],
         });

@@ -4,6 +4,12 @@
 //! owner's DM. Its final reply is signed first, stored here under the request,
 //! and only then published; the stored event is what is published again after
 //! a crash and what a later final `send` of the same request gets back.
+//!
+//! A stored reply is never replaced and never removed while its request is
+//! kept. It ends in one of two ways: the relay accepts it, or it is marked
+//! refused (by the relay, or by bzz because the agent may no longer write in
+//! that place) and is never published again. Nothing else is ever signed as
+//! the final reply of that request.
 
 use rusqlite::{OptionalExtension as _, params};
 use uuid::Uuid;
@@ -114,7 +120,37 @@ pub struct StoredReply {
     pub event_id: String,
     pub event_json: String,
     pub origin: ReplyOrigin,
+    /// The relay accepted it.
     pub published: bool,
+    /// Why it will never be published, when that is so: the relay refused
+    /// it (`reply-refused`), or the agent may no longer write in that place
+    /// (`not-a-member`, `read-only`).
+    pub refused: Option<String>,
+}
+
+impl StoredReply {
+    /// Where the reply stands with the relay.
+    pub fn standing(&self) -> ReplyStanding {
+        if self.published {
+            ReplyStanding::Accepted
+        } else if self.refused.is_some() {
+            ReplyStanding::Refused
+        } else {
+            ReplyStanding::Pending
+        }
+    }
+}
+
+/// Where a stored reply stands with the relay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplyStanding {
+    /// Signed and stored; the relay has not accepted it yet. It is
+    /// published again, unchanged, until the relay answers.
+    Pending,
+    /// The relay has it.
+    Accepted,
+    /// It will never be published.
+    Refused,
 }
 
 /// One request as `bzz agent show` and the agents panel list it: where its
@@ -128,6 +164,9 @@ pub struct RecentTurn {
     pub failure: Option<String>,
     pub attempts: u32,
     pub updated_at: u64,
+    /// Where the stored reply of the request stands with the relay, when it
+    /// has one: only an accepted reply is an answer.
+    pub reply: Option<ReplyStanding>,
 }
 
 /// The outcome of claiming a request's one final reply.
@@ -170,8 +209,16 @@ fn reply_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredReply> {
         origin: ReplyOrigin::parse(&row.get::<_, String>(3)?)
             .map_err(|_| rusqlite::Error::InvalidQuery)?,
         published: row.get::<_, Option<i64>>(4)?.is_some(),
+        refused: row
+            .get::<_, Option<i64>>(5)?
+            .map(|_| row.get::<_, Option<String>>(6))
+            .transpose()?
+            .map(Option::unwrap_or_default),
     })
 }
+
+const REPLY_COLUMNS: &str =
+    "request_id,reply_event_id,reply_event_json,origin,published_at,refused_at,refusal";
 
 impl Store {
     /// Admits a request once. `false`: the agent already has it.
@@ -296,7 +343,9 @@ impl Store {
             )?;
         }
         let reply = transaction.query_row(
-            "SELECT request_id,reply_event_id,reply_event_json,origin,published_at FROM agent_replies WHERE agent_id=?1 AND request_id=?2",
+            &format!(
+                "SELECT {REPLY_COLUMNS} FROM agent_replies WHERE agent_id=?1 AND request_id=?2"
+            ),
             params![agent.to_string(), request],
             reply_row,
         )?;
@@ -308,55 +357,94 @@ impl Store {
         Ok(self
             .connection
             .query_row(
-                "SELECT request_id,reply_event_id,reply_event_json,origin,published_at FROM agent_replies WHERE agent_id=?1 AND request_id=?2",
+                &format!(
+                    "SELECT {REPLY_COLUMNS} FROM agent_replies WHERE agent_id=?1 AND request_id=?2"
+                ),
                 params![agent.to_string(), request],
                 reply_row,
             )
             .optional()?)
     }
 
+    /// Records that the relay accepted the stored reply. A reply that was
+    /// refused stays refused.
     pub fn agent_reply_published(&mut self, agent: Uuid, request: &str) -> Result<()> {
         self.connection.execute(
-            "UPDATE agent_replies SET published_at=unixepoch() WHERE agent_id=?1 AND request_id=?2 AND published_at IS NULL",
+            "UPDATE agent_replies SET published_at=unixepoch() WHERE agent_id=?1 AND request_id=?2 AND published_at IS NULL AND refused_at IS NULL",
             params![agent.to_string(), request],
         )?;
         Ok(())
     }
 
-    /// Removes a stored reply the relay refused outright, so nothing of it
-    /// exists anywhere, and reopens the request. A published reply stays.
-    pub fn agent_reply_discard(
+    /// Ends a stored reply that will never be published: the relay refused
+    /// it, or the agent may no longer write in that place. The reply stays
+    /// in the ledger, so its request can never be given another, and it is
+    /// never published again. The request ends as failed with `kind`; a
+    /// request whose stored reply is bzz's own failure notice keeps the kind
+    /// its turn failed with. `false`: the ledger holds no such reply, or the
+    /// relay has it already.
+    pub fn agent_reply_refused(
         &mut self,
         agent: Uuid,
         request: &str,
         event_id: &str,
+        kind: &str,
     ) -> Result<bool> {
         let transaction = self.connection.transaction()?;
-        let removed = transaction.execute(
-            "DELETE FROM agent_replies WHERE agent_id=?1 AND request_id=?2 AND reply_event_id=?3 AND published_at IS NULL",
-            params![agent.to_string(), request, event_id],
+        let refused = transaction.execute(
+            "UPDATE agent_replies SET refused_at=unixepoch(),refusal=?4 WHERE agent_id=?1 AND request_id=?2 AND reply_event_id=?3 AND published_at IS NULL AND refused_at IS NULL",
+            params![agent.to_string(), request, event_id, kind],
         )? == 1;
-        if removed {
+        if refused {
             transaction.execute(
-                "UPDATE agent_inbox SET state='delivered',failure=NULL,updated_at=unixepoch() WHERE agent_id=?1 AND request_id=?2",
-                params![agent.to_string(), request],
+                "UPDATE agent_inbox SET state='failed',failure=CASE WHEN state='failed' AND failure IS NOT NULL THEN failure ELSE ?3 END,updated_at=unixepoch() WHERE agent_id=?1 AND request_id=?2",
+                params![agent.to_string(), request, kind],
             )?;
         }
         transaction.commit()?;
-        Ok(removed)
+        Ok(refused)
     }
 
-    /// Stored replies the relay has not acknowledged, oldest first. With
-    /// `older_than_seconds`, only those stored at least that long ago: a
-    /// younger one may still be waiting for the relay's answer.
+    /// Ends, as [`Store::agent_reply_refused`] does, every stored reply of
+    /// `agent` that the relay has neither accepted nor refused in
+    /// `older_than_seconds`. Returns how many.
+    pub fn agent_replies_expire(
+        &mut self,
+        agent: Uuid,
+        older_than_seconds: u64,
+        kind: &str,
+    ) -> Result<usize> {
+        let stale = {
+            let mut statement = self.connection.prepare(
+                "SELECT request_id,reply_event_id FROM agent_replies WHERE agent_id=?1 AND published_at IS NULL AND refused_at IS NULL AND stored_at<unixepoch()-?2 LIMIT 1000",
+            )?;
+            statement
+                .query_map(
+                    params![agent.to_string(), u64_to_i64(older_than_seconds)?],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let mut ended = 0;
+        for (request, event) in stale {
+            if self.agent_reply_refused(agent, &request, &event, kind)? {
+                ended += 1;
+            }
+        }
+        Ok(ended)
+    }
+
+    /// Stored replies the relay has neither accepted nor refused, oldest
+    /// first. With `older_than_seconds`, only those stored at least that
+    /// long ago: a younger one may still be waiting for the relay's answer.
     pub fn agent_replies_unpublished(
         &self,
         agent: Uuid,
         older_than_seconds: u64,
     ) -> Result<Vec<StoredReply>> {
-        let mut statement = self.connection.prepare(
-            "SELECT request_id,reply_event_id,reply_event_json,origin,published_at FROM agent_replies WHERE agent_id=?1 AND published_at IS NULL AND stored_at<=unixepoch()-?2 ORDER BY stored_at,request_id LIMIT 1000",
-        )?;
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT {REPLY_COLUMNS} FROM agent_replies WHERE agent_id=?1 AND published_at IS NULL AND refused_at IS NULL AND stored_at<=unixepoch()-?2 ORDER BY stored_at,request_id LIMIT 1000"
+        ))?;
         Ok(statement
             .query_map(
                 params![agent.to_string(), u64_to_i64(older_than_seconds)?],
@@ -433,7 +521,7 @@ impl Store {
     ///   [`SETTLED_RETENTION_SECONDS`] ago, or when [`SETTLED_KEPT`] newer
     ///   finished requests exist;
     /// - never a request that is queued or being answered, and never one
-    ///   whose stored reply the relay has not acknowledged;
+    ///   whose stored reply the relay has neither accepted nor refused;
     /// - a stored session id goes when it was last used more than
     ///   [`SESSION_RETENTION_SECONDS`] ago.
     ///
@@ -443,7 +531,7 @@ impl Store {
         const OVER: &str = "state IN ('replied','ended','failed')
                AND NOT EXISTS(SELECT 1 FROM agent_replies r
                  WHERE r.agent_id=agent_inbox.agent_id AND r.request_id=agent_inbox.request_id
-                   AND r.published_at IS NULL)";
+                   AND r.published_at IS NULL AND r.refused_at IS NULL)";
         let transaction = self.connection.transaction()?;
         let id = agent.to_string();
         let doomed = format!(
@@ -493,8 +581,11 @@ impl Store {
     /// The newest requests of one agent, newest first.
     pub fn agent_recent_turns(&self, agent: Uuid, limit: usize) -> Result<Vec<RecentTurn>> {
         let mut statement = self.connection.prepare(
-            "SELECT request_id,channel_id,state,failure,attempts,updated_at FROM agent_inbox
-             WHERE agent_id=?1 ORDER BY updated_at DESC,created_at DESC,request_id LIMIT ?2",
+            "SELECT i.request_id,i.channel_id,i.state,i.failure,i.attempts,i.updated_at,
+                    r.request_id IS NOT NULL,r.published_at,r.refused_at
+             FROM agent_inbox i LEFT JOIN agent_replies r
+               ON r.agent_id=i.agent_id AND r.request_id=i.request_id
+             WHERE i.agent_id=?1 ORDER BY i.updated_at DESC,i.created_at DESC,i.request_id LIMIT ?2",
         )?;
         Ok(statement
             .query_map(
@@ -508,6 +599,13 @@ impl Store {
                         failure: row.get(3)?,
                         attempts: row.get(4)?,
                         updated_at: u64::try_from(row.get::<_, i64>(5)?).unwrap_or_default(),
+                        reply: row.get::<_, bool>(6)?.then_some(
+                            match (row.get::<_, Option<i64>>(7)?, row.get::<_, Option<i64>>(8)?) {
+                                (Some(_), _) => ReplyStanding::Accepted,
+                                (None, Some(_)) => ReplyStanding::Refused,
+                                (None, None) => ReplyStanding::Pending,
+                            },
+                        ),
                     })
                 },
             )?
@@ -724,8 +822,11 @@ mod tests {
         );
     }
 
+    /// Found against Buzz 1.0: a reply the relay refused was removed and its
+    /// request opened again, so the next `send` signed another reply for the
+    /// same request, and the next, for as long as the harness tried.
     #[test]
-    fn a_refused_reply_is_discarded_only_while_unpublished() {
+    fn a_refused_reply_stays_and_its_request_never_gets_another() {
         let mut store = Store::open_memory().unwrap();
         let agent = Uuid::new_v4();
         store.agent_inbox_offer(&request(agent, "m1", 10)).unwrap();
@@ -733,20 +834,183 @@ mod tests {
         store
             .agent_reply_claim(agent, "m1", "r1", "{}", ReplyOrigin::Send, None)
             .unwrap();
-        assert!(!store.agent_reply_discard(agent, "m1", "other").unwrap());
-        assert!(store.agent_reply_discard(agent, "m1", "r1").unwrap());
         assert_eq!(
-            store.agent_inbox_get(agent, "m1").unwrap().unwrap().state,
-            RequestState::Delivered,
-            "the request is open again"
+            store.agent_recent_turns(agent, 1).unwrap()[0].reply,
+            Some(ReplyStanding::Pending),
+            "stored and not yet accepted is not answered"
         );
-        let again = store
-            .agent_reply_claim(agent, "m1", "r2", "{}", ReplyOrigin::Send, None)
-            .unwrap();
-        assert!(again.fresh);
+        assert!(
+            !store
+                .agent_reply_refused(agent, "m1", "other", "reply-refused")
+                .unwrap(),
+            "only the stored reply can be refused"
+        );
+        assert!(
+            store
+                .agent_reply_refused(agent, "m1", "r1", "reply-refused")
+                .unwrap()
+        );
+        let row = store.agent_inbox_get(agent, "m1").unwrap().unwrap();
+        assert_eq!(
+            (row.state, row.failure.as_deref()),
+            (RequestState::Failed, Some("reply-refused")),
+            "the request is over, and says why"
+        );
+        // The reply is still the request's one reply: whatever is offered
+        // afterwards, however worded and whatever its origin, gets it back.
+        for origin in [ReplyOrigin::Send, ReplyOrigin::Text, ReplyOrigin::Failure] {
+            let again = store
+                .agent_reply_claim(agent, "m1", "r2", "{}", origin, Some("no-reply"))
+                .unwrap();
+            assert!(!again.fresh, "{origin:?}");
+            assert_eq!(
+                (again.reply.event_id.as_str(), again.reply.standing()),
+                ("r1", ReplyStanding::Refused)
+            );
+        }
+        assert_eq!(
+            store
+                .agent_reply_get(agent, "m1")
+                .unwrap()
+                .unwrap()
+                .refused
+                .as_deref(),
+            Some("reply-refused")
+        );
+        // It is never published again, and a late word of the relay does
+        // not turn it into an answer.
+        assert!(
+            store
+                .agent_replies_unpublished(agent, 0)
+                .unwrap()
+                .is_empty()
+        );
         store.agent_reply_published(agent, "m1").unwrap();
-        assert!(!store.agent_reply_discard(agent, "m1", "r2").unwrap());
-        assert!(store.agent_reply_get(agent, "m1").unwrap().is_some());
+        assert!(
+            !store
+                .agent_reply_get(agent, "m1")
+                .unwrap()
+                .unwrap()
+                .published
+        );
+        let turn = store.agent_recent_turns(agent, 1).unwrap().remove(0);
+        assert_eq!(
+            (turn.state.as_str(), turn.failure.as_deref(), turn.reply),
+            (
+                "failed",
+                Some("reply-refused"),
+                Some(ReplyStanding::Refused)
+            )
+        );
+        assert!(
+            !store
+                .agent_reply_refused(agent, "m1", "r1", "read-only")
+                .unwrap(),
+            "refused once"
+        );
+
+        // A reply the relay accepted is not refused afterwards.
+        store.agent_inbox_offer(&request(agent, "m2", 20)).unwrap();
+        store
+            .agent_reply_claim(agent, "m2", "r3", "{}", ReplyOrigin::Send, None)
+            .unwrap();
+        store.agent_reply_published(agent, "m2").unwrap();
+        assert!(
+            !store
+                .agent_reply_refused(agent, "m2", "r3", "reply-refused")
+                .unwrap()
+        );
+        assert_eq!(
+            store.agent_recent_turns(agent, 5).unwrap()[0].reply,
+            Some(ReplyStanding::Accepted)
+        );
+
+        // A failure notice the relay refuses: the request keeps the kind
+        // its turn failed with, and the notice is not published again.
+        store.agent_inbox_offer(&request(agent, "m3", 30)).unwrap();
+        store
+            .agent_reply_claim(
+                agent,
+                "m3",
+                "r4",
+                "{}",
+                ReplyOrigin::Failure,
+                Some("timeout"),
+            )
+            .unwrap();
+        assert!(
+            store
+                .agent_reply_refused(agent, "m3", "r4", "reply-refused")
+                .unwrap()
+        );
+        let row = store.agent_inbox_get(agent, "m3").unwrap().unwrap();
+        assert_eq!(
+            (row.state, row.failure.as_deref()),
+            (RequestState::Failed, Some("timeout"))
+        );
+        assert!(
+            store
+                .agent_replies_unpublished(agent, 0)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A stored reply the relay never took is not published for ever: after
+    /// the time a message can be a request at all, it ends as refused.
+    #[test]
+    fn a_reply_the_relay_never_took_is_given_up_after_a_day() {
+        let mut store = Store::open_memory().unwrap();
+        let agent = Uuid::new_v4();
+        for request_id in ["old", "young", "taken"] {
+            store
+                .agent_inbox_offer(&request(agent, request_id, 10))
+                .unwrap();
+            store
+                .agent_reply_claim(agent, request_id, request_id, "{}", ReplyOrigin::Send, None)
+                .unwrap();
+        }
+        store.agent_reply_published(agent, "taken").unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE agent_replies SET stored_at=unixepoch()-90000 WHERE request_id IN ('old','taken')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .agent_replies_expire(agent, 86_400, "reply-undelivered")
+                .unwrap(),
+            1
+        );
+        let old = store.agent_inbox_get(agent, "old").unwrap().unwrap();
+        assert_eq!(
+            (old.state, old.failure.as_deref()),
+            (RequestState::Failed, Some("reply-undelivered"))
+        );
+        assert_eq!(
+            store
+                .agent_replies_unpublished(agent, 0)
+                .unwrap()
+                .iter()
+                .map(|reply| reply.request_id.as_str())
+                .collect::<Vec<_>>(),
+            ["young"]
+        );
+        assert!(
+            store
+                .agent_reply_get(agent, "taken")
+                .unwrap()
+                .unwrap()
+                .published
+        );
+        assert_eq!(
+            store
+                .agent_replies_expire(agent, 86_400, "reply-undelivered")
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

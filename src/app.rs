@@ -3191,6 +3191,7 @@ impl App {
             Ok(text) if text.is_empty() => {}
             Ok(text) => {
                 self.composer.insert_text(&text);
+                self.note_dropped_mention();
                 self.refresh_mention_picker().await?;
                 self.persist_draft().await?;
             }
@@ -5697,7 +5698,24 @@ impl App {
         changed
     }
 
+    /// Says so when an edit turned a mention into plain text: a message
+    /// never loses a mention the picker put in without a word.
+    fn note_dropped_mention(&mut self) {
+        if let Some(name) = self.composer.take_dropped_mention() {
+            self.status_error = Some(format!(
+                "{} is no longer a mention: its name was edited, so nobody is notified. Type @ and choose the name again to mention",
+                crate::render::sanitize::single_line(&name)
+            ));
+        }
+    }
+
     async fn insert_action(&mut self, action: KeyAction) -> Result<()> {
+        let done = self.composer_action(action).await;
+        self.note_dropped_mention();
+        done
+    }
+
+    async fn composer_action(&mut self, action: KeyAction) -> Result<()> {
         if self.mention_picker.is_some() {
             match action {
                 KeyAction::Up => {
@@ -6122,9 +6140,11 @@ impl App {
         });
         self.mention_picker = None;
         if let Some((range, candidate)) = selected {
+            // The cursor is left after a space, as Buzz leaves it: what is
+            // typed next must not run into the name and undo the mention.
             if self
                 .composer
-                .accept_mention(range, &candidate.label, &candidate.pubkey)
+                .accept_mention_from_picker(range, &candidate.label, &candidate.pubkey)
             {
                 if let Some((_, channel, _)) = &self.mention_choices {
                     let channel = *channel;
@@ -6531,6 +6551,7 @@ impl App {
             ClipboardContents::Text(text) => {
                 self.composer.insert_text(&text);
                 self.status_error = None;
+                self.note_dropped_mention();
                 self.refresh_mention_picker().await?;
                 self.persist_draft().await?;
             }
@@ -8239,7 +8260,7 @@ impl App {
     }
 
     /// The agents panel's key: adds the selected agent to the channel that
-    /// is open, as its owner (a member; the `bot` role in a Solo chat).
+    /// is open, as its owner, with the `bot` role as Buzz adds an agent.
     fn add_selected_agent_to_open_channel(&mut self, id: Uuid, name: &str) {
         use crate::agents::manage;
         let Some(agent) = self
@@ -8310,17 +8331,20 @@ impl App {
                     format!("{name} was already a member of #{}", added.channel_name)
                 }
                 Ok(added) => format!(
-                    "{name} added to #{} {}; mention it there to wake it",
-                    added.channel_name,
-                    match added.role {
-                        Some(role) => format!("with the {role} role (a Solo chat)"),
-                        None => "as a member".to_owned(),
-                    }
+                    "{name} added to #{} with the {} role; mention it there to wake it",
+                    added.channel_name, added.role
                 ),
                 Err(error) => format!("{name} was not added to #{channel_name}: {error}"),
             };
             let _ = tx.send(Background::Notice(notice)).await;
         });
+    }
+
+    /// The agents of the open community whose key this bzz holds itself.
+    fn own_agents(&self) -> HashMap<String, crate::agents::Own> {
+        self.active_community_id()
+            .map(|community| crate::agents::own_agents(&self.config.hosted_agents, community))
+            .unwrap_or_default()
     }
 
     fn open_agent_form(&mut self, name: &str) {
@@ -8332,6 +8356,18 @@ impl App {
             self.status_error = Some(
                 "creating an agent needs your identity unlocked: restart bzz and unlock it".into(),
             );
+            return;
+        }
+        // An identity whose key Buzz Desktop holds cannot have agents: said
+        // before the form, the checks and the install of the host.
+        let owner = self.runtime.as_ref().and_then(|runtime| {
+            self.config
+                .identities
+                .iter()
+                .find(|identity| identity.id == runtime.identity_id)
+        });
+        if let Some(Err(error)) = owner.map(crate::agents::manage::may_own_agents) {
+            self.status_error = Some(error.to_string());
             return;
         }
         self.agent_form = Some(crate::ui::local_agents::NewAgentForm::new(name));
@@ -10389,7 +10425,13 @@ impl App {
                         hit_map.push(row, HitTarget::MentionCandidate(index));
                     }
                 }
-                crate::ui::mention_picker::render(frame, mention_area, picker, &self.theme);
+                crate::ui::mention_picker::render(
+                    frame,
+                    mention_area,
+                    picker,
+                    &self.own_agents(),
+                    &self.theme,
+                );
             }
         }
     }
@@ -10845,6 +10887,7 @@ impl App {
                     frame,
                     popup,
                     &self.agent_directory,
+                    &self.own_agents(),
                     &self.profiles,
                     self.self_pubkey(),
                     &self.theme,
@@ -11583,6 +11626,146 @@ mod tests {
         assert_eq!(app.composer.body, "@Ghost");
     }
 
+    /// From the run against Buzz 1.0: `@Sc`, Enter, and text typed at once
+    /// gave "@Scouthello from bzz", sent with no mention tag and no warning.
+    /// Accepting a name in the picker, with Enter or with Tab, leaves the
+    /// cursor after a space; and when an edit does turn a mention into
+    /// plain text, bzz says so.
+    #[tokio::test]
+    async fn the_picker_leaves_the_cursor_after_a_space_and_a_lost_mention_is_told() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let target = app.presentation.composer_target.clone().unwrap();
+        let (community, channel) = (target.community_id, target.channel_id);
+        let relay = Keys::generate();
+        let scout = Keys::generate();
+        let events = vec![
+            EventBuilder::new(Kind::Custom(39_000), "")
+                .tags([
+                    Tag::parse(["d", &channel.to_string()]).unwrap(),
+                    Tag::parse(["name", "general"]).unwrap(),
+                    Tag::parse(["t", "stream"]).unwrap(),
+                    Tag::parse(["public"]).unwrap(),
+                ])
+                .sign_with_keys(&relay)
+                .unwrap(),
+            EventBuilder::new(Kind::Custom(39_002), "")
+                .tags([
+                    Tag::parse(["d", &channel.to_string()]).unwrap(),
+                    Tag::parse(["p", &scout.public_key().to_hex()]).unwrap(),
+                ])
+                .sign_with_keys(&relay)
+                .unwrap(),
+            EventBuilder::new(
+                Kind::Metadata,
+                serde_json::json!({ "name": "Scout" }).to_string(),
+            )
+            .sign_with_keys(&scout)
+            .unwrap(),
+        ];
+        let relay_pubkey = relay.public_key().to_hex();
+        app.store
+            .call(move |store| {
+                store.pin_relay_pubkey(community, &relay_pubkey)?;
+                for event in &events {
+                    store.apply_event(community, event)?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let scout = scout.public_key().to_hex();
+        let typed = |text: &str| {
+            text.chars()
+                .map(super::KeyAction::Character)
+                .collect::<Vec<_>>()
+        };
+
+        // Enter accepts the name, and the next word is typed at once.
+        for accept in [super::KeyAction::Submit, super::KeyAction::Complete] {
+            app.composer.clear();
+            app.status_error = None;
+            for action in typed("@Sc") {
+                app.insert_action(action).await.unwrap();
+            }
+            assert!(app.mention_picker.is_some(), "{accept:?}");
+            app.insert_action(accept).await.unwrap();
+            assert!(app.mention_picker.is_none());
+            assert_eq!(app.composer.body, "@Scout ", "{accept:?}");
+            assert_eq!(app.composer.cursor, app.composer.body.len());
+            for action in typed("hello from bzz") {
+                app.insert_action(action).await.unwrap();
+            }
+            assert_eq!(app.composer.body, "@Scout hello from bzz", "{accept:?}");
+            assert_eq!(
+                app.composer
+                    .mentions()
+                    .iter()
+                    .map(|mention| mention.pubkey.as_str())
+                    .collect::<Vec<_>>(),
+                [scout.as_str()],
+                "{accept:?}: the message still mentions Scout"
+            );
+            assert_eq!(app.status_error, None, "{accept:?}");
+        }
+
+        // The space taken away again, and a letter typed onto the name: it
+        // is no longer a mention, and bzz says so where the user looks.
+        app.composer.clear();
+        for action in typed("@Sc") {
+            app.insert_action(action).await.unwrap();
+        }
+        app.insert_action(super::KeyAction::Submit).await.unwrap();
+        app.insert_action(super::KeyAction::Backspace)
+            .await
+            .unwrap();
+        assert_eq!(app.composer.mentions().len(), 1);
+        assert_eq!(app.status_error, None, "the name itself is untouched");
+        for action in typed("h") {
+            app.insert_action(action).await.unwrap();
+        }
+        assert_eq!(app.composer.body, "@Scouth");
+        assert!(app.composer.mentions().is_empty());
+        let told = app.status_error.clone().unwrap_or_default();
+        assert!(
+            told.starts_with("@Scout is no longer a mention")
+                && told.contains("nobody is notified"),
+            "{told}"
+        );
+        let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("@Scout is no longer a mention"), "{screen}");
+
+        // Cutting into the name says the same.
+        app.composer.clear();
+        app.status_error = None;
+        for action in typed("@Sc") {
+            app.insert_action(action).await.unwrap();
+        }
+        app.insert_action(super::KeyAction::Submit).await.unwrap();
+        for _ in 0..2 {
+            app.insert_action(super::KeyAction::Backspace)
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.composer.body, "@Scou");
+        assert!(app.composer.mentions().is_empty());
+        assert!(
+            app.status_error
+                .as_deref()
+                .is_some_and(|told| told.starts_with("@Scout is no longer a mention")),
+            "{:?}",
+            app.status_error
+        );
+    }
+
     #[test]
     fn typing_subscription_switch_replaces_req_without_close() {
         let first = Uuid::new_v4();
@@ -12187,40 +12370,85 @@ mod tests {
             created_at: 1,
             event_json: "{}".into(),
         };
+        // What the panel says of the newest request, read again.
+        macro_rules! last_outcome {
+            () => {{
+                app.local_agent_turns.clear();
+                app.refresh_local_agent_panel();
+                loop {
+                    if let Some(super::Background::LocalAgentTurns { turns, .. }) =
+                        app.background_rx.recv().await
+                    {
+                        app.local_agent_turns = turns
+                            .into_iter()
+                            .filter_map(|(agent, turn)| turn.map(|turn| (agent, turn)))
+                            .collect();
+                        if !app.local_agent_turns.is_empty() {
+                            break;
+                        }
+                    }
+                }
+                screen(&mut app)
+            }};
+        }
+        let failed = request.clone();
         app.store
             .call(move |store| {
-                store.agent_inbox_offer(&request)?;
+                store.agent_inbox_offer(&failed)?;
                 store.agent_reply_claim(
-                    request.agent_id,
-                    &request.request_id,
+                    failed.agent_id,
+                    &failed.request_id,
                     &"b".repeat(64),
                     "{}",
                     crate::store::agent_runtime::ReplyOrigin::Failure,
                     Some("timeout"),
                 )?;
+                store.agent_reply_published(failed.agent_id, &failed.request_id)
+            })
+            .await
+            .unwrap();
+        let shown = last_outcome!();
+        assert!(
+            shown.contains("last outcome: failed: timeout · "),
+            "{shown}"
+        );
+        // A reply that is signed and stored is not "answered" before the
+        // relay has it: until then the state has a name of its own.
+        let answered = crate::store::agent_runtime::NewRequest {
+            request_id: "c".repeat(64),
+            created_at: 2,
+            ..request
+        };
+        let (agent_id, request_id) = (answered.agent_id, answered.request_id.clone());
+        app.store
+            .call(move |store| {
+                store.agent_inbox_offer(&answered)?;
+                // Newer than the first, whatever the clock's second.
+                store.agent_reply_claim(
+                    answered.agent_id,
+                    &answered.request_id,
+                    &"d".repeat(64),
+                    "{}",
+                    crate::store::agent_runtime::ReplyOrigin::Send,
+                    None,
+                )?;
                 Ok(())
             })
             .await
             .unwrap();
-        app.refresh_local_agent_panel();
-        loop {
-            if let Some(super::Background::LocalAgentTurns { turns, .. }) =
-                app.background_rx.recv().await
-            {
-                app.local_agent_turns = turns
-                    .into_iter()
-                    .filter_map(|(agent, turn)| turn.map(|turn| (agent, turn)))
-                    .collect();
-                if !app.local_agent_turns.is_empty() {
-                    break;
-                }
-            }
-        }
+        let shown = last_outcome!();
         assert!(
-            screen(&mut app).contains("last outcome: failed: timeout · "),
-            "{}",
-            screen(&mut app)
+            shown.contains(
+                "last outcome: sending its reply: signed, and not yet accepted by the relay · "
+            ) && !shown.contains("last outcome: answered"),
+            "{shown}"
         );
+        app.store
+            .call(move |store| store.agent_reply_published(agent_id, &request_id))
+            .await
+            .unwrap();
+        let shown = last_outcome!();
+        assert!(shown.contains("last outcome: answered · "), "{shown}");
 
         // Space pauses the selected agent, and resumes it.
         app.local_agents_key(key(KeyCode::Char(' '))).await.unwrap();
@@ -12517,6 +12745,7 @@ mod tests {
             let facts = ChannelFacts {
                 id: self.channel,
                 name: "general".into(),
+                read_only: Vec::new(),
                 kind: PlaceKind::Channel,
                 members: vec![self.owner_keys.public_key().to_hex(), agent.pubkey.clone()],
             };
@@ -13772,7 +14001,7 @@ mod tests {
                 .map(|cell| cell.symbol())
                 .collect::<String>();
             assert!(screen.contains("Verified Worker"));
-            assert!(screen.contains("remote agents"));
+            assert!(screen.contains("verified agents"));
         }
     }
 

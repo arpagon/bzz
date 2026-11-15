@@ -52,6 +52,10 @@ const MIGRATIONS: &[(u32, &str)] = &[
         19,
         include_str!("../../migrations/0019_memberships_by_member.sql"),
     ),
+    (
+        20,
+        include_str!("../../migrations/0020_agent_reply_refusal.sql"),
+    ),
 ];
 
 pub fn configure(connection: &Connection) -> Result<()> {

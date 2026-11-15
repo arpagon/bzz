@@ -6723,24 +6723,31 @@ async fn real_relay_agent_new_to_delete_on_the_pi_durable_host() {
         }
     };
     assert_eq!(role_in(channel).await, None);
-    // By its name, as the sidebar shows it: this profile never synced, so
-    // bzz asks the relay.
-    let text = ok(&["agent", "add", "Scout", &channel_name]);
-    assert!(
-        text.contains(&format!("Scout added to #{channel_name} as a member")),
-        "{text}"
-    );
-    assert_eq!(
-        role_in(channel).await.as_deref(),
-        Some("member"),
-        "a plain member, as Buzz 1.0 adds an agent (D13)"
-    );
-    let text = ok(&["agent", "add", "Scout", &channel.to_string()]);
-    assert!(text.contains("was already a member"), "{text}");
+    // A plain member first, in a channel of its own: what Buzz 1.0 makes
+    // of the agent a Solo chat is created with, and what bzz made of every
+    // agent it added before the run against Buzz 1.0.1.
+    let plain = uuid::Uuid::new_v4();
+    publish(
+        buzz_sdk::build_create_channel(
+            plain,
+            &format!("p1-{}", &plain.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Open),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    publish(buzz_sdk::build_add_member(plain, &agent_hex, None).unwrap()).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(role_in(plain).await.as_deref(), Some("member"));
 
     // bzz's own directory lists it now, while it has the `bot` role nowhere:
     // its owner's proof is what counts (D13). Until v0.14 it was not listed.
     assert_eq!(role_in(solo).await, None);
+    assert_eq!(role_in(channel).await, None);
     let refreshed = ok(&["agents", "refresh"]);
     assert!(refreshed.contains("verified=1"), "{refreshed}");
     let directory: serde_json::Value =
@@ -6766,11 +6773,43 @@ async fn real_relay_agent_new_to_delete_on_the_pi_durable_host() {
     );
     assert_eq!(
         listed[0]["channel_ids"],
-        json!([channel.to_string()]),
+        json!([plain.to_string()]),
         "the channel it is a plain member of: {directory}"
     );
+    // It is the owner's own agent, and the directory says so: until the
+    // run against Buzz 1.0 it was listed as a remote agent.
+    assert_eq!(directory["own"][&agent_hex], "runs-here", "{directory}");
+    let listing = ok(&["agents", "list"]);
+    assert!(
+        listing.contains("yours · run by this bzz") && !listing.contains("remote agents"),
+        "{listing}"
+    );
+    let shown = ok(&["agents", "show", &agent_hex]);
+    assert!(
+        shown.contains("your own agent") && !shown.contains("not controlled by bzz"),
+        "{shown}"
+    );
+
+    // `bzz agent add`, by the channel's name as the sidebar shows it: this
+    // profile never synced that channel, so bzz asks the relay. The agent
+    // gets the `bot` role, in a channel and in a Solo chat, as Buzz 1.0.1
+    // gives it to an agent it adds to either.
+    let text = ok(&["agent", "add", "Scout", &channel_name]);
+    assert!(
+        text.contains(&format!(
+            "Scout added to #{channel_name} with the bot role, as Buzz adds an agent"
+        )),
+        "{text}"
+    );
+    assert_eq!(
+        role_in(channel).await.as_deref(),
+        Some("bot"),
+        "the bot role, as Buzz 1.0.1 adds an agent to a channel that exists"
+    );
+    let text = ok(&["agent", "add", "Scout", &channel.to_string()]);
+    assert!(text.contains("was already a member"), "{text}");
     let text = ok(&["agent", "add", "Scout", &solo.to_string()]);
-    assert!(text.contains("with the bot role (a Solo chat)"), "{text}");
+    assert!(text.contains("with the bot role"), "{text}");
     assert_eq!(role_in(solo).await.as_deref(), Some("bot"));
     let (added, text) = said(&["agent", "add", "Scout", "no-such-channel"]);
     assert!(!added && text.contains("no channel is called"), "{text}");
@@ -7028,7 +7067,7 @@ async fn real_relay_agent_new_to_delete_on_the_pi_durable_host() {
         "wakes for:   its owner only",
         "may reach:   github.com",
         "folders:     none of this machine",
-        &format!("#{channel_name} (member)"),
+        &format!("#{channel_name} (bot)"),
         "#Plans (bot)",
         "last turns:",
         "answered · attempt 2",
@@ -7037,9 +7076,6 @@ async fn real_relay_agent_new_to_delete_on_the_pi_durable_host() {
     ] {
         assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
     }
-    let (deleted, text) = said(&["agent", "delete", "Scout", "--yes"]);
-    assert!(!deleted && text.contains("is running"), "{text}");
-
     // bzz and the host both restart.
     stop(first_bzz, &first_log);
     assert!(!running_pid(second_pid), "no host outlives bzz agent run");
@@ -7219,6 +7255,7 @@ async fn real_relay_agent_new_to_delete_on_the_pi_durable_host() {
     );
     assert_eq!(role_in(channel).await, None);
     assert_eq!(role_in(solo).await, None);
+    assert_eq!(role_in(plain).await, None);
     drop(database);
     let rows = rusqlite::Connection::open(paths.database_file())
         .unwrap()
@@ -7717,4 +7754,722 @@ async fn real_relay_agent_runs_a_real_command_and_clones_a_private_remote() {
     assert!(left.is_empty(), "{left:?}");
     owner_supervisor.shutdown().await;
     owner.lock().await;
+}
+
+/// What the run against the real Buzz 1.0.1 found
+/// (`runs/experiments/buzz1/agents/README.md`), on the pinned relay, with
+/// bzz's real Pi Durable host on its stand-in model and every step of the
+/// owner's the `bzz` binary or an event of the owner's own key:
+///
+/// - **presence**: a running agent is present on the relay by its own key,
+///   and gone when it is paused or deleted; the owner's key says nothing;
+/// - **the observed case**: the owner makes the agent read-only (kind 9000
+///   with `["role","guest"]`) and mentions it. Nothing is handed to the
+///   harness and nothing is signed, where five different replies were
+///   signed for one mention and `agent show` said "answered";
+/// - **the ledger when the relay refuses**: the relay refuses the agent's
+///   reply while its records say the agent may write (a moderator's
+///   timeout). One signed reply, the request fails at once with its kind,
+///   and it is never published later;
+/// - **a turn that outlives the agent's membership** publishes nothing;
+/// - **`bzz agent pause` and `resume`** in another process reach the bzz
+///   that runs the agent;
+/// - **`bzz agent delete`** reaches it too: an agent it serves, and one
+///   that is answering, are let go before their files go.
+///
+/// The claims are collected and asserted together at the end, so that one
+/// run against the code as it was shows each of them failing.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_agent_keeps_to_its_access_and_a_delete_or_a_pause_reaches_the_bzz_that_runs_it()
+{
+    use bzz::{auth::IdentityManager, paths::Paths, protocol::presence};
+    use serde_json::json;
+    use support::{agent_harness::until, pi_host};
+
+    let Some(node) = pi_host::node_or_skip("real_relay_agent_keeps_to_its_access").await else {
+        return;
+    };
+    const WAIT: Duration = Duration::from_secs(60);
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let temporary = tempfile::TempDir::new().unwrap();
+    let dirs = temporary.path();
+    let passphrase = "c7 disposable passphrase";
+    std::fs::write(dirs.join("pass"), format!("{passphrase}\n")).unwrap();
+    let pi_dir = dirs.join("pi");
+    let variables = pi_host::variables(&pi_host::scripted_node(&dirs.join("bin"), &node), &pi_dir);
+    let bzz = |args: &[&str], output: Option<&std::path::Path>| {
+        let mut command = bzz_on_profile(dirs, args, output);
+        command.envs(variables.iter().cloned());
+        command
+    };
+    let said = |args: &[&str]| {
+        let output = bzz(args, None).output().unwrap();
+        (
+            output.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    };
+    let ok = |args: &[&str]| {
+        let (success, text) = said(args);
+        assert!(success, "bzz {args:?}: {text}");
+        text
+    };
+    // What the run found, as this test sees it: each claim that does not
+    // hold, in the order it was looked at.
+    let faults = std::cell::RefCell::new(Vec::<String>::new());
+    let claim = |holds: bool, what: String| {
+        if !holds {
+            faults.borrow_mut().push(what);
+        }
+    };
+
+    ok(&[
+        "identity",
+        "new",
+        "--label",
+        "owner",
+        "--backend",
+        "encrypted-file",
+    ]);
+    let paths = Paths {
+        config_dir: dirs.join("c"),
+        data_dir: dirs.join("d"),
+        cache_dir: dirs.join("k"),
+    };
+    let mut config = Config::load(&paths).unwrap();
+    let identity = config.identities[0].clone();
+    config
+        .add_community("c7".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    config.save(&paths).unwrap();
+    // An owner of the relay: he may also put a member in time-out.
+    let _ = seed_member(&source, &identity.pubkey);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let secret = secrecy::SecretString::from(passphrase.to_owned());
+    let owner = IdentityManager::new(&paths)
+        .signer(&identity, Some(&secret))
+        .unwrap();
+    let owner_hex = owner.public_key().to_hex();
+    let owner_supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        owner.clone(),
+    );
+    let owner_http = HttpClient::new(
+        url::Url::parse("http://localhost:3030/").unwrap(),
+        owner.clone(),
+    )
+    .unwrap();
+    let relay_key = bzz::protocol::http::relay_signing_pubkey(&owner_http.nip11().await.unwrap())
+        .expect("the relay names its key")
+        .to_owned();
+    // The owner's own connection is between two attempts now and then: a
+    // `bzz` command of the same owner has just used the relay too.
+    let publish = |builder: EventBuilder| {
+        let (supervisor, owner) = (owner_supervisor.clone(), owner.clone());
+        async move {
+            let event = owner.sign(builder).await.unwrap();
+            let deadline = tokio::time::Instant::now() + WAIT;
+            loop {
+                match supervisor.publish(event.clone()).await {
+                    Ok(ack) => {
+                        assert!(
+                            ack.accepted || ack.message.starts_with("duplicate:"),
+                            "{}",
+                            ack.message
+                        );
+                        return event;
+                    }
+                    Err(error) => {
+                        assert!(
+                            tokio::time::Instant::now() < deadline,
+                            "the owner could not publish: {error}"
+                        );
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            }
+        }
+    };
+    let query = |filter: serde_json::Value| {
+        let http = owner_http.clone();
+        async move { http.query_raw(&[filter]).await.unwrap() }
+    };
+    let tagged = |kind: u16, tags: Vec<Vec<String>>| {
+        EventBuilder::new(Kind::Custom(kind), "")
+            .tags(tags.into_iter().map(|tag| nostr::Tag::parse(tag).unwrap()))
+    };
+
+    // ---- two agents, one channel ------------------------------------------
+    for name in ["Scout", "Echo"] {
+        ok(&[
+            "agent",
+            "new",
+            name,
+            "--model",
+            "scripted/scripted",
+            "--yes",
+        ]);
+    }
+    let config = Config::load(&paths).unwrap();
+    let agent_of = |name: &str| {
+        config
+            .hosted_agents
+            .iter()
+            .find(|agent| agent.label == name)
+            .unwrap()
+            .clone()
+    };
+    let (scout, echo) = (agent_of("Scout"), agent_of("Echo"));
+    let lab = uuid::Uuid::new_v4();
+    let lab_name = format!("c7-{}", &lab.simple().to_string()[..8]);
+    publish(
+        buzz_sdk::build_create_channel(
+            lab,
+            &lab_name,
+            Some(buzz_sdk::Visibility::Open),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // The role the relay records for an agent in the channel.
+    let role_of = |agent: &str| {
+        let (list, agent) = (
+            query(json!({"kinds": [39_002], "#d": [lab.to_string()], "limit": 2})),
+            agent.to_owned(),
+        );
+        async move {
+            list.await.iter().find_map(|event| {
+                event.tags.iter().find_map(|tag| {
+                    let values = tag.as_slice();
+                    (values.first().map(String::as_str) == Some("p")
+                        && values.get(1) == Some(&agent))
+                    .then(|| values.get(3).cloned().unwrap_or_default())
+                })
+            })
+        }
+    };
+    let role_becomes = |agent: &str, role: Option<&'static str>| {
+        let (agent, role_of) = (agent.to_owned(), &role_of);
+        async move {
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while role_of(&agent).await.as_deref() != role {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the relay never listed the role {role:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        }
+    };
+    // The owner changes a member's role as Buzz 1.0 does: kind 9000 for a
+    // member that is there, with the role.
+    let set_role = |agent: &str, role: &'static str| {
+        let event = tagged(
+            9000,
+            vec![
+                vec!["h".into(), lab.to_string()],
+                vec!["p".into(), agent.to_owned()],
+                vec!["role".into(), role.into()],
+            ],
+        );
+        let (publish, role_becomes, agent) = (&publish, &role_becomes, agent.to_owned());
+        async move {
+            publish(event).await;
+            role_becomes(&agent, Some(role)).await;
+        }
+    };
+    for name in ["Scout", "Echo"] {
+        let text = ok(&["agent", "add", name, &lab_name]);
+        claim(
+            text.contains("with the bot role"),
+            format!("role: `agent add` says it gives the bot role: {text}"),
+        );
+    }
+    claim(
+        role_of(&scout.pubkey).await.as_deref() == Some("bot"),
+        format!(
+            "role: `agent add` gives the bot role in a channel, as Buzz 1.0.1 does: {:?}",
+            role_of(&scout.pubkey).await
+        ),
+    );
+
+    // ---- what the test reads ----------------------------------------------
+    let mention = |agent: &str, text: String| {
+        let (agent, publish) = (agent.to_owned(), &publish);
+        async move {
+            publish(
+                buzz_sdk::build_message(lab, &text, None, &[agent.as_str()], false, &[], &[])
+                    .unwrap(),
+            )
+            .await
+        }
+    };
+    // The replies the relay holds to a request, by whoever.
+    let replies = |request: String| {
+        let all = query(json!({"kinds": [9], "#h": [lab.to_string()], "limit": 500}));
+        let owner_hex = owner_hex.clone();
+        async move {
+            all.await
+                .into_iter()
+                .filter(|event| {
+                    event.pubkey.to_hex() != owner_hex
+                        && bzz::protocol::events::event_references(event).contains(&request)
+                })
+                .map(|event| event.content)
+                .collect::<Vec<_>>()
+        }
+    };
+    let exactly_one = |request: String, what: &'static str| {
+        let replies = &replies;
+        async move {
+            let deadline = tokio::time::Instant::now() + WAIT;
+            while replies(request.clone()).await.is_empty() {
+                assert!(tokio::time::Instant::now() < deadline, "{what}: no reply");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let all = replies(request).await;
+            assert_eq!(all.len(), 1, "{what}: {all:?}");
+            all.into_iter().next().unwrap()
+        }
+    };
+    // bzz's own books, read beside the running bzz: the request's state,
+    // its failure and its attempts; and the id of its stored reply.
+    let database = paths.database_file();
+    let turn = |request: &str| {
+        rusqlite::Connection::open_with_flags(
+            &database,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .ok()
+        .and_then(|database| {
+            database
+                .query_row(
+                    "SELECT state,COALESCE(failure,''),attempts FROM agent_inbox WHERE request_id=?1",
+                    [request],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, u32>(2)?,
+                        ))
+                    },
+                )
+                .ok()
+        })
+    };
+    let stored_reply = |request: &str| {
+        rusqlite::Connection::open_with_flags(&database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()
+            .and_then(|database| {
+                database
+                    .query_row(
+                        "SELECT reply_event_id FROM agent_replies WHERE request_id=?1",
+                        [request],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .ok()
+            })
+    };
+    // Watches one request for a while, as the tester did: every reply bzz
+    // stored for it, and what `agent show` called it meanwhile.
+    let watch = |request: String, for_seconds: u64| {
+        let (stored_reply, said) = (&stored_reply, &said);
+        async move {
+            let short = request[..12].to_owned();
+            let (mut stored, mut called) = (Vec::<String>::new(), Vec::<String>::new());
+            let until = tokio::time::Instant::now() + Duration::from_secs(for_seconds);
+            let mut looked = 0_u32;
+            while tokio::time::Instant::now() < until {
+                if let Some(id) = stored_reply(&request)
+                    && !stored.contains(&id)
+                {
+                    stored.push(id);
+                }
+                // `agent show` is a whole bzz: asked now and then.
+                if looked.is_multiple_of(10) {
+                    let shown = said(&["agent", "show", "Scout"]).1;
+                    if let Some(line) = shown.lines().find(|line| line.contains(&short)) {
+                        let line = line.trim().to_owned();
+                        if !called.contains(&line) {
+                            called.push(line);
+                        }
+                    }
+                }
+                looked += 1;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            (stored, called)
+        }
+    };
+    // Whether the relay holds a key as present: its own snapshot.
+    let present = |agent: &str| {
+        let (snapshot, agent, relay_key) = (
+            query(json!({"kinds": [presence::KIND_PRESENCE], "authors": [agent], "limit": 1})),
+            agent.to_owned(),
+            relay_key.clone(),
+        );
+        async move {
+            snapshot
+                .await
+                .iter()
+                .filter_map(|event| presence::observe(event, Some(&relay_key), |_| None))
+                .find(|observed| observed.subjects.contains(&agent))
+                .is_some_and(|observed| observed.presence != presence::Presence::Offline)
+        }
+    };
+    let presence_becomes = |agent: &str, wanted: bool, what: &'static str| {
+        let (agent, present, claim) = (agent.to_owned(), &present, &claim);
+        async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+            let mut now = present(&agent).await;
+            while now != wanted && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                now = present(&agent).await;
+            }
+            claim(
+                now == wanted,
+                format!(
+                    "presence: {what}: the relay holds it as {}",
+                    if now { "present" } else { "not present" }
+                ),
+            );
+        }
+    };
+    let run_log = dirs.join("agent-run.log");
+    let logged = |text: &str| {
+        std::fs::read_to_string(&run_log)
+            .unwrap_or_default()
+            .contains(text)
+    };
+    let log_says = |text: &'static str, what: &'static str| {
+        let (logged, claim) = (&logged, &claim);
+        async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            while !logged(text) && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            claim(
+                logged(text),
+                format!("{what}: `bzz agent run` never printed `{text}`"),
+            );
+        }
+    };
+
+    // ---- bzz agent run ----------------------------------------------------
+    let mut running = bzz(&["agent", "run"], Some(&run_log)).spawn().unwrap();
+    until("bzz agent run to be running", WAIT, || {
+        (logged("Scout · pi-durable · idle") && logged("Echo · pi-durable · idle")).then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // ---- presence ---------------------------------------------------------
+    presence_becomes(&scout.pubkey, true, "a running agent says it is present").await;
+    presence_becomes(&echo.pubkey, true, "a second running agent says so too").await;
+    claim(
+        !present(&owner_hex).await,
+        "presence: the owner's own key signs nothing: the relay holds the owner as present".into(),
+    );
+    let hello = mention(&scout.pubkey, "hello there".into()).await;
+    assert_eq!(
+        exactly_one(hello.id.to_hex(), "the first mention").await,
+        "pong: this conversation holds 1 message(s) from people"
+    );
+
+    // ---- the observed case: read-only, then a mention ---------------------
+    set_role(&scout.pubkey, "guest").await;
+    let viewing = mention(&scout.pubkey, "are you there?".into()).await;
+    let viewing_id = viewing.id.to_hex();
+    let (stored, called) = watch(viewing_id.clone(), 12).await;
+    claim(
+        stored.is_empty(),
+        format!(
+            "read-only: nothing is signed for a mention where the agent may only read: {} different stored replies {:?}",
+            stored.len(),
+            stored.iter().map(|id| &id[..8]).collect::<Vec<_>>()
+        ),
+    );
+    claim(
+        !called.iter().any(|line| line.contains("answered")),
+        format!("read-only: `agent show` never says answered of it: {called:?}"),
+    );
+    let state = turn(&viewing_id);
+    claim(
+        state == Some(("failed".into(), "read-only".into(), 0)),
+        format!("read-only: the request fails as read-only, and is never handed over: {state:?}"),
+    );
+    claim(
+        replies(viewing_id.clone()).await.is_empty(),
+        "read-only: the relay holds a reply to it".into(),
+    );
+    let shown = said(&["agent", "show", "Scout"]).1;
+    claim(
+        shown.contains(&format!("#{lab_name} (guest)"))
+            && shown.contains("read-only: it cannot answer there"),
+        format!("read-only: `agent show` says it is read-only in the channel:\n{shown}"),
+    );
+    claim(
+        shown.contains("failed: read-only"),
+        format!("read-only: `agent show` says why the mention was not answered:\n{shown}"),
+    );
+    // "Participating" again: the next mention is answered.
+    set_role(&scout.pubkey, "member").await;
+    let back = mention(&scout.pubkey, "and now?".into()).await;
+    assert_eq!(
+        exactly_one(back.id.to_hex(), "a writing member again").await,
+        "pong: this conversation holds 1 message(s) from people"
+    );
+    claim(
+        replies(viewing_id.clone()).await.is_empty(),
+        "read-only: the mention of that time was answered afterwards".into(),
+    );
+
+    // ---- the relay refuses the reply --------------------------------------
+    // A moderator's time-out: the relay's records still list the agent as
+    // a member who may write, and the relay refuses what it writes.
+    let until_then = (Timestamp::now().as_secs() + 600).to_string();
+    publish(tagged(
+        9042,
+        vec![
+            vec!["p".into(), scout.pubkey.clone()],
+            vec!["expiration".into(), until_then],
+        ],
+    ))
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let refused = mention(&scout.pubkey, "can you write?".into()).await;
+    let refused_id = refused.id.to_hex();
+    let (stored, called) = watch(refused_id.clone(), 12).await;
+    claim(
+        stored.len() == 1,
+        format!(
+            "refused: one signed reply for one mention, whatever the relay answers: {} different stored replies {:?}",
+            stored.len(),
+            stored.iter().map(|id| &id[..8]).collect::<Vec<_>>()
+        ),
+    );
+    claim(
+        !called.iter().any(|line| line.contains("answered")),
+        format!(
+            "refused: `agent show` never says answered of a reply the relay refused: {called:?}"
+        ),
+    );
+    let state = turn(&refused_id);
+    claim(
+        state == Some(("failed".into(), "reply-refused".into(), 1)),
+        format!(
+            "refused: the request fails at once as reply-refused, after one attempt: {state:?}"
+        ),
+    );
+    claim(
+        called
+            .iter()
+            .any(|line| line.contains("failed: reply-refused")),
+        format!("refused: `agent show` says failed: reply-refused: {called:?}"),
+    );
+    // The time-out is lifted. The refused reply is not published later:
+    // longer than the interval at which stored replies are published again.
+    publish(tagged(9043, vec![vec!["p".into(), scout.pubkey.clone()]])).await;
+    let lifted = mention(&scout.pubkey, "and after the time-out?".into()).await;
+    assert_eq!(
+        exactly_one(lifted.id.to_hex(), "after the time-out").await,
+        "pong: this conversation holds 1 message(s) from people"
+    );
+    tokio::time::sleep(Duration::from_secs(35)).await;
+    claim(
+        replies(refused_id.clone()).await.is_empty(),
+        format!(
+            "refused: a refused reply is never published later: {:?}",
+            replies(refused_id.clone()).await
+        ),
+    );
+    claim(
+        stored_reply(&refused_id).as_ref() == stored.first(),
+        "refused: the stored reply is still the first one".into(),
+    );
+
+    // ---- removed while it answers -----------------------------------------
+    let late = mention(
+        &scout.pubkey,
+        r#"do: [["sleep", 8000], ["buzz_send", {"text": "answered after I was removed", "final": true}]]"#.into(),
+    )
+    .await;
+    let late_id = late.id.to_hex();
+    until("the turn to be running", WAIT, || {
+        (turn(&late_id).map(|(state, ..)| state).as_deref() == Some("delivered")).then_some(())
+    })
+    .await;
+    publish(buzz_sdk::build_remove_member(lab, &scout.pubkey).unwrap()).await;
+    role_becomes(&scout.pubkey, None).await;
+    tokio::time::sleep(Duration::from_secs(16)).await;
+    let published = replies(late_id.clone()).await;
+    claim(
+        published.is_empty(),
+        format!(
+            "removed: nothing is published after the agent was removed from the channel: {published:?}"
+        ),
+    );
+    let state = turn(&late_id);
+    claim(
+        state
+            .as_ref()
+            .is_some_and(|(state, failure, _)| state == "failed" && failure == "not-a-member"),
+        format!("removed: the request fails as not-a-member: {state:?}"),
+    );
+    // Added again, it answers again; the old mention stays as it is.
+    ok(&["agent", "add", "Scout", &lab_name]);
+    let again = mention(&scout.pubkey, "back in the channel?".into()).await;
+    assert_eq!(
+        exactly_one(again.id.to_hex(), "added again").await,
+        "pong: this conversation holds 1 message(s) from people"
+    );
+    claim(
+        replies(late_id.clone()).await.is_empty(),
+        "removed: the mention of that time was answered afterwards".into(),
+    );
+
+    // ---- bzz agent pause and resume, from another process -----------------
+    ok(&["agent", "pause", "Scout"]);
+    log_says(
+        "Scout · pi-durable · paused",
+        "pause: the bzz that runs the agent pauses it",
+    )
+    .await;
+    presence_becomes(&scout.pubkey, false, "a paused agent says it is gone").await;
+    let while_paused = mention(&scout.pubkey, "while you are paused".into()).await;
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    claim(
+        replies(while_paused.id.to_hex()).await.is_empty(),
+        "pause: a mention is answered while the agent is paused".into(),
+    );
+    ok(&["agent", "resume", "Scout"]);
+    presence_becomes(&scout.pubkey, true, "a resumed agent is present again").await;
+    let resumed = mention(&scout.pubkey, "and resumed?".into()).await;
+    assert_eq!(
+        exactly_one(resumed.id.to_hex(), "after the resume").await,
+        "pong: this conversation holds 1 message(s) from people"
+    );
+    claim(
+        replies(while_paused.id.to_hex()).await.is_empty(),
+        "pause: what was said while it was paused was answered later".into(),
+    );
+
+    // ---- bzz agent delete, from another process ---------------------------
+    // Echo: served by the running bzz, idle. It has no process, and the
+    // running bzz holds its key and its connection.
+    let (deleted, text) = said(&["agent", "delete", "Echo", "--yes"]);
+    assert!(deleted, "{text}");
+    claim(
+        text.contains("the bzz that runs Echo") && text.contains("has stopped it"),
+        format!("delete: the delete says that it reached the bzz that runs the agent: {text}"),
+    );
+    log_says(
+        "Echo · pi-durable · stopped · deleted",
+        "delete: the bzz that served the agent let go of it",
+    )
+    .await;
+    presence_becomes(&echo.pubkey, false, "a deleted agent says it is gone").await;
+    let serving = |agent: uuid::Uuid| {
+        std::fs::read_dir(paths.data_dir.join("agents").join("serving"))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(&agent.to_string())
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    };
+    claim(
+        serving(echo.id) == 0 && serving(scout.id) == 1,
+        format!(
+            "delete: no bzz says it holds the deleted agent's key, and one holds the other's: Echo {}, Scout {}",
+            serving(echo.id),
+            serving(scout.id)
+        ),
+    );
+    // Scout: deleted while it is answering.
+    let last = mention(
+        &scout.pubkey,
+        r#"do: [["sleep", 8000], ["buzz_send", {"text": "answered after I was deleted", "final": true}]]"#.into(),
+    )
+    .await;
+    let last_id = last.id.to_hex();
+    until("the turn to be running", WAIT, || {
+        (turn(&last_id).map(|(state, ..)| state).as_deref() == Some("delivered")).then_some(())
+    })
+    .await;
+    let harness = bzz::agents::runtime::process::read_record(
+        &bzz::agents::runtime::process::run_dir(&paths.data_dir),
+        scout.id,
+    )
+    .map(|record| record.process.pid);
+    let (deleted, text) = said(&["agent", "delete", "Scout", "--yes"]);
+    claim(
+        deleted,
+        format!("delete: an agent that is answering is stopped and deleted: {text}"),
+    );
+    if deleted {
+        claim(
+            harness.is_some_and(|pid| !support::agent_harness::running(pid)),
+            format!("delete: the agent's process is gone when the delete returns: {harness:?}"),
+        );
+        log_says(
+            "Scout · pi-durable · stopped · deleted",
+            "delete: the bzz that ran the agent let go of it",
+        )
+        .await;
+        claim(
+            serving(scout.id) == 0,
+            "delete: a bzz still says it holds the deleted agent's key".into(),
+        );
+        claim(
+            Config::load(&paths).unwrap().hosted_agents.is_empty(),
+            "delete: the settings still hold an agent".into(),
+        );
+    }
+    tokio::time::sleep(Duration::from_secs(14)).await;
+    let after = replies(last_id.clone()).await;
+    claim(
+        after.is_empty(),
+        format!("delete: no bzz publishes as an agent after it was deleted: {after:?}"),
+    );
+    presence_becomes(&scout.pubkey, false, "the deleted agent says it is gone").await;
+
+    // The bzz that ran them is still there, and stops as always.
+    let status = Command::new("kill")
+        .args(["-TERM", &running.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(
+        running.wait().unwrap().success(),
+        "{}",
+        std::fs::read_to_string(&run_log).unwrap()
+    );
+    owner_supervisor.shutdown().await;
+    owner.lock().await;
+    let faults = faults.into_inner();
+    assert!(
+        faults.is_empty(),
+        "{} claim(s) do not hold:\n- {}",
+        faults.len(),
+        faults.join("\n- ")
+    );
 }

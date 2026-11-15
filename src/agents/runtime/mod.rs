@@ -215,6 +215,10 @@ pub struct Limits {
     /// How long a real command waits for the owner's answer before it
     /// counts as refused (`_bzz/approve`).
     pub approval: Duration,
+    /// How often a running agent says that it is present on the relay
+    /// (kind 20001, with its own key). Buzz 1.0 takes an agent for present
+    /// for 75 seconds after it last said so.
+    pub presence_interval: Duration,
 }
 
 /// How long bzz's own host gives a Pi package to load, all of them at the
@@ -243,6 +247,7 @@ impl Default for Limits {
             agent_exchange_window: Duration::from_secs(3600),
             prune_interval: Duration::from_secs(24 * 3600),
             approval: Duration::from_secs(300),
+            presence_interval: Duration::from_secs(crate::protocol::presence::HEARTBEAT_SECONDS),
         }
     }
 }

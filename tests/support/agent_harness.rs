@@ -169,6 +169,8 @@ pub enum Mode {
     #[default]
     Accept,
     Refuse(String),
+    /// It never left bzz, or the relay said to come back later.
+    Later(String),
     /// No answer, and the relay does not have the event.
     Lost,
     /// No answer, but the relay has the event.
@@ -191,6 +193,8 @@ pub struct RecordedRelay {
     release: tokio::sync::Notify,
     /// Set when a bzz ended the agent's connection for good.
     closed: std::sync::atomic::AtomicBool,
+    /// While set, the relay's records of a channel cannot be read.
+    unreadable: std::sync::atomic::AtomicBool,
 }
 
 impl RecordedRelay {
@@ -204,6 +208,7 @@ impl RecordedRelay {
             mode: Mutex::default(),
             release: tokio::sync::Notify::new(),
             closed: std::sync::atomic::AtomicBool::new(false),
+            unreadable: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -211,6 +216,13 @@ impl RecordedRelay {
     /// agent again.
     pub fn closed(&self) -> bool {
         self.closed.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Makes the relay's records of every channel unreadable, as when the
+    /// relay cannot be reached, or readable again.
+    pub fn set_unreadable(&self, unreadable: bool) {
+        self.unreadable
+            .store(unreadable, std::sync::atomic::Ordering::Release);
     }
 
     pub fn set_mode(&self, mode: Mode) {
@@ -320,8 +332,9 @@ impl AgentRelay for RecordedRelay {
 
     async fn publish(&self, event: Event) -> Published {
         self.calls.lock().unwrap().push(event.clone());
-        // A typing indicator is ephemeral: no mode applies to it.
-        let mode = if event.kind.as_u16() == 20_002 {
+        // A typing indicator and a presence update are ephemeral: no mode
+        // applies to them.
+        let mode = if matches!(event.kind.as_u16(), 20_001 | 20_002) {
             Mode::Accept
         } else {
             self.mode.lock().unwrap().clone()
@@ -332,6 +345,7 @@ impl AgentRelay for RecordedRelay {
                 Published::Accepted
             }
             Mode::Refuse(why) => Published::Refused(why),
+            Mode::Later(why) => Published::Later(why),
             Mode::Lost => Published::Unknown,
             Mode::Silent => {
                 self.seed(&event);
@@ -357,6 +371,9 @@ impl AgentRelay for RecordedRelay {
     }
 
     async fn channel(&self, channel: Uuid) -> bzz::Result<ChannelFacts> {
+        if self.unreadable.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(bzz::Error::Network("the relay cannot be reached".into()));
+        }
         self.channels
             .lock()
             .unwrap()

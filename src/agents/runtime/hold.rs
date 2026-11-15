@@ -11,6 +11,17 @@
 //!   command that was killed holds nothing.
 //! - `moved-away`: the agent runs elsewhere. It stays until `bzz agent
 //!   receive` takes the agent back.
+//! - `deleting`: a `bzz agent delete` is at work, in the process named.
+//!   A bzz that serves the agent stops its process and stops listening, as
+//!   for a move; if the deletion does not happen, it runs the agent again.
+//! - `deleted`: the deletion goes on. A bzz that serves the agent closes
+//!   the agent's connection and forgets its key, for good, before the
+//!   agent's files go.
+//!
+//! The other half is who serves an agent: each bzz that does writes
+//! `<data>/agents/serving/<agent id>.<its pid>.json` while it holds the
+//! agent's key and connection, and removes it when it has let both go. A
+//! deletion waits for these to be gone before it removes the agent's files.
 
 use std::path::{Path, PathBuf};
 
@@ -26,6 +37,11 @@ use crate::{
 pub const MOVED_AWAY: &str = "moved away: it runs elsewhere, and this bzz does not start it (`bzz agent receive` takes it back)";
 /// What a status line says while a move is at work.
 pub const MOVING: &str = "being moved: stopped until the move is over";
+/// What a status line says while a deletion is at work.
+pub const DELETING: &str = "being deleted: stopped until the deletion is over";
+/// What a status line says of an agent that was deleted under a running bzz.
+pub const DELETED: &str =
+    "deleted: `bzz agent delete` removed it, and this bzz let go of its key and its connection";
 
 /// Where a moved agent went.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -51,6 +67,8 @@ impl Destination {
 enum Record {
     Moving { holder: ProcessIdentity },
     MovedAway { at: u64, to: Destination },
+    Deleting { holder: ProcessIdentity },
+    Deleted { at: u64 },
 }
 
 /// What the file says, when it says anything that counts.
@@ -64,6 +82,27 @@ pub enum Hold {
         at: Option<u64>,
         to: Option<Destination>,
     },
+    /// The live process `pid` is deleting the agent, and may still give up.
+    Deleting { pid: u32 },
+    /// The agent is deleted: its files are about to go.
+    Deleted,
+}
+
+impl Hold {
+    /// What a status line says of an agent held like this.
+    pub const fn words(&self) -> &'static str {
+        match self {
+            Self::Moving { .. } => MOVING,
+            Self::MovedAway { .. } => MOVED_AWAY,
+            Self::Deleting { .. } => DELETING,
+            Self::Deleted => DELETED,
+        }
+    }
+
+    /// Whether the agent may run here again when the file goes away.
+    pub const fn passes(&self) -> bool {
+        matches!(self, Self::Moving { .. } | Self::Deleting { .. })
+    }
 }
 
 pub fn path(data_dir: &Path, agent: Uuid) -> PathBuf {
@@ -86,6 +125,10 @@ pub fn read(data_dir: &Path, agent: Uuid) -> Option<Hold> {
             at: Some(at),
             to: Some(to),
         }),
+        Ok(Record::Deleting { holder }) => {
+            process::is_alive(&holder).then_some(Hold::Deleting { pid: holder.pid })
+        }
+        Ok(Record::Deleted { .. }) => Some(Hold::Deleted),
         Err(_) => Some(Hold::MovedAway { at: None, to: None }),
     }
 }
@@ -127,15 +170,35 @@ pub struct Held {
     settled: bool,
 }
 
-/// Holds `agent` for this process. Refused while another live process
-/// holds it.
+/// Holds `agent` for this process, for a move. Refused while another live
+/// process holds it.
 pub fn take(data_dir: &Path, agent: Uuid) -> Result<Held> {
-    if let Some(Hold::Moving { pid }) = read(data_dir, agent)
-        && pid != std::process::id()
-    {
-        return Err(Error::Config(format!(
-            "another bzz is moving this agent right now (process {pid}); wait for it to finish"
-        )));
+    take_as(data_dir, agent, |holder| Record::Moving { holder })
+}
+
+/// Holds `agent` for this process, for a deletion that may still not
+/// happen. Refused while another live process holds it.
+pub fn take_for_deletion(data_dir: &Path, agent: Uuid) -> Result<Held> {
+    take_as(data_dir, agent, |holder| Record::Deleting { holder })
+}
+
+fn take_as(
+    data_dir: &Path,
+    agent: Uuid,
+    record: impl FnOnce(ProcessIdentity) -> Record,
+) -> Result<Held> {
+    match read(data_dir, agent) {
+        Some(Hold::Moving { pid }) if pid != std::process::id() => {
+            return Err(Error::Config(format!(
+                "another bzz is moving this agent right now (process {pid}); wait for it to finish"
+            )));
+        }
+        Some(Hold::Deleting { pid }) if pid != std::process::id() => {
+            return Err(Error::Config(format!(
+                "another bzz is deleting this agent right now (process {pid}); wait for it to finish"
+            )));
+        }
+        _ => {}
     }
     let holder = process::identity_of(std::process::id())
         .ok_or_else(|| Error::Config("this process could not identify itself".into()))?;
@@ -143,7 +206,7 @@ pub fn take(data_dir: &Path, agent: Uuid) -> Result<Held> {
     let before = std::fs::read(path(data_dir, agent))
         .ok()
         .filter(|bytes| matches!(serde_json::from_slice(bytes), Ok(Record::MovedAway { .. })));
-    write(data_dir, agent, &Record::Moving { holder })?;
+    write(data_dir, agent, &record(holder))?;
     Ok(Held {
         data_dir: data_dir.to_path_buf(),
         agent,
@@ -159,6 +222,19 @@ impl Held {
             &self.data_dir,
             self.agent,
             &Record::MovedAway { at: unix_now(), to },
+        )?;
+        self.settled = true;
+        Ok(())
+    }
+
+    /// The deletion goes on: from now on every bzz that serves the agent
+    /// lets go of its key and its connection for good. The file goes with
+    /// the agent's folder.
+    pub fn deleted(mut self) -> Result<()> {
+        write(
+            &self.data_dir,
+            self.agent,
+            &Record::Deleted { at: unix_now() },
         )?;
         self.settled = true;
         Ok(())
@@ -192,6 +268,69 @@ impl Drop for Held {
             }
         }
     }
+}
+
+// ---- who serves an agent ---------------------------------------------------
+
+fn serving_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("agents").join("serving")
+}
+
+fn serving_path(data_dir: &Path, agent: Uuid, pid: u32) -> PathBuf {
+    serving_dir(data_dir).join(format!("{agent}.{pid}.json"))
+}
+
+/// Says that this bzz holds `agent`'s key and its connection from now on.
+/// Written before either is used.
+pub fn serve(data_dir: &Path, agent: Uuid) -> Result<()> {
+    // Asked once: where a process's start time is not a file to read,
+    // finding it starts a program.
+    static ME: std::sync::OnceLock<Option<ProcessIdentity>> = std::sync::OnceLock::new();
+    let folder = serving_dir(data_dir);
+    process::create_private_dir(&folder)?;
+    let me = ME
+        .get_or_init(|| process::identity_of(std::process::id()))
+        .clone()
+        .ok_or_else(|| Error::Config("this process could not identify itself".into()))?;
+    let path = serving_path(data_dir, agent, me.pid);
+    let bytes = serde_json::to_vec(&me).map_err(|error| Error::Serialization(error.to_string()))?;
+    std::fs::write(&path, bytes).map_err(|error| Error::io(&path, error))?;
+    crate::paths::set_private_permissions(&path)
+}
+
+/// Says that this bzz has let go of `agent`: its connection is closed and
+/// its key is forgotten.
+pub fn let_go(data_dir: &Path, agent: Uuid) {
+    let _ = std::fs::remove_file(serving_path(data_dir, agent, std::process::id()));
+}
+
+/// The live bzz processes, other than this one, that hold `agent`'s key and
+/// connection. A record whose process is gone is removed: a bzz that was
+/// killed holds nothing.
+pub fn served_by(data_dir: &Path, agent: Uuid) -> Vec<u32> {
+    let prefix = format!("{agent}.");
+    let Ok(entries) = std::fs::read_dir(serving_dir(data_dir)) else {
+        return Vec::new();
+    };
+    let mut serving = Vec::new();
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with(&prefix) {
+            continue;
+        }
+        let alive = std::fs::read(entry.path())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<ProcessIdentity>(&bytes).ok())
+            .filter(process::is_alive);
+        match alive {
+            Some(identity) if identity.pid != std::process::id() => serving.push(identity.pid),
+            Some(_) => {}
+            None => {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    serving.sort_unstable();
+    serving
 }
 
 /// Removes whatever the file says. For a move whose last step could not be
@@ -288,6 +427,26 @@ mod tests {
         take(data.path(), agent).unwrap().free().unwrap();
         assert_eq!(read(data.path(), agent), None);
 
+        // A deletion holds the agent as a move does, and gives it back when
+        // it does not happen; once it goes on, the agent never runs here.
+        let held = take_for_deletion(data.path(), agent).unwrap();
+        assert_eq!(
+            read(data.path(), agent),
+            Some(Hold::Deleting {
+                pid: std::process::id()
+            })
+        );
+        assert!(read(data.path(), agent).unwrap().passes());
+        drop(held);
+        assert_eq!(read(data.path(), agent), None, "a deletion that failed");
+        take_for_deletion(data.path(), agent)
+            .unwrap()
+            .deleted()
+            .unwrap();
+        assert_eq!(read(data.path(), agent), Some(Hold::Deleted));
+        assert!(!Hold::Deleted.passes() && !moved_away(data.path(), agent));
+        clear(data.path(), agent);
+
         // A file that cannot be read: in doubt the agent is not started.
         std::fs::write(path(data.path(), agent), b"{ half a rec").unwrap();
         assert_eq!(
@@ -303,6 +462,39 @@ mod tests {
                 .permissions()
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn a_bzz_that_serves_an_agent_says_so_until_it_lets_go() {
+        let data = tempfile::TempDir::new().unwrap();
+        let agent = Uuid::new_v4();
+        assert!(served_by(data.path(), agent).is_empty());
+        // This bzz itself is never one a deletion waits for.
+        serve(data.path(), agent).unwrap();
+        assert!(served_by(data.path(), agent).is_empty());
+        assert!(serving_path(data.path(), agent, std::process::id()).exists());
+        let_go(data.path(), agent);
+        assert!(!serving_path(data.path(), agent, std::process::id()).exists());
+        #[cfg(unix)]
+        {
+            // Another bzz that lives is one; when it is gone, so is its word.
+            let mut other = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap();
+            let identity = process::identity_of(other.id()).unwrap();
+            let path = serving_path(data.path(), agent, other.id());
+            std::fs::write(&path, serde_json::to_vec(&identity).unwrap()).unwrap();
+            assert_eq!(served_by(data.path(), agent), vec![other.id()]);
+            assert!(
+                served_by(data.path(), Uuid::new_v4()).is_empty(),
+                "another agent"
+            );
+            other.kill().unwrap();
+            other.wait().unwrap();
+            assert!(served_by(data.path(), agent).is_empty());
+            assert!(!path.exists(), "a dead bzz's record is removed");
         }
     }
 }

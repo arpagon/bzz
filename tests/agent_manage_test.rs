@@ -987,3 +987,89 @@ fn the_broker_commands_leave_an_agent_bzz_runs_alone() {
         "{said}"
     );
 }
+
+/// From the run against Buzz 1.0: with an identity whose key Buzz Desktop
+/// holds (a paired one), `bzz agent new` refused only after it had looked
+/// for Node, installed the agent host from npm and checked the model. It
+/// refuses first now, and says why such an identity cannot have agents.
+#[cfg(unix)]
+#[test]
+fn agent_new_with_a_paired_identity_refuses_before_anything_is_looked_for_or_installed() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let temporary = TempDir::new().unwrap();
+    let paths = Paths {
+        config_dir: temporary.path().join("c"),
+        data_dir: temporary.path().join("d"),
+        cache_dir: temporary.path().join("k"),
+    };
+    let paired = IdentityConfig {
+        id: Uuid::new_v4(),
+        label: "buzz1".into(),
+        pubkey: Keys::generate().public_key().to_hex(),
+        backend: KeyBackend::BuzzDesktop,
+        key_ref: "bzz-desktop-test".into(),
+    };
+    let mut config = Config {
+        identities: vec![paired.clone()],
+        ..Config::default()
+    };
+    config
+        .add_community("c1".into(), "ws://localhost:3030".into(), paired.id, true)
+        .unwrap();
+    config.save(&paths).unwrap();
+    // A stand-in for `node` that leaves a mark when anything starts it.
+    let looked = temporary.path().join("node-was-started");
+    let node = temporary.path().join("node");
+    std::fs::write(
+        &node,
+        format!("#!/bin/sh\ntouch '{}'\nexit 1\n", looked.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_bzz"))
+        .args([
+            "agent",
+            "new",
+            "Paired",
+            "--model",
+            "scripted/scripted",
+            "--yes",
+        ])
+        .env("BZZ_CONFIG_DIR", &paths.config_dir)
+        .env("BZZ_DATA_DIR", &paths.data_dir)
+        .env("BZZ_CACHE_DIR", &paths.cache_dir)
+        .env("BZZ_NODE", &node)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.status.success(), "{said}");
+    for expected in [
+        "buzz1 is an identity whose key Buzz Desktop holds",
+        "cannot have local agents",
+        "Buzz Desktop does not sign for a paired program",
+        "Nothing was installed and nothing was made",
+    ] {
+        assert!(said.contains(expected), "`{expected}` in: {said}");
+    }
+    assert!(
+        !looked.exists() && !said.contains("installing"),
+        "refused before Node was looked for: {said}"
+    );
+    assert!(!paths.data_dir.join("agent-host").exists());
+    assert!(Config::load(&paths).unwrap().hosted_agents.is_empty());
+
+    // An identity whose key bzz holds may.
+    assert!(
+        manage::may_own_agents(&IdentityConfig {
+            backend: KeyBackend::EncryptedFile,
+            ..paired.clone()
+        })
+        .is_ok()
+    );
+    assert!(manage::may_own_agents(&paired).is_err());
+}

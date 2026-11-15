@@ -5,6 +5,15 @@
 //! - **One final reply per request.** A final `send` is signed, stored under
 //!   the request in the ledger, and only then published. The request comes
 //!   from the calling session's live turn, never from the call's arguments.
+//!   The stored reply is never replaced: it is published again unchanged
+//!   until the relay answers, and the relay's refusal ends the request at
+//!   once, with nothing more signed for it.
+//! - **Only where the agent may write.** Before anything is published as
+//!   the agent (a reply, a stored reply again, a message of a turn, a
+//!   reaction, a typing indicator) bzz asks the relay's own records whether
+//!   the agent is still a member of that channel and may write there. If
+//!   not, nothing is published, then or later, and a mention is not handed
+//!   to the harness at all.
 //! - **A turn always ends in one of four ways:** a final `send`; the
 //!   harness's last plain text, when it never called `send`; something said
 //!   without a final reply; or a failure notice named by kind.
@@ -53,11 +62,11 @@ use crate::{
         runtime::{
             FailureKind, Limits,
             acp::{self, CallError, Connection, Incoming, RpcError},
-            admission::{self, ChannelFacts, PlaceKind, Refusal, ReplyTarget, Rule},
+            admission::{self, ChannelFacts, PlaceKind, Refusal, ReplyTarget, Rule, Unwritable},
             approval::{self, Approvals, Asked, NotAsked, Outcome},
             coding,
             credentials::Credentials,
-            hold::{self, Hold},
+            hold,
             install::{self, StartReport},
             permission as permission_rule,
             process::{self, Harness, Launch},
@@ -81,8 +90,20 @@ const MAX_PLAIN_TEXT_CHARS: usize = 16_000;
 const CONCURRENT_TOOL_CALLS: usize = 8;
 /// A stored reply this old and still unacknowledged is published again.
 const REPUBLISH_AFTER_SECONDS: u64 = 30;
-/// How often a running bzz looks whether another bzz is moving its agent.
+/// How often a running bzz looks whether another bzz is moving, deleting or
+/// pausing its agent.
 const HOLD_POLL: Duration = Duration::from_millis(500);
+/// How long bzz waits for the relay to take a presence update.
+const PRESENCE_LIMIT: Duration = Duration::from_secs(3);
+
+/// What the settings file says of an agent that a running bzz serves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SettingsSay {
+    Active,
+    Paused,
+    /// It is no longer in the settings: it was deleted.
+    Gone,
+}
 /// Git credentials of one harness that bzz looks up at once. A git command
 /// asks once, so more than a few at a time is a harness gone wrong.
 const CONCURRENT_CREDENTIALS: usize = 4;
@@ -367,23 +388,64 @@ pub struct Agent {
     turn_changed: Notify,
     stopping: AtomicBool,
     paused: AtomicBool,
-    /// A `bzz agent move` in another process holds the agent
-    /// ([`hold`]): no process, no listening, until it lets go.
+    /// A `bzz agent move` or `bzz agent delete` in another process holds the
+    /// agent ([`hold`]): no process, no listening, until it lets go.
     held: AtomicBool,
+    /// The settings file says the agent is paused: `bzz agent pause` in
+    /// another process. No process, no listening, until it says otherwise.
+    suspended: AtomicBool,
+    /// This bzz let the agent go for good (moved away, or deleted): its
+    /// connection is closed and its key forgotten.
+    retired: AtomicBool,
+    /// Wakes the task that says the agent is present.
+    presence_changed: Notify,
     /// When this agent's rows were last pruned.
     pruned: Mutex<Option<Instant>>,
+    /// Whether the agent might write in a channel by the relay's records
+    /// as they came with the last request from it, and when that was. Used
+    /// only to decide whether a request is handed to the harness while the
+    /// relay cannot be asked again; never to publish.
+    admitted: Mutex<HashMap<Uuid, (Instant, bool)>>,
 }
+
+/// The kind a request fails with when the relay refuses its reply.
+pub const REPLY_REFUSED: &str = "reply-refused";
+/// The kind a request fails with when its stored reply was never accepted
+/// in the time a message can be a request at all.
+pub const REPLY_UNDELIVERED: &str = "reply-undelivered";
+/// How long bzz waits for the relay's records of a channel before it
+/// publishes there.
+const STANDING_LIMIT: Duration = Duration::from_secs(10);
+/// For how long the relay's records that came with a request may decide
+/// that it is handed to the harness, while the relay cannot be asked.
+const ADMITTED_FRESH: Duration = Duration::from_secs(60);
 
 /// What became of a reply offered to the ledger.
 enum Reply {
+    /// The relay accepted it.
     Sent(String),
-    /// The request already had its final reply.
-    Already(String),
-    /// Stored; the relay has not acknowledged it yet.
+    /// The request already had its final reply. `refused`: one that will
+    /// never be published.
+    Already { id: String, refused: bool },
+    /// Stored; the relay has not accepted it yet.
     Pending(String),
+    /// The relay refused it. It stays the request's one reply, the request
+    /// is over, and nothing more is signed for it.
     Refused(String),
+    /// Nothing was signed: the agent may not write in that place.
+    Withheld(Unwritable),
     /// It could not be signed or stored.
     Failed,
+}
+
+/// Whether the agent may write in a channel, by the relay's own records.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Standing {
+    Writer,
+    Not(Unwritable),
+    /// The relay could not be asked just now. Nothing is published on a
+    /// guess.
+    Unknown,
 }
 
 /// Answers `session/request_permission` for a harness that is not a coding
@@ -420,7 +482,11 @@ impl Agent {
             stopping: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             held: AtomicBool::new(false),
+            suspended: AtomicBool::new(false),
+            retired: AtomicBool::new(false),
+            presence_changed: Notify::new(),
             pruned: Mutex::new(None),
+            admitted: Mutex::new(HashMap::new()),
         })
     }
 
@@ -435,9 +501,20 @@ impl Agent {
     }
 
     fn halted(&self) -> bool {
-        self.stopping.load(Ordering::Acquire)
-            || self.paused.load(Ordering::Acquire)
+        self.stopping.load(Ordering::Acquire) || self.resting()
+    }
+
+    /// Stopped for now by its owner or by another bzz: paused here, paused
+    /// in the settings, or held for a move or a deletion.
+    fn resting(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
             || self.held.load(Ordering::Acquire)
+            || self.suspended.load(Ordering::Acquire)
+    }
+
+    /// Whether this bzz let the agent go for good.
+    pub fn retired(&self) -> bool {
+        self.retired.load(Ordering::Acquire)
     }
 
     async fn store<T, F>(&self, operation: F) -> Result<T>
@@ -489,6 +566,13 @@ impl Agent {
             },
             channel,
         )?;
+        self.admitted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                channel.id,
+                (Instant::now(), channel.may_write(&self.spec.pubkey).is_ok()),
+            );
         // Another agent's message wakes this one only so often in one
         // conversation: two agents that may wake each other cannot answer
         // each other for ever. Its owner and other people are not counted.
@@ -536,6 +620,11 @@ impl Agent {
     /// Settles what an earlier bzz or an earlier process left open. Runs
     /// before any harness is started.
     pub async fn recover(&self) {
+        // Held for a move or a deletion by another bzz: nothing is
+        // published and nothing decided until that is over.
+        if hold::read(&self.shared.data_dir, self.spec.id).is_some() {
+            return;
+        }
         self.republish(0).await;
         self.prune().await;
         let Ok(open) = self
@@ -573,56 +662,181 @@ impl Agent {
 
     /// Starts handing queued requests to the harness.
     pub fn start(self: &Arc<Self>) {
+        // From here this bzz holds the agent's key and connection, and says
+        // so where a `bzz agent delete` in another process looks.
+        let _ = hold::serve(&self.shared.data_dir, self.spec.id);
         tokio::spawn(self.clone().schedule());
-        tokio::spawn(self.clone().watch_hold());
+        tokio::spawn(self.clone().watch());
+        tokio::spawn(self.clone().say_present());
         self.wake.notify_one();
     }
 
-    /// Follows the agent's `move.json` ([`hold`]), which a `bzz agent move`
-    /// in another process writes. While a move is at work the agent has no
-    /// process and takes no request; when the move fails it runs again, and
-    /// when it succeeds this bzz never starts the agent again.
-    async fn watch_hold(self: Arc<Self>) {
+    /// What the settings file says of this agent now, when it says anything
+    /// a running bzz acts on.
+    fn settings_say(&self) -> Option<SettingsSay> {
+        let path = self.shared.settings_file.as_ref()?;
+        // Unreadable just now: nothing is concluded from that.
+        let config = crate::config::load_from(path).ok()?;
+        Some(
+            match config
+                .hosted_agents
+                .iter()
+                .find(|agent| agent.id == self.spec.id)
+            {
+                // No longer an agent of this bzz at all: it was deleted.
+                None => SettingsSay::Gone,
+                // There, and not as an agent bzz runs: nothing a `bzz
+                // agent` command writes. Nothing is concluded from it.
+                Some(agent) if agent.local.is_none() => return None,
+                Some(agent) if agent.runs_locally() => SettingsSay::Active,
+                // Moved away is the business of `move.json`.
+                Some(agent)
+                    if agent.local.as_ref().is_some_and(|local| {
+                        local.state == crate::config::LocalAgentState::MovedAway
+                    }) =>
+                {
+                    return None;
+                }
+                Some(_) => SettingsSay::Paused,
+            },
+        )
+    }
+
+    /// Lets the agent go for good: its process is stopped, it says that it
+    /// is gone, its connection is closed and its key forgotten. Then, and
+    /// only then, this bzz no longer counts as one that serves it.
+    async fn retire(&self, why: &'static str) {
+        self.stop().await;
+        self.state().problem = Some(why.into());
+        self.relay.close().await;
+        self.retired.store(true, Ordering::Release);
+        hold::let_go(&self.shared.data_dir, self.spec.id);
+    }
+
+    /// Follows what another bzz process does to the agent, twice a second:
+    ///
+    /// - the agent's `move.json` ([`hold`]), which a `bzz agent move` or a
+    ///   `bzz agent delete` writes. While one is at work the agent has no
+    ///   process and takes no request; when it fails the agent runs again,
+    ///   and when it succeeds this bzz never runs the agent again;
+    /// - the settings file, when it changed: `bzz agent pause` and `bzz
+    ///   agent resume` hold at once, and an agent that is no longer in the
+    ///   settings is let go.
+    async fn watch(self: Arc<Self>) {
         let mut tick = tokio::time::interval(HOLD_POLL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut settings_seen = None;
         loop {
             tick.tick().await;
             if self.stopping.load(Ordering::Acquire) {
                 break;
             }
-            match hold::read(&self.shared.data_dir, self.spec.id) {
-                Some(Hold::MovedAway { .. }) => {
-                    self.stop().await;
-                    self.state().problem = Some(hold::MOVED_AWAY.into());
-                    // It is another home's agent now: this bzz keeps neither
-                    // a connection as the agent nor its key in memory.
-                    self.relay.close().await;
+            let held = hold::read(&self.shared.data_dir, self.spec.id);
+            if let Some(hold) = &held {
+                if !hold.passes() {
+                    // It is another home's agent now, or nobody's: this bzz
+                    // keeps neither a connection as the agent nor its key
+                    // in memory.
+                    self.retire(hold.words()).await;
                     break;
                 }
-                Some(Hold::Moving { .. }) => {
-                    if !self.held.swap(true, Ordering::AcqRel) {
-                        self.halt(Phase::Stopped).await;
-                        self.state().problem = Some(hold::MOVING.into());
-                    }
-                }
-                None => {
-                    if self.held.swap(false, Ordering::AcqRel) {
-                        let paused = self.paused.load(Ordering::Acquire);
-                        {
-                            let mut state = self.state();
-                            state.problem = None;
-                            state.phase = if paused { Phase::Paused } else { Phase::Idle };
-                        }
-                        if !paused {
-                            // As after a pause: what was open is settled,
-                            // and what is queued is handed over.
-                            self.recover().await;
-                            self.wake.notify_one();
-                        }
-                    }
+                if !self.held.swap(true, Ordering::AcqRel) {
+                    self.halt(Phase::Stopped).await;
+                    self.state().problem = Some(hold.words().into());
                 }
             }
+            // The settings, read again only when the file changed.
+            let stamp = self.shared.settings_file.as_ref().and_then(|path| {
+                let file = std::fs::metadata(path).ok()?;
+                Some((file.modified().ok()?, file.len()))
+            });
+            let mut resumed = false;
+            if stamp.is_some() && stamp != settings_seen {
+                settings_seen = stamp;
+                match self.settings_say() {
+                    Some(SettingsSay::Gone) => {
+                        self.retire(hold::DELETED).await;
+                        break;
+                    }
+                    Some(SettingsSay::Paused) => {
+                        if !self.suspended.swap(true, Ordering::AcqRel) {
+                            self.halt(Phase::Paused).await;
+                            self.state().problem =
+                                Some("paused by its owner, with `bzz agent pause`".into());
+                        }
+                    }
+                    Some(SettingsSay::Active) => {
+                        resumed |= self.suspended.swap(false, Ordering::AcqRel);
+                    }
+                    None => {}
+                }
+            }
+            if held.is_none() {
+                resumed |= self.held.swap(false, Ordering::AcqRel);
+            }
+            if resumed {
+                self.rest_or_run().await;
+            }
         }
+    }
+
+    /// After something that stopped the agent for a while is over: it runs
+    /// again unless something else still stops it.
+    async fn rest_or_run(&self) {
+        if self.stopping.load(Ordering::Acquire) {
+            return;
+        }
+        let resting = self.resting();
+        {
+            let mut state = self.state();
+            let paused =
+                self.paused.load(Ordering::Acquire) || self.suspended.load(Ordering::Acquire);
+            if !resting {
+                state.problem = None;
+                state.phase = Phase::Idle;
+            } else if paused && !self.held.load(Ordering::Acquire) {
+                state.phase = Phase::Paused;
+            }
+        }
+        if !resting {
+            // As after a pause: what was open is settled, and what is
+            // queued is handed over.
+            self.recover().await;
+            self.wake.notify_one();
+            self.presence_changed.notify_one();
+        }
+    }
+
+    /// Says on the relay, with the agent's own key, that the agent is
+    /// present (kind 20001, `online`), now and at every interval for as
+    /// long as this bzz runs it. Buzz shows an agent as online from this;
+    /// without it a bzz agent was "Offline" while it answered. Nothing is
+    /// said while the agent is paused, held or stopped: [`Agent::halt`] has
+    /// said `offline` then.
+    async fn say_present(self: Arc<Self>) {
+        loop {
+            if self.stopping.load(Ordering::Acquire) {
+                break;
+            }
+            if !self.resting() {
+                self.say(crate::protocol::presence::Presence::Online).await;
+            }
+            tokio::select! {
+                () = tokio::time::sleep(self.limits().presence_interval) => {}
+                () = self.presence_changed.notified() => {}
+            }
+        }
+    }
+
+    /// One presence update as the agent, waited for only briefly: it is
+    /// ephemeral, and the next one says the same.
+    async fn say(&self, presence: crate::protocol::presence::Presence) {
+        let said = async {
+            let builder = buzz_sdk::build_presence_update(presence.as_str()).ok()?;
+            let event = self.relay.sign(builder).await.ok()?;
+            Some(self.relay.publish(event).await)
+        };
+        let _ = tokio::time::timeout(PRESENCE_LIMIT, said).await;
     }
 
     async fn schedule(self: Arc<Self>) {
@@ -636,7 +850,7 @@ impl Agent {
             if self.stopping.load(Ordering::Acquire) {
                 break;
             }
-            if self.paused.load(Ordering::Acquire) || self.held.load(Ordering::Acquire) {
+            if self.resting() {
                 continue;
             }
             self.republish(REPUBLISH_AFTER_SECONDS).await;
@@ -835,8 +1049,8 @@ impl Agent {
         let launch = self.launch().await?;
         // Read at the last moment before the process exists: a move that
         // began while the host was being found or installed is seen here.
-        if hold::read(&self.shared.data_dir, self.spec.id).is_some() {
-            return Err(hold::MOVING.to_owned());
+        if let Some(hold) = hold::read(&self.shared.data_dir, self.spec.id) {
+            return Err(hold.words().to_owned());
         }
         let run_dir = process::run_dir(&self.shared.data_dir);
         let (harness, stdin, stdout) =
@@ -931,8 +1145,16 @@ impl Agent {
             }
             Err(problem) => {
                 let mut state = self.state();
-                // Held for a move: nothing was started, so nothing crashed.
-                if problem != hold::MOVING {
+                // Held for a move or a deletion: nothing was started, so
+                // nothing crashed.
+                if ![
+                    hold::MOVING,
+                    hold::DELETING,
+                    hold::DELETED,
+                    hold::MOVED_AWAY,
+                ]
+                .contains(&problem.as_str())
+                {
                     state.crashes.push_back(Instant::now());
                 }
                 state.problem = Some(problem);
@@ -1129,6 +1351,7 @@ impl Agent {
     /// Stops the agent for good: bzz is closing or locking.
     pub async fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
+        self.presence_changed.notify_one();
         self.halt(Phase::Stopped).await;
     }
 
@@ -1140,6 +1363,9 @@ impl Agent {
                 turn.typing = None;
             }
         }
+        // It is gone from here on, and says so while it still can: a
+        // mention would not be answered.
+        self.say(crate::protocol::presence::Presence::Offline).await;
         // A command that waits for the owner's answer is not started by an
         // agent that is paused, stopped, or whose bzz is closing.
         self.shared.approvals.void_agent(
@@ -1213,12 +1439,14 @@ impl Agent {
         if self.paused.swap(paused, Ordering::AcqRel) == paused {
             return;
         }
+        // An agent that was stopped for good is not paused or resumed.
+        if self.stopping.load(Ordering::Acquire) {
+            return;
+        }
         if paused {
             self.halt(Phase::Paused).await;
         } else {
-            self.state().phase = Phase::Idle;
-            self.recover().await;
-            self.wake.notify_one();
+            self.rest_or_run().await;
         }
     }
 
@@ -1399,6 +1627,33 @@ impl Agent {
             return;
         };
         let request = Arc::new(request);
+        // Before any harness sees it: an agent that was taken out of the
+        // channel, or made read-only there, could not answer. The request
+        // ends, with the reason, and nothing is started for it.
+        match self.standing(row.channel_id, true).await {
+            Standing::Writer => {}
+            Standing::Not(why) => {
+                self.settle_failed(&row, why.as_str()).await;
+                return;
+            }
+            // The relay cannot be asked just now. The records that came
+            // with the request say whether it may be handed over, while
+            // they are fresh; what the turn then wants to publish is asked
+            // about again, and waits for the relay. Otherwise the request
+            // waits.
+            Standing::Unknown => {
+                let fresh = self
+                    .admitted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&row.channel_id)
+                    .is_some_and(|(at, may_write)| *may_write && at.elapsed() < ADMITTED_FRESH);
+                if !fresh {
+                    tokio::time::sleep(self.limits().restart_backoff).await;
+                    return;
+                }
+            }
+        }
         let Some(run) = self.ensure_run().await else {
             // The request stays queued; a start is tried again shortly.
             tokio::time::sleep(self.limits().restart_backoff).await;
@@ -1526,14 +1781,19 @@ impl Agent {
         if self.halted() {
             return;
         }
+        // A request that has its reply, accepted or refused, or that ended
+        // while its turn ran, is over: nothing more is signed for it.
         let request_id = row.request_id.clone();
-        let replied = self
-            .store(move |store, agent| store.agent_reply_get(agent, &request_id))
+        let over = self
+            .store(move |store, agent| {
+                Ok(store.agent_reply_get(agent, &request_id)?.is_some()
+                    || store
+                        .agent_inbox_get(agent, &request_id)?
+                        .is_none_or(|current| current.state != RequestState::Delivered))
+            })
             .await
-            .ok()
-            .flatten()
-            .is_some();
-        if replied {
+            .unwrap_or(true);
+        if over {
             return;
         }
         match result {
@@ -1563,8 +1823,12 @@ impl Agent {
                 match response.get("stopReason").and_then(Value::as_str) {
                     Some("cancelled") => self.fail(row, nothing).await,
                     _ if !text.is_empty() => {
-                        self.reply(row, &turn.request, &text, &[], ReplyOrigin::Text, None)
-                            .await;
+                        if let Reply::Withheld(why) = self
+                            .reply(row, &turn.request, &text, &[], ReplyOrigin::Text, None)
+                            .await
+                        {
+                            self.settle_failed(row, why.as_str()).await;
+                        }
                     }
                     Some("refusal") => self.fail(row, FailureKind::Refused).await,
                     _ => self.fail(row, nothing).await,
@@ -1662,8 +1926,21 @@ impl Agent {
         let relay = self.relay.clone();
         let target = target.clone();
         let interval = self.limits().typing_interval;
+        let agent = self.spec.pubkey.clone();
         AbortOnDrop(tokio::spawn(async move {
             loop {
+                // Only where the agent may write, by the relay's records as
+                // bzz last read them: a membership notice makes bzz read
+                // them again.
+                let allowed = tokio::time::timeout(STANDING_LIMIT, relay.channel(target.channel))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .is_some_and(|facts| facts.may_write(&agent).is_ok());
+                if !allowed {
+                    tokio::time::sleep(interval).await;
+                    continue;
+                }
                 let thread = target
                     .thread
                     .as_ref()
@@ -1694,6 +1971,12 @@ impl Agent {
         origin: ReplyOrigin,
         failure: Option<FailureKind>,
     ) -> Reply {
+        // Asked before anything is signed: an agent that was taken out of
+        // the channel, or made read-only there, signs no reply at all.
+        let standing = self.standing(row.channel_id, true).await;
+        if let Standing::Not(why) = standing {
+            return Reply::Withheld(why);
+        }
         let Ok(event) = self.message(row, request, text, mentions).await else {
             return Reply::Failed;
         };
@@ -1716,12 +1999,52 @@ impl Agent {
             return Reply::Failed;
         };
         if !claim.fresh {
-            return Reply::Already(claim.reply.event_id);
+            return Reply::Already {
+                refused: claim.reply.refused.is_some(),
+                id: claim.reply.event_id,
+            };
+        }
+        if standing == Standing::Unknown {
+            // Signed and stored, and not sent on a guess: it is published,
+            // unchanged, once the relay's records can be read.
+            return Reply::Pending(event_id);
         }
         self.publish_stored(&row.request_id, event).await
     }
 
+    /// Whether the agent may write in `channel` by the relay's own records:
+    /// asked now when `fresh`, else as bzz last read them.
+    async fn standing(&self, channel: Uuid, fresh: bool) -> Standing {
+        let facts = async {
+            if fresh {
+                self.relay.channel_now(channel).await
+            } else {
+                self.relay.channel(channel).await
+            }
+        };
+        match tokio::time::timeout(STANDING_LIMIT, facts).await {
+            Ok(Ok(facts)) => match facts.may_write(&self.spec.pubkey) {
+                Ok(()) => Standing::Writer,
+                Err(why) => Standing::Not(why),
+            },
+            // The relay shows the agent no such channel: it is not in it.
+            Ok(Err(Error::Access(_))) => Standing::Not(Unwritable::NotAMember),
+            Ok(Err(_)) | Err(_) => Standing::Unknown,
+        }
+    }
+
+    /// Ends an open request as failed with `kind`, and posts nothing.
+    async fn settle_failed(&self, row: &InboxRow, kind: &'static str) {
+        let request_id = row.request_id.clone();
+        let _ = self
+            .store(move |store, agent| {
+                store.agent_inbox_settle(agent, &request_id, RequestState::Failed, Some(kind))
+            })
+            .await;
+    }
+
     /// Publishes a reply the ledger holds and records what the relay said.
+    /// The caller has asked whether the agent may write there.
     async fn publish_stored(&self, request_id: &str, event: Event) -> Reply {
         let event_id = event.id.to_hex();
         match self.relay.publish(event).await {
@@ -1733,46 +2056,78 @@ impl Agent {
                 Reply::Sent(event_id)
             }
             Published::Refused(message) => {
-                // The relay has none of it: the request is open again.
-                let (request_id, discarded) = (request_id.to_owned(), event_id.clone());
-                let _ = self
-                    .store(move |store, agent| {
-                        store.agent_reply_discard(agent, &request_id, &discarded)
-                    })
+                // The relay's verdict on this event, and so on this request:
+                // the reply stays in the ledger as refused, the request is
+                // over, and nothing more is signed for it.
+                self.refuse_stored(request_id, &event_id, REPLY_REFUSED)
                     .await;
                 Reply::Refused(message)
             }
             // It stays stored and is published again, unchanged, later.
-            Published::Unknown => Reply::Pending(event_id),
+            Published::Later(_) | Published::Unknown => Reply::Pending(event_id),
         }
     }
 
-    /// Publishes again, unchanged, every stored reply the relay has not
-    /// acknowledged. A relay that already has one keeps a single copy.
+    /// Marks a stored reply as one that will never be published, and its
+    /// request as failed with `kind`.
+    async fn refuse_stored(&self, request_id: &str, event_id: &str, kind: &'static str) {
+        let (request_id, event_id) = (request_id.to_owned(), event_id.to_owned());
+        let _ = self
+            .store(move |store, agent| {
+                store.agent_reply_refused(agent, &request_id, &event_id, kind)
+            })
+            .await;
+    }
+
+    /// Publishes again, unchanged, every stored reply the relay has neither
+    /// accepted nor refused. A relay that already has one keeps a single
+    /// copy. Before each, the relay's records are asked whether the agent
+    /// may still write there: a reply for a channel it was taken out of, or
+    /// made read-only in, is never published.
     async fn republish(&self, older_than_seconds: u64) {
+        // A reply nobody took in the time a message can be a request at
+        // all is not tried for ever.
+        let too_old = relay::MAX_REQUEST_AGE.as_secs();
+        let _ = self
+            .store(move |store, agent| {
+                store.agent_replies_expire(agent, too_old, REPLY_UNDELIVERED)
+            })
+            .await;
         let Ok(pending) = self
             .store(move |store, agent| store.agent_replies_unpublished(agent, older_than_seconds))
             .await
         else {
             return;
         };
+        let mut standings = HashMap::<Uuid, Standing>::new();
         for reply in pending {
+            if self.halted() {
+                return;
+            }
             let Ok(event) = Event::from_json(&reply.event_json) else {
                 continue;
             };
-            if let Reply::Refused(_) = self.publish_stored(&reply.request_id, event).await {
-                // It can never be delivered: the request ends as failed.
-                let request_id = reply.request_id.clone();
-                let _ = self
-                    .store(move |store, agent| {
-                        store.agent_inbox_settle(
-                            agent,
-                            &request_id,
-                            RequestState::Failed,
-                            Some("reply-refused"),
-                        )
-                    })
-                    .await;
+            let Some(channel) = crate::protocol::events::channel_id(&event) else {
+                continue;
+            };
+            let standing = match standings.get(&channel) {
+                Some(standing) => *standing,
+                None => {
+                    let standing = self.standing(channel, true).await;
+                    standings.insert(channel, standing);
+                    standing
+                }
+            };
+            match standing {
+                Standing::Writer => {
+                    self.publish_stored(&reply.request_id, event).await;
+                }
+                Standing::Not(why) => {
+                    self.refuse_stored(&reply.request_id, &reply.event_id, why.as_str())
+                        .await;
+                }
+                // Not now: it waits for the next round.
+                Standing::Unknown => {}
             }
         }
     }
@@ -1807,8 +2162,13 @@ impl Agent {
             )
             .await
         {
-            Reply::Refused(_) | Reply::Failed => settle(kind.as_str()).await,
-            Reply::Sent(_) | Reply::Already(_) | Reply::Pending(_) => {}
+            // No notice can be posted: the request still ends, with the
+            // kind its turn failed with.
+            Reply::Withheld(_) | Reply::Failed => settle(kind.as_str()).await,
+            // A notice the relay refused stays in the ledger as refused, and
+            // the request keeps its kind: bzz stops here.
+            Reply::Refused(_) => {}
+            Reply::Sent(_) | Reply::Already { .. } | Reply::Pending(_) => {}
         }
     }
 
@@ -1896,15 +2256,27 @@ impl Agent {
                 .await
             {
                 Reply::Sent(id) => ToolReply::final_reply(format!("sent as {id}")),
-                Reply::Already(id) => ToolReply::final_reply(format!(
+                Reply::Already { id, refused: false } => ToolReply::final_reply(format!(
                     "already sent as {id}: this message has its final reply, and nothing new was posted"
                 )),
+                Reply::Already { refused: true, .. } => ToolReply::ended(
+                    "The reply to this message was refused, and that is final: nothing was posted, and nothing more can be posted for this message. Do not try again; end your turn.",
+                ),
                 Reply::Pending(id) => ToolReply::final_reply(format!(
                     "sent as {id}; the relay has not confirmed it yet and bzz will keep trying"
                 )),
-                Reply::Refused(why) => ToolReply::refused(format!(
-                    "The relay refused the message: {why}. Nothing was sent."
+                // The relay's no is final for this message: the turn ends
+                // here, and a harness that tries again is told the same.
+                Reply::Refused(why) => ToolReply::ended(format!(
+                    "The relay refused the reply: {why}. That is final: nothing was posted, and nothing more can be posted for this message. Do not try again; end your turn."
                 )),
+                Reply::Withheld(why) => {
+                    self.settle_failed(&row, why.as_str()).await;
+                    ToolReply::ended(format!(
+                        "Nothing was posted: {}. Nothing more can be posted for this message. Do not try again; end your turn.",
+                        unwritable_words(why)
+                    ))
+                }
                 Reply::Failed => {
                     ToolReply::refused("bzz could not sign or store the reply. Nothing was sent.")
                 }
@@ -2319,6 +2691,9 @@ impl Agent {
         text: &str,
         mentions: &[String],
     ) -> ToolReply {
+        if let Some(refusal) = self.may_post(row, "Nothing was sent.").await {
+            return refusal;
+        }
         let Ok(event) = self.message(row, request, text, mentions).await else {
             return ToolReply::refused("bzz could not sign the message. Nothing was sent.");
         };
@@ -2331,9 +2706,25 @@ impl Agent {
             Published::Unknown => {
                 ToolReply::ok(format!("sent as {id}; the relay has not confirmed it"))
             }
-            Published::Refused(why) => ToolReply::refused(format!(
+            Published::Refused(why) | Published::Later(why) => ToolReply::refused(format!(
                 "The relay refused the message: {why}. Nothing was sent."
             )),
+        }
+    }
+
+    /// For a message of a turn or a reaction: `None` when the agent may
+    /// write in the request's channel by the relay's records as they are
+    /// now, else what the harness is told.
+    async fn may_post(&self, row: &InboxRow, nothing: &str) -> Option<ToolReply> {
+        match self.standing(row.channel_id, true).await {
+            Standing::Writer => None,
+            Standing::Not(why) => Some(ToolReply::refused(format!(
+                "{nothing} {}. Do not try again; end your turn.",
+                capitalised(unwritable_words(why))
+            ))),
+            Standing::Unknown => Some(ToolReply::refused(format!(
+                "{nothing} bzz could not ask the relay just now whether you may still write in this conversation. Try again shortly."
+            ))),
         }
     }
 
@@ -2413,6 +2804,9 @@ impl Agent {
                 }
             },
         };
+        if let Some(refusal) = self.may_post(row, NOTHING).await {
+            return refusal;
+        }
         let Ok(builder) = buzz_sdk::build_reaction(target, emoji) else {
             return ToolReply::refused(format!("`emoji` of `react` is not a reaction. {NOTHING}"));
         };
@@ -2426,7 +2820,7 @@ impl Agent {
             Published::Accepted | Published::Unknown => {
                 ToolReply::ok(format!("reacted {emoji} to {}", target.to_hex()))
             }
-            Published::Refused(why) => {
+            Published::Refused(why) | Published::Later(why) => {
                 ToolReply::refused(format!("The relay refused the reaction: {why}. {NOTHING}"))
             }
         }
@@ -2437,6 +2831,23 @@ fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// What a harness is told when its agent may not write in a place.
+const fn unwritable_words(why: Unwritable) -> &'static str {
+    match why {
+        Unwritable::NotAMember => "you are no longer a member of this channel",
+        Unwritable::ReadOnly => {
+            "you may only read in this channel now: your access there was set to viewing only"
+        }
+    }
+}
+
+fn capitalised(text: &str) -> String {
+    let mut characters = text.chars();
+    characters.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(characters).collect()
+    })
 }
 
 fn session_id(opened: &Value) -> std::result::Result<String, CallError> {

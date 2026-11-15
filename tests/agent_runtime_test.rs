@@ -27,7 +27,9 @@ use bzz::{
     },
     store::{
         Store,
-        agent_runtime::{InboxRow, NewRequest, ReplyOrigin, RequestState},
+        agent_runtime::{
+            InboxRow, NewRequest, ReplyOrigin, ReplyStanding, RequestState, StoredReply,
+        },
         writer::StoreHandle,
     },
 };
@@ -61,6 +63,7 @@ fn limits() -> Limits {
         prune_interval: Duration::from_secs(24 * 3600),
         // Longer than any test, but for the one that waits for it.
         approval: Duration::from_secs(600),
+        presence_interval: Duration::from_secs(60),
     }
 }
 
@@ -119,6 +122,7 @@ impl World {
         let facts = ChannelFacts {
             id: channel,
             name: "general".into(),
+            read_only: Vec::new(),
             kind,
             members,
         };
@@ -338,6 +342,48 @@ impl World {
 
     fn contents(&self, events: &[Event]) -> Vec<String> {
         events.iter().map(|event| event.content.clone()).collect()
+    }
+
+    /// The reply the ledger holds for `request`, if any.
+    async fn stored(&self, request: &Event) -> Option<StoredReply> {
+        let (agent, id) = (self.agent, request.id.to_hex());
+        self.store
+            .call(move |store| store.agent_reply_get(agent, &id))
+            .await
+            .unwrap()
+    }
+
+    /// How `bzz agent show` and the agents panel word the turn of `request`.
+    async fn outcome(&self, request: &Event) -> String {
+        let agent = self.agent;
+        let turns = self
+            .store
+            .call(move |store| store.agent_recent_turns(agent, 10))
+            .await
+            .unwrap();
+        let id = request.id.to_hex();
+        bzz::agents::manage::outcome(turns.iter().find(|turn| turn.request_id == id).unwrap())
+    }
+
+    /// What a restart of the agent does: its open requests are settled and
+    /// its stored replies published again.
+    async fn recover(&self, host: &AgentHost) {
+        host.set_paused(self.agent, true).await;
+        host.set_paused(self.agent, false).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    /// The relay's records of the channel without the agent in it, or with
+    /// the agent as a member who may only read.
+    fn agent_is(&self, member: bool, read_only: bool) {
+        let mut facts = self.channel_is(PlaceKind::Channel, self.channel, true);
+        if !member {
+            facts.members.retain(|key| key != &self.agent_pubkey());
+        }
+        if read_only {
+            facts.read_only.push(self.agent_pubkey());
+        }
+        self.relay.set_channel(facts);
     }
 }
 
@@ -3289,6 +3335,7 @@ async fn two_agents_may_each_have_a_command_waiting() {
     let facts = ChannelFacts {
         id: world.channel,
         name: "general".into(),
+        read_only: Vec::new(),
         kind: PlaceKind::Channel,
         members: vec![
             world.owner.public_key().to_hex(),
@@ -3384,9 +3431,8 @@ async fn two_agents_may_each_have_a_command_waiting() {
 /// M7 and M3: an agent runs on the settings bzz started with, but what its
 /// owner takes away afterwards is refused at once, by the bzz that is
 /// running: a folder that is no longer granted for commands, a folder that
-/// now asks, a host that is no longer allowed, and an agent that is paused
-/// or gone from the settings. In doubt (a settings file that cannot be
-/// read) nothing is allowed and nothing is given.
+/// now asks, and a host that is no longer allowed. In doubt (a settings
+/// file that cannot be read) nothing is allowed and nothing is given.
 #[tokio::test]
 async fn what_the_owner_takes_away_is_refused_at_once_by_a_running_bzz() {
     let world = World::new().await;
@@ -3403,7 +3449,7 @@ async fn what_the_owner_takes_away_is_refused_at_once_by_a_running_bzz() {
     .await
     .unwrap();
     let marker = |name: &str| world.script.marker(name);
-    let steps = (1..=6)
+    let steps = (1..=5)
         .flat_map(|round| {
             vec![
                 approve(
@@ -3520,16 +3566,13 @@ async fn what_the_owner_takes_away_is_refused_at_once_by_a_running_bzz() {
     assert!(!allowed && !given, "{reason}");
     assert!(reason.contains("could not read its settings"), "{reason}");
 
-    // 6. The agent is paused in the settings, by a command.
-    write(Some(&local), true);
-    next(5);
-    let (allowed, reason, given) = round(6).await;
-    assert!(!allowed && !given, "{reason}");
-    assert!(reason.contains("no longer one that bzz runs"), "{reason}");
-    for number in 2..=6 {
+    // (An agent that is paused in the settings, or gone from them, is
+    // stopped as a whole: `a_pause_in_another_process_…` below.)
+    for number in 2..=5 {
         assert!(!marker(&format!("ran-{number}")).exists(), "round {number}");
     }
-    next(6);
+    write(Some(&local), false);
+    next(5);
     world.settled(&request).await;
     let activity = world.activity();
     assert!(
@@ -3592,4 +3635,797 @@ async fn a_folder_allowed_without_asking_still_asks_when_anyone_may_wake_the_age
         );
         host.shutdown().await;
     }
+}
+
+// ---- after the run against Buzz 1.0 ----------------------------------------
+//
+// `runs/experiments/buzz1/agents/README.md`: what Buzz 1.0.1 made bzz do when
+// it changed an agent's access in a channel.
+
+const RESTRICTED: &str = "restricted: only members can post in this channel";
+
+/// Bug 1 of that run. The relay refused the reply; bzz threw the stored
+/// reply away, told the harness "nothing was sent", and signed a new reply
+/// for the same mention each time the harness tried again: five different
+/// events for one mention in four seconds. The relay's no is final: one
+/// signed reply, the request failed with its kind, nothing more signed.
+#[tokio::test]
+async fn a_reply_the_relay_refuses_is_final_and_nothing_more_is_signed() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([{"steps": [
+            send("the answer", true),
+            send("the answer, again", true),
+            send("a third wording", true),
+            send("a progress message", false),
+            {"text": "I could not post my answer."},
+        ]}]),
+    );
+    world.relay.set_mode(Mode::Refuse(RESTRICTED.into()));
+    let host = world.host(Harness::PiDurable).await;
+    let request = world.ask(&host, "hello").await;
+    let results = world.results("send", 4).await;
+    // The turn is over for the harness too: wait for it to end.
+    until("the turn to end", WAIT, || {
+        (host.status()[0].turns == 0).then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let signed = world.relay.calls(9);
+    assert_eq!(
+        world.contents(&signed),
+        ["the answer"],
+        "one signed reply for one mention, however often the harness tries"
+    );
+    let row = world.row(&request).await.unwrap();
+    assert_eq!(
+        (row.state, row.failure.as_deref(), row.attempts),
+        (RequestState::Failed, Some("reply-refused"), 1)
+    );
+    let stored = world.stored(&request).await.unwrap();
+    assert_eq!(
+        (
+            stored.event_id.as_str(),
+            stored.published,
+            stored.refused.as_deref()
+        ),
+        (signed[0].id.to_hex().as_str(), false, Some("reply-refused")),
+        "the first reply is still the request's one reply"
+    );
+    assert!(world.relay.replies_to(&request).is_empty());
+    // The harness is told at once that this is final, and each time again.
+    for result in &results[..3] {
+        assert_eq!(
+            (&result["isError"], &result["final"]),
+            (&json!(true), &json!(true)),
+            "{result}"
+        );
+        assert!(
+            result["text"].as_str().unwrap().contains("is final"),
+            "{result}"
+        );
+    }
+    assert!(
+        results[0]["text"].as_str().unwrap().contains(RESTRICTED),
+        "{}",
+        results[0]
+    );
+    assert_eq!(results[3]["isError"], true, "nothing after the final reply");
+    assert!(
+        world
+            .outcome(&request)
+            .await
+            .starts_with("failed: reply-refused"),
+        "{}",
+        world.outcome(&request).await
+    );
+
+    // Nothing is tried again: not at a restart, and not when the relay
+    // would take it.
+    world.relay.set_mode(Mode::Accept);
+    world.recover(&host).await;
+    world.recover(&host).await;
+    assert_eq!(world.relay.calls(9).len(), 1, "never published again");
+    assert_eq!(world.row(&request).await.unwrap().attempts, 1);
+    assert_eq!(world.script.starts().len(), 1, "never handed over again");
+    host.shutdown().await;
+}
+
+/// Bug 1, the other two endings. A turn without a `send` whose plain text
+/// the relay refuses, and a failed turn whose notice the relay refuses: the
+/// request ends, and bzz stops. Before, the first left the request open, so
+/// that every restart handed it to the harness again.
+#[tokio::test]
+async fn a_refused_plain_text_reply_and_a_refused_notice_end_the_request() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": false}),
+        json!([
+            {"match": "plain", "steps": [{"text": "A plain answer."}]},
+            {"match": "broken", "steps": [{"error": {"code": -32603, "message": "upstream connect error"}}]},
+        ]),
+    );
+    world.relay.set_mode(Mode::Refuse(RESTRICTED.into()));
+    let host = world.host(Harness::Codex).await;
+
+    let plain = world.ask(&host, "plain text please").await;
+    world.state_is(&plain, RequestState::Failed).await;
+    let row = world.row(&plain).await.unwrap();
+    assert_eq!(
+        (row.failure.as_deref(), row.attempts),
+        (Some("reply-refused"), 1)
+    );
+    let stored = world.stored(&plain).await.unwrap();
+    assert_eq!(
+        (stored.origin, stored.standing()),
+        (ReplyOrigin::Text, ReplyStanding::Refused)
+    );
+    assert_eq!(world.contents(&world.relay.calls(9)), ["A plain answer."]);
+
+    let broken = world.ask(&host, "a broken turn").await;
+    world.state_is(&broken, RequestState::Failed).await;
+    until("the notice to be refused", WAIT, || {
+        (world.relay.calls(9).len() == 2).then_some(())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let row = world.row(&broken).await.unwrap();
+    assert_eq!(
+        (row.failure.as_deref(), row.attempts),
+        (Some("provider-error"), 1),
+        "it keeps the kind its turn failed with"
+    );
+    let stored = world.stored(&broken).await.unwrap();
+    assert_eq!(
+        (stored.origin, stored.standing()),
+        (ReplyOrigin::Failure, ReplyStanding::Refused)
+    );
+    assert_eq!(
+        world.outcome(&broken).await,
+        "failed: provider-error (the relay refused its notice; nothing was posted)"
+    );
+
+    // No loop: restarts sign nothing, publish nothing and hand nothing over.
+    for _ in 0..3 {
+        world.recover(&host).await;
+    }
+    assert_eq!(world.relay.calls(9).len(), 2, "one event for each request");
+    for request in [&plain, &broken] {
+        let row = world.row(request).await.unwrap();
+        assert_eq!((row.state, row.attempts), (RequestState::Failed, 1));
+    }
+    assert_eq!(
+        world.script.received("session/prompt").len(),
+        2,
+        "neither was handed to the harness again"
+    );
+    host.shutdown().await;
+}
+
+/// Bug 1: `agent show` said "answered" for 93 seconds of a reply the relay
+/// never took. "Answered" is said only of a reply the relay accepted; until
+/// then the state has its own name. And a publish that never left bzz, or
+/// that the relay put off, is no refusal: the same event goes out again.
+#[tokio::test]
+async fn answered_is_said_only_when_the_relay_has_the_reply() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([{"steps": [send("the answer", true)]}]),
+    );
+    world.relay.set_mode(Mode::Later(
+        "rate-limited: quota exceeded; retry in 17s".into(),
+    ));
+    let host = world.host(Harness::PiDurable).await;
+    let request = world.ask(&host, "hello").await;
+    world.state_is(&request, RequestState::Replied).await;
+    let result = world.results("send", 1).await.remove(0);
+    assert_eq!(result["final"], true, "{result}");
+    assert!(
+        result["text"]
+            .as_str()
+            .unwrap()
+            .contains("has not confirmed it yet"),
+        "{result}"
+    );
+    let stored = world.stored(&request).await.unwrap();
+    assert_eq!(stored.standing(), ReplyStanding::Pending);
+    assert_eq!(world.outcome(&request).await, bzz::agents::manage::SENDING);
+    assert!(!world.outcome(&request).await.contains("answered"));
+
+    // Still put off: the same event again, and still not "answered".
+    world.recover(&host).await;
+    assert_eq!(world.outcome(&request).await, bzz::agents::manage::SENDING);
+    // The relay takes it: now it is answered.
+    world.relay.set_mode(Mode::Accept);
+    world.recover(&host).await;
+    until("the reply to be accepted", WAIT, || {
+        (world.relay.replies_to(&request).len() == 1).then_some(())
+    })
+    .await;
+    let row = world.settled(&request).await;
+    assert_eq!(row.state, RequestState::Replied);
+    assert_eq!(world.outcome(&request).await, "answered");
+    let published = world.relay.calls(9);
+    assert!(published.len() >= 3, "{}", published.len());
+    assert!(
+        published.iter().all(|event| event.id == published[0].id),
+        "the same signed event every time"
+    );
+    assert_eq!(
+        world.stored(&request).await.unwrap().event_id,
+        published[0].id.to_hex()
+    );
+    host.shutdown().await;
+}
+
+/// Bug 2 of that run, and its read-only half. The owner made the agent
+/// read-only in a channel ("Viewing only", the `guest` role): a mention
+/// there is not handed to the harness at all, and the request says why.
+#[tokio::test]
+async fn a_mention_where_the_agent_may_only_read_is_not_handed_to_the_harness() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([{"steps": [send("the answer", true)]}]),
+    );
+    let host = world.host(Harness::PiDurable).await;
+    world.agent_is(true, true);
+    let request = world.ask(&host, "hello").await;
+    world.state_is(&request, RequestState::Failed).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let row = world.row(&request).await.unwrap();
+    assert_eq!(
+        (row.failure.as_deref(), row.attempts),
+        (Some("read-only"), 0),
+        "never handed over"
+    );
+    assert!(world.script.starts().is_empty(), "no harness was started");
+    assert!(world.stored(&request).await.is_none(), "nothing was signed");
+    assert!(
+        world.relay.calls(9).is_empty() && world.relay.calls(20_002).is_empty(),
+        "nothing was published as the agent, not even a typing indicator"
+    );
+    let outcome = world.outcome(&request).await;
+    assert!(
+        outcome.starts_with("failed: read-only (it may only read in that channel"),
+        "{outcome}"
+    );
+
+    // With its access back, the next mention is answered.
+    world.agent_is(true, false);
+    let again = world.ask(&host, "hello again").await;
+    world.settled(&again).await;
+    assert_eq!(
+        world.contents(&world.relay.replies_to(&again)),
+        ["the answer"]
+    );
+    host.shutdown().await;
+}
+
+/// Bug 2: a reply was published 16 seconds after the agent had been removed
+/// from the channel (the relay takes a post from a community member who is
+/// not in an open channel). Nothing is published as the agent where it is
+/// no longer a member: not the reply of a turn that was running, not a
+/// message of that turn, not a reaction, not a typing indicator.
+#[tokio::test]
+async fn a_turn_that_outlives_the_agents_membership_publishes_nothing() {
+    let world = World::new().await;
+    let (started, go) = (world.script.marker("started"), world.script.marker("go"));
+    world.script.write(
+        json!({"own_host": true}),
+        json!([{"steps": [
+            {"touch": started},
+            {"wait_for": go},
+            send("still working", false),
+            {"tool": "react", "arguments": {"emoji": "👍"}},
+            send("the answer", true),
+            send("the answer, again", true),
+        ]}]),
+    );
+    let host = world.host(Harness::PiDurable).await;
+    let request = world.ask(&host, "hello").await;
+    until("the turn to start", WAIT, || started.exists().then_some(())).await;
+    until("a typing indicator", WAIT, || {
+        (!world.relay.calls(20_002).is_empty()).then_some(())
+    })
+    .await;
+    // The owner takes the agent out of the channel while it is answering.
+    world.agent_is(false, false);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let typing = world.relay.calls(20_002).len();
+    std::fs::write(&go, "").unwrap();
+    world.state_is(&request, RequestState::Failed).await;
+    let results = world.results("send", 3).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert!(
+        world.relay.calls(9).is_empty() && world.relay.calls(7).is_empty(),
+        "no message and no reaction after the removal"
+    );
+    assert_eq!(
+        world.relay.calls(20_002).len(),
+        typing,
+        "no typing indicator after the removal"
+    );
+    let row = world.row(&request).await.unwrap();
+    assert_eq!(row.failure.as_deref(), Some("not-a-member"));
+    assert!(world.stored(&request).await.is_none(), "nothing was signed");
+    for result in &results {
+        assert_eq!(result["isError"], true, "{result}");
+        assert!(
+            result["text"]
+                .as_str()
+                .unwrap()
+                .contains("no longer a member of this channel"),
+            "{result}"
+        );
+    }
+    assert_eq!(results[1]["final"], true, "the turn ends: {}", results[1]);
+    assert!(
+        world.results("react", 1).await[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("no longer a member"),
+    );
+
+    // Added again later, the old mention stays unanswered: nothing of it
+    // was kept to publish.
+    world.agent_is(true, false);
+    world.recover(&host).await;
+    assert!(world.relay.calls(9).is_empty());
+    host.shutdown().await;
+}
+
+/// Bug 2, exactly as observed: the reply was signed and stored, the relay
+/// had not taken it, the owner removed the agent, and the stored reply was
+/// published 16 seconds later. A stored reply is published again only where
+/// the agent may still write; otherwise it is never published, also not
+/// when the agent is added again.
+#[tokio::test]
+async fn a_stored_reply_is_not_published_after_the_agent_was_removed_or_made_read_only() {
+    for (member, read_only, kind) in [(false, false, "not-a-member"), (true, true, "read-only")] {
+        let world = World::new().await;
+        world.script.write(
+            json!({"own_host": true}),
+            json!([{"steps": [send("the answer", true)]}]),
+        );
+        // Signed, stored, and no word from the relay, which does not have it.
+        world.relay.set_mode(Mode::Lost);
+        let host = world.host(Harness::PiDurable).await;
+        let request = world.ask(&host, "hello").await;
+        world.state_is(&request, RequestState::Replied).await;
+        world.results("send", 1).await;
+        assert_eq!(world.relay.calls(9).len(), 1);
+        assert_eq!(world.outcome(&request).await, bzz::agents::manage::SENDING);
+
+        world.agent_is(member, read_only);
+        world.relay.set_mode(Mode::Accept);
+        world.recover(&host).await;
+        assert_eq!(
+            world.contents(&world.relay.replies_to(&request)),
+            Vec::<String>::new(),
+            "{kind}: the stored reply is not published where the agent may not write"
+        );
+        assert_eq!(world.relay.calls(9).len(), 1, "{kind}");
+        world.state_is(&request, RequestState::Failed).await;
+        let row = world.row(&request).await.unwrap();
+        assert_eq!(row.failure.as_deref(), Some(kind));
+        assert_eq!(
+            world.stored(&request).await.unwrap().refused.as_deref(),
+            Some(kind)
+        );
+
+        // Back in the channel with the right to write: still never.
+        world.agent_is(true, false);
+        world.recover(&host).await;
+        world.recover(&host).await;
+        assert_eq!(
+            world.relay.calls(9).len(),
+            1,
+            "{kind}: never published later"
+        );
+        assert!(world.relay.replies_to(&request).is_empty(), "{kind}");
+        host.shutdown().await;
+    }
+}
+
+/// Bug 2, the doubt: the relay's records cannot be read. Nothing is
+/// published as the agent on a guess. A request whose own records were
+/// fresh is still handed to the harness; its reply is signed and stored,
+/// and goes out, unchanged, once the records can be read.
+#[tokio::test]
+async fn while_the_relays_records_cannot_be_read_nothing_is_published_on_a_guess() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([{"steps": [send("on it", false), send("the answer", true)]}]),
+    );
+    let host = world.host(Harness::PiDurable).await;
+    let facts = world.channel_is(PlaceKind::Channel, world.channel, true);
+    world.relay.set_unreadable(true);
+    let request = world.mention("hello");
+    assert_eq!(
+        host.offer(world.agent, &request, &facts).await,
+        Offer::Queued
+    );
+    world.state_is(&request, RequestState::Replied).await;
+    let results = world.results("send", 2).await;
+    assert_eq!(results[0]["isError"], true, "{}", results[0]);
+    assert!(
+        results[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("could not ask the relay just now"),
+        "{}",
+        results[0]
+    );
+    assert_eq!(results[1]["final"], true, "{}", results[1]);
+    assert!(
+        world.relay.calls(9).is_empty() && world.relay.calls(20_002).is_empty(),
+        "nothing was published on a guess"
+    );
+    assert_eq!(
+        world.stored(&request).await.unwrap().standing(),
+        ReplyStanding::Pending
+    );
+    assert_eq!(world.outcome(&request).await, bzz::agents::manage::SENDING);
+    // Still unreadable at a restart: still nothing.
+    world.recover(&host).await;
+    assert!(world.relay.calls(9).is_empty());
+    // Readable again: the stored reply goes out, once.
+    world.relay.set_unreadable(false);
+    world.recover(&host).await;
+    world.settled(&request).await;
+    assert_eq!(
+        world.contents(&world.relay.replies_to(&request)),
+        ["the answer"]
+    );
+    assert_eq!(world.relay.calls(9).len(), 1);
+    host.shutdown().await;
+}
+
+impl World {
+    /// The agent as the settings file holds it.
+    fn configured(&self, local: &LocalAgentConfig, paused: bool) -> HostedAgentConfig {
+        HostedAgentConfig {
+            id: self.agent,
+            label: "Scout".into(),
+            pubkey: self.agent_pubkey(),
+            community: Uuid::nil(),
+            owner_identity: Uuid::nil(),
+            auth_tag: "[]".into(),
+            credential_hash: "c".repeat(64),
+            allowed: Vec::new(),
+            paused,
+            local: Some(local.clone()),
+        }
+    }
+
+    /// Writes the settings file as a `bzz agent` command in another process
+    /// does: with the agent, paused or not, or without it.
+    fn write_settings(&self, agent: Option<HostedAgentConfig>) -> std::path::PathBuf {
+        let path = self.temporary.path().join("config.toml");
+        let config = bzz::config::Config {
+            hosted_agents: agent.into_iter().collect(),
+            ..bzz::config::Config::default()
+        };
+        // Never the same length twice in a row: a running bzz reads the
+        // file again when its time or its size changed.
+        let stamp = format!("# {}\n", rand_suffix());
+        let temporary = path.with_extension("tmp");
+        std::fs::write(
+            &temporary,
+            format!("{stamp}{}", toml::to_string_pretty(&config).unwrap()),
+        )
+        .unwrap();
+        std::fs::rename(&temporary, &path).unwrap();
+        path
+    }
+
+    /// What the agent last said of its presence on the relay.
+    fn presence(&self) -> Option<String> {
+        self.relay
+            .calls(20_001)
+            .last()
+            .map(|event| event.content.clone())
+    }
+
+    /// Whether this bzz still says that it holds the agent's key.
+    fn serves(&self) -> bool {
+        std::fs::read_dir(self.data_dir().join("agents").join("serving"))
+            .map(|entries| {
+                entries.flatten().any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(&self.agent.to_string())
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    async fn phase_is(&self, host: &AgentHost, phase: Phase) {
+        until(&format!("the agent to be {phase:?}"), WAIT, || {
+            (host.status()[0].phase == phase).then_some(())
+        })
+        .await;
+    }
+}
+
+fn rand_suffix() -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    "x".repeat(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Presence, from the run against Buzz 1.0: it showed a bzz agent as
+/// "Offline" while the agent answered, because bzz said nothing. A running
+/// agent says that it is present, with its own key (kind 20001), again and
+/// again; and it says that it is gone when it is paused and when bzz stops.
+#[tokio::test]
+async fn a_running_agent_says_it_is_present_and_says_when_it_is_gone() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([{"steps": [send("the answer", true)]}]),
+    );
+    let host = world
+        .host_with(
+            world.settings(Harness::PiDurable),
+            Limits {
+                presence_interval: Duration::from_millis(100),
+                ..limits()
+            },
+        )
+        .await;
+    until("three presence updates", WAIT, || {
+        (world.relay.calls(20_001).len() >= 3).then_some(())
+    })
+    .await;
+    for update in world.relay.calls(20_001) {
+        assert_eq!(update.content, "online");
+        assert_eq!(
+            update.pubkey,
+            world.relay.agent.public_key(),
+            "said by the agent itself"
+        );
+        assert!(
+            update.tags.iter().any(|tag| {
+                let values = tag.as_slice();
+                values.first().map(String::as_str) == Some("auth")
+                    && values.get(1) == Some(&world.owner.public_key().to_hex())
+            }),
+            "with its owner's authorization, as everything it publishes"
+        );
+        assert!(
+            bzz::protocol::presence::observe(&update, None, |_| None)
+                .is_some_and(|observed| observed.subjects == [world.agent_pubkey()]
+                    && observed.presence == bzz::protocol::presence::Presence::Online),
+            "as bzz and Buzz read a presence"
+        );
+    }
+    // It answers a mention, and is still present.
+    let request = world.ask(&host, "hello").await;
+    world.settled(&request).await;
+    assert_eq!(world.presence().as_deref(), Some("online"));
+
+    // Paused: it says that it is gone, once, and nothing after.
+    host.set_paused(world.agent, true).await;
+    assert_eq!(world.presence().as_deref(), Some("offline"));
+    let said = world.relay.calls(20_001).len();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        world.relay.calls(20_001).len(),
+        said,
+        "a paused agent is not present"
+    );
+    // Resumed: present again, at once.
+    host.set_paused(world.agent, false).await;
+    until("it to be present again", WAIT, || {
+        (world.presence().as_deref() == Some("online")).then_some(())
+    })
+    .await;
+    // bzz closes: gone.
+    host.shutdown().await;
+    assert_eq!(world.presence().as_deref(), Some("offline"));
+    let said = world.relay.calls(20_001).len();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(world.relay.calls(20_001).len(), said);
+}
+
+/// Bug 3 of the run against Buzz 1.0, and what it says of `agent pause`:
+/// a command in another process did not reach the bzz that ran the agent.
+/// `bzz agent pause` writes the settings; the bzz that runs the agent sees
+/// it within a second, stops the agent's process, says that the agent is
+/// gone, and stops listening. `bzz agent resume` runs it again.
+#[tokio::test]
+async fn a_pause_in_another_process_stops_a_running_agent_and_a_resume_runs_it_again() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([
+            {"match": "first", "steps": [send("one", true)]},
+            {"match": "third", "steps": [send("three", true)]},
+        ]),
+    );
+    let local = world.settings(Harness::PiDurable);
+    let settings = world.write_settings(Some(world.configured(&local, false)));
+    let host = world
+        .host_configured(local.clone(), limits(), |options| {
+            options.settings_file = Some(settings.clone());
+        })
+        .await;
+    let first = world.ask(&host, "first").await;
+    world.settled(&first).await;
+    let pid = until("its process", WAIT, || host.status()[0].pid).await;
+    assert_eq!(world.presence().as_deref(), Some("online"));
+
+    // `bzz agent pause Scout`, in another process.
+    world.write_settings(Some(world.configured(&local, true)));
+    world.phase_is(&host, Phase::Paused).await;
+    until("its process to be gone", WAIT, || {
+        (!running(pid)).then_some(())
+    })
+    .await;
+    assert_eq!(world.presence().as_deref(), Some("offline"));
+    let status = host.status().remove(0);
+    assert!(
+        status
+            .line()
+            .contains("paused by its owner, with `bzz agent pause`"),
+        "{}",
+        status.line()
+    );
+    // What is said while it is paused is not answered later.
+    let second = world.mention("second, while it is paused");
+    assert_eq!(world.offer(&host, &second).await, Offer::NotRunning);
+
+    // `bzz agent resume Scout`, in another process.
+    world.write_settings(Some(world.configured(&local, false)));
+    world.phase_is(&host, Phase::Idle).await;
+    until("it to be present again", WAIT, || {
+        (world.presence().as_deref() == Some("online")).then_some(())
+    })
+    .await;
+    let third = world.ask(&host, "third").await;
+    world.settled(&third).await;
+    assert_eq!(world.contents(&world.relay.replies_to(&third)), ["three"]);
+    assert!(world.row(&second).await.is_none());
+    assert!(
+        !world.relay.closed(),
+        "its connection was kept for the resume"
+    );
+    host.shutdown().await;
+}
+
+/// Bug 3: `bzz agent delete` removed an agent that a running `bzz agent
+/// run` was serving, and that bzz was not told: it kept the agent's key in
+/// memory and its connection open. A deletion reaches the bzz that runs
+/// the agent, as a move does. First it holds the agent: the process is
+/// stopped and nothing is listened for, and if the deletion does not
+/// happen the agent runs again. Then, before the files go, that bzz lets
+/// go for good: it closes the agent's connection and forgets its key.
+#[tokio::test]
+async fn a_deletion_in_another_process_reaches_the_bzz_that_runs_the_agent() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([
+            {"match": "first", "steps": [send("one", true)]},
+            {"match": "second", "steps": [send("two", true)]},
+        ]),
+    );
+    let local = world.settings(Harness::PiDurable);
+    let configured = world.configured(&local, false);
+    let host = world.host(Harness::PiDurable).await;
+    let first = world.ask(&host, "first").await;
+    world.settled(&first).await;
+    let pid = until("its process", WAIT, || host.status()[0].pid).await;
+    assert!(
+        world.serves(),
+        "this bzz says that it holds the agent's key"
+    );
+
+    // The deletion begins. When this returns, the agent's process is gone.
+    let held = bzz::agents::manage::hold_for_deletion(
+        &world.data_dir(),
+        &configured,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    assert!(!running(pid), "the bzz that ran it has stopped its process");
+    world.phase_is(&host, Phase::Stopped).await;
+    assert!(
+        host.status()[0].line().contains("being deleted"),
+        "{}",
+        host.status()[0].line()
+    );
+    assert_eq!(world.presence().as_deref(), Some("offline"));
+    let waiting = world.mention("while it is being deleted");
+    assert_eq!(world.offer(&host, &waiting).await, Offer::NotRunning);
+    assert!(!world.relay.closed() && world.serves());
+
+    // The deletion does not happen (the relay could not be reached, say):
+    // the agent runs again.
+    drop(held);
+    world.phase_is(&host, Phase::Idle).await;
+    let second = world.ask(&host, "second").await;
+    world.settled(&second).await;
+    assert_eq!(world.contents(&world.relay.replies_to(&second)), ["two"]);
+    let pid = until("its process", WAIT, || host.status()[0].pid).await;
+
+    // The deletion happens: before the files go, this bzz lets go for good.
+    let held = bzz::agents::manage::hold_for_deletion(
+        &world.data_dir(),
+        &configured,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    assert!(!running(pid));
+    let published = world.relay.calls(9).len();
+    held.deleted().unwrap();
+    until("this bzz to let go of the agent", WAIT, || {
+        (world.relay.closed() && !world.serves()).then_some(())
+    })
+    .await;
+    assert!(host.retired(world.agent));
+    let line = host.status().remove(0).line();
+    assert!(
+        line.contains("stopped") && line.contains("deleted"),
+        "{line}"
+    );
+    assert_eq!(world.presence().as_deref(), Some("offline"));
+    // After a deletion this bzz publishes nothing as the agent, whatever
+    // reaches it and whatever its owner presses.
+    let late = world.mention("after the deletion");
+    assert_eq!(world.offer(&host, &late).await, Offer::NotRunning);
+    host.set_paused(world.agent, true).await;
+    host.set_paused(world.agent, false).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(world.relay.calls(9).len(), published);
+    assert_eq!(world.presence().as_deref(), Some("offline"));
+    assert_eq!(host.status()[0].phase, Phase::Stopped);
+    assert_eq!(host.status()[0].pid, None);
+    host.shutdown().await;
+}
+
+/// Bug 3, the other way a running bzz learns of a deletion: the agent is
+/// no longer in the settings (a `bzz agent delete --force`, or an older bzz
+/// that deletes without holding). It lets the agent go all the same.
+#[tokio::test]
+async fn an_agent_that_is_gone_from_the_settings_is_let_go_by_the_bzz_that_runs_it() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([{"steps": [send("one", true)]}]),
+    );
+    let local = world.settings(Harness::PiDurable);
+    let settings = world.write_settings(Some(world.configured(&local, false)));
+    let host = world
+        .host_configured(local.clone(), limits(), |options| {
+            options.settings_file = Some(settings.clone());
+        })
+        .await;
+    let first = world.ask(&host, "first").await;
+    world.settled(&first).await;
+    let pid = until("its process", WAIT, || host.status()[0].pid).await;
+    // A settings file that cannot be read says nothing: the agent stays.
+    std::fs::write(&settings, "this is [not toml").unwrap();
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert!(!host.retired(world.agent) && running(pid));
+
+    world.write_settings(None);
+    until("this bzz to let go of the agent", WAIT, || {
+        (world.relay.closed() && !world.serves()).then_some(())
+    })
+    .await;
+    assert!(!running(pid) && host.retired(world.agent));
+    assert_eq!(world.presence().as_deref(), Some("offline"));
+    let late = world.mention("after the deletion");
+    assert_eq!(world.offer(&host, &late).await, Offer::NotRunning);
+    host.shutdown().await;
 }

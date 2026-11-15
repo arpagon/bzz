@@ -137,7 +137,7 @@ pub async fn shutdown(
         .await?;
     match relay.as_owner(command).await {
         Published::Accepted => {}
-        Published::Refused(why) => {
+        Published::Refused(why) | Published::Later(why) => {
             return Err(Error::Access(format!(
                 "the relay refused the command in {channel_name}: {why}"
             )));

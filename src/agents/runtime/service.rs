@@ -50,6 +50,8 @@ pub struct CommunityAgents {
     pub community: Uuid,
     pub host: AgentHost,
     ports: Vec<Arc<RelayPort>>,
+    /// The agents whose key and connection this bzz holds.
+    served: Vec<Uuid>,
     /// One per agent: its recovery, then its intake.
     starting: Vec<tokio::task::JoinHandle<()>>,
     /// Agents that could not be started, each with its reason.
@@ -76,6 +78,11 @@ impl CommunityAgents {
         for port in &self.ports {
             port.supervisor.shutdown().await;
             port.signer.lock().await;
+        }
+        // Only now: a deletion in another process waits for this before it
+        // removes an agent's files.
+        for agent in &self.served {
+            self.host.let_go(*agent);
         }
     }
 }
@@ -159,6 +166,7 @@ pub async fn serve_with_tools(
         community,
         host: host.clone(),
         ports: Vec::new(),
+        served: Vec::new(),
         starting: Vec::new(),
         problems: Vec::new(),
     };
@@ -170,6 +178,11 @@ pub async fn serve_with_tools(
         let Some(settings) = agent.local.clone() else {
             continue;
         };
+        // Said before the key is opened: a `bzz agent delete` in another
+        // process waits for every bzz that holds an agent's key.
+        // (Where that cannot be written, the agent runs all the same, and
+        // a deletion learns of it from the settings.)
+        let _ = crate::agents::runtime::hold::serve(&options.paths.data_dir, agent.id);
         let built = async {
             let signer = crate::broker::custody::unlock(&keys_dir, options.owner, agent).await?;
             let auth_tag = crate::broker::relay::auth_tag(&agent.auth_tag)?;
@@ -205,18 +218,16 @@ pub async fn serve_with_tools(
                 options.diagnostics.clone(),
                 evidence,
             );
-            Ok::<_, Error>(Arc::new(RelayPort::new(
-                signer,
-                http,
-                supervisor,
-                auth_tag,
-                relay_pubkey,
-            )))
+            Ok::<_, Error>(Arc::new(
+                RelayPort::new(signer, http, supervisor, auth_tag, relay_pubkey)
+                    .keeping_records(options.store.clone(), community),
+            ))
         }
         .await;
         match built {
             Ok(port) => {
                 running.ports.push(port.clone());
+                running.served.push(agent.id);
                 let spec = AgentSpec {
                     id: agent.id,
                     name: agent.label.clone(),
@@ -236,9 +247,12 @@ pub async fn serve_with_tools(
                     host.listen(port, id, owner);
                 }));
             }
-            Err(error) => running
-                .problems
-                .push(format!("agent {} unavailable: {error}", agent.label)),
+            Err(error) => {
+                host.let_go(agent.id);
+                running
+                    .problems
+                    .push(format!("agent {} unavailable: {error}", agent.label));
+            }
         }
     }
     Ok(Some(running))

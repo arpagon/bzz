@@ -39,8 +39,10 @@ Implemented MVP protocol surface:
   agent's kind `0` profile with `"bot": true` and the owner's NIP-OA tag, the
   owner's kind `30177` record with `runtime` `bzz/<harness>`, `name`,
   `picture`, `respond_to` and `parallelism`, its NIP-09 removal by coordinate,
-  and the owner's kind `9000` addition of the agent to a channel, with the
-  `bot` role only in a Solo chat;
+  and the owner's kind `9000` addition of the agent to a channel with the
+  `bot` role, as Buzz 1.0.1 was seen to add one; and, signed by the agent
+  itself while bzz runs it, kind `20001` presence (`online`, then `offline`
+  when it is paused, stopped, deleted or moved away);
 - relay-authored kind `40099` control events through a bounded semantic parser,
   never raw authored-message rendering;
 - transient relay-authored kind `39005` thread summaries for the selected

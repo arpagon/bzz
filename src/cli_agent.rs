@@ -14,7 +14,7 @@ use bzz::{
         capability, manage, moving, remote,
         runtime::{
             agent::Environment,
-            coding,
+            coding, hold,
             install::{self, ModelCheck},
         },
     },
@@ -38,8 +38,9 @@ pub enum AgentCommand {
     /// Show one agent: state, model, folders, hosts, channels, last turns
     /// and its capability record.
     Show { name: String },
-    /// Add an agent to a channel, as its owner. In a Solo chat it gets the
-    /// bot role; elsewhere it is a plain member, as Buzz adds one.
+    /// Add an agent to a channel or a Solo chat, as its owner. It gets the
+    /// bot role, as Buzz gives an agent it adds; with that role or as a
+    /// plain member, it answers where it may write.
     Add {
         name: String,
         /// The channel's name or id.
@@ -424,6 +425,8 @@ async fn new_agent(paths: &Paths, config: &mut Config, args: NewArgs) -> Result<
     let name = name_answer(&args, interactive)?;
     let community = community_answer(config, &args, interactive)?;
     let identity = find_identity(config, community.identity_id)?.clone();
+    // Before any question, any look for Node and any install.
+    manage::may_own_agents(&identity)?;
     let new = answers(&args, interactive, &name)?;
     if manage::name_taken(config, &new.name, None) {
         return Err(Error::Config(format!("an agent named {} exists", new.name)));
@@ -749,12 +752,6 @@ async fn delete(
     force: bool,
 ) -> Result<()> {
     let agent = manage::find(config, name)?.clone();
-    if let Some(pid) = manage::running_pid(&paths.data_dir, agent.id) {
-        return Err(Error::Config(format!(
-            "{} is running (process {pid}): close bzz or pause the agent first",
-            agent.label
-        )));
-    }
     let moved_away = manage::state_of(&agent) == "moved away";
     if moved_away {
         eprintln!(
@@ -772,7 +769,31 @@ async fn delete(
     }
     let store = open_store(paths, config)?;
     let mut removal = manage::Removal::default();
-    match owner_relay(paths, config, &agent).await {
+    // The owner's passphrase is asked for here, before anything is stopped.
+    let connected = owner_relay(paths, config, &agent).await;
+    // A bzz that is open, or a `bzz agent run`, may be running the agent or
+    // listening for it with its key. It is reached as a move reaches it:
+    // from here it has stopped the agent, and if the deletion does not
+    // happen it runs the agent again.
+    let serving = hold::served_by(&paths.data_dir, agent.id);
+    let held = match manage::hold_for_deletion(&paths.data_dir, &agent, manage::RELEASE_LIMIT).await
+    {
+        Ok(held) => held,
+        Err(error) => {
+            if let Ok((owner, relay)) = connected {
+                relay.close().await;
+                owner.lock().await;
+            }
+            return Err(error);
+        }
+    };
+    if let Some(pid) = serving.first() {
+        println!(
+            "the bzz that runs {} (process {pid}) has stopped it",
+            agent.label
+        );
+    }
+    match connected {
         Ok((owner, relay)) => {
             // NIP-FI communities: the agent's grants with the adapter go
             // first, as `broker delete` does.
@@ -813,6 +834,10 @@ async fn delete(
             agent.label
         )));
     }
+    // Before the files go: every bzz that holds the agent's key closes the
+    // agent's connection and forgets the key. After this no bzz can publish
+    // as the agent.
+    manage::release_for_deletion(&paths.data_dir, &agent, held, manage::RELEASE_LIMIT).await?;
     let local = manage::remove_local(paths, config, &store, agent.id).await?;
     removal.removed.extend(local.removed);
     removal.left.extend(local.left);
@@ -1446,20 +1471,17 @@ pub async fn command(command: AgentCommand, paths: &Paths, config: &mut Config) 
             relay.close().await;
             owner.lock().await;
             let added = added?;
-            println!(
-                "{} {} #{} {}",
-                agent.label,
-                if added.already {
-                    "was already a member of"
-                } else {
-                    "added to"
-                },
-                added.channel_name,
-                match added.role {
-                    Some(role) => format!("with the {role} role (a Solo chat)"),
-                    None => "as a member".to_owned(),
-                }
-            );
+            if added.already {
+                println!(
+                    "{} was already a member of #{}",
+                    agent.label, added.channel_name
+                );
+            } else {
+                println!(
+                    "{} added to #{} with the {} role, as Buzz adds an agent",
+                    agent.label, added.channel_name, added.role
+                );
+            }
             println!(
                 "mention it there to wake it; it answers while bzz is open, or under `bzz agent run`"
             );
@@ -1472,9 +1494,13 @@ pub async fn command(command: AgentCommand, paths: &Paths, config: &mut Config) 
             manage::set_paused(config, agent.id, paused)?;
             config.save(paths)?;
             println!(
-                "{} {}; a bzz that is running applies it at its next start (in the TUI, use the agents panel)",
+                "{} {}",
                 agent.label,
-                if paused { "paused" } else { "resumed" }
+                if paused {
+                    "paused; a bzz that is running it stops it within a second, and it says on the relay that it is gone"
+                } else {
+                    "resumed; a bzz that was running it before the pause runs it again within a second. A bzz that was started while it was paused starts it at its own next start"
+                }
             );
             Ok(())
         }

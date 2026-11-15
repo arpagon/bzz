@@ -770,7 +770,7 @@ failing as quoted, then removed. `U:` is a unit test in the named module;
 |---|---|---|---|
 | The profile is a kind 0 with the name, `"bot": true` and the picture when there is one | `U: manage::the_profile_is_a_bot_with_its_name_and_picture` | see next row | pass |
 | The owner's record is kind 30177 with `d` the agent's key, `runtime` `bzz/<harness>` (which passes Buzz's own test of a runtime for all four harnesses), and content `parallelism`, `respond_to` in Buzz's words, `name`, `picture`. bzz's own reader of v0.11 takes profile and record as a verified agent of that owner. An edit keeps what another client put in the record that is not bzz's to set, as Buzz does, and the removal names the record by its coordinate | `U: manage::the_owners_record_is_what_buzz_reads` | not run for the unit test; on the relay the same content is read back from the relay | pass |
-| An agent is added as a member, with the `bot` role only in a Solo chat (D13) | `U: manage::an_agent_joins_as_a_member_and_as_a_bot_only_in_a_solo_chat`; relay test | on the relay: `RR1` below | pass |
+| *(Superseded: see "After the run against Buzz 1.0", fix 4. `agent add` now gives `bot` everywhere.)* An agent is added as a member, with the `bot` role only in a Solo chat (D13) | `U: manage::an_agent_joins_as_a_member_and_as_a_bot_only_in_a_solo_chat`; relay test | on the relay: `RR1` below | pass |
 | The answers of the command and of the form are read the same way; contradictions are refused with what to write | `U: manage::the_answers_are_read_as_written`; `U: ui::local_agents::the_form_asks_what_the_command_asks_and_reads_it_the_same_way` | not run for the first | pass |
 | A created agent has its sealed key, its folder, its settings saved, its profile signed by the agent with the owner's authorization, and the owner's record; the broker serves it nothing | `C: a_created_agent_has_its_key_folder_settings_profile_and_owners_record` | a profile not marked as a bot: `left: Object {"name": …, "picture": …} right: Object {"bot": Bool(true), …}` | pass |
 | **A creation that fails at any step leaves nothing**: the profile refused, lost, or landed and unconfirmed; the owner's record refused, lost, or landed and unconfirmed. After each: no key, no folder, no settings in memory or on disk, and the recorded relay holds nothing of the agent. What was published is removed first, by the agent's own key while bzz still holds it | `C: a_creation_that_fails_at_any_step_leaves_nothing` (six cases) | the undo keeps the key: `the profile is refused left: (1, 0, 0) right: (0, 0, 0)`; the undo leaves the profile: `the profile is lost left: [("agent", 0)] right: [("agent", 0), ("agent", 5)]` | pass |
@@ -1877,6 +1877,289 @@ Run on `09cc5ce`, 2026-11-14, Linux x86_64, Node 26.5.0.
 | Pinned relay, with the real programs | the same with `BZZ_REAL_HARNESSES=grok,codex,claude-code` and `BZZ_RELAY_TEST_FILTER=real_relay_coding_harnesses` | 1 passed in 179 s, on `b5515ac`; nothing of bzz's own code changed after it |
 | Agent host | `cd agent-host && npm ci --ignore-scripts --omit=optional && npm test` | 99 tests, 99 pass; `npm ci` reports 0 vulnerabilities. `agent-host/` was not changed |
 | Supply chain | `cargo deny check`; `cargo audit`; `npm audit --omit=dev --omit=optional` in both `agent-adapters/` | `advisories ok, bans ok, licenses ok, sources ok`; the 4 allowed warnings of v0.14; 0 vulnerabilities. `Cargo.toml` and `Cargo.lock` are unchanged: M6 adds no Rust dependency. It adds two npm packages that bzz installs at run time, with what they need: 107 and 24 packages |
+
+## After the run against Buzz 1.0
+
+> In its own branch this work's migration was number 19. Merged into
+> `v0.15.0` it is **migration 20** (`0020_agent_reply_refusal.sql`), after
+> the release work's `0019_memberships_by_member.sql`; the text below names
+> it as merged.
+
+Linux x86_64, Rust 1.98.1, Node 26.5.0, Buzz pin `bf3bdd0eaefe`, 2026-11-14.
+Commits `b7da2df..92b07c3` on the branch `t3/fix-buzz-agent-run-bugs`, on top of
+`d53b8d9`.
+
+A tester ran bzz's agents against the real Buzz 1.0.1 desktop application
+in a sandbox (task C6). His report is
+`runs/experiments/buzz1/agents/README.md` in the main checkout, with what
+the commands said in `out/` and the screens in `shots/` beside it (local,
+not in git). The plan's M4 gate held: Buzz 1.0.1 lists an agent made by bzz
+(after it is started again), offers it for a mention, and a mention is
+answered once, with the working indicator. The run also found three bugs,
+one assumption that was the wrong way round, and smaller faults. This
+section is what was done about each.
+
+**What he observed.**
+
+| # | Observed | Where in the report |
+|---|---|---|
+| 1 | With the agent made "Viewing only" in a channel (the owner's kind 9000 with `["role","guest"]`) and then mentioned: the reply stored for the one mention was replaced by newly signed events again and again; five different reply events for one mention reached the relay in four seconds; `agent show` said "answered" for 93 seconds and only then "failed: reply-refused" | "Bugs found in bzz", 1; `out/16-…`, `out/25-…` |
+| 2 | A reply was published in a channel 16 seconds after the agent had been removed from it | bug 2; `out/25-…` |
+| 3 | `bzz agent delete` removed an agent that a running `bzz agent run` listed as idle; that bzz was not told | bug 3; `out/20-…`, `out/run-3.log` |
+| 4 | Buzz 1.0.1 gives an agent the `bot` role when it adds it to an ordinary channel or to a Solo chat that exists, and leaves the agent a Solo chat is created with a plain member: the opposite of D13 and of ADR decision 11 | "2. Added by Buzz 1.0" |
+| 5 | Buzz 1.0 shows a bzz agent as "Offline" always, also while it answers; bzz published no presence | section 1, "The agent's profile" |
+| 6 | `bzz agent new` with a paired identity refuses only after installing the host; the directory calls the owner's own agents remote; `@Sc`, Enter and text gave `@Scouthello` with no mention; a change of role is shown as "joined"; the guide's causes for "does not answer at all" lack four | "Differences from bzz's documents", "Bugs", 4 |
+
+**Where the fixes are.**
+
+| What | Where |
+|---|---|
+| The ledger: a stored reply is never replaced or removed; refused, pending and accepted | `src/store/agent_runtime.rs`, migration 20 (`migrations/0020_agent_reply_refusal.sql`), `src/agents/runtime/agent.rs` (`reply`, `publish_stored`, `republish`, `fail`, `finish`) |
+| A relay's verdict told from "not now" | `src/agents/runtime/relay.rs` (`Published::Later`, `is_verdict`) |
+| Where the agent may write | `src/agents/runtime/admission.rs` (`ChannelFacts::may_write`, `Unwritable`), `relay.rs` (`channel_now`, the `guest` role, `keeping_records`), `agent.rs` (`standing`, the start of a turn, every publish) |
+| Delete and pause in a running bzz | `src/agents/runtime/hold.rs` (`deleting`, `deleted`, who serves an agent), `agent.rs` (`watch`, `retire`), `src/agents/manage.rs` (`hold_for_deletion`, `release_for_deletion`), `src/cli_agent.rs` |
+| Presence | `agent.rs` (`say_present`, `say`, `halt`) |
+| The role, the paired identity | `src/agents/manage.rs` (`add_member_builder`, `may_own_agents`) |
+| The directory, the picker, the timeline | `src/agents/mod.rs` (`Own`), `src/ui/agents.rs`, `src/ui/mention_picker.rs`, `src/ui/composer.rs`, `src/ui/timeline.rs`, `src/main.rs`, `src/app.rs` |
+| The owner's guide | [`agents.md`](agents.md) |
+
+**How to repeat.**
+
+```sh
+. runs/env.sh
+cargo test --locked --all-features --lib -- store::agent_runtime agents::runtime agents::own_tests agents::manage ui::agents ui::composer the_picker_leaves
+cargo test --locked --all-features --test agent_runtime_test --test agent_manage_test --test store_migration_test --test ui_timeline_test --test presence_markers_test
+BZZ_RELAY_TEST_FILTER=real_relay_agent_keeps_to_its_access BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh
+```
+
+Each red below is the named test with the one fault in the cell planted
+(the code put back as it was before the fix), seen failing as quoted, then
+removed. `U:` is a unit test in the named module, `T:` a test of
+`tests/agent_runtime_test.rs` (the scripted harness and a recorded relay),
+`C:` of `tests/agent_manage_test.rs`. The pinned relay has its own
+subsection: there the red run is the whole test against the code as it was.
+
+### 1. One signed reply per mention, whatever the relay answers
+
+**Cause.** When the relay refused a reply, bzz removed the stored reply and
+opened the request again (`agent_reply_discard`, "the relay has none of it:
+the request is open again"), and told the harness "nothing was sent". Each
+further `send` of the harness then signed and stored another reply for the
+same mention. A publish that never left bzz (its own queue) counted as a
+refusal too. A turn without a `send` whose plain text was refused left its
+request open, so every restart handed it to the harness again. And a
+request counted as "answered" from the moment its reply was stored. No test
+had ever made the recorded relay refuse.
+
+**Fix.** A stored reply is never replaced and never removed. It ends in one
+of two ways: the relay accepts it, or it is marked refused (migration 20)
+and is never published again. The relay's own no is final at once: the
+request fails as `reply-refused`, the harness is told so with an answer
+that ends its turn, and anything it sends after gets the same answer and
+signs nothing. A publish that never left bzz, and a relay's `rate-limited:`
+or `error:`, are no verdict: the same event goes out again. A reply the
+relay takes in no day is given up (`reply-undelivered`). "Answered" is said
+only of a reply the relay accepted; until then `agent show` and the panel
+say "sending its reply: signed, and not yet accepted by the relay".
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| The relay refuses the reply: one signed event for the mention however often the harness sends again (two more final sends, a progress message, and plain text); the request fails at once as `reply-refused` after one attempt; the stored reply is the first one, kept as refused; each answer to the harness is an error that ends the turn; nothing is published or handed over again at a restart, also when the relay would then take it | `T: a_reply_the_relay_refuses_is_final_and_nothing_more_is_signed` | the ledger as it was: `one signed reply for one mention, however often the harness tries left: ["the answer", "the answer, again", "a third wording", "a progress message", "I could not post my answer."] right: ["the answer"]` (five events for one mention, as observed) | pass |
+| The same for the plain text of a turn without a `send`, and for a failure notice: the request ends (`reply-refused`; for a notice, the kind its turn failed with), and three restarts sign nothing, publish nothing and hand nothing over | `T: a_refused_plain_text_reply_and_a_refused_notice_end_the_request` | the same fault: `request never became Failed: … state: Delivered, attempts: 1` (left open, to be handed over again) | pass |
+| In the ledger: a refused reply stays the request's one reply, whatever is offered afterwards and whatever its origin; it is not published again and a late acceptance does not make it an answer; an accepted reply cannot be refused; a refused notice keeps its request's kind | `U: store::agent_runtime::a_refused_reply_stays_and_its_request_never_gets_another` (in place of `a_refused_reply_is_discarded_only_while_unpublished`, which asserted the bug: "the request is open again") | `the request is over, and says why left: (Delivered, None) right: (Failed, Some("reply-refused"))` | pass |
+| A publish the relay puts off, or that never left bzz, is no refusal: the reply stays, the same signed event goes out again, and the state is "sending its reply…", never "answered", until the relay has it | `T: answered_is_said_only_when_the_relay_has_the_reply`; `U: runtime::relay::only_the_relays_own_no_is_a_verdict` | put off taken as refused: `request never became Replied: … state: Failed, failure: Some("reply-refused")`; a stored reply called answered: `left: "answered" right: "sending its reply: signed, and not yet accepted by the relay"` | pass |
+| The panel prints the state: a stored, unaccepted reply is "sending its reply…", an accepted one "answered" | `app::tests::agent_new_in_the_tui_creates_an_agent_and_the_panel_manages_it` (extended) | covered by the red above (same function) | pass |
+| A reply the relay takes in no day is given up: it ends as `reply-undelivered` and is not published again; a younger one and an accepted one are left alone | `U: store::agent_runtime::a_reply_the_relay_never_took_is_given_up_after_a_day` | not run | pass |
+| A database of schema 19 with a stored reply opens at schema 20 with the reply as it was: neither accepted nor refused, still published again | `store_migration_test::schema_nineteen_keeps_the_stored_replies_of_schema_eighteen` | not run | pass |
+
+### 2. Nothing is published where the agent may not write
+
+**Cause.** bzz asked whether the agent was a member of a channel once, when
+a mention arrived, from records up to a minute old, and never again. It did
+not read roles at all. A stored reply was published again every 30 seconds
+whatever had happened to the agent's membership, and the relay takes a post
+from a community member who is not in an open channel.
+
+**Fix.** Before bzz publishes anything as the agent, it asks the relay's
+own records, now, whether the agent is a member of that channel and may
+write there (`guest`, Buzz's "Viewing only", may not). That holds for a
+reply, a stored reply published again, a message of a turn, a reaction, and
+the typing indicator (from records bzz last read, which a membership notice
+makes it read again). A mention is checked the same way before any harness
+is started. If the agent may not write, the request fails as `not-a-member`
+or `read-only`, nothing is signed, and a reply already stored is marked so
+and never published. If the relay cannot be asked, nothing is published on
+a guess. The records are kept in bzz's database as they are read, so that
+`agent show` says the agent's role as it is now.
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| A mention where the agent may only read is not handed to the harness: no process is started, nothing is signed, not even a typing indicator is published; the request is `failed: read-only` with no attempt; with its access back, the next mention is answered | `T: a_mention_where_the_agent_may_only_read_is_not_handed_to_the_harness`; `U: runtime::relay::channel_facts_come_only_from_the_relays_own_records` (the `guest` role, in the exact four-field shape) | the standing never asked: `request never became Failed: … state: Replied` (it was handed over and answered) | pass |
+| The agent is removed while it answers: no message of the turn, no reaction, no reply and no further typing indicator are published; the request is `failed: not-a-member`; nothing was signed; added again later, the old mention stays unanswered | `T: a_turn_that_outlives_the_agents_membership_publishes_nothing` | the same fault: `request never became Failed: … state: Replied` | pass |
+| As observed: a reply is signed and stored, the relay has not taken it, the agent is removed (or made read-only), and the stored reply is not published at the next round or ever, also when the agent is added again | `T: a_stored_reply_is_not_published_after_the_agent_was_removed_or_made_read_only` | the same fault: `not-a-member: the stored reply is not published where the agent may not write left: ["the answer"] right: []` | pass |
+| While the relay's records cannot be read, nothing is published on a guess: a request whose own records were fresh is handed over, its progress message is refused, its reply is stored and goes out, once, when the records can be read again | `T: while_the_relays_records_cannot_be_read_nothing_is_published_on_a_guess` | a relay that cannot be asked taken for a yes: the progress message was sent, `{"text":"sent as …"}` where an error was expected (`left: Null right: true`) | pass |
+
+### 3. A delete and a pause reach the bzz that runs the agent
+
+**Cause.** `bzz agent delete` refused only when the agent's harness process
+was running. An idle agent has none, so the delete went ahead while another
+bzz held the agent's key in memory and its connection open. Nothing told
+that bzz. `bzz agent pause` changed the settings, which a running bzz reads
+once, at its start.
+
+**Fix.** A delete holds the agent as a move does, in two steps. First
+(`deleting`): the bzz that runs the agent stops its process and stops
+listening, within a second; if the deletion then does not happen, it runs
+the agent again. Then, when the relay has removed the owner's record and
+before any file goes (`deleted`): every bzz that holds the agent's key
+closes the agent's connection and forgets the key, and says so by removing
+its record of serving the agent, which the delete waits for (15 s, then it
+refuses and keeps the files). A running bzz also follows the settings file
+when it changes: `pause` stops the agent there and `resume` runs it again,
+and an agent that is no longer in the settings is let go.
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| A deletion in another process: when its first step returns, the agent's process is gone, the agent says it is gone, and a mention is not taken; if the deletion does not happen the agent runs again and answers; when it goes on, this bzz closes the agent's connection, removes its record of serving it, and publishes nothing as the agent afterwards, whatever reaches it | `T: a_deletion_in_another_process_reaches_the_bzz_that_runs_the_agent`; `U: runtime::hold` (2) | a running bzz that does not look at a deletion's hold, as before: `Timeout("the bzz that runs Scout did not stop it (process N). Close that bzz, and delete the agent then. Nothing was deleted")` | pass |
+| An agent that is gone from the settings is let go by the bzz that runs it; a settings file that cannot be read changes nothing | `T: an_agent_that_is_gone_from_the_settings_is_let_go_by_the_bzz_that_runs_it` | the settings not followed: `timed out waiting for this bzz to let go of the agent` | pass |
+| `bzz agent pause` in another process stops the agent's process within a second, the agent says it is gone, and what is said meanwhile is not answered later; `resume` runs it again with the same connection | `T: a_pause_in_another_process_stops_a_running_agent_and_a_resume_runs_it_again` | the same fault: `timed out waiting for the agent to be Paused` | pass |
+
+What each command does to a bzz that is running, as the guide now says:
+`delete` and `pause` and `resume` reach it within a second; `edit` does
+not, but for what it takes away (a folder for commands, a host), which
+holds at once as before.
+
+### 4. The role: `bot`, as Buzz 1.0.1 gives it
+
+`bzz agent add` and the panel's `i` now ask for the `bot` role in a channel
+as in a Solo chat. bzz answers and lists an agent with either role, as
+before (the directory of M4 does not ask for the role; the M4 relay journey
+still checks that with an agent that is a plain member). Corrected texts:
+`docs/agents.md`, `bzz agent add --help`, ADR decision 11, one sentence of
+`docs/configuration.md`, and the comments in `src/agents/manage.rs` and
+`src/store/agents.rs`. The plan (D13) is left for the orchestrator.
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| The owner's act carries `["role","bot"]` | `U: manage::an_agent_is_added_with_the_bot_role_as_buzz_adds_one` (was `an_agent_joins_as_a_member_and_as_a_bot_only_in_a_solo_chat`) | no role asked for in a channel, as before: `left: [["h", …], ["p", …]] right: [["h", …], ["p", …], ["role", "bot"]]` | pass |
+| On the relay: the member list has the agent as `bot` in an ordinary channel and in a Solo chat | pinned relay, below, and the M4 journey | on the relay, the code as it was: `role: … Some("member")` | pass |
+
+### 5. Presence
+
+Buzz 1.0 shows a subject as online from its own kind 20001 (`online`,
+`away`, `offline`), which it takes as current for 75 seconds, and from the
+relay's snapshot of the same (`src/features/presence/presence.ts` at
+`095df3f0f6f8`). A running agent now publishes kind 20001 `online` with its
+own key and its owner's authorization at once and then every 60 seconds,
+and `offline` when it is paused (here or from another process), held for a
+move or a deletion, stopped with bzz, deleted, or moved away. The owner's
+key signs nothing for it.
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| A running agent says `online`, itself, again and again, in the form bzz and Buzz read; `offline` once when it is paused and nothing after; `online` again at once when it is resumed; `offline` when bzz stops | `T: a_running_agent_says_it_is_present_and_says_when_it_is_gone` | nothing said: `timed out waiting for three presence updates` | pass |
+| On the relay: its own snapshot holds a running agent as present, a paused and a deleted one as not, and never the owner | pinned relay, below | the code as it was: `presence: a running agent says it is present: the relay holds it as not present` | pass |
+
+### 6. Smaller faults
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| `bzz agent new` with an identity whose key Buzz Desktop holds refuses before Node is looked for and before anything is installed, and says why such an identity cannot have agents; `:agent new` refuses before its form | `C: agent_new_with_a_paired_identity_refuses_before_anything_is_looked_for_or_installed` (the binary, with a stand-in `node` that leaves a mark when it is started) | the identity not asked first: `` `buzz1 is an identity whose key Buzz Desktop holds` in: bzz: configuration error: …/node did not answer `--version` as Node.js does `` | pass |
+| An agent this bzz holds the key of is the owner's own: running here, paused here, moved away, or held for a process he runs; by community | `U: agents::own_tests::an_agent_this_bzz_holds_the_key_of_is_its_owners_own` | not run | pass |
+| The directory shows it as his in the list and in the detail, and anyone else's as remote | `U: ui::agents::an_agent_this_bzz_holds_is_shown_as_its_own` (TestBackend) | the directory not told which agents are held: the row is `› ◆ a  policy unknown`, with no `yours · run by this bzz` | pass |
+| The mention picker offers it as "your agent" | `presence_markers_test::mention_picker_offers_an_agent_this_bzz_holds_as_the_owners_own` (TestBackend) | every agent called remote: `@Scout  aaaaaaaa…aaaa  ◆ remote agent · eligible` | pass |
+| `bzz agents list` and `bzz agents show` say `yours · run by this bzz` and "your own agent"; the JSON gains `own` | the M4 relay journey (`directory["own"]`, the two commands) | the first green run of that journey after the change | pass |
+| Enter and Tab in the mention picker leave the cursor after a space: `@Sc`, Enter, `hello from bzz` is `@Scout hello from bzz`, and still mentions Scout. When an edit does turn a mention into plain text (a letter typed onto the name, a cut into it), the status line says so | `app::tests::the_picker_leaves_the_cursor_after_a_space_and_a_lost_mention_is_told` (the App's own key path and a TestBackend screen); `U: ui::composer` (2) | no space: `Submit left: "@Scout" right: "@Scout "`; not told: the status line is empty | pass |
+| A change of a member's role is shown as "…'s access to this channel was changed by …", a join as a join, also after a removal | `ui_timeline_test::a_change_of_a_members_role_is_shown_as_a_change_not_as_a_join` (TestBackend) | every notice a join: three lines `bbbbbbbb…bbbb joined · added by aaaaaaaa…aaaa` in a row | pass |
+| The guide's table for "does not answer at all" has the causes of this run: read-only in the channel, removed from it, Buzz 1.0 lists a new agent only after it restarts, Buzz 1.0 does not offer a bzz agent for a direct message | [`agents.md`](agents.md), "When something is wrong" | a document | done |
+
+### On the pinned relay
+
+`real_relay_agent_keeps_to_its_access_and_a_delete_or_a_pause_reaches_the_bzz_that_runs_it`,
+in `tests/relay_integration.rs`: bzz's real Pi Durable host on its stand-in
+model, two agents made by `bzz agent new`, `bzz agent run` in one process,
+and every act of the owner either the `bzz` binary in another process or an
+event signed with his key. Its claims are collected and asserted together,
+so that one run shows all that do not hold.
+
+**Red: the whole test against the code as it was** (`src/` and
+`migrations/` of `d53b8d9`, the test as it is). `29 claim(s) do not hold`,
+among them:
+
+```text
+- role: `agent add` gives the bot role in a channel, as Buzz 1.0.1 does: Some("member")
+- presence: a running agent says it is present: the relay holds it as not present
+- read-only: nothing is signed for a mention where the agent may only read: 12 different stored replies ["d3d57653", "527292e8", "391c812f", …]
+- read-only: `agent show` never says answered of it: ["… · answered · attempt 1 · request 479400ecc7eb", …]
+- read-only: the request fails as read-only, and is never handed over: Some(("replied", "", 1))
+- refused: one signed reply for one mention, whatever the relay answers: 8 different stored replies ["f0dc4452", "b62f8a92", …]
+- refused: a refused reply is never published later: ["pong: this conversation holds 1 message(s) from people"]
+- removed: nothing is published after the agent was removed from the channel: ["answered after I was removed"]
+- pause: the bzz that runs the agent pauses it: `bzz agent run` never printed `Scout · pi-durable · paused`
+- pause: a mention is answered while the agent is paused
+- delete: the bzz that served the agent let go of it: `bzz agent run` never printed `Echo · pi-durable · stopped · deleted`
+- delete: an agent that is answering is stopped and deleted: bzz: configuration error: Scout is running (process N): close bzz or pause the agent first
+```
+
+That is the tester's bug 1 again, on the pinned relay: twelve different
+signed replies for one mention in twelve seconds, and "answered" for a
+mention the relay holds no reply to. One thing it shows that he did not
+see: a reply the relay had refused during a time-out was published after
+the time-out was lifted.
+
+**Green**, the same test on the final code:
+
+| Claim | Observed | Result |
+|---|---|---|
+| `bzz agent add` gives the `bot` role | the relay's member list: `bot` | pass |
+| A running agent is present by its own key, a second one too; the owner's key says nothing | the relay's snapshot of kind 20001: both present, the owner absent | pass |
+| **The observed case.** The owner makes the agent `guest` (kind 9000 with `["role","guest"]`) and mentions it | in 12 s: no reply stored, `agent show` never says "answered"; the request is `failed: read-only` with no attempt; the relay holds no reply; `agent show` has `(guest) · read-only: it cannot answer there` beside the channel and `failed: read-only` for the mention; back as `member`, the next mention is answered once and the old one stays unanswered | pass |
+| **The relay refuses the reply** while its records say the agent may write (a moderator's time-out, kind 9042) | one stored reply in 12 s, never "answered"; `failed: reply-refused` after one attempt; after the time-out is lifted (9043) the next mention is answered once, and 35 s later the refused reply is still not on the relay and still the stored one | pass |
+| The agent is removed (kind 9001) while it answers | 16 s later the relay holds no reply to that mention; `failed: not-a-member`; added again, it answers the next mention | pass |
+| `bzz agent pause` from another process | `bzz agent run` prints `Scout · pi-durable · paused`; the relay's snapshot no longer holds it as present; a mention gets no reply in 8 s; after `resume` it is present again and answers, and the mention of the pause stays unanswered | pass |
+| `bzz agent delete` of an agent the running bzz serves, idle | the delete says the running bzz stopped it; `bzz agent run` prints `Echo · pi-durable · stopped · deleted`; no record of serving Echo is left, and one of serving Scout is; not present | pass |
+| `bzz agent delete` of an agent that is answering | the delete succeeds; its harness process is gone when it returns; `Scout · pi-durable · stopped · deleted`; no settings, no record of serving it; 14 s later no reply to the mention it was answering; the running bzz ends as always | pass |
+
+The first green run had one claim left: `agent show` still said `(bot)`
+beside the channel, because it reads bzz's database and no bzz of that
+profile had read the member list since `agent add`. The agent's own
+connection now keeps the relay's records as it reads them
+(`RelayPort::keeping_records`).
+
+The M4 journey (`real_relay_agent_new_to_delete_on_the_pi_durable_host`)
+was changed with it: `agent add` gives `bot` in the channel and in the Solo
+chat; the directory's check that a plain member is listed now uses a
+channel where the owner added the agent with no role; `bzz agents list` and
+`bzz agents show` say the agent is the owner's own; and the check that a
+running agent is not deleted is gone, since a delete now reaches it.
+
+### Not fixed, and why
+
+| Item of the report | State |
+|---|---|
+| Buzz 1.0 lists an agent bzz creates, and drops one bzz deletes, only after it is started again | Buzz 1.0's own behaviour: it reads the agent records at its start. bzz publishes the records as before. The guide says so in three places |
+| Buzz 1.0 describes a bzz agent as "Harness unavailable", with no edit, delete or start | its `summaryOf` for a `runtime` it does not know. Nothing in bzz to change |
+| Buzz 1.0 offers no direct message with a bzz agent | Buzz 1.0's "New message" lists only its own agents. The guide says to use a Solo chat |
+| The person who mentioned a read-only agent sees nothing in Buzz 1.0 | the agent may not write there, so it cannot say so. `agent show` says `failed: read-only`, and the agent's profile in Buzz says whether it is running (presence) |
+| "Not established: why the second case sent only one event to the relay in 93 s, and what set the 9 s rhythm" | not established here either: it needs his tunnel. What is known: those replies never reached the relay, and a publish that never left bzz was counted as a refusal, which replaced the reply. With the fix neither a refusal nor a publish that did not leave replaces a stored reply |
+| A change of role whose earlier join is older than what the timeline has loaded still reads as a join | the relay's notice is the same for both and names no role; bzz tells them apart from the notices it has loaded |
+| The top of [`agents.md`](agents.md) still says that `bzz agents` lists "verified agents that other people run" | that paragraph is being edited by the release task; the correction is the paragraph about the directory under "See what it is doing", and the sentence is for the merge |
+| A private channel the agent was removed from stays in `agent show` until a bzz of that profile reads the member list | the agent can no longer read that channel's records, so its own connection learns only that it cannot see the channel. It publishes nothing there (`not-a-member`) |
+| Two copies answering at once; a Buzz 1.0 agent with a model; macOS and Windows; a Buzz newer than 1.0.1 | not observed by the tester, and not here |
+| Buzz 1.0 itself showing the agent as online | not run: no Buzz 1.0 was started for this task. What Buzz 1.0 reads (kind 20001 by the agent's key, and the relay's snapshot of it) was read in its source, and the relay's snapshot is checked on the pinned relay |
+
+### Gates after the fixes
+
+Run on `92b07c3`, 2026-11-14, Linux x86_64, Node 26.5.0.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets --all-features -- -D warnings` | clean (also `--no-default-features`) |
+| Tests | `cargo test --locked --all-features` | 725 passed, 0 failed, 30 ignored. 23 passing tests are new since `d53b8d9`: 11 in `tests/agent_runtime_test.rs`, 8 unit (2 `ui::composer`, and 1 each of `store::agent_runtime`, `runtime::relay`, `runtime::hold`, `agents`, `ui::agents` and the App), and 1 each in `agent_manage_test`, `store_migration_test`, `presence_markers_test` and `ui_timeline_test`. Two tests were replaced by tests that assert the opposite (the discarded reply; the role), and the panel test and the M4 relay journey were extended. The one new ignored test is the relay test above |
+| Pinned relay | `BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh` | 22 passed in 885 s (the 21 of `d53b8d9` and the one above; the test with the real programs skipped itself and said so), then `agent_host_test`, 6 passed, and `agent_move_test`, 8 passed. An earlier full run, on `be35d40`, failed one test, `real_relay_local_agent_answers_a_mention_exactly_once`, with `the agent's intake never subscribed`: that test serves an agent whose entry in the settings file has no `local` table, and the running bzz took that for a deleted agent and let it go. Only an agent that is gone from the settings is let go now (`92b07c3`) |
+| Agent host | `cd agent-host && npm ci --ignore-scripts --omit=optional && npm test` | 99 tests, 99 pass; `npm ci` reports 0 vulnerabilities. `agent-host/` was not changed |
+| Supply chain | none run | `Cargo.toml` and `Cargo.lock` are unchanged: no new dependency |
 
 ## Release acceptance (2026-11-14)
 

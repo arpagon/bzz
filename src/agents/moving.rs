@@ -1046,6 +1046,8 @@ pub fn moved_line(data_dir: &Path, agent: Uuid) -> Option<String> {
                 .unwrap_or_default()
         )),
         Hold::Moving { pid } => Some(format!("being moved by bzz process {pid}")),
+        Hold::Deleting { pid } => Some(format!("being deleted by bzz process {pid}")),
+        Hold::Deleted => Some("deleted".to_owned()),
     }
 }
 

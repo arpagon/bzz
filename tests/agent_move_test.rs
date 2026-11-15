@@ -679,6 +679,7 @@ impl Running {
         relay.set_channel(ChannelFacts {
             id: channel,
             name: "general".into(),
+            read_only: Vec::new(),
             kind: PlaceKind::Channel,
             members: vec![owner.public_key().to_hex(), agent.pubkey.clone()],
         });
@@ -1604,6 +1605,7 @@ async fn the_real_host_continues_a_conversation_in_another_bzz_after_a_move() {
     relay.set_channel(ChannelFacts {
         id: channel,
         name: "general".into(),
+        read_only: Vec::new(),
         kind: PlaceKind::Channel,
         members: vec![owner.public_key().to_hex(), agent.pubkey.clone()],
     });

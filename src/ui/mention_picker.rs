@@ -47,7 +47,15 @@ impl MentionPicker {
     }
 }
 
-pub fn render(frame: &mut Frame<'_>, area: Rect, picker: &MentionPicker, theme: &Theme) {
+/// `own`: the agents whose key this bzz holds itself, by key. They are the
+/// owner's own, and are offered as his, not as remote.
+pub fn render(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    picker: &MentionPicker,
+    own: &std::collections::HashMap<String, crate::agents::Own>,
+    theme: &Theme,
+) {
     frame.render_widget(Clear, area);
     let mut items = Vec::new();
     if picker.candidates.is_empty() {
@@ -56,9 +64,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, picker: &MentionPicker, theme: 
         items.extend(picker.candidates.iter().map(|candidate| {
             let kind = if candidate.is_agent {
                 format!(
-                    // Someone else's agent or one of your own: both are in
-                    // the directory, and the timeline says which is yours.
-                    "  ◆ agent · {}",
+                    "  ◆ {} · {}",
+                    if own.contains_key(&candidate.pubkey) {
+                        "your agent"
+                    } else {
+                        "remote agent"
+                    },
                     candidate
                         .agent_eligibility
                         .map_or("policy-unknown", crate::agents::Eligibility::as_str)

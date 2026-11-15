@@ -115,8 +115,16 @@ key, talks to the relay and starts an ACP agent beneath it.
     file and settings. bzz stores no provider key.
 11. **What Buzz sees.** A local agent has a profile marked as a bot and an
     owner-signed record (kind 30177) with a `runtime` value of `bzz/<harness>`.
-    It is added to a channel as Buzz 1.0 adds one: as a member, with the `bot`
-    role only in Solo chats.
+    It is added to a channel as Buzz 1.0 adds one to a channel or a Solo chat
+    that exists: with the `bot` role. As first written this said "as a
+    member, with the `bot` role only in Solo chats"; Buzz 1.0.1 was then seen
+    to do the opposite (the `bot` role in a channel and in an existing Solo
+    chat, and a plain member only for the agent a Solo chat is created
+    with). bzz answers and lists an agent with either role. As built: a
+    running agent also says that it is present, with its own key (kind
+    20001, `online` once a minute), and `offline` when it is paused, stopped,
+    deleted or moved away; Buzz shows an agent as online from that. The
+    owner's key signs nothing for it.
 12. **A remote copy follows Buzz's rules.** Under `buzz-acp` the key sits
     beside the agent and the agent posts with the `buzz` CLI. Our host reads
     the place and the request from `buzz-acp`'s prompt text there; a test at

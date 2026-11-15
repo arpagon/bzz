@@ -38,10 +38,27 @@ use crate::{
 pub enum Published {
     /// The relay has it (now, or already).
     Accepted,
-    /// The relay refused it, or it never left bzz: it exists nowhere.
+    /// The relay's own no to this event. It is final: the same event sent
+    /// again gets the same answer.
     Refused(String),
+    /// Not a verdict on the event, and the relay does not have it: it never
+    /// left bzz, or the relay said to come back later (`rate-limited:`,
+    /// `error:`). The same event may be sent again.
+    Later(String),
     /// No verdict came. It may be stored.
     Unknown,
+}
+
+/// Whether a relay's `OK false` is its verdict on the event, or only says
+/// that it cannot take anything just now (NIP-01's `rate-limited:` and
+/// `error:` prefixes).
+fn is_verdict(message: &str) -> bool {
+    let prefix = message
+        .split_once(':')
+        .map_or(message, |(prefix, _)| prefix)
+        .trim()
+        .to_ascii_lowercase();
+    !matches!(prefix.as_str(), "rate-limited" | "rate limited" | "error")
 }
 
 /// The agent's side of the relay. Tests replace it with a recorded one.
@@ -52,8 +69,14 @@ pub trait AgentRelay: Send + Sync + 'static {
     async fn publish(&self, event: Event) -> Published;
     /// Reads what the agent itself may read.
     async fn query(&self, filters: Vec<Value>) -> Result<Vec<Event>>;
-    /// The relay's own records of one channel.
+    /// The relay's own records of one channel. They may be a minute old.
     async fn channel(&self, channel: Uuid) -> Result<ChannelFacts>;
+    /// The relay's own records of one channel, asked for now. An
+    /// [`Error::Access`] says the agent cannot see the channel: it is not a
+    /// member of it.
+    async fn channel_now(&self, channel: Uuid) -> Result<ChannelFacts> {
+        self.channel(channel).await
+    }
     /// Ends the agent's connection and forgets its key, for an agent this
     /// bzz will not run again (it was moved away). A relay counts a key as
     /// present while a connection of it is open: an agent that runs
@@ -146,6 +169,19 @@ pub async fn names(relay: &dyn AgentRelay, pubkeys: &[String]) -> HashMap<String
     names
 }
 
+/// The members of a member list (39002) who may not write: those with the
+/// `guest` role, in the exact shape `["p", pubkey, relay, role]`.
+fn read_only(members: &Event) -> Vec<String> {
+    members
+        .tags
+        .iter()
+        .filter_map(|tag| match tag.as_slice() {
+            [name, pubkey, _, role] if name == "p" && role == "guest" => Some(pubkey.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// A channel's facts from its relay-signed metadata (39000) and member list
 /// (39002). `None` when either is missing or not signed by `relay_pubkey`.
 pub fn channel_facts(channel: Uuid, relay_pubkey: &str, records: &[Event]) -> Option<ChannelFacts> {
@@ -183,6 +219,7 @@ pub fn channel_facts(channel: Uuid, relay_pubkey: &str, records: &[Event]) -> Op
         name: events::first_tag(metadata, "name").unwrap_or_else(|| channel.to_string()),
         kind,
         members: events::tag_values(members, "p"),
+        read_only: read_only(members),
     })
 }
 
@@ -191,10 +228,13 @@ pub fn channel_facts(channel: Uuid, relay_pubkey: &str, records: &[Event]) -> Op
 pub async fn publish_on(supervisor: &SupervisorHandle, event: Event, limit: Duration) -> Published {
     match tokio::time::timeout(limit, supervisor.publish(event)).await {
         Ok(Ok(ack)) if ack.accepted || ack.message.starts_with("duplicate:") => Published::Accepted,
-        Ok(Ok(ack)) => Published::Refused(crate::protocol::artifact::display(&ack.message, 160)),
+        Ok(Ok(ack)) if is_verdict(&ack.message) => {
+            Published::Refused(crate::protocol::artifact::display(&ack.message, 160))
+        }
+        Ok(Ok(ack)) => Published::Later(crate::protocol::artifact::display(&ack.message, 160)),
         // Refused by bzz's own queue: it was never sent.
         Ok(Err(error)) if is_local_admission_error(&error) => {
-            Published::Refused("bzz could not send it now; try again shortly".into())
+            Published::Later("bzz could not send it now; try again shortly".into())
         }
         Ok(Err(_)) | Err(_) => Published::Unknown,
     }
@@ -250,6 +290,10 @@ pub struct RelayPort {
     channels: Mutex<HashMap<Uuid, (Instant, ChannelFacts)>>,
     /// Set once the intake's subscription is live.
     listening: AtomicBool,
+    /// Where the relay's records of the agent's channels are kept as bzz
+    /// reads them, for `bzz agent show`: it then says the role the agent
+    /// has now, also when no bzz of this profile is open.
+    records: Option<(StoreHandle, Uuid)>,
 }
 
 impl RelayPort {
@@ -269,7 +313,40 @@ impl RelayPort {
             publish_timeout: Duration::from_secs(15),
             channels: Mutex::new(HashMap::new()),
             listening: AtomicBool::new(false),
+            records: None,
         }
+    }
+
+    /// Keeps the relay's own records of the agent's channels in `store`,
+    /// as any bzz keeps them, each time they are read.
+    #[must_use]
+    pub fn keeping_records(mut self, store: StoreHandle, community: Uuid) -> Self {
+        self.records = Some((store, community));
+        self
+    }
+
+    /// Stores the relay's own signed records among `records`.
+    async fn keep(&self, records: &[Event]) {
+        let Some((store, community)) = &self.records else {
+            return;
+        };
+        let (community, relay) = (*community, self.relay_pubkey.clone());
+        let own = records
+            .iter()
+            .filter(|event| event.pubkey.to_hex() == relay && events::verify(event).is_ok())
+            .cloned()
+            .collect::<Vec<_>>();
+        if own.is_empty() {
+            return;
+        }
+        let _ = store
+            .call(move |store| {
+                for record in &own {
+                    let _ = store.apply_event(community, record);
+                }
+                Ok(())
+            })
+            .await;
     }
 
     /// Whether requests published from now on will reach the agent.
@@ -304,6 +381,7 @@ impl RelayPort {
             .query_raw(&[json!({"kinds": [39_000], "#d": names, "limit": names.len() * 2})])
             .await?;
         records.extend(lists);
+        self.keep(&records).await;
         let facts = ids
             .into_iter()
             .filter_map(|id| channel_facts(id, &self.relay_pubkey, &records))
@@ -337,6 +415,10 @@ impl AgentRelay for RelayPort {
         {
             return Ok(facts.clone());
         }
+        self.channel_now(channel).await
+    }
+
+    async fn channel_now(&self, channel: Uuid) -> Result<ChannelFacts> {
         let id = channel.to_string();
         let records = self
             .http
@@ -345,8 +427,11 @@ impl AgentRelay for RelayPort {
                 json!({"kinds": [39_002], "#d": [id], "limit": 2}),
             ])
             .await?;
-        let facts = channel_facts(channel, &self.relay_pubkey, &records)
-            .ok_or_else(|| Error::Access("the agent cannot see this channel".into()))?;
+        self.keep(&records).await;
+        let Some(facts) = channel_facts(channel, &self.relay_pubkey, &records) else {
+            self.cache().remove(&channel);
+            return Err(Error::Access("the agent cannot see this channel".into()));
+        };
         self.cache()
             .insert(channel, (Instant::now(), facts.clone()));
         Ok(facts)
@@ -550,6 +635,31 @@ mod tests {
             (PlaceKind::Channel, "general")
         );
         assert_eq!(facts.members, vec![agent.clone(), owner.clone()]);
+        assert!(facts.read_only.is_empty());
+        // "Viewing only" in Buzz 1.0 is the `guest` role: a member who may
+        // not write. Any other role may.
+        let viewing = record(
+            &relay,
+            39_002,
+            &[
+                &["d", &id],
+                &["p", &agent, "", "guest"],
+                &["p", &owner, "", "owner"],
+                &["p", &"d".repeat(64), "", "bot"],
+            ],
+        );
+        let facts_viewing = channel_facts(channel, &relay_hex, &[stream.clone(), viewing]).unwrap();
+        assert_eq!(facts_viewing.read_only, vec![agent.clone()]);
+        assert_eq!(
+            facts_viewing.may_write(&agent),
+            Err(crate::agents::runtime::admission::Unwritable::ReadOnly)
+        );
+        assert_eq!(facts_viewing.may_write(&owner), Ok(()));
+        assert_eq!(facts_viewing.may_write(&"d".repeat(64)), Ok(()));
+        assert_eq!(
+            facts_viewing.may_write(&"e".repeat(64)),
+            Err(crate::agents::runtime::admission::Unwritable::NotAMember)
+        );
         let kind_of = |metadata: Event| {
             channel_facts(channel, &relay_hex, &[metadata, members.clone()])
                 .unwrap()
@@ -617,6 +727,29 @@ mod tests {
     /// Found on the pinned relay: a stored membership notice comes back with
     /// every new subscription. Acted on each time, the intake subscribed
     /// twice a second until the relay's quota stopped it.
+    /// Found against Buzz 1.0: a publish that never left bzz was taken for
+    /// the relay's refusal, and the reply it carried was thrown away.
+    #[test]
+    fn only_the_relays_own_no_is_a_verdict() {
+        for refusal in [
+            "restricted: only members can post in this channel",
+            "restricted: not a channel member",
+            "blocked: you are banned",
+            "invalid: bad signature",
+            "some words of a relay bzz does not know",
+            "",
+        ] {
+            assert!(is_verdict(refusal), "{refusal}");
+        }
+        for later in [
+            "rate-limited: quota exceeded; retry in 17s",
+            "Rate-Limited: slow down",
+            "error: database error: connection reset",
+        ] {
+            assert!(!is_verdict(later), "{later}");
+        }
+    }
+
     #[test]
     fn a_membership_notice_is_acted_on_once() {
         let relay = Keys::generate();
@@ -637,6 +770,7 @@ mod tests {
             name: String::new(),
             kind,
             members: members.iter().map(|member| (*member).clone()).collect(),
+            read_only: Vec::new(),
         };
         let channel = facts(PlaceKind::Channel, &[&agent, &owner, &other]);
         let solo = facts(PlaceKind::Solo, &[&agent, &owner]);

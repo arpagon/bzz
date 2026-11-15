@@ -19,12 +19,20 @@ An agent is three things, kept apart:
 | Its **hands** | nowhere, until you grant a folder, a host, or a folder for commands | never by default |
 
 `bzz agents` (with an `s`) and `:agents directory` are something else: the
-list of verified agents that other people run. `bzz broker` is for an agent
+list of every verified agent of the community, those other people run and
+your own, which it marks as yours. `bzz broker` is for an agent
 whose process you run yourself: it does not list a local agent and refuses
 to change one.
 
 ## What you need
 
+- **An identity whose key bzz holds.** An identity paired with Buzz Desktop
+  (`bzz identity pair-desktop`) cannot have local agents: an agent needs its
+  owner's authorization (NIP-OA), signed with your key, and Buzz Desktop
+  does not sign one for a program that is paired with it. `bzz agent new`
+  and `:agent new` say so before they look for anything or install
+  anything. Use an identity made or imported in bzz (`bzz identity new`,
+  `bzz identity import`); the same key can be used in Buzz too.
 - **Node.js 22.19 or newer**, with its `npm`. Only agents need it; bzz without
   agents stays one binary. bzz uses the first `node` on your `PATH` that is new
   enough, or the one `BZZ_NODE` names.
@@ -81,7 +89,8 @@ What bzz does, in this order, all or nothing:
 4. Publishes the agent's profile, marked as a bot, with your authorization.
 5. Publishes your record of the agent (kind 30177), which is what Buzz lists
    an agent from: its name, picture, who may wake it, and `runtime`
-   `bzz/pi-durable`.
+   `bzz/pi-durable`. A Buzz 1.0 that is open reads these records when it
+   starts: it lists a new agent after it is started again.
 
 If a step fails, the steps before it are taken back: no key, no folder, no
 settings, and the published records are removed while bzz still holds the
@@ -102,14 +111,27 @@ agent runs from it. If it fails, npm's output is in
 
 ## Add it to a channel
 
-An agent answers only where it is a member.
+An agent answers only where it is a member, and only where it may write.
 
 ```sh
 bzz agent add Scout general        # by the channel's name, or its id
 ```
 
-You add it as its owner, as Buzz does: a plain member in a channel, and with
-the `bot` role in a Solo chat. You need the right to add members there.
+You add it as its owner, with the `bot` role: that is what Buzz 1.0 gives an
+agent it adds to a channel, or to a Solo chat that exists. (The agent a Solo
+chat is created with is a plain member there. bzz answers and lists an agent
+with either role.) You need the right to add members there.
+
+In Buzz you can change what an agent of yours may do in a channel, or take
+it out:
+
+- **"Viewing only"** (the `guest` role): the agent may read there and not
+  write. bzz does not hand a mention from that channel to the agent at all.
+  `bzz agent show` says `read-only` beside the channel, and `failed:
+  read-only` for the mention. "Participating" gives the right back.
+- **"Remove from channel"**: the agent no longer hears that channel. If it
+  was answering there, its answer is not posted: bzz asks the relay whether
+  the agent is still a member before it publishes anything as the agent.
 
 Then mention it in that channel. It answers:
 
@@ -118,7 +140,9 @@ Then mention it in that channel. It answers:
   interrupt it.
 
 A direct message between you and the agent needs no mention. A direct message
-with anyone else in it never wakes the agent.
+with anyone else in it never wakes the agent. Buzz 1.0 offers no way to
+start a direct message with a bzz agent (its "New message" does not list
+one): use a Solo chat there.
 
 A top-level mention starts a thread, and the agent answers in it. Each thread
 is one conversation with its own memory; a direct message or a Solo chat is
@@ -149,8 +173,15 @@ A `pi-durable` agent's world is its own disk:
 What bzz itself enforces, whatever the model does:
 
 - **One final reply per mention.** The reply is signed and stored before it is
-  published. If anything is killed on the way, the same reply is published
-  again and the relay keeps one.
+  published. If anything is killed on the way, or the relay does not answer,
+  the same reply is published again and the relay keeps one. If the relay
+  refuses it, that is final: the mention fails as `reply-refused`, and
+  nothing else is signed for it.
+- **It posts only where it may write.** Before anything is published as the
+  agent (a reply, a reply that waited, a message of a turn, a reaction, a
+  typing indicator), bzz asks the relay's own records whether the agent is
+  still a member of that channel and may write there. If not, nothing is
+  posted there, then or later.
 - **Who may wake it.** You always can. Others only by the rule you chose, and
   only you in a direct message.
 - **Two agents do not answer each other for ever.** Another agent's message
@@ -463,6 +494,28 @@ For the agent selected it shows its state, what it is doing now (also that it
 waits for your answer to a command), how its last turn ended, its settings
 and its capability record.
 
+How a turn ended is said in bzz's own words, here and in `bzz agent show`:
+
+| It says | What happened |
+|---|---|
+| `answered` | the relay accepted the reply. Not before |
+| `sending its reply: signed, and not yet accepted by the relay` | the reply is stored, and the relay has not taken it yet. bzz publishes the same reply again until the relay answers |
+| `failed: reply-refused` | the relay refused the reply. Nothing was posted, and nothing is tried again |
+| `failed: read-only` | the agent may only read in that channel, so it was not asked |
+| `failed: not-a-member` | the agent was taken out of the channel before it could answer |
+| `failed: <another kind>` | the turn itself failed; the agent said so in the thread, unless the line adds that its notice was refused or is not accepted yet |
+
+**Presence.** While bzz runs an agent, the agent says so on the relay with
+its own key, once a minute, and Buzz shows it as online. It says that it is
+gone when you pause it, when bzz closes or locks, and when it is deleted or
+moved away. A bzz that is killed says nothing: the relay then forgets the
+agent within three minutes. Your own key signs nothing for this.
+
+The directory (`Tab`, `:agents directory`, `bzz agents list`) holds every
+verified agent of the community, your own among them. bzz marks those as
+yours (`yours · run by this bzz`, `paused here`, `moved away`) and calls
+only the others remote.
+
 `Ctrl-Y`, on any screen, opens the command an agent waits to run
 ([above](#letting-an-agent-run-commands)).
 
@@ -495,8 +548,14 @@ bzz agent resume Scout
 
 A paused agent has no process and does not queue what it misses: what is said
 while it is paused is not answered later. In the TUI, `Space` in `:agents`
-pauses the running agent at once. The commands change the settings; a bzz
-that is already running applies them at its next start.
+pauses the running agent at once.
+
+The commands change the settings, and a bzz that runs the agent (the TUI, or
+`bzz agent run`) follows them within a second: on `pause` it stops the
+agent's process, stops listening for it, and the agent says on the relay
+that it is gone; on `resume` it runs the agent again. A bzz that was started
+while the agent was paused never opened the agent's key: it starts the agent
+at its own next start (in the TUI, `Space` in `:agents` does it at once).
 
 `x` in `:agents` stops only the turn that is running. The agent stays.
 
@@ -538,7 +597,8 @@ bzz agent delete Scout
 
 It removes, and says what it removed:
 
-- your record of the agent from the relay, so that Buzz no longer lists it;
+- your record of the agent from the relay, so that Buzz no longer lists it
+  (a Buzz 1.0 that is open lists it until it is started again);
 - its place in the channels you can see it in;
 - its settings, its key, the git credentials stored for it, its folder
   with its memory, its disk and its activity, and its rows in bzz's
@@ -547,9 +607,16 @@ It removes, and says what it removed:
 The agent's messages and its profile stay on the relay, as with any member
 who leaves. If the relay cannot be reached, nothing is deleted, so that Buzz
 is not left listing an agent nobody runs; `--force` deletes what is on your
-machine anyway and tells you what is left on the relay. An agent that is
-running is not deleted: close bzz or pause it first. A deleted key cannot be
-recovered.
+machine anyway and tells you what is left on the relay. A deleted key cannot
+be recovered.
+
+If a bzz is running the agent (the TUI, or `bzz agent run`), the delete
+reaches it, as a move does. That bzz stops the agent's process at once, also
+in the middle of an answer; and before the agent's files go, it closes the
+agent's connection and forgets its key. After a delete no bzz publishes as
+that agent. If the deletion does not happen (the relay cannot be reached,
+say), that bzz runs the agent again. If that bzz does not let go within 15
+seconds, nothing on your machine is deleted, and bzz tells you to close it.
 
 ## Moving an agent
 
@@ -713,6 +780,7 @@ should be listed any more.
 | `<data>/agents/<id>/started.json` | what its host reported when it last started |
 | `<data>/keys/agent-<id>.git/` | its git credentials, each sealed to your key |
 | `<data>/agents/run/<id>.json` | its running process, while it runs |
+| `<data>/agents/serving/<id>.<pid>.json` | which bzz holds its key and its connection now; `bzz agent delete` waits for it to be gone |
 | `<data>/agent-host/<id>/` | the agent host and its packages |
 
 bzz's database keeps each request an agent was woken by, and the reply it
@@ -735,8 +803,9 @@ signed, for 30 days after the turn is over (at most 1000 per agent), so that
 - Git credentials are HTTP Basic over HTTPS only: no SSH keys, and no
   credential for the agent's `curl`.
 - A bzz that is running keeps the settings it started with, but for what
-  you take away. An edit from the command line is safe while the TUI is
-  open; what it adds takes effect at the next start.
+  you take away, and for `pause`, `resume` and `delete`, which reach it at
+  once. An edit from the command line is safe while the TUI is open; what
+  it adds takes effect at the next start.
 - Nothing stops you from running the same agent from two data folders. bzz
   refuses only to start an agent that another bzz of the same data folder is
   running.
@@ -750,7 +819,11 @@ signed, for 30 days after the turn is over (at most 1000 per agent), so that
 | "the model … cannot be used (provider_unavailable)" | the provider is not one of Pi's own; one from a Pi extension needs a Pi Durable entry in that package |
 | "… (sign_in_needed)", or the agent says you need to sign in | run `pi` and sign in to that provider |
 | The agent says "I am not available right now" | its host could not start or keeps stopping: `:agents` shows why, and `l` its log |
-| The agent does not answer at all | it is not a member of the channel (`bzz agent add`), it is paused, bzz is not running, or the author may not wake it (`bzz agent show`) |
+| The agent does not answer at all | `bzz agent show <name>` tells most of these apart. It is not a member of the channel, or was removed from it (`bzz agent add`); it is a member who may only read there ("Viewing only" in Buzz: `read-only` beside the channel; give it "Participating"); it is paused; bzz is not running (Buzz then shows it offline); or the author may not wake it |
+| Buzz 1.0 does not list an agent you just made, or still lists one you deleted | Buzz 1.0 reads the agent records when it starts: start it again |
+| Buzz 1.0 does not offer the agent for a direct message | it lists only its own agents there; talk to a bzz agent in a channel or a Solo chat |
+| `bzz agent show` says `failed: reply-refused` | the relay refused the agent's reply (a time-out by a moderator, or a rule of the relay); nothing was posted. Ask again when the cause is gone |
+| "is an identity whose key Buzz Desktop holds … cannot have local agents" | use an identity made or imported in bzz for the community's agents ([above](#what-you-need)) |
 | `:agents` says "not running: unlock to run them" | bzz was started locked; restart it and unlock |
 | "stopped · moved away: it runs elsewhere" | you moved it: `bzz agent show` says when and how, and `bzz agent receive` takes it back |
 | "the file was cut short", "the file was changed after bzz made it" | copy the file again from where `bzz agent move` wrote it |

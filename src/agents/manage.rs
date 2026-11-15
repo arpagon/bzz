@@ -11,8 +11,10 @@
 //!   agent's key, `runtime` is `bzz/<harness>`, and the content holds the
 //!   name, the picture, `parallelism`, and who may wake it in Buzz's own
 //!   words (`respond_to`);
-//! - **adding to a channel** (kind 9000), by the owner: a member, with the
-//!   `bot` role only in a Solo chat (D13).
+//! - **adding to a channel** (kind 9000), by the owner, with the `bot` role:
+//!   what Buzz 1.0 does when it adds an agent to a channel or a Solo chat
+//!   that exists. (Seen with Buzz 1.0.1; the plan's D13 had it the other
+//!   way round. bzz answers and lists an agent with either role.)
 //!
 //! Creation is all or nothing. Used by `bzz agent …` and by the TUI.
 
@@ -29,7 +31,7 @@ use crate::{
         runtime::{
             admission::{ChannelFacts, PlaceKind},
             agent::Environment,
-            coding,
+            coding, hold,
             install::{self, ModelCheck},
             process,
             relay::{self, Published},
@@ -1070,6 +1072,21 @@ impl Publisher for OwnerRelay {
 // ---- before anything is made ------------------------------------------------
 
 /// What the checks before a creation found.
+/// Whether `identity` can own a local agent. One whose key Buzz Desktop
+/// holds (a paired identity) cannot: the owner's key must sign the agent's
+/// authorization (NIP-OA), and Buzz Desktop signs none for a program that
+/// is paired with it. Asked first, before anything is looked for or
+/// installed.
+pub fn may_own_agents(identity: &IdentityConfig) -> Result<()> {
+    if identity.backend != KeyBackend::BuzzDesktop {
+        return Ok(());
+    }
+    Err(Error::Unsupported(format!(
+        "{} is an identity whose key Buzz Desktop holds (it was paired with `bzz identity pair-desktop`), and such an identity cannot have local agents: an agent needs its owner's authorization (NIP-OA), which Buzz Desktop does not sign for a paired program. Use an identity whose key bzz holds (`bzz identity new` or `bzz identity import`), in a community added with it. Nothing was installed and nothing was made",
+        identity.label
+    )))
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Preflight {
     /// Lines for the owner: the Node in use, the model that will answer.
@@ -1463,7 +1480,7 @@ pub async fn create(
     };
     match publisher.as_agent(&agent, &signer, profile.clone()).await {
         Published::Accepted => undo.profile = Some(profile.clone()),
-        Published::Refused(why) => {
+        Published::Refused(why) | Published::Later(why) => {
             fail!(Error::Protocol(format!(
                 "the relay refused the agent's profile: {why}"
             )));
@@ -1486,7 +1503,7 @@ pub async fn create(
     };
     match publisher.as_owner(record.clone()).await {
         Published::Accepted => {}
-        Published::Refused(why) => {
+        Published::Refused(why) | Published::Later(why) => {
             fail!(Error::Protocol(format!(
                 "the relay refused your record of the agent: {why}"
             )));
@@ -1624,7 +1641,9 @@ pub async fn republish(
         .ok_or_else(|| Error::Config("this agent is not run by bzz".into()))?;
     let refused = |what: &str, published: Published| match published {
         Published::Accepted => Ok(()),
-        Published::Refused(why) => Err(Error::Protocol(format!("the relay refused {what}: {why}"))),
+        Published::Refused(why) | Published::Later(why) => {
+            Err(Error::Protocol(format!("the relay refused {what}: {why}")))
+        }
         Published::Unknown => Err(Error::Timeout(format!("the relay did not confirm {what}"))),
     };
     if what.profile {
@@ -1684,17 +1703,22 @@ pub struct Added {
     pub channel: Uuid,
     pub channel_name: String,
     pub kind: PlaceKind,
-    /// The role asked for: `bot` in a Solo chat, none elsewhere (D13).
-    pub role: Option<&'static str>,
+    /// The role asked for: `bot`, as Buzz 1.0 adds an agent.
+    pub role: &'static str,
     /// It was a member before; nothing was published.
     pub already: bool,
 }
 
-/// The owner's act that adds an agent to a channel, as Buzz 1.0 writes it:
-/// a member, with the `bot` role only in a Solo chat.
-pub fn add_member_builder(channel: Uuid, agent: &str, kind: PlaceKind) -> Result<EventBuilder> {
-    let role = (kind == PlaceKind::Solo).then_some(buzz_sdk::MemberRole::Bot);
-    buzz_sdk::build_add_member(channel, agent, role)
+/// The role an agent is added with.
+pub const ADDED_ROLE: &str = "bot";
+
+/// The owner's act that adds an agent to a channel, as Buzz 1.0 writes it
+/// when it adds an agent to a channel or a Solo chat that exists: with the
+/// `bot` role (`additionRole` in its `channel-members/members.ts`, "agents
+/// join as Bot"). Only the agent a Solo chat is created with is a plain
+/// member there, and bzz creates no chat with an agent.
+pub fn add_member_builder(channel: Uuid, agent: &str) -> Result<EventBuilder> {
+    buzz_sdk::build_add_member(channel, agent, Some(buzz_sdk::MemberRole::Bot))
         .map_err(|error| Error::Protocol(error.to_string()))
 }
 
@@ -1723,17 +1747,17 @@ pub async fn add_to_channel(
         channel,
         channel_name: facts.name.clone(),
         kind: facts.kind,
-        role: (facts.kind == PlaceKind::Solo).then_some("bot"),
+        role: ADDED_ROLE,
         already: is_member(&facts),
     };
     if !added.already {
         let event = relay
             .signer
-            .sign(add_member_builder(channel, &agent.pubkey, facts.kind)?)
+            .sign(add_member_builder(channel, &agent.pubkey)?)
             .await?;
         match relay.as_owner(event).await {
             Published::Accepted => {}
-            Published::Refused(why) => {
+            Published::Refused(why) | Published::Later(why) => {
                 return Err(Error::Access(format!(
                     "the relay refused to add {} to {}: {why}",
                     agent.label, facts.name
@@ -1789,6 +1813,65 @@ pub fn running_pid(data_dir: &Path, agent: Uuid) -> Option<u32> {
     process::read_record(&process::run_dir(data_dir), agent)
         .filter(|record| process::is_alive(&record.process))
         .map(|record| record.process.pid)
+}
+
+/// How long a deletion waits for a bzz that runs the agent: to stop it, and
+/// then to let go of its key and its connection.
+pub const RELEASE_LIMIT: Duration = Duration::from_secs(15);
+
+/// The first step of a deletion, as of a move: from here no bzz of this
+/// data folder runs the agent. One that does stops the agent's process
+/// within a second, says on the relay that the agent is gone, and stops
+/// listening for it; this waits until its process is gone. When what this
+/// returns is dropped without [`release_for_deletion`], that bzz runs the
+/// agent again.
+pub async fn hold_for_deletion(
+    data_dir: &Path,
+    agent: &HostedAgentConfig,
+    limit: Duration,
+) -> Result<hold::Held> {
+    let held = hold::take_for_deletion(data_dir, agent.id)?;
+    // A bzz that was starting the agent this very moment has written its
+    // record by now; one that runs it stops it within half a second.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let deadline = tokio::time::Instant::now() + limit;
+    while let Some(pid) = running_pid(data_dir, agent.id) {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::Timeout(format!(
+                "the bzz that runs {} did not stop it (process {pid}). Close that bzz, and delete the agent then. Nothing was deleted",
+                agent.label
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(held)
+}
+
+/// The step before an agent's files go: every bzz that serves the agent
+/// closes the agent's connection and forgets its key, for good. This waits
+/// until none holds them, so that after a deletion no bzz can publish as
+/// the agent.
+pub async fn release_for_deletion(
+    data_dir: &Path,
+    agent: &HostedAgentConfig,
+    held: hold::Held,
+    limit: Duration,
+) -> Result<()> {
+    held.deleted()?;
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        let serving = hold::served_by(data_dir, agent.id);
+        let Some(pid) = serving.first() else {
+            return Ok(());
+        };
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::Timeout(format!(
+                "the bzz that runs {} (process {pid}) did not let go of its key and its connection, so its files were kept. Close that bzz and run the delete again",
+                agent.label
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Removes what the relay holds for the agent, in the order Buzz 1.0 does:
@@ -1928,16 +2011,62 @@ pub fn when(seconds: u64) -> String {
         .unwrap_or_else(|| seconds.to_string())
 }
 
-/// How one turn ended, in a few words.
+/// What `bzz agent show` and the agents panel call a request whose reply is
+/// signed and stored, and which the relay has not accepted yet. It is not
+/// "answered" before the relay has it.
+pub const SENDING: &str = "sending its reply: signed, and not yet accepted by the relay";
+
+/// What a failure that only bzz's own records can explain means, for the
+/// owner who reads `agent show`.
+fn failure_words(kind: &str) -> &'static str {
+    match kind {
+        "reply-refused" => " (the relay refused its reply; nothing was posted)",
+        "reply-undelivered" => " (the relay never took its reply; nothing was posted)",
+        "read-only" => {
+            " (it may only read in that channel, so it was not asked to answer; give it access to write there)"
+        }
+        "not-a-member" => {
+            " (it is no longer a member of that channel, so nothing was posted there)"
+        }
+        _ => "",
+    }
+}
+
+/// How one turn ended, in a few words. "answered" is said only of a reply
+/// the relay accepted.
 pub fn outcome(turn: &RecentTurn) -> String {
-    match (turn.state.as_str(), turn.failure.as_deref()) {
-        ("replied", _) => "answered".into(),
-        ("ended", _) => "spoke without a final reply".into(),
-        ("failed", Some(kind)) => format!("failed: {kind}"),
-        ("failed", None) => "failed".into(),
-        ("delivered", _) => "answering now".into(),
-        ("queued", _) => "waiting".into(),
-        (other, _) => other.to_owned(),
+    use crate::store::agent_runtime::ReplyStanding;
+    match (turn.state.as_str(), turn.failure.as_deref(), turn.reply) {
+        ("replied", _, Some(ReplyStanding::Pending)) => SENDING.into(),
+        ("replied", _, Some(ReplyStanding::Refused)) => "failed: reply-refused".into(),
+        ("replied", ..) => "answered".into(),
+        ("ended", ..) => "spoke without a final reply".into(),
+        ("failed", Some(kind), reply) => format!(
+            "failed: {kind}{}{}",
+            failure_words(kind),
+            // The notice that says so in the thread, when there is one.
+            match reply {
+                Some(ReplyStanding::Pending) if failure_words(kind).is_empty() =>
+                    " (its notice is not yet accepted by the relay)",
+                Some(ReplyStanding::Refused) if failure_words(kind).is_empty() =>
+                    " (the relay refused its notice; nothing was posted)",
+                _ => "",
+            }
+        ),
+        ("failed", None, _) => "failed".into(),
+        ("delivered", ..) => "answering now".into(),
+        ("queued", ..) => "waiting".into(),
+        (other, ..) => other.to_owned(),
+    }
+}
+
+/// What `agent show` says beside a channel's role when the agent cannot
+/// answer there.
+pub fn role_note(role: &str) -> &'static str {
+    if crate::domain::MemberRole::parse(Some(role)).can_write() {
+        ""
+    } else {
+        " · read-only: it cannot answer there until it may write (\"Participating\" in Buzz)"
     }
 }
 
@@ -2171,8 +2300,9 @@ pub fn show_lines(agent: &HostedAgentConfig, community: &str, details: &Details)
     }
     for (id, name, role) in &details.channels {
         lines.push(format!(
-            "channel:     #{} ({role}) {id}",
-            crate::protocol::artifact::display(name, 60)
+            "channel:     #{} ({role}) {id}{}",
+            crate::protocol::artifact::display(name, 60),
+            role_note(role)
         ));
     }
     if details.turns.is_empty() {
@@ -2426,28 +2556,30 @@ mod tests {
         );
     }
 
+    /// The run against Buzz 1.0.1: it adds an agent to an ordinary channel,
+    /// and to a Solo chat that exists, with the `bot` role. bzz had it the
+    /// other way round: a plain member in a channel.
     #[test]
-    fn an_agent_joins_as_a_member_and_as_a_bot_only_in_a_solo_chat() {
+    fn an_agent_is_added_with_the_bot_role_as_buzz_adds_one() {
         let agent = Keys::generate().public_key().to_hex();
         let channel = Uuid::new_v4();
-        let roles = |kind| {
-            add_member_builder(channel, &agent, kind)
-                .unwrap()
-                .sign_with_keys(&Keys::generate())
-                .unwrap()
-                .tags
-                .iter()
-                .map(|tag| tag.as_slice().to_vec())
-                .collect::<Vec<_>>()
-        };
-        let plain = vec![
-            vec!["h".to_owned(), channel.to_string()],
-            vec!["p".to_owned(), agent.clone()],
-        ];
-        assert_eq!(roles(PlaceKind::Channel), plain);
-        let mut solo = plain.clone();
-        solo.push(vec!["role".to_owned(), "bot".to_owned()]);
-        assert_eq!(roles(PlaceKind::Solo), solo);
+        let tags = add_member_builder(channel, &agent)
+            .unwrap()
+            .sign_with_keys(&Keys::generate())
+            .unwrap()
+            .tags
+            .iter()
+            .map(|tag| tag.as_slice().to_vec())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tags,
+            vec![
+                vec!["h".to_owned(), channel.to_string()],
+                vec!["p".to_owned(), agent.clone()],
+                vec!["role".to_owned(), "bot".to_owned()],
+            ]
+        );
+        assert_eq!(ADDED_ROLE, "bot");
     }
 
     #[test]
