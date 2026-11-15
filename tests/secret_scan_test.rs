@@ -619,7 +619,7 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
     };
     use nostr::ToBech32 as _;
     use serde_json::json;
-    use support::agent_harness::{RecordedRelay, Script, until};
+    use support::agent_harness::{RecordedRelay, Script};
 
     let temporary = tempfile::TempDir::new().unwrap();
     let paths = Paths {
@@ -794,18 +794,29 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
             );
             requests.push(request);
         }
-        until(
-            "both turns to end",
-            std::time::Duration::from_secs(30),
-            || {
-                requests
-                    .iter()
-                    .all(|request| !relay.replies_to(request).is_empty())
-                    .then_some(())
-                    .filter(|()| script.tool_results("send").len() == 3)
-            },
-        )
-        .await;
+        // Both turns end: each request has its reply, and the harness was
+        // answered for its three sends. When that does not happen, say for
+        // which harness, and what bzz and the harness know of it: in CI this
+        // wait once ended with nothing but "timed out" (`ccfa1c6`).
+        let ended = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let replied = requests
+                .iter()
+                .map(|request| relay.replies_to(request).len())
+                .collect::<Vec<_>>();
+            let sends = script.tool_results("send").len();
+            if replied.iter().all(|count| *count > 0) && sends == 3 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < ended,
+                "{}: both turns did not end in 30 s. Replies to each request: {replied:?}; the harness was answered for {sends} of 3 sends.\nbzz says: {:?}\nthe harness's log: {:?}",
+                harness.as_str(),
+                host.status(),
+                script.log()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
         // While the harness still runs: its ownership record.
         let run_dir = process::run_dir(&paths.data_dir);
         let record =
