@@ -21,7 +21,7 @@ fn fresh_database_has_expected_pragmas_and_schema() {
     let foreign_keys: u32 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 18);
+    assert_eq!(version, 19);
     assert_eq!(
         foreign_keys, 1,
         "foreign-key enforcement must remain enabled"
@@ -175,7 +175,7 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
     let version: u32 = upgraded
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 18);
+    assert_eq!(version, 19);
     let inbox_projection_table: u32 = upgraded
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='inbox_conversations'",
@@ -278,7 +278,7 @@ fn schema_eight_repairs_historical_bot_roles_and_duplicate_projection_drift() {
         .unwrap();
     connection
         .execute_batch(
-            "DELETE FROM schema_migrations WHERE version IN (8,9,10,11,12,13,14,15,16,17,18);
+            "DELETE FROM schema_migrations WHERE version IN (8,9,10,11,12,13,14,15,16,17,18,19);
              DROP TABLE agent_replies;
              DROP TABLE agent_inbox;
              DROP TABLE agent_sessions;
@@ -470,7 +470,7 @@ fn schema_nine_projects_guest_roles_and_repairs_channel_facts_on_reingest() {
              DROP TABLE artifacts;
              DROP TABLE emoji_contributions;
              ALTER TABLE reactions DROP COLUMN emoji_url;
-             DELETE FROM schema_migrations WHERE version IN (9,10,11,12,13,14,15,16,17,18);"
+             DELETE FROM schema_migrations WHERE version IN (9,10,11,12,13,14,15,16,17,18,19);"
         ))
         .unwrap();
     connection.pragma_update(None, "user_version", 8).unwrap();
@@ -551,4 +551,81 @@ fn schema_eleven_accepts_buzz_desktop_identities_with_their_communities() {
         })
         .unwrap();
     assert_eq!(violations, 0);
+}
+
+/// Migration 19 (after the run against Buzz 1.0): a stored reply can be
+/// marked as one that will never be published. A database of schema 18,
+/// with a reply the relay had not acknowledged, keeps that reply as it was:
+/// neither accepted nor refused, and so still published again.
+#[test]
+fn schema_nineteen_keeps_the_stored_replies_of_schema_eighteen() {
+    use bzz::store::agent_runtime::{NewRequest, ReplyOrigin, ReplyStanding};
+    let temporary = TempDir::new().unwrap();
+    let path = temporary.path().join("bzz.db");
+    let agent = Uuid::new_v4();
+    let mut store = Store::open(&path).unwrap();
+    for (request, published) in [("m1", false), ("m2", true)] {
+        store
+            .agent_inbox_offer(&NewRequest {
+                agent_id: agent,
+                request_id: request.into(),
+                community_id: Uuid::nil(),
+                channel_id: Uuid::nil(),
+                place: Uuid::nil().to_string(),
+                author: "a".repeat(64),
+                created_at: 10,
+                event_json: "{}".into(),
+            })
+            .unwrap();
+        store
+            .agent_reply_claim(agent, request, "r", "{}", ReplyOrigin::Send, None)
+            .unwrap();
+        if published {
+            store.agent_reply_published(agent, request).unwrap();
+        }
+    }
+    drop(store);
+    // The database as schema 18 left it.
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "DROP INDEX agent_replies_unpublished;
+             ALTER TABLE agent_replies DROP COLUMN refused_at;
+             ALTER TABLE agent_replies DROP COLUMN refusal;
+             CREATE INDEX agent_replies_unpublished ON agent_replies (agent_id) WHERE published_at IS NULL;
+             DELETE FROM schema_migrations WHERE version=19;",
+        )
+        .unwrap();
+    connection.pragma_update(None, "user_version", 18).unwrap();
+    drop(connection);
+
+    let mut store = Store::open(&path).unwrap();
+    let standing = |store: &Store, request: &str| {
+        store
+            .agent_reply_get(agent, request)
+            .unwrap()
+            .unwrap()
+            .standing()
+    };
+    assert_eq!(standing(&store, "m1"), ReplyStanding::Pending);
+    assert_eq!(standing(&store, "m2"), ReplyStanding::Accepted);
+    assert_eq!(store.agent_replies_unpublished(agent, 0).unwrap().len(), 1);
+    assert!(
+        store
+            .agent_reply_refused(agent, "m1", "r", "reply-refused")
+            .unwrap()
+    );
+    assert_eq!(standing(&store, "m1"), ReplyStanding::Refused);
+    assert!(
+        store
+            .agent_replies_unpublished(agent, 0)
+            .unwrap()
+            .is_empty()
+    );
+    drop(store);
+    let version: u32 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 19);
 }

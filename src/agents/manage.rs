@@ -1463,7 +1463,7 @@ pub async fn create(
     };
     match publisher.as_agent(&agent, &signer, profile.clone()).await {
         Published::Accepted => undo.profile = Some(profile.clone()),
-        Published::Refused(why) => {
+        Published::Refused(why) | Published::Later(why) => {
             fail!(Error::Protocol(format!(
                 "the relay refused the agent's profile: {why}"
             )));
@@ -1486,7 +1486,7 @@ pub async fn create(
     };
     match publisher.as_owner(record.clone()).await {
         Published::Accepted => {}
-        Published::Refused(why) => {
+        Published::Refused(why) | Published::Later(why) => {
             fail!(Error::Protocol(format!(
                 "the relay refused your record of the agent: {why}"
             )));
@@ -1624,7 +1624,9 @@ pub async fn republish(
         .ok_or_else(|| Error::Config("this agent is not run by bzz".into()))?;
     let refused = |what: &str, published: Published| match published {
         Published::Accepted => Ok(()),
-        Published::Refused(why) => Err(Error::Protocol(format!("the relay refused {what}: {why}"))),
+        Published::Refused(why) | Published::Later(why) => {
+            Err(Error::Protocol(format!("the relay refused {what}: {why}")))
+        }
         Published::Unknown => Err(Error::Timeout(format!("the relay did not confirm {what}"))),
     };
     if what.profile {
@@ -1733,7 +1735,7 @@ pub async fn add_to_channel(
             .await?;
         match relay.as_owner(event).await {
             Published::Accepted => {}
-            Published::Refused(why) => {
+            Published::Refused(why) | Published::Later(why) => {
                 return Err(Error::Access(format!(
                     "the relay refused to add {} to {}: {why}",
                     agent.label, facts.name
@@ -1928,16 +1930,62 @@ pub fn when(seconds: u64) -> String {
         .unwrap_or_else(|| seconds.to_string())
 }
 
-/// How one turn ended, in a few words.
+/// What `bzz agent show` and the agents panel call a request whose reply is
+/// signed and stored, and which the relay has not accepted yet. It is not
+/// "answered" before the relay has it.
+pub const SENDING: &str = "sending its reply: signed, and not yet accepted by the relay";
+
+/// What a failure that only bzz's own records can explain means, for the
+/// owner who reads `agent show`.
+fn failure_words(kind: &str) -> &'static str {
+    match kind {
+        "reply-refused" => " (the relay refused its reply; nothing was posted)",
+        "reply-undelivered" => " (the relay never took its reply; nothing was posted)",
+        "read-only" => {
+            " (it may only read in that channel, so it was not asked to answer; give it access to write there)"
+        }
+        "not-a-member" => {
+            " (it is no longer a member of that channel, so nothing was posted there)"
+        }
+        _ => "",
+    }
+}
+
+/// How one turn ended, in a few words. "answered" is said only of a reply
+/// the relay accepted.
 pub fn outcome(turn: &RecentTurn) -> String {
-    match (turn.state.as_str(), turn.failure.as_deref()) {
-        ("replied", _) => "answered".into(),
-        ("ended", _) => "spoke without a final reply".into(),
-        ("failed", Some(kind)) => format!("failed: {kind}"),
-        ("failed", None) => "failed".into(),
-        ("delivered", _) => "answering now".into(),
-        ("queued", _) => "waiting".into(),
-        (other, _) => other.to_owned(),
+    use crate::store::agent_runtime::ReplyStanding;
+    match (turn.state.as_str(), turn.failure.as_deref(), turn.reply) {
+        ("replied", _, Some(ReplyStanding::Pending)) => SENDING.into(),
+        ("replied", _, Some(ReplyStanding::Refused)) => "failed: reply-refused".into(),
+        ("replied", ..) => "answered".into(),
+        ("ended", ..) => "spoke without a final reply".into(),
+        ("failed", Some(kind), reply) => format!(
+            "failed: {kind}{}{}",
+            failure_words(kind),
+            // The notice that says so in the thread, when there is one.
+            match reply {
+                Some(ReplyStanding::Pending) if failure_words(kind).is_empty() =>
+                    " (its notice is not yet accepted by the relay)",
+                Some(ReplyStanding::Refused) if failure_words(kind).is_empty() =>
+                    " (the relay refused its notice; nothing was posted)",
+                _ => "",
+            }
+        ),
+        ("failed", None, _) => "failed".into(),
+        ("delivered", ..) => "answering now".into(),
+        ("queued", ..) => "waiting".into(),
+        (other, ..) => other.to_owned(),
+    }
+}
+
+/// What `agent show` says beside a channel's role when the agent cannot
+/// answer there.
+pub fn role_note(role: &str) -> &'static str {
+    if crate::domain::MemberRole::parse(Some(role)).can_write() {
+        ""
+    } else {
+        " · read-only: it cannot answer there until it may write (\"Participating\" in Buzz)"
     }
 }
 
@@ -2171,8 +2219,9 @@ pub fn show_lines(agent: &HostedAgentConfig, community: &str, details: &Details)
     }
     for (id, name, role) in &details.channels {
         lines.push(format!(
-            "channel:     #{} ({role}) {id}",
-            crate::protocol::artifact::display(name, 60)
+            "channel:     #{} ({role}) {id}{}",
+            crate::protocol::artifact::display(name, 60),
+            role_note(role)
         ));
     }
     if details.turns.is_empty() {

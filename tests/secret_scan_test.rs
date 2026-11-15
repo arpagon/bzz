@@ -657,6 +657,7 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
     relay.set_channel(ChannelFacts {
         id: channel,
         name: "general".into(),
+        read_only: Vec::new(),
         kind: PlaceKind::Channel,
         members: vec![owner_keys.public_key().to_hex(), configured.pubkey.clone()],
     });
@@ -1111,6 +1112,7 @@ async fn a_stored_git_credential_is_in_no_log_no_database_and_no_activity_line()
     let facts = ChannelFacts {
         id: channel,
         name: "general".into(),
+        read_only: Vec::new(),
         kind: PlaceKind::Channel,
         members: vec![identity.pubkey.clone(), agent.pubkey.clone()],
     };

@@ -12512,6 +12512,7 @@ mod tests {
             let facts = ChannelFacts {
                 id: self.channel,
                 name: "general".into(),
+                read_only: Vec::new(),
                 kind: PlaceKind::Channel,
                 members: vec![self.owner_keys.public_key().to_hex(), agent.pubkey.clone()],
             };

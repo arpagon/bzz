@@ -68,6 +68,16 @@ impl ToolReply {
         }
     }
 
+    /// Nothing was done, and the turn is over all the same: the request
+    /// has ended, and nothing more can be posted for it.
+    pub fn ended(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            is_error: true,
+            is_final: true,
+        }
+    }
+
     pub fn to_json(&self) -> Value {
         let mut value = json!({"text": self.text});
         if self.is_error {

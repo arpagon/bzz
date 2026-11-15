@@ -5,6 +5,15 @@
 //! - **One final reply per request.** A final `send` is signed, stored under
 //!   the request in the ledger, and only then published. The request comes
 //!   from the calling session's live turn, never from the call's arguments.
+//!   The stored reply is never replaced: it is published again unchanged
+//!   until the relay answers, and the relay's refusal ends the request at
+//!   once, with nothing more signed for it.
+//! - **Only where the agent may write.** Before anything is published as
+//!   the agent (a reply, a stored reply again, a message of a turn, a
+//!   reaction, a typing indicator) bzz asks the relay's own records whether
+//!   the agent is still a member of that channel and may write there. If
+//!   not, nothing is published, then or later, and a mention is not handed
+//!   to the harness at all.
 //! - **A turn always ends in one of four ways:** a final `send`; the
 //!   harness's last plain text, when it never called `send`; something said
 //!   without a final reply; or a failure notice named by kind.
@@ -53,7 +62,7 @@ use crate::{
         runtime::{
             FailureKind, Limits,
             acp::{self, CallError, Connection, Incoming, RpcError},
-            admission::{self, ChannelFacts, PlaceKind, Refusal, ReplyTarget, Rule},
+            admission::{self, ChannelFacts, PlaceKind, Refusal, ReplyTarget, Rule, Unwritable},
             approval::{self, Approvals, Asked, NotAsked, Outcome},
             coding,
             credentials::Credentials,
@@ -374,16 +383,41 @@ pub struct Agent {
     pruned: Mutex<Option<Instant>>,
 }
 
+/// The kind a request fails with when the relay refuses its reply.
+pub const REPLY_REFUSED: &str = "reply-refused";
+/// The kind a request fails with when its stored reply was never accepted
+/// in the time a message can be a request at all.
+pub const REPLY_UNDELIVERED: &str = "reply-undelivered";
+/// How long bzz waits for the relay's records of a channel before it
+/// publishes there.
+const STANDING_LIMIT: Duration = Duration::from_secs(10);
+
 /// What became of a reply offered to the ledger.
 enum Reply {
+    /// The relay accepted it.
     Sent(String),
-    /// The request already had its final reply.
-    Already(String),
-    /// Stored; the relay has not acknowledged it yet.
+    /// The request already had its final reply. `refused`: one that will
+    /// never be published.
+    Already { id: String, refused: bool },
+    /// Stored; the relay has not accepted it yet.
     Pending(String),
+    /// The relay refused it. It stays the request's one reply, the request
+    /// is over, and nothing more is signed for it.
     Refused(String),
+    /// Nothing was signed: the agent may not write in that place.
+    Withheld(Unwritable),
     /// It could not be signed or stored.
     Failed,
+}
+
+/// Whether the agent may write in a channel, by the relay's own records.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Standing {
+    Writer,
+    Not(Unwritable),
+    /// The relay could not be asked just now. Nothing is published on a
+    /// guess.
+    Unknown,
 }
 
 /// Answers `session/request_permission` for a harness that is not a coding
@@ -1396,6 +1430,21 @@ impl Agent {
             return;
         };
         let request = Arc::new(request);
+        // Before any harness sees it: an agent that was taken out of the
+        // channel, or made read-only there, could not answer. The request
+        // ends, with the reason, and nothing is started for it.
+        match self.standing(row.channel_id, true).await {
+            Standing::Writer => {}
+            Standing::Not(why) => {
+                self.settle_failed(&row, why.as_str()).await;
+                return;
+            }
+            // The relay cannot be asked just now: the request waits.
+            Standing::Unknown => {
+                tokio::time::sleep(self.limits().restart_backoff).await;
+                return;
+            }
+        }
         let Some(run) = self.ensure_run().await else {
             // The request stays queued; a start is tried again shortly.
             tokio::time::sleep(self.limits().restart_backoff).await;
@@ -1523,14 +1572,19 @@ impl Agent {
         if self.halted() {
             return;
         }
+        // A request that has its reply, accepted or refused, or that ended
+        // while its turn ran, is over: nothing more is signed for it.
         let request_id = row.request_id.clone();
-        let replied = self
-            .store(move |store, agent| store.agent_reply_get(agent, &request_id))
+        let over = self
+            .store(move |store, agent| {
+                Ok(store.agent_reply_get(agent, &request_id)?.is_some()
+                    || store
+                        .agent_inbox_get(agent, &request_id)?
+                        .is_none_or(|current| current.state != RequestState::Delivered))
+            })
             .await
-            .ok()
-            .flatten()
-            .is_some();
-        if replied {
+            .unwrap_or(true);
+        if over {
             return;
         }
         match result {
@@ -1560,8 +1614,12 @@ impl Agent {
                 match response.get("stopReason").and_then(Value::as_str) {
                     Some("cancelled") => self.fail(row, nothing).await,
                     _ if !text.is_empty() => {
-                        self.reply(row, &turn.request, &text, &[], ReplyOrigin::Text, None)
-                            .await;
+                        if let Reply::Withheld(why) = self
+                            .reply(row, &turn.request, &text, &[], ReplyOrigin::Text, None)
+                            .await
+                        {
+                            self.settle_failed(row, why.as_str()).await;
+                        }
                     }
                     Some("refusal") => self.fail(row, FailureKind::Refused).await,
                     _ => self.fail(row, nothing).await,
@@ -1659,8 +1717,21 @@ impl Agent {
         let relay = self.relay.clone();
         let target = target.clone();
         let interval = self.limits().typing_interval;
+        let agent = self.spec.pubkey.clone();
         AbortOnDrop(tokio::spawn(async move {
             loop {
+                // Only where the agent may write, by the relay's records as
+                // bzz last read them: a membership notice makes bzz read
+                // them again.
+                let allowed = tokio::time::timeout(STANDING_LIMIT, relay.channel(target.channel))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .is_some_and(|facts| facts.may_write(&agent).is_ok());
+                if !allowed {
+                    tokio::time::sleep(interval).await;
+                    continue;
+                }
                 let thread = target
                     .thread
                     .as_ref()
@@ -1691,6 +1762,12 @@ impl Agent {
         origin: ReplyOrigin,
         failure: Option<FailureKind>,
     ) -> Reply {
+        // Asked before anything is signed: an agent that was taken out of
+        // the channel, or made read-only there, signs no reply at all.
+        let standing = self.standing(row.channel_id, true).await;
+        if let Standing::Not(why) = standing {
+            return Reply::Withheld(why);
+        }
         let Ok(event) = self.message(row, request, text, mentions).await else {
             return Reply::Failed;
         };
@@ -1713,12 +1790,52 @@ impl Agent {
             return Reply::Failed;
         };
         if !claim.fresh {
-            return Reply::Already(claim.reply.event_id);
+            return Reply::Already {
+                refused: claim.reply.refused.is_some(),
+                id: claim.reply.event_id,
+            };
+        }
+        if standing == Standing::Unknown {
+            // Signed and stored, and not sent on a guess: it is published,
+            // unchanged, once the relay's records can be read.
+            return Reply::Pending(event_id);
         }
         self.publish_stored(&row.request_id, event).await
     }
 
+    /// Whether the agent may write in `channel` by the relay's own records:
+    /// asked now when `fresh`, else as bzz last read them.
+    async fn standing(&self, channel: Uuid, fresh: bool) -> Standing {
+        let facts = async {
+            if fresh {
+                self.relay.channel_now(channel).await
+            } else {
+                self.relay.channel(channel).await
+            }
+        };
+        match tokio::time::timeout(STANDING_LIMIT, facts).await {
+            Ok(Ok(facts)) => match facts.may_write(&self.spec.pubkey) {
+                Ok(()) => Standing::Writer,
+                Err(why) => Standing::Not(why),
+            },
+            // The relay shows the agent no such channel: it is not in it.
+            Ok(Err(Error::Access(_))) => Standing::Not(Unwritable::NotAMember),
+            Ok(Err(_)) | Err(_) => Standing::Unknown,
+        }
+    }
+
+    /// Ends an open request as failed with `kind`, and posts nothing.
+    async fn settle_failed(&self, row: &InboxRow, kind: &'static str) {
+        let request_id = row.request_id.clone();
+        let _ = self
+            .store(move |store, agent| {
+                store.agent_inbox_settle(agent, &request_id, RequestState::Failed, Some(kind))
+            })
+            .await;
+    }
+
     /// Publishes a reply the ledger holds and records what the relay said.
+    /// The caller has asked whether the agent may write there.
     async fn publish_stored(&self, request_id: &str, event: Event) -> Reply {
         let event_id = event.id.to_hex();
         match self.relay.publish(event).await {
@@ -1730,46 +1847,78 @@ impl Agent {
                 Reply::Sent(event_id)
             }
             Published::Refused(message) => {
-                // The relay has none of it: the request is open again.
-                let (request_id, discarded) = (request_id.to_owned(), event_id.clone());
-                let _ = self
-                    .store(move |store, agent| {
-                        store.agent_reply_discard(agent, &request_id, &discarded)
-                    })
+                // The relay's verdict on this event, and so on this request:
+                // the reply stays in the ledger as refused, the request is
+                // over, and nothing more is signed for it.
+                self.refuse_stored(request_id, &event_id, REPLY_REFUSED)
                     .await;
                 Reply::Refused(message)
             }
             // It stays stored and is published again, unchanged, later.
-            Published::Unknown => Reply::Pending(event_id),
+            Published::Later(_) | Published::Unknown => Reply::Pending(event_id),
         }
     }
 
-    /// Publishes again, unchanged, every stored reply the relay has not
-    /// acknowledged. A relay that already has one keeps a single copy.
+    /// Marks a stored reply as one that will never be published, and its
+    /// request as failed with `kind`.
+    async fn refuse_stored(&self, request_id: &str, event_id: &str, kind: &'static str) {
+        let (request_id, event_id) = (request_id.to_owned(), event_id.to_owned());
+        let _ = self
+            .store(move |store, agent| {
+                store.agent_reply_refused(agent, &request_id, &event_id, kind)
+            })
+            .await;
+    }
+
+    /// Publishes again, unchanged, every stored reply the relay has neither
+    /// accepted nor refused. A relay that already has one keeps a single
+    /// copy. Before each, the relay's records are asked whether the agent
+    /// may still write there: a reply for a channel it was taken out of, or
+    /// made read-only in, is never published.
     async fn republish(&self, older_than_seconds: u64) {
+        // A reply nobody took in the time a message can be a request at
+        // all is not tried for ever.
+        let too_old = relay::MAX_REQUEST_AGE.as_secs();
+        let _ = self
+            .store(move |store, agent| {
+                store.agent_replies_expire(agent, too_old, REPLY_UNDELIVERED)
+            })
+            .await;
         let Ok(pending) = self
             .store(move |store, agent| store.agent_replies_unpublished(agent, older_than_seconds))
             .await
         else {
             return;
         };
+        let mut standings = HashMap::<Uuid, Standing>::new();
         for reply in pending {
+            if self.halted() {
+                return;
+            }
             let Ok(event) = Event::from_json(&reply.event_json) else {
                 continue;
             };
-            if let Reply::Refused(_) = self.publish_stored(&reply.request_id, event).await {
-                // It can never be delivered: the request ends as failed.
-                let request_id = reply.request_id.clone();
-                let _ = self
-                    .store(move |store, agent| {
-                        store.agent_inbox_settle(
-                            agent,
-                            &request_id,
-                            RequestState::Failed,
-                            Some("reply-refused"),
-                        )
-                    })
-                    .await;
+            let Some(channel) = crate::protocol::events::channel_id(&event) else {
+                continue;
+            };
+            let standing = match standings.get(&channel) {
+                Some(standing) => *standing,
+                None => {
+                    let standing = self.standing(channel, true).await;
+                    standings.insert(channel, standing);
+                    standing
+                }
+            };
+            match standing {
+                Standing::Writer => {
+                    self.publish_stored(&reply.request_id, event).await;
+                }
+                Standing::Not(why) => {
+                    self.refuse_stored(&reply.request_id, &reply.event_id, why.as_str())
+                        .await;
+                }
+                // Not now: it waits for the next round.
+                Standing::Unknown => {}
             }
         }
     }
@@ -1804,8 +1953,13 @@ impl Agent {
             )
             .await
         {
-            Reply::Refused(_) | Reply::Failed => settle(kind.as_str()).await,
-            Reply::Sent(_) | Reply::Already(_) | Reply::Pending(_) => {}
+            // No notice can be posted: the request still ends, with the
+            // kind its turn failed with.
+            Reply::Withheld(_) | Reply::Failed => settle(kind.as_str()).await,
+            // A notice the relay refused stays in the ledger as refused, and
+            // the request keeps its kind: bzz stops here.
+            Reply::Refused(_) => {}
+            Reply::Sent(_) | Reply::Already { .. } | Reply::Pending(_) => {}
         }
     }
 
@@ -1893,15 +2047,27 @@ impl Agent {
                 .await
             {
                 Reply::Sent(id) => ToolReply::final_reply(format!("sent as {id}")),
-                Reply::Already(id) => ToolReply::final_reply(format!(
+                Reply::Already { id, refused: false } => ToolReply::final_reply(format!(
                     "already sent as {id}: this message has its final reply, and nothing new was posted"
                 )),
+                Reply::Already { refused: true, .. } => ToolReply::ended(
+                    "The reply to this message was refused, and that is final: nothing was posted, and nothing more can be posted for this message. Do not try again; end your turn.",
+                ),
                 Reply::Pending(id) => ToolReply::final_reply(format!(
                     "sent as {id}; the relay has not confirmed it yet and bzz will keep trying"
                 )),
-                Reply::Refused(why) => ToolReply::refused(format!(
-                    "The relay refused the message: {why}. Nothing was sent."
+                // The relay's no is final for this message: the turn ends
+                // here, and a harness that tries again is told the same.
+                Reply::Refused(why) => ToolReply::ended(format!(
+                    "The relay refused the reply: {why}. That is final: nothing was posted, and nothing more can be posted for this message. Do not try again; end your turn."
                 )),
+                Reply::Withheld(why) => {
+                    self.settle_failed(&row, why.as_str()).await;
+                    ToolReply::ended(format!(
+                        "Nothing was posted: {}. Nothing more can be posted for this message. Do not try again; end your turn.",
+                        unwritable_words(why)
+                    ))
+                }
                 Reply::Failed => {
                     ToolReply::refused("bzz could not sign or store the reply. Nothing was sent.")
                 }
@@ -2316,6 +2482,9 @@ impl Agent {
         text: &str,
         mentions: &[String],
     ) -> ToolReply {
+        if let Some(refusal) = self.may_post(row, "Nothing was sent.").await {
+            return refusal;
+        }
         let Ok(event) = self.message(row, request, text, mentions).await else {
             return ToolReply::refused("bzz could not sign the message. Nothing was sent.");
         };
@@ -2328,9 +2497,25 @@ impl Agent {
             Published::Unknown => {
                 ToolReply::ok(format!("sent as {id}; the relay has not confirmed it"))
             }
-            Published::Refused(why) => ToolReply::refused(format!(
+            Published::Refused(why) | Published::Later(why) => ToolReply::refused(format!(
                 "The relay refused the message: {why}. Nothing was sent."
             )),
+        }
+    }
+
+    /// For a message of a turn or a reaction: `None` when the agent may
+    /// write in the request's channel by the relay's records as they are
+    /// now, else what the harness is told.
+    async fn may_post(&self, row: &InboxRow, nothing: &str) -> Option<ToolReply> {
+        match self.standing(row.channel_id, true).await {
+            Standing::Writer => None,
+            Standing::Not(why) => Some(ToolReply::refused(format!(
+                "{nothing} {}. Do not try again; end your turn.",
+                capitalised(unwritable_words(why))
+            ))),
+            Standing::Unknown => Some(ToolReply::refused(format!(
+                "{nothing} bzz could not ask the relay just now whether you may still write in this conversation. Try again shortly."
+            ))),
         }
     }
 
@@ -2410,6 +2595,9 @@ impl Agent {
                 }
             },
         };
+        if let Some(refusal) = self.may_post(row, NOTHING).await {
+            return refusal;
+        }
         let Ok(builder) = buzz_sdk::build_reaction(target, emoji) else {
             return ToolReply::refused(format!("`emoji` of `react` is not a reaction. {NOTHING}"));
         };
@@ -2423,7 +2611,7 @@ impl Agent {
             Published::Accepted | Published::Unknown => {
                 ToolReply::ok(format!("reacted {emoji} to {}", target.to_hex()))
             }
-            Published::Refused(why) => {
+            Published::Refused(why) | Published::Later(why) => {
                 ToolReply::refused(format!("The relay refused the reaction: {why}. {NOTHING}"))
             }
         }
@@ -2434,6 +2622,23 @@ fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// What a harness is told when its agent may not write in a place.
+const fn unwritable_words(why: Unwritable) -> &'static str {
+    match why {
+        Unwritable::NotAMember => "you are no longer a member of this channel",
+        Unwritable::ReadOnly => {
+            "you may only read in this channel now: your access there was set to viewing only"
+        }
+    }
+}
+
+fn capitalised(text: &str) -> String {
+    let mut characters = text.chars();
+    characters.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(characters).collect()
+    })
 }
 
 fn session_id(opened: &Value) -> std::result::Result<String, CallError> {

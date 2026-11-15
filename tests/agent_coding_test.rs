@@ -107,6 +107,7 @@ impl World {
         world.relay.set_channel(ChannelFacts {
             id: world.channel,
             name: "general".into(),
+            read_only: Vec::new(),
             kind: PlaceKind::Channel,
             members: vec![world.owner.public_key().to_hex(), world.agent_pubkey()],
         });

@@ -28,6 +28,44 @@ pub struct ChannelFacts {
     pub kind: PlaceKind,
     /// Public keys (hex) of the channel's members.
     pub members: Vec<String>,
+    /// The members who may read and not write: the `guest` role, which Buzz
+    /// calls "Viewing only".
+    pub read_only: Vec<String>,
+}
+
+/// Why an agent may not write in a place, by the relay's own records.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Unwritable {
+    /// It is not a member of the channel, or no longer.
+    NotAMember,
+    /// It is a member who may only read there.
+    ReadOnly,
+}
+
+impl Unwritable {
+    /// The kind a request fails with when its agent may not answer it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotAMember => "not-a-member",
+            Self::ReadOnly => "read-only",
+        }
+    }
+}
+
+impl ChannelFacts {
+    /// Whether `agent` may write in the channel: it is a member, and not
+    /// one who may only read. The relay takes a post from a community
+    /// member who is not in an open channel, so bzz asks this itself before
+    /// it publishes anything as the agent.
+    pub fn may_write(&self, agent: &str) -> Result<(), Unwritable> {
+        if !self.members.iter().any(|member| same_key(member, agent)) {
+            return Err(Unwritable::NotAMember);
+        }
+        if self.read_only.iter().any(|member| same_key(member, agent)) {
+            return Err(Unwritable::ReadOnly);
+        }
+        Ok(())
+    }
 }
 
 /// The reply a `send` builds: the channel and, for a thread, its root and
@@ -229,6 +267,7 @@ mod tests {
                 name: "general".into(),
                 kind,
                 members: members.iter().map(|keys| Self::hex(keys)).collect(),
+                read_only: Vec::new(),
             }
         }
 

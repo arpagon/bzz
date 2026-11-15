@@ -169,6 +169,8 @@ pub enum Mode {
     #[default]
     Accept,
     Refuse(String),
+    /// It never left bzz, or the relay said to come back later.
+    Later(String),
     /// No answer, and the relay does not have the event.
     Lost,
     /// No answer, but the relay has the event.
@@ -332,6 +334,7 @@ impl AgentRelay for RecordedRelay {
                 Published::Accepted
             }
             Mode::Refuse(why) => Published::Refused(why),
+            Mode::Later(why) => Published::Later(why),
             Mode::Lost => Published::Unknown,
             Mode::Silent => {
                 self.seed(&event);
