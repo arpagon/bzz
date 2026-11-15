@@ -56,7 +56,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, picker: &MentionPicker, theme: 
         items.extend(picker.candidates.iter().map(|candidate| {
             let kind = if candidate.is_agent {
                 format!(
-                    "  ◆ remote agent · {}",
+                    // Someone else's agent or one of your own: both are in
+                    // the directory, and the timeline says which is yours.
+                    "  ◆ agent · {}",
                     candidate
                         .agent_eligibility
                         .map_or("policy-unknown", crate::agents::Eligibility::as_str)

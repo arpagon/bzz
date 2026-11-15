@@ -295,7 +295,7 @@ herdr pane send-keys "$BZZ_PANE" enter
 Capture sanitized wide and narrow visible states. Exercise `j`/`k`, mouse row
 selection, `r`, `m`, resize, `esc`, community switch, and `:lock`. `m` must only
 insert an exact mention into the visible human composer; it must not publish.
-Verify the `◆ remote agent` marker, owner/policy/freshness explanation, and
+Verify the `◆ agent` marker, owner/policy/freshness explanation, and
 remote-runtime disclaimer without retaining pubkeys or channel content in
 screenshots.
 

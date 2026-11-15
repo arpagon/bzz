@@ -339,7 +339,7 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
             ],
             warning: None,
             notes: Vec::new(),
-            seen_with: "bzz's own host, on Linux, macOS and Windows",
+            seen_with: "bzz's own host, on Linux; macOS and Windows not tried",
         },
         Harness::Grok => {
             let sandbox = (!windows).then_some(
