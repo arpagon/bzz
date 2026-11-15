@@ -1,0 +1,17 @@
+The marks beside the four agent harnesses on getbzz.dev are inlined in
+index.html. They name the programs bzz can run an agent on (nominative use);
+their owners do not endorse or sponsor bzz.
+
+Pi          the Pi project's own logo (five rectangles on a 4x4 grid, in its
+            three colours), from earendil-works/pi, apps/p2/public/icons/favicon.svg
+            https://github.com/earendil-works/pi (MIT)
+Grok        the Grok mark of xAI; path from lobehub/lobe-icons,
+            packages/static-svg/icons/grok.svg (MIT for the file)
+Codex       the Codex mark of OpenAI; path from lobehub/lobe-icons,
+            packages/static-svg/icons/codex.svg (MIT for the file)
+Claude      the Claude mark of Anthropic, used for Claude Code; path from
+            simple-icons, icons/claude.svg (CC0 for the file)
+
+The marks themselves remain trademarks of Earendil, xAI, OpenAI and
+Anthropic. Grok, Codex and Claude are drawn in the page's text colour so
+that they follow the theme switcher; no mark is altered in shape.

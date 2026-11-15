@@ -43,6 +43,12 @@ experimental, what each can touch, and the sentence bzz prints of every
 coding harness (it never gives it the key; it cannot promise the key is out
 of reach). Change them together.
 
+Each harness has its mark beside its name, inlined in `index.html`: Pi's own
+logo in its colours, and the Grok, Codex and Claude marks in the page's text
+colour. Their sources are in `public/assets/harness-logos-attribution.txt`.
+They are other people's trademarks, used only to name the programs: do not
+redraw them, and keep the footer's line that says so.
+
 ## Demo media
 
 The hero video `public/assets/promo-v015.webm`, `promo-v015.mp4` and

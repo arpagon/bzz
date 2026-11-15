@@ -499,6 +499,25 @@ section h2.head {
   font-size: 0.95rem;
 }
 
+.card h3.with-logo {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.7rem;
+}
+
+.hlogo {
+  width: 1.6rem;
+  height: 1.6rem;
+  flex: none;
+  color: var(--text);
+}
+
+.card.feature .hlogo {
+  width: 2.4rem;
+  height: 2.4rem;
+}
+
 .feature-head {
   display: flex;
   flex-wrap: wrap;
