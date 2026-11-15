@@ -1553,6 +1553,20 @@ with its own saved session, and refuses versions outside its range."
   (`a new host is running`), and passed four times alone and in the next full
   runs. It is M2's test and was not changed.
 
+### Gates after M6
+
+Run on `09cc5ce`, 2026-11-14, Linux x86_64, Node 26.5.0.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets --all-features -- -D warnings` | clean (also `--no-default-features`) |
+| Tests | `cargo test --locked --all-features` | 675 passed, 0 failed, 27 ignored. 31 passing tests are new since M7: 18 unit (10 `coding`, 5 `permission`, 1 each of `record`, `process`, `ui::approval`), 12 in `tests/agent_coding_test.rs`, 1 creation. The secret scan and two tests of M4 were extended. The one new ignored test is the one with the real programs |
+| Pinned relay | `BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh` | 20 passed in 446 s (the 19 of M7, and the test with the real programs, which skipped itself and said so), then `agent_host_test`, 6 passed |
+| Pinned relay, with the real programs | the same with `BZZ_REAL_HARNESSES=grok,codex,claude-code` and `BZZ_RELAY_TEST_FILTER=real_relay_coding_harnesses` | 1 passed in 179 s, on `b5515ac`; nothing of bzz's own code changed after it |
+| Agent host | `cd agent-host && npm ci --ignore-scripts --omit=optional && npm test` | 99 tests, 99 pass; `npm ci` reports 0 vulnerabilities. `agent-host/` was not changed |
+| Supply chain | `cargo deny check`; `cargo audit`; `npm audit --omit=dev --omit=optional` in both `agent-adapters/` | `advisories ok, bans ok, licenses ok, sources ok`; the 4 allowed warnings of v0.14; 0 vulnerabilities. `Cargo.toml` and `Cargo.lock` are unchanged: M6 adds no Rust dependency. It adds two npm packages that bzz installs at run time, with what they need: 107 and 24 packages |
+
 ## Evidence gathered before the plan (2026-11-13)
 
 These spikes ran before any product code and are the reason for the design.
