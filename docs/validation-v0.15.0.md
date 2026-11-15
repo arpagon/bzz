@@ -3,8 +3,8 @@
 **Status:** M0 in progress on branch `v0.15.0` (PR #9). Implemented and proven
 below (2026-11-14): M1, the agent runtime in bzz; M2, the Pi Durable host,
 on both sides; M3, the agent's disk, with credentials for a private remote on
-both sides; M4, creating and managing an agent; M7, hands on this machine, on
-both sides; M6, the other harnesses. Not in this document yet: M5 (move). Plan:
+both sides; M4, creating and managing an agent; M5, moving one; M6, the other
+harnesses; M7, hands on this machine, on both sides. Plan:
 [`docs/planning/2026-11-13/v0.15.0.md`](planning/2026-11-13/v0.15.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
 
@@ -884,6 +884,285 @@ Two faults CI found on `5791420`, both in tests, are fixed in `8b78d05`:
 - On Windows the folder grant `/home/ann/site` of `config_test` is not an
   absolute path. The test now grants a path that is absolute where it runs.
   Not run on Windows here; CI will show it.
+
+## M5 — Move
+
+Linux x86_64, Rust 1.98.1, Node 26.5.0, Buzz pin `bf3bdd0eaefe`, 2026-11-14.
+Commits `a508f6d..b0ef7d3` on branch `t3/agent-move`, and the commit of this
+record. `agent-host/`, the protocol document and the ADR are unchanged by
+this work. What Buzz's own `buzz-acp` accepts as an owner command and how it
+starts an agent were read in its source at the pin
+(`crates/buzz-acp/README.md`, `src/lib.rs`, `src/config.rs`), and the
+relay's presence in `crates/buzz-relay`.
+
+**Where it is.**
+
+| What | Where |
+|---|---|
+| The sealed file: its format, sealing, opening, the three refusals | `src/agents/bundle.rs` |
+| What is carried, `move`, `receive`, the last step, the settings made to agree with an agent's folder | `src/agents/moving.rs` |
+| The launch kit: its files, its environment file, its README | `src/agents/launch_kit.rs`, `src/agents/launch_kit_readme.md` |
+| A moved agent's presence, and Buzz's stop command | `src/agents/remote.rs` |
+| `move.json`: what keeps a bzz from starting an agent that is being moved or was moved away | `src/agents/runtime/hold.rs`, and `watch_hold`, `start_run` in `runtime/agent.rs`, `runnable` in `runtime/host.rs` |
+| The agent's files made whole (`_bzz/checkpoint`) | `src/agents/runtime/settle.rs` |
+| A key out of custody and into it | `take_out`, `take_in` in `src/broker/custody.rs` |
+| `bzz agent move\|receive\|launch-kit\|shutdown`, and `show` for a moved agent | `src/cli_agent.rs` |
+| The switch for Pi packages, which a move carries | `packages` in `src/config.rs`; `bzz agent edit --packages off` |
+| The owner's guide, and what a file and a kit expose | [`agents.md`](agents.md#moving-an-agent), [`security.md`](security.md) |
+
+**No crate was added.** The sealed file uses Argon2id and
+XChaCha20-Poly1305, which bzz already had for an identity in an encrypted
+file. `Cargo.toml` and `Cargo.lock` are unchanged.
+
+**How to repeat.**
+
+```sh
+. runs/env.sh
+cargo test --locked --all-features --lib -- agents::bundle agents::moving agents::launch_kit agents::remote agents::runtime::hold agents::capability broker::custody
+cargo test --locked --all-features --test agent_move_test     # scripted harness; the last test runs the real host and needs Node
+cargo test --locked --all-features --test secret_scan_test a_moved_agents
+cargo test --locked --all-features --test relay_integration a_buzz_acp_prompts_shape
+BZZ_RELAY_TEST_FILTER=real_relay_agent_moves BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh
+# the recorded prompts of buzz-acp, again, from that same run:
+BZZ_REFRESH_BUZZ_ACP_PROMPTS=1 BZZ_RELAY_TEST_FILTER=real_relay_agent_moves BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh
+```
+
+`scripts/test-relay.sh` now builds `buzz-acp` beside the `buzz` CLI from
+`$BZZ_BUZZ_SOURCE` and gives the tests its path as `BZZ_BUZZ_ACP`.
+
+Each red is the named test with the one fault in the cell planted, seen
+failing as quoted, then removed. `U:` is a unit test in the named module;
+`A:` is a test of `tests/agent_move_test.rs`; `S:` is
+`secret_scan_test::a_moved_agents_key_is_sealed_in_its_file_and_in_the_clear_in_one_file_of_a_kit`.
+39 faults were planted: 15 in unit tests, 22 against the scripted harness,
+the real host and the secret scan, and 2 on the pinned relay, on `c97d785`
+to `503f66b`. Four more red runs on the relay happened by themselves.
+
+### The sealed file
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| What is sealed comes out as it went in, for sizes around the edges of a piece (nothing, a little, exactly 1 MiB, one byte more, several pieces across two files); the file is mode 600 and as long as its head says | `U: bundle::what_is_sealed_comes_out_as_it_went_in` | the planned length off by one empty piece: `Unpackable("the file did not come out at its planned length")` | pass |
+| Nothing carried is readable in the file: not the content, a file's name or a file's bytes; two files of the same agent and passphrase share no sealed bytes | `U: bundle::nothing_carried_is_readable_in_the_file` | a piece written without being sealed: `the content is sealed` | pass |
+| **A flipped bit in any byte of the file** is refused and named a change (1,428 files, one per byte); so are bytes added at the end | `U: bundle::a_flipped_byte_anywhere_is_named_as_a_change` | the file's own checksum not looked at: `byte 112 of 1428: the passphrase is wrong: the file is whole, and it does not open with it` | pass |
+| **A file cut at any length** is refused and named as cut short (1,427 lengths); nothing at all, and something that never was such a file, are named as not ours | `U: bundle::a_file_cut_short_anywhere_is_named_as_that` | the length not compared: `cut at 112 of 1428: …/cut.bzzagent: failed to fill whole buffer` | pass |
+| **A wrong passphrase** is named as that, and only that; a passphrase under 12 characters seals nothing and leaves no file | `U: bundle::a_wrong_passphrase_is_named_as_that` | the first piece's failure not read as the passphrase: `"a disposable passphrasE": the file was changed after bzz made it (a sealed piece does not open)` | pass |
+| The plain checksums protect nothing, and need not: with both made right again, a changed byte, two pieces in each other's place, a piece of another file sealed with the same passphrase, a dropped last piece and weaker key parameters still do not open; parameters no file of ours asks for are refused before any work | `U: bundle::a_forgery_with_its_checksums_made_right_still_does_not_open` | the piece's number left out of its nonce: two whole pieces swapped open, and only the files' own checksum notices (`a file in it does not match its checksum`) | pass |
+| A failed unpack leaves no file; neither sealing nor unpacking writes over a file; a name that could lead out of a folder is never carried; a newer format says so | `U: bundle::a_failed_unpack_leaves_no_file_and_a_taken_name_is_refused` | not run | pass |
+
+The red run of the forgery test first stayed green: the swapped pieces
+were the last two, and the mark "this is the last piece" told them apart
+whatever their numbers. The test now also swaps two whole pieces of three.
+
+### What is carried, and whose it is
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| What is carried is exactly: format, the bzz that made it, when, id, name, public key, the owner's authorization, the relay, harness, model, instructions, who may wake it, allowed hosts, Pi packages, picture, key. **Never a granted folder, the launch override or the broker's credential.** In and out it is the same; in its new home it is active with no folder and the default launch; a paused agent arrives active; the key is never printed with the rest | `U: moving::what_is_carried_is_what_a_new_home_needs_and_nothing_of_this_machine` | the launch override carried into the new settings: the two `LocalAgentConfig` differ | pass |
+| `agent.json` holds what the host reads as a remote copy, and no folder | `U: moving::the_host_reads_its_settings_from_agent_json_and_no_folder_is_in_it` | not run | pass |
+| What arrives is checked before any of it is used: another format, a harness that cannot be moved, a key that is not the agent's, an authorization made for another key, settings bzz would not have written (name, allowlist, host, picture, relay, public key); a file that names a folder is not read at all | `U: moving::what_arrives_is_checked_before_any_of_it_is_used` | the key not compared with the public key: `unwrap_err() on an Ok value` | pass |
+| **An authorization for another owner is refused**: an agent goes only to the identity its authorization names, in the community of its relay, however the relay's address was written. Already here and active: refused. Moved away from here: taken back under its id. A v0.13 hosted agent with that key: refused. An id that is taken: a new one | `U: moving::an_agent_goes_only_to_its_owner_in_its_own_community` | the owner not compared: `unwrap_err() on an Ok value: Plan { … taken_back: false }` | pass |
+| A key leaves custody only with its owner and enters it sealed and read back; a key that is not the agent's is refused; the same key a second time writes nothing; a sealed file another owner made is replaced | `U: broker::custody::a_key_leaves_and_enters_custody_only_with_its_owner` | the key taken for the agent's whatever it is: `a key that is not the agent's is refused` | pass |
+| The capability record's move line names `bzz agent move`, one file, `bzz agent launch-kit`, `buzz-acp`, and that granted folders and git credentials stay; bzz moves exactly the harnesses whose record says so | `U: capability::the_records_say_what_the_tests_and_the_groundwork_showed`; `A: only_a_harness_whose_record_says_so_is_moved` | the line as it was before M5: `` `bzz agent move` ``; every harness movable: `unwrap_err() on an Ok value: Moved { name: "Coder", … }` | pass |
+
+The red run for custody first stayed green: with the comparison removed, the
+read-back of the sealed key still refused a key that is not the agent's.
+Both keep that claim; the fault that turns the test red removes both.
+
+### State: moving, moved away, taken back
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| `move.json` says "moving" only while the process that wrote it lives, and "moved away" for good; a move that does not happen puts back what was there (nothing, or "moved away"); a file that cannot be read means "not started" | `U: runtime::hold::a_hold_counts_while_its_holder_lives_and_moved_away_stays` | a dead holder still counts: `left: Some(Moving { pid: 1 }) right: None` | pass |
+| The settings follow the agent's folder: an agent whose folder says moved away is moved away in the settings, and the other way round the folder is written; a move at work changes nothing | `U: moving::the_settings_follow_what_the_agents_folder_says` | nothing corrected: `left: [] right: ["Scout"]` | pass |
+| **A move.** The host is asked to checkpoint with no folder, no host and no package; the agent is moved away in memory, on disk and in its folder; a second move is refused. **A receive in another bzz of the owner's**: the agent's own id, this bzz's community and identity, its settings but for the folder and the launch override, active; the same key in custody; both files byte for byte, mode 600, in a folder of mode 700 with nothing else. **The same file twice does not make two agents** | `A: an_agent_moves_to_another_bzz_with_its_key_its_files_and_its_settings` | the last step not written: `left: Active right: MovedAway`; an agent that is here taken as one to take back: `unwrap_err() on an Ok value: Received { … taken_back: true }` | pass |
+| A file that is changed, cut short or opened with the wrong passphrase, another owner's bzz, a bzz without the agent's community, and a bzz where another agent has the name are each refused with the reason, and nothing of the agent is made; a receive that fails at its last step leaves no settings, no key and no folder | `A: a_file_that_is_not_whole_or_not_the_owners_is_refused_and_leaves_nothing` | the owner not compared: `unwrap_err() on an Ok value: Plan { … }`; the key left after a failed receive: `no settings, no key, no folder left: (0, 1, false)` | pass |
+| **A failure before the last step leaves the agent as it was, running again if it was running.** With the agent served by a running bzz: a passphrase that is too short and a file that exists are refused before its process is touched; when its files cannot be made whole, when the file cannot be written, and when the last step itself cannot be written down, there is no file, no partial file, the settings say active in memory and on disk, nothing holds the agent, and the bzz that had stopped it for the move answers the next mention with a new process | `A: a_move_that_fails_before_its_last_step_leaves_the_agent_running_as_it_was` | the hold not let go: `the files could not be made whole left: Some(Moving { pid: … }) right: None`; the bzz not resuming: `the agent does not listen: "Scout · pi-durable · stopped · being moved: stopped until the move is over"`; the sealed copy left: `the settings could not be saved: ["scout.bzzagent"]`; "moved away" left in the folder: `left: Some(MovedAway { … }) right: None` | pass |
+| **A running bzz stops the agent for a move and never starts it again**, although its own copy of the settings says active: its process is stopped, its status says "stopped · moved away", a mention is not taken, nothing is started | same test | the running bzz not watching: `operation timed out: the bzz that runs Scout did not stop it (process …)` | pass |
+| …and it ends its connection as the agent | same test | the connection kept: `timed out waiting for the agent's connection to be closed` | pass |
+| A bzz started afterwards with an older copy of the settings does not run it either, and says why | same test | the folder not read at startup: `assertion failed: !host.runnable(&stale.hosted_agents[0])` | pass |
+| An agent that is answering is not moved, and its turn is not cut: the move is refused, its process is left alone, the answer arrives; a request that was never handed over holds a move back too | `A: an_agent_that_is_answering_is_not_moved_and_its_turn_is_not_cut` | the open requests not looked at: `its process was left alone left: None` | pass |
+| **A bzz takes back the agent it moved away**: one agent, active, the file's memory and disk in place of the stale ones, a leftover write-ahead file gone, the folders this machine had granted as they were, and nothing said before this moment is a request; a take-back that fails halfway leaves it moved away | `A: a_bzz_takes_back_the_agent_it_moved_away` | the mark of "nothing before now" not set: `1000 < 1794690819 + 30`; "moved away" not put back after a failure: `assertion failed: hold::moved_away(…)` | pass |
+
+### The launch kit, and the stop
+
+| Claim | Proof | Red with the fault | Result |
+|---|---|---|---|
+| A kit is written only into a folder bzz makes; one whose last step fails is removed. It holds README, the environment file, `start.sh`, a service unit, the settings for `receive`, the agent's two files and `agent.json`, and every file of the host as this bzz carries it. The folder is 700, the key's file and the agent's files 600. **The key is in `buzz-acp.env` and in no other file.** The environment file has the owner's authorization, the relay, the host's start relative to the kit, one conversation per thread, who may wake it, and a shell reads it as it stands. No folder of this machine is named anywhere. The README has the steps: Node, `npm ci --ignore-scripts --omit=optional --omit=dev`, `buzz-acp` and `buzz` at the pin, the model, `start.sh`, the unit, how to stop it and take it back | `A: a_launch_kit_holds_what_buzz_acp_needs_and_the_key_in_one_file_only` | the key also in the settings file: `the key (hex) is in …/scout-kit/bzz-agent.json`; the key's file readable by others: `left: 420 right: 384`; a kit left after a failed last step: `no kit is left of a move that did not happen` | pass |
+| A kit comes back: the agent is received from the folder with the key from its one file. A kit with write-ahead files is given to the agent's host to make a copy whole; when the copy is not whole nothing arrives, and the kit is not touched | same test | covered on the relay, below, with the real host | pass |
+| The kit names the Buzz revision bzz is built against | `U: launch_kit::the_kit_names_the_buzz_revision_bzz_is_built_against` (reads `Cargo.toml`) | not run | pass |
+| A value is written so that a shell and systemd read the same, and one that cannot be is refused | `U: launch_kit::a_value_is_written_so_that_a_shell_and_systemd_read_the_same` | a quote let through: `"it's"` | pass |
+| The stop command is what `buzz-acp` at the pin takes as an owner command: kind 9, body exactly `!shutdown`, the agent in a `p` tag of its own, signed by the owner; a name in the body or no mention is not one | `U: remote::the_stop_command_is_what_buzz_acp_takes_as_an_owner_command` | the agent not mentioned: `assertion failed: buzz_acp_takes_it_as(&command, "!shutdown", &agent)` | pass |
+
+### The secret scan
+
+`S:` runs the `bzz` binary: `agent move`, `agent receive`, `agent
+launch-kit` without and with `--yes`, with the owner's passphrase and the
+file's passphrase each on a descriptor of its own. It then searches
+everything bzz printed and every file it wrote (the settings, the database,
+both sealed keys, the sealed file, the kit) for both agents' keys and the
+owner's key as hex and as `nsec`, and for both passphrases.
+
+| Claim | Red with the fault | Result |
+|---|---|---|
+| The sealed file never holds the key in the clear, nor the agent's name, its instructions or what it remembers | `U:` and `A:` above (a piece not sealed) | pass |
+| The kit's key file is mode 600, holds the key of the agent the kit is for and no other secret, and nothing else in the kit holds a key | the key also in `bzz-agent.json`: `Courier's key (hex) leaked into courier-kit/bzz-agent.json` | pass |
+| Nothing bzz prints holds a key or a passphrase | the file's passphrase echoed: ``the file's passphrase leaked into what `bzz agent move Scout --to …` printed`` | pass |
+| `launch-kit` says the key will be in the clear and asks; with no answer nothing is written | not asking: the kit is written (`launch kit for Courier written in …`) | pass |
+
+### With the real host
+
+`A: the_real_host_continues_a_conversation_in_another_bzz_after_a_move`
+(Node 26.5.0, the host installed from the bzz binary, the stand-in model, a
+recorded relay, two data folders).
+
+| Claim | Observed | Result |
+|---|---|---|
+| A host that was killed leaves what it knew beside its two files | after `kill -9`: `memory.sqlite-wal` and `files.sqlite-wal`, with content | pass |
+| The move makes the files whole before it packs them, while the bzz that served the agent is open | no write-ahead file left; that bzz says "stopped · moved away" | pass |
+| Another bzz of the owner's receives it, and the next message in the same thread shows the conversation's memory | `pong: this conversation holds 2 message(s) from people` | pass |
+| The file the agent had made is on the disk that came | `made before the move` | pass |
+| One reply per mention; the bzz it left takes no request | four mentions, four messages by the agent; `NotRunning` | pass |
+| The agent's key is in nothing the host wrote, in either home | scan of both agent folders | pass |
+
+Red: the files not made whole before packing:
+`the files were made whole left: ["…/memory.sqlite-wal", "…/memory.sqlite-shm", "…/files.sqlite-wal", "…/files.sqlite-shm"] right: []`.
+
+### On the pinned relay
+
+`real_relay_agent_moves_to_another_bzz_and_to_buzz_acp`, in
+`tests/relay_integration.rs` (284 to 287 s alone, three green runs). Every step is the
+`bzz` binary on a disposable profile; the host is the real one on its
+stand-in model; `buzz-acp` and `buzz` are Buzz's own, built at the pin, and
+`buzz-acp` is started by the kit's own `start.sh` after `npm ci
+--ignore-scripts --omit=optional --omit=dev` in the kit's `host/`. The bzz of
+the first profile stays up from the first step to the last, and a second one
+is started on it after the move.
+
+| Claim | Observed | Result |
+|---|---|---|
+| An agent answers here and makes a file | `pong: … 1 message(s)`; `made before the move` | pass |
+| `agent move` is refused over a file that exists, and the agent's host is left running | `bzz does not write over it`; the same process | pass |
+| `agent move` while `bzz agent run` serves the agent: the host is stopped, the file written, the running bzz says so and goes on | `agent Scout moved into …`, `not moved: its granted folder(s) (site) and git credentials`; `Scout · pi-durable · stopped · being moved…`, then `stopped · moved away: it runs elsewhere` | pass |
+| The sealed file holds nothing in the clear, and is mode 600 | no key (hex, `nsec`), name, instructions, public key, the agent's file, relay address or passphrase | pass |
+| **The first profile refuses to run it**: `list`, `show` with the reason and "not present", `resume` and a second `move` refused, and a `bzz agent run` started now says "stopped · moved away" | as claimed; neither bzz of the first profile answers anything to the end | pass |
+| `agent receive` in a second profile (the owner's identity brought there with `identity backup` and `import-backup`) refuses the wrong passphrase, a changed file and a cut file, each by name; another owner's profile is refused; nothing arrives in either | `the passphrase is wrong`; `was changed after bzz made it`; `was cut short`; `An agent is received only by its owner. Nothing was received` | pass |
+| It is received: active, no folder, its hosts and instructions; the same file again is refused | `agent Scout (…) received in c1`; `is already here and was not moved away`; one agent | pass |
+| **The next message in the same thread shows the conversation's memory, and the file the agent had made is there** | `pong: … 2 message(s)`; `made before the move` | pass |
+| `agent launch-kit` while the second bzz serves the agent | `THE AGENT'S KEY IS IN THE CLEAR in …`; the host stopped; "stopped · moved away" | pass |
+| The kit's key file is mode 600, and nothing else in the kit holds the key or names a folder of the first machine | more than 20 other files searched | pass |
+| **The real `buzz-acp` at the pin, started from the kit, answers the next message in that thread with the same memory** | `pong: … 3 message(s)`; `agent show` says `present (online)` and "as a launch kit" | pass |
+| Under `buzz-acp`: a new thread is a new conversation; `buzz-acp` killed with everything it started and started again hands the mention over again and it is not answered again; a reply in that thread continues it; every reply carries the owner's authorization | `1`, `2`, `1`; one reply to the mention handed over twice | pass |
+| **Decision D9**: what `buzz-acp` sends has the wording and the fields of the four recorded prompts | each compared with its file, ids, names, times and words aside | pass |
+| **The owner's `agent shutdown` stops it** | `sent Buzz's stop command (`!shutdown`) to Scout as its owner, in #…`; `Scout left: it is no longer present on the relay`; `buzz-acp` exits with code 0; `agent show` says "not present"; a mention afterwards gets no reply | pass |
+| The kit comes back and is taken in by the bzz that had moved the agent away, with what it remembers from its time under `buzz-acp` | `taken back`; `pong: … 4 message(s)` in the first thread and `3` in the thread begun under `buzz-acp` | pass |
+| **One reply per mention throughout**, and what was asked while nobody ran it is not answered later | ten mentions, ten messages by the agent; none to the eleventh | pass |
+
+Red on the relay. The first four happened by themselves while the journey
+was being written, each a fault the scripted tests could not see:
+
+- **RM1, the launch kit as it first was** (Buzz's defaults): the guard of D9
+  failed with `buzz-acp at bf3bdd0e… no longer words its prompt as
+  tests/fixtures/agents/buzz-acp-prompts/01-top-level-mention.txt has it`,
+  `left: "<base>\nYou are an agent operating inside Buzz…`. `buzz-acp` at the
+  pin puts about 21 kB of its own orientation and a `<core-memory>` section
+  before `<context>` in the first prompt of a session when the agent speaks
+  version 1 of the protocol, as the host does. The recorded prompts, made by
+  a prototype in spike S10, did not show it. The host found the place and
+  the request behind it all the same (the answers before the comparison were
+  right), but the model would have been told to work with a `buzz` command
+  it does not have. The kit now switches both off.
+- **RM2, a bzz that kept its connection as the agent after the move**:
+  `Scout is still present on the relay 30 s after the command`, although
+  `buzz-acp` had logged `shutdown command from owner` and stopped. The relay
+  clears a key's presence when its last connection closes, and the two bzz
+  that had served the agent were still connected as it. They now end that
+  connection when they see the move.
+- **RM3, a kit that came back was refused**: `the agent was not stopped
+  cleanly where this kit ran: …/memory.sqlite-wal is still there`.
+  `buzz-acp` does not give its agent time to close its files, so every kit
+  comes back that way. `receive` now has the host make a copy whole.
+- **RM4, a fault of the test**: the shapes differed in `Parsed:
+  mentions=[Scout (<event>)]` against `mentions=[<event>]`: Buzz writes a
+  name before the key of someone who has a profile. The comparison now
+  leaves names out, and
+  `a_buzz_acp_prompts_shape_leaves_out_what_differs_from_run_to_run` holds
+  it to that: a renamed agent is the same shape, a reworded field is not.
+
+Planted:
+
+- **RM5, the host no longer finding the request.** `Event Id:` for
+  `Event ID:` in the host's reading of the prompt, which is what a reworded
+  prompt looks like to it. The fault was put in the host inside the bzz
+  binary, so it reached the launch kit, and taken out again:
+  `under buzz-acp, the same thread: no reply under buzz-acp at bf3bdd0e…. If
+  there is no reply, or it is not the conversation's, the host no longer
+  finds the place and the request in buzz-acp's prompt (decision D9): did
+  Buzz change its wording?`, followed by what `buzz-acp` and the host
+  logged.
+- **RM6, a take-back that does not set "nothing before now is a request".**
+  `the same thread, buzz-acp: one reply left: 2 right: 1`. The bzz that took
+  the agent back was offered the mentions `buzz-acp` had answered. The host
+  knew each request and did nothing; bzz, with no record of a reply, posted
+  "I could not answer" under each.
+
+Two runs failed before the test began, as noted under M4: the harness was
+started while another run on this machine was ending (`database "buzz" does
+not exist`, and once `dial tcp 127.0.0.1:5471: connect: connection refused`).
+
+### The plan's exit gate for M5
+
+"S11 as a test with bzz on one side; a second bzz receives an agent and
+continues its conversation; the moved-away copy refuses to run."
+
+- [x] S11 as a test with bzz on one side: the journey above, with the real
+  `buzz-acp` and `buzz` at the pin.
+- [x] A second bzz receives an agent and continues its conversation: on the
+  relay with two profiles of the `bzz` binary, and with the real host
+  against a recorded relay.
+- [x] The moved-away copy refuses to run: a bzz that was running, a bzz
+  started afterwards, and a bzz with an older copy of the settings.
+- [x] Stopping a remote agent is Buzz's `!shutdown`; its presence is its
+  status.
+- [x] A test at the Buzz pin that the host still reads `buzz-acp`'s prompt.
+- [ ] "Move and receive between two profiles" on the **release binary** in a
+  terminal (the plan's test table, last column): not run. Every step ran as
+  the debug binary from a test, with the passphrases on descriptors; the
+  prompts on a terminal were not driven.
+
+### Not proven in M5
+
+| Item | State |
+|---|---|
+| macOS and Windows | not compiled or run here. The tests that start processes are Unix only. A launch kit is a shell script and a systemd unit: it is for Linux and macOS, and ran on Linux |
+| A real machine | "the other machine" of every test is a folder on this one, with a `PATH` and a `HOME` of its own. The kit's `bzz-agent.service` was written and never started by systemd |
+| A real model, and a Pi sign-in on the other machine | the stand-in model everywhere. With a real model the whole text of `buzz-acp`'s prompt reaches it, `<context>` included, which tells it to reply with `buzz messages send`; the host posts through its own tool. What a model makes of that was not seen |
+| The passphrase typed on a terminal, twice | `read_passphrase_from` asks twice on a terminal (the code of the identity's passphrase); the tests give it on a descriptor, which asks once |
+| A file of hundreds of MB | the largest sealed in a test is 3 MiB, in pieces of 1 MiB. Sealing reads the files twice |
+| A community with federated identity (NIP-FI) | a received agent enrolls with the adapter as any local agent does when it first runs; not run |
+| `agent shutdown` in a direct message or a Solo chat, with `--channel`, and when the agent shares no channel with its owner | written; the journey has one channel, and the command chose it |
+| A move while the TUI is open | the TUI runs agents through the same runtime as `bzz agent run`, which the journey moved under. The panel showing "stopped · moved away" was not captured: the panel prints the runtime's status line, which is tested |
+| Two copies | nothing prevents the same file or kit from being started twice; that is not a claim |
+| Solo chats under `buzz-acp` | a conversation in a Solo chat is not found again there (protocol, section 7); not in the journey |
+| An older file of the same agent | it opens, and receiving it puts back an older memory: a file does not say it is the newest |
+
+### Gates after M5
+
+Run on `b0ef7d3`, 2026-11-14, Linux x86_64, Node 26.5.0.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets --all-features -- -D warnings` | clean |
+| Tests | `cargo test --locked --all-features` | 637 passed, 0 failed, 26 ignored. 27 passing tests are new since M4: 17 unit (7 sealed file, 5 moving, 2 launch kit, 1 stop command, 1 `move.json`, 1 custody), 8 in `agent_move_test`, 1 secret scan, 1 for the shape of a prompt |
+| Pinned relay | `BZZ_TEST_REQUIRE_NODE=1 BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh` | 19 passed (the 18 of M4 and the journey above) in 635 s, then `agent_host_test`, 3 passed, and `agent_move_test`, 8 passed |
+| Agent host | `cd agent-host && npm ci --ignore-scripts --omit=optional && npm test` | 98 tests, 98 pass, 0 skipped, on the prompts recorded again; `npm ci` reports 0 vulnerabilities. `agent-host/` is unchanged by this work |
+| Supply chain | none run | `Cargo.toml` and `Cargo.lock` are unchanged since `0626ddb`: no new dependency |
+
+The full relay run failed twice before any test began, with `psql: … the
+database system is shutting down` and `Relay did not come up on :3030 within
+30s`, while another agent's builds and runs shared this machine. It was
+repeated without a change.
 
 ## M7 — Hands on this machine (host side)
 

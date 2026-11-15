@@ -303,7 +303,13 @@ Cache/concurrency settings are validated against hard safety ceilings. See
     with your rights. `false` is written by `--no-packages` and `bzz agent
     edit --packages off`. Only for `pi-durable`.
   - `state`: `active` (default), `paused` or `moved-away`. Only an active,
-    unpaused agent is ever started.
+    unpaused agent is ever started. `moved-away` is written by
+    `bzz agent move` and `bzz agent launch-kit`, with `move.json` in the
+    agent's folder, which is what a bzz that is already running reads. Every
+    `bzz agent` command makes this setting agree with that file.
+  - `packages`: whether the Pi Durable host loads your Pi packages for this
+    agent. Written only when `false` (`bzz agent edit --packages off`); the
+    choice moves with the agent.
   - `picture`: the HTTPS address of the agent's picture, kept so that an edit
     can publish its profile and the owner's record again.
   - `command`: program and arguments to start instead of the harness's own
@@ -345,6 +351,11 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   agent a real command or gives it a credential, it reads this file again,
   and refuses what you have taken away since. See
   [`adr-v0.15-local-agents.md`](adr-v0.15-local-agents.md).
+
+  `bzz agent move` and `bzz agent receive` ask for the passphrase of the
+  moved agent's file on the terminal. A script gives it on an inherited
+  descriptor named by `BZZ_MOVE_PASSPHRASE_FD`, as `BZZ_PASSPHRASE_FD` names
+  the one for an identity's passphrase.
 
   Some variables of bzz's own environment matter to agents, and none is a
   setting:

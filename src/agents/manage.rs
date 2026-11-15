@@ -1977,6 +1977,12 @@ pub struct Details {
     /// `(id, name, role)` of the channels bzz last saw it in.
     pub channels: Vec<(Uuid, String, String)>,
     pub turns: Vec<RecentTurn>,
+    /// For an agent that is being moved or was moved away: when, and where
+    /// to.
+    pub moved: Option<String>,
+    /// For an agent that was moved away, once the relay was asked: whether
+    /// it is present there, or why that could not be told.
+    pub presence: Option<String>,
     /// What its host said when it last started: where it offers `run`,
     /// and the Pi packages it loaded or left out.
     pub started: Option<install::StartReport>,
@@ -2007,6 +2013,8 @@ pub async fn details(
         running: running_pid(&paths.data_dir, agent.id),
         channels,
         turns,
+        moved: crate::agents::moving::moved_line(&paths.data_dir, agent.id),
+        presence: None,
         started: install::StartReport::read(&paths.data_dir, agent.id),
         activity: crate::agents::activity::recent(&paths.data_dir, agent.id, SHOWN_ACTIVITY),
         credential_hosts: crate::agents::git_credentials::hosts(&paths.keys_dir(), agent.id),
@@ -2141,6 +2149,20 @@ pub fn show_lines(agent: &HostedAgentConfig, community: &str, details: &Details)
                 .unwrap_or_default()
         ),
     ];
+    // Why bzz does not start it, and what is known of it where it runs.
+    if let Some(moved) = &details.moved {
+        lines.push(format!("             {moved}"));
+    }
+    if local.state == LocalAgentState::MovedAway {
+        lines.push(
+            "             this bzz does not start it: it runs elsewhere. `bzz agent receive` takes it back"
+                .into(),
+        );
+        lines.push(format!(
+            "on the relay: {}",
+            details.presence.as_deref().unwrap_or("not asked")
+        ));
+    }
     lines.extend(settings_lines(local));
     if details.channels.is_empty() {
         lines.push(

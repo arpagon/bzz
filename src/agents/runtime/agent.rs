@@ -57,6 +57,7 @@ use crate::{
             approval::{self, Approvals, Asked, NotAsked, Outcome},
             coding,
             credentials::Credentials,
+            hold::{self, Hold},
             install::{self, StartReport},
             permission as permission_rule,
             process::{self, Harness, Launch},
@@ -80,6 +81,8 @@ const MAX_PLAIN_TEXT_CHARS: usize = 16_000;
 const CONCURRENT_TOOL_CALLS: usize = 8;
 /// A stored reply this old and still unacknowledged is published again.
 const REPUBLISH_AFTER_SECONDS: u64 = 30;
+/// How often a running bzz looks whether another bzz is moving its agent.
+const HOLD_POLL: Duration = Duration::from_millis(500);
 /// Git credentials of one harness that bzz looks up at once. A git command
 /// asks once, so more than a few at a time is a harness gone wrong.
 const CONCURRENT_CREDENTIALS: usize = 4;
@@ -364,6 +367,9 @@ pub struct Agent {
     turn_changed: Notify,
     stopping: AtomicBool,
     paused: AtomicBool,
+    /// A `bzz agent move` in another process holds the agent
+    /// ([`hold`]): no process, no listening, until it lets go.
+    held: AtomicBool,
     /// When this agent's rows were last pruned.
     pruned: Mutex<Option<Instant>>,
 }
@@ -413,6 +419,7 @@ impl Agent {
             turn_changed: Notify::new(),
             stopping: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            held: AtomicBool::new(false),
             pruned: Mutex::new(None),
         })
     }
@@ -428,7 +435,9 @@ impl Agent {
     }
 
     fn halted(&self) -> bool {
-        self.stopping.load(Ordering::Acquire) || self.paused.load(Ordering::Acquire)
+        self.stopping.load(Ordering::Acquire)
+            || self.paused.load(Ordering::Acquire)
+            || self.held.load(Ordering::Acquire)
     }
 
     async fn store<T, F>(&self, operation: F) -> Result<T>
@@ -565,7 +574,55 @@ impl Agent {
     /// Starts handing queued requests to the harness.
     pub fn start(self: &Arc<Self>) {
         tokio::spawn(self.clone().schedule());
+        tokio::spawn(self.clone().watch_hold());
         self.wake.notify_one();
+    }
+
+    /// Follows the agent's `move.json` ([`hold`]), which a `bzz agent move`
+    /// in another process writes. While a move is at work the agent has no
+    /// process and takes no request; when the move fails it runs again, and
+    /// when it succeeds this bzz never starts the agent again.
+    async fn watch_hold(self: Arc<Self>) {
+        let mut tick = tokio::time::interval(HOLD_POLL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            if self.stopping.load(Ordering::Acquire) {
+                break;
+            }
+            match hold::read(&self.shared.data_dir, self.spec.id) {
+                Some(Hold::MovedAway { .. }) => {
+                    self.stop().await;
+                    self.state().problem = Some(hold::MOVED_AWAY.into());
+                    // It is another home's agent now: this bzz keeps neither
+                    // a connection as the agent nor its key in memory.
+                    self.relay.close().await;
+                    break;
+                }
+                Some(Hold::Moving { .. }) => {
+                    if !self.held.swap(true, Ordering::AcqRel) {
+                        self.halt(Phase::Stopped).await;
+                        self.state().problem = Some(hold::MOVING.into());
+                    }
+                }
+                None => {
+                    if self.held.swap(false, Ordering::AcqRel) {
+                        let paused = self.paused.load(Ordering::Acquire);
+                        {
+                            let mut state = self.state();
+                            state.problem = None;
+                            state.phase = if paused { Phase::Paused } else { Phase::Idle };
+                        }
+                        if !paused {
+                            // As after a pause: what was open is settled,
+                            // and what is queued is handed over.
+                            self.recover().await;
+                            self.wake.notify_one();
+                        }
+                    }
+                }
+            }
+        }
     }
 
     async fn schedule(self: Arc<Self>) {
@@ -579,7 +636,7 @@ impl Agent {
             if self.stopping.load(Ordering::Acquire) {
                 break;
             }
-            if self.paused.load(Ordering::Acquire) {
+            if self.paused.load(Ordering::Acquire) || self.held.load(Ordering::Acquire) {
                 continue;
             }
             self.republish(REPUBLISH_AFTER_SECONDS).await;
@@ -762,6 +819,10 @@ impl Agent {
         if let Some(pi_dir) = &self.shared.pi_dir {
             bzz["piDir"] = json!(pi_dir);
         }
+        // Only `false` means something to the host: no Pi package's code runs.
+        if !local.packages {
+            bzz["packages"] = json!(false);
+        }
         json!({
             "protocolVersion": 1,
             "clientCapabilities": {},
@@ -772,6 +833,11 @@ impl Agent {
 
     async fn start_run(self: &Arc<Self>) -> std::result::Result<Arc<Run>, String> {
         let launch = self.launch().await?;
+        // Read at the last moment before the process exists: a move that
+        // began while the host was being found or installed is seen here.
+        if hold::read(&self.shared.data_dir, self.spec.id).is_some() {
+            return Err(hold::MOVING.to_owned());
+        }
         let run_dir = process::run_dir(&self.shared.data_dir);
         let (harness, stdin, stdout) =
             Harness::spawn(&launch, &run_dir, self.spec.id).map_err(|error| error.to_string())?;
@@ -865,7 +931,10 @@ impl Agent {
             }
             Err(problem) => {
                 let mut state = self.state();
-                state.crashes.push_back(Instant::now());
+                // Held for a move: nothing was started, so nothing crashed.
+                if problem != hold::MOVING {
+                    state.crashes.push_back(Instant::now());
+                }
                 state.problem = Some(problem);
                 state.phase = Phase::Idle;
                 self.breaker_open(&mut state);

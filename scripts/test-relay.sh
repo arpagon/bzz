@@ -13,7 +13,8 @@ set -euo pipefail
 # Docker project, and a second run's cleanup would remove the first's
 # containers. The lock is shared by every checkout of this user.
 if command -v flock >/dev/null 2>&1 && [[ -z "${BZZ_RELAY_LOCK_HELD:-}" ]]; then
-  lock="${TMPDIR:-/tmp}/bzz-test-relay-$(id -u).lock"
+  # A fixed path: two shells with different TMPDIR must meet at one lock.
+  lock="/tmp/bzz-test-relay-$(id -u).lock"
   echo "waiting for the relay harness lock ($lock)" >&2
   BZZ_RELAY_LOCK_HELD=1 exec flock "$lock" "$0" "$@"
 fi
@@ -124,17 +125,21 @@ elif [[ "$PROFILE" == herdr ]]; then
   rm -rf -- "$fixture"
   exit "$status"
 else
-  # The `buzz` CLI at the pin, for sidebar interop (v0.14 M4).
-  (cd "$BZZ_BUZZ_SOURCE" && cargo build -p buzz-cli)
+  # The `buzz` CLI at the pin, for sidebar interop (v0.14 M4), and Buzz's
+  # own `buzz-acp`, which runs a moved agent from a launch kit (v0.15 M5).
+  (cd "$BZZ_BUZZ_SOURCE" && cargo build -p buzz-cli -p buzz-acp)
   # The scripted agent harness (v0.15 M1); `cargo test --test` does not build examples.
   cargo build --locked --example scripted_harness
   # BZZ_RELAY_TEST_FILTER runs only the tests whose name contains it.
   BZZ_BUZZ_CLI="$BZZ_BUZZ_SOURCE/target/debug/buzz" \
+  BZZ_BUZZ_ACP="$BZZ_BUZZ_SOURCE/target/debug/buzz-acp" \
   BZZ_E2E_RELAY_URL=ws://localhost:3030 cargo test --locked --test relay_integration ${BZZ_RELAY_TEST_FILTER:+"$BZZ_RELAY_TEST_FILTER"} -- --ignored --test-threads=1
   # bzz's real agent host against a recorded relay (v0.15 M2). It needs
   # Node.js 22.19 or newer and no relay; it runs here because this is the
   # job that has Node (BZZ_TEST_REQUIRE_NODE=1 turns its skip into a failure).
   if [[ -z "${BZZ_RELAY_TEST_FILTER:-}" ]]; then
     cargo test --locked --test agent_host_test
+    # A move with the real host between two data folders (v0.15 M5).
+    cargo test --locked --test agent_move_test
   fi
 fi

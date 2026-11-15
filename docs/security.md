@@ -414,6 +414,72 @@ trusted with anything of bzz's:
   activity and its rows. What a real command printed is kept by the agent as
   it was printed, so paths of the machine can be in its memory.
 
+**Moving an agent.** An agent's key leaves bzz's custody only by one of two
+explicit acts of its owner, each of which needs the owner's identity
+unlocked. The owner's guide is [`agents.md`](agents.md#moving-an-agent).
+
+- **The sealed file (`bzz agent move`).** It holds the agent's key, its
+  memory, its disk and its settings: everything needed to be the agent.
+  - It is sealed with a passphrase the owner types twice, of at least 12
+    characters: Argon2id (64 MiB, 3 passes, a new salt per file) makes the
+    key, and XChaCha20-Poly1305 seals the content in pieces of at most 1 MiB.
+    These are the primitives of bzz's encrypted identity file; no
+    cryptography was added.
+  - **The passphrase is the whole protection.** Whoever has the file can try
+    passphrases without limit and without bzz. The owner's identity is not
+    needed to open it. Choose a long passphrase, and delete the file once it
+    was received: it opens for as long as it exists.
+  - Nothing of the content is readable in the file: not the key, a name, a
+    file's name or a file's size beyond the file's total length.
+  - A file that was cut short, a file that was changed and a wrong passphrase
+    are each refused whole, before anything is used, and named. Two plain
+    checksums let bzz tell them apart; they protect nothing. What cannot be
+    forged is the sealing: each piece is bound to its place, to being the
+    last or not, and to the file's head with its length.
+  - What a file cannot do: say that it is the newest. An older file of the
+    same agent opens as well, and receiving it puts back an older memory.
+- **Receiving (`bzz agent receive`).** The file is refused unless the owner's
+  authorization (NIP-OA) inside it was signed for the agent's key and names
+  the identity this bzz uses in the agent's community; the key inside must be
+  the agent's. What arrives is checked as `bzz agent new` checks an owner's
+  answers. The agent arrives with no folder granted, whatever the file says:
+  a file that names a folder is not read at all. Receiving needs no relay.
+  An agent that is already here and was not moved away is never replaced.
+- **The launch kit (`bzz agent launch-kit`).** The one place where an agent's
+  key leaves bzz **in the clear**, because Buzz's `buzz-acp` reads the key
+  from its environment: under `buzz-acp` the key sits beside the agent
+  (decision D8).
+  - bzz says so and asks before it writes.
+  - The key is in `buzz-acp.env` (mode 600), with the owner's authorization
+    and the relay's address, and in no other file of the kit. The folder is
+    mode 700; the agent's files in it are mode 600.
+  - The kit also holds the agent's memory and disk, **not sealed**: every
+    conversation it had, and every file it made.
+  - Whoever reads the folder can act as the agent, read what it remembers,
+    and keep doing so after the owner took the agent back: a key that was in
+    the clear somewhere cannot be taken back. Only a new agent has a new key.
+  - On the other machine a Pi package runs inside the agent's host and can
+    read the key from the environment. `bzz agent edit --packages off` before
+    the kit is made keeps every package off there.
+  - A kit whose last step fails is removed, so that no key is left in the
+    clear for an agent that did not move.
+- **Moved away.** A move ends by marking the agent moved away, in the
+  settings and in the agent's own folder (`move.json`), which every bzz reads
+  before it starts the agent's process and twice a second while it serves the
+  agent. A bzz that was open during the move, with an older copy of the
+  settings, therefore stops the agent and does not start it again. bzz keeps
+  the sealed key and the files of a moved-away agent until `bzz agent
+  delete`.
+- **Two copies.** Nothing prevents the same key from running in two places:
+  not bzz, and not Buzz. A file or a kit that was copied can be started
+  wherever it lies, and both copies answer. bzz refuses only to run what it
+  has moved away.
+- **A moved agent's stop.** `bzz agent shutdown` publishes one message as the
+  owner: `!shutdown`, with the agent mentioned, in a channel both are members
+  of. Others in that channel see it. `buzz-acp` obeys it only from the
+  agent's owner. Whether the agent left is read from its presence on the
+  relay, which the relay forgets three minutes after a crash.
+
 ## Media
 
 Message media is fetched only from a complete `imeta` descriptor bound to the

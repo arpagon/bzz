@@ -8,9 +8,20 @@ these files and fails when that happens.
 
 - **Buzz revision:** `block/buzz@bf3bdd0eaefe39289bf9620594f254c7f68897f5`,
   the pin of bzz v0.15.0 (`crates/buzz-acp/src/queue.rs`, `format_prompt`).
-- **Recorded:** 2026-11-13, by spike S10: the pinned `buzz-acp` started the
-  host against the pinned relay harness and the host wrote each prompt it
-  received to a file.
+- **Recorded:** 2026-11-14, by
+  `real_relay_agent_moves_to_another_bzz_and_to_buzz_acp` in
+  `tests/relay_integration.rs`: the pinned `buzz-acp` ran the host from a
+  launch kit that `bzz agent launch-kit` wrote, against the pinned relay
+  harness, and the host wrote each prompt it received to a file
+  (`BZZ_AGENT_HOST_RECORD`).
+- **As a launch kit starts it:** `buzz-acp` ran with the environment of the
+  kit's `buzz-acp.env`. That switches off Buzz's own orientation for agents
+  and its relay-side memory (`BUZZ_ACP_NO_BASE_PROMPT`, `BUZZ_ACP_NO_MEMORY`).
+  Without those two, `buzz-acp` at this pin puts a `<base>` section of about
+  21 kB and a `<core-memory>` section before `<context>` in the first prompt
+  of every session, because the host speaks version 1 of the protocol. The
+  host finds the place and the request behind them all the same; these files
+  do not show that form.
 - **Identities:** disposable keys and a channel made for that run on a local
   relay. Nothing here names a person, a community or a deployed relay.
 
@@ -31,15 +42,27 @@ the same Buzz source, not with a recording.
 
 ## Recording again at a new Buzz pin
 
-1. Build `buzz-acp` and the `buzz` CLI at the new revision and start the
-   relay harness, as `scripts/test-relay.sh` does.
-2. Start `buzz-acp` with the host as its agent
-   (`node agent-host/main.mjs <folder>`), with a disposable agent key and
-   `BZZ_AGENT_HOST_RECORD=<folder for the recording>` in its environment.
-   The folder needs an `agent.json`; any model will do.
-3. From a disposable identity: mention the agent at the top level of a
-   channel; kill and restart `buzz-acp`; reply to the agent in that thread;
-   mention it again at the top level.
-4. The host wrote one `prompt-<pid>-<n>.txt` per prompt it received. Replace
-   these four files with them, update `expected.json`, and run `npm test` in
-   `agent-host/`.
+One command, with a checkout of Buzz at the new revision (and `PIN` moved in
+the three places that name it). It needs Docker, tmux and Node.js 22.19 or
+newer:
+
+```sh
+BZZ_REFRESH_BUZZ_ACP_PROMPTS=1 BZZ_RELAY_TEST_FILTER=real_relay_agent_moves \
+  BZZ_BUZZ_SOURCE=<the checkout> ./scripts/test-relay.sh
+```
+
+That test moves an agent to `buzz-acp` and, under it, mentions the agent at
+the top level of a channel, kills and restarts `buzz-acp`, replies in that
+thread and mentions the agent at the top level again. With the variable set
+it replaces the four files here with what the host received and writes
+`expected.json` from the events it published itself. Then run the host's own
+tests, which say whether the host still reads them:
+
+```sh
+cd agent-host && npm test
+```
+
+Without the variable the same test is the guard: it compares what `buzz-acp`
+sends with these files, ids, names, times and words aside, and fails when
+the wording or a field differs. It also fails when the agent, run by the
+real `buzz-acp`, no longer answers in the right conversation.

@@ -189,6 +189,8 @@ pub struct RecordedRelay {
     channels: Mutex<HashMap<Uuid, ChannelFacts>>,
     mode: Mutex<Mode>,
     release: tokio::sync::Notify,
+    /// Set when a bzz ended the agent's connection for good.
+    closed: std::sync::atomic::AtomicBool,
 }
 
 impl RecordedRelay {
@@ -201,7 +203,14 @@ impl RecordedRelay {
             channels: Mutex::default(),
             mode: Mutex::default(),
             release: tokio::sync::Notify::new(),
+            closed: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// Whether a bzz closed the agent's connection: it will not run the
+    /// agent again.
+    pub fn closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn set_mode(&self, mode: Mode) {
@@ -354,5 +363,10 @@ impl AgentRelay for RecordedRelay {
             .get(&channel)
             .cloned()
             .ok_or_else(|| bzz::Error::Access("no such channel".into()))
+    }
+
+    async fn close(&self) {
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }

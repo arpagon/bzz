@@ -119,6 +119,58 @@ pub async fn unlock(
     ))
 }
 
+/// The agent's secret key (hex), out of custody. Only the owner's explicit
+/// acts that move an agent call this (`agent move`, `agent launch-kit`): a
+/// local agent's key reaches nothing else.
+pub async fn take_out(
+    keys_dir: &Path,
+    owner: &SignerHandle,
+    agent: &HostedAgentConfig,
+) -> Result<Zeroizing<String>> {
+    let keys = open_sealed(&key_file(keys_dir, agent.id), owner, &agent.pubkey).await?;
+    Ok(Zeroizing::new(keys.secret_key().to_secret_hex()))
+}
+
+/// Puts the key of an agent that arrives (`agent receive`) into custody:
+/// sealed to the owner and read back, as [`create`] does. `true`: the sealed
+/// file was written now; `false`: this bzz already held this very key.
+pub async fn take_in(
+    keys_dir: &Path,
+    owner: &SignerHandle,
+    id: Uuid,
+    pubkey: &str,
+    secret: &str,
+) -> Result<bool> {
+    let keys = Keys::parse(secret)
+        .map_err(|_| Error::IdentityCorrupt("the agent's key is not a key".into()))?;
+    if keys.public_key().to_hex() != pubkey {
+        return Err(Error::IdentityCorrupt(
+            "the agent's key does not match its public key".into(),
+        ));
+    }
+    let path = key_file(keys_dir, id);
+    if path.exists() {
+        if open_sealed(&path, owner, pubkey).await.is_ok() {
+            return Ok(false);
+        }
+        // A sealed file that does not open to this key is of no use here.
+        std::fs::remove_file(&path).map_err(|error| Error::io(&path, error))?;
+    }
+    let secret = Zeroizing::new(keys.secret_key().to_secret_hex());
+    let sealed = owner.encrypt_self(secret.to_string()).await?;
+    write_sealed(&path, &sealed)?;
+    if let Err(error) = open_sealed(&path, owner, pubkey).await {
+        let _ = std::fs::remove_file(&path);
+        return Err(error);
+    }
+    Ok(true)
+}
+
+/// Removes the sealed key of agent `id`, when there is one.
+pub fn delete_by_id(keys_dir: &Path, id: Uuid) {
+    let _ = std::fs::remove_file(key_file(keys_dir, id));
+}
+
 /// Whether the agent's sealed key is where bzz keeps it.
 pub fn has_key(keys_dir: &Path, agent: &HostedAgentConfig) -> bool {
     key_file(keys_dir, agent.id).is_file()
@@ -234,5 +286,66 @@ mod tests {
         assert_eq!(rotated.allowed, vec!["channel.read", "message.post"]);
         delete(temporary.path(), &rotated).unwrap();
         assert!(unlock(temporary.path(), &owner, &rotated).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_key_leaves_and_enters_custody_only_with_its_owner() {
+        let (here, there) = (
+            tempfile::TempDir::new().unwrap(),
+            tempfile::TempDir::new().unwrap(),
+        );
+        let owner = SignerHandle::spawn(Keys::generate());
+        let stranger = SignerHandle::spawn(Keys::generate());
+        let (agent, _) = create(here.path(), &owner, Uuid::new_v4(), Uuid::new_v4(), "Scout")
+            .await
+            .unwrap();
+        assert!(take_out(here.path(), &stranger, &agent).await.is_err());
+        let secret = take_out(here.path(), &owner, &agent).await.unwrap();
+        assert_eq!(
+            Keys::parse(secret.as_str()).unwrap().public_key().to_hex(),
+            agent.pubkey
+        );
+        // Into another bzz of the same owner: sealed, read back, mode 600.
+        let other = Keys::generate().public_key().to_hex();
+        assert!(
+            take_in(there.path(), &owner, agent.id, &other, &secret)
+                .await
+                .is_err(),
+            "a key that is not the agent's is refused"
+        );
+        assert!(!has_key(there.path(), &agent));
+        assert!(
+            take_in(there.path(), &owner, agent.id, &agent.pubkey, &secret)
+                .await
+                .unwrap()
+        );
+        let on_disk = std::fs::read_to_string(key_file(there.path(), agent.id)).unwrap();
+        assert!(!on_disk.contains(secret.as_str()));
+        assert_eq!(
+            unlock(there.path(), &owner, &agent)
+                .await
+                .unwrap()
+                .public_key()
+                .to_hex(),
+            agent.pubkey
+        );
+        // A second time it is the same key: nothing is written.
+        assert!(
+            !take_in(there.path(), &owner, agent.id, &agent.pubkey, &secret)
+                .await
+                .unwrap()
+        );
+        // A sealed file another owner made does not open: it is replaced.
+        std::fs::write(
+            key_file(there.path(), agent.id),
+            stranger.encrypt_self(secret.to_string()).await.unwrap(),
+        )
+        .unwrap();
+        assert!(
+            take_in(there.path(), &owner, agent.id, &agent.pubkey, &secret)
+                .await
+                .unwrap()
+        );
+        assert!(unlock(there.path(), &owner, &agent).await.is_ok());
     }
 }

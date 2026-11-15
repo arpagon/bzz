@@ -228,11 +228,22 @@ impl<'a> IdentityManager<'a> {
 }
 
 pub fn read_passphrase(prompt: &str, confirm: bool) -> Result<SecretString> {
-    let passphrase = Zeroizing::new(if let Some(fd) = std::env::var_os("BZZ_PASSPHRASE_FD") {
+    read_passphrase_from("BZZ_PASSPHRASE_FD", prompt, confirm)
+}
+
+/// The variable that names the descriptor a script gives the passphrase of
+/// a moved agent's file on (`bzz agent move`, `bzz agent receive`). It is
+/// another one than the identity's, because both are asked for.
+pub const MOVE_PASSPHRASE_FD: &str = "BZZ_MOVE_PASSPHRASE_FD";
+
+/// A passphrase from the terminal, typed twice when `confirm`, or from the
+/// inherited descriptor that the environment variable `variable` names.
+pub fn read_passphrase_from(variable: &str, prompt: &str, confirm: bool) -> Result<SecretString> {
+    let passphrase = Zeroizing::new(if let Some(fd) = std::env::var_os(variable) {
         let fd = fd
             .to_str()
             .and_then(|value| value.parse::<u32>().ok())
-            .ok_or_else(|| Error::Config("BZZ_PASSPHRASE_FD must be an integer".into()))?;
+            .ok_or_else(|| Error::Config(format!("{variable} must be an integer")))?;
         let path = inherited_fd_path(fd);
         let mut file = fs::File::open(&path).map_err(|error| Error::io(&path, error))?;
         let mut value = String::new();
@@ -243,7 +254,7 @@ pub fn read_passphrase(prompt: &str, confirm: bool) -> Result<SecretString> {
         rpassword::prompt_password(prompt)
             .map_err(|error| Error::io("controlling terminal", error))?
     });
-    if confirm && std::env::var_os("BZZ_PASSPHRASE_FD").is_none() {
+    if confirm && std::env::var_os(variable).is_none() {
         let second = Zeroizing::new(
             rpassword::prompt_password("Confirm passphrase: ")
                 .map_err(|error| Error::io("controlling terminal", error))?,

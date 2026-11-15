@@ -5,14 +5,21 @@
 //! only a set of signed public relay records, scoped later by community
 //! membership. [`runtime`] (v0.15) runs local agents: bzz holds the key and
 //! starts the process; [`manage`] creates and manages them, and
-//! [`capability`] says what each harness can do.
+//! [`capability`] says what each harness can do. [`moving`] moves one to
+//! another bzz ([`bundle`] is the sealed file) or to a machine with Buzz's
+//! `buzz-acp` ([`launch_kit`]); [`remote`] reads a moved agent's presence
+//! and stops it.
 
 pub mod activity;
+pub mod bundle;
 pub mod capability;
 pub mod git_credentials;
+pub mod launch_kit;
 pub mod manage;
+pub mod moving;
 pub mod policy;
 pub mod protocol;
+pub mod remote;
 pub mod runtime;
 pub mod typing;
 

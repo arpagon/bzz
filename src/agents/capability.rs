@@ -311,7 +311,10 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
                 "the everyday commands, over HTTPS; it names what it lacks",
             ),
             real_folders: "only the folders you grant, under /mnt/<name>, read-only unless you allow writes",
-            move_with_memory: (true, "its memory and its disk are two files"),
+            move_with_memory: (
+                true,
+                "`bzz agent move` seals its key, its memory and its disk in one file for another bzz, and `bzz agent launch-kit` writes a folder for a machine with Buzz's buzz-acp; granted folders and git credentials stay on this machine",
+            ),
             runs: PI_DURABLE_RUNS.into(),
             sandbox: Some("its own disk, shell and git, with a list of hosts it may reach"),
             rules: vec![
@@ -557,6 +560,32 @@ mod tests {
         let pi = record(Harness::PiDurable);
         assert!(pi.available && pi.own_disk.0 && pi.git_without_a_process.0);
         assert!(pi.move_with_memory.0 && pi.warning.is_none());
+        // The move line names what M5 built, and what does not move.
+        for said in [
+            "`bzz agent move`",
+            "one file",
+            "`bzz agent launch-kit`",
+            "buzz-acp",
+            "granted folders and git credentials stay",
+        ] {
+            assert!(pi.move_with_memory.1.contains(said), "{said}");
+        }
+        // And bzz moves exactly the harnesses whose record says so.
+        for harness in ALL {
+            assert_eq!(
+                crate::agents::moving::movable(harness).is_ok(),
+                record(harness).move_with_memory.0,
+                "{harness:?}"
+            );
+        }
+        let refused = crate::agents::moving::movable(Harness::Codex)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("cannot be moved")
+                && refused.contains(record(Harness::Codex).move_with_memory.1),
+            "{refused}"
+        );
         assert_eq!(pi.promise, Promise::Full);
         assert!(pi.runs.contains("no program of this machine"));
         // Real commands: none by default, and bzz is asked before each one.

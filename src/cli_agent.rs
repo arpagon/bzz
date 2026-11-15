@@ -1,13 +1,17 @@
-//! `bzz agent …`: create, run and manage local agents from the command line
-//! (plan v0.15.0, M2 and M4). The work is in `bzz::agents::manage`; this file
+//! `bzz agent …`: create, run, manage and move local agents from the command
+//! line (plan v0.15.0, M2, M4 and M5). The work is in `bzz::agents::manage`; this file
 //! asks the questions, reads the owner's passphrase and prints.
 
-use std::{io::IsTerminal as _, path::PathBuf, sync::Arc};
+use std::{
+    io::IsTerminal as _,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use bzz::{
     Result,
     agents::{
-        capability, manage,
+        capability, manage, moving, remote,
         runtime::{
             agent::Environment,
             coding,
@@ -70,6 +74,46 @@ pub enum AgentCommand {
     Run {
         #[arg(long)]
         community: Option<Uuid>,
+    },
+    /// Move an agent to another bzz: stop it, and seal its key, its memory,
+    /// its disk and its settings in one file with a passphrase. It is then
+    /// marked moved away here, and this bzz no longer starts it.
+    Move {
+        name: String,
+        /// The file to write. It must not exist.
+        #[arg(long, value_name = "FILE")]
+        to: PathBuf,
+    },
+    /// Receive an agent: from a file made by `bzz agent move`, or from a
+    /// launch kit folder that came back. An agent this bzz had moved away
+    /// is taken back.
+    Receive {
+        /// The sealed file, or the launch kit's folder.
+        file: PathBuf,
+    },
+    /// Move an agent to a machine without bzz: write a folder from which
+    /// Buzz's buzz-acp runs it. The folder holds the agent's key in the
+    /// clear. The agent is then marked moved away here.
+    LaunchKit {
+        name: String,
+        /// The folder to write. It must not exist.
+        #[arg(long, value_name = "FOLDER")]
+        to: PathBuf,
+        /// Write the key in the clear without asking.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Stop a copy of an agent that runs elsewhere: send Buzz's own stop
+    /// command (`!shutdown`) as its owner, and say whether it then left.
+    Shutdown {
+        name: String,
+        /// The channel to send it in (name or id). Default: a direct
+        /// message or Solo chat you share with it, else one of its channels.
+        #[arg(long)]
+        channel: Option<String>,
+        /// How many seconds to wait for it to leave.
+        #[arg(long, default_value_t = 30)]
+        wait: u64,
     },
     /// Store, list or remove what an agent's git uses for a private remote:
     /// a user name and a token per host. They are sealed to your own key,
@@ -686,7 +730,14 @@ async fn edit(paths: &Paths, config: &mut Config, args: EditArgs) -> Result<()> 
             }
         );
     }
-    println!("a bzz that is running uses the new settings at its next start");
+    if manage::state_of(&agent) == "moved away" {
+        println!(
+            "{} was moved away: this changes nothing where it runs. When it is taken back, its settings are the ones that arrive with it; the folders granted here stay as you set them",
+            agent.label
+        );
+    } else {
+        println!("a bzz that is running uses the new settings at its next start");
+    }
     Ok(())
 }
 
@@ -703,6 +754,13 @@ async fn delete(
             "{} is running (process {pid}): close bzz or pause the agent first",
             agent.label
         )));
+    }
+    let moved_away = manage::state_of(&agent) == "moved away";
+    if moved_away {
+        eprintln!(
+            "{} was moved away: a copy of it may be running elsewhere. Deleting it here also removes your record of it from the relay and its place in its channels, so that copy stops being listed and heard. The copy keeps its key",
+            agent.label
+        );
     }
     if !yes
         && !confirm(&format!(
@@ -945,6 +1003,320 @@ async fn doctor(paths: &Paths, config: &Config, models: bool) -> Result<()> {
     }
 }
 
+/// What does not travel with an agent, said after a move.
+fn stays_here(agent: &HostedAgentConfig) -> String {
+    let folders = agent
+        .local
+        .as_ref()
+        .map(|local| {
+            local
+                .folders
+                .iter()
+                .map(|folder| folder.name.as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    format!(
+        "  not moved: {}git credentials. They belong to this machine",
+        if folders.is_empty() {
+            "granted folders (it had none) and ".to_owned()
+        } else {
+            format!("its granted folder(s) ({}) and ", folders.join(", "))
+        }
+    )
+}
+
+/// The owner's signer for an agent, with the passphrase asked for when the
+/// identity needs one.
+fn unlock_owner(
+    paths: &Paths,
+    config: &Config,
+    identity: Uuid,
+) -> Result<bzz::auth::signer::SignerHandle> {
+    let identity = find_identity(config, identity)?.clone();
+    let passphrase = identity_passphrase(&identity, "Owner identity passphrase: ", false)?;
+    IdentityManager::new(paths).signer(&identity, passphrase.as_ref())
+}
+
+async fn move_agent(paths: &Paths, config: &mut Config, name: &str, to: &Path) -> Result<()> {
+    let agent = manage::find(config, name)?.clone();
+    // What can be refused before any passphrase is asked for.
+    moving::check_movable(config, agent.id)?;
+    let owner = unlock_owner(paths, config, agent.owner_identity)?;
+    let passphrase = match bzz::auth::read_passphrase_from(
+        bzz::auth::MOVE_PASSPHRASE_FD,
+        "Passphrase for the file (at least 12 characters; it is all that protects the agent's key in it): ",
+        true,
+    ) {
+        Ok(passphrase) => passphrase,
+        Err(error) => {
+            owner.lock().await;
+            return Err(error);
+        }
+    };
+    eprintln!(
+        "stopping {} and packing it; nothing changes here until the file is whole…",
+        agent.label
+    );
+    let moved = match open_store(paths, config) {
+        Ok(store) => {
+            let mover = moving::Mover::new(paths, &store, &owner);
+            moving::move_to_file(&mover, config, agent.id, &passphrase, to).await
+        }
+        Err(error) => Err(error),
+    };
+    owner.lock().await;
+    let moved = moved?;
+    println!(
+        "agent {} moved into {} ({} bytes), sealed with your passphrase",
+        moved.name,
+        moved.file.display(),
+        moved.bytes
+    );
+    println!(
+        "  in it: its key, its memory, its disk, and its settings (name, model, instructions, who may wake it, the hosts it may reach, Pi packages)"
+    );
+    println!("{}", stays_here(&agent));
+    println!(
+        "{} is marked moved away here: this bzz no longer starts it. Its sealed key and its files stay here until you delete it",
+        moved.name
+    );
+    println!(
+        "next: copy the file to the other machine and run `bzz agent receive <file>` there, as the same owner in the same community. `bzz agent receive {}` here takes it back",
+        shell_word(&moved.file.display().to_string())
+    );
+    Ok(())
+}
+
+async fn receive(paths: &Paths, config: &mut Config, source: &Path) -> Result<()> {
+    let from_kit = source.is_dir();
+    let arrival = if from_kit {
+        moving::open_kit(source)?
+    } else {
+        let passphrase = bzz::auth::read_passphrase_from(
+            bzz::auth::MOVE_PASSPHRASE_FD,
+            "Passphrase of the file: ",
+            false,
+        )?;
+        moving::open_file(source, &passphrase).await?
+    };
+    // Whose it is and where it goes, before the owner's identity is asked
+    // for: an agent of another owner is refused here.
+    let plan = moving::plan(config, &arrival.carried)?;
+    let identity = find_identity(config, plan.identity)?.clone();
+    let owner = unlock_owner(paths, config, plan.identity)?;
+    let received = match open_store(paths, config) {
+        Ok(store) => {
+            moving::receive(
+                paths,
+                &store,
+                &owner,
+                config,
+                arrival,
+                &bzz::agents::runtime::settle::HostAccess::of_this_process(),
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    owner.lock().await;
+    let received = received?;
+    let community = config
+        .communities
+        .iter()
+        .find(|community| community.id == received.community)
+        .map_or_else(
+            || received.community.to_string(),
+            |entry| entry.label.clone(),
+        );
+    println!(
+        "agent {} ({}) {} in {community}",
+        received.name,
+        received.pubkey,
+        if received.taken_back {
+            "taken back: its files here were replaced by the ones that arrived"
+        } else {
+            "received"
+        }
+    );
+    println!(
+        "  its key is in bzz's custody, sealed to {}",
+        identity.label
+    );
+    println!(
+        "  {}",
+        if received.taken_back {
+            "the folders this machine had granted it are as they were"
+        } else {
+            "no folder of this machine is granted to it: grant one with `bzz agent edit --folder`"
+        }
+    );
+    println!("  it is active: it answers while bzz is open, or under `bzz agent run`");
+    println!(
+        "  {}",
+        if from_kit {
+            "delete the launch kit's folder now, here and where it ran: it still holds the key in the clear"
+        } else {
+            "the file still opens with its passphrase: delete it when you no longer need it"
+        }
+    );
+    println!("  run it in one place only: nothing stops a copy left elsewhere from answering too");
+    Ok(())
+}
+
+async fn launch_kit(
+    paths: &Paths,
+    config: &mut Config,
+    name: &str,
+    to: &Path,
+    yes: bool,
+) -> Result<()> {
+    let agent = manage::find(config, name)?.clone();
+    moving::check_movable(config, agent.id)?;
+    eprintln!(
+        "A launch kit holds the key of {} in the clear, in {}: Buzz's buzz-acp reads an agent's key from its environment, so on that machine the key sits beside the agent. Whoever can read the folder can act as {}.",
+        agent.label,
+        to.join(bzz::agents::launch_kit::ENV_FILE).display(),
+        agent.label
+    );
+    if !yes
+        && !confirm(&format!(
+            "Write the key of {} in the clear into that folder, and mark it moved away here?",
+            agent.label
+        ))?
+    {
+        return Err(Error::Config("no launch kit was written".into()));
+    }
+    let owner = unlock_owner(paths, config, agent.owner_identity)?;
+    eprintln!(
+        "stopping {} and writing its launch kit; nothing changes here until the kit is whole…",
+        agent.label
+    );
+    let kit = match open_store(paths, config) {
+        Ok(store) => {
+            let mover = moving::Mover::new(paths, &store, &owner);
+            moving::launch_kit(&mover, config, agent.id, to).await
+        }
+        Err(error) => Err(error),
+    };
+    owner.lock().await;
+    let kit = kit?;
+    println!(
+        "launch kit for {} written in {}",
+        kit.name,
+        kit.folder.display()
+    );
+    println!(
+        "  THE AGENT'S KEY IS IN THE CLEAR in {} (mode 600), and in no other file of the kit",
+        kit.key_file.display()
+    );
+    println!(
+        "  in it: its memory, its disk, its settings, bzz's agent host with its lock file, and README.md with the steps on the other machine"
+    );
+    println!("{}", stays_here(&agent));
+    println!(
+        "{} is marked moved away here: this bzz no longer starts it",
+        kit.name
+    );
+    println!(
+        "next: copy the folder to the other machine over a channel you trust, follow its README.md, and delete it here. `bzz agent shutdown {}` stops it there; `bzz agent receive <folder>` takes it back",
+        shell_word(&kit.name)
+    );
+    Ok(())
+}
+
+async fn shutdown(
+    paths: &Paths,
+    config: &Config,
+    name: &str,
+    channel: Option<&str>,
+    wait: u64,
+) -> Result<()> {
+    let agent = manage::find(config, name)?.clone();
+    if manage::state_of(&agent) != "moved away" {
+        eprintln!(
+            "{} was not moved away from this bzz: the command stops a copy of it that Buzz's buzz-acp runs elsewhere, and nothing here (use `bzz agent pause` for that)",
+            agent.label
+        );
+    }
+    let store = open_store(paths, config)?;
+    let (owner, relay) = owner_relay(paths, config, &agent).await?;
+    let stopped = async {
+        let channel = match channel {
+            Some(wanted) => Some(relay.find_channel(&store, wanted).await?),
+            None => None,
+        };
+        remote::shutdown(
+            &relay,
+            &store,
+            &agent,
+            channel,
+            std::time::Duration::from_secs(wait),
+        )
+        .await
+    }
+    .await;
+    relay.close().await;
+    owner.lock().await;
+    let stopped = stopped?;
+    println!(
+        "sent Buzz's stop command (`{}`) to {} as its owner, in #{}",
+        remote::SHUTDOWN,
+        agent.label,
+        stopped.channel_name
+    );
+    match stopped.left {
+        Some(true) => {
+            println!("{} left: it is no longer present on the relay", agent.label);
+            Ok(())
+        }
+        None => {
+            println!(
+                "{} was not present on the relay before the command, so its presence cannot say whether a copy heard it",
+                agent.label
+            );
+            Ok(())
+        }
+        Some(false) => Err(Error::Timeout(format!(
+            "{} is still present on the relay {wait} s after the command. A copy hears it only in a channel it is a member of, and only from its owner. It also stays present while another copy of it is connected, and for up to {} s after a copy crashed. Try `--channel`, or stop it on its machine",
+            agent.label,
+            bzz::protocol::presence::PRESENCE_TTL_SECONDS
+        ))),
+    }
+}
+
+/// `bzz agent show`: for an agent that was moved away, the relay is asked
+/// whether it is present. That needs the owner's identity; when it cannot
+/// be had, the rest is shown and the reason said.
+async fn show(paths: &Paths, config: &Config, name: &str) -> Result<()> {
+    let agent = manage::find(config, name)?.clone();
+    let store = open_store(paths, config)?;
+    let mut details = manage::details(paths, &store, &agent).await?;
+    if manage::state_of(&agent) == "moved away" {
+        details.presence = Some(match owner_relay(paths, config, &agent).await {
+            Ok((owner, relay)) => {
+                let presence = remote::presence_of(&relay, &store, &agent.pubkey).await;
+                relay.close().await;
+                owner.lock().await;
+                match presence {
+                    Ok(presence) => remote::presence_line(presence),
+                    Err(error) => format!("unknown: the relay could not be asked ({error})"),
+                }
+            }
+            Err(error) => format!("unknown: the relay could not be asked ({error})"),
+        });
+    }
+    let community = config
+        .communities
+        .iter()
+        .find(|community| community.id == agent.community)
+        .map_or_else(|| agent.community.to_string(), |entry| entry.label.clone());
+    for line in manage::show_lines(&agent, &community, &details) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 /// One secret from the terminal, without echo; or, when standard input is
 /// not a terminal, its next line. It is wiped from memory when dropped.
 fn read_secret(prompt: &str) -> Result<zeroize::Zeroizing<String>> {
@@ -1034,6 +1406,15 @@ async fn credential(command: CredentialCommand, paths: &Paths, config: &Config) 
 }
 
 pub async fn command(command: AgentCommand, paths: &Paths, config: &mut Config) -> Result<()> {
+    // An agent whose folder says it was moved away is moved away, whatever
+    // an older copy of the settings said when it was written back.
+    let corrected = moving::reconcile(paths, config);
+    if !corrected.is_empty() {
+        config.save(paths)?;
+        for name in corrected {
+            eprintln!("{name} was moved away: the settings said otherwise and were corrected");
+        }
+    }
     match command {
         AgentCommand::Run { community } => crate::agent_run(paths, config, community).await,
         AgentCommand::Credential(command) => credential(command, paths, config).await,
@@ -1042,20 +1423,17 @@ pub async fn command(command: AgentCommand, paths: &Paths, config: &mut Config) 
             list(paths, config);
             Ok(())
         }
-        AgentCommand::Show { name } => {
-            let agent = manage::find(config, &name)?.clone();
-            let store = open_store(paths, config)?;
-            let details = manage::details(paths, &store, &agent).await?;
-            let community = config
-                .communities
-                .iter()
-                .find(|community| community.id == agent.community)
-                .map_or_else(|| agent.community.to_string(), |entry| entry.label.clone());
-            for line in manage::show_lines(&agent, &community, &details) {
-                println!("{line}");
-            }
-            Ok(())
+        AgentCommand::Show { name } => show(paths, config, &name).await,
+        AgentCommand::Move { name, to } => move_agent(paths, config, &name, &to).await,
+        AgentCommand::Receive { file } => receive(paths, config, &file).await,
+        AgentCommand::LaunchKit { name, to, yes } => {
+            launch_kit(paths, config, &name, &to, yes).await
         }
+        AgentCommand::Shutdown {
+            name,
+            channel,
+            wait,
+        } => shutdown(paths, config, &name, channel.as_deref(), wait).await,
         AgentCommand::Add { name, channel } => {
             let agent = manage::find(config, &name)?.clone();
             let store = open_store(paths, config)?;

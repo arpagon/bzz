@@ -26,7 +26,7 @@ use crate::{
         approval::{Answer, Approvals, Asked},
         credentials::{Credentials, Refused},
         endpoint::{self, Denied, ToolsServer},
-        install,
+        hold, install,
         process::{self, Leftover},
         relay::{AgentRelay, RelayPort},
         tools::ToolReply,
@@ -232,10 +232,15 @@ impl AgentHost {
             } if *id == agent.id => Some(*owner_pid),
             _ => None,
         });
+        // The agent's own folder says so too, and says it to a bzz whose
+        // copy of the settings is older than the move.
+        if local.state == LocalAgentState::MovedAway
+            || hold::moved_away(&self.0.shared.data_dir, agent.id)
+        {
+            self.note_idle(agent, Phase::Stopped, hold::MOVED_AWAY);
+            return false;
+        }
         match (local.state, agent.paused, owned_elsewhere) {
-            (LocalAgentState::MovedAway, ..) => {
-                self.note_idle(agent, Phase::Stopped, "moved away: it runs elsewhere");
-            }
             (LocalAgentState::Paused, ..) | (_, true, _) => {
                 self.note_idle(agent, Phase::Paused, "paused by its owner");
             }
@@ -244,7 +249,7 @@ impl AgentHost {
                 Phase::Stopped,
                 &format!("another bzz runs it (process {pid})"),
             ),
-            (LocalAgentState::Active, false, None) => return true,
+            (LocalAgentState::Active | LocalAgentState::MovedAway, false, None) => return true,
         }
         false
     }
