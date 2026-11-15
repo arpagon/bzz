@@ -285,8 +285,21 @@ pub fn read_record(run_dir: &Path, agent: Uuid) -> Option<OwnershipRecord> {
     serde_json::from_slice(&std::fs::read(record_path(run_dir, agent)).ok()?).ok()
 }
 
-fn remove_record(run_dir: &Path, agent: Uuid) {
-    let _ = std::fs::remove_file(record_path(run_dir, agent));
+/// Removes the record of the harness `pid` of `agent`, and only that one.
+/// When a harness dies in the middle of a turn, its successor is started at
+/// once and writes its own record under the same name; the first one's end
+/// is handled a moment later and must not take that record with it, or a
+/// harness would run that no bzz finds again. A record that cannot be read
+/// names nothing and goes.
+fn remove_record_of(run_dir: &Path, agent: Uuid, pid: Option<u32>) {
+    let path = record_path(run_dir, agent);
+    let theirs = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<OwnershipRecord>(&bytes).ok())
+        .is_some_and(|record| Some(record.process.pid) != pid);
+    if !theirs {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// What the startup sweep found for one ownership record.
@@ -557,7 +570,7 @@ impl Harness {
     fn kill_now(&mut self) {
         self.signal(GroupSignal::Kill);
         let _ = self.child.start_kill();
-        remove_record(&self.run_dir, self.agent);
+        remove_record_of(&self.run_dir, self.agent, self.pid());
     }
 
     /// Stops the harness and everything in its group. `close_input` closes
@@ -578,8 +591,9 @@ impl Harness {
         }
         // What the harness started and left behind goes with it.
         self.signal(GroupSignal::Kill);
+        let pid = self.pid();
         self.identity = None;
-        remove_record(&self.run_dir, self.agent);
+        remove_record_of(&self.run_dir, self.agent, pid);
     }
 
     /// After the harness exited by itself: clears what it left in its group
@@ -587,8 +601,9 @@ impl Harness {
     pub async fn reap(mut self) {
         self.signal(GroupSignal::Kill);
         let _ = self.child.wait().await;
+        let pid = self.pid();
         self.identity = None;
-        remove_record(&self.run_dir, self.agent);
+        remove_record_of(&self.run_dir, self.agent, pid);
     }
 }
 
@@ -698,6 +713,46 @@ mod tests {
         assert!(!is_alive(&record.process));
         assert!(read_record(&run, agent).is_none());
         assert_eq!(wait_for(&temporary.path().join("harness.log")).await, "bye");
+    }
+
+    /// A harness that died is cleaned up while its successor may already
+    /// run: when a harness is killed, the turn it was answering fails at
+    /// once and starts a new process, and the old one's end is seen a moment
+    /// later. The old one's cleanup must leave the new one's record, or a
+    /// harness runs that no bzz can find again.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_harness_that_ends_does_not_take_its_successors_record() {
+        for way in ["stop", "reap"] {
+            let temporary = tempfile::TempDir::new().unwrap();
+            let run = run_dir(temporary.path());
+            let agent = Uuid::new_v4();
+            let (first, first_stdin, _first_stdout) =
+                Harness::spawn(&launch(temporary.path(), "cat >/dev/null"), &run, agent).unwrap();
+            let first_pid = first.pid().unwrap();
+            // Killed from outside, as a crash is.
+            signal_group(first_pid, GroupSignal::Kill);
+            // Its successor starts before the first one's end is handled.
+            let (second, second_stdin, _second_stdout) =
+                Harness::spawn(&launch(temporary.path(), "cat >/dev/null"), &run, agent).unwrap();
+            let second_pid = second.pid().unwrap();
+            assert_ne!(first_pid, second_pid);
+            if way == "stop" {
+                first.stop(move || drop(first_stdin), STOP_GRACE).await;
+            } else {
+                drop(first_stdin);
+                first.reap().await;
+            }
+            let record = read_record(&run, agent);
+            assert_eq!(
+                record.map(|record| record.process.pid),
+                Some(second_pid),
+                "{way}: the record is the running harness's"
+            );
+            // Its own end still removes its own record.
+            second.stop(move || drop(second_stdin), STOP_GRACE).await;
+            assert!(read_record(&run, agent).is_none(), "{way}");
+        }
     }
 
     #[cfg(unix)]
