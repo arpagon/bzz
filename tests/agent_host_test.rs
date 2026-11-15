@@ -564,6 +564,124 @@ async fn the_real_host_keeps_to_the_grants_and_names_its_failures() {
     host.shutdown().await;
 }
 
+/// The write-ahead files beside an agent's two files, when they are there.
+fn write_ahead_files(folder: &std::path::Path) -> Vec<String> {
+    let mut found = ["memory.sqlite", "files.sqlite"]
+        .iter()
+        .flat_map(|file| [format!("{file}-wal"), format!("{file}-shm")])
+        .filter(|name| folder.join(name).exists())
+        .collect::<Vec<_>>();
+    found.sort();
+    found
+}
+
+/// When the real host has been idle for the stated time, bzz asks it to
+/// checkpoint (`_bzz/checkpoint`): its two files are then whole, with no
+/// write-ahead file beside them, the host goes on running, and the next
+/// message of the conversation finds its memory. Not before that time, and
+/// not while a turn runs.
+#[tokio::test]
+async fn the_real_host_checkpoints_its_files_when_it_has_been_idle() {
+    let Some(node) = pi_host::node_or_skip("agent_host_test").await else {
+        return;
+    };
+    const IDLE: Duration = Duration::from_secs(4);
+    let world = World::new(&node).await;
+    let host = world
+        .host_configured(world.settings(), |options| {
+            options.limits.checkpoint_idle = IDLE;
+        })
+        .await;
+    // A turn that writes to both files: its conversation and its disk.
+    let first = world
+        .ask(
+            &host,
+            r#"do: [["bash", {"command": "echo kept > /home/agent/note.txt && cat /home/agent/note.txt"}], ["report"]]"#,
+            None,
+        )
+        .await;
+    world.settled(&host, &first).await;
+    let answered = tokio::time::Instant::now();
+    assert_eq!(world.replies(&first).len(), 1, "{}", world.log());
+    let folder = process::agent_dir(&world.data_dir(), world.agent);
+    let pid = world.pid().expect("the host is running");
+    assert_eq!(
+        write_ahead_files(&folder),
+        [
+            "files.sqlite-shm",
+            "files.sqlite-wal",
+            "memory.sqlite-shm",
+            "memory.sqlite-wal"
+        ],
+        "a host that runs keeps its newest writes beside its files"
+    );
+    // Not before the time is up.
+    tokio::time::sleep(IDLE / 2).await;
+    assert!(!write_ahead_files(&folder).is_empty(), "checkpointed early");
+    until("the idle host to checkpoint its files", WAIT, || {
+        write_ahead_files(&folder).is_empty().then_some(())
+    })
+    .await;
+    assert!(
+        answered.elapsed() >= IDLE,
+        "the files were made whole {:?} after the answer, before the host had been idle for {IDLE:?}",
+        answered.elapsed()
+    );
+    assert_eq!(world.pid(), Some(pid), "the host goes on running");
+    assert!(running(pid));
+    for file in ["memory.sqlite", "files.sqlite"] {
+        assert!(folder.join(file).is_file(), "{file}");
+    }
+
+    // The conversation goes on from the files as they were left.
+    let second = world
+        .ask(
+            &host,
+            r#"do: [["bash", {"command": "cat /home/agent/note.txt"}], ["report"]]"#,
+            Some(&first),
+        )
+        .await;
+    world.settled(&host, &second).await;
+    let reported = world.replies(&second);
+    assert!(
+        reported.len() == 1 && reported[0].contains("kept"),
+        "{reported:?}\n{}",
+        world.log()
+    );
+    assert_eq!(world.pid(), Some(pid), "in the same process");
+
+    // While a turn runs nothing is checkpointed: a turn longer than the
+    // idle time ends with its answer, and the files are whole only after.
+    let long = world
+        .ask(
+            &host,
+            &format!(
+                r#"do: [["sleep", {}], ["buzz_send", {{"text": "after a long turn", "final": true}}]]"#,
+                (IDLE * 2).as_millis()
+            ),
+            None,
+        )
+        .await;
+    until("the long turn to be running", WAIT, || {
+        (host.status()[0].turns == 1).then_some(())
+    })
+    .await;
+    tokio::time::sleep(IDLE + IDLE / 2).await;
+    assert_eq!(host.status()[0].turns, 1, "the turn is still running");
+    assert!(
+        !write_ahead_files(&folder).is_empty(),
+        "nothing is checkpointed while a turn runs"
+    );
+    world.settled(&host, &long).await;
+    assert_eq!(world.replies(&long), ["after a long turn"]);
+    until("the idle host to checkpoint again", WAIT, || {
+        write_ahead_files(&folder).is_empty().then_some(())
+    })
+    .await;
+    assert_eq!(world.pid(), Some(pid));
+    host.shutdown().await;
+}
+
 /// Without a Node that is new enough the agent does not start and its
 /// status says what to do. Whoever asked is told once that it is not
 /// available, and nothing is installed.
