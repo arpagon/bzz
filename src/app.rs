@@ -12182,40 +12182,85 @@ mod tests {
             created_at: 1,
             event_json: "{}".into(),
         };
+        // What the panel says of the newest request, read again.
+        macro_rules! last_outcome {
+            () => {{
+                app.local_agent_turns.clear();
+                app.refresh_local_agent_panel();
+                loop {
+                    if let Some(super::Background::LocalAgentTurns { turns, .. }) =
+                        app.background_rx.recv().await
+                    {
+                        app.local_agent_turns = turns
+                            .into_iter()
+                            .filter_map(|(agent, turn)| turn.map(|turn| (agent, turn)))
+                            .collect();
+                        if !app.local_agent_turns.is_empty() {
+                            break;
+                        }
+                    }
+                }
+                screen(&mut app)
+            }};
+        }
+        let failed = request.clone();
         app.store
             .call(move |store| {
-                store.agent_inbox_offer(&request)?;
+                store.agent_inbox_offer(&failed)?;
                 store.agent_reply_claim(
-                    request.agent_id,
-                    &request.request_id,
+                    failed.agent_id,
+                    &failed.request_id,
                     &"b".repeat(64),
                     "{}",
                     crate::store::agent_runtime::ReplyOrigin::Failure,
                     Some("timeout"),
                 )?;
+                store.agent_reply_published(failed.agent_id, &failed.request_id)
+            })
+            .await
+            .unwrap();
+        let shown = last_outcome!();
+        assert!(
+            shown.contains("last outcome: failed: timeout · "),
+            "{shown}"
+        );
+        // A reply that is signed and stored is not "answered" before the
+        // relay has it: until then the state has a name of its own.
+        let answered = crate::store::agent_runtime::NewRequest {
+            request_id: "c".repeat(64),
+            created_at: 2,
+            ..request
+        };
+        let (agent_id, request_id) = (answered.agent_id, answered.request_id.clone());
+        app.store
+            .call(move |store| {
+                store.agent_inbox_offer(&answered)?;
+                // Newer than the first, whatever the clock's second.
+                store.agent_reply_claim(
+                    answered.agent_id,
+                    &answered.request_id,
+                    &"d".repeat(64),
+                    "{}",
+                    crate::store::agent_runtime::ReplyOrigin::Send,
+                    None,
+                )?;
                 Ok(())
             })
             .await
             .unwrap();
-        app.refresh_local_agent_panel();
-        loop {
-            if let Some(super::Background::LocalAgentTurns { turns, .. }) =
-                app.background_rx.recv().await
-            {
-                app.local_agent_turns = turns
-                    .into_iter()
-                    .filter_map(|(agent, turn)| turn.map(|turn| (agent, turn)))
-                    .collect();
-                if !app.local_agent_turns.is_empty() {
-                    break;
-                }
-            }
-        }
+        let shown = last_outcome!();
         assert!(
-            screen(&mut app).contains("last outcome: failed: timeout · "),
-            "{}",
-            screen(&mut app)
+            shown.contains(
+                "last outcome: sending its reply: signed, and not yet accepted by the relay · "
+            ) && !shown.contains("last outcome: answered"),
+            "{shown}"
         );
+        app.store
+            .call(move |store| store.agent_reply_published(agent_id, &request_id))
+            .await
+            .unwrap();
+        let shown = last_outcome!();
+        assert!(shown.contains("last outcome: answered · "), "{shown}");
 
         // Space pauses the selected agent, and resumes it.
         app.local_agents_key(key(KeyCode::Char(' '))).await.unwrap();

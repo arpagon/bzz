@@ -322,8 +322,9 @@ impl AgentRelay for RecordedRelay {
 
     async fn publish(&self, event: Event) -> Published {
         self.calls.lock().unwrap().push(event.clone());
-        // A typing indicator is ephemeral: no mode applies to it.
-        let mode = if event.kind.as_u16() == 20_002 {
+        // A typing indicator and a presence update are ephemeral: no mode
+        // applies to them.
+        let mode = if matches!(event.kind.as_u16(), 20_001 | 20_002) {
             Mode::Accept
         } else {
             self.mode.lock().unwrap().clone()

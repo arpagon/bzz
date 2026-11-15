@@ -63,6 +63,7 @@ fn limits() -> Limits {
         prune_interval: Duration::from_secs(24 * 3600),
         // Longer than any test, but for the one that waits for it.
         approval: Duration::from_secs(600),
+        presence_interval: Duration::from_secs(60),
     }
 }
 
@@ -3430,9 +3431,8 @@ async fn two_agents_may_each_have_a_command_waiting() {
 /// M7 and M3: an agent runs on the settings bzz started with, but what its
 /// owner takes away afterwards is refused at once, by the bzz that is
 /// running: a folder that is no longer granted for commands, a folder that
-/// now asks, a host that is no longer allowed, and an agent that is paused
-/// or gone from the settings. In doubt (a settings file that cannot be
-/// read) nothing is allowed and nothing is given.
+/// now asks, and a host that is no longer allowed. In doubt (a settings
+/// file that cannot be read) nothing is allowed and nothing is given.
 #[tokio::test]
 async fn what_the_owner_takes_away_is_refused_at_once_by_a_running_bzz() {
     let world = World::new().await;
@@ -3449,7 +3449,7 @@ async fn what_the_owner_takes_away_is_refused_at_once_by_a_running_bzz() {
     .await
     .unwrap();
     let marker = |name: &str| world.script.marker(name);
-    let steps = (1..=6)
+    let steps = (1..=5)
         .flat_map(|round| {
             vec![
                 approve(
@@ -3566,16 +3566,13 @@ async fn what_the_owner_takes_away_is_refused_at_once_by_a_running_bzz() {
     assert!(!allowed && !given, "{reason}");
     assert!(reason.contains("could not read its settings"), "{reason}");
 
-    // 6. The agent is paused in the settings, by a command.
-    write(Some(&local), true);
-    next(5);
-    let (allowed, reason, given) = round(6).await;
-    assert!(!allowed && !given, "{reason}");
-    assert!(reason.contains("no longer one that bzz runs"), "{reason}");
-    for number in 2..=6 {
+    // (An agent that is paused in the settings, or gone from them, is
+    // stopped as a whole: `a_pause_in_another_process_…` below.)
+    for number in 2..=5 {
         assert!(!marker(&format!("ran-{number}")).exists(), "round {number}");
     }
-    next(6);
+    write(Some(&local), false);
+    next(5);
     world.settled(&request).await;
     let activity = world.activity();
     assert!(
@@ -4033,4 +4030,347 @@ async fn a_stored_reply_is_not_published_after_the_agent_was_removed_or_made_rea
         assert!(world.relay.replies_to(&request).is_empty(), "{kind}");
         host.shutdown().await;
     }
+}
+
+impl World {
+    /// The agent as the settings file holds it.
+    fn configured(&self, local: &LocalAgentConfig, paused: bool) -> HostedAgentConfig {
+        HostedAgentConfig {
+            id: self.agent,
+            label: "Scout".into(),
+            pubkey: self.agent_pubkey(),
+            community: Uuid::nil(),
+            owner_identity: Uuid::nil(),
+            auth_tag: "[]".into(),
+            credential_hash: "c".repeat(64),
+            allowed: Vec::new(),
+            paused,
+            local: Some(local.clone()),
+        }
+    }
+
+    /// Writes the settings file as a `bzz agent` command in another process
+    /// does: with the agent, paused or not, or without it.
+    fn write_settings(&self, agent: Option<HostedAgentConfig>) -> std::path::PathBuf {
+        let path = self.temporary.path().join("config.toml");
+        let config = bzz::config::Config {
+            hosted_agents: agent.into_iter().collect(),
+            ..bzz::config::Config::default()
+        };
+        // Never the same length twice in a row: a running bzz reads the
+        // file again when its time or its size changed.
+        let stamp = format!("# {}\n", rand_suffix());
+        let temporary = path.with_extension("tmp");
+        std::fs::write(
+            &temporary,
+            format!("{stamp}{}", toml::to_string_pretty(&config).unwrap()),
+        )
+        .unwrap();
+        std::fs::rename(&temporary, &path).unwrap();
+        path
+    }
+
+    /// What the agent last said of its presence on the relay.
+    fn presence(&self) -> Option<String> {
+        self.relay
+            .calls(20_001)
+            .last()
+            .map(|event| event.content.clone())
+    }
+
+    /// Whether this bzz still says that it holds the agent's key.
+    fn serves(&self) -> bool {
+        std::fs::read_dir(self.data_dir().join("agents").join("serving"))
+            .map(|entries| {
+                entries.flatten().any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(&self.agent.to_string())
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    async fn phase_is(&self, host: &AgentHost, phase: Phase) {
+        until(&format!("the agent to be {phase:?}"), WAIT, || {
+            (host.status()[0].phase == phase).then_some(())
+        })
+        .await;
+    }
+}
+
+fn rand_suffix() -> String {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    "x".repeat(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Presence, from the run against Buzz 1.0: it showed a bzz agent as
+/// "Offline" while the agent answered, because bzz said nothing. A running
+/// agent says that it is present, with its own key (kind 20001), again and
+/// again; and it says that it is gone when it is paused and when bzz stops.
+#[tokio::test]
+async fn a_running_agent_says_it_is_present_and_says_when_it_is_gone() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([{"steps": [send("the answer", true)]}]),
+    );
+    let host = world
+        .host_with(
+            world.settings(Harness::PiDurable),
+            Limits {
+                presence_interval: Duration::from_millis(100),
+                ..limits()
+            },
+        )
+        .await;
+    until("three presence updates", WAIT, || {
+        (world.relay.calls(20_001).len() >= 3).then_some(())
+    })
+    .await;
+    for update in world.relay.calls(20_001) {
+        assert_eq!(update.content, "online");
+        assert_eq!(
+            update.pubkey,
+            world.relay.agent.public_key(),
+            "said by the agent itself"
+        );
+        assert!(
+            update.tags.iter().any(|tag| {
+                let values = tag.as_slice();
+                values.first().map(String::as_str) == Some("auth")
+                    && values.get(1) == Some(&world.owner.public_key().to_hex())
+            }),
+            "with its owner's authorization, as everything it publishes"
+        );
+        assert!(
+            bzz::protocol::presence::observe(&update, None, |_| None)
+                .is_some_and(|observed| observed.subjects == [world.agent_pubkey()]
+                    && observed.presence == bzz::protocol::presence::Presence::Online),
+            "as bzz and Buzz read a presence"
+        );
+    }
+    // It answers a mention, and is still present.
+    let request = world.ask(&host, "hello").await;
+    world.settled(&request).await;
+    assert_eq!(world.presence().as_deref(), Some("online"));
+
+    // Paused: it says that it is gone, once, and nothing after.
+    host.set_paused(world.agent, true).await;
+    assert_eq!(world.presence().as_deref(), Some("offline"));
+    let said = world.relay.calls(20_001).len();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        world.relay.calls(20_001).len(),
+        said,
+        "a paused agent is not present"
+    );
+    // Resumed: present again, at once.
+    host.set_paused(world.agent, false).await;
+    until("it to be present again", WAIT, || {
+        (world.presence().as_deref() == Some("online")).then_some(())
+    })
+    .await;
+    // bzz closes: gone.
+    host.shutdown().await;
+    assert_eq!(world.presence().as_deref(), Some("offline"));
+    let said = world.relay.calls(20_001).len();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(world.relay.calls(20_001).len(), said);
+}
+
+/// Bug 3 of the run against Buzz 1.0, and what it says of `agent pause`:
+/// a command in another process did not reach the bzz that ran the agent.
+/// `bzz agent pause` writes the settings; the bzz that runs the agent sees
+/// it within a second, stops the agent's process, says that the agent is
+/// gone, and stops listening. `bzz agent resume` runs it again.
+#[tokio::test]
+async fn a_pause_in_another_process_stops_a_running_agent_and_a_resume_runs_it_again() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([
+            {"match": "first", "steps": [send("one", true)]},
+            {"match": "third", "steps": [send("three", true)]},
+        ]),
+    );
+    let local = world.settings(Harness::PiDurable);
+    let settings = world.write_settings(Some(world.configured(&local, false)));
+    let host = world
+        .host_configured(local.clone(), limits(), |options| {
+            options.settings_file = Some(settings.clone());
+        })
+        .await;
+    let first = world.ask(&host, "first").await;
+    world.settled(&first).await;
+    let pid = until("its process", WAIT, || host.status()[0].pid).await;
+    assert_eq!(world.presence().as_deref(), Some("online"));
+
+    // `bzz agent pause Scout`, in another process.
+    world.write_settings(Some(world.configured(&local, true)));
+    world.phase_is(&host, Phase::Paused).await;
+    until("its process to be gone", WAIT, || {
+        (!running(pid)).then_some(())
+    })
+    .await;
+    assert_eq!(world.presence().as_deref(), Some("offline"));
+    let status = host.status().remove(0);
+    assert!(
+        status
+            .line()
+            .contains("paused by its owner, with `bzz agent pause`"),
+        "{}",
+        status.line()
+    );
+    // What is said while it is paused is not answered later.
+    let second = world.mention("second, while it is paused");
+    assert_eq!(world.offer(&host, &second).await, Offer::NotRunning);
+
+    // `bzz agent resume Scout`, in another process.
+    world.write_settings(Some(world.configured(&local, false)));
+    world.phase_is(&host, Phase::Idle).await;
+    until("it to be present again", WAIT, || {
+        (world.presence().as_deref() == Some("online")).then_some(())
+    })
+    .await;
+    let third = world.ask(&host, "third").await;
+    world.settled(&third).await;
+    assert_eq!(world.contents(&world.relay.replies_to(&third)), ["three"]);
+    assert!(world.row(&second).await.is_none());
+    assert!(
+        !world.relay.closed(),
+        "its connection was kept for the resume"
+    );
+    host.shutdown().await;
+}
+
+/// Bug 3: `bzz agent delete` removed an agent that a running `bzz agent
+/// run` was serving, and that bzz was not told: it kept the agent's key in
+/// memory and its connection open. A deletion reaches the bzz that runs
+/// the agent, as a move does. First it holds the agent: the process is
+/// stopped and nothing is listened for, and if the deletion does not
+/// happen the agent runs again. Then, before the files go, that bzz lets
+/// go for good: it closes the agent's connection and forgets its key.
+#[tokio::test]
+async fn a_deletion_in_another_process_reaches_the_bzz_that_runs_the_agent() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([
+            {"match": "first", "steps": [send("one", true)]},
+            {"match": "second", "steps": [send("two", true)]},
+        ]),
+    );
+    let local = world.settings(Harness::PiDurable);
+    let configured = world.configured(&local, false);
+    let host = world.host(Harness::PiDurable).await;
+    let first = world.ask(&host, "first").await;
+    world.settled(&first).await;
+    let pid = until("its process", WAIT, || host.status()[0].pid).await;
+    assert!(
+        world.serves(),
+        "this bzz says that it holds the agent's key"
+    );
+
+    // The deletion begins. When this returns, the agent's process is gone.
+    let held = bzz::agents::manage::hold_for_deletion(
+        &world.data_dir(),
+        &configured,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    assert!(!running(pid), "the bzz that ran it has stopped its process");
+    world.phase_is(&host, Phase::Stopped).await;
+    assert!(
+        host.status()[0].line().contains("being deleted"),
+        "{}",
+        host.status()[0].line()
+    );
+    assert_eq!(world.presence().as_deref(), Some("offline"));
+    let waiting = world.mention("while it is being deleted");
+    assert_eq!(world.offer(&host, &waiting).await, Offer::NotRunning);
+    assert!(!world.relay.closed() && world.serves());
+
+    // The deletion does not happen (the relay could not be reached, say):
+    // the agent runs again.
+    drop(held);
+    world.phase_is(&host, Phase::Idle).await;
+    let second = world.ask(&host, "second").await;
+    world.settled(&second).await;
+    assert_eq!(world.contents(&world.relay.replies_to(&second)), ["two"]);
+    let pid = until("its process", WAIT, || host.status()[0].pid).await;
+
+    // The deletion happens: before the files go, this bzz lets go for good.
+    let held = bzz::agents::manage::hold_for_deletion(
+        &world.data_dir(),
+        &configured,
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
+    assert!(!running(pid));
+    let published = world.relay.calls(9).len();
+    held.deleted().unwrap();
+    until("this bzz to let go of the agent", WAIT, || {
+        (world.relay.closed() && !world.serves()).then_some(())
+    })
+    .await;
+    assert!(host.retired(world.agent));
+    let line = host.status().remove(0).line();
+    assert!(
+        line.contains("stopped") && line.contains("deleted"),
+        "{line}"
+    );
+    assert_eq!(world.presence().as_deref(), Some("offline"));
+    // After a deletion this bzz publishes nothing as the agent, whatever
+    // reaches it and whatever its owner presses.
+    let late = world.mention("after the deletion");
+    assert_eq!(world.offer(&host, &late).await, Offer::NotRunning);
+    host.set_paused(world.agent, true).await;
+    host.set_paused(world.agent, false).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(world.relay.calls(9).len(), published);
+    assert_eq!(world.presence().as_deref(), Some("offline"));
+    assert_eq!(host.status()[0].phase, Phase::Stopped);
+    assert_eq!(host.status()[0].pid, None);
+    host.shutdown().await;
+}
+
+/// Bug 3, the other way a running bzz learns of a deletion: the agent is
+/// no longer in the settings (a `bzz agent delete --force`, or an older bzz
+/// that deletes without holding). It lets the agent go all the same.
+#[tokio::test]
+async fn an_agent_that_is_gone_from_the_settings_is_let_go_by_the_bzz_that_runs_it() {
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": true}),
+        json!([{"steps": [send("one", true)]}]),
+    );
+    let local = world.settings(Harness::PiDurable);
+    let settings = world.write_settings(Some(world.configured(&local, false)));
+    let host = world
+        .host_configured(local.clone(), limits(), |options| {
+            options.settings_file = Some(settings.clone());
+        })
+        .await;
+    let first = world.ask(&host, "first").await;
+    world.settled(&first).await;
+    let pid = until("its process", WAIT, || host.status()[0].pid).await;
+    // A settings file that cannot be read says nothing: the agent stays.
+    std::fs::write(&settings, "this is [not toml").unwrap();
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert!(!host.retired(world.agent) && running(pid));
+
+    world.write_settings(None);
+    until("this bzz to let go of the agent", WAIT, || {
+        (world.relay.closed() && !world.serves()).then_some(())
+    })
+    .await;
+    assert!(!running(pid) && host.retired(world.agent));
+    assert_eq!(world.presence().as_deref(), Some("offline"));
+    let late = world.mention("after the deletion");
+    assert_eq!(world.offer(&host, &late).await, Offer::NotRunning);
+    host.shutdown().await;
 }

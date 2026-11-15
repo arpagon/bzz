@@ -66,7 +66,7 @@ use crate::{
             approval::{self, Approvals, Asked, NotAsked, Outcome},
             coding,
             credentials::Credentials,
-            hold::{self, Hold},
+            hold,
             install::{self, StartReport},
             permission as permission_rule,
             process::{self, Harness, Launch},
@@ -90,8 +90,20 @@ const MAX_PLAIN_TEXT_CHARS: usize = 16_000;
 const CONCURRENT_TOOL_CALLS: usize = 8;
 /// A stored reply this old and still unacknowledged is published again.
 const REPUBLISH_AFTER_SECONDS: u64 = 30;
-/// How often a running bzz looks whether another bzz is moving its agent.
+/// How often a running bzz looks whether another bzz is moving, deleting or
+/// pausing its agent.
 const HOLD_POLL: Duration = Duration::from_millis(500);
+/// How long bzz waits for the relay to take a presence update.
+const PRESENCE_LIMIT: Duration = Duration::from_secs(3);
+
+/// What the settings file says of an agent that a running bzz serves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SettingsSay {
+    Active,
+    Paused,
+    /// It is no longer in the settings: it was deleted.
+    Gone,
+}
 /// Git credentials of one harness that bzz looks up at once. A git command
 /// asks once, so more than a few at a time is a harness gone wrong.
 const CONCURRENT_CREDENTIALS: usize = 4;
@@ -376,9 +388,17 @@ pub struct Agent {
     turn_changed: Notify,
     stopping: AtomicBool,
     paused: AtomicBool,
-    /// A `bzz agent move` in another process holds the agent
-    /// ([`hold`]): no process, no listening, until it lets go.
+    /// A `bzz agent move` or `bzz agent delete` in another process holds the
+    /// agent ([`hold`]): no process, no listening, until it lets go.
     held: AtomicBool,
+    /// The settings file says the agent is paused: `bzz agent pause` in
+    /// another process. No process, no listening, until it says otherwise.
+    suspended: AtomicBool,
+    /// This bzz let the agent go for good (moved away, or deleted): its
+    /// connection is closed and its key forgotten.
+    retired: AtomicBool,
+    /// Wakes the task that says the agent is present.
+    presence_changed: Notify,
     /// When this agent's rows were last pruned.
     pruned: Mutex<Option<Instant>>,
 }
@@ -454,6 +474,9 @@ impl Agent {
             stopping: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             held: AtomicBool::new(false),
+            suspended: AtomicBool::new(false),
+            retired: AtomicBool::new(false),
+            presence_changed: Notify::new(),
             pruned: Mutex::new(None),
         })
     }
@@ -469,9 +492,20 @@ impl Agent {
     }
 
     fn halted(&self) -> bool {
-        self.stopping.load(Ordering::Acquire)
-            || self.paused.load(Ordering::Acquire)
+        self.stopping.load(Ordering::Acquire) || self.resting()
+    }
+
+    /// Stopped for now by its owner or by another bzz: paused here, paused
+    /// in the settings, or held for a move or a deletion.
+    fn resting(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
             || self.held.load(Ordering::Acquire)
+            || self.suspended.load(Ordering::Acquire)
+    }
+
+    /// Whether this bzz let the agent go for good.
+    pub fn retired(&self) -> bool {
+        self.retired.load(Ordering::Acquire)
     }
 
     async fn store<T, F>(&self, operation: F) -> Result<T>
@@ -570,6 +604,11 @@ impl Agent {
     /// Settles what an earlier bzz or an earlier process left open. Runs
     /// before any harness is started.
     pub async fn recover(&self) {
+        // Held for a move or a deletion by another bzz: nothing is
+        // published and nothing decided until that is over.
+        if hold::read(&self.shared.data_dir, self.spec.id).is_some() {
+            return;
+        }
         self.republish(0).await;
         self.prune().await;
         let Ok(open) = self
@@ -607,56 +646,182 @@ impl Agent {
 
     /// Starts handing queued requests to the harness.
     pub fn start(self: &Arc<Self>) {
+        // From here this bzz holds the agent's key and connection, and says
+        // so where a `bzz agent delete` in another process looks.
+        let _ = hold::serve(&self.shared.data_dir, self.spec.id);
         tokio::spawn(self.clone().schedule());
-        tokio::spawn(self.clone().watch_hold());
+        tokio::spawn(self.clone().watch());
+        tokio::spawn(self.clone().say_present());
         self.wake.notify_one();
     }
 
-    /// Follows the agent's `move.json` ([`hold`]), which a `bzz agent move`
-    /// in another process writes. While a move is at work the agent has no
-    /// process and takes no request; when the move fails it runs again, and
-    /// when it succeeds this bzz never starts the agent again.
-    async fn watch_hold(self: Arc<Self>) {
+    /// What the settings file says of this agent now, when it says anything
+    /// a running bzz acts on.
+    fn settings_say(&self) -> Option<SettingsSay> {
+        let path = self.shared.settings_file.as_ref()?;
+        // Unreadable just now: nothing is concluded from that.
+        let config = crate::config::load_from(path).ok()?;
+        Some(
+            match config
+                .hosted_agents
+                .iter()
+                .find(|agent| agent.id == self.spec.id)
+            {
+                // No longer an agent of this bzz at all: it was deleted.
+                None => SettingsSay::Gone,
+                Some(agent) if agent.local.is_none() => SettingsSay::Gone,
+                Some(agent) if agent.runs_locally() => SettingsSay::Active,
+                // Moved away is the business of `move.json`.
+                Some(agent)
+                    if agent.local.as_ref().is_some_and(|local| {
+                        local.state == crate::config::LocalAgentState::MovedAway
+                    }) =>
+                {
+                    return None;
+                }
+                Some(_) => SettingsSay::Paused,
+            },
+        )
+    }
+
+    /// Lets the agent go for good: its process is stopped, it says that it
+    /// is gone, its connection is closed and its key forgotten. Then, and
+    /// only then, this bzz no longer counts as one that serves it.
+    async fn retire(&self, why: &'static str) {
+        self.stop().await;
+        self.state().problem = Some(why.into());
+        self.relay.close().await;
+        self.retired.store(true, Ordering::Release);
+        hold::let_go(&self.shared.data_dir, self.spec.id);
+    }
+
+    /// Follows what another bzz process does to the agent, twice a second:
+    ///
+    /// - the agent's `move.json` ([`hold`]), which a `bzz agent move` or a
+    ///   `bzz agent delete` writes. While one is at work the agent has no
+    ///   process and takes no request; when it fails the agent runs again,
+    ///   and when it succeeds this bzz never runs the agent again;
+    /// - the settings file, when it changed: `bzz agent pause` and `bzz
+    ///   agent resume` hold at once, and an agent that is no longer in the
+    ///   settings is let go.
+    async fn watch(self: Arc<Self>) {
         let mut tick = tokio::time::interval(HOLD_POLL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut settings_seen = None;
         loop {
             tick.tick().await;
             if self.stopping.load(Ordering::Acquire) {
                 break;
             }
-            match hold::read(&self.shared.data_dir, self.spec.id) {
-                Some(Hold::MovedAway { .. }) => {
-                    self.stop().await;
-                    self.state().problem = Some(hold::MOVED_AWAY.into());
-                    // It is another home's agent now: this bzz keeps neither
-                    // a connection as the agent nor its key in memory.
-                    self.relay.close().await;
+            let held = hold::read(&self.shared.data_dir, self.spec.id);
+            match &held {
+                Some(hold) if !hold.passes() => {
+                    // It is another home's agent now, or nobody's: this bzz
+                    // keeps neither a connection as the agent nor its key
+                    // in memory.
+                    self.retire(hold.words()).await;
                     break;
                 }
-                Some(Hold::Moving { .. }) => {
+                Some(hold) => {
                     if !self.held.swap(true, Ordering::AcqRel) {
                         self.halt(Phase::Stopped).await;
-                        self.state().problem = Some(hold::MOVING.into());
+                        self.state().problem = Some(hold.words().into());
                     }
                 }
-                None => {
-                    if self.held.swap(false, Ordering::AcqRel) {
-                        let paused = self.paused.load(Ordering::Acquire);
-                        {
-                            let mut state = self.state();
-                            state.problem = None;
-                            state.phase = if paused { Phase::Paused } else { Phase::Idle };
-                        }
-                        if !paused {
-                            // As after a pause: what was open is settled,
-                            // and what is queued is handed over.
-                            self.recover().await;
-                            self.wake.notify_one();
+                None => {}
+            }
+            // The settings, read again only when the file changed.
+            let stamp = self.shared.settings_file.as_ref().and_then(|path| {
+                let file = std::fs::metadata(path).ok()?;
+                Some((file.modified().ok()?, file.len()))
+            });
+            let mut resumed = false;
+            if stamp.is_some() && stamp != settings_seen {
+                settings_seen = stamp;
+                match self.settings_say() {
+                    Some(SettingsSay::Gone) => {
+                        self.retire(hold::DELETED).await;
+                        break;
+                    }
+                    Some(SettingsSay::Paused) => {
+                        if !self.suspended.swap(true, Ordering::AcqRel) {
+                            self.halt(Phase::Paused).await;
+                            self.state().problem =
+                                Some("paused by its owner, with `bzz agent pause`".into());
                         }
                     }
+                    Some(SettingsSay::Active) => {
+                        resumed |= self.suspended.swap(false, Ordering::AcqRel);
+                    }
+                    None => {}
                 }
             }
+            if held.is_none() {
+                resumed |= self.held.swap(false, Ordering::AcqRel);
+            }
+            if resumed {
+                self.rest_or_run().await;
+            }
         }
+    }
+
+    /// After something that stopped the agent for a while is over: it runs
+    /// again unless something else still stops it.
+    async fn rest_or_run(&self) {
+        if self.stopping.load(Ordering::Acquire) {
+            return;
+        }
+        let resting = self.resting();
+        {
+            let mut state = self.state();
+            let paused =
+                self.paused.load(Ordering::Acquire) || self.suspended.load(Ordering::Acquire);
+            if !resting {
+                state.problem = None;
+                state.phase = Phase::Idle;
+            } else if paused && !self.held.load(Ordering::Acquire) {
+                state.phase = Phase::Paused;
+            }
+        }
+        if !resting {
+            // As after a pause: what was open is settled, and what is
+            // queued is handed over.
+            self.recover().await;
+            self.wake.notify_one();
+            self.presence_changed.notify_one();
+        }
+    }
+
+    /// Says on the relay, with the agent's own key, that the agent is
+    /// present (kind 20001, `online`), now and at every interval for as
+    /// long as this bzz runs it. Buzz shows an agent as online from this;
+    /// without it a bzz agent was "Offline" while it answered. Nothing is
+    /// said while the agent is paused, held or stopped: [`Agent::halt`] has
+    /// said `offline` then.
+    async fn say_present(self: Arc<Self>) {
+        loop {
+            if self.stopping.load(Ordering::Acquire) {
+                break;
+            }
+            if !self.resting() {
+                self.say(crate::protocol::presence::Presence::Online).await;
+            }
+            tokio::select! {
+                () = tokio::time::sleep(self.limits().presence_interval) => {}
+                () = self.presence_changed.notified() => {}
+            }
+        }
+    }
+
+    /// One presence update as the agent, waited for only briefly: it is
+    /// ephemeral, and the next one says the same.
+    async fn say(&self, presence: crate::protocol::presence::Presence) {
+        let said = async {
+            let builder = buzz_sdk::build_presence_update(presence.as_str()).ok()?;
+            let event = self.relay.sign(builder).await.ok()?;
+            Some(self.relay.publish(event).await)
+        };
+        let _ = tokio::time::timeout(PRESENCE_LIMIT, said).await;
     }
 
     async fn schedule(self: Arc<Self>) {
@@ -670,7 +835,7 @@ impl Agent {
             if self.stopping.load(Ordering::Acquire) {
                 break;
             }
-            if self.paused.load(Ordering::Acquire) || self.held.load(Ordering::Acquire) {
+            if self.resting() {
                 continue;
             }
             self.republish(REPUBLISH_AFTER_SECONDS).await;
@@ -869,8 +1034,8 @@ impl Agent {
         let launch = self.launch().await?;
         // Read at the last moment before the process exists: a move that
         // began while the host was being found or installed is seen here.
-        if hold::read(&self.shared.data_dir, self.spec.id).is_some() {
-            return Err(hold::MOVING.to_owned());
+        if let Some(hold) = hold::read(&self.shared.data_dir, self.spec.id) {
+            return Err(hold.words().to_owned());
         }
         let run_dir = process::run_dir(&self.shared.data_dir);
         let (harness, stdin, stdout) =
@@ -965,8 +1130,16 @@ impl Agent {
             }
             Err(problem) => {
                 let mut state = self.state();
-                // Held for a move: nothing was started, so nothing crashed.
-                if problem != hold::MOVING {
+                // Held for a move or a deletion: nothing was started, so
+                // nothing crashed.
+                if ![
+                    hold::MOVING,
+                    hold::DELETING,
+                    hold::DELETED,
+                    hold::MOVED_AWAY,
+                ]
+                .contains(&problem.as_str())
+                {
                     state.crashes.push_back(Instant::now());
                 }
                 state.problem = Some(problem);
@@ -1160,6 +1333,7 @@ impl Agent {
     /// Stops the agent for good: bzz is closing or locking.
     pub async fn stop(&self) {
         self.stopping.store(true, Ordering::Release);
+        self.presence_changed.notify_one();
         self.halt(Phase::Stopped).await;
     }
 
@@ -1171,6 +1345,9 @@ impl Agent {
                 turn.typing = None;
             }
         }
+        // It is gone from here on, and says so while it still can: a
+        // mention would not be answered.
+        self.say(crate::protocol::presence::Presence::Offline).await;
         // A command that waits for the owner's answer is not started by an
         // agent that is paused, stopped, or whose bzz is closing.
         self.shared.approvals.void_agent(
@@ -1244,12 +1421,14 @@ impl Agent {
         if self.paused.swap(paused, Ordering::AcqRel) == paused {
             return;
         }
+        // An agent that was stopped for good is not paused or resumed.
+        if self.stopping.load(Ordering::Acquire) {
+            return;
+        }
         if paused {
             self.halt(Phase::Paused).await;
         } else {
-            self.state().phase = Phase::Idle;
-            self.recover().await;
-            self.wake.notify_one();
+            self.rest_or_run().await;
         }
     }
 

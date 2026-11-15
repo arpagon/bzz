@@ -240,6 +240,11 @@ impl AgentHost {
             self.note_idle(agent, Phase::Stopped, hold::MOVED_AWAY);
             return false;
         }
+        // A deletion that went on, and whose files are about to go.
+        if hold::read(&self.0.shared.data_dir, agent.id) == Some(hold::Hold::Deleted) {
+            self.note_idle(agent, Phase::Stopped, hold::DELETED);
+            return false;
+        }
         match (local.state, agent.paused, owned_elsewhere) {
             (LocalAgentState::Paused, ..) | (_, true, _) => {
                 self.note_idle(agent, Phase::Paused, "paused by its owner");
@@ -328,6 +333,18 @@ impl AgentHost {
     /// Whether this host has started serving `agent`.
     pub fn runs(&self, agent: Uuid) -> bool {
         lock(&self.0.agents).contains_key(&agent)
+    }
+
+    /// Whether this host let `agent` go for good while it ran: it was moved
+    /// away or deleted by another bzz process.
+    pub fn retired(&self, agent: Uuid) -> bool {
+        agent_of(&self.0.agents, agent).is_some_and(|agent| agent.retired())
+    }
+
+    /// Says that this bzz no longer holds `agent`'s key and connection.
+    /// For the caller that has closed the one and forgotten the other.
+    pub fn let_go(&self, agent: Uuid) {
+        hold::let_go(&self.0.shared.data_dir, agent);
     }
 
     /// One line of state per agent, running or not.

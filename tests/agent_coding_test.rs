@@ -68,6 +68,7 @@ fn limits() -> Limits {
         agent_exchange_window: Duration::from_secs(3600),
         prune_interval: Duration::from_secs(24 * 3600),
         approval: Duration::from_secs(600),
+        presence_interval: Duration::from_secs(60),
     }
 }
 

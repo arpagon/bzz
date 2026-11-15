@@ -29,7 +29,7 @@ use crate::{
         runtime::{
             admission::{ChannelFacts, PlaceKind},
             agent::Environment,
-            coding,
+            coding, hold,
             install::{self, ModelCheck},
             process,
             relay::{self, Published},
@@ -1791,6 +1791,65 @@ pub fn running_pid(data_dir: &Path, agent: Uuid) -> Option<u32> {
     process::read_record(&process::run_dir(data_dir), agent)
         .filter(|record| process::is_alive(&record.process))
         .map(|record| record.process.pid)
+}
+
+/// How long a deletion waits for a bzz that runs the agent: to stop it, and
+/// then to let go of its key and its connection.
+pub const RELEASE_LIMIT: Duration = Duration::from_secs(15);
+
+/// The first step of a deletion, as of a move: from here no bzz of this
+/// data folder runs the agent. One that does stops the agent's process
+/// within a second, says on the relay that the agent is gone, and stops
+/// listening for it; this waits until its process is gone. When what this
+/// returns is dropped without [`release_for_deletion`], that bzz runs the
+/// agent again.
+pub async fn hold_for_deletion(
+    data_dir: &Path,
+    agent: &HostedAgentConfig,
+    limit: Duration,
+) -> Result<hold::Held> {
+    let held = hold::take_for_deletion(data_dir, agent.id)?;
+    // A bzz that was starting the agent this very moment has written its
+    // record by now; one that runs it stops it within half a second.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let deadline = tokio::time::Instant::now() + limit;
+    while let Some(pid) = running_pid(data_dir, agent.id) {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::Timeout(format!(
+                "the bzz that runs {} did not stop it (process {pid}). Close that bzz, and delete the agent then. Nothing was deleted",
+                agent.label
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(held)
+}
+
+/// The step before an agent's files go: every bzz that serves the agent
+/// closes the agent's connection and forgets its key, for good. This waits
+/// until none holds them, so that after a deletion no bzz can publish as
+/// the agent.
+pub async fn release_for_deletion(
+    data_dir: &Path,
+    agent: &HostedAgentConfig,
+    held: hold::Held,
+    limit: Duration,
+) -> Result<()> {
+    held.deleted()?;
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        let serving = hold::served_by(data_dir, agent.id);
+        let Some(pid) = serving.first() else {
+            return Ok(());
+        };
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::Timeout(format!(
+                "the bzz that runs {} (process {pid}) did not let go of its key and its connection, so its files were kept. Close that bzz and run the delete again",
+                agent.label
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Removes what the relay holds for the agent, in the order Buzz 1.0 does:
