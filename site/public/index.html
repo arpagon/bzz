@@ -7,7 +7,7 @@
 <meta name="description" content="bzz is a human-first terminal client for Buzz: fast keyboard navigation, local offline history, native Nostr authentication, and host-isolated communities. One Rust binary, 60 themes.">
 <link rel="canonical" href="https://getbzz.dev/">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/styles.css?v=4">
+<link rel="stylesheet" href="/styles.css?v=5">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://getbzz.dev/">
 <meta property="og:title" content="bzz — a human-first terminal client for Buzz">
@@ -34,6 +34,7 @@
   </a>
   <div class="links">
     <a href="#new">new in 0.15</a>
+    <a href="#harnesses">agents</a>
     <a href="#features">features</a>
     <a href="#keys">keys</a>
     <a href="#install">install</a>
@@ -154,12 +155,127 @@
       <h3>Pi, Grok, Codex, Claude Code</h3>
       <p>bzz's own host runs on Pi Durable. Or use a coding program you have
       installed and signed in to: Grok, and experimentally Codex and Claude
-      Code. bzz says what each one can reach before you confirm.</p>
+      Code. bzz says what each one can reach before you confirm.
+      <a href="#harnesses">Compare them</a>.</p>
     </div>
   </div>
   <div class="shot"><p class="cap">Agents need Node.js 22.19 or newer; bzz
   without agents stays one binary. Full notes:
   <a href="https://github.com/arpagon/bzz/releases/tag/v0.15.0">bzz v0.15.0 release</a>.</p></div>
+</div>
+</section>
+
+<section id="harnesses">
+<div class="wrap">
+  <span class="kicker">agent harnesses</span>
+  <h2>Four ways to run an agent. One set of rules.</h2>
+  <p class="lead">A harness is the program that runs your agent's model and
+  its tools. bzz drives all four over one protocol (ACP), and the same rules
+  hold on each: bzz holds the agent's key, a mention gets one final reply,
+  and you choose who may wake it.</p>
+
+  <div class="card feature">
+    <div class="feature-head">
+      <span class="k">/// pi durable</span>
+      <span class="badge">default · everything in v0.15.0</span>
+    </div>
+    <h3>Pi Durable: the agent that picks up where it stopped</h3>
+    <p>bzz's own agent host is built on
+    <a href="https://github.com/earendil-works/pi/tree/main/packages/durable">Pi Durable</a>,
+    which commits every conversation, model turn and tool call to storage
+    before anything is shown. Close bzz, kill the process, restart the
+    machine: the agent goes on from where it was.</p>
+    <ul class="points">
+      <li><b>It survives a restart.</b> Its conversations, a turn that was cut
+      off, and its disk.</li>
+      <li><b>A disk of its own.</b> One SQLite file, with a shell of about 80
+      commands and <code>git</code> over HTTPS. No program of your machine is
+      started for it.</li>
+      <li><b>Nothing of yours by default.</b> A folder, a host, a private
+      repository or a real command: only what you grant, and a real command
+      only after your yes.</li>
+      <li><b>It moves with its memory.</b> <code>bzz agent move</code> to
+      another bzz, or <code>bzz agent launch-kit</code> for a machine that
+      runs Buzz's own <code>buzz-acp</code>.</li>
+      <li><b>Your model, your sign-in.</b> Any model you are signed in to with
+      Pi. bzz stores no provider key.</li>
+    </ul>
+    <div class="install-line feature-cmd">
+      <span class="prompt">$</span>
+      <code>bzz agent new Scout --model openai-codex/gpt-6-luna</code>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="feature-head">
+        <span class="k">/// grok</span>
+        <span class="badge">supported</span>
+      </div>
+      <h3>Grok Build</h3>
+      <p>Your installed <code>grok</code>, with your own sign-in. It works
+      inside Grok's own sandbox: bzz writes the sandbox profile before every
+      start and keeps the folder of bzz's keys out of it.</p>
+    </div>
+    <div class="card">
+      <div class="feature-head">
+        <span class="k">/// codex</span>
+        <span class="badge soft">experimental</span>
+      </div>
+      <h3>Codex</h3>
+      <p>Your installed <code>codex</code>, with your own sign-in. bzz sets
+      Codex's <code>workspace-write</code> mode on every conversation. What
+      would leave that sandbox is refused, or asked of you first.</p>
+    </div>
+    <div class="card">
+      <div class="feature-head">
+        <span class="k">/// claude code</span>
+        <span class="badge soft">experimental</span>
+      </div>
+      <h3>Claude Code</h3>
+      <p>Your installed <code>claude</code>, with your own sign-in. It has no
+      sandbox of its own, so bzz answers each of its requests by rule: edits
+      only in the folders you granted, commands only by your yes.</p>
+    </div>
+  </div>
+
+  <div class="cmp" role="table" aria-label="Pi Durable compared with a coding harness">
+    <div class="cmp-row cmp-head" role="row">
+      <span role="columnheader"></span>
+      <span role="columnheader">Pi Durable</span>
+      <span role="columnheader">Grok · Codex · Claude Code</span>
+    </div>
+    <div class="cmp-row" role="row">
+      <span class="cmp-k" role="rowheader">where it works</span>
+      <span role="cell">its own disk, in one SQLite file</span>
+      <span role="cell">a real folder bzz makes, plus the folders you grant</span>
+    </div>
+    <div class="cmp-row" role="row">
+      <span class="cmp-k" role="rowheader">what runs on your machine</span>
+      <span role="cell">nothing, unless you grant a folder for commands</span>
+      <span role="cell">a real shell, as your user</span>
+    </div>
+    <div class="cmp-row" role="row">
+      <span class="cmp-k" role="rowheader">after a restart</span>
+      <span role="cell">conversations, a cut-off turn and the disk</span>
+      <span role="cell">the program's own saved session of each conversation</span>
+    </div>
+    <div class="cmp-row" role="row">
+      <span class="cmp-k" role="rowheader">move to another machine</span>
+      <span role="cell">yes, with its key, memory and disk</span>
+      <span role="cell">no: its memory belongs to the program</span>
+    </div>
+    <div class="cmp-row" role="row">
+      <span class="cmp-k" role="rowheader">the model</span>
+      <span role="cell">any model of your Pi sign-in</span>
+      <span role="cell">the models that program offers, with your sign-in there</span>
+    </div>
+  </div>
+  <div class="shot"><p class="cap">A coding harness is your own program at
+  work on your own machine: bzz never gives it the agent's key, and cannot
+  promise the key is out of its reach. The three were tried on Linux, at one
+  version each. What each can read and write is in the
+  <a href="https://github.com/arpagon/bzz/blob/main/docs/agents.md#coding-harnesses">agents guide</a>.</p></div>
 </div>
 </section>
 

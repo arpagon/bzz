@@ -34,6 +34,15 @@ recorded in `public/assets/mdi-attribution.txt` and the license text is at
 [`LICENSE-APACHE`](../LICENSE-APACHE). Usage rules live in the short
 [`docs/brand` manual](../docs/brand/README.md).
 
+## Agent harnesses
+
+The "agent harnesses" section sells the four harnesses, Pi Durable first. It
+may say only what [`docs/agents.md`](../docs/agents.md) and the capability
+records (`src/agents/capability.rs`) say: which harness is supported or
+experimental, what each can touch, and the sentence bzz prints of every
+coding harness (it never gives it the key; it cannot promise the key is out
+of reach). Change them together.
+
 ## Demo media
 
 The hero video `public/assets/promo-v015.webm`, `promo-v015.mp4` and

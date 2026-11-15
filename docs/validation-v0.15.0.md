@@ -2782,10 +2782,13 @@ real Pi package.
 - getbzz.dev deployed (Cloudflare Pages `2e45cbdd`) with "new in v0.15.0".
   Checked live on desktop (1280 px) and mobile (390 px). The hero is still
   the v0.14 film.
-- The v0.15 launch film is made (PR #10, `promo/v0.15-launch`: 55.0 s, the
-  agent shots with a real model). Its two new narration lines were confirmed
-  by speech recognition and by nobody's ear: it replaces the hero and the
-  README's preview when the owner has listened.
+- The v0.15 launch film (`promo/v0.15-launch`: 55.0 s, the agent shots with
+  a real model). Its two new narration lines were confirmed by speech
+  recognition, and then by the owner's ear on a preview of the page: he
+  approved it on 2026-11-15. PR #10 merged as `f6005f2`; the film is the
+  site's hero and the README's preview. The site also gained an "agent
+  harnesses" section, at the owner's request: the four harnesses, Pi Durable
+  first, in the words of `docs/agents.md` and the capability records.
 
 - After the release, one run of `agent-host (macos-15)` (run 43758952538,
   on PR #10, which changes nothing of the host) failed 1 of 99: "a command
@@ -2825,7 +2828,6 @@ commands of M7 are in this release (D20 had them in v0.15.1).
 
 | Item | Whose |
 |---|---|
-| The v0.15 film on the site and in the README (PR #10), after the owner has listened to it | owner |
 | A mention refused for its author is answered after the rule is widened and bzz starts again within ten minutes: keep, or record the refusal | owner |
 | Production acceptance: one agent answering in the real community, and moved to his VM with a launch kit (plan, acceptance 4; `e2e-manual.md` section 13). A real model, a move and a launch kit were seen on the test relay in the recorded run above; the real community and a second machine were not | owner |
 | Carried from v0.14: production check of edits, mentions, Solo and sections on the real community; upgrade from v0.12.1; the huddle's backing channel in the sidebar | owner / operator |

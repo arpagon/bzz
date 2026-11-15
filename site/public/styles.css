@@ -463,10 +463,142 @@ section h2.head {
 }
 
 .card code {
+  color: var(--text);
   background: var(--selection);
   border-radius: 4px;
   padding: 0.05rem 0.35rem;
   font-size: 0.82em;
+}
+
+/* ---- harnesses ---- */
+
+.lead {
+  color: var(--muted);
+  max-width: 46rem;
+  margin: -1rem 0 2rem;
+}
+
+.card a,
+.lead a {
+  color: var(--primary);
+}
+
+.card.feature {
+  border-color: var(--accent);
+  padding: 1.8rem;
+  margin-bottom: 1rem;
+}
+
+.card.feature h3 {
+  font-size: 1.3rem;
+  margin: 0.5rem 0 0.7rem;
+}
+
+.card.feature > p {
+  max-width: 48rem;
+  font-size: 0.95rem;
+}
+
+.feature-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.badge {
+  color: var(--bg);
+  background: var(--accent);
+  border-radius: 999px;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.badge.soft {
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  font-weight: 400;
+}
+
+.points {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  gap: 0.9rem 1.6rem;
+  margin: 1.3rem 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.points li {
+  padding-left: 1.1rem;
+  position: relative;
+}
+
+.points li::before {
+  content: "⬡";
+  color: var(--accent);
+  position: absolute;
+  left: 0;
+  font-size: 0.7rem;
+  top: 0.2rem;
+}
+
+.points b {
+  color: var(--text);
+}
+
+.feature-cmd {
+  margin: 1.5rem 0 0;
+  max-width: 100%;
+}
+
+.card .feature-cmd code {
+  background: none;
+  padding: 0;
+  font-size: 0.9rem;
+}
+
+.cmp {
+  margin-top: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 0.86rem;
+}
+
+.cmp-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, 0.8fr) 1.2fr 1.2fr;
+  gap: 0 1.2rem;
+  padding: 0.75rem 1.2rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface-dark);
+  color: var(--muted);
+}
+
+.cmp-row:first-child {
+  border-top: none;
+}
+
+.cmp-head {
+  color: var(--accent);
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+}
+
+.cmp-k {
+  color: var(--text);
+}
+
+.cmp-row span:nth-child(2) {
+  color: var(--text);
 }
 
 /* ---- keys ---- */
@@ -626,6 +758,25 @@ footer .disclaimer {
 
   header.hero {
     padding: 3.5rem 0 2.5rem;
+  }
+
+  .cmp-row {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.3rem 1rem;
+    padding: 0.8rem 1rem;
+  }
+
+  .cmp-row .cmp-k,
+  .cmp-head span:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .cmp-head span:first-child {
+    display: none;
+  }
+
+  .card.feature {
+    padding: 1.4rem;
   }
 }
 
