@@ -8114,11 +8114,16 @@ impl App {
         };
         self.approval.show(first.id);
         // What was open is shown again afterwards: a form half filled in
-        // is not lost to a question.
-        self.approval_return = self
-            .presentation
-            .overlay
-            .filter(|overlay| !matches!(overlay, Overlay::Approval | Overlay::Command));
+        // is not lost to a question. A confirmation is not: what it asked
+        // about is gone once another dialog has been open over it, and
+        // going back to it would leave a prompt with nothing in it. The
+        // owner asks again.
+        self.approval_return = self.presentation.overlay.filter(|overlay| {
+            !matches!(
+                overlay,
+                Overlay::Approval | Overlay::Command | Overlay::Confirmation
+            )
+        });
         self.presentation.open_overlay(Overlay::Approval);
     }
 
@@ -12646,6 +12651,24 @@ mod tests {
         assert!(!world.app.global_key(key(KeyCode::Char('y'))));
         assert!(!world.app.global_key(key(KeyCode::Char('a'))));
         assert_eq!(world.app.approvals.len(), 2);
+
+        // Opened over a confirmation (Esc had asked whether to quit), the
+        // dialog does not go back to it afterwards: a confirmation that
+        // lost its question would be a prompt with nothing in it, which
+        // takes the next key.
+        world
+            .app
+            .presentation
+            .open_confirmation(crate::ui::state::ConfirmationKind::Quit);
+        assert!(world.app.global_key(ctrl_y));
+        assert_eq!(world.app.presentation.overlay, Some(Overlay::Approval));
+        world.app.approval_key(key(KeyCode::Esc));
+        assert!(
+            world.app.presentation.overlay.is_none()
+                && world.app.presentation.confirmation.is_none(),
+            "deciding later leaves no confirmation behind"
+        );
+        assert_eq!(world.app.approvals.len(), 2, "and answers nothing");
 
         // ---- the command, whole --------------------------------------------
         // Opened from inside another panel, which is there again afterwards.
