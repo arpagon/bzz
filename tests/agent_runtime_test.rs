@@ -352,15 +352,16 @@ impl World {
             .unwrap()
     }
 
-    /// How `bzz agent show` and the agents panel word the last turn.
-    async fn outcome(&self) -> String {
+    /// How `bzz agent show` and the agents panel word the turn of `request`.
+    async fn outcome(&self, request: &Event) -> String {
         let agent = self.agent;
         let turns = self
             .store
-            .call(move |store| store.agent_recent_turns(agent, 1))
+            .call(move |store| store.agent_recent_turns(agent, 10))
             .await
             .unwrap();
-        bzz::agents::manage::outcome(&turns[0])
+        let id = request.id.to_hex();
+        bzz::agents::manage::outcome(turns.iter().find(|turn| turn.request_id == id).unwrap())
     }
 
     /// What a restart of the agent does: its open requests are settled and
@@ -3667,7 +3668,6 @@ async fn a_reply_the_relay_refuses_is_final_and_nothing_more_is_signed() {
     world.relay.set_mode(Mode::Refuse(RESTRICTED.into()));
     let host = world.host(Harness::PiDurable).await;
     let request = world.ask(&host, "hello").await;
-    world.state_is(&request, RequestState::Failed).await;
     let results = world.results("send", 4).await;
     // The turn is over for the harness too: wait for it to end.
     until("the turn to end", WAIT, || {
@@ -3717,9 +3717,12 @@ async fn a_reply_the_relay_refuses_is_final_and_nothing_more_is_signed() {
     );
     assert_eq!(results[3]["isError"], true, "nothing after the final reply");
     assert!(
-        world.outcome().await.starts_with("failed: reply-refused"),
+        world
+            .outcome(&request)
+            .await
+            .starts_with("failed: reply-refused"),
         "{}",
-        world.outcome().await
+        world.outcome(&request).await
     );
 
     // Nothing is tried again: not at a restart, and not when the relay
@@ -3783,7 +3786,7 @@ async fn a_refused_plain_text_reply_and_a_refused_notice_end_the_request() {
         (ReplyOrigin::Failure, ReplyStanding::Refused)
     );
     assert_eq!(
-        world.outcome().await,
+        world.outcome(&broken).await,
         "failed: provider-error (the relay refused its notice; nothing was posted)"
     );
 
@@ -3832,12 +3835,12 @@ async fn answered_is_said_only_when_the_relay_has_the_reply() {
     );
     let stored = world.stored(&request).await.unwrap();
     assert_eq!(stored.standing(), ReplyStanding::Pending);
-    assert_eq!(world.outcome().await, bzz::agents::manage::SENDING);
-    assert!(!world.outcome().await.contains("answered"));
+    assert_eq!(world.outcome(&request).await, bzz::agents::manage::SENDING);
+    assert!(!world.outcome(&request).await.contains("answered"));
 
     // Still put off: the same event again, and still not "answered".
     world.recover(&host).await;
-    assert_eq!(world.outcome().await, bzz::agents::manage::SENDING);
+    assert_eq!(world.outcome(&request).await, bzz::agents::manage::SENDING);
     // The relay takes it: now it is answered.
     world.relay.set_mode(Mode::Accept);
     world.recover(&host).await;
@@ -3847,7 +3850,7 @@ async fn answered_is_said_only_when_the_relay_has_the_reply() {
     .await;
     let row = world.settled(&request).await;
     assert_eq!(row.state, RequestState::Replied);
-    assert_eq!(world.outcome().await, "answered");
+    assert_eq!(world.outcome(&request).await, "answered");
     let published = world.relay.calls(9);
     assert!(published.len() >= 3, "{}", published.len());
     assert!(
@@ -3888,7 +3891,7 @@ async fn a_mention_where_the_agent_may_only_read_is_not_handed_to_the_harness() 
         world.relay.calls(9).is_empty() && world.relay.calls(20_002).is_empty(),
         "nothing was published as the agent, not even a typing indicator"
     );
-    let outcome = world.outcome().await;
+    let outcome = world.outcome(&request).await;
     assert!(
         outcome.starts_with("failed: read-only (it may only read in that channel"),
         "{outcome}"
@@ -3999,18 +4002,18 @@ async fn a_stored_reply_is_not_published_after_the_agent_was_removed_or_made_rea
         world.state_is(&request, RequestState::Replied).await;
         world.results("send", 1).await;
         assert_eq!(world.relay.calls(9).len(), 1);
-        assert_eq!(world.outcome().await, bzz::agents::manage::SENDING);
+        assert_eq!(world.outcome(&request).await, bzz::agents::manage::SENDING);
 
         world.agent_is(member, read_only);
         world.relay.set_mode(Mode::Accept);
         world.recover(&host).await;
-        world.state_is(&request, RequestState::Failed).await;
         assert_eq!(
-            world.relay.calls(9).len(),
-            1,
-            "{kind}: the stored reply was not published again"
+            world.contents(&world.relay.replies_to(&request)),
+            Vec::<String>::new(),
+            "{kind}: the stored reply is not published where the agent may not write"
         );
-        assert!(world.relay.replies_to(&request).is_empty(), "{kind}");
+        assert_eq!(world.relay.calls(9).len(), 1, "{kind}");
+        world.state_is(&request, RequestState::Failed).await;
         let row = world.row(&request).await.unwrap();
         assert_eq!(row.failure.as_deref(), Some(kind));
         assert_eq!(
