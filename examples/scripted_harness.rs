@@ -48,7 +48,9 @@
 //!   request seen before and not finished takes a turn marked `resume`.
 //!
 //! Steps: `{"tool": "send", "arguments": {…}, "nowait": false}`,
-//! `{"text": "…"}`, `{"update": {…}}`, `{"notify": {"method": …}}`,
+//! `{"text": "…"}` (the model's text), `{"notice": "…"}` (text with no
+//! message id, as Codex's adapter writes its own warnings),
+//! `{"update": {…}}`, `{"notify": {"method": …}}`,
 //! `{"request": {"method": …}}` (`"$session"` as its `sessionId` is the
 //! turn's session; with `"then_touch": "<file>"` the file is written when
 //! the answer is `{"allow": true}`, as a command that starts, or selects
@@ -337,6 +339,15 @@ impl Harness {
                 );
                 self.log(json!({"tool": name, "session": session, "result": result}));
             } else if let Some(chunk) = step.get("text").and_then(Value::as_str) {
+                // The model's text, with the id of its message as the
+                // adapters of Codex and Claude Code give it.
+                self.notify(
+                    "session/update",
+                    json!({"sessionId": session, "update": {"sessionUpdate": "agent_message_chunk", "messageId": "msg_scripted", "content": {"type": "text", "text": chunk}}}),
+                );
+            } else if let Some(chunk) = step.get("notice").and_then(Value::as_str) {
+                // What Codex's adapter writes of its own: message text
+                // with no message id.
                 self.notify(
                     "session/update",
                     json!({"sessionId": session, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": chunk}}}),
@@ -414,7 +425,7 @@ impl Harness {
                 );
             } else if let Some(flood) = step.get("flood") {
                 let count = |name: &str| flood.get(name).and_then(Value::as_u64).unwrap_or(0);
-                let chunk = json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": session, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "flood "}}}}).to_string() + "\n";
+                let chunk = json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": session, "update": {"sessionUpdate": "agent_message_chunk", "messageId": "msg_scripted", "content": {"type": "text", "text": "flood "}}}}).to_string() + "\n";
                 for _ in 0..count("chunks") {
                     self.raw(chunk.as_bytes());
                 }

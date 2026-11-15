@@ -213,6 +213,30 @@ pub const CLAUDE_MODE: &str = "default";
 /// The mode bzz sets on every session of the harness before its first
 /// prompt, new or loaded. `None`: the harness has no modes over ACP (Grok,
 /// whose sandbox profile is its whole guard).
+/// Whether a piece of message text a harness sent is the model's own.
+///
+/// Codex's adapter writes its own notices as message text when the client
+/// has no other place for them: a warning of Codex ("Warning: …"), a
+/// warning about the owner's configuration, "context compacted", the text
+/// of a provider's error. They are no answer. In a turn that ends with no
+/// `send` and no other text, one of them would be the last plain text, and
+/// bzz would publish it as the agent's reply.
+///
+/// The adapter (`codex-acp` 2.5.0, the version the lock file pins) gives
+/// the model's text the id of its message and gives those notices none:
+/// read in its source (`createAgentMessageText` against
+/// `createWarningEvent`, `createConfigWarningEvent`), and seen in
+/// `tests/fixtures/agents/transcripts/codex/after-restart.ndjson`. So for
+/// Codex, text without a message id is not kept. The other harnesses are
+/// left as they are: Grok gives its model's text no id at all.
+pub fn is_model_text(harness: Harness, update: &serde_json::Value) -> bool {
+    harness != Harness::Codex
+        || update
+            .get("messageId")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+}
+
 pub const fn required_mode(harness: Harness) -> Option<&'static str> {
     match harness {
         Harness::Codex => Some(CODEX_MODE),
@@ -1267,6 +1291,50 @@ mod tests {
     use crate::config::FolderGrant;
 
     const ALL: [&ProgramSpec; 3] = [&GROK, &CODEX, &CLAUDE];
+
+    /// What Codex's adapter sent in the recorded run: its own warnings as
+    /// message text with no message id, the model's text with one.
+    #[test]
+    fn a_notice_of_codex_itself_is_not_the_models_text() {
+        let chunk = |id: Option<&str>| {
+            let mut update = serde_json::json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "Warning: something of Codex's own\n\n"},
+            });
+            if let Some(id) = id {
+                update["messageId"] = id.into();
+            }
+            update
+        };
+        assert!(is_model_text(Harness::Codex, &chunk(Some("msg_00bb"))));
+        assert!(!is_model_text(Harness::Codex, &chunk(None)));
+        assert!(!is_model_text(Harness::Codex, &chunk(Some(""))));
+        // Grok gives its model's text no id: nothing of it is dropped.
+        for harness in [Harness::Grok, Harness::ClaudeCode, Harness::PiDurable] {
+            assert!(is_model_text(harness, &chunk(None)), "{harness:?}");
+        }
+        // The recorded transcript: every piece of text without an id is one
+        // of Codex's own warnings, and nothing else is.
+        let transcript =
+            include_str!("../../../tests/fixtures/agents/transcripts/codex/after-restart.ndjson");
+        let mut notices = 0;
+        for line in transcript.lines() {
+            let message: serde_json::Value = serde_json::from_str(line).unwrap();
+            let Some(update) = message.pointer("/in/params/update") else {
+                continue;
+            };
+            if update["sessionUpdate"] != "agent_message_chunk" {
+                continue;
+            }
+            let text = update
+                .pointer("/content/text")
+                .and_then(|text| text.as_str());
+            let warning = text.is_some_and(|text| text.starts_with("Warning: "));
+            assert_eq!(!is_model_text(Harness::Codex, update), warning, "{update}");
+            notices += usize::from(warning);
+        }
+        assert_eq!(notices, 3, "the transcript holds Codex's warnings");
+    }
 
     #[test]
     fn versions_are_read_as_each_program_prints_them() {

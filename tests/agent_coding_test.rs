@@ -1208,6 +1208,57 @@ async fn a_turn_that_ends_with_nothing_after_a_refusal_says_so() {
     host.shutdown().await;
 }
 
+/// Codex writes its own warnings as message text. A turn that ends with one
+/// of them and nothing else has no answer: the chat is told so, and the
+/// warning is published nowhere. Text of the model in the same turn is
+/// still the answer, without the warning; and the other harnesses, which
+/// give their model's text no message id, are published as before.
+#[tokio::test]
+async fn a_warning_of_codex_itself_is_never_published_as_the_answer() {
+    const WARNING: &str = "Warning: this session was recorded with another model.\n\n";
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": false}),
+        json!([
+            {"match": "only a warning", "steps": [{"notice": WARNING}]},
+            {"match": "a warning and words", "steps": [
+                {"notice": WARNING},
+                {"text": "the model's own words"},
+                {"notice": WARNING},
+            ]},
+        ]),
+    );
+    let host = world.host(world.settings(Harness::Codex)).await;
+    let alone = world.ask(&host, "only a warning").await;
+    let row = world.settled(&alone).await;
+    assert_eq!(
+        (row.state, row.failure.as_deref()),
+        (RequestState::Failed, Some("no-reply")),
+        "{:?}",
+        world.replies(&alone)
+    );
+    let replies = world.replies(&alone);
+    assert_eq!(replies.len(), 1, "one notice: {replies:?}");
+    assert!(!replies[0].contains("Warning"), "{replies:?}");
+    let mixed = world.ask(&host, "a warning and words").await;
+    let row = world.settled(&mixed).await;
+    assert_eq!(row.state, RequestState::Replied);
+    assert_eq!(world.replies(&mixed), ["the model's own words"]);
+    host.shutdown().await;
+
+    // Grok's own text carries no message id: it is the answer.
+    let world = World::new().await;
+    world.script.write(
+        json!({"own_host": false, "modes": []}),
+        json!([{"steps": [{"notice": "plain words of a model"}]}]),
+    );
+    let host = world.host(world.settings(Harness::Grok)).await;
+    let asked = world.ask(&host, "anything").await;
+    world.settled(&asked).await;
+    assert_eq!(world.replies(&asked), ["plain words of a model"]);
+    host.shutdown().await;
+}
+
 /// ADR decision 13, for a coding harness: what the owner takes away while
 /// bzz runs holds at once. The settings file is read again for every
 /// answer.

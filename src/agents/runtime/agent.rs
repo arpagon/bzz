@@ -1100,7 +1100,10 @@ impl Agent {
         };
         match update.get("sessionUpdate").and_then(Value::as_str) {
             Some("agent_message_chunk") => {
-                if let Some(text) = update.pointer("/content/text").and_then(Value::as_str) {
+                // A notice of the program itself is not the model's text.
+                if coding::is_model_text(self.spec.local.harness, update)
+                    && let Some(text) = update.pointer("/content/text").and_then(Value::as_str)
+                {
                     turn.push_text(text);
                 }
             }
