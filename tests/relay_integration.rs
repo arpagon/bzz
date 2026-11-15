@@ -7964,7 +7964,7 @@ async fn real_relay_agent_keeps_to_its_access_and_a_delete_or_a_pause_reaches_th
                     stored.push(id);
                 }
                 // `agent show` is a whole bzz: asked now and then.
-                if looked % 10 == 0 {
+                if looked.is_multiple_of(10) {
                     let shown = said(&["agent", "show", "Scout"]).1;
                     if let Some(line) = shown.lines().find(|line| line.contains(&short)) {
                         let line = line.trim().to_owned();

@@ -290,6 +290,10 @@ pub struct RelayPort {
     channels: Mutex<HashMap<Uuid, (Instant, ChannelFacts)>>,
     /// Set once the intake's subscription is live.
     listening: AtomicBool,
+    /// Where the relay's records of the agent's channels are kept as bzz
+    /// reads them, for `bzz agent show`: it then says the role the agent
+    /// has now, also when no bzz of this profile is open.
+    records: Option<(StoreHandle, Uuid)>,
 }
 
 impl RelayPort {
@@ -309,7 +313,40 @@ impl RelayPort {
             publish_timeout: Duration::from_secs(15),
             channels: Mutex::new(HashMap::new()),
             listening: AtomicBool::new(false),
+            records: None,
         }
+    }
+
+    /// Keeps the relay's own records of the agent's channels in `store`,
+    /// as any bzz keeps them, each time they are read.
+    #[must_use]
+    pub fn keeping_records(mut self, store: StoreHandle, community: Uuid) -> Self {
+        self.records = Some((store, community));
+        self
+    }
+
+    /// Stores the relay's own signed records among `records`.
+    async fn keep(&self, records: &[Event]) {
+        let Some((store, community)) = &self.records else {
+            return;
+        };
+        let (community, relay) = (*community, self.relay_pubkey.clone());
+        let own = records
+            .iter()
+            .filter(|event| event.pubkey.to_hex() == relay && events::verify(event).is_ok())
+            .cloned()
+            .collect::<Vec<_>>();
+        if own.is_empty() {
+            return;
+        }
+        let _ = store
+            .call(move |store| {
+                for record in &own {
+                    let _ = store.apply_event(community, record);
+                }
+                Ok(())
+            })
+            .await;
     }
 
     /// Whether requests published from now on will reach the agent.
@@ -344,6 +381,7 @@ impl RelayPort {
             .query_raw(&[json!({"kinds": [39_000], "#d": names, "limit": names.len() * 2})])
             .await?;
         records.extend(lists);
+        self.keep(&records).await;
         let facts = ids
             .into_iter()
             .filter_map(|id| channel_facts(id, &self.relay_pubkey, &records))
@@ -389,6 +427,7 @@ impl AgentRelay for RelayPort {
                 json!({"kinds": [39_002], "#d": [id], "limit": 2}),
             ])
             .await?;
+        self.keep(&records).await;
         let Some(facts) = channel_facts(channel, &self.relay_pubkey, &records) else {
             self.cache().remove(&channel);
             return Err(Error::Access("the agent cannot see this channel".into()));

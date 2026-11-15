@@ -730,21 +730,18 @@ impl Agent {
                 break;
             }
             let held = hold::read(&self.shared.data_dir, self.spec.id);
-            match &held {
-                Some(hold) if !hold.passes() => {
+            if let Some(hold) = &held {
+                if !hold.passes() {
                     // It is another home's agent now, or nobody's: this bzz
                     // keeps neither a connection as the agent nor its key
                     // in memory.
                     self.retire(hold.words()).await;
                     break;
                 }
-                Some(hold) => {
-                    if !self.held.swap(true, Ordering::AcqRel) {
-                        self.halt(Phase::Stopped).await;
-                        self.state().problem = Some(hold.words().into());
-                    }
+                if !self.held.swap(true, Ordering::AcqRel) {
+                    self.halt(Phase::Stopped).await;
+                    self.state().problem = Some(hold.words().into());
                 }
-                None => {}
             }
             // The settings, read again only when the file changed.
             let stamp = self.shared.settings_file.as_ref().and_then(|path| {

@@ -218,13 +218,10 @@ pub async fn serve_with_tools(
                 options.diagnostics.clone(),
                 evidence,
             );
-            Ok::<_, Error>(Arc::new(RelayPort::new(
-                signer,
-                http,
-                supervisor,
-                auth_tag,
-                relay_pubkey,
-            )))
+            Ok::<_, Error>(Arc::new(
+                RelayPort::new(signer, http, supervisor, auth_tag, relay_pubkey)
+                    .keeping_records(options.store.clone(), community),
+            ))
         }
         .await;
         match built {
