@@ -1,7 +1,8 @@
 # bzz v0.15.0 validation
 
-**Status:** the owner approved publishing on 2026-11-15, after watching the
-recorded run with real models; branch `v0.15.0` (PR #9). Every milestone of the plan, M0 to M7, is implemented and proven
+**Status:** released on 2026-11-15 (PR #9, tag `v0.15.0`), by the owner's
+approval after he watched the recorded run with real models; see
+["Publication"](#publication-2026-11-15). Every milestone of the plan, M0 to M7, is implemented and proven
 below, each in its own section as it was closed; the release work around
 them (the release binary in a terminal, the upgrade from v0.14.0, the
 benchmarks, the supply chain, the plan's testing table cell by cell, and
@@ -2761,7 +2762,42 @@ Found by it:
 Not shown by it: macOS and Windows, a second machine, a private remote, a
 real Pi package.
 
-### Still pending, and what the owner decides
+### Publication (2026-11-15)
+
+- CI on PR #9 at its final commit `8f6f30c`: `ci.yml` run 43755899341 and
+  `integration.yml` run 43755899267 passed on Linux, macOS Intel, macOS
+  Apple Silicon and Windows, including `upgrade` from v0.14.0 and
+  `agent-host` on the three systems, `agent-adapters`, and `relay (default)`
+  and `relay (nip-fi)`. `audio (windows-latest)` failed as in every release
+  since v0.13.0 (experimental, no audio endpoint on hosted Windows).
+- PR #9 merged as `f9fc97b`; tag `v0.15.0` on that commit. `release.yml` run
+  43758376846 built all five targets and published 18 assets.
+- Linux x86_64 archive checked on this machine: `sha256sum -c` OK against
+  its own file and against `sha256.sum`, `gh attestation verify` OK for the
+  archive and `bzz.cdx.xml`, `bzz --version` prints `bzz 0.15.0`, and
+  `bzz agent doctor` names the agent host's folder `01da4266c0e8179e`, the
+  one the candidate was tested with: the host inside the published binary
+  is the tested one. `curl -fsSL https://getbzz.dev/install.sh | sh` into a
+  temporary `CARGO_HOME` installs `bzz 0.15.0`.
+- getbzz.dev deployed (Cloudflare Pages `2e45cbdd`) with "new in v0.15.0".
+  Checked live on desktop (1280 px) and mobile (390 px). The hero is still
+  the v0.14 film.
+- The v0.15 launch film is made (PR #10, `promo/v0.15-launch`: 55.0 s, the
+  agent shots with a real model). Its two new narration lines were confirmed
+  by speech recognition and by nobody's ear: it replaces the hero and the
+  README's preview when the owner has listened.
+
+- After the release, one run of `agent-host (macos-15)` (run 43758952538,
+  on PR #10, which changes nothing of the host) failed 1 of 99: "a command
+  does not outlive a host that is killed", in its part about a command that
+  ignores TERM: 300 ms after the kill one of the three processes was gone.
+  It had passed in every earlier run on macOS. The test killed the host the
+  moment the shell had written its last child's id, before that child need
+  have become `sleep`; it now lets the group settle first. The failure could
+  not be made to happen again, so this is a reading of it, not a red run.
+  What the test is for, that nothing outlives the host, held in that run.
+
+### Still pending after release
 
 The owner approved publishing v0.15.0 on 2026-11-15 with these items open.
 He was asked, and did not change, three things that therefore ship as they
@@ -2771,11 +2807,11 @@ commands of M7 are in this release (D20 had them in v0.15.1).
 
 | Item | Whose |
 |---|---|
-| Push the branch and let CI run on the candidate: four platforms with `bzz 0.15.0`, both relay jobs, `agent-host` and the new `upgrade` from v0.14.0 on three systems. Watch `test`: it failed once at `ccfa1c6` in the secret scan and could not be made to fail here ("CI at the last pushed commit") | owner |
+| The v0.15 film on the site and in the README (PR #10), after the owner has listened to it | owner |
+| A mention refused for its author is answered after the rule is widened and bzz starts again within ten minutes: keep, or record the refusal | owner |
 | Production acceptance: one agent answering in the real community, and moved to his VM with a launch kit (plan, acceptance 4; `e2e-manual.md` section 13). A real model, a move and a launch kit were seen on the test relay in the recorded run above; the real community and a second machine were not | owner |
-| The film and the hero of getbzz.dev still show v0.14; the page's "new in v0.15.0" section is written and not deployed | owner |
-| Merge, tag `v0.15.0`, the release workflow, the checks of the published archive, the site | owner, as in v0.14.0's "Publication" |
 | Carried from v0.14: production check of edits, mentions, Solo and sections on the real community; upgrade from v0.12.1; the huddle's backing channel in the sidebar | owner / operator |
+| Agents on macOS and Windows; a move to a second machine; a private remote; a real Pi package | not run anywhere |
 
 ## Evidence gathered before the plan (2026-11-13)
 
