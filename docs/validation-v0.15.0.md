@@ -2704,6 +2704,16 @@ in 1036 s, then `agent_host_test` 7 and `agent_move_test` 8; and the release
 TUI through Herdr, with the release build of `b68398f`, all harness
 scenarios passed in one run.
 
+**CI on `90986c5`** (the branch's head but for this paragraph): `ci.yml` run
+43688853184 passed: `test`; `build` on Linux, macOS Intel, macOS Apple
+Silicon and Windows; `upgrade` from v0.14.0 on Linux, macOS and Windows;
+`agent-host` on the three; `agent-adapters` for Codex and Claude Code; and
+`audio` on Linux and macOS. `audio (windows-latest)` failed as in every
+release since v0.13.0 (experimental: hosted Windows runners have no audio
+endpoint). `integration.yml` passed `relay (default)` and `relay (nip-fi)`.
+The `test` job's secret scan, which had timed out once at `ccfa1c6`, passed
+on each of the four pushes since.
+
 Not run again after the merge: the benchmarks, `cargo deny`, `cargo audit`
 and `npm audit` (no dependency and no lock file changed), and the by-hand
 checks of the release binary that have no Herdr scenario.
