@@ -6,7 +6,7 @@
 //! what v0.14.0 reads back, then runs this test with `BZZ_UPGRADE_FIXTURE`
 //! pointing at that directory.
 //!
-//! What must hold: migration 18 runs, the backup made before it is a
+//! What must hold: migrations 18 and 19 run, the backup made before them is a
 //! readable database at the old version, nothing v0.14.0 showed is lost or
 //! changed, and the hosted agent is as it was: unchanged in the settings,
 //! never started by bzz, and still served by the agent broker.
@@ -131,7 +131,7 @@ async fn v0140_profile_upgrades_with_its_hosted_agent_served_and_nothing_lost() 
         "the hosted agent's entry is written back as it was"
     );
 
-    // ---- the database: migration 18, and what v0.14.0 showed -------------
+    // ---- the database: migrations 18 and 19, and what v0.14.0 showed -----
     let mut store = Store::open(&database).unwrap();
     store.sync_config(&config).unwrap();
     store.search_integrity().unwrap();
@@ -248,11 +248,22 @@ async fn v0140_profile_upgrades_with_its_hosted_agent_served_and_nothing_lost() 
     let after: u32 = upgraded
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(after, 18, "migration 18 ran ({before} -> {after})");
+    assert_eq!(after, 19, "migrations 18 and 19 ran ({before} -> {after})");
     let integrity: String = upgraded
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .unwrap();
     assert_eq!(integrity, "ok");
+    let by_member: bool = upgraded
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='memberships_by_member')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        by_member,
+        "migration 19 made the index of memberships by member"
+    );
     // The tables of the agent runtime exist, and hold nothing: no agent of
     // this profile is run by bzz.
     for table in [

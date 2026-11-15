@@ -21,7 +21,7 @@ fn fresh_database_has_expected_pragmas_and_schema() {
     let foreign_keys: u32 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 18);
+    assert_eq!(version, 19);
     assert_eq!(
         foreign_keys, 1,
         "foreign-key enforcement must remain enabled"
@@ -175,7 +175,7 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
     let version: u32 = upgraded
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 18);
+    assert_eq!(version, 19);
     let inbox_projection_table: u32 = upgraded
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='inbox_conversations'",
@@ -278,7 +278,8 @@ fn schema_eight_repairs_historical_bot_roles_and_duplicate_projection_drift() {
         .unwrap();
     connection
         .execute_batch(
-            "DELETE FROM schema_migrations WHERE version IN (8,9,10,11,12,13,14,15,16,17,18);
+            "DELETE FROM schema_migrations WHERE version IN (8,9,10,11,12,13,14,15,16,17,18,19);
+             DROP INDEX memberships_by_member;
              DROP TABLE agent_replies;
              DROP TABLE agent_inbox;
              DROP TABLE agent_sessions;
@@ -470,7 +471,8 @@ fn schema_nine_projects_guest_roles_and_repairs_channel_facts_on_reingest() {
              DROP TABLE artifacts;
              DROP TABLE emoji_contributions;
              ALTER TABLE reactions DROP COLUMN emoji_url;
-             DELETE FROM schema_migrations WHERE version IN (9,10,11,12,13,14,15,16,17,18);"
+             DROP INDEX memberships_by_member;
+             DELETE FROM schema_migrations WHERE version IN (9,10,11,12,13,14,15,16,17,18,19);"
         ))
         .unwrap();
     connection.pragma_update(None, "user_version", 8).unwrap();

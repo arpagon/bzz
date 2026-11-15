@@ -80,8 +80,11 @@ impl Store {
         let profile = self.latest_agent_event(community_id, 0, &agent_pubkey)?;
         // D13: a plain member of a channel is an agent when its profile
         // carries its owner's valid proof. A person's profile carries none,
-        // so people never enter the directory, not even as failures.
-        let is_proven_member = is_channel_member
+        // so people never enter the directory, not even as failures. Asked
+        // only of a member that is no bot: a bot is a candidate already, and
+        // its proof is verified below in any case.
+        let is_proven_member = !is_bot
+            && is_channel_member
             && profile.as_ref().is_some_and(|profile| {
                 crate::agents::protocol::verified_owner_pubkey(profile).is_ok()
             });
@@ -809,6 +812,55 @@ mod tests {
             .unwrap();
         assert!(stale.stale);
         assert_eq!(stale.eligibility, Eligibility::Ineligible);
+    }
+
+    /// A member's channels are asked for by the member, whatever its role
+    /// (D13). SQLite answers that from the index of migration 19, not by
+    /// reading every membership of the community for each agent: in a
+    /// community of 5,000 members that was 33 ms to list fifty agents.
+    #[test]
+    fn a_members_channels_are_found_by_an_index_not_by_reading_every_membership() {
+        let (store, ..) = setup();
+        let plan = |sql: &str| {
+            let mut statement = store
+                .connection
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap();
+            statement
+                .query_map(["c", "p"], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+                .join("\n")
+        };
+        // The three places that ask: an agent's channels, whether a listed
+        // agent is still a member anywhere, and whether a candidate is.
+        for sql in [
+            format!(
+                "SELECT m.channel_id FROM memberships m
+                 JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
+                 WHERE m.community_id=?1 AND m.pubkey=?2 AND {AGENT_MEMBERSHIP}"
+            ),
+            format!(
+                "SELECT EXISTS(SELECT 1 FROM memberships m
+                 JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
+                 WHERE m.community_id=?1 AND m.pubkey=?2 AND {AGENT_MEMBERSHIP})"
+            ),
+            "SELECT EXISTS(SELECT 1 FROM memberships m
+             JOIN channels c ON c.community_id=m.community_id AND c.channel_id=m.channel_id
+             WHERE m.community_id=?1 AND m.pubkey=?2 AND c.channel_type!='dm')"
+                .to_owned(),
+        ] {
+            let plan = plan(&sql);
+            assert!(
+                plan.contains("memberships_by_member"),
+                "the member's rows are found by the index:\n{plan}"
+            );
+            assert!(
+                !plan.contains("SCAN m"),
+                "no membership is read in turn:\n{plan}"
+            );
+        }
     }
 
     /// One agent asked for by its key is the entry the whole list has for

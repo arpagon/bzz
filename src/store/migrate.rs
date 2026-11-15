@@ -48,6 +48,10 @@ const MIGRATIONS: &[(u32, &str)] = &[
         include_str!("../../migrations/0017_sidebar_documents.sql"),
     ),
     (18, include_str!("../../migrations/0018_agent_runtime.sql")),
+    (
+        19,
+        include_str!("../../migrations/0019_memberships_by_member.sql"),
+    ),
 ];
 
 pub fn configure(connection: &Connection) -> Result<()> {
