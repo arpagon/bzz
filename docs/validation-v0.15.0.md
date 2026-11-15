@@ -1,10 +1,13 @@
 # bzz v0.15.0 validation
 
-**Status:** M0 in progress on branch `v0.15.0` (PR #9). Implemented and proven
-below (2026-11-14): M1, the agent runtime in bzz; M2, the Pi Durable host,
-on both sides; M3, the agent's disk, with credentials for a private remote on
-both sides; M4, creating and managing an agent; M5, moving one; M6, the other
-harnesses; M7, hands on this machine, on both sides. Plan:
+**Status:** release candidate on branch `v0.15.0` (PR #9), 2026-11-14; not
+published. Every milestone of the plan, M0 to M7, is implemented and proven
+below, each in its own section as it was closed; the release work around
+them (the release binary in a terminal, the upgrade from v0.14.0, the
+benchmarks, the supply chain, the plan's testing table cell by cell, and
+what is still pending) is in
+["Release acceptance"](#release-acceptance-2026-11-14). Release notes:
+[`release-v0.15.0.md`](release-v0.15.0.md). Plan:
 [`docs/planning/2026-11-13/v0.15.0.md`](planning/2026-11-13/v0.15.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
 
@@ -45,12 +48,37 @@ the owner's installed programs with his own sign-ins (D17).
 Not tried: a shell command or a file edit by a coding harness, a restart with
 a harness's saved session, a cancelled turn, macOS, Windows.
 
+### Experiments 2 and 3: Buzz 1.0 and an agent made by bzz (2026-11-14)
+
+Run with the Buzz **1.0.1** desktop app (`block/buzz-app` `v1.0.1`, the
+AppImage checked against the release's `SHA256SUMS`) in a Bubblewrap sandbox
+with a disposable home, against Buzz at the pin behind a tunnel, with one
+generated owner key held by both programs and the host's stand-in model. bzz
+was the release build of `ccfa1c6`: the code of v0.15.0 before the version
+number changed, so it printed `bzz 0.14.0`. The report, with every event
+and screenshot it rests on, is `runs/experiments/buzz1/agents/README.md`
+(local and untracked).
+
+| Question | Seen |
+|---|---|
+| Experiment 2: how Buzz 1.0 shows an agent whose `runtime` (`bzz/pi-durable`) it does not know | In "Your agents" as a card "Scout · **Harness unavailable**", with the text "This agent's harness is unavailable in this client." It offers "Make my bestie" and "Copy public key"; no edit, no delete, no start. In a channel's member list it is under "Agents", "Managed by" its owner |
+| When Buzz 1.0 lists it | **Only after Buzz 1.0 is started again.** A Buzz 1.0 that is open neither shows an agent bzz creates nor drops one bzz deletes. A reconnection without a restart was not tried |
+| Is it offered for a mention, and answered | Yes. The mention picker offers it with the agent mark; a mention sent from Buzz 1.0 carried the agent's `p` tag and was answered once, two seconds later, with Buzz's working indicator shown during a longer turn. A Solo chat made in Buzz 1.0 with the agent chosen was answered without a mention |
+| A direct message from Buzz 1.0 | **Not offered.** "New message" does not find a bzz agent, and its profile has no Message button |
+| Experiment 3: an agent Buzz 1.0 adds to a channel, seen from bzz | bzz lists it as an agent: `bzz agents list` shows bzz's own agents and one made by Buzz 1.0 as `eligible`, wherever and however each was added, and a mention from bzz's TUI reached each. The roles the relay recorded for every way of adding are tabled in the report, section 2. The build was v0.15's, not v0.14.0: the second half of the experiment as the plan words it was not run |
+| Does Buzz 1.0 try to run it | No. It has nothing to run it with; every request had exactly one reply, by the agent's key |
+| An identity paired with Buzz 1.0 (v0.14's arrangement) | **Cannot have local agents:** `bzz agent new` refuses, "a Buzz Desktop identity cannot host local agents", and leaves nothing. The run used a key both programs hold a copy of |
+| Paused, deleted, moved away | Nothing is published for a pause or a move: Buzz 1.0 shows the same card, and a mention gets no answer and no reason. A deletion removes the owner's record; Buzz 1.0 drops the card at its next start. Received in a second bzz, the agent answers the next mention once |
+
+Not seen: two copies of one key answering at once; a Buzz 1.0 agent with a
+model; macOS and Windows; a Buzz newer than 1.0.1.
+
 ### Pending in M0
 
 | Item | State |
 |---|---|
-| Experiment 2: how Buzz 1.0 shows an agent whose `runtime` it does not know | not run |
-| Experiment 3: the role Buzz 1.0 gives an agent it adds to a channel, and whether bzz v0.14 lists that agent | not run |
+| Experiment 2: how Buzz 1.0 shows an agent whose `runtime` it does not know | run 2026-11-14, above |
+| Experiment 3: an agent Buzz 1.0 adds to a channel, and whether bzz lists it | run 2026-11-14, above, with the v0.15 build; not with v0.14.0 |
 | Baselines fixed in the repository: the host's `package.json` and lock file, Node detection | `agent-host/package.json` and `package-lock.json` added 2026-11-14 (see M2); Node detection in bzz done 2026-11-14 (see "bzz's side of M2") |
 | ADR "local agents" and the agent host protocol | written 2026-11-14: `adr-v0.15-local-agents.md`, `agent-host-protocol.md` |
 
@@ -841,10 +869,14 @@ disposable sandbox, and from bzz."
   resolves the agent's name and its mention is answered; the records are the
   ones Buzz 1.0's code writes and reads, compared field by field with its
   source and checked against its own test of a `runtime` value.
-- [ ] **From the Buzz 1.0 desktop app: not run.** No Buzz 1.0 was started
-  against a disposable relay. Whether its agent list shows a `bzz/pi-durable`
-  agent, and what it shows for a `runtime` it does not know, is M0's
-  experiment 2 and is still open.
+- [x] **From the Buzz 1.0 desktop app** (2026-11-14, Buzz 1.0.1 in a
+  disposable sandbox, against the pinned relay): an agent made by
+  `bzz agent new` is listed in "Your agents" once Buzz 1.0 has been started
+  again, as "Harness unavailable"; its mention picker offers it as an agent;
+  a mention sent from Buzz 1.0 is answered once while bzz runs the agent.
+  What Buzz 1.0 does not do for it: start a direct message with it, list it
+  without a restart, edit or delete it. See "Experiments 2 and 3" under M0,
+  and `runs/experiments/buzz1/agents/README.md`.
 
 ### Not proven in M4
 
@@ -1845,6 +1877,513 @@ Run on `09cc5ce`, 2026-11-14, Linux x86_64, Node 26.5.0.
 | Pinned relay, with the real programs | the same with `BZZ_REAL_HARNESSES=grok,codex,claude-code` and `BZZ_RELAY_TEST_FILTER=real_relay_coding_harnesses` | 1 passed in 179 s, on `b5515ac`; nothing of bzz's own code changed after it |
 | Agent host | `cd agent-host && npm ci --ignore-scripts --omit=optional && npm test` | 99 tests, 99 pass; `npm ci` reports 0 vulnerabilities. `agent-host/` was not changed |
 | Supply chain | `cargo deny check`; `cargo audit`; `npm audit --omit=dev --omit=optional` in both `agent-adapters/` | `advisories ok, bans ok, licenses ok, sources ok`; the 4 allowed warnings of v0.14; 0 vulnerabilities. `Cargo.toml` and `Cargo.lock` are unchanged: M6 adds no Rust dependency. It adds two npm packages that bzz installs at run time, with what they need: 107 and 24 packages |
+
+## Release acceptance (2026-11-14)
+
+Version 0.15.0 (`Cargo.toml`, `Cargo.lock`, commit `ac886aa`). Release notes:
+[`release-v0.15.0.md`](release-v0.15.0.md). **Status: release candidate,
+not published.** Nothing was pushed, merged, tagged or deployed.
+
+Linux x86_64, Rust 1.98.1, Node 26.5.0 (and 22.19.0 where named), Buzz pin
+`bf3bdd0eaefe`. The machine was shared throughout with another work session's
+builds and relay runs and with two virtual machines; the load is given where
+it matters.
+
+The release work was done in two work sessions. The first was cut off
+without warning; the second read its commits, its uncommitted work and its
+notes, ran everything again that is recorded below, and says so where a
+result is the first session's and was not repeated.
+
+### Gates
+
+The first seven ran one after the other on `52e8ea5`, 2026-11-14 from
+23:12 (UTC−5), with nothing else of this work running and a load of 4 to 6,
+after the last change to any source, test, migration or example. The Herdr
+run is of `eeabef9`, which differs from `52e8ea5` only in the Herdr
+scenarios, their runner, and the relay's quota in the `--herdr` profile of
+`scripts/test-relay.sh`; its binary is the release build of `52e8ea5`.
+Only documents changed afterwards.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets --all-features -- -D warnings` | clean |
+| Tests | `cargo test --locked --all-features` | 709 passed, 0 failed, 29 ignored, in 49 test programs (2 min 32 s). The ignored ones need the relay or an older release's profile and run in the gates below |
+| Pinned relay | `BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh` | 21 passed in 706 s: 20 ran, and the one with the owner's own programs skipped itself and said so. Then `agent_host_test`, 7 passed, and `agent_move_test`, 8 passed. Run with `BZZ_TEST_REQUIRE_NODE=1`, which turns a missing Node into a failure |
+| Pinned relay, federated identity | the same with `--nip-fi` | 4 passed in 24 s |
+| Release TUI (Herdr) | `BZZ_HERDR_PANE=w5:p5 BZZ_BUZZ_SOURCE=$PWD/runs/buzz-pin ./scripts/test-relay.sh --herdr`, from the controller pane | **21 harness scenarios passed, three full runs in a row** (222 observed steps and about 108 s each, from 23:54): the 7 of v0.13 and v0.14 and the 14 new `t15-*`. Then the 3 automated scenarios on an empty profile (`./scripts/test-tui-herdr.sh`), also three times |
+| Upgrade from v0.14.0 | `./scripts/upgrade-test.sh` | 1 passed: a v0.14.0 profile at schema 17 opens at schema 19 |
+| Agent host | `cd agent-host && npm ci --ignore-scripts --omit=optional && npm test` | 99 tests, 99 pass, 0 skipped, on Node 26.5.0 (49 s) and on Node 22.19.0, the minimum (51 s); `npm ci` reports 0 vulnerabilities |
+| Supply chain | `cargo deny check`; `cargo audit`; `npm audit --omit=dev` in `agent-host/` and both folders of `agent-adapters/` | below |
+| Benchmarks | `cargo bench` on v0.14.0 and here, in turn | below |
+
+Three things were measured before the last commits and not again, because
+what they measure did not change after: the agent host's tests and the
+audits (`agent-host/`, `agent-adapters/` and `Cargo.lock` are as they were),
+and the benchmarks, taken on the tree of `340f49a`. The one change to
+`src/` after that, `629ec25`, is in how a harness's ownership record is
+removed, which no benchmark runs.
+
+### The release binary in a terminal (Herdr)
+
+`scripts/test-relay.sh --herdr` starts a fresh pinned relay, writes a
+disposable profile with `examples/harness_fixture.rs` and drives
+`target/release/bzz` in a Herdr pane with key events only
+([`e2e-herdr.md`](e2e-herdr.md), "Harness scenarios for local agents"). The
+fixture now gives the viewer a local agent, `Scout`, on bzz's **real Pi
+Durable host** with the host's stand-in model, installed from npm into the
+profile on first use, in the viewer's own `#t15-agents`, with one folder
+granted for commands; three agents on the coding harnesses whose programs
+are absent; and a second profile of the same owner. The keys are generated,
+the owner's passphrase goes to bzz on a descriptor, and no real model and no
+program of the user's own is started.
+
+The run has 21 harness scenarios: the seven of v0.13 and v0.14 (`t9-*`,
+`t14-*`), unchanged, and 14 new ones, `t15-*`, in the order they run:
+
+| Scenario | Plan cell | Seen on the release binary |
+|---|---|---|
+| `t15-cli-version` | M0 | `bzz --version` prints `bzz 0.15.0` |
+| `t15-cli-agent-doctor` | M2, M6 | `agent doctor`: Node, npm, `host: installed in …`; for each coding program `not ready`, with the variable to set (``Set BZZ_CODEX to the path of `codex`, or unset it to use the one on PATH``) and its adapter `not installed yet`; `agent: Scout · pi-durable · active · ready`, and the three agents on coding harnesses `not ready`; `3 thing(s) are not ready`, exit 1. It installs nothing |
+| `t15-cli-agent-new` | M4 | `agent new` with no flags asks, on the terminal and in this order: name, harness, model, instructions, who may wake it, folders, hosts, picture, Pi packages; then its checks, then `Sign an owner authorization (NIP-OA) letting agent "Rover" act for harness-viewer, and publish its profile and your record of it in harness? [y/N]`; after `y`: `created in harness`, `capability record: pi-durable`, `one final reply per mention: bzz`, and the next step |
+| `t15-cli-agent-credential` | M3 | `agent credential set Rover github.com` asks `User name for github.com (not shown):` and `Token for github.com (not shown):`; neither what was typed for the name nor for the token is on the screen or in the pane's output afterwards; `stored a git credential for Rover at github.com, sealed to your key` |
+| `t15-cli-agent-show` | M3, M4 | `agent show Rover`: `/mnt/work = <the folder's real path>`, `git credentials stored for (the host only is shown):` and no token, the capability record down to `a move with memory:` |
+| `t15-cli-agent-move-mismatch` | M5 | `agent move` asks `Passphrase for the file (at least 12 characters…` and `Confirm passphrase:`; a second one that differs: `passphrases did not match`, exit 1; nothing typed is shown |
+| `t15-cli-agent-move` | M5 | the same with the passphrase typed twice: `agent Rover moved into …/rover.bzzagent`, `not moved: its granted folder(s) (work) and git credentials`, `Rover is marked moved away here: this bzz no longer starts it`; nothing typed is shown |
+| `t15-cli-agent-receive` | M5 | in the second profile, `agent receive <file>` asks `Passphrase of the file:`; `received in harness`, `no folder of this machine is granted to it`; the passphrase is not shown |
+| `t15-agent-answers-mention` | M2 | in the TUI, `@Sco`, Tab, a question: `↳ 1 reply`; the thread shows `Scout · managed by you` and `pong: this conversation holds 1 message(s) from people`; a second mention in that thread is answered with `2`: the conversation's memory |
+| `t15-agents-panel-turn-stop-pause` | M1, M4 | a mention that makes the agent run `sleep 120` on its disk; `:agents` shows `Scout · pi-durable · answering 1 · bash: sleep 120; echo slept`, `state: answering 1`, `doing now: bash: …` and the capability record; **`x` with the turn running**: `Scout: its running turn was stopped`, `last outcome: failed: stopped`, and in the thread one notice, `My owner stopped this answer.`; `x` again: `Scout is not answering anything now`; Space: `Scout paused`, the row `paused`; Space: `Scout resumed`; `l`: its log |
+| `t15-approval-approve-refuse` | M7 | a mention that makes the agent ask to run a real command in its granted folder: the line `Scout asks to run a command in /mnt/work (#t15-agents (a thread)) · Ctrl-Y to see and answer it · refused in …` at the top, **also with the Inbox open, the broker panel open and the agents panel open** (which adds `waiting for your answer: run in /mnt/work`); `Ctrl-Y`: the dialog with the agent, the conversation and `it is answering you`, `folder: /mnt/work = <real path>`, `It runs as your user, starting in that folder, and can reach whatever you can.`, `the command, exactly as /bin/sh will get it (1 line(s), 48 bytes):`, the whole command on its numbered line, `that is the whole command`; `a`: `allowed: Scout runs its command in /mnt/work`, and the reply in the thread holds the command's own output, `A FOLDER OF THE FIXTURE`, which nobody typed. A second command, `Ctrl-Y`, `r`, a reason, Enter: `refused: Scout was told no, and nothing was started`, and the reply in the thread says `says: not today` |
+| `t15-cli-agent-activity` | M7 | `agent show Scout` lists both questions: `allowed by you`, `refused by you: not today` |
+| `t15-agent-new-form` | M4, M5 | `:agent new Pilot` opens the form with `Name: Pilot`; the model and the instructions typed; `Ctrl-S`: the checks (`model scripted/scripted (thinking: off), with Pi's own sign-in`) and `Enter signs an owner authorization (NIP-OA) letting agent "Pilot" act for harness-viewer`; Enter: `created in harness` and the capability record; Enter: the panel, with `Pilot · pi-durable · idle` **without a restart of bzz**; the agent that was moved away: `Rover · pi-durable · stopped · moved away: it runs elsewhere`, ``doing now: moved away: it runs elsewhere, and this bzz does not start it (`bzz agent receive` takes it back)``, and Space on it: `Rover was moved away and runs elsewhere`; `i` on Pilot: `Pilot added to #t15-agents`; the directory, refreshed, lists `◆ Pilot`; a mention of Pilot is answered, `pong: this conversation holds 1` |
+| `t15-coding-harnesses-in-panel` | M6 | the panel lists `Garnet · grok · idle`, `Cobalt · codex (experimental) · idle`, `Coral · claude-code (experimental) · idle`, each with its record: `capability record: grok (supported)` with `its own sandbox: Grok's own`, `codex (experimental)`, `claude-code (experimental)` with `its own sandbox: none that bzz can switch on here`. Garnet, added to the channel and mentioned: one notice in the thread, `I am not available right now`, and the panel says `Garnet · grok · unavailable`, `last outcome: failed: unavailable` and ``Set BZZ_GROK to the path of `grok`, or unset it to use the one on PATH`` |
+
+Seen by hand in the pane on a fixture of the same kind (2026-11-14, on the
+release build of `619a230` with the change of `5926d8d`; nothing of what is
+looked at here changed after):
+
+- **What the host is given.** With the TUI open and an agent answering, the
+  host's process is `node <data>/agent-host/<id>/main.mjs <agent folder>`.
+  Its environment, read from `/proc`, is `HOME`, `LANG`, `PATH`, `PWD`,
+  `TMPDIR` and the one variable the stand-in for `node` adds. Its open
+  descriptors are its three pipes, Node's own, and its two SQLite files. No
+  passphrase descriptor, no key.
+- **Approve and refuse, in the folder.** After the approval scenario the
+  granted folder holds `made.txt` with `A FOLDER OF THE FIXTURE`, and no
+  `refused.txt`.
+- **A search of what the harness could see.** The agents' folders hold
+  neither the owner's passphrase, nor `nsec1`, nor the relay's address; the
+  granted folder and the folder of the moved file hold neither the
+  passphrase nor `nsec1`.
+- **The in-app help** (`?`) is generated from the keymap and lists keys, not
+  commands. `Ctrl-Y` is not in it: bzz takes that key only while a command
+  waits, and the waiting line names it. The agents panel has its keys in its
+  title. `bzz --help` and `bzz agent --help` list every agent command.
+
+**The first full runs failed, four times, each for a reason of the run and
+one for a limit of bzz:**
+
+- At the sixth start of bzz, in a v0.14 scenario (`t14-sections-and-solo`):
+  `network error: rate-limited: quota exceeded; retry in 46s`. The relay's
+  log shows the viewer's 167 queries of twenty seconds answered and the next
+  27 refused (`quota_exceeded`). The scenarios start bzz more than twenty
+  times in two minutes as one person, each start a whole sync, and a profile
+  with agents asks more at each start than v0.14's did. No person starts bzz
+  like that: `scripts/test-relay.sh` now raises the relay's quota of calls
+  for a person in its `--herdr` profile, as it already raised the two quotas
+  of messages. The other two profiles keep the relay's own quota.
+- `t15-cli-agent-doctor` expected exit 0 and got 1: with three agents whose
+  programs are absent, `agent doctor` says `3 thing(s) are not ready`, as it
+  should. The scenario now checks what it says of each.
+- **The mention chooser did not offer an agent that had just been added to
+  the open channel**, twice (`"@Pilot" did not show`, also after four
+  seconds), and offered it in other runs. bzz takes a member for an agent
+  when it has that member's profile with its owner's proof, and it fetches
+  the profiles of new members when the directory is refreshed: at start, or
+  when the directory panel is opened. The two scenarios that mention such
+  an agent now open the directory first (`Tab` in `:agents`, then `r`) and
+  wait for the agent there. It is in the notes' known limits; it was not
+  changed.
+- `t14-edit-own-message` pressed `e` on a message the relay had not yet
+  taken, one run in five: `wait until the message is delivered, then edit
+  it`. The step now waits two seconds (a new step field, `pause`). That is
+  the only change to a scenario of an earlier release.
+
+**Red runs**, for the runner and for one scenario:
+
+- **The runner's `absent` check never fired.** It read the pane through a
+  pipe into `grep -q`, under `pipefail`: a match ended the pipe early, the
+  reader failed, and the check took that for "not found". Shown by a
+  manifest whose `absent` names text that is on the screen (`User name for
+  github.com`): the run **passed**. Fixed; with the fix the same manifest
+  fails with `"User name for github.com" is on the screen and must not be`.
+  Every scenario with `absent` (the credential, the three of a move, the
+  panel, the approval, the form) was run again and passed, so "nothing typed
+  is shown" above is a check that can fail.
+- **With the agent paused** (`bzz agent pause Scout`),
+  `t15-agent-answers-mention` fails: `"Scout · managed by you" did not show
+  within 15000 ms`.
+
+**Found with the release binary in a terminal, and fixed:**
+
+| Fault | Fix | Red before the fix |
+|---|---|---|
+| Answering a command over a quit confirmation (Esc in the workspace asks whether to quit; `Ctrl-Y` from there) left a confirmation that drew nothing and took the next key | `231daec` | first session: `a_command_waits_for_the_owner_on_every_screen_and_runs_only_on_his_yes`: `deciding later leaves no confirmation behind` |
+| The mention chooser called the owner's own local agent a remote agent; pi-durable's capability record said it was seen to hold on macOS and Windows | `d01b54d` | none run |
+| The broker panel listed a moved-away agent as `active · local: bzz runs it` | `8fb3b86` | `app::tests::broker_panel_shows_a_status_line_per_local_agent`, with the assertion added and the code unchanged: no `Rover · moved away · local: it runs elsewhere` on the screen |
+
+**Seen and not fixed** (in the notes' known limits): an answer made in the
+same second as its mention can be listed above it in the thread pane, which
+the stand-in model, answering in milliseconds, showed; and the waiting line takes the first row of the screen, over the title
+of whatever is open there (the Inbox's `Inbox · All`).
+
+**Not shown in a terminal:** a coding harness that runs (it needs the
+owner's own `grok`, `codex` and `claude`, signed in); a move made while the
+TUI is open (the panel showed an agent moved away before bzz started);
+anything on macOS or Windows; a real model.
+
+### Upgrade from v0.14.0
+
+`scripts/upgrade-test.sh` now takes `0140` as its default: it builds the
+released v0.14.0 (tag `v0.14.0`, `80e1b07`) in a worktree and lets it write
+a **whole profile** with disposable keys (`tests/upgrade/seed_v0140.rs`,
+compiled inside that tag): the settings as v0.14.0 saves them, an identity
+in an encrypted file, a hosted agent of v0.13 made by v0.14.0's own broker
+code with its sealed key and two allowed actions, and a database at schema
+17 with messages, an applied edit, an unsent draft and a synced sidebar
+section. It records what v0.14.0 reads back. `tests/upgrade_from_v0140_test.rs`
+then opens a copy with this build and checks:
+
+- migrations 18 and 19 ran (schema 17 → 19), `PRAGMA integrity_check` is clean, and the index of migration 19 is there;
+- the backup made before them is a readable database at schema 17, with the
+  events and without the tables of the agent runtime;
+- the Inbox, the search hits, the history with its edit, the draft and the
+  sidebar section are what v0.14.0 read;
+- the hosted agent is in the settings as v0.14.0 saved it, field for field,
+  with no `local` table: bzz never starts it;
+- its key, sealed by v0.14.0, opens with its owner;
+- **the agent broker still serves it**: built from the settings as the TUI
+  builds it and asked over HTTP with the credential v0.14.0 printed, it
+  serves the actions v0.14.0 allowed, refuses the one it did not, and
+  refuses another credential;
+- the release's own commands on the upgraded profile: `bzz broker list`
+  lists it with its actions, `bzz agent list` does not, `bzz check` passes.
+
+| Run | Result |
+|---|---|
+| `./scripts/upgrade-test.sh`, in the gates above and three times before | 1 passed (3.3 s; the script 33 s with the v0.14.0 build kept in `BZZ_UPGRADE_TARGET_DIR`) |
+| **Red** (this and the next two were run before migration 19 was added)**:** migration 18 with `DELETE FROM drafts;` added to it | `the unsent draft is still there  left: ""  right: "unsent upgrade draft"` |
+| **Red:** migration 18 replaced by SQL that does not parse | `Database(SqlInputError { … msg: "near \"agent_cursors\": syntax error" … })` where the store is opened |
+| **Red:** the broker built with nothing allowed (`custody::hosted`) | `an action v0.14.0 allowed is served: Failed { error: BrokerError { code: Unauthorized, message: "the owner has not allowed this action for this agent" } }` |
+| Red runs of the first session, from its notes, not repeated: migration 18 not listed; a hosted agent given a `local` table when the settings are read | `migration 18 ran (17 -> 17)  left: 17  right: 18`; `the hosted agent is what v0.14.0 saved, field for field` |
+
+The CI job `upgrade` (`.github/workflows/ci.yml`) runs the script on Linux,
+macOS and Windows as it did for v0.14.0; only its name of the old release
+changed. **It has not run with this seed:** nothing was pushed. On macOS and
+Windows the seed and the test are therefore unproven. `BZZ_UPGRADE_FROM_VERSION=0130`
+and `0121` still select the older seeds; they were not run here.
+
+### Supply chain
+
+| Check | Result |
+|---|---|
+| `cargo deny check` | `advisories ok, bans ok, licenses ok, sources ok` |
+| `cargo audit` | 593 crates, no vulnerability; 4 allowed warnings, the same as v0.14.0, all "unmaintained": `instant` 0.1.13 (RUSTSEC-2024-0384), `zbus_names` 4.3.4 (RUSTSEC-2026-0371), `zvariant` 5.15.0 (RUSTSEC-2026-0370), `zvariant_derive` 5.15.0 (RUSTSEC-2026-0372) |
+| `npm audit --omit=dev` in `agent-host/` | 0 vulnerabilities (npm 11.14.1) |
+| `npm audit --omit=dev` in `agent-adapters/codex/` | 0 vulnerabilities |
+| `npm audit --omit=dev` in `agent-adapters/claude-code/` | 0 vulnerabilities |
+
+Against v0.14.0, `Cargo.lock` gains one package, `close_fds` 0.3.2 (MIT),
+and the version of bzz; `tokio` gains its `process` and `io-std` features
+and `rustix`, already locked, is no longer optional. Nothing else moved: the
+version was changed in the lock file by hand.
+
+Accepted, and said in the notes and in `THIRD_PARTY_LICENSES.md`:
+
+- The four warnings above, as in v0.14.0.
+- **One package that is not open source**, installed only for a
+  `claude-code` agent: `@anthropic-ai/claude-agent-sdk` 0.3.318 ("SEE
+  LICENSE IN README.md"), which the Claude Code adapter needs. bzz does not
+  ship it.
+- Two packages of the agent host declare an install script (`@google/genai`,
+  `protobufjs`); bzz installs with `--ignore-scripts`, so neither runs.
+- `node-liblzma` 2.2.0 (LGPL-3.0), optional in the host's lock file, is left
+  out by `--omit=optional`.
+
+`THIRD_PARTY_LICENSES.md` was counted again from the three lock files: the
+host installs 176 of 204 locked packages (MIT 106, Apache-2.0 43,
+BSD-3-Clause 15, ISC 7, five others), the Codex adapter 24 of 30, the Claude
+Code adapter 107 of 115. The counts in the file match.
+
+### The three gaps the last milestones named
+
+| Gap | State |
+|---|---|
+| Codex can end a turn with only one of its own warnings as text, which bzz would publish as the answer | **Closed** in `3d7d5b7`. Codex's adapter gives the model's text the id of its message and its own notices none; for Codex, text without one is not kept, and such a turn ends as any turn with no answer. Proof: `agent_coding_test::a_warning_of_codex_itself_is_never_published_as_the_answer` and `coding::tests::a_notice_of_codex_itself_is_not_the_models_text`, which also reads the recorded Codex transcript (three notices, none with an id). Red, first session: `["Warning: this session was recorded with another model."]  left: (Replied, None)  right: (Failed, Some("no-reply"))`. The second session read the adapter itself, `@agentclientprotocol/codex-acp` 2.5.0 from npm: the model's text goes out through `createAgentMessageText(text, itemId, …)`, which sets `messageId`; a configuration warning through the same builder with no id. **Not seen with Codex itself after the change:** that needs the owner's Codex |
+| `agent shutdown` in a DM or a Solo chat and with `--channel` was never run | **Closed:** run on the pinned relay, as section 5b of `real_relay_agent_moves_to_another_bzz_and_to_buzz_acp` (`db327e9`). The agent is put in a second channel whose name sorts first, in a Solo chat and in a direct message; each time the copy under the real `buzz-acp` is started again from the kit. `agent shutdown --channel <the first channel>` sends the command there and not to the channel that would have been chosen; with no flag it goes to the Solo chat before any channel, and to the direct message before both; each time `buzz-acp` logs `shutdown command from owner`, leaves with code 0, and bzz says `Scout left: it is no longer present on the relay`. `--channel` with a channel the agent is not in is refused: `Scout is not a member of …: a copy of it hears a command only where it is a member`. **The test found something of Buzz's:** the third round's copy left 14 ms after it was online, on the command of the second round. `buzz-acp` at the pin asks, in its first subscription, for messages since five seconds before its start, so a copy started right after a stop command hears it again. The rounds now wait ten seconds apart, and the notes say so. Not run: an agent that shares no channel with its owner (the refusal is written) |
+| `_bzz/checkpoint` after 60 s idle was never seen with the real host | **Closed.** `agent_host_test::the_real_host_checkpoints_its_files_when_it_has_been_idle` (`53f5266`), with the real host and the idle time set to 4 s: after it both files are whole with no write-ahead file beside them, the host goes on running in the same process, the conversation continues from the files, and nothing is checkpointed while a turn longer than the idle time runs. Red, first session, with the idle task off: `timed out waiting for the idle host to checkpoint its files`. With the default 60 s, by hand on the release binary in the TUI (first session, 2026-11-14): 9 s after a turn ended `memory.sqlite-wal` held 1,413,192 bytes; 60 s after the turn's end `memory.sqlite` had grown from 180,224 to 208,896 bytes, no `-wal` or `-shm` file was left, and the same host process was still running. The second session did not repeat that by hand |
+
+That test failed once in the second session's first full run, on a machine
+under load: `the files were made whole 3.993087323s after the answer, before
+the host had been idle for 4s`. The fault was the test's: it counted from
+the moment it noticed the answer, which is a few milliseconds after the host
+went idle. It now allows one second for that (`4f89766`).
+
+### Other faults found while the release was closed
+
+| Fault | Fix | Proof, and its red |
+|---|---|---|
+| `bzz broker list`, `allow`, `rotate`, `pause`, `resume` and `delete` took any entry of the settings by its label, so they acted on a local agent too. `broker delete` removed its key and its settings and left its record on the relay, its folder and its git credentials | `ea260aa`: they list and change only agents whose process the user runs, and say to use `bzz agent` | `agent_manage_test::the_broker_commands_leave_an_agent_bzz_runs_alone`. Red, first session: `["broker", "delete", "Scout", "--yes"]: agent Scout deleted` |
+| Before a message that mentions an agent is sent, bzz listed every verified agent of the community to find the one | `5926d8d`: the one agent is asked for by its key | `store::agents::tests::one_agent_asked_for_is_its_entry_of_the_list` (the same entry as the list's, for either case of the key; a stranger and another channel are nobody). Red, with the key not lower-cased: `the agent is found by its key`. The time is in the benchmarks below |
+| **A harness could run with no ownership record.** When a harness dies in the middle of a turn, the turn fails at once and bzz starts a new process, which writes its record; the first one's end is handled a moment later, and its cleanup removed the record by the agent's id: the new one's. Such a harness is found by no sweep after a crash of bzz and by no second bzz on the same data folder. It showed as `agent_host_test` failing now and then with `a new host is running`: once in M6's run ("Found on the way" there, cause then unknown) and once in this session's full run | `629ec25`: a harness removes only its own record | `process::tests::a_harness_that_ends_does_not_take_its_successors_record`, for both ways a harness ends. Red: `stop: the record is the running harness's  left: None  right: Some(…)` |
+
+### Benchmarks against v0.14.0
+
+`cargo bench --bench timeline --bench store --bench media --bench agents`,
+on the `v0.14.0` tag in a worktree and on this branch, with one target
+folder. `benches/agents.rs` is new; with its `v0.15-only` parts cut out it
+compiles in v0.14.0, which is how the directory is compared.
+
+**How it was measured, and under what load.** Both sides were built before
+anything was measured, so that nothing compiled meanwhile, and the two were
+measured in turn, each run saving its own baseline. The machine was never
+idle: two virtual machines and another work session's runs shared its 16
+cores. The load average (1, 5 and 15 minutes) at the start of each run:
+
+| Run | Start (UTC−5) | Load |
+|---|---|---|
+| v0.14.0, first | 21:55 | 14.5, 12.5, 11.6 |
+| v0.14.0, second | 22:06 | 15.5, 12.7, 11.8 |
+| v0.15.0, first of the final code | 22:35 | 6.1, 8.2, 10.0 |
+| v0.14.0, third | 22:40 | 5.9, 7.4, 9.2 |
+| v0.15.0, second of the final code | 22:45 | 4.1, 5.9, 8.1 |
+
+Each cell below is the median of one run; "lowest" takes the lowest median
+of a side, the run the other load disturbed least. Two v0.15.0 runs from
+before the last change (21:55 to 22:17, load 8 to 15, in turn with the
+first two of v0.14.0) are kept in the second table. **The rounds of the
+first work session are not used:** one had a build step killed under it,
+and all ran while builds loaded the machine (their loads are in
+`runs/v015/c5/bench.done`).
+
+#### A profile without agents
+
+| Benchmark | v0.14.0, three runs | v0.15.0, two runs | Lowest of each | Change |
+|---|---|---|---|---|
+| Inbox cursor page | 160 µs · 159 µs · 153 µs | 156 µs · 155 µs | 153 µs → 155 µs | +0.9 % |
+| Inbox first page | 159 µs · 162 µs · 152 µs | 153 µs · 152 µs | 152 µs → 152 µs | +0.1 % |
+| composer unicode insert and cursor move | 444 ns · 449 ns · 441 ns | 459 ns · 459 ns | 441 ns → 459 ns | +4.1 % |
+| decode bounded 1024x768 png | 389 µs · 382 µs · 385 µs | 387 µs · 390 µs | 382 µs → 387 µs | +1.2 % |
+| mention candidates over 1k cached members | 1.12 ms · 1.14 ms · 1.06 ms | 1.01 ms · 1.02 ms | 1.06 ms → 1.01 ms | -4.9 % |
+| parse bounded imeta | 1.89 µs · 2.36 µs · 1.85 µs | 1.93 µs · 1.9 µs | 1.85 µs → 1.9 µs | +2.7 % |
+| query latest 500 of 100k | 1.34 ms · 1.36 ms · 1.35 ms | 1.37 ms · 1.3 ms | 1.34 ms → 1.3 ms | -3.1 % |
+| rebuild Inbox projection over 100k | 111 ms · 116 ms · 111 ms | 113 ms · 109 ms | 111 ms → 109 ms | -1.4 % |
+| redraw gate 1k idle ticks | 290 ns · 294 ns · 295 ns | 334 ns · 289 ns | 290 ns → 289 ns | -0.4 % |
+| sanitize 64KiB | 176 µs · 169 µs · 183 µs | 197 µs · 198 µs | 169 µs → 197 µs | +16.6 % |
+| search FTS5 over 100k | 712 µs · 693 µs · 698 µs | 714 µs · 699 µs | 693 µs → 699 µs | +1.0 % |
+| semantic hit map build and resolve 10k | 3.55 ms · 3.27 ms · 3.56 ms | 3.32 ms · 3.58 ms | 3.27 ms → 3.32 ms | +1.4 % |
+| timeline cursor move in 10k messages | 25.5 µs · 24.2 µs · 24.3 µs | 24.4 µs · 24.5 µs | 24.2 µs → 24.4 µs | +1.1 % |
+| timeline render 500 messages at 110-cell measure | 2.2 ms · 2.22 ms · 2.2 ms | 2.23 ms · 2.2 ms | 2.2 ms → 2.2 ms | -0.2 % |
+
+Thirteen of fourteen are within 5 %, either way, which is less than the
+runs of one side differ among themselves (v0.14.0's own three by up to 28 %
+on `parse bounded imeta` and 9 % on the hit map). None of the code these
+measure changed, but the query behind `mention candidates`, which is no
+slower.
+
+One difference is real: **`sanitize 64KiB`, +17 %** (169 → 197 µs), in every
+run of both rounds and in three more pairs taken in turn (181 to 194 µs
+against 208 to 232 µs, under a load of 15 to 19). `sanitize::text` and the
+one function it calls are the same source as in v0.14.0; the file only
+gained other functions (what the approval dialog writes out). The same loop
+compiles to slower code in the larger crate. **Accepted:** it is 0.4 µs for
+each KiB of text shown, and a message is a few hundred bytes.
+
+#### The agent directory, and a profile with agents when none runs
+
+A community of 5,000 members in 50 channels with 50 agents. In the first
+world half the agents are plain members with their owner's proof, which
+only v0.15.0 lists (v0.14.0 lists 25 there, v0.15.0 all 50), so those rows
+do not compare like with like. In the second, "50 bots", every agent has
+the `bot` role and both releases list all 50.
+
+| Benchmark | v0.14.0, three runs | v0.15.0 before migration 19, two runs | v0.15.0, two runs | Lowest: v0.14.0 → v0.15.0 | Change |
+|---|---|---|---|---|---|
+| agent directory, 50 bots: list agents among 5k members | 27.3 ms · 25.1 ms · 24.2 ms | 34.1 ms · 34 ms | 971 µs · 948 µs | 24.2 ms → 948 µs | -96.1 % |
+| agent directory, 50 bots: reconcile over 5k members | 28.7 ms · 29.1 ms · 26.8 ms | 44 ms · 46.7 ms | 30.4 ms · 30.6 ms | 26.8 ms → 30.4 ms | +13.4 % |
+| agent directory, 50 bots: validate one agent mention | 24.5 ms · 24.6 ms · 24.3 ms | 692 µs · 527 µs | 84.3 µs · 80.1 µs | 24.3 ms → 80.1 µs | -99.7 % |
+| agent directory: candidates among 5k members | 1.51 ms · 1.62 ms · 1.58 ms | 1.6 ms · 1.54 ms | 1.93 ms · 1.86 ms | 1.51 ms → 1.86 ms | +23.3 % |
+| agent directory: list agents among 5k members | 12.2 ms · 12.5 ms · 12.9 ms | 35.2 ms · 32.9 ms | 958 µs · 938 µs | 12.2 ms → 938 µs | -92.3 % |
+| agent directory: members a refresh asks profiles for (5k members) | — | 7.03 ms · 6.87 ms | 3.15 ms · 2.85 ms | — → 2.85 ms | new in v0.15.0 |
+| agent directory: mention candidates, 100-member channel | 186 µs · 211 µs · 197 µs | 191 µs · 189 µs | 191 µs · 180 µs | 186 µs → 180 µs | -3.3 % |
+| agent directory: reconcile over 5k members | 14.2 ms · 15.1 ms · 16.3 ms | 42.9 ms · 43.6 ms | 31.6 ms · 31 ms | 14.2 ms → 31 ms | +117.4 % |
+| agent directory: validate one agent mention | 12.7 ms · 12.7 ms · 12.6 ms | 530 µs · 539 µs | 83.7 µs · 80.6 µs | 12.6 ms → 80.6 µs | -99.4 % |
+| agent runtime: start with 0 paused agents | — | 226 µs · 221 µs | 222 µs · 223 µs | — → 222 µs | new in v0.15.0 |
+| agent runtime: start with 20 paused agents | — | 301 µs · 302 µs | 297 µs · 295 µs | — → 295 µs | new in v0.15.0 |
+
+**A regression was found here, and fixed.** The first comparison showed the
+directory slower: with 50 bots, listing the agents took 34 ms against 25 ms,
+and bringing the directory up to date ("reconcile", which runs each time a
+channel's member list arrives) 44 ms against 29 ms. The cause: since the
+`bot` role is no longer required, bzz asks for a member's channels by the
+member, whatever its role, and `memberships` had no index for that. Its
+primary key starts with the channel and the index of migration 0007 with the
+role, so each such question read every membership of the community.
+v0.14.0's list read them all too, for the same two questions (SQLite's plan
+for its queries says so), which is why its own list took 25 ms.
+
+Two changes, both in this release:
+
+- **Migration 0019**, an index of memberships by member. Proof:
+  `store::agents::tests::a_members_channels_are_found_by_an_index_not_by_reading_every_membership`
+  reads SQLite's plan for the three places that ask. Red, with migration 19
+  out of the list: `SEARCH m USING COVERING INDEX
+  sqlite_autoindex_memberships_1 (community_id=?)`, which is every
+  membership of the community.
+- A mention of one agent is checked by asking for that agent (`5926d8d`),
+  and the owner's proof is asked a second time only of a member that is no
+  bot.
+
+What is left, and accepted:
+
+| Benchmark | v0.14.0 | v0.15.0 | Why |
+|---|---|---|---|
+| reconcile, 50 bots among 5,000 members | 26.8 ms | 30.4 ms (+13 %) | for every membership that is no bot's, bzz now looks whether that member's stored profile claims an owner: that is how a plain member is found to be an agent. It costs about 3.6 ms each time a member list arrives, in a community of this size |
+| candidates among 5,000 members | 1.51 ms | 1.86 ms (+23 %) | the same query; SQLite now walks the new index in the order asked for instead of sorting, and reads each row for its role. 0.35 ms, once a refresh |
+
+**What a profile with agents costs when none runs:**
+
+- **At start:** the agent runtime starts in 0.22 ms with no agent and in
+  0.30 ms with 20 paused agents: 4 µs an agent. A paused or moved-away agent
+  starts no process, and nothing is installed or checked for it.
+- **At a refresh of the directory:** finding the members whose profile bzz
+  has yet to look at takes 2.9 ms among 5,000 members (the list is cut at
+  2,000). Asking the relay for those profiles is up to 20 more requests of
+  100 authors each, until they are stored; a member whose stored profile
+  claims no owner is not asked about again. The requests were not timed:
+  that depends on the relay.
+- **A large directory:** with 50 agents among 5,000 members, the list is
+  drawn from a query of 0.95 ms and a mention is checked in 0.08 ms.
+
+The index, and the proof asked once, came after the two earlier v0.15.0
+runs; the two last ones measure the code as it is released.
+
+### The plan's testing table, cell by cell
+
+The table of "Testing v0.15.0" in the plan, with each cell marked.
+**Proven** names where; **partly** and **pending** give the reason. "Herdr"
+is the run above. Everything is Linux x86_64 unless the cell says
+otherwise.
+
+| Milestone | Unit | Scripted harness or fake relay | Pinned relay | Release binary (Herdr) |
+|---|---|---|---|---|
+| **M0** | none asked | **Proven**, the four experiments: 1 and 4 under M0 (2026-11-13); 2 and 3 with Buzz 1.0.1 (2026-11-14, "Experiments 2 and 3"). Experiment 3's second half as worded, "whether bzz v0.14 lists that agent", ran with the v0.15 build | **Proven:** every v0.14 suite still passes: the pinned relay run and its `--nip-fi` run in "Gates" above | **Partly.** `bzz --version` prints `bzz 0.15.0` on Linux x86_64 (`t15-cli-version`). On macOS Intel, macOS Apple Silicon and Windows the binary was built and run by CI at `ccfa1c6`, the commit before the version changed, and printed `bzz 0.14.0` on each (run 43658798025). **Pending: `0.15.0` on those three**, which the next push shows; only the Linux target is built on this machine |
+| **M1** | **Proven:** ledger `U: store::agent_runtime` (5), admission `U: admission` (4), credential scope `U: credentials` (2) (M1) | **Proven:** `T: killed_before_the_publish…`, `killed_during_the_publish…`, `killed_after_the_publish…`, `a_harness_that_sends_twice_yields_one_reply` (M1, "After a crash") | **Proven:** `real_relay_local_agent_answers_a_mention_exactly_once` (M1, "On the pinned relay") | **Proven:** `t15-agents-panel-turn-stop-pause`: the panel shows the agent, `answering 1` and what it is doing while the turn runs, and `x` stops that turn |
+| **M2** | **Proven:** `agent-host/test/acp.test.mjs` "one conversation per place…", "the same request handed over again…"; `U: admission::the_place_is_the_channel_or_the_thread_and_replies_follow_it` (M2, M1) | **Partly.** What ran: the host against a scripted client (`agent-host` `npm test`, 99), the real host against a recorded relay (`agent_host_test`, 7), and `buzz-acp`'s recorded prompts (`remote.test.mjs`, and compared on the relay at every run). **No transcript of bzz's own host was recorded and replayed**, as there is for each coding harness in M6: its tests start the host itself, which CI can do | **Proven:** `real_relay_agent_new_to_delete_on_the_pi_durable_host`: a mention, memory across a restart of bzz and of the host, a kill in the middle of a turn (M2, bzz's side) | **Proven:** `t15-agent-answers-mention`: the real host answers a mention in the TUI once, and a second one from memory |
+| **M3** | **Proven:** `agent-host/test/disk.test.mjs` (files, paths, links, chunks, the self-check), `kill.test.mjs` (M3) | **Proven:** `env-conformance.test.mjs`, the 24 cases of Pi Durable's own suite (M3) | none asked | **Proven:** `t15-cli-agent-show`: `agent show` lists the granted folder with its real path, and the host a credential is stored for; `t15-cli-agent-credential`: the token is asked without echo |
+| **M4** | **Proven:** `U: manage::the_profile_is_a_bot_with_its_name_and_picture`, `the_owners_record_is_what_buzz_reads` (M4, "The records") | **Proven:** `C: a_creation_that_fails_at_any_step_leaves_nothing` (six cases), `a_creation_that_fails_on_this_machine_publishes_nothing` (M4) | **Proven:** Buzz's own CLI at the pin resolves the agent's name and its mention is answered (`real_relay_agent_new_to_delete…`); and the Buzz 1.0.1 desktop app lists it, offers it for a mention and gets one answer (M0, "Experiments 2 and 3"; by hand in a sandbox, not a repeatable test) | **Proven:** `t15-cli-agent-new` (the questions on a terminal, to the capability record) and `t15-agent-new-form` (`:agent new` from the form to an answer) |
+| **M5** | **Proven:** `U: bundle` (7: what is sealed comes out as it went in, nothing carried is readable, the format's edges) (M5, "The sealed file") | **Proven:** `U: bundle::a_flipped_byte_anywhere_is_named_as_a_change`, `a_file_cut_short_anywhere_is_named_as_that`, `a_wrong_passphrase_is_named_as_that`, `a_forgery_with_its_checksums_made_right_still_does_not_open`; `agent_move_test` (8) (M5) | **Proven:** `real_relay_agent_moves_to_another_bzz_and_to_buzz_acp`: a move to a second bzz and to the real `buzz-acp` at the pin, and `!shutdown` sent by `agent shutdown` in a channel, with `--channel`, in a Solo chat and in a direct message (M5, and "The three gaps" above) | **Proven:** `t15-cli-agent-move-mismatch`, `t15-cli-agent-move`, `t15-cli-agent-receive`: the passphrase typed twice and never shown, the file made, the agent marked moved away, received in a second profile; `t15-agent-new-form` shows the moved-away agent in the panel. **Not shown in a terminal:** the received agent continuing its conversation (proven on the relay with the debug binary) |
+| **M6** | **Proven:** `U: coding` (version ranges, the launch of each program, the adapters), `U: capability` (M6) | **Proven:** `agent_coding_test::bzz_answers_what_each_real_program_sent_as_it_did_when_recorded` over the six recorded transcripts (M6, "Recorded transcripts") | **Proven on `b5515ac`, not repeated on the candidate:** `real_relay_coding_harnesses_answer_once_remember_and_stay_in_their_folders` with the owner's own Grok 1.0.77, Codex 0.166.0 and Claude Code 2.1.322 (M6). It needs his programs and his sign-ins and spends his usage, so it was not run again. One change to that code came after it: `3d7d5b7`, which for Codex keeps only text that carries a message id. The replay of Codex's recorded messages passes with it; Codex itself has not run against it | **Partly.** `t15-coding-harnesses-in-panel`: the panel lists an agent on each of the three, with its promise and its capability record, and says what is missing when the program is not there. **Pending: a coding harness that runs, in the panel.** It needs the owner's own programs, signed in |
+| **M7** | **Proven:** `U: approval` (2), `U: ui::approval` (3), `U: agent::only_the_chat_tools_are_allowed_and_only_once` (M7, M1) | **Proven:** `T: a_command_runs_only_after_the_owner_allows_it` (his no starts nothing), `an_unanswered_command_counts_as_refused…`, `without_the_tui_a_command_is_refused…` (M7, "Approvals: the rules") | none asked (it ran all the same: `real_relay_agent_runs_a_real_command_and_clones_a_private_remote`, M7) | **Proven:** `t15-approval-approve-refuse`: the waiting line from three other screens, the dialog with the whole command, a yes with the command's output in the chat, a no with its reason; `t15-cli-agent-activity` |
+
+**The secret scan on every row** (the plan's last line under the table):
+`secret_scan_test` runs in the test gate over every launch, the sealed file
+and the launch kit; the relay tests scan what each harness saw; and for the
+Herdr row the host's environment, arguments and descriptors and the agents'
+folders were read by hand ("Seen by hand" above). No scenario of the runner
+makes that search itself.
+
+### What the milestones left as "not proven", and where it stands
+
+Each milestone's section above ends with what it had not proven when it was
+closed. Those lists are left as they were written. What the release work
+changed in them:
+
+| Left open by | Item | Now |
+|---|---|---|
+| M0 | experiments 2 and 3 | run with Buzz 1.0.1 ("Experiments 2 and 3" under M0) |
+| M1 | the release TUI through Herdr ("the agent panel shows a turn") | proven: `t15-agents-panel-turn-stop-pause` |
+| M2, bzz's side | `_bzz/checkpoint` with the real host after 60 s idle | closed ("The three gaps") |
+| M2, M3 | the CI job `agent-host` on macOS and Windows; the relay job in CI with Node | both ran at `ccfa1c6` and passed ("CI at the last pushed commit") |
+| M3, credentials | `credential set` on a terminal, the prompts without echo | proven: `t15-cli-agent-credential` |
+| M4 | `agent new` end to end on the release binary; its questions on a terminal | proven: `t15-cli-agent-new`, `t15-agent-new-form` |
+| M4 | `x` in the panel with a turn running | proven: `t15-agents-panel-turn-stop-pause` |
+| M4 | the Buzz 1.0 desktop app | run: listed, offered for a mention, answered once (M4's exit gate) |
+| M4 | the refresh of the directory in a community of thousands; benchmarks against v0.14.0 | measured ("Benchmarks against v0.14.0"), and a regression found by them fixed |
+| M5 | move and receive on the release binary; the passphrase typed twice on a terminal | proven: `t15-cli-agent-move-mismatch`, `-move`, `-receive` |
+| M5 | `agent shutdown` in a direct message, a Solo chat and with `--channel` | proven on the relay ("The three gaps") |
+| M5 | the panel showing an agent that was moved away | proven for an agent moved before bzz started: `t15-agent-new-form`. A move made while the TUI is open was not shown in a terminal |
+| M6 | each harness in the panel on the release binary | partly: `t15-coding-harnesses-in-panel`, with the programs absent |
+| M6 | Codex's own warnings published as the answer | closed ("The three gaps") |
+| M7 | approve and refuse in the TUI on the release binary; one journey with everything real | proven: `t15-approval-approve-refuse`, with the real host, the relay and keys pressed in a terminal |
+| every milestone | macOS and Windows | the agent runtime compiles there and the library's unit tests pass (CI at `ccfa1c6`), and the agent host's own tests pass on macOS and, with eleven skipped, on Windows. **Still not run there:** the tests that start processes (`agent_runtime_test`, `agent_coding_test`, `agent_host_test`, `agent_move_test`, the secret scan), which are Unix only and run in CI on Linux; a relay; a terminal; a coding harness |
+
+Everything else in those lists is still as written there, and the notes'
+"Known limits" are drawn from them.
+
+### The plan's four acceptance items
+
+| # | Item | State |
+|---|---|---|
+| 1 | All CI gates on Linux, macOS Intel, macOS Apple Silicon and Windows; both relay jobs; benchmarks with no regression against v0.14.0 for a profile without agents | **On this machine (Linux): every gate above passes; the benchmarks show one accepted difference for a profile without agents (`sanitize 64KiB`), and the regression they found in the agent directory is fixed.** **CI: pending for the candidate.** It last ran at `ccfa1c6`: nothing from `ac886aa` on has been pushed; see "CI at the last pushed commit" below |
+| 2 | Upgrade test: a v0.14.0 data directory opens with v0.15.0, hosted agents from v0.13 included | **Proven on Linux**, "Upgrade from v0.14.0" above. Pending in CI on macOS and Windows: the job that ran there at `ccfa1c6` still opened a v0.13.0 profile |
+| 3 | `docs/e2e-manual.md` updated and run with a disposable identity | **Updated:** section 13. **Run in part,** on the release binary with a disposable identity on the pinned relay, by the Herdr scenarios; see "Manual E2E" below for the steps no run covered |
+| 4 | Production acceptance by the owner: one agent created, answering, and moved to his VM | **Pending: the owner's.** Nothing here touched a real community, a real model or another machine |
+
+### CI at the last pushed commit
+
+Nothing was pushed by this work. The last commit CI has seen is `ccfa1c6`
+(PR #9): the code of M0 to M7, before the version changed and before
+everything in this section. Read from GitHub on 2026-11-14:
+
+| Workflow, at `ccfa1c6` | Result |
+|---|---|
+| `ci.yml` run 43658798025, `build` on Linux, macOS Intel, macOS Apple Silicon and Windows | passed on all four: the release build, `bzz --version` (`bzz 0.14.0` then), and the library's tests with the per-system tests: 440 passed on Linux, 439 on each macOS, 420 on Windows. **So the agent runtime compiles and its unit tests pass on macOS and Windows**, which the sections above could only call unproven |
+| the same run, `upgrade` on three systems | passed, from v0.13.0, the default then |
+| the same run, `agent-host` on three systems | 99 of 99 on Linux and on macOS; on Windows 88 pass of 99 and none fails: the others skip themselves there, as their tests say |
+| the same run, `agent-adapters` (both) | 0 vulnerabilities |
+| the same run, `audio (windows-latest)` | failed, as in v0.13.0 and v0.14.0: experimental, no audio endpoint on hosted Windows |
+| the same run, **`test`** | **failed:** `secret_scan_test::no_key_reaches_a_harness_environment_arguments_or_logs`, `timed out waiting for both turns to end`, after its 30 s. Every other test of the job passed |
+| `integration.yml` run 43658798034, `relay (default)` | 21 passed in 545 s (the test with the owner's own programs skips itself), then `agent_host_test` 6 and `agent_move_test` 8: the relay job has Node |
+| the same run, `relay (nip-fi)` | 4 passed |
+
+**The failure of `test` was not repeated here.** The same test takes 0.5 s
+on this machine and took 0.2 s in CI one commit earlier (`b50b212`). It
+passed: alone 40 times and with the four other tests of its file 7 times,
+as root in the build image (`bzz-build`, Ubuntu 22.04), with 16 processors
+and with 2; and outside the image on one, two and all processors. Its
+cause is not known. So that the next failure says something, the wait now
+names the harness, the replies, the sends answered, bzz's status of the
+agent and the harness's log (`17537f0`). **If it fails again on the next
+push, it is a fault to find before publishing**: it is the test of rule 10.
+
+### Manual E2E
+
+`docs/e2e-manual.md` has a new section 13 for v0.15.0. Its steps, and what
+ran them on the release binary:
+
+| Part of section 13 | Covered by | Left to a person |
+|---|---|---|
+| Create, show, add (1 to 5) | `t15-cli-version`, `-doctor`, `-agent-new`, `-agent-show`, `-agent-new-form` | step 6, a model the host does not have, on a terminal (proven on the relay with the debug binary, M4) |
+| An agent answers (1, 2) | `t15-agent-answers-mention` | steps 3 and 4: bzz restarted between two mentions, and `bzz agent run` (both proven on the relay with the debug binary, M2 and M1) |
+| The agents panel, and stopping a turn (1 to 4) | `t15-agents-panel-turn-stop-pause` | none |
+| A real command (1 to 5, 7) | `t15-approval-approve-refuse`, `t15-cli-agent-activity` | step 6, five minutes without an answer, and a turn stopped while a command waits; step 8, `bzz agent run` (each proven with the scripted harness or on the relay, M7) |
+| Private repository, move and receive (1 to 4) | `t15-cli-agent-credential`, `-move-mismatch`, `-move`, `-receive`, and the panel in `t15-agent-new-form` | the wrong passphrase and a changed file at `receive`; step 5, the received agent answering; step 6, the launch kit (each proven on the relay with the debug binary, M5) |
+| Coding harnesses | `t15-coding-harnesses-in-panel` for what the panel shows | all four steps: they need the owner's own programs |
+| Upgrade and the broker | `scripts/upgrade-test.sh`; `agent_manage_test::the_broker_commands_leave_an_agent_bzz_runs_alone` | a person's own v0.14.0 profile |
+
+### Still pending, and what the owner decides
+
+Nothing below was done, by design: publishing is the owner's decision.
+
+| Item | Whose |
+|---|---|
+| Push the branch and let CI run on the candidate: four platforms with `bzz 0.15.0`, both relay jobs, `agent-host` and the new `upgrade` from v0.14.0 on three systems. Watch `test`: it failed once at `ccfa1c6` in the secret scan and could not be made to fail here ("CI at the last pushed commit") | owner |
+| The coding harnesses once more with his own programs, because `3d7d5b7` changed which text of Codex is kept: `BZZ_REAL_HARNESSES=grok,codex,claude-code BZZ_RELAY_TEST_FILTER=real_relay_coding_harnesses BZZ_BUZZ_SOURCE=… ./scripts/test-relay.sh` (it spends his usage; `docs/releasing.md`) | owner |
+| Production acceptance: one agent created with a real model, answering in the real community, and moved to his VM with a launch kit (plan, acceptance 4; `e2e-manual.md` section 13) | owner |
+| The film and the hero of getbzz.dev still show v0.14; the page's "new in v0.15.0" section is written and not deployed | owner |
+| Merge, tag `v0.15.0`, the release workflow, the checks of the published archive, the site | owner, as in v0.14.0's "Publication" |
+| Carried from v0.14: production check of edits, mentions, Solo and sections on the real community; upgrade from v0.12.1; the huddle's backing channel in the sidebar | owner / operator |
 
 ## Evidence gathered before the plan (2026-11-13)
 
