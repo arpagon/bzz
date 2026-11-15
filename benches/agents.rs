@@ -31,9 +31,11 @@ struct Directory {
 }
 
 /// A community of `CHANNELS` channels of `MEMBERS_PER_CHANNEL` people each,
-/// with `AGENTS` agents among them. `profiles`: whether every person's
-/// profile is stored, as after a first refresh.
-fn directory(profiles: bool) -> Directory {
+/// with `AGENTS` agents among them. `every_agent_a_bot`: each agent has the
+/// `bot` role where it is a member, so v0.14.0 lists as many agents as
+/// v0.15.0 does; otherwise half of them are plain members, which only
+/// v0.15.0 lists.
+fn directory(every_agent_a_bot: bool) -> Directory {
     let mut store = Store::open_memory().unwrap();
     let viewer = Keys::generate();
     let identity = IdentityConfig {
@@ -85,7 +87,7 @@ fn directory(profiles: bool) -> Directory {
         }
         // One agent in each channel: with the `bot` role in the even ones.
         let agent = agents[index % AGENTS].public_key().to_hex();
-        tags.push(if index % 2 == 0 {
+        tags.push(if every_agent_a_bot || index % 2 == 0 {
             Tag::parse(["p", &agent, "", "bot"]).unwrap()
         } else {
             Tag::parse(["p", &agent]).unwrap()
@@ -113,16 +115,15 @@ fn directory(profiles: bool) -> Directory {
         store.apply_event(community, &profile).unwrap();
         store.apply_event(community, &policy).unwrap();
     }
-    if profiles {
-        // People's profiles: signed by keys of their own, so the members
-        // above (made-up keys) stay without one; these stand for the size.
-        for index in 0..CHANNELS * MEMBERS_PER_CHANNEL / 10 {
-            let person = Keys::generate();
-            let profile = EventBuilder::new(Kind::Metadata, format!(r#"{{"name":"P{index}"}}"#))
-                .sign_with_keys(&person)
-                .unwrap();
-            store.apply_event(community, &profile).unwrap();
-        }
+    // Profiles of other people, for the size of the events table. The
+    // members above have made-up keys and so no profile: a refresh asks for
+    // theirs.
+    for index in 0..CHANNELS * MEMBERS_PER_CHANNEL / 10 {
+        let person = Keys::generate();
+        let profile = EventBuilder::new(Kind::Metadata, format!(r#"{{"name":"P{index}"}}"#))
+            .sign_with_keys(&person)
+            .unwrap();
+        store.apply_event(community, &profile).unwrap();
     }
     store.reconcile_remote_agents(community).unwrap();
     Directory {
@@ -134,14 +135,73 @@ fn directory(profiles: bool) -> Directory {
     }
 }
 
-fn bench_directory(c: &mut Criterion) {
+/// The mention that is timed is one that passes: the whole check runs.
+fn checked(world: &Directory) {
+    world
+        .store
+        .validate_agent_mentions(
+            world.community,
+            world.channel,
+            &world.viewer,
+            std::slice::from_ref(&world.agent),
+        )
+        .expect("the first agent may be mentioned in the first channel");
+}
+
+/// The same community with every agent a `bot` member: both releases list
+/// all fifty, so the numbers compare like with like.
+fn bench_directory_of_bots(c: &mut Criterion) {
     let mut world = directory(true);
     let listed = world
         .store
         .list_remote_agents(world.community, &world.viewer)
         .unwrap()
         .len();
+    eprintln!("agent directory, every agent a bot: {listed} agent(s) listed of {AGENTS}");
+    checked(&world);
+    c.bench_function("agent directory, 50 bots: reconcile over 5k members", |b| {
+        b.iter(|| {
+            world
+                .store
+                .reconcile_remote_agents(black_box(world.community))
+                .unwrap()
+        })
+    });
+    c.bench_function(
+        "agent directory, 50 bots: list agents among 5k members",
+        |b| {
+            b.iter(|| {
+                world
+                    .store
+                    .list_remote_agents(black_box(world.community), &world.viewer)
+                    .unwrap()
+            })
+        },
+    );
+    c.bench_function(
+        "agent directory, 50 bots: validate one agent mention",
+        |b| {
+            b.iter(|| {
+                world.store.validate_agent_mentions(
+                    world.community,
+                    world.channel,
+                    &world.viewer,
+                    std::slice::from_ref(&world.agent),
+                )
+            })
+        },
+    );
+}
+
+fn bench_directory(c: &mut Criterion) {
+    let mut world = directory(false);
+    let listed = world
+        .store
+        .list_remote_agents(world.community, &world.viewer)
+        .unwrap()
+        .len();
     eprintln!("agent directory: {listed} agent(s) listed of {AGENTS}");
+    checked(&world);
     c.bench_function("agent directory: reconcile over 5k members", |b| {
         b.iter(|| {
             world
@@ -270,6 +330,7 @@ fn bench_runtime_start(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_directory,
+    bench_directory_of_bots,
     // v0.15-only begin
     bench_runtime_start,
     // v0.15-only end
