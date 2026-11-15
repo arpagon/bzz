@@ -760,12 +760,21 @@ fn confirm(prompt: &str) -> Result<bool> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 
+/// A hosted agent of the broker: one whose process the user runs himself.
+/// An agent bzz runs (`bzz agent new`) is not the broker's to change: its
+/// records on the relay, its folder and its credentials are `bzz agent`'s.
 fn hosted_agent_index(config: &Config, label: &str) -> Result<usize> {
-    config
+    let index = config
         .hosted_agents
         .iter()
         .position(|agent| agent.label == label)
-        .ok_or_else(|| Error::Config(format!("no hosted agent named {label}")))
+        .ok_or_else(|| Error::Config(format!("no hosted agent named {label}")))?;
+    if config.hosted_agents[index].local.is_some() {
+        return Err(Error::Config(format!(
+            "{label} is a local agent, which bzz runs itself: manage it with `bzz agent` (`bzz agent show|edit|pause|resume|delete {label}`). `bzz broker` is for an agent whose process you run"
+        )));
+    }
+    Ok(index)
 }
 
 async fn broker_command(command: BrokerCommand, paths: &Paths, config: &mut Config) -> Result<()> {
@@ -820,10 +829,16 @@ async fn broker_command(command: BrokerCommand, paths: &Paths, config: &mut Conf
             Ok(())
         }
         BrokerCommand::List => {
-            if config.hosted_agents.is_empty() {
+            // Agents bzz runs itself are `bzz agent list`'s.
+            let hosted = config
+                .hosted_agents
+                .iter()
+                .filter(|agent| agent.local.is_none())
+                .collect::<Vec<_>>();
+            if hosted.is_empty() {
                 println!("no hosted agents; create one with `bzz broker create <label>`");
             }
-            for agent in &config.hosted_agents {
+            for agent in hosted {
                 println!(
                     "{}\t{}\t{}\t{}",
                     agent.label,

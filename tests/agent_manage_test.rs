@@ -902,3 +902,88 @@ async fn an_agent_on_a_coding_harness_is_checked_before_its_key_is_made() {
         "codex (experimental)"
     );
 }
+
+/// `bzz broker` is for an agent whose process the user runs. An agent bzz
+/// runs itself is not listed by it and not changed by it: `broker delete`
+/// would remove its key and leave its records on the relay, its folder and
+/// its credentials behind. Each command says to use `bzz agent`.
+#[test]
+fn the_broker_commands_leave_an_agent_bzz_runs_alone() {
+    let temporary = TempDir::new().unwrap();
+    let paths = Paths {
+        config_dir: temporary.path().join("c"),
+        data_dir: temporary.path().join("d"),
+        cache_dir: temporary.path().join("k"),
+    };
+    paths.ensure().unwrap();
+    let agent = |label: &str, local: bool| HostedAgentConfig {
+        id: Uuid::new_v4(),
+        label: label.into(),
+        pubkey: Keys::generate().public_key().to_hex(),
+        community: Uuid::nil(),
+        owner_identity: Uuid::nil(),
+        auth_tag: "[]".into(),
+        credential_hash: "c".repeat(64),
+        allowed: vec!["channel.read".into()],
+        paused: false,
+        local: local.then(|| bzz::config::LocalAgentConfig::new(Harness::PiDurable)),
+    };
+    let config = Config {
+        hosted_agents: vec![agent("helper", false), agent("Scout", true)],
+        ..Config::default()
+    };
+    config.save(&paths).unwrap();
+    let bzz = |args: &[&str]| {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_bzz"))
+            .args(args)
+            .env("BZZ_CONFIG_DIR", &paths.config_dir)
+            .env("BZZ_DATA_DIR", &paths.data_dir)
+            .env("BZZ_CACHE_DIR", &paths.cache_dir)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    };
+    let (ok, listed) = bzz(&["broker", "list"]);
+    assert!(ok && listed.contains("helper"), "{listed}");
+    assert!(
+        !listed.contains("Scout"),
+        "an agent bzz runs is not the broker's: {listed}"
+    );
+    for args in [
+        &["broker", "delete", "Scout", "--yes"][..],
+        &["broker", "rotate", "Scout"],
+        &["broker", "allow", "Scout", "message.post"],
+        &["broker", "pause", "Scout"],
+        &["broker", "resume", "Scout"],
+    ] {
+        let (ok, said) = bzz(args);
+        assert!(!ok, "{args:?}: {said}");
+        assert!(
+            said.contains("is a local agent") && said.contains("bzz agent"),
+            "{args:?}: {said}"
+        );
+    }
+    assert_eq!(
+        Config::load(&paths).unwrap(),
+        config,
+        "nothing of either agent changed"
+    );
+    // The broker's own agent is the broker's as before.
+    let (ok, said) = bzz(&["broker", "pause", "helper"]);
+    assert!(ok, "{said}");
+    let after = Config::load(&paths).unwrap();
+    assert!(after.hosted_agents[0].paused && !after.hosted_agents[1].paused);
+    let (ok, said) = bzz(&["agent", "list"]);
+    assert!(
+        ok && said.contains("Scout") && !said.contains("helper"),
+        "{said}"
+    );
+}
