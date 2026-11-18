@@ -311,3 +311,41 @@ fn a_long_error_message_is_cut() {
     let message = error(&vm, "t.lua", r#"error(string.rep("x", 4000000), 0)"#);
     assert_eq!(message.len(), 2048);
 }
+
+#[test]
+fn a_thousand_stops_in_a_row_leave_the_interpreter_as_it_was() {
+    // A stopped call's coroutine is abandoned: never resumed, never closed.
+    // M0 left open what a long run of them costs. Each is garbage like any
+    // other: after a thousand the interpreter holds what it held, and
+    // answers.
+    let vm = Vm::new(16 * MIB, Duration::from_millis(3)).expect("Lua starts");
+    let script = r#"
+        local held = setmetatable({}, { __close = function() while true do end end })
+        local kept <close> = held
+        local t = {}
+        while true do t[#t % 100 + 1] = { #t } end
+    "#;
+    let chunk = vm
+        .compile("stuck.lua", script.as_bytes())
+        .expect("compiles");
+    let mut used = Vec::new();
+    for round in 0..1000 {
+        let stopped = vm.call(&chunk, ());
+        assert!(
+            matches!(stopped, Err(Failure::Stopped { .. })),
+            "{round}: {stopped:?}"
+        );
+        if round % 100 == 99 {
+            vm.collect();
+            used.push(vm.used_memory());
+        }
+    }
+    // Memory after every hundred stops: flat, not a hundred coroutines
+    // more each time.
+    let (least, most) = (
+        used.iter().copied().min().unwrap_or(0),
+        used.iter().copied().max().unwrap_or(0),
+    );
+    assert!(most - least < 64 * 1024, "{used:?}");
+    assert_eq!(integer(&vm, "return 1 + 1"), 2);
+}

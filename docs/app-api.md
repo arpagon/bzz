@@ -253,7 +253,7 @@ and the type's name otherwise. `match` looks at the same text.
 | Memory | 64 MiB |
 | Script | 128 KiB |
 | Elements in a screen | 10000 |
-| Text in a screen | 256 KiB |
+| Text in a screen | 128 KiB |
 | Nesting of a screen | 32 levels |
 | Timers waiting | 32 |
 | A timer | 100 ms to 86400000 ms |

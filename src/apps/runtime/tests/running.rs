@@ -1094,3 +1094,86 @@ fn the_owner_is_told_what_a_version_declares() {
     assert_eq!(outputs.last(), Some(&Output::Redraw));
     assert_eq!(runtime.timers(), 0);
 }
+
+// ------------------------------------------------------------ the driver
+
+#[test]
+fn a_script_is_tried_without_a_window() {
+    use crate::apps::runtime::headless::{Step, try_app};
+    // What `bzz app try` and the agents' tool will do: load a script, do
+    // steps to it, and read the screen as text with any error.
+    let steps: Vec<Step> = ["n", "type:buy milk", "enter", "resize:30x6", "wait:500"]
+        .iter()
+        .map(|written| Step::parse(written).expect("a step"))
+        .collect();
+    let tried = try_app(HELLO, HeadlessOptions::new("hello.lua"), &steps).expect("runs");
+    assert_eq!(tried.screen, "Notes (1)\n> ana: buy milk\n\n\n\nSaved.\n");
+    assert_eq!(tried.error, None);
+    assert_eq!(tried.types, ["note"]);
+    assert!(tried.responding && !tried.closed);
+
+    // A script with a fault comes back with its file and line, and with
+    // the screen it had.
+    let faulty = HELLO.replace(
+        "s.form = { value = \"\" }",
+        "s.form = { value = nil .. \"\" }",
+    );
+    let tried = try_app(
+        faulty,
+        HeadlessOptions::new("hello.lua"),
+        &[Step::parse("n").expect("a step")],
+    )
+    .expect("runs");
+    let error = tried.error.expect("an error");
+    assert!(
+        error.starts_with("in app.key: hello.lua:")
+            && error.contains("attempt to concatenate a nil value"),
+        "{error}"
+    );
+    assert!(tried.screen.starts_with("Notes (0)\n"), "{}", tried.screen);
+    assert!(
+        tried
+            .logs
+            .iter()
+            .any(|l| l.starts_with("error: in app.key: hello.lua:"))
+    );
+
+    // One that does not load, and one that never comes back.
+    let tried = try_app("return 1", HeadlessOptions::new("x.lua"), &[]).expect("runs");
+    assert!(
+        tried
+            .error
+            .unwrap_or_default()
+            .contains("must end with `return app`")
+    );
+    assert!(tried.types.is_empty());
+    let tried = try_app(
+        PROBE,
+        HeadlessOptions::new("probe.lua"),
+        &[
+            Step::parse("x").expect("a step"),
+            Step::parse("x").expect("a step"),
+            Step::parse("x").expect("a step"),
+            Step::parse("q").expect("a step"),
+        ],
+    )
+    .expect("runs");
+    assert!(tried.error.unwrap_or_default().contains("3 times in a row"));
+    assert!(tried.responding && !tried.closed);
+
+    // The steps as a person writes them.
+    assert_eq!(
+        Step::parse("ctrl+u"),
+        Ok(Step::Key(Key::parse("ctrl+u").expect("a key")))
+    );
+    assert_eq!(Step::parse("type:a b"), Ok(Step::Type("a b".into())));
+    assert_eq!(
+        Step::parse("paste:two\nlines"),
+        Ok(Step::Paste("two\nlines".into()))
+    );
+    assert_eq!(Step::parse("resize:40x16"), Ok(Step::Resize(40, 16)));
+    assert_eq!(Step::parse("wait:250"), Ok(Step::Advance(250)));
+    assert!(Step::parse("resize:wide").is_err());
+    assert!(Step::parse("wait:soon").is_err());
+    assert!(Step::parse("return").unwrap_err().contains("not a key"));
+}

@@ -143,7 +143,7 @@ fn a_screen_past_its_limits_is_refused_and_the_last_one_stays() {
         (
             limits::SCREEN_TEXT_BYTES + 1,
             "x",
-            Some("ui.text: item [1]: the screen has more than 262144 bytes of text"),
+            Some("ui.text: item [1]: the screen has more than 131072 bytes of text"),
         ),
         (limits::SCREEN_DEPTH, "d", None),
         (

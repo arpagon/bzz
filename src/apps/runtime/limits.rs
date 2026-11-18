@@ -49,9 +49,11 @@ pub const SCRIPT_BYTES: usize = 128 * KIB;
 /// document has the number).
 pub const SCREEN_ELEMENTS: usize = 10_000;
 
-/// Text in one returned screen, in bytes. 256 KiB is 1000 records with 256
-/// bytes shown of each.
-pub const SCREEN_TEXT_BYTES: usize = 256 * KIB;
+/// Text in one returned screen, in bytes. 128 KiB is 1000 rows with 128
+/// bytes shown of each, more than a row of a wide window holds. A text
+/// that is wrapped is the one thing whose drawing reads every byte: at
+/// 256 KiB it took a release build 17.6 ms, a whole frame.
+pub const SCREEN_TEXT_BYTES: usize = 128 * KIB;
 
 /// How deep elements may nest. The deepest screen of the experiment's apps
 /// nests six levels.

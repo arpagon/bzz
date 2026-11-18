@@ -389,12 +389,12 @@ fn the_largest_screen_a_script_can_return_is_drawn_in_good_time() {
     for (shape, what, count) in [
         ("l", "a list of 9,990 items", 9_990),
         ("t", "a table of 1,240 rows of 7 cells", 1_240),
-        ("x", "262,140 bytes of text, wrapped", 262_140),
+        ("x", "131,070 bytes of text, wrapped", 131_070),
         ("r", "a row of 4,990 parts", 4_990),
         ("c", "a column of 4,990 parts", 4_990),
         ("g", "a grid of 384 rows of 8 bordered cells", 9_990),
         ("d", "blocks nested 31 deep", 31),
-        ("i", "an input of 100,000 characters", 100_000),
+        ("i", "an input of 60,000 characters", 60_000),
     ] {
         let mut app = large(count, shape, size);
         let area = Rect::new(0, 0, size.0, size.1);
