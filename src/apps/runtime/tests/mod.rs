@@ -3,6 +3,7 @@
 //! contract against its document.
 
 mod board;
+mod contract;
 mod differential;
 mod drawing;
 mod hostile;
