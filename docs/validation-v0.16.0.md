@@ -227,17 +227,24 @@ only), so this was expected; the test keeps it true.
 
 ### Questions 3, 4 and 5
 
-| Question | State |
-|---|---|
-| 3. Records on the pinned relay | pending: answered outside this branch |
-| 4. What Buzz desktop does with these artifacts | pending: answered outside this branch |
-| 5. The pane and the keys | pending: answered outside this branch |
+Each was answered by an agent in `runs/experiments/bzz/v016-m0/` (ignored by
+git, kept on the principal's machine) and reviewed by the principal. The ADR
+carries the answers.
+
+| Question | Answer | How it was seen |
+|---|---|---|
+| 3. Records on the pinned relay | `bzz.app.<app>.<record>` is accepted; one sync takes an exact list of types; 4096 is per sync filter; a 128 KiB script fits one artifact; any channel writer may revise any record | `q3-relay/run.sh all`: eight measures on the pinned relay, all ok. The principal ran `names`, `shapes`, `roles` and `closed` again: all ok |
+| 4. What Buzz desktop does with these artifacts | Buzz desktop 1.0.1 shows nothing of them, stores nothing, writes nothing, and is no slower with 4,101 | `q4-buzz-desktop/`: 54 screenshots, 4,708 artifact events, `verify.py final` with 0 missing, extra or changed. Run once, by the agent; the principal checked the teardown |
+| 5. The pane and the keys | 42 columns from a window of 72; thread and app together from 144; 22 rows docked; `Ctrl+C` leaves the app | `q5-pane-keys/`: a throwaway pane (branch `t3/research-pane-keys`, not merged) on the pinned relay through tmux, 207 captures. Herdr was not running |
+
+Not seen: a Buzz desktop newer than 1.0.1; an agent run by Buzz desktop in
+the channel; the Linux console, Windows Terminal and macOS Terminal; a real
+script in the pane.
 
 ### The ADR
 
 [`adr-v0.16-apps.md`](adr-v0.16-apps.md): bzz runs code it did not ship.
-Written from the plan's decisions and from what questions 2 and 6 found,
-with three sections marked TBD for questions 3, 4 and 5.
+Written from the plan's decisions and from what the six questions found.
 
 ### Gates after M0
 
@@ -268,6 +275,14 @@ The same gates ran once before on the tree as it was before `cargo fmt`
 everything else passed. The logs of both passes, of the relay runs and of
 the red runs are in `out/m0a/` of the experiment.
 
+The principal ran the gates again on `e8e0f57` after merging the branch
+(format, lint, the scripted harness, all tests: 742 passed, the tests
+without the features, `cargo deny check`, `cargo audit`): all green. He ran
+the hostile suite of question 2 twice. The bounded library stopped 80 of 80
+on a quiet machine, and 79 of 80 while the lint was compiling beside it:
+the mark of 300 ms is tight on a loaded machine, and M1's tests give it
+room. The prototype's sandbox failed 32 of 80, as reported.
+
 ### Not proven in M0
 
 | Item | State |
@@ -276,7 +291,6 @@ the red runs are in `out/m0a/` of the experiment.
 | The release TUI through Herdr | not run: nothing a user sees changed, and the brief of this work gave it no Herdr pane |
 | The upgrade from v0.15.0, the benchmarks, the agent host's own tests | not run: no migration, no change to what a benchmark runs, no change under `agent-host/` |
 | The bounded library inside bzz | it is in the experiment; M1 brings it in with its suite |
-| Questions 3, 4 and 5 | pending, above |
 
 ### Found on the way
 

@@ -3,8 +3,7 @@
 **Status:** Proposed. Its decisions are those of the plan the owner approved
 on 2026-11-17 ([`planning/2026-11-17/v0.16.0.md`](planning/2026-11-17/v0.16.0.md),
 D1 to D17, rules 14 to 18), written out here with what milestone M0 found.
-Three sections are open until M0's questions 3, 4 and 5 are answered; they
-are marked **TBD**. Narrows one line of
+Narrows one line of
 [`adr-v0.15-local-agents.md`](adr-v0.15-local-agents.md): "a JavaScript
 engine inside bzz" was rejected there, and bzz now embeds an interpreter. The
 section "Why this is not the engine v0.15 ruled out" says what differs and
@@ -178,24 +177,69 @@ inside bzz, the v0.15 line applies unchanged and must be reopened by name.
   for what it did not find. It is not proven that nothing else exists, and
   nothing of it has run on macOS or Windows yet.
 
-## Records on the relay: TBD (M0 question 3)
+## Records on the relay
 
-To be written from the answer to question 3: the rule for a record type's name on the pinned
-relay; how bzz syncs only the types of one app; what bzz does near the 4096
-live artifacts a channel can have in one sync; whether a script with its
-manifest and brief fits one artifact, and the limit bzz sets on it.
+From M0 question 3, run against the pinned relay
+(`runs/experiments/bzz/v016-m0/q3-relay/RESULT.md`).
 
-## What Buzz desktop does with these records: TBD (M0 question 4)
+- **Names.** A record type is `bzz.app.<app>.<record>`; a shared script is an
+  artifact of type `bzz.app`. The relay's rule is two or more parts
+  separated by dots, each `[a-z][a-z0-9_-]*`, 128 bytes in all. bzz holds
+  both names to `[a-z][a-z0-9_-]{0,31}` and checks them before sending,
+  because a refused write costs quota as an accepted one does. bzz stays out
+  of `buzz.*`.
+- **Sync.** One subscription per open app, for its channel and the exact
+  list of its types. The relay has no prefix filter. Heads arrive, then
+  `EOSE`, then live heads; a deletion arrives as a head.
+- **The limit.** One sync returns at most 4096 live artifacts and then
+  closes with an error. It counts what the filter matches, so an app is
+  limited by its own records, not by the channel's. bzz sets 1000 live
+  records for an app and says so in the pane before the relay does.
+- **A sync is closed by ordinary chat events** (a deleted message, a removed
+  member) and must be asked again. The pane keeps what it shows until the
+  new set has arrived; a script never sees a resync as records deleted and
+  created.
+- **Writes.** Every revision is a whole snapshot. The revision a script holds
+  is the event id of the head. A stale revision is refused without the
+  head; bzz takes the head from its sync, or reads it over HTTP.
+- **Who writes.** Any member of the channel, an agent included, may revise
+  or delete any record. The relay records only who signed the last
+  revision. An app's rules are the script's, not the relay's.
+- **Size.** Content up to 262,144 bytes and a frame up to 524,288. A script
+  of 128 KiB with its manifest and brief travelled as one artifact. bzz
+  refuses a script over 128 KiB and a brief over 16 KiB, on both sides.
 
-To be written from the answer to question 4: whether the artifacts of an app show, clutter or
-break anything in a Buzz desktop that shares the channel, and what bzz does
-about it.
+## What Buzz desktop does with these records
 
-## The pane and its keys: TBD (M0 question 5)
+From M0 question 4 (`…/v016-m0/q4-buzz-desktop/RESULT.md`): Buzz desktop
+1.0.1, in a disposable sandbox, in a channel with 1, 201 and 4,101 records
+and a 36 KB script artifact.
 
-To be written from the answer to question 5: at which window widths conversation, thread and app
-fit side by side, which of them gives way below that, and which key leaves
-the app.
+It shows nothing of them: no list, tab, search result, unread mark,
+activity entry or notification. It keeps nothing of them on disk and wrote
+no artifact event. It did not get slower. So the names stay, and a person
+on Buzz desktop cannot tell that a channel has an app: the brief, posted as
+a message, is all they see. Archiving the channel refuses every record
+write until it is unarchived. A newer Buzz desktop and an agent run by Buzz
+desktop were not tried.
+
+## The pane and its keys
+
+From M0 question 5 (`…/v016-m0/q5-pane-keys/RESULT.md`), tried with a
+stand-in pane on the pinned relay, through tmux.
+
+- The pane is 42 columns with its border, 40 inside, at the far right. The
+  conversation keeps 30.
+- It docks from a window of 72 columns. Below that the app takes the whole
+  window while it has the focus and is hidden otherwise.
+- Thread and app show together from 144 columns (116 with the sidebar
+  off). Below that, the one asked for last shows.
+- An app of 16 rows needs a window of 22 rows docked, or 19 zoomed.
+- `Ctrl+C` leaves the app. bzz does not quit on it, and the contract never
+  gives it to a script. Every other key is the app's while it has the
+  focus.
+- A paste reaches the app as one piece of text. bzz did not enable
+  bracketed paste before v0.16; it does now, for the composer too.
 
 ## Rejected
 
