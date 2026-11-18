@@ -876,7 +876,11 @@ fn transport(error: &Error) -> RecordError {
             Some(wait) => RecordError::RateLimited {
                 seconds: wait.as_secs().max(1),
             },
-            None => unavailable("not sent: bzz is offline"),
+            None if message == "session is offline" => unavailable("not sent: bzz is offline"),
+            // On the wire when the connection went: only the sync can tell.
+            None => unavailable(
+                "the connection dropped before the relay acknowledged the write; it may still have been stored",
+            ),
         },
         Error::Timeout(_) => {
             unavailable("the relay did not acknowledge the write; it may still have been stored")
@@ -1257,5 +1261,47 @@ impl SyncTask {
             });
         }
         self.set_state(SyncState::Live);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_write_without_an_acknowledgement_says_whether_it_was_sent() {
+        let reason = |error: Error| match transport(&error) {
+            RecordError::Unavailable { reason } => reason,
+            other => panic!("{other:?}"),
+        };
+        // Never on the wire.
+        for error in [
+            admission::local_admission_error("session disconnected before wire send"),
+            admission::local_admission_error("cancelled by reconnect before wire send"),
+            Error::Network("session is offline".into()),
+            Error::Access("session is not authenticated".into()),
+        ] {
+            assert!(reason(error).starts_with("not sent:"));
+        }
+        // On the wire, unanswered: it may have been stored.
+        for error in [
+            Error::Network("relay closed the connection".into()),
+            Error::Timeout("relay acknowledgement".into()),
+        ] {
+            assert!(reason(error).ends_with("it may still have been stored"));
+        }
+        // A wait bzz or the relay asked for is a wait, whoever worded it.
+        for (error, seconds) in [
+            (
+                admission::app_write_deferred(Duration::from_millis(39_200)),
+                40,
+            ),
+            (
+                Error::Network("rate-limited: quota exceeded; retry in 7s".into()),
+                7,
+            ),
+        ] {
+            assert_eq!(transport(&error), RecordError::RateLimited { seconds });
+        }
     }
 }
