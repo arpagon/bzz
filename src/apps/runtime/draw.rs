@@ -302,8 +302,9 @@ impl Painter<'_> {
                     } else {
                         RenderDirection::LeftToRight
                     });
-                if let Some(m) = max {
-                    s = s.max(*m);
+                // A largest value of zero would have the widget divide by it.
+                if let Some(m) = max.filter(|m| *m > 0) {
+                    s = s.max(m);
                 }
                 s.render(area, self.buffer);
             }
@@ -317,7 +318,15 @@ impl Painter<'_> {
                 value_look,
                 label_look,
             } => {
-                let shown: Vec<Bar> = bars
+                // Ratatui multiplies the number of bars by their width in
+                // sixteen bits. It gets no more bars than can be seen, and
+                // none wider than the area: what is drawn is the same.
+                let extent = if *horizontal { area.height } else { area.width };
+                let width = (*bar_width).clamp(1, extent.max(1));
+                let gap = (*bar_gap).min(extent);
+                let fit = u32::from(u16::MAX) / (u32::from(width) + u32::from(gap));
+                let count = bars.len().min(extent as usize).min(fit as usize);
+                let shown: Vec<Bar> = bars[..count]
                     .iter()
                     .map(|b| {
                         let mut bar = Bar::default()
@@ -330,10 +339,15 @@ impl Painter<'_> {
                         bar
                     })
                     .collect();
+                // The largest value is of all the bars, also those that
+                // do not fit; zero would have the widget divide by it.
+                let most = max
+                    .or_else(|| bars.iter().map(|b| b.value).max())
+                    .filter(|m| *m > 0);
                 let mut chart = BarChart::default()
                     .data(BarGroup::default().bars(&shown))
-                    .bar_width(*bar_width)
-                    .bar_gap(*bar_gap)
+                    .bar_width(width)
+                    .bar_gap(gap)
                     .style(look.resolve(theme))
                     .value_style(value_look.resolve(theme))
                     .label_style(label_look.resolve(theme))
@@ -342,8 +356,8 @@ impl Painter<'_> {
                     } else {
                         Direction::Vertical
                     });
-                if let Some(m) = max {
-                    chart = chart.max(*m);
+                if let Some(m) = most {
+                    chart = chart.max(m);
                 }
                 chart.render(area, self.buffer);
             }

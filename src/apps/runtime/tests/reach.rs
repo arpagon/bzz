@@ -251,3 +251,88 @@ fn the_fence_holds_a_script_to_its_declared_types() {
         card.content
     );
 }
+
+/// A script that hangs a metatable on everything it hands to bzz. Every
+/// metamethod counts its calls: bzz reads a script's tables raw, so the
+/// count must stay at zero. (Were one of them a loop, bzz would be caught
+/// in it where no budget applies.)
+const WATCHED: &str = r#"
+local calls = 0
+local function hit() calls = calls + 1 return nil end
+local watch = {
+  __index = hit, __newindex = function(t, k, v) calls = calls + 1 rawset(t, k, v) end,
+  __len = function() calls = calls + 1 return 0 end, __pairs = hit, __call = hit, __tostring = hit,
+  __eq = hit, __lt = hit, __le = hit, __concat = hit, __close = hit, __name = "watched",
+}
+local function watched(t) return setmetatable(t, watch) end
+
+-- The handlers are put in before the table is watched: an assignment to a
+-- watched table is the script's own call of `__newindex`.
+local app = { api = 1, types = watched { "note" } }
+
+function app.init(ctx)
+  data.list(watched { type = "note", tag = watched { why = "load" } })
+  host.after(100, watched { n = 1 })
+  host.log(watched { logged = true })
+  return watched { field = watched { value = "ab", cursor = 1 }, notes = watched {}, fired = 0, replies = 0 }
+end
+
+function app.view(s, ctx)
+  local count = calls
+  return watched(ui.column(watched {
+    watched(ui.text(watched { "calls " .. count .. " fired " .. rawget(s, "fired") .. " replies " .. rawget(s, "replies") })),
+    watched(ui.list(watched { items = watched { watched(ui.line(watched { watched(ui.span(watched { "item" })) })) }, selected = 1, highlight = watched { bold = true } })),
+    watched(ui.table(watched { header = watched { "h" }, rows = watched { watched { "cell" } }, widths = watched { "fill" } })),
+    watched(ui.row(watched { watched(ui.text(watched { "f: ", size = 3 })), watched(ui.input(watched { value = rawget(rawget(s, "field"), "value"), focused = true })) })),
+    watched(ui.block(watched { borders = watched { "top" }, padding = watched { 1, 0 }, title = watched(ui.line(watched { "t" })) })),
+    watched(ui.bar_chart(watched { bars = watched { watched { label = "a", value = 1 } } })),
+    watched(ui.sparkline(watched { data = watched { 1, 2 } })),
+  }))
+end
+
+function app.key(s, key, ctx)
+  ui.edit(rawget(s, "field"), watched(key))
+  ui.paste(rawget(s, "field"), "x")
+  data.create(watched { type = "note", content = watched { text = "t", list = watched { 1, 2 }, sub = watched { a = 1 } }, tag = watched { 1 } })
+end
+
+function app.timer(s, tag, ctx) rawset(s, "fired", rawget(s, "fired") + 1) end
+function app.reply(s, r, ctx) rawset(s, "replies", rawget(s, "replies") + 1) end
+
+return watched(app)
+"#;
+
+#[test]
+fn bzz_never_runs_a_metamethod_of_a_script() {
+    let mut app =
+        Headless::start(WATCHED, HeadlessOptions::new("watched.lua").size(40, 12)).expect("starts");
+    assert_eq!(app.error(), None);
+    assert_eq!(app.types(), ["note"]);
+    app.key("z").advance(100);
+    let screen = app.screen();
+    assert_eq!(app.error(), None, "{screen}");
+    // Everything worked: the request was made and answered, the timer
+    // fired, the field was edited, the content was stored as it is.
+    assert!(
+        screen.starts_with("calls 0 fired 1 replies 2\n"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("> item") && screen.contains("cell") && screen.contains("f: azxb"),
+        "{screen}"
+    );
+    assert_eq!(app.logs(), [r#"{"logged":true}"#]);
+    let stored = app.store().records()[0].content.clone();
+    assert_eq!(
+        serde_json::Value::Object(stored),
+        json!({ "text": "t", "list": [1, 2], "sub": { "a": 1 } })
+    );
+    // And across a reload, where the whole state is read.
+    app.reload(WATCHED);
+    assert_eq!(app.error(), None);
+    assert!(
+        app.screen().starts_with("calls 0 fired 1 replies 2\n"),
+        "{}",
+        app.screen()
+    );
+}

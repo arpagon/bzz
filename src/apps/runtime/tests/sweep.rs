@@ -212,8 +212,14 @@ enum Progress {
     },
 }
 
-fn sweep_function(worker: usize, path: &str, lists: &Lists, progress: &mpsc::Sender<Progress>) {
-    let vm = app_vm();
+fn sweep_function(
+    worker: usize,
+    path: &str,
+    lists: &Lists,
+    progress: &mpsc::Sender<Progress>,
+    make: fn() -> Vm,
+) {
+    let vm = make();
     // The function is taken before the pool is built, by its own name.
     let f = resolve(&vm, path);
     // The pool is built outside any call: it is the test's, not a script's,
@@ -268,22 +274,16 @@ fn sweep_function(worker: usize, path: &str, lists: &Lists, progress: &mpsc::Sen
     });
 }
 
-#[test]
-fn no_function_a_script_can_reach_runs_past_the_budget() {
+/// Sweeps every function of an interpreter that `make` makes. Panics with
+/// the function and its arguments when a call does not come back.
+fn sweep(make: fn() -> Vm, functions: usize) {
     let lists = Arc::new(Lists {
         full: std::env::var("BZZ_APPS_SWEEP").is_ok_and(|v| v == "full"),
     });
-    let names = functions(&app_vm());
+    let names = self::functions(&make());
     // What a script can reach, by name: a new function must be looked at
     // before it is added here, as M0 looked at these.
-    // 76 are Lua's (M0 counted 77 with `print`, which is the API's now);
-    // the rest are the API's functions, `data.null` being a value.
-    assert_eq!(
-        names.len(),
-        76 + api::FUNCTIONS.len() - 1,
-        "{}",
-        names.join(" ")
-    );
+    assert_eq!(names.len(), functions, "{}", names.join(" "));
     let queue = Arc::new(Mutex::new(
         names.clone().into_iter().rev().collect::<Vec<_>>(),
     ));
@@ -299,7 +299,7 @@ fn no_function_a_script_can_reach_runs_past_the_budget() {
                 loop {
                     let next = queue.lock().expect("queue").pop();
                     let Some(name) = next else { break };
-                    sweep_function(worker, &name, &lists, &tx);
+                    sweep_function(worker, &name, &lists, &tx, make);
                 }
                 let _ = tx.send(Progress::Finished { worker });
             })
@@ -366,5 +366,28 @@ fn no_function_a_script_can_reach_runs_past_the_budget() {
         "{} calls ran past the budget of {BUDGET:?} and {MARGIN:?}:\n{}",
         slow.len(),
         slow.join("\n")
+    );
+}
+
+#[test]
+fn no_function_a_script_can_reach_runs_past_the_budget() {
+    // 76 are Lua's (M0 counted 77 with `print`, which is the API's now);
+    // the rest are the API's functions, `data.null` being a value.
+    sweep(app_vm, 76 + api::FUNCTIONS.len() - 1);
+}
+
+/// The same sweep over Lua as it ships, in the prototype's sandbox. To be
+/// run by hand, as the proof that the sweep can fail: it ends at the first
+/// call that does not come back.
+///
+/// ```sh
+/// cargo test --lib apps::runtime::tests::sweep::the_prototype -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "the red run: it leaves a thread spinning until the test process ends"]
+fn the_prototype_sandbox_fails_the_sweep() {
+    sweep(
+        || Vm::plain_for_the_red_run(MEMORY, BUDGET).expect("Lua starts"),
+        76,
     );
 }

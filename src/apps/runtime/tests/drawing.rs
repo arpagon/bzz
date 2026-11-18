@@ -541,3 +541,84 @@ fn a_screen_as_text_counts_a_wide_character_once() {
     buffer.set_string(0, 1, "plain   ", Style::new());
     assert_eq!(text_of(&buffer), "日本 ok\nplain\n");
 }
+
+#[test]
+fn no_value_a_script_can_give_an_element_breaks_the_drawing() {
+    // Ratatui's widgets check some of what they are given and panic on the
+    // rest: a ratio over one, a division into nothing. A panic here would
+    // be on bzz's own thread. Every property that takes a number, with the
+    // numbers a script can write.
+    let numbers = [
+        "0",
+        "1",
+        "-1",
+        "0.5",
+        "1.5",
+        "65535",
+        "65536",
+        "2147483648",
+        "math.maxinteger",
+        "math.mininteger",
+        "1e308",
+        "-1e308",
+        "0/0",
+        "1/0",
+        "-1/0",
+    ];
+    let elements = [
+        "ui.gauge { ratio = N }",
+        "ui.gauge { percent = N, label = 'x' }",
+        "ui.line_gauge { ratio = N }",
+        "ui.line_gauge { percent = N }",
+        "ui.sparkline { data = { 1, 2, 3 }, max = N }",
+        "ui.sparkline { data = { N, 2, N } }",
+        "ui.bar_chart { bars = { { label = 'a', value = N }, { value = 2 } }, bar_width = N, bar_gap = N, max = N }",
+        "ui.bar_chart { bars = { { value = 1 } }, horizontal = true, bar_width = N }",
+        "ui.scrollbar { length = N, position = N, viewport = N }",
+        "ui.scrollbar { orientation = 'horizontal_top', length = 3, position = N }",
+        "ui.list { items = { 'a', 'b' }, selected = N, scroll_padding = N }",
+        "ui.table { rows = { { 'a', 'b' } }, selected = N, column_spacing = N, widths = { N, 'fill' } }",
+        "ui.tabs { titles = { 'a', 'b' }, selected = N }",
+        "ui.input { value = 'abc', cursor = N, focused = true }",
+        "ui.text { 'a\\nb', scroll = N, wrap = true }",
+        "ui.block { padding = N, spacing = N, ui.text { 'x' } }",
+        "ui.block { padding = { N, N, N, N }, ui.text { 'x' } }",
+        "ui.column { spacing = N, margin = N, ui.text { 'x', size = N }, ui.text { 'y' } }",
+        "ui.row { spacing = N, flex = 'space_around', ui.text { 'x', size = N }, ui.spacer { size = N } }",
+        "ui.popup { width = N, height = N, spacing = N, ui.text { 'x' } }",
+        "ui.text { 'x', fg = N }",
+    ];
+    let theme = AppTheme::default();
+    let (mut drawn, mut refused) = (0, 0);
+    for element in elements {
+        for number in numbers {
+            let source = format!(
+                "local app = {{ api = 1, types = {{ 'note' }} }}\nfunction app.view() return {} end\nreturn app",
+                element.replace('N', number)
+            );
+            let mut app = start("extreme.lua", &source);
+            // Either the screen is refused with words, or it draws.
+            match app.error() {
+                Some(error) => {
+                    assert!(
+                        error.contains("extreme.lua:2: ui."),
+                        "{element} with {number}: {error}"
+                    );
+                    refused += 1;
+                }
+                None => drawn += 1,
+            }
+            for (w, h) in [(0, 0), (1, 1), (3, 2), (40, 16), (200, 60)] {
+                let area = Rect::new(0, 0, w, h);
+                let mut buffer = Buffer::empty(area);
+                app.runtime_mut().draw(area, &mut buffer, &theme);
+            }
+            assert_eq!(app.phase(), crate::apps::runtime::Phase::Running);
+        }
+    }
+    println!("{drawn} screens drawn, {refused} refused with an error");
+    assert!(
+        drawn > 150 && refused > 50,
+        "{drawn} drawn, {refused} refused"
+    );
+}
