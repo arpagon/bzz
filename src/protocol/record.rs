@@ -990,20 +990,55 @@ mod tests {
                 ..
             })
         ));
-        // And once more in the frame: a revision another client made, whose
-        // content is within the relay's 262,144 bytes but whose frame is not,
-        // is stopped before the relay drops the connection for it.
-        let newlines = "\n".repeat(262_144);
-        let head = foreign(&keys, fence.channel(), "bzz.app.board.card", &newlines, &[]);
-        assert!(envelope::publish(&head.event).len() > MAX_FRAME_BYTES);
+        // And once more in the frame, where a control character is six
+        // bytes. A revision that carries what another client left on the
+        // record (content of control characters, sixteen long tags) passes
+        // the relay's validator and bzz's content limit, and would be a
+        // frame of more than 524,288 bytes: the relay answers that by
+        // dropping the connection.
+        let noise = "\u{1}".repeat(4000);
+        let tags = (0..16)
+            .map(|index| vec![format!("x{index}"), noise.clone()])
+            .collect::<Vec<_>>();
+        let tags = tags
+            .iter()
+            .map(|parts| parts.iter().map(String::as_str).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        let tags = tags.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let head = foreign(
+            &keys,
+            fence.channel(),
+            "bzz.app.board.card",
+            &"\u{1}".repeat(MAX_CONTENT_BYTES),
+            &tags,
+        );
+        assert!(buzz_core::artifact::validate(&head.event).is_ok());
+        let frame = envelope::publish(&head.event).len();
+        assert!(frame > MAX_FRAME_BYTES, "{frame}");
+        assert_eq!(
+            fence.check(&head.event).unwrap_err(),
+            RecordError::TooLarge {
+                what: Oversize::Frame,
+                bytes: frame,
+                limit: MAX_FRAME_BYTES
+            }
+        );
+        // Content the relay itself would take (262,144 bytes) is over bzz's
+        // own limit for a record.
+        let head = foreign(
+            &keys,
+            fence.channel(),
+            "bzz.app.board.card",
+            &"x".repeat(262_144),
+            &[],
+        );
         assert!(matches!(
             fence.check(&head.event),
-            Err(RecordError::TooLarge { .. })
+            Err(RecordError::TooLarge {
+                what: Oversize::Content,
+                ..
+            })
         ));
-        let quoted = format!("{{\"t\":\"{}\"}}", "\\\"".repeat(30_000));
-        assert!(quoted.len() <= MAX_CONTENT_BYTES);
-        let head = foreign(&keys, fence.channel(), "bzz.app.board.card", &quoted, &[]);
-        fence.check(&head.event).unwrap();
     }
 
     #[test]
