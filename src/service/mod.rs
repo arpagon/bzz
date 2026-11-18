@@ -6,5 +6,7 @@ pub mod inbox;
 pub mod messages;
 pub mod profiles;
 pub mod read_state;
+#[cfg(feature = "apps")]
+pub mod records;
 pub mod search;
 pub mod sidebar;

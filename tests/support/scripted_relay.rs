@@ -5,7 +5,8 @@
 //! test states exactly what the relay says, including forged or mismatched
 //! signed responses and NIP-FI upgrade denials. Every HTTP request, upgrade and
 //! inbound WebSocket frame is recorded with its virtual (`tokio::time`)
-//! arrival time.
+//! arrival time. `push` sends a frame the relay was not asked for, to every
+//! open socket: a live event, or a `CLOSED` of the relay's own.
 #![allow(dead_code, clippy::result_large_err)]
 
 use std::{
@@ -202,6 +203,7 @@ pub struct ScriptedRelay {
     pub ws_url: url::Url,
     pub http_url: url::Url,
     log: Arc<Mutex<Log>>,
+    pushes: tokio::sync::broadcast::Sender<Value>,
     stop: Option<tokio::sync::watch::Sender<bool>>,
 }
 
@@ -221,9 +223,11 @@ impl ScriptedRelay {
         let script = Arc::new(script);
         let log = Arc::new(Mutex::new(Log::default()));
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let (pushes, _) = tokio::sync::broadcast::channel(4096);
         for listener in listeners {
             let script = script.clone();
             let task_log = log.clone();
+            let pushes = pushes.clone();
             let mut stop_rx = stop_rx.clone();
             tokio::spawn(async move {
                 loop {
@@ -231,7 +235,12 @@ impl ScriptedRelay {
                         _ = stop_rx.changed() => break,
                         accepted = listener.accept() => {
                             let Ok((stream, _)) = accepted else { break };
-                            tokio::spawn(serve(stream, script.clone(), task_log.clone()));
+                            tokio::spawn(serve(
+                                stream,
+                                script.clone(),
+                                task_log.clone(),
+                                pushes.clone(),
+                            ));
                         }
                     }
                 }
@@ -241,8 +250,15 @@ impl ScriptedRelay {
             ws_url: url::Url::parse(&format!("ws://{address}/")).unwrap(),
             http_url: url::Url::parse(&format!("http://{address}/")).unwrap(),
             log,
+            pushes,
             stop: Some(stop_tx),
         }
+    }
+
+    /// Sends `value` on every open WebSocket, unasked. Returns how many
+    /// sockets were listening.
+    pub fn push(&self, value: Value) -> usize {
+        self.pushes.send(value).unwrap_or(0)
     }
 
     pub fn http_requests(&self) -> Vec<HttpRequest> {
@@ -284,20 +300,30 @@ impl Drop for ScriptedRelay {
     }
 }
 
-async fn serve(stream: TcpStream, script: Arc<Script>, log: Arc<Mutex<Log>>) {
+async fn serve(
+    stream: TcpStream,
+    script: Arc<Script>,
+    log: Arc<Mutex<Log>>,
+    pushes: tokio::sync::broadcast::Sender<Value>,
+) {
     let mut peek = [0_u8; 4096];
     let Ok(read) = stream.peek(&mut peek).await else {
         return;
     };
     let head = String::from_utf8_lossy(&peek[..read]).to_ascii_lowercase();
     if head.contains("upgrade: websocket") {
-        serve_websocket(stream, script, log).await;
+        serve_websocket(stream, script, log, pushes).await;
     } else {
         serve_http(stream, script, log).await;
     }
 }
 
-async fn serve_websocket(stream: TcpStream, script: Arc<Script>, log: Arc<Mutex<Log>>) {
+async fn serve_websocket(
+    stream: TcpStream,
+    script: Arc<Script>,
+    log: Arc<Mutex<Log>>,
+    pushes: tokio::sync::broadcast::Sender<Value>,
+) {
     let callback_log = log.clone();
     let callback_script = script.clone();
     let callback =
@@ -347,7 +373,7 @@ async fn serve_websocket(stream: TcpStream, script: Arc<Script>, log: Arc<Mutex<
         log.connections += 1;
         log.connections
     };
-    run_socket(socket, connection, script, log).await;
+    run_socket(socket, connection, script, log, pushes).await;
 }
 
 async fn run_socket(
@@ -355,7 +381,10 @@ async fn run_socket(
     connection: usize,
     script: Arc<Script>,
     log: Arc<Mutex<Log>>,
+    pushes: tokio::sync::broadcast::Sender<Value>,
 ) {
+    // Only a WebSocket listens: an HTTP connection is no socket to push on.
+    let mut pushes = pushes.subscribe();
     if script.auth_challenge
         && socket
             .send(Message::Text(r#"["AUTH","scripted-challenge"]"#.into()))
@@ -364,7 +393,24 @@ async fn run_socket(
     {
         return;
     }
-    while let Some(Ok(message)) = socket.next().await {
+    loop {
+        let message = tokio::select! {
+            message = socket.next() => match message {
+                Some(Ok(message)) => message,
+                _ => return,
+            },
+            pushed = pushes.recv() => {
+                if let Ok(value) = pushed
+                    && socket
+                        .send(Message::Text(value.to_string().into()))
+                        .await
+                        .is_err()
+                {
+                    return;
+                }
+                continue;
+            }
+        };
         match message {
             Message::Text(text) => {
                 let Ok(value) = serde_json::from_str::<Value>(&text) else {
