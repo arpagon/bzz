@@ -287,8 +287,10 @@ fn sweep(make: fn() -> Vm, functions: usize) {
     let queue = Arc::new(Mutex::new(
         names.clone().into_iter().rev().collect::<Vec<_>>(),
     ));
+    // Half the processors: the other tests run beside this one, and some
+    // of them time a call.
     let jobs = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
+        .map_or(2, |n| n.get() / 2)
         .clamp(1, 8);
     let (tx, rx) = mpsc::channel();
     for worker in 0..jobs {

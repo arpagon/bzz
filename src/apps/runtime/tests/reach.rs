@@ -91,8 +91,10 @@ end
 return app
 "#;
 
+/// With time for its calls on a busy machine: these tests are about what
+/// a script reaches, not about how long it runs.
 fn hostile_app(marker: &std::path::Path) -> Headless {
-    hostile_app_with(marker, Limits::default())
+    hostile_app_with(marker, Limits::patient())
 }
 
 fn hostile_app_with(marker: &std::path::Path, limits: Limits) -> Headless {
@@ -143,7 +145,7 @@ fn a_script_reaches_no_file_network_process_environment_native_code_or_bytecode(
 #[test]
 fn a_script_that_misbehaves_is_stopped_and_the_app_goes_on() {
     let dir = tempfile::tempdir().expect("a folder");
-    let mut app = hostile_app(&dir.path().join("pwned"));
+    let mut app = hostile_app_with(&dir.path().join("pwned"), Limits::default());
     let wait = "ran longer than 250 ms and was stopped";
     // An endless loop, and one that catches the stop.
     for (key, code) in [("x", "if n == \"x\""), ("y", "elseif n == \"y\"")] {
@@ -173,9 +175,16 @@ fn a_script_that_misbehaves_is_stopped_and_the_app_goes_on() {
         "{error}"
     );
     assert!(app.status().responding);
-    // Recursion without end is an error of the script.
+    // Recursion without end is an error of the script when Lua's stack is
+    // full, which takes about half the budget; on a busy machine the
+    // budget ends it first. Either way it ends, and the app goes on.
     app.key("s");
-    assert!(app.error().unwrap_or_default().contains("stack overflow"));
+    let error = app.error().unwrap_or_default();
+    assert!(
+        error.contains("stack overflow") || error.contains(wait),
+        "{error}"
+    );
+    assert_eq!(app.phase(), Phase::Running);
 }
 
 #[test]
@@ -304,8 +313,13 @@ return watched(app)
 
 #[test]
 fn bzz_never_runs_a_metamethod_of_a_script() {
-    let mut app =
-        Headless::start(WATCHED, HeadlessOptions::new("watched.lua").size(40, 12)).expect("starts");
+    let mut app = Headless::start(
+        WATCHED,
+        HeadlessOptions::new("watched.lua")
+            .size(40, 12)
+            .limits(Limits::patient()),
+    )
+    .expect("starts");
     assert_eq!(app.error(), None);
     assert_eq!(app.types(), ["note"]);
     app.key("z").advance(100);

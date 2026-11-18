@@ -84,8 +84,16 @@ end
 return app
 "#;
 
+/// Every limit but the time of a call is the published one here: on a busy
+/// machine a call that does nothing wrong must not meet the budget.
 fn greedy() -> Headless {
-    Headless::start(GREEDY, HeadlessOptions::new("greedy.lua").size(100, 16)).expect("starts")
+    Headless::start(
+        GREEDY,
+        HeadlessOptions::new("greedy.lua")
+            .size(100, 16)
+            .limits(Limits::patient()),
+    )
+    .expect("starts")
 }
 
 /// Sets the script's `count` (by a paste) and presses `key`.
@@ -356,7 +364,7 @@ fn the_published_limits_fit_in_the_memory_of_one_app() {
     let text = "x".repeat(limits::CONTENT_BYTES - 11);
     let mut app = Headless::start_on(
         HOLDER,
-        HeadlessOptions::new("holder.lua"),
+        HeadlessOptions::new("holder.lua").limits(Limits::patient()),
         {
             let clock = ManualClock::new(START_OF_TIME);
             let mut store = MemoryStore::new(ana(), clock);
@@ -386,7 +394,7 @@ fn a_record_set_too_big_for_the_memory_is_an_error_in_the_app() {
     let numbers: Vec<u8> = vec![1; (limits::CONTENT_BYTES - 12) / 2];
     let mut app = Headless::start_on(
         HOLDER,
-        HeadlessOptions::new("holder.lua"),
+        HeadlessOptions::new("holder.lua").limits(Limits::patient()),
         {
             let clock = ManualClock::new(START_OF_TIME);
             let mut store = MemoryStore::new(ana(), clock);
