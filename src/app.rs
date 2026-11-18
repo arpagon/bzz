@@ -611,6 +611,9 @@ const AGENT_SPINNER_INTERVAL: Duration = Duration::from_millis(200);
 const RELAY_EVENT_DEDUP_CAPACITY: usize = 16_384;
 const AGENT_TYPING_SUBSCRIPTION: &str = "agent-typing-selected";
 const ARTIFACT_SYNC_SUBSCRIPTION: &str = "artifact-sync-selected";
+/// The panel's note when the channel holds more live artifacts, of all
+/// types together, than the relay returns in one sync.
+const ARTIFACT_SYNC_OVERFLOW_NOTE: &str = "too many artifacts here to sync · list may be stale";
 const HUDDLE_LIFECYCLE_SUBSCRIPTION: &str = "huddle-lifecycle-selected";
 const HUDDLE_BACKING_SUBSCRIPTION: &str = "huddle-backing-selected";
 
@@ -674,6 +677,10 @@ struct ArtifactSync {
     retry_at: Option<Instant>,
     /// `restricted`: this reader cannot read the channel's artifacts.
     blocked: bool,
+    /// `error: sync set exceeds max_events`: the channel holds more live
+    /// artifacts than one sync returns. Asking again gives the same answer
+    /// and downloads the relay's whole bound each time, so bzz does not.
+    overflowed: bool,
 }
 
 impl ArtifactSync {
@@ -686,7 +693,17 @@ impl ArtifactSync {
             failures: 0,
             retry_at: None,
             blocked: false,
+            overflowed: false,
         }
+    }
+
+    /// The relay cannot give this channel's set in one sync. The last
+    /// complete set stays; nothing is scheduled.
+    fn overflow(&mut self) {
+        self.buffer.clear();
+        self.complete = false;
+        self.retry_at = None;
+        self.overflowed = true;
     }
 
     /// Exponential backoff with jitter before the next sync attempt.
@@ -2451,7 +2468,11 @@ impl App {
                 let community = runtime.community_id;
                 // Sync may resend a known head (resync, reconnect); it must
                 // reach the buffer, so artifacts bypass the relay dedupe.
+                // What arrives on an app's records subscription is the
+                // records service's, whatever its kind.
                 if subscription == ARTIFACT_SYNC_SUBSCRIPTION
+                    || subscription
+                        .starts_with(crate::protocol::artifact::APP_RECORDS_SUBSCRIPTION_PREFIX)
                     || matches!(event.kind.as_u16(), 45_010 | 45_011)
                 {
                     return self.apply_artifact_sync_event(&subscription, &event).await;
@@ -2618,16 +2639,26 @@ impl App {
             }) => {
                 if subscription == ARTIFACT_SYNC_SUBSCRIPTION {
                     if let Some(sync) = &mut self.artifact_sync {
+                        use crate::realtime::admission::{ClosedReason, closed_reason};
                         // The last complete set stays; it is possibly stale.
-                        if message.starts_with("restricted:") {
-                            sync.blocked = true;
-                            sync.buffer.clear();
-                        } else {
-                            sync.schedule_retry();
+                        match closed_reason(&message) {
+                            ClosedReason::Restricted => {
+                                sync.blocked = true;
+                                sync.buffer.clear();
+                            }
+                            ClosedReason::SyncOverflow => sync.overflow(),
+                            ClosedReason::Resync | ClosedReason::Other => sync.schedule_retry(),
                         }
                     }
                     self.refresh_artifact_panel().await?;
                     return Ok(true);
+                }
+                // The state of an app's records is its pane's to show, not
+                // the status line's.
+                if subscription
+                    .starts_with(crate::protocol::artifact::APP_RECORDS_SUBSCRIPTION_PREFIX)
+                {
+                    return Ok(false);
                 }
                 if subscription == AGENT_TYPING_SUBSCRIPTION {
                     self.closed_typing_channel = self.typing_subscription_channel.take();
@@ -4897,6 +4928,7 @@ impl App {
         }
         if let Some(sync) = &mut self.artifact_sync
             && !sync.blocked
+            && !sync.overflowed
             && sync.retry_at.is_some_and(|at| Instant::now() >= at)
         {
             sync.retry_at = None;
@@ -5000,6 +5032,8 @@ impl App {
         Some(
             if sync.blocked {
                 "artifacts unavailable here"
+            } else if sync.overflowed {
+                ARTIFACT_SYNC_OVERFLOW_NOTE
             } else if sync.complete {
                 "synced"
             } else if sync.retry_at.is_some() {
@@ -14594,6 +14628,60 @@ mod tests {
             2,
             "nothing dropped before the new cut"
         );
+
+        // More live artifacts in the channel than one sync returns: the
+        // relay ends every attempt with the same error. The held set stays,
+        // nothing is scheduled, and the panel says so in plain words.
+        app.artifact_sync = Some(super::ArtifactSync::new(community, channel));
+        app.artifact_sync.as_mut().unwrap().complete = true;
+        app.artifact_panel.scope = crate::ui::artifacts::ArtifactScope::Channel(channel);
+        app.presentation.open_overlay(Overlay::Artifacts);
+        app.handle_network(crate::realtime::supervisor::SupervisorEvent::Session(
+            crate::realtime::session::SessionEvent::Closed {
+                subscription: sync.into(),
+                message: crate::realtime::admission::CLOSED_SYNC_OVERFLOW.into(),
+            },
+        ))
+        .await
+        .unwrap();
+        let over = app.artifact_sync.as_ref().unwrap();
+        assert!(over.overflowed && !over.complete && !over.blocked);
+        assert!(over.retry_at.is_none(), "not asked again on a timer");
+        assert_eq!(stored(&app).await.len(), 2, "the last complete set stays");
+        assert_eq!(
+            app.artifact_panel.sync_note.as_deref(),
+            Some("too many artifacts here to sync · list may be stale")
+        );
+        assert_eq!(app.artifact_panel.items.len(), 2);
+        // A dropped connection does not turn it back into "syncing".
+        app.handle_network(crate::realtime::supervisor::SupervisorEvent::Session(
+            crate::realtime::session::SessionEvent::Disconnected("generated".into()),
+        ))
+        .await
+        .unwrap();
+        app.refresh_artifact_panel().await.unwrap();
+        assert_eq!(
+            app.artifact_panel.sync_note.as_deref(),
+            Some("too many artifacts here to sync · list may be stale")
+        );
+        app.presentation.close_overlay();
+
+        // The closing of an app's records subscription is its pane's to
+        // show: nothing reaches the status line.
+        app.status_error = None;
+        let changed = app
+            .handle_network(crate::realtime::supervisor::SupervisorEvent::Session(
+                crate::realtime::session::SessionEvent::Closed {
+                    subscription: format!(
+                        "{}0123456789abcdef01234567",
+                        crate::protocol::artifact::APP_RECORDS_SUBSCRIPTION_PREFIX
+                    ),
+                    message: crate::realtime::admission::CLOSED_RESYNC.into(),
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(!changed && app.status_error.is_none());
 
         // The panel shows the set; artifacts never become messages or unread.
         // A new cut holding only `live` replaces the set: `first` left it.
