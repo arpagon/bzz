@@ -164,6 +164,37 @@ fn case_01_first_draw() {
 }
 
 #[test]
+fn a_title_of_sixteen_characters_is_shown_in_full_at_every_size() {
+    // The spec of the bench: "Titles of up to 16 characters are shown in
+    // full at any size the board is drawn." The experiment's Board needed
+    // 60 columns for that. In the 40 columns of the pane three columns
+    // side by side have 13 cells each, so the fixture stacks them there.
+    let titles = ["Sixteen letters!", "Quarterly report", "Ship the release"];
+    assert!(titles.iter().all(|t| t.chars().count() == 16));
+    for size in [(40, 16), (41, 30), (59, 16), (60, 16), (80, 24)] {
+        let mut app = start_on("board.lua", BOARD, size, |store| {
+            for (order, (title, column)) in titles.iter().zip(["todo", "doing", "done"]).enumerate()
+            {
+                store.seed(
+                    "card",
+                    content(json!({ "title": title, "column": column, "order": order })),
+                    &bo(),
+                );
+            }
+        });
+        let screen = app.screen();
+        assert_eq!(
+            read(&screen),
+            board(&[titles[0]], &[titles[1]], &[titles[2]], Some(titles[0])),
+            "{size:?}\n{screen}"
+        );
+        // And when it is the selected card of another column.
+        app.key("l").key("l");
+        assert_eq!(read(&app.screen()).selected.as_deref(), Some(titles[2]));
+    }
+}
+
+#[test]
 fn case_02_form_cancel() {
     at_each_size(|size| {
         let mut app = start_board(size);
