@@ -436,7 +436,7 @@ The suite raises a person's quota to 5000 a minute for its other tests and
 leaves an agent's at the relay's default, which is why the quota is met as
 an agent. That write path is the one M7 will use.
 
-Three runs on this branch, each under the harness lock, each torn down by
+Four runs on this branch, each under the harness lock, each torn down by
 the script (no `buzz-harness` container, no listener on 3030, no
 `buzz-relay` process and no tmux server afterwards):
 
@@ -447,6 +447,7 @@ the script (no `buzz-harness` container, no listener on 3030, no
 - 16:15 to 16:31, the whole suite, on `ad6009e`: 23 passed in 870 s (the 22
   of M0 and this one; the one with the owner's own programs skipped itself),
   then `agent_host_test` 7 and `agent_move_test` 8.
+- 17:01 to 17:02, the M2 test alone on `60079e4`: passed in 27 s.
 
 ### The v0.15 behaviour of `:artifacts` and `:tasks`
 
@@ -462,18 +463,17 @@ One thing a user of the panel can see differently: an artifact of a type
 
 ### Gates
 
-On `ad6009e`, 2026-11-18. Only the last unit test of the first table, its
-one-line change and documents came after; the gates were run again on the
-final commit and the result is in the report of this work.
+On `60079e4`, 2026-11-18, from 16:52 (UTC−5). Only this section changed
+afterwards.
 
 | Gate | Command | Result |
 |---|---|---|
 | Format | `cargo fmt --check` | clean |
 | Lint | `cargo clippy --locked --all-targets -- -D warnings`; the same with `--no-default-features` | clean, both |
-| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets` | 767 passed, 0 failed, 31 ignored, in 57 test programs. 25 passing tests are new (9 of `protocol::record`, 2 of the store, 2 of admission, 2 of the supervisor, 1 of `session_test`, 9 scripted); the new ignored one is the relay test |
+| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets` | 768 passed, 0 failed, 31 ignored, in 57 test programs. 26 passing tests are new (9 of `protocol::record`, 1 of `service::records`, 2 of the store, 2 of admission, 2 of the supervisor, 1 of `session_test`, 9 scripted); the new ignored one is the relay test |
 | Tests without the features | `cargo test --locked --no-default-features --lib` | 458 passed (6 new: the store, admission and the supervisor are not behind the feature) |
 | Supply chain | not run: `Cargo.toml` and `Cargo.lock` are unchanged | |
-| Pinned relay | above | 23 passed |
+| Pinned relay | above | the whole suite on `ad6009e`: 23 passed. The M2 test alone again on `60079e4`, 17:01 to 17:02: passed in 27 s. Between the two, one message of `service::records` changed (the first table's last row) |
 
 In this worktree `scripts/test-relay.sh` was run with a `cargo` on the
 `PATH` that sets `CARGO_TARGET_DIR` to the main checkout's `target` only
