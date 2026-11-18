@@ -8473,3 +8473,550 @@ async fn real_relay_agent_keeps_to_its_access_and_a_delete_or_a_pause_reaches_th
         faults.join("\n- ")
     );
 }
+
+/// One bzz profile for the records of apps: a generated identity with its
+/// own store, connection and records service.
+#[cfg(feature = "apps")]
+struct RecordsProfile {
+    keys: Keys,
+    signer: SignerHandle,
+    supervisor: SupervisorHandle,
+    service: bzz::service::records::RecordsService,
+    config: Config,
+    community: uuid::Uuid,
+    store: std::path::PathBuf,
+}
+
+#[cfg(feature = "apps")]
+impl RecordsProfile {
+    fn config(keys: &Keys) -> (Config, uuid::Uuid) {
+        let identity = IdentityConfig {
+            id: uuid::Uuid::new_v4(),
+            label: "records".into(),
+            pubkey: keys.public_key().to_hex(),
+            backend: KeyBackend::EncryptedFile,
+            key_ref: "records".into(),
+        };
+        let mut config = Config::default();
+        config.identities.push(identity.clone());
+        let community = config
+            .add_community(
+                "records".into(),
+                "ws://localhost:3030".into(),
+                identity.id,
+                true,
+            )
+            .unwrap();
+        (config, community)
+    }
+
+    /// `store` is a file, so that the profile can be closed and opened again.
+    async fn start(
+        keys: Keys,
+        signer: SignerHandle,
+        (config, community): (Config, uuid::Uuid),
+        store: std::path::PathBuf,
+    ) -> Self {
+        let http = HttpClient::new(
+            url::Url::parse("http://localhost:3030/").unwrap(),
+            signer.clone(),
+        )
+        .unwrap();
+        let relay = bzz::protocol::http::relay_signing_pubkey(&http.nip11().await.unwrap())
+            .unwrap()
+            .to_owned();
+        let mut database = Store::open(&store).unwrap();
+        database.sync_config(&config).unwrap();
+        database.pin_relay_pubkey(community, &relay).unwrap();
+        let supervisor = SupervisorHandle::spawn(
+            url::Url::parse("ws://localhost:3030/").unwrap(),
+            signer.clone(),
+        );
+        let service = bzz::service::records::RecordsService::new(
+            community,
+            http,
+            StoreHandle::spawn(database).unwrap(),
+            bzz::service::records::Writer::new(signer.clone(), supervisor.clone()),
+        );
+        Self {
+            keys,
+            signer,
+            supervisor,
+            service,
+            config,
+            community,
+            store,
+        }
+    }
+
+    /// A person with a profile of their own, a member of the relay with
+    /// `relay_role`. `seed_member` makes everyone an owner of the relay,
+    /// which is not who a guest of a channel or a stranger to it is.
+    async fn person(source: &str, folder: &std::path::Path, name: &str, relay_role: &str) -> Self {
+        let keys = Keys::generate();
+        let pubkey = keys.public_key().to_hex();
+        let sql = format!(
+            "INSERT INTO relay_members (community_id,pubkey,role,added_by) SELECT id,'{pubkey}','{relay_role}',NULL FROM communities WHERE lower(host)='localhost:3030' ON CONFLICT (community_id,pubkey) DO UPDATE SET role='{relay_role}',updated_at=now();"
+        );
+        let status = Command::new("docker")
+            .args(["compose", "-p", "buzz-harness", "-f"])
+            .arg(format!("{source}/docker-compose.harness.yml"))
+            .args([
+                "exec",
+                "-T",
+                "postgres",
+                "psql",
+                "-U",
+                "buzz",
+                "-d",
+                "buzz",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-c",
+                &sql,
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let signer = SignerHandle::spawn(keys.clone());
+        let config = Self::config(&keys);
+        Self::start(keys, signer, config, folder.join(format!("{name}.sqlite3"))).await
+    }
+
+    fn pubkey(&self) -> String {
+        self.keys.public_key().to_hex()
+    }
+
+    async fn send(&self, builder: EventBuilder) -> nostr::Event {
+        let event = self.signer.sign(builder).await.unwrap();
+        let ack = self.supervisor.publish(event.clone()).await.unwrap();
+        assert!(ack.accepted, "{}", ack.message);
+        event
+    }
+
+    /// Closes bzz and opens it again on the same store and identity.
+    async fn restart(self) -> Self {
+        let (keys, config, store) = (
+            self.keys.clone(),
+            (self.config.clone(), self.community),
+            self.store.clone(),
+        );
+        self.supervisor.shutdown().await;
+        self.signer.lock().await;
+        drop(self);
+        let signer = SignerHandle::spawn(keys.clone());
+        Self::start(keys, signer, config, store).await
+    }
+
+    async fn stop(self) {
+        self.supervisor.shutdown().await;
+        self.signer.lock().await;
+    }
+}
+
+/// v0.16 M2 (service half) on the pinned relay: two people share the records
+/// of one app in a channel.
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_app_records_are_shared_by_two_profiles() {
+    use bzz::protocol::record::{Change, Record, RecordError, Refusal};
+    use bzz::service::records::{Cause, RecordEvent, SyncState, Writer};
+    use serde_json::{Map, Value, json};
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    async fn next(events: &mut UnboundedReceiver<RecordEvent>) -> RecordEvent {
+        tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("an event of the records in time")
+            .expect("the records are open")
+    }
+    async fn changes(events: &mut UnboundedReceiver<RecordEvent>) -> (Vec<Change>, Cause) {
+        loop {
+            if let RecordEvent::Changes { changes, cause } = next(events).await {
+                return (changes, cause);
+            }
+        }
+    }
+    /// Waits for `wanted`; any change told on the way is a failure.
+    async fn until_state(events: &mut UnboundedReceiver<RecordEvent>, wanted: &SyncState) {
+        loop {
+            match next(events).await {
+                RecordEvent::State(state) if &state == wanted => return,
+                RecordEvent::State(_) => {}
+                other @ RecordEvent::Changes { .. } => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+    async fn silence(events: &mut UnboundedReceiver<RecordEvent>, quiet: Duration) {
+        if let Ok(event) = tokio::time::timeout(quiet, events.recv()).await {
+            panic!("unexpected {event:?}");
+        }
+    }
+    fn object(value: Value) -> Map<String, Value> {
+        value.as_object().unwrap().clone()
+    }
+    fn sorted(mut records: Vec<Record>) -> Vec<Record> {
+        records.sort_by_key(|record| record.id);
+        records
+    }
+    const TYPES: [&str; 2] = ["card", "column"];
+
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let folder = tempfile::tempdir().unwrap();
+    let ana = RecordsProfile::person(&source, folder.path(), "ana", "member").await;
+    let ben = RecordsProfile::person(&source, folder.path(), "ben", "member").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // A private channel of the two, so that nothing else is in it.
+    let channel = uuid::Uuid::new_v4();
+    ana.send(
+        buzz_sdk::build_create_channel(
+            channel,
+            &format!("records-{}", &channel.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Private),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    ana.send(buzz_sdk::build_add_member(channel, &ben.pubkey(), None).unwrap())
+        .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Both open the same app. Nothing is there yet.
+    let (ana_app, mut ana_events) = ana.service.open(channel, "board", &TYPES).await.unwrap();
+    let (ben_app, mut ben_events) = ben.service.open(channel, "board", &TYPES).await.unwrap();
+    until_state(&mut ana_events, &SyncState::Live).await;
+    until_state(&mut ben_events, &SyncState::Live).await;
+    assert!(ana_app.records().is_empty() && ben_app.records().is_empty());
+
+    // 1. A change by one arrives live at the other, with who signed it. The
+    // writer is answered by its call and told nothing more.
+    let started = std::time::Instant::now();
+    let card = ana_app
+        .create(
+            "card",
+            object(json!({"title": "Write the brief", "column": "todo", "order": 1024.0})),
+        )
+        .await
+        .unwrap();
+    let (told, cause) = changes(&mut ben_events).await;
+    eprintln!(
+        "a record created by one profile reached the other {} ms after the create was sent",
+        started.elapsed().as_millis()
+    );
+    assert_eq!(
+        (told, cause),
+        (vec![Change::Upsert(card.clone())], Cause::Live)
+    );
+    assert_eq!(card.author, ana.pubkey());
+    assert_eq!(ben_app.records(), std::slice::from_ref(&card));
+    silence(&mut ana_events, Duration::from_millis(500)).await;
+    let column = ben_app
+        .create("column", object(json!({"title": "Doing", "order": 2})))
+        .await
+        .unwrap();
+    assert_eq!(
+        changes(&mut ana_events).await.0,
+        [Change::Upsert(column.clone())]
+    );
+    assert_eq!(column.author, ben.pubkey());
+
+    // 2. Both revise the same record at once, five times over. Each time one
+    // is stored and the other gets a conflict with the record as it is now;
+    // its retry on that record is stored, and nothing either wrote is lost.
+    let mut base = card.clone();
+    for round in 0..5 {
+        let with = |record: &Record, field: &str| {
+            let mut content = record.content.clone();
+            content.insert(field.into(), json!(round));
+            content
+        };
+        let (from_ana, from_ben) = tokio::join!(
+            ana_app.update(base.id, &base.revision, with(&base, "ana")),
+            ben_app.update(base.id, &base.revision, with(&base, "ben")),
+        );
+        let (winner, loser, loser_app, field) = match (from_ana, from_ben) {
+            (Ok(stored), Err(error)) => (stored, error, &ben_app, "ben"),
+            (Err(error), Ok(stored)) => (stored, error, &ana_app, "ana"),
+            other => panic!("round {round}: exactly one must be stored: {other:?}"),
+        };
+        let RecordError::Conflict { current } = loser else {
+            panic!("round {round}: {loser:?}")
+        };
+        assert_eq!(
+            *current, winner,
+            "round {round}: the current record is the winner's"
+        );
+        let merged = loser_app
+            .update(current.id, &current.revision, with(&current, field))
+            .await
+            .unwrap();
+        assert_eq!(merged.content["ana"], json!(round));
+        assert_eq!(merged.content["ben"], json!(round));
+        assert_eq!(merged.content["title"], "Write the brief");
+        // Both profiles end on the same record.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while ana_app.record(base.id) != Some(merged.clone())
+                || ben_app.record(base.id) != Some(merged.clone())
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("both profiles hold the merged record");
+        base = merged;
+    }
+    while tokio::time::timeout(Duration::from_millis(300), ana_events.recv())
+        .await
+        .is_ok()
+    {}
+    while tokio::time::timeout(Duration::from_millis(300), ben_events.recv())
+        .await
+        .is_ok()
+    {}
+
+    // 3. Ordinary chat ends every sync of the channel: a deleted message
+    // (`resync: redaction`). Both profiles ask again, are told of no change,
+    // and their records were never emptied.
+    let message = ana
+        .send(
+            buzz_sdk::build_message(channel, "to be deleted", None, &[], false, &[], &[]).unwrap(),
+        )
+        .await;
+    silence(&mut ben_events, Duration::from_millis(500)).await;
+    ana.send(buzz_sdk::build_delete_message(channel, message.id).unwrap())
+        .await;
+    for (app, events) in [(&ana_app, &mut ana_events), (&ben_app, &mut ben_events)] {
+        until_state(events, &SyncState::Resyncing).await;
+        assert_eq!(app.records().len(), 2);
+        until_state(events, &SyncState::Live).await;
+        assert_eq!(app.records().len(), 2);
+    }
+    assert_eq!(sorted(ana_app.records()), sorted(ben_app.records()));
+
+    // 4. A type that was not declared is refused, and the relay never sees it.
+    let total = ana.service.channel_total(channel).await.unwrap();
+    assert_eq!(total, 2);
+    for outside in ["vote", "bzz.app.board.card", "buzz.task"] {
+        let error = ana_app
+            .create(outside, object(json!({"title": "outside"})))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "fenced", "{outside}: {error:?}");
+    }
+    assert_eq!(ana.service.channel_total(channel).await.unwrap(), total);
+
+    // 5. After bzz is closed and opened again the same records are there,
+    // before the relay answers anything.
+    let before = sorted(ana_app.records());
+    drop((ana_app, ana_events));
+    let ana = ana.restart().await;
+    let (ana_app, mut ana_events) = ana.service.open(channel, "board", &TYPES).await.unwrap();
+    assert_eq!(
+        sorted(ana_app.records()),
+        before,
+        "read from the store as `open` returns"
+    );
+    assert_eq!(before, sorted(ben_app.records()));
+    // And the relay's set is the same: no change is told.
+    until_state(&mut ana_events, &SyncState::Live).await;
+    assert_eq!(sorted(ana_app.records()), before);
+
+    // A deletion arrives live too, with who deleted.
+    let gone = ben_app.delete(column.id, &column.revision).await.unwrap();
+    assert_eq!(gone, column);
+    assert_eq!(
+        changes(&mut ana_events).await.0,
+        [Change::Removed {
+            record: column.clone(),
+            by: Some(ben.pubkey())
+        }]
+    );
+    assert_eq!(ana_app.records().len(), 1);
+
+    // 6. A guest reads and cannot write; someone outside the channel cannot
+    // read. Each is told in the relay's own terms.
+    let guest = RecordsProfile::person(&source, folder.path(), "guest", "member").await;
+    let outsider = RecordsProfile::person(&source, folder.path(), "outsider", "member").await;
+    ana.send(
+        buzz_sdk::build_add_member(channel, &guest.pubkey(), Some(buzz_sdk::MemberRole::Guest))
+            .unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (guest_app, mut guest_events) = guest.service.open(channel, "board", &TYPES).await.unwrap();
+    assert_eq!(changes(&mut guest_events).await.0.len(), 1);
+    until_state(&mut guest_events, &SyncState::Live).await;
+    let error = guest_app
+        .create("card", object(json!({"title": "a guest's"})))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            RecordError::Refused {
+                refusal: Refusal::Guest,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    let (outsider_app, mut outsider_events) = outsider
+        .service
+        .open(channel, "board", &TYPES)
+        .await
+        .unwrap();
+    until_state(&mut outsider_events, &SyncState::Restricted).await;
+    assert!(outsider_app.records().is_empty());
+    assert!(matches!(
+        outsider_app
+            .create("card", object(json!({"title": "x"})))
+            .await,
+        Err(RecordError::Refused {
+            refusal: Refusal::Unreadable,
+            ..
+        })
+    ));
+    silence(&mut ana_events, Duration::from_millis(500)).await;
+    assert_eq!(ana.service.channel_total(channel).await.unwrap(), 1);
+
+    // 7. The relay's own quota. The harness raises a person's quota for the
+    // other tests of this suite and leaves an agent's at the relay's default
+    // (120 writes a minute at the pin). An agent of Ana's writes through her
+    // open app, with its own key on its own connection: what M7 will do.
+    let agent_keys = Keys::generate();
+    let auth = buzz_sdk::nip_oa::compute_auth_tag(&ana.keys, &agent_keys.public_key(), "").unwrap();
+    let agent_signer = SignerHandle::spawn_with_auth_tag(
+        agent_keys.clone(),
+        Some(buzz_sdk::nip_oa::parse_auth_tag(&auth).unwrap()),
+    );
+    let agent_supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        agent_signer.clone(),
+    );
+    let agent = Writer::new(agent_signer.clone(), agent_supervisor.clone());
+    ana.send(
+        buzz_sdk::build_add_member(channel, &agent.pubkey(), Some(buzz_sdk::MemberRole::Bot))
+            .unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Adding a member does not end a sync; adding the guest did not either.
+    let first = ana_app
+        .create_as(
+            &agent,
+            "card",
+            object(json!({"title": "The agent's first"})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.author, agent.pubkey());
+    // Ana's app is told of it once, as of any participant's change; so is Ben's.
+    assert_eq!(
+        changes(&mut ana_events).await.0,
+        [Change::Upsert(first.clone())]
+    );
+    assert_eq!(
+        changes(&mut ben_events).await.0,
+        [Change::Upsert(first.clone())]
+    );
+    silence(&mut ana_events, Duration::from_millis(500)).await;
+
+    let started = std::time::Instant::now();
+    let mut accepted = 1;
+    let wait = loop {
+        match ana_app
+            .create_as(
+                &agent,
+                "card",
+                object(json!({"title": format!("card {accepted}")})),
+            )
+            .await
+        {
+            Ok(_) => accepted += 1,
+            Err(RecordError::RateLimited { seconds }) => break seconds,
+            Err(other) => panic!("after {accepted} writes: {other:?}"),
+        }
+        assert!(accepted <= 200, "the relay's quota was never met");
+    };
+    eprintln!(
+        "the relay accepted {accepted} writes of the agent in {} s, then asked for a wait of {wait} s",
+        started.elapsed().as_secs()
+    );
+    assert_eq!(
+        accepted, 120,
+        "the relay's own quota for an agent at the pin"
+    );
+    assert!((1..=60).contains(&wait), "{wait}");
+    // While the gate is closed the next write is answered at once, with what
+    // is left of the wait.
+    let again = std::time::Instant::now();
+    let Err(RecordError::RateLimited { seconds }) = ana_app
+        .create_as(&agent, "card", object(json!({"title": "too soon"})))
+        .await
+    else {
+        panic!("expected the wait again")
+    };
+    assert!(seconds <= wait && seconds >= 1, "{seconds} after {wait}");
+    assert!(again.elapsed() < Duration::from_secs(2));
+    // The agent's quota is not Ana's: her own write is stored at that moment.
+    let hers = ana_app
+        .create("card", object(json!({"title": "Ana's, meanwhile"})))
+        .await
+        .unwrap();
+    assert_eq!(hers.author, ana.pubkey());
+    // Every write the relay accepted is in both profiles' sets.
+    let expected = 1 + accepted + 1;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while ana_app.records().len() != expected || ben_app.records().len() != expected {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("both profiles hold every accepted record");
+    assert_eq!(sorted(ana_app.records()), sorted(ben_app.records()));
+
+    // 8. An archived channel refuses writes and still answers the sync.
+    // Archiving ends the syncs too (`resync: channel access changed`).
+    while tokio::time::timeout(Duration::from_millis(300), ana_events.recv())
+        .await
+        .is_ok()
+    {}
+    ana.send(buzz_sdk::build_archive(channel).unwrap()).await;
+    until_state(&mut ana_events, &SyncState::Resyncing).await;
+    until_state(&mut ana_events, &SyncState::Live).await;
+    assert_eq!(ana_app.records().len(), expected);
+    let error = ana_app
+        .create("card", object(json!({"title": "into the archive"})))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            RecordError::Refused {
+                refusal: Refusal::Archived,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    ana.send(buzz_sdk::build_unarchive(channel).unwrap()).await;
+    until_state(&mut ana_events, &SyncState::Resyncing).await;
+    until_state(&mut ana_events, &SyncState::Live).await;
+    ana_app
+        .create("card", object(json!({"title": "out of the archive"})))
+        .await
+        .unwrap();
+
+    drop((ana_app, ben_app, guest_app, outsider_app));
+    agent_supervisor.shutdown().await;
+    agent_signer.lock().await;
+    for profile in [ana, ben, guest, outsider] {
+        profile.stop().await;
+    }
+}
