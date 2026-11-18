@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{
     error::Result,
-    protocol::artifact::{self, Artifact},
+    protocol::artifact::{self, APP_RECORD_TYPE_PREFIX, Artifact},
 };
 
 use super::Store;
@@ -30,10 +30,6 @@ fn decode(json: &str) -> Option<Artifact> {
         .ok()
         .and_then(|event| artifact::parse(&event).ok())
 }
-
-/// The prefix of every record type of an app. The type `bzz.app` itself, a
-/// shared script, does not have it.
-pub const APP_RECORD_TYPE_PREFIX: &str = "bzz.app.";
 
 /// `?N,?N+1,...` for `count` values starting at parameter `first`.
 fn placeholders(first: usize, count: usize) -> String {

@@ -23,6 +23,12 @@ const ENVELOPE: [&str; 8] = ["ar", "d", "h", "type", "title", "op", "root", "pre
 const MAX_TITLE_BYTES: usize = 512;
 /// Conflict reconciliation attempts before the user is told.
 pub const MAX_RECONCILE: usize = 3;
+/// The prefix of every record type of an app, `bzz.app.<app>.<record>`
+/// (v0.16). The type `bzz.app` itself, a shared script, does not have it.
+pub const APP_RECORD_TYPE_PREFIX: &str = "bzz.app.";
+/// The prefix of the subscription of an app's records. bzz's own handling of
+/// relay messages leaves these to the records service.
+pub const APP_RECORDS_SUBSCRIPTION_PREFIX: &str = "apprec-";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Op {
