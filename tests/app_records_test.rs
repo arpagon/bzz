@@ -72,6 +72,8 @@ struct Scripted {
     answers: VecDeque<Answer>,
     /// Record writes get no answer at all.
     mute_records: bool,
+    /// An accepted record write is echoed on the sync before its `OK`.
+    echo_first: bool,
     /// Heads the HTTP head view knows, newest last.
     heads: Vec<Event>,
     /// The subscription of the last sync request.
@@ -205,6 +207,13 @@ async fn world_on(
                         if script.mute_records {
                             return Vec::new();
                         }
+                        let echo = script
+                            .subscription
+                            .clone()
+                            .filter(|_| script.echo_first)
+                            .map(|subscription| {
+                                WsAction::Send(json!(["EVENT", subscription, value[1]]))
+                            });
                         match script.answers.pop_front() {
                             Some(answer) => {
                                 let mut actions = vec![WsAction::Send(json!([
@@ -216,7 +225,10 @@ async fn world_on(
                                 actions.extend(answer.then.into_iter().map(WsAction::Send));
                                 actions
                             }
-                            None => vec![WsAction::Send(json!(["OK", event_id, true, ""]))],
+                            None => echo
+                                .into_iter()
+                                .chain([WsAction::Send(json!(["OK", event_id, true, ""]))])
+                                .collect(),
                         }
                     }
                     "CLOSE" => vec![WsAction::Send(json!(["CLOSED", value[1], ""]))],
@@ -1319,7 +1331,28 @@ async fn the_callers_own_writes_are_answered_once_and_another_writers_are_told()
     assert_eq!(app.records(), std::slice::from_ref(&fresh));
     world.live(&Event::from_json(world.writes()[4].to_string()).unwrap());
     silence(&mut events, Duration::from_millis(300)).await;
-    assert_eq!(app.records(), [fresh]);
+    assert_eq!(app.records(), std::slice::from_ref(&fresh));
+
+    // The relay may deliver the echo before the acknowledgement. The
+    // caller is still answered once and told nothing.
+    world.script().echo_first = true;
+    let early = app
+        .create("column", object(json!({"title": "Echoed first"})))
+        .await
+        .unwrap();
+    let early = app
+        .update(
+            early.id,
+            &early.revision,
+            object(json!({"title": "Echoed first, revised"})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(app.record(early.id), Some(early.clone()));
+    assert_eq!(app.delete(early.id, &early.revision).await.unwrap(), early);
+    assert_eq!(app.records(), std::slice::from_ref(&fresh));
+    silence(&mut events, Duration::from_millis(300)).await;
+    world.script().echo_first = false;
 
     agent_signer.lock().await;
     world.stop().await;
