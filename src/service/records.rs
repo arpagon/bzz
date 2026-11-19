@@ -18,7 +18,7 @@
 //! - **An answer for every write**, one of `protocol::record::RecordError`.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
+    collections::{BTreeMap, HashSet, VecDeque},
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
@@ -38,8 +38,8 @@ use crate::{
         artifact::{self, Artifact, KIND_ARTIFACT, KIND_ARTIFACT_REMOVAL},
         http::HttpClient,
         record::{
-            Change, Fence, MAX_LIVE_RECORDS, Record, RecordError, Refusal, Verdict, difference,
-            verdict,
+            Change, Fence, MAX_LIVE_RECORDS, Record, RecordError, Refusal, Verdict, WriteBudget,
+            difference, verdict,
         },
     },
     realtime::{
@@ -156,7 +156,16 @@ pub struct RecordsService {
     open: Arc<Mutex<HashSet<String>>>,
     /// What the relay's NIP-11 says of artifacts, once it was read.
     capabilities: Arc<Mutex<Option<artifact::Capabilities>>>,
+    /// What the owner's apps may still write this minute: one budget for
+    /// every app of this identity, because the relay has one for the person.
+    budget: SharedBudget,
 }
+
+/// The budget of writes the open apps of one identity share
+/// (`protocol::record::APP_WRITES_PER_MINUTE`). Whoever runs an app for the
+/// owner (`apps::session`) takes a write out of it before it calls `create`,
+/// `update` or `delete`.
+pub type SharedBudget = Arc<Mutex<WriteBudget>>;
 
 impl RecordsService {
     pub fn new(community_id: Uuid, http: HttpClient, store: StoreHandle, owner: Writer) -> Self {
@@ -167,7 +176,24 @@ impl RecordsService {
             owner,
             open: Arc::default(),
             capabilities: Arc::default(),
+            budget: Arc::default(),
         }
+    }
+
+    /// The identity the owner's writes are signed with (public key, hex).
+    pub fn owner_pubkey(&self) -> String {
+        self.owner.pubkey()
+    }
+
+    /// The budget of writes every app of the owner shares.
+    pub fn budget(&self) -> SharedBudget {
+        self.budget.clone()
+    }
+
+    /// Whether `app` is open in `channel` now. An app that was just closed
+    /// stays open until its sync has ended, a moment later.
+    pub fn is_open(&self, channel: Uuid, app: &str) -> bool {
+        lock(&self.open).contains(&Fence::subscription_of(app, channel))
     }
 
     /// Opens the records of `app` in `channel` for the short type names it
@@ -297,9 +323,6 @@ struct State {
     /// Live heads inside the fence that are records, by identity.
     heads: BTreeMap<Uuid, Artifact>,
     records: BTreeMap<Uuid, Record>,
-    /// Live artifacts of the app's types whose content is not a record.
-    /// They are not shown, and they count against the limit.
-    unreadable: BTreeSet<Uuid>,
     sync: SyncState,
     /// Creates on their way, counted against the limit.
     creating: usize,
@@ -316,7 +339,6 @@ impl State {
         let id = head.id;
         match fence.record(&head) {
             Some(record) => {
-                self.unreadable.remove(&id);
                 self.records.insert(id, record);
                 self.heads.insert(id, head);
                 true
@@ -324,22 +346,18 @@ impl State {
             None => {
                 self.records.remove(&id);
                 self.heads.remove(&id);
-                if fence.admits(&head) && !head.is_deleted() {
-                    self.unreadable.insert(id);
-                }
                 false
             }
         }
     }
 
     fn forget(&mut self, id: Uuid) -> Option<Record> {
-        self.unreadable.remove(&id);
         self.heads.remove(&id);
         self.records.remove(&id)
     }
 
     fn live(&self) -> usize {
-        self.records.len() + self.unreadable.len() + self.creating
+        self.records.len() + self.creating
     }
 
     fn remember(&mut self, write: OwnWrite) {
@@ -445,13 +463,6 @@ impl AppRecords {
 
     pub fn record(&self, id: Uuid) -> Option<Record> {
         lock(&self.shared.state).records.get(&id).cloned()
-    }
-
-    /// Live artifacts of the app's types that are not records (their content
-    /// is not a JSON object). Some other client wrote them. They are not
-    /// shown and count against the limit.
-    pub fn unreadable(&self) -> usize {
-        lock(&self.shared.state).unreadable.len()
     }
 
     /// Asks for the set again after a final state, for example once records
@@ -1236,7 +1247,6 @@ impl SyncTask {
                 .collect::<Vec<_>>();
             state.heads = fresh.heads;
             state.records = fresh.records;
-            state.unreadable = fresh.unreadable;
             (changes, state.heads.values().cloned().collect::<Vec<_>>())
         };
         self.attempts = 0;

@@ -1118,7 +1118,8 @@ async fn nothing_is_sent_that_bzz_knows_would_be_refused() {
     let world = world().await;
     let other = Keys::generate();
     // The app already holds its thousand records, one of them written by
-    // some other client with content that is no object.
+    // some other client with content that is no object: a record with no
+    // fields, which counts, and which the app can delete.
     let mut set = (0..MAX_LIVE_RECORDS - 1)
         .map(|index| card(&world.fence, &other, &format!("card {index}")))
         .collect::<Vec<_>>();
@@ -1136,16 +1137,16 @@ async fn nothing_is_sent_that_bzz_knows_would_be_refused() {
         ),
         &other,
     );
+    let odd_id = head(&odd).id;
     set.push(odd);
     let one = set[0].clone();
     world.script().syncs.push_back(Sync::Set(set));
     let (app, mut events) = world.open().await;
-    assert_eq!(changes(&mut events).await.0.len(), MAX_LIVE_RECORDS - 1);
+    assert_eq!(changes(&mut events).await.0.len(), MAX_LIVE_RECORDS);
     until_state(&mut events, &SyncState::Live).await;
-    assert_eq!(
-        (app.records().len(), app.unreadable()),
-        (MAX_LIVE_RECORDS - 1, 1)
-    );
+    assert_eq!(app.records().len(), MAX_LIVE_RECORDS);
+    let odd = app.record(odd_id).expect("the odd one is a record");
+    assert!(odd.content.is_empty());
 
     // Over the app's limit.
     let error = app
@@ -1213,10 +1214,14 @@ async fn nothing_is_sent_that_bzz_knows_would_be_refused() {
     assert_eq!(first_tag(&sent[0], "op").as_deref(), Some("delete"));
     assert_eq!(first_tag(&sent[0], "title"), None);
     assert_eq!(sent[0]["content"], "");
-    assert_eq!(
-        (app.records().len(), app.unreadable()),
-        (MAX_LIVE_RECORDS - 2, 1)
-    );
+    assert_eq!(app.records().len(), MAX_LIVE_RECORDS - 1);
+    // What no contract wrote can be deleted like any record.
+    let gone = app.delete(odd_id, &odd.revision).await.unwrap();
+    assert!(gone.content.is_empty());
+    assert_eq!(app.records().len(), MAX_LIVE_RECORDS - 2);
+    let sent = world.writes();
+    assert_eq!(first_tag(&sent[4], "d"), Some(odd_id.to_string()));
+    assert_eq!(first_tag(&sent[4], "op").as_deref(), Some("delete"));
     // The relay's count of the whole channel, for the warning.
     assert_eq!(
         world.service.channel_total(world.channel).await.unwrap(),

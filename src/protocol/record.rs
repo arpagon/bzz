@@ -34,8 +34,19 @@ pub const MAX_TYPES: usize = 16;
 /// here, long before, and says so.
 pub const MAX_LIVE_RECORDS: usize = 1000;
 /// The content bzz sends for one record, in bytes of JSON. The relay takes
-/// 262,144; a record is a card or a vote, not a file.
-pub const MAX_CONTENT_BYTES: usize = 65_536;
+/// 262,144; a record is a card or a vote, not a file. 16 KiB keeps the
+/// fullest set an app may have (1000 records) at 16 MiB, inside the memory
+/// of the interpreter that has to hold it. It is the one number for every
+/// writer of this bzz: a script, and an agent's tools (M7).
+pub const MAX_CONTENT_BYTES: usize = 16_384;
+/// The relay's budget of writes for one person in a minute, at the pin. Chat
+/// messages and the writes of apps spend the same budget.
+pub const PERSON_WRITES_PER_MINUTE: u32 = 60;
+/// What the apps of one person may spend of that budget: half. An app that
+/// could spend all of it would leave its owner unable to send a message
+/// until the minute passed. Past it bzz answers `rate_limited` itself and
+/// sends no frame.
+pub const APP_WRITES_PER_MINUTE: u32 = PERSON_WRITES_PER_MINUTE / 2;
 /// The relay's limit for one WebSocket message, after JSON escaping. Past it
 /// the relay drops the connection without an answer.
 pub const MAX_FRAME_BYTES: usize = 524_288;
@@ -331,26 +342,37 @@ impl Fence {
     /// The subscription of that sync. Stable for an app in a channel, and
     /// short enough for any relay (a subscription id is at most 64 bytes).
     pub fn subscription_id(&self) -> String {
+        Self::subscription_of(&self.app, self.channel)
+    }
+
+    /// The subscription of `app` in `channel`, whatever its types.
+    pub fn subscription_of(app: &str, channel: Uuid) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(self.channel.as_bytes());
+        hasher.update(channel.as_bytes());
         hasher.update([0]);
-        hasher.update(self.app.as_bytes());
+        hasher.update(app.as_bytes());
         format!(
             "{APP_RECORDS_SUBSCRIPTION_PREFIX}{}",
             &hex::encode(hasher.finalize())[..24]
         )
     }
 
-    /// The record a live head stands for. `None` for a deletion, for a head
-    /// outside the fence, and for content that is not a JSON object: such an
-    /// artifact was not written by this app's contract.
+    /// The record a live head stands for. `None` for a deletion and for a
+    /// head outside the fence.
+    ///
+    /// Content that is not a JSON object was not written by this app's
+    /// contract: some other client put it under the app's type. It is a
+    /// record all the same, with **no fields**: an app is shown it, counts
+    /// it, and can replace or delete it. Hidden, it would count against the
+    /// app's limit with nothing in bzz able to remove it.
     pub fn record(&self, head: &Artifact) -> Option<Record> {
         if head.is_deleted() || head.home != self.channel {
             return None;
         }
         let short = self.short_type(&head.artifact_type)?;
-        let Ok(Value::Object(content)) = serde_json::from_str::<Value>(&head.event.content) else {
-            return None;
+        let content = match serde_json::from_str::<Value>(&head.event.content) {
+            Ok(Value::Object(content)) => content,
+            _ => Map::new(),
         };
         Some(Record {
             id: head.id,
@@ -598,6 +620,71 @@ pub fn verdict(message: &str) -> Verdict {
             refusal: Refusal::Other,
             reason: display(message.trim(), 160),
         }
+    }
+}
+
+/// A budget of writes in any minute: the local cap on what the apps of one
+/// person send. Pure: whoever asks says what time it is, on any clock that
+/// only moves forward.
+#[derive(Clone, Debug)]
+pub struct WriteBudget {
+    per_minute: u32,
+    spent: std::collections::VecDeque<std::time::Duration>,
+}
+
+impl Default for WriteBudget {
+    fn default() -> Self {
+        Self::new(APP_WRITES_PER_MINUTE)
+    }
+}
+
+impl WriteBudget {
+    const WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+    pub const fn new(per_minute: u32) -> Self {
+        Self {
+            per_minute,
+            spent: std::collections::VecDeque::new(),
+        }
+    }
+
+    pub const fn per_minute(&self) -> u32 {
+        self.per_minute
+    }
+
+    fn forget(&mut self, now: std::time::Duration) {
+        while self
+            .spent
+            .front()
+            .is_some_and(|at| now.saturating_sub(*at) >= Self::WINDOW)
+        {
+            self.spent.pop_front();
+        }
+    }
+
+    /// How long until one more write may be sent: zero when one may now.
+    pub fn wait(&mut self, now: std::time::Duration) -> std::time::Duration {
+        if self.per_minute == 0 {
+            return Self::WINDOW;
+        }
+        self.forget(now);
+        if self.spent.len() < self.per_minute as usize {
+            return std::time::Duration::ZERO;
+        }
+        // The oldest of the last `per_minute` writes leaves the window first.
+        let oldest = self.spent[self.spent.len() - self.per_minute as usize];
+        (oldest + Self::WINDOW).saturating_sub(now)
+    }
+
+    /// Takes one write out of the budget, or says how long to wait. A
+    /// budget of zero never has one.
+    pub fn spend(&mut self, now: std::time::Duration) -> Result<(), std::time::Duration> {
+        let wait = self.wait(now);
+        if !wait.is_zero() {
+            return Err(wait);
+        }
+        self.spent.push_back(now);
+        Ok(())
     }
 }
 
@@ -864,11 +951,31 @@ mod tests {
         assert_eq!(updated.root.as_deref(), Some(root.as_str()));
         fence.check(&updated.event).unwrap();
 
-        // Not an object: not a record of this contract.
+        // Not an object: no app's contract wrote it. It is a record with no
+        // fields, which an app can see, replace and delete.
         for content in ["", "not json", "[1,2]", "\"text\"", "3", "null"] {
             let head = foreign(&keys, channel, "bzz.app.board.card", content, &[]);
             assert!(fence.admits(&head));
-            assert!(fence.record(&head).is_none(), "{content}");
+            let record = fence.record(&head).expect(content);
+            assert!(record.content.is_empty(), "{content}");
+            assert_eq!(
+                (
+                    record.id,
+                    record.revision.as_str(),
+                    record.record_type.as_str()
+                ),
+                (head.id, head.head.as_str(), "card")
+            );
+            let replaced = signed(
+                fence
+                    .update(&head, &object(json!({"title":"Ours"})))
+                    .unwrap(),
+                &keys,
+            );
+            assert_eq!(fence.record(&replaced).unwrap().content["title"], "Ours");
+            let deleted = signed(fence.delete(&head).unwrap(), &keys);
+            assert!(deleted.is_deleted());
+            fence.check(&deleted.event).unwrap();
         }
     }
 
@@ -991,11 +1098,14 @@ mod tests {
             })
         ));
         // And once more in the frame, where a control character is six
-        // bytes. A revision that carries what another client left on the
-        // record (content of control characters, sixteen long tags) passes
-        // the relay's validator and bzz's content limit, and would be a
-        // frame of more than 524,288 bytes: the relay answers that by
-        // dropping the connection.
+        // bytes. The largest revision bzz can sign carries what another
+        // client left on the record: content of control characters up to
+        // bzz's own limit, and as many tag bytes as the relay's validator
+        // takes (sixteen tags of 4000). At 16,384 bytes of content that is
+        // still one frame. With the 65,536 of the first design it was
+        // about 778,000 bytes, which the relay answers by dropping the
+        // connection; the check of the frame stays, for a relay that takes
+        // more tags.
         let noise = "\u{1}".repeat(4000);
         let tags = (0..16)
             .map(|index| vec![format!("x{index}"), noise.clone()])
@@ -1014,15 +1124,35 @@ mod tests {
         );
         assert!(buzz_core::artifact::validate(&head.event).is_ok());
         let frame = envelope::publish(&head.event).len();
-        assert!(frame > MAX_FRAME_BYTES, "{frame}");
-        assert_eq!(
-            fence.check(&head.event).unwrap_err(),
-            RecordError::TooLarge {
-                what: Oversize::Frame,
-                bytes: frame,
-                limit: MAX_FRAME_BYTES
-            }
+        assert!(
+            frame > 480_000 && frame <= MAX_FRAME_BYTES,
+            "the largest revision is {frame} bytes"
         );
+        fence.check(&head.event).unwrap();
+        // One more tag and the relay's own validator refuses it, before the
+        // frame is measured.
+        let more = (0..17)
+            .map(|index| vec![format!("x{index}"), noise.clone()])
+            .collect::<Vec<_>>();
+        let more = more
+            .iter()
+            .map(|parts| parts.iter().map(String::as_str).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        let more = more.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let mut envelope_tags = vec![
+            tag(&["ar", "1"]).unwrap(),
+            tag(&["d", &Uuid::new_v4().to_string()]).unwrap(),
+            tag(&["h", &fence.channel().to_string()]).unwrap(),
+            tag(&["type", "bzz.app.board.card"]).unwrap(),
+            tag(&["title", "Theirs"]).unwrap(),
+            tag(&["op", "create"]).unwrap(),
+        ];
+        envelope_tags.extend(more.iter().map(|parts| tag(parts).unwrap()));
+        let over = EventBuilder::new(Kind::Custom(KIND_ARTIFACT), "{}")
+            .tags(envelope_tags)
+            .sign_with_keys(&keys)
+            .unwrap();
+        assert_eq!(fence.check(&over).unwrap_err().code(), "bad_request");
         // Content the relay itself would take (262,144 bytes) is over bzz's
         // own limit for a record.
         let head = foreign(
@@ -1099,6 +1229,43 @@ mod tests {
             panic!()
         };
         assert!(reason.chars().count() <= 160 && !reason.chars().any(char::is_control));
+    }
+
+    #[test]
+    fn an_apps_writes_have_a_budget_of_half_the_persons() {
+        use std::time::Duration;
+        assert_eq!(APP_WRITES_PER_MINUTE * 2, PERSON_WRITES_PER_MINUTE);
+        let at = Duration::from_secs;
+        let mut budget = WriteBudget::default();
+        // Thirty writes at once are taken, the next is told the wait.
+        for _ in 0..APP_WRITES_PER_MINUTE {
+            assert_eq!(budget.spend(at(100)), Ok(()));
+        }
+        assert_eq!(budget.spend(at(100)), Err(at(60)));
+        assert_eq!(budget.spend(at(141)), Err(at(19)));
+        // A refused write spends nothing: the wait is not pushed back.
+        assert_eq!(budget.wait(at(159)), at(1));
+        // A minute after the first, one more; in any minute never over thirty.
+        assert_eq!(budget.spend(at(160)), Ok(()));
+        let mut budget = WriteBudget::new(3);
+        let mut taken = Vec::new();
+        for step in 0..600_u64 {
+            // Asked every 1 or 8 seconds, on a clock that only moves forward.
+            let second = step * 7 + step % 7;
+            if budget.spend(at(second)).is_ok() {
+                taken.push(second);
+            }
+        }
+        assert!(taken.len() > 80, "{}", taken.len());
+        assert!(taken.windows(4).all(|four| four[3] - four[0] >= 60));
+        // The wait is until the write that frees a place leaves the minute.
+        let mut budget = WriteBudget::new(2);
+        assert!(budget.spend(at(0)).is_ok() && budget.spend(at(30)).is_ok());
+        assert_eq!(budget.spend(at(40)), Err(at(20)));
+        assert_eq!(budget.spend(at(60)), Ok(()));
+        assert_eq!(budget.spend(at(61)), Err(at(29)));
+        // No budget at all is a wait, never a division or an index.
+        assert_eq!(WriteBudget::new(0).spend(at(5)), Err(at(60)));
     }
 
     #[test]
