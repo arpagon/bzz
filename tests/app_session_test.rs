@@ -9,15 +9,13 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use bzz::apps::runtime::draw::text_of;
-use bzz::apps::runtime::{AppTheme, Key, Phase, Signal};
-use bzz::apps::session::{AppSession, SessionOptions, SessionStatus};
+use bzz::apps::runtime::Phase;
 use bzz::protocol::record::{APP_WRITES_PER_MINUTE, Fence};
 use bzz::service::records::SyncState;
 use bzz::store::Store;
 use nostr::{Event, Keys};
-use ratatui::{buffer::Buffer, layout::Rect};
 use serde_json::{Value, json};
+use support::app_pane::{Pane, last_row};
 use support::records_world::*;
 use uuid::Uuid;
 
@@ -43,102 +41,6 @@ function app.reply(s, r, ctx)
 end
 return app
 "#;
-
-/// What an app's pane will be: a session, woken, polled and drawn.
-struct Pane {
-    session: AppSession,
-    signal: Signal,
-    size: (u16, u16),
-}
-
-impl Pane {
-    /// Opens `app` in the world's channel, at the size an app has when it
-    /// is docked beside the conversation.
-    fn open(world: &World, app: &str, source: &str) -> Self {
-        Self::open_with(world, source, SessionOptions::new(app))
-    }
-
-    fn open_with(world: &World, source: &str, options: SessionOptions) -> Self {
-        let signal = Signal::new();
-        let session = AppSession::on_relay(
-            source,
-            options.waker(signal.waker()),
-            &world.service,
-            world.channel,
-        )
-        .unwrap();
-        Self {
-            session,
-            signal,
-            size: (40, 16),
-        }
-    }
-
-    fn screen(&mut self) -> String {
-        self.session.poll();
-        let area = Rect::new(0, 0, self.size.0, self.size.1);
-        let mut buffer = Buffer::empty(area);
-        self.session.draw(area, &mut buffer, &AppTheme::default());
-        text_of(&buffer)
-    }
-
-    fn status(&mut self) -> SessionStatus {
-        self.session.poll();
-        self.session.status()
-    }
-
-    fn key(&mut self, written: &str) {
-        assert!(self.session.key(Key::parse(written).expect(written)));
-    }
-
-    fn type_text(&mut self, text: &str) {
-        for character in text.chars() {
-            let key = if character == ' ' {
-                Key::named("space")
-            } else {
-                Key::named(&character.to_string())
-            };
-            assert!(self.session.key(key));
-        }
-    }
-
-    /// Polls and draws until the screen and the status are as wanted. The
-    /// screen is returned. Never blocks the test's runtime: the session's
-    /// own tasks run while this waits.
-    async fn until(
-        &mut self,
-        what: &str,
-        mut ready: impl FnMut(&str, &SessionStatus) -> bool,
-    ) -> String {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let screen = self.screen();
-            let status = self.session.status();
-            if ready(&screen, &status) {
-                return screen;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for {what}:\n{screen}\n{status:?}"
-            );
-            tokio::time::sleep(Duration::from_millis(3)).await;
-            // The owner was woken, or its own tick has come.
-            self.signal.wait(Duration::ZERO);
-            self.session.tick();
-        }
-    }
-
-    /// The screen once the script has done everything it was sent and the
-    /// status line says `status`.
-    async fn settled(&mut self, status: &str) -> String {
-        self.until(status, |screen, _| last_row(screen) == status)
-            .await
-    }
-}
-
-fn last_row(screen: &str) -> &str {
-    screen.lines().last().unwrap_or("")
-}
 
 /// A card of the Board, written by `keys`.
 fn board_card(fence: &Fence, keys: &Keys, title: &str, column: &str, order: u32) -> Event {
@@ -172,7 +74,7 @@ async fn a_resync_changes_nothing_on_the_screen() {
     let other = Keys::generate();
     let cards = three_cards(&world, &other);
     world.script().syncs.push_back(Sync::Set(cards.clone()));
-    let mut pane = Pane::open(&world, "board", BOARD);
+    let mut pane = Pane::open(&world.service, world.channel, "board", BOARD);
     let first = pane.settled("Loaded 3 cards.").await;
     assert!(
         first.contains("To do (2)") && first.contains("> Alpha") && first.contains("Doing (1)"),
@@ -257,7 +159,7 @@ async fn too_many_restricted_and_archived_each_show_their_sentence() {
         three_cards(&world, &other),
         "error: sync set exceeds max_events",
     ));
-    let mut pane = Pane::open(&world, "board", BOARD);
+    let mut pane = Pane::open(&world.service, world.channel, "board", BOARD);
     pane.until("too many", |_, status| {
         matches!(status.sync, SyncState::TooMany { .. })
     })
@@ -289,7 +191,7 @@ async fn too_many_restricted_and_archived_each_show_their_sentence() {
         .script()
         .syncs
         .push_back(Sync::Closed(Vec::new(), "restricted: not a channel member"));
-    let mut pane = Pane::open(&world, "board", BOARD);
+    let mut pane = Pane::open(&world.service, world.channel, "board", BOARD);
     pane.until("no access", |_, status| {
         status.sync == SyncState::Restricted
     })
@@ -324,7 +226,7 @@ async fn too_many_restricted_and_archived_each_show_their_sentence() {
         .script()
         .answers
         .push_back(Answer::refuse("invalid: channel is archived"));
-    let mut pane = Pane::open(&world, "board", BOARD);
+    let mut pane = Pane::open(&world.service, world.channel, "board", BOARD);
     pane.settled("Loaded 3 cards.").await;
     assert_eq!(pane.status().notice, None);
     pane.key("]");
@@ -381,7 +283,7 @@ async fn a_message_of_the_person_is_not_delayed_by_an_apps_writes() {
     // sixty, and the other thirty stay for the person's chat. A message
     // sent while the app's writes wait goes out before nearly all of them.
     let world = world().await;
-    let mut pane = Pane::open(&world, "burst", BURST);
+    let mut pane = Pane::open(&world.service, world.channel, "burst", BURST);
     pane.until("the app", |screen, status| {
         screen.starts_with("stored 0") && status.sync == SyncState::Live
     })
@@ -456,7 +358,7 @@ async fn a_message_of_the_person_is_not_delayed_by_an_apps_writes() {
     // is sent and acknowledged at once.
     let world = support::records_world::world().await;
     world.script().mute_records = true;
-    let mut pane = Pane::open(&world, "burst", BURST);
+    let mut pane = Pane::open(&world.service, world.channel, "burst", BURST);
     pane.until("the app", |screen, status| {
         screen.starts_with("stored 0") && status.sync == SyncState::Live
     })
@@ -534,7 +436,7 @@ async fn a_sync_of_a_thousand_records_through_a_session() {
         })
         .collect();
     let wide = |world: &World, source: &str| {
-        let mut pane = Pane::open(world, "board", source);
+        let mut pane = Pane::open(&world.service, world.channel, "board", source);
         pane.size = (80, 24);
         pane.session.resize(80, 24);
         pane

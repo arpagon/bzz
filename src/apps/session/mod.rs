@@ -721,8 +721,11 @@ impl AppSession {
     // --------------------------------------------------------------- requests
 
     /// One request of the script: exactly one reply follows, now or later.
-    /// Also the way in for a test that asks what a script cannot.
-    pub(crate) fn serve(&mut self, request: RecordRequest) {
+    /// [`AppSession::poll`] calls it for each request the script made. It
+    /// is public for a test that asks what the runtime lets no script ask:
+    /// the reply then goes to a script that does not wait for it.
+    #[doc(hidden)]
+    pub fn serve(&mut self, request: RecordRequest) {
         // The fence, where the request is served (rule 17). The runtime
         // refuses these at the line that asks; the service refuses them
         // again.

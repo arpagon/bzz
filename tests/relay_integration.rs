@@ -8583,6 +8583,43 @@ impl RecordsProfile {
         Self::start(keys, signer, config, folder.join(format!("{name}.sqlite3"))).await
     }
 
+    /// The same identity and store with no relay to reach: bzz opened
+    /// offline. The store was opened before, so the relay's key is pinned.
+    fn offline(
+        keys: Keys,
+        (config, community): (Config, uuid::Uuid),
+        store: std::path::PathBuf,
+    ) -> Self {
+        let signer = SignerHandle::spawn(keys.clone());
+        // Nothing listens on the discard port: every connection is refused.
+        let http = HttpClient::new(
+            url::Url::parse("http://127.0.0.1:9/").unwrap(),
+            signer.clone(),
+        )
+        .unwrap();
+        let mut database = Store::open(&store).unwrap();
+        database.sync_config(&config).unwrap();
+        let supervisor = SupervisorHandle::spawn(
+            url::Url::parse("ws://127.0.0.1:9/").unwrap(),
+            signer.clone(),
+        );
+        let service = bzz::service::records::RecordsService::new(
+            community,
+            http,
+            StoreHandle::spawn(database).unwrap(),
+            bzz::service::records::Writer::new(signer.clone(), supervisor.clone()),
+        );
+        Self {
+            keys,
+            signer,
+            supervisor,
+            service,
+            config,
+            community,
+            store,
+        }
+    }
+
     fn pubkey(&self) -> String {
         self.keys.public_key().to_hex()
     }
@@ -9019,4 +9056,589 @@ async fn real_relay_app_records_are_shared_by_two_profiles() {
     for profile in [ana, ben, guest, outsider] {
         profile.stop().await;
     }
+}
+
+/// The cards a Board's screen shows, by column. At 40 columns the three
+/// columns are stacked: a header such as `To do (2)`, then its cards.
+#[cfg(feature = "apps")]
+fn board_cards(screen: &str) -> std::collections::BTreeMap<&'static str, Vec<String>> {
+    let mut cards = std::collections::BTreeMap::new();
+    let mut column = None;
+    for line in screen.lines() {
+        let text = line.trim_start_matches("> ").trim();
+        let header = [
+            ("To do (", "todo"),
+            ("Doing (", "doing"),
+            ("Done (", "done"),
+        ]
+        .into_iter()
+        .find(|(prefix, _)| text.starts_with(prefix));
+        if let Some((_, name)) = header {
+            column = Some(name);
+            cards.insert(name, Vec::new());
+        } else if text.is_empty() || line == support::app_pane::last_row(screen) {
+            // A gap, or the app's own status line.
+        } else if let Some(name) = column {
+            cards
+                .entry(name)
+                .or_insert_with(Vec::new)
+                .push(text.to_owned());
+        }
+    }
+    cards
+}
+
+#[cfg(feature = "apps")]
+fn board_column(screen: &str, title: &str) -> Option<&'static str> {
+    board_cards(screen)
+        .into_iter()
+        .find(|(_, cards)| cards.iter().any(|card| card == title))
+        .map(|(column, _)| column)
+}
+
+/// A script that writes as many records at once as it is pasted a number,
+/// and counts what it is answered.
+#[cfg(feature = "apps")]
+const BURST_APP: &str = r#"
+local app = { api = 1, types = { "card" } }
+function app.init(ctx) return { ok = 0, waits = 0, other = 0, wait = "" } end
+function app.view(s, ctx)
+  return ui.text { "stored " .. s.ok, "told to wait " .. s.waits .. s.wait, "other " .. s.other .. (s.why or "") }
+end
+function app.paste(s, text, ctx)
+  for i = 1, tonumber(text) do data.create { type = "card", content = { title = "burst " .. i } } end
+end
+function app.reply(s, r, ctx)
+  if r.ok then s.ok = s.ok + 1
+  elseif r.error.code == "rate_limited" then
+    s.waits = s.waits + 1
+    s.wait = " (" .. (r.error.retry_after > 0 and r.error.retry_after <= 60 and "1 to 60 s" or "?") .. ")"
+  else s.other = s.other + 1; s.why = " " .. r.error.code .. ": " .. r.error.message end
+end
+return app
+"#;
+
+/// v0.16 M2, the exit gate, to the letter: two bzz profiles on the pinned
+/// relay share a board. Each profile is a generated identity with its own
+/// store on disk, connection, records service and app session; the app is
+/// the Board fixture, driven by keys through the session and read as
+/// screens of 40 by 16, the size of a docked app.
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_app_session_two_profiles_share_a_board() {
+    use bzz::apps::runtime::{RecordOp, RecordRequest};
+    use bzz::apps::session::SessionOptions;
+    use bzz::service::records::SyncState;
+    use serde_json::json;
+    use support::app_pane::{Pane, last_row};
+
+    const BOARD: &str = include_str!("fixtures/apps/board/app.lua");
+    const SAVED: &str = "Saved.";
+    const MERGED: &str = "Conflict: merged with a newer change.";
+
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let folder = tempfile::tempdir().unwrap();
+    let ana = RecordsProfile::person(&source, folder.path(), "ana", "member").await;
+    let ben = RecordsProfile::person(&source, folder.path(), "ben", "member").await;
+    let dan = RecordsProfile::person(&source, folder.path(), "dan", "member").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let channel = uuid::Uuid::new_v4();
+    ana.send(
+        buzz_sdk::build_create_channel(
+            channel,
+            &format!("board-{}", &channel.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Private),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    for member in [&ben, &dan] {
+        ana.send(buzz_sdk::build_add_member(channel, &member.pubkey(), None).unwrap())
+            .await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let names: std::collections::HashMap<String, String> = [
+        (ana.pubkey(), "ana".to_owned()),
+        (ben.pubkey(), "ben".to_owned()),
+    ]
+    .into();
+    let open = |profile: &RecordsProfile| {
+        Pane::open_with(
+            &profile.service,
+            channel,
+            BOARD,
+            SessionOptions::new("board").names(names.clone()),
+        )
+    };
+    let mut ana_pane = open(&ana);
+    let mut ben_pane = open(&ben);
+    // The first time: nothing is kept, the list waits for the relay's set.
+    ana_pane.settled("Loaded 0 cards.").await;
+    ben_pane.settled("Loaded 0 cards.").await;
+
+    // 1. A change by one arrives live on the other's screen.
+    let started = std::time::Instant::now();
+    ana_pane.key("n");
+    ana_pane.type_text("Write the brief");
+    ana_pane.key("enter");
+    let hers = ana_pane.settled(SAVED).await;
+    assert!(
+        hers.contains("To do (1)") && hers.contains("> Write the brief"),
+        "{hers}"
+    );
+    let his = ben_pane
+        .until("ana's card on ben's screen", |screen, _| {
+            screen.contains("Write the brief")
+        })
+        .await;
+    eprintln!(
+        "a card made on one profile was on the other's screen {} ms after the keys",
+        started.elapsed().as_millis()
+    );
+    assert_eq!(board_cards(&his), board_cards(&hers));
+    assert_eq!(board_cards(&his)["todo"], ["Write the brief"]);
+    // And the other way: ben makes a card and moves it.
+    ben_pane.key("n");
+    ben_pane.type_text("Review it");
+    ben_pane.key("enter");
+    ben_pane.settled(SAVED).await;
+    ben_pane.key("]");
+    ben_pane
+        .until("ben's own move", |screen, _| {
+            board_column(screen, "Review it") == Some("doing") && last_row(screen) == SAVED
+        })
+        .await;
+    let hers = ana_pane
+        .until("ben's card, moved, on ana's screen", |screen, _| {
+            board_column(screen, "Review it") == Some("doing")
+        })
+        .await;
+    assert_eq!(board_cards(&hers), board_cards(&ben_pane.screen()));
+    assert_eq!(ana.service.channel_total(channel).await.unwrap(), 2);
+
+    // 2. A simultaneous change loses nothing. Both move the same card at
+    // once, in opposite directions, five times over: one move is stored;
+    // the other is told of the conflict, puts its move on top of the
+    // current card and stores that; both screens then show the same card.
+    ben_pane.key("h");
+    for pane in [&mut ana_pane, &mut ben_pane] {
+        pane.until("the brief selected", |screen, _| {
+            screen.contains("> Write the brief")
+        })
+        .await;
+    }
+    let mut merged_by = Vec::new();
+    for round in 0..5 {
+        // The card goes to the middle column, by ana alone.
+        let now = board_column(&ana_pane.screen(), "Write the brief").unwrap();
+        if now != "doing" {
+            ana_pane.key(if now == "todo" { "]" } else { "[" });
+        }
+        for pane in [&mut ana_pane, &mut ben_pane] {
+            pane.until("the brief in the middle", |screen, _| {
+                board_column(screen, "Write the brief") == Some("doing")
+                    && last_row(screen) != "Saving..."
+            })
+            .await;
+            // A fresh status line, so that the round's own is told apart.
+            pane.key("r");
+            pane.settled("Loaded 2 cards.").await;
+        }
+        // Both at once, from the same revision: ana to the right, ben to
+        // the left. Each script has asked before either request is
+        // carried, and both writes are then on the wire before bzz hears
+        // of either: in turn one profile's first, then the other's.
+        ana_pane.key("]");
+        ben_pane.key("[");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        if round % 2 == 0 {
+            ana_pane.screen();
+            ben_pane.screen();
+        } else {
+            ben_pane.screen();
+            ana_pane.screen();
+        }
+        let mut ends = Vec::new();
+        for pane in [&mut ana_pane, &mut ben_pane] {
+            let screen = pane
+                .until("the answer to the move", |screen, _| {
+                    [SAVED, MERGED].contains(&last_row(screen))
+                })
+                .await;
+            ends.push(last_row(&screen).to_owned());
+        }
+        let (merger, wanted) = match (ends[0].as_str(), ends[1].as_str()) {
+            (SAVED, MERGED) => ("ben", "todo"),
+            (MERGED, SAVED) => ("ana", "done"),
+            other => panic!("round {round}: exactly one is stored and one is told: {other:?}"),
+        };
+        merged_by.push(merger);
+        // Both screens end on the current card: the one the loser stored
+        // on top of the winner's.
+        for pane in [&mut ana_pane, &mut ben_pane] {
+            pane.until("both on the current card", |screen, _| {
+                board_column(screen, "Write the brief") == Some(wanted)
+            })
+            .await;
+        }
+        let card = |pane: &Pane| {
+            pane.session
+                .records()
+                .find(|record| record.content["title"] == "Write the brief")
+                .cloned()
+                .unwrap()
+        };
+        let (hers, his) = (card(&ana_pane), card(&ben_pane));
+        assert_eq!(hers, his, "round {round}: one record, one revision");
+        assert_eq!(
+            hers.author,
+            if merger == "ana" {
+                ana.pubkey()
+            } else {
+                ben.pubkey()
+            },
+            "round {round}: the last revision is the merged one"
+        );
+        assert_eq!(hers.content["column"], wanted);
+        assert_eq!(
+            board_cards(&ana_pane.screen()),
+            board_cards(&ben_pane.screen())
+        );
+    }
+    eprintln!("the five simultaneous moves were merged by {merged_by:?}");
+    assert_eq!(
+        ana.service.channel_total(channel).await.unwrap(),
+        2,
+        "no card was lost and none was made twice"
+    );
+
+    // 3. A script that asks for an undeclared type is refused: at the
+    // session, when the runtime is passed by, and at the service, when the
+    // session is. The relay never sees it.
+    let brief = ana_pane
+        .session
+        .records()
+        .find(|record| record.content["title"] == "Write the brief")
+        .cloned()
+        .unwrap();
+    for (n, op) in [
+        RecordOp::Create {
+            record_type: "vote".into(),
+            content: json!({"title": "outside"}).as_object().unwrap().clone(),
+        },
+        RecordOp::Create {
+            record_type: "bzz.app.board.card".into(),
+            content: json!({"title": "outside"}).as_object().unwrap().clone(),
+        },
+        RecordOp::Delete {
+            record_id: brief.id.to_string(),
+            record_type: "vote".into(),
+            rev: brief.revision.clone(),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        ana_pane.session.serve(RecordRequest {
+            id: 9_000_000 + n as u64,
+            op,
+        });
+    }
+    let records = ana_pane.session.relay().expect("the records are open");
+    for outside in ["vote", "bzz.app.board.card", "buzz.task"] {
+        let error = records
+            .create(
+                outside,
+                json!({"title": "outside"}).as_object().unwrap().clone(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "fenced", "{outside}: {error:?}");
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    ana_pane.screen();
+    assert_eq!(ana.service.channel_total(channel).await.unwrap(), 2);
+    assert_eq!(ana_pane.session.records().count(), 2);
+    drop(records);
+
+    // 4. A restart shows the same records. Ana's session and store are
+    // closed and opened again, first with no relay to reach: the screen
+    // has the cards from the store, and nothing else can have put them
+    // there.
+    ana_pane.key("r");
+    let before = board_cards(&ana_pane.settled("Loaded 2 cards.").await);
+    assert_eq!(before.values().map(Vec::len).sum::<usize>(), 2);
+    drop(ana_pane);
+    let (keys, config, store) = (
+        ana.keys.clone(),
+        (ana.config.clone(), ana.community),
+        ana.store.clone(),
+    );
+    ana.stop().await;
+    let offline = RecordsProfile::offline(keys.clone(), config.clone(), store.clone());
+    let mut pane = open(&offline);
+    let screen = pane.settled("Loaded 2 cards.").await;
+    assert_eq!(board_cards(&screen), before, "from the store alone");
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(pane.status().sync, SyncState::Loading, "no relay answered");
+    }
+    drop(pane);
+    offline.stop().await;
+    // Then with the relay: the screen has the cards before the relay's set
+    // is complete, and the same after.
+    let ana = RecordsProfile::start(keys.clone(), SignerHandle::spawn(keys), config, store).await;
+    let mut ana_pane = open(&ana);
+    let mut seen = Vec::new();
+    ana_pane
+        .until("the relay's set", |screen, status| {
+            if last_row(screen) == "Loaded 2 cards." {
+                assert_eq!(board_cards(screen), before, "while {}", status.sync_words);
+                if seen.last() != Some(&status.sync_words) {
+                    seen.push(status.sync_words.clone());
+                }
+            }
+            status.sync == SyncState::Live && last_row(screen) == "Loaded 2 cards."
+        })
+        .await;
+    eprintln!("after the restart the cards were on the screen while the records were: {seen:?}");
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(board_cards(&ana_pane.screen()), before);
+    }
+    assert_eq!(board_cards(&ben_pane.screen()), before);
+
+    // 5. At the quota the pane shows the wait: the app's own budget, half
+    // of a person's. Dan has written nothing yet. His app asks for forty
+    // records at once: thirty are stored, ten are told to wait, and the
+    // relay never saw them. (This suite raises a person's quota at the
+    // relay, so the relay itself refuses none here.)
+    let mut dan_pane = Pane::open(&dan.service, channel, "burst", BURST_APP);
+    dan_pane
+        .until("dan's app", |screen, status| {
+            screen.starts_with("stored 0") && status.sync == SyncState::Live
+        })
+        .await;
+    assert!(dan_pane.session.paste("40"));
+    let screen = dan_pane
+        .until("forty answers", |screen, _| {
+            screen.starts_with("stored 30\ntold to wait 10 (1 to 60 s)")
+        })
+        .await;
+    assert!(screen.contains("other 0"), "{screen}");
+    let status = dan_pane.status();
+    let notice = status.notice.clone().expect("the pane says the wait");
+    assert!(
+        notice.starts_with("Too many changes: this app can write again in ")
+            && status
+                .wait
+                .is_some_and(|seconds| (1..=60).contains(&seconds)),
+        "{status:?}"
+    );
+    eprintln!("at the app's own budget the pane says: {notice}");
+    assert_eq!(dan.service.channel_total(channel).await.unwrap(), 32);
+    // His chat is not held up by it: the relay takes his message at once.
+    let said = dan
+        .send(buzz_sdk::build_message(channel, "still here", None, &[], false, &[], &[]).unwrap())
+        .await;
+    assert_eq!(said.pubkey, dan.keys.public_key());
+
+    // 6. At the relay's own quota, which this suite does not raise for an
+    // agent (120 writes a minute at the pin): a profile whose identity is
+    // an agent of ana's. Its chat spends the whole budget; the next write
+    // of its app is refused by the relay with the wait, and the pane shows
+    // it.
+    let agent_keys = Keys::generate();
+    let auth = buzz_sdk::nip_oa::compute_auth_tag(&ana.keys, &agent_keys.public_key(), "").unwrap();
+    let agent_signer = SignerHandle::spawn_with_auth_tag(
+        agent_keys.clone(),
+        Some(buzz_sdk::nip_oa::parse_auth_tag(&auth).unwrap()),
+    );
+    ana.send(
+        buzz_sdk::build_add_member(
+            channel,
+            &agent_keys.public_key().to_hex(),
+            Some(buzz_sdk::MemberRole::Bot),
+        )
+        .unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let cy = RecordsProfile::start(
+        agent_keys.clone(),
+        agent_signer,
+        RecordsProfile::config(&agent_keys),
+        folder.path().join("cy.sqlite3"),
+    )
+    .await;
+    let mut cy_pane = Pane::open(&cy.service, channel, "ledger", BURST_APP);
+    cy_pane
+        .until("the agent's app", |screen, status| {
+            screen.starts_with("stored 0") && status.sync == SyncState::Live
+        })
+        .await;
+    let started = std::time::Instant::now();
+    for n in 0..120 {
+        cy.send(
+            buzz_sdk::build_message(channel, &format!("chat {n}"), None, &[], false, &[], &[])
+                .unwrap(),
+        )
+        .await;
+    }
+    eprintln!(
+        "the relay took the agent's 120 messages in {} ms",
+        started.elapsed().as_millis()
+    );
+    let total = cy.service.channel_total(channel).await.unwrap();
+    assert!(cy_pane.session.paste("1"));
+    let screen = cy_pane
+        .until("the relay's refusal", |screen, _| {
+            !screen.starts_with("stored 0\ntold to wait 0\n") || !screen.contains("other 0")
+        })
+        .await;
+    assert!(
+        screen.starts_with("stored 0\ntold to wait 1 (1 to 60 s)\nother 0"),
+        "{screen}"
+    );
+    let status = cy_pane.status();
+    let notice = status.notice.clone().expect("the pane says the wait");
+    assert!(
+        notice.starts_with("Too many changes: this app can write again in "),
+        "{notice}"
+    );
+    let wait = status.wait.expect("a wait");
+    assert!((1..=60).contains(&wait), "{wait}");
+    eprintln!("at the relay's own quota the pane says: {notice}");
+    // While the wait lasts the next write is answered by bzz, at once.
+    let again = std::time::Instant::now();
+    assert!(cy_pane.session.paste("1"));
+    cy_pane
+        .until("the second wait", |screen, _| {
+            screen.contains("told to wait 2")
+        })
+        .await;
+    assert!(again.elapsed() < Duration::from_secs(2));
+    assert_eq!(cy.service.channel_total(channel).await.unwrap(), total);
+    // The pane counts the wait down.
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    cy_pane.session.tick();
+    let later = cy_pane.status().wait.unwrap_or(0);
+    assert!(later < wait, "{later} after {wait}");
+
+    drop((ana_pane, ben_pane, dan_pane, cy_pane));
+    for profile in [ana, ben, dan, cy] {
+        profile.stop().await;
+    }
+}
+
+/// v0.16 M2: a person's own quota at the relay, sixty writes a minute
+/// shared between chat and apps. The suite raises that quota for its other
+/// tests, so this one runs only when the relay was started with its own:
+/// `BZZ_RELAY_OWN_QUOTA=1 ./scripts/test-relay.sh`.
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[ignore = "requires BZZ_RELAY_OWN_QUOTA=1 scripts/test-relay.sh"]
+async fn real_relay_app_session_meets_a_persons_own_quota() {
+    use bzz::service::records::SyncState;
+    use support::app_pane::{Pane, last_row};
+
+    const BOARD: &str = include_str!("fixtures/apps/board/app.lua");
+    if std::env::var("BZZ_RELAY_OWN_QUOTA").is_err() {
+        eprintln!("skipped: the relay of this run has a raised quota for people");
+        return;
+    }
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let folder = tempfile::tempdir().unwrap();
+    let eva = RecordsProfile::person(&source, folder.path(), "eva", "member").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let channel = uuid::Uuid::new_v4();
+    eva.send(
+        buzz_sdk::build_create_channel(
+            channel,
+            &format!("quota-{}", &channel.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Private),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut pane = Pane::open(&eva.service, channel, "board", BOARD);
+    pane.settled("Loaded 0 cards.").await;
+    pane.key("n");
+    pane.type_text("One card");
+    pane.key("enter");
+    pane.settled("Saved.").await;
+
+    // Her chat spends the rest of her minute: the channel's creation and
+    // the card were two of the sixty. The relay also takes no more than
+    // fifty frames in five seconds, so she types at eight a second.
+    let started = std::time::Instant::now();
+    let mut sent = 2;
+    let wait = loop {
+        let event = eva
+            .signer
+            .sign(
+                buzz_sdk::build_message(
+                    channel,
+                    &format!("chat {sent}"),
+                    None,
+                    &[],
+                    false,
+                    &[],
+                    &[],
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let ack = eva.supervisor.publish(event).await.unwrap();
+        if !ack.accepted {
+            break ack.message;
+        }
+        sent += 1;
+        assert!(sent <= 200, "the relay's quota was never met");
+        tokio::time::sleep(Duration::from_millis(125)).await;
+    };
+    eprintln!(
+        "the relay took {sent} writes of the person in {} s, then said: {wait}",
+        started.elapsed().as_secs()
+    );
+    assert_eq!(sent, 60, "a person's own quota at the pin");
+    assert!(wait.starts_with("rate-limited:"), "{wait}");
+
+    // Her app's next write is answered with the wait, and the pane shows
+    // it: in the app's own words and in bzz's.
+    pane.key("]");
+    let screen = pane
+        .until("the wait on the screen", |screen, _| {
+            last_row(screen).starts_with("Too many changes. Retry in ")
+        })
+        .await;
+    assert!(screen.contains("To do (1)"), "the card is back:\n{screen}");
+    let status = pane.status();
+    let notice = status.notice.clone().expect("the pane says the wait");
+    assert!(
+        notice.starts_with("Too many changes: this app can write again in ")
+            && status
+                .wait
+                .is_some_and(|seconds| (1..=60).contains(&seconds)),
+        "{status:?}"
+    );
+    assert_eq!(status.sync, SyncState::Live);
+    eprintln!(
+        "at a person's own quota the app says \"{}\" and the pane: {notice}",
+        last_row(&screen)
+    );
+    assert_eq!(eva.service.channel_total(channel).await.unwrap(), 1);
+    drop(pane);
+    eva.stop().await;
 }

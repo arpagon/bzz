@@ -1,4 +1,6 @@
 pub mod agent_harness;
+#[cfg(feature = "apps")]
+pub mod app_pane;
 pub mod fake_adapter;
 pub mod fake_provider;
 pub mod fake_relay;

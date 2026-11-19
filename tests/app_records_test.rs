@@ -413,6 +413,97 @@ async fn a_resync_tells_only_real_differences_and_never_empties_the_set() {
 }
 
 #[tokio::test]
+async fn frames_missed_inside_bzz_are_made_up_by_a_whole_new_set() {
+    let world = world().await;
+    let other = Keys::generate();
+    let [a, b, c, d] = ["a", "b", "c", "d"].map(|title| card(&world.fence, &other, title));
+    world
+        .script()
+        .syncs
+        .push_back(Sync::Set(vec![a.clone(), b.clone()]));
+    let (app, mut events) = world.open().await;
+    assert_eq!(changes(&mut events).await.0.len(), 2);
+    until_state(&mut events, &SyncState::Live).await;
+
+    // bzz's store is busy. The task that follows this app's sync takes one
+    // live head and waits for the store with it...
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let busy = world.store.clone();
+    let blocked = tokio::spawn(async move {
+        busy.call(move |_| {
+            let _ = held.recv_timeout(Duration::from_secs(30));
+            Ok(())
+        })
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut heard = world.supervisor.subscribe_events();
+    world.live(&c);
+    // ...while the relay goes on: another head, and then more frames than
+    // bzz keeps for a listener that is not listening (2048). The head is
+    // among the ones that are dropped.
+    world.live(&d);
+    const NOISE: usize = 2600;
+    for n in 0..NOISE {
+        assert_eq!(world.relay.push(json!(["NOTICE", format!("noise {n}")])), 1);
+        if n % 256 == 255 {
+            tokio::task::yield_now().await;
+        }
+    }
+    let last = format!("noise {}", NOISE - 1);
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match heard.recv().await {
+                Ok(SupervisorEvent::Session(bzz::realtime::session::SessionEvent::Notice(
+                    notice,
+                ))) if notice == last => break,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(error) => panic!("{error}"),
+            }
+        }
+    })
+    .await
+    .expect("every frame was heard by bzz");
+    // The relay will answer the next request with the whole set.
+    world
+        .script()
+        .syncs
+        .push_back(Sync::Set(vec![a, b, c.clone(), d.clone()]));
+    release.send(()).unwrap();
+    blocked.await.unwrap().unwrap();
+
+    // The head it had in hand is told as the live change it was. Then bzz
+    // finds that it missed frames, asks for the whole set again, and tells
+    // exactly what it had missed: nothing is taken on trust, nothing is
+    // told twice, and the set was never emptied.
+    let told = |event: &Event| vec![Change::Upsert(world.fence.record(&head(event)).unwrap())];
+    assert_eq!(
+        next(&mut events).await,
+        RecordEvent::Changes {
+            changes: told(&c),
+            cause: Cause::Live
+        }
+    );
+    assert_eq!(
+        next(&mut events).await,
+        RecordEvent::State(SyncState::Resyncing)
+    );
+    assert!(app.records().len() >= 3);
+    assert_eq!(
+        next(&mut events).await,
+        RecordEvent::Changes {
+            changes: told(&d),
+            cause: Cause::Sync
+        }
+    );
+    assert_eq!(next(&mut events).await, RecordEvent::State(SyncState::Live));
+    assert_eq!(app.records().len(), 4);
+    assert_eq!(world.requests().len(), 2, "one request for the new set");
+    silence(&mut events, Duration::from_millis(300)).await;
+    world.stop().await;
+}
+
+#[tokio::test]
 async fn too_many_records_and_no_access_reach_the_caller_as_states() {
     // More live records of the app's types than one sync returns.
     let world = world().await;

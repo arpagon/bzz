@@ -3,6 +3,8 @@
 # --nip-fi: start a test-only NIP-FA issuer (examples/fake_nip_fa.rs) on
 # localhost:3093 and the relay in BUZZ_NIP_FI_MODE=enforce trusting it, then
 # run tests/relay_nip_fi_integration.rs.
+# BZZ_RELAY_OWN_QUOTA=1: keep the relay's own quota for people and run only
+# the test of it.
 # --herdr: write a disposable viewer profile and generated content with
 # examples/harness_fixture.rs, then drive the release TUI through the
 # `harness` scenarios of scripts/tui-herdr-scenarios.toml (run this from a
@@ -55,8 +57,16 @@ cleanup() {
 trap cleanup EXIT INT TERM
 # Dense same-second pagination coverage intentionally publishes more than the
 # production human quota inside this isolated, disposable harness.
-export BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN=5000
-export BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC=5000
+# BZZ_RELAY_OWN_QUOTA=1 leaves a person's quota as the relay ships it (60
+# writes a minute, 50 in five seconds) and runs the one test that has to
+# meet it (v0.16 M2); the rest of the suite cannot pass under it.
+if [[ -z "${BZZ_RELAY_OWN_QUOTA:-}" ]]; then
+  export BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN=5000
+  export BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC=5000
+else
+  export BZZ_RELAY_OWN_QUOTA
+  export BZZ_RELAY_TEST_FILTER="${BZZ_RELAY_TEST_FILTER:-real_relay_app_session_meets_a_persons_own_quota}"
+fi
 # The Herdr run starts bzz more than twenty times in a few minutes as one
 # person, each start a whole sync: its first six starts, twenty seconds
 # apart in all, made about 190 queries and the relay's quota for a person
@@ -141,9 +151,10 @@ else
   # The scripted agent harness (v0.15 M1); `cargo test --test` does not build examples.
   cargo build --locked --example scripted_harness
   # BZZ_RELAY_TEST_FILTER runs only the tests whose name contains it.
+  # BZZ_RELAY_NOCAPTURE=1 shows what the tests print: the times they measure.
   BZZ_BUZZ_CLI="$BZZ_BUZZ_SOURCE/target/debug/buzz" \
   BZZ_BUZZ_ACP="$BZZ_BUZZ_SOURCE/target/debug/buzz-acp" \
-  BZZ_E2E_RELAY_URL=ws://localhost:3030 cargo test --locked --test relay_integration ${BZZ_RELAY_TEST_FILTER:+"$BZZ_RELAY_TEST_FILTER"} -- --ignored --test-threads=1
+  BZZ_E2E_RELAY_URL=ws://localhost:3030 cargo test --locked --test relay_integration ${BZZ_RELAY_TEST_FILTER:+"$BZZ_RELAY_TEST_FILTER"} -- --ignored --test-threads=1 ${BZZ_RELAY_NOCAPTURE:+--nocapture}
   # bzz's real agent host against a recorded relay (v0.15 M2). It needs
   # Node.js 22.19 or newer and no relay; it runs here because this is the
   # job that has Node (BZZ_TEST_REQUIRE_NODE=1 turns its skip into a failure).
