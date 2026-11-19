@@ -205,12 +205,15 @@ def at_prompt(tmux, target):
 
 
 def send(tmux, target, keys):
+    # Forty keys to a call, as test-tui-herdr.sh sends them: keys sent
+    # together reach the terminal together (Esc and a key are read as Alt
+    # and that key, as under Herdr). A lone `;` is tmux's command separator.
+    names = []
     for key in keys:
-        names, literal = tmux_key(key)
-        if literal:
-            tmux("send-keys", "-t", target, "-l", "--", names[0])
-        else:
-            tmux("send-keys", "-t", target, *names)
+        name, _ = tmux_key(key)
+        names.append("\\;" if name[0] == ";" else name[0])
+    for start in range(0, len(names), 40):
+        tmux("send-keys", "-t", target, *names[start:start + 40])
 
 
 def launch(tmux, target, command):
