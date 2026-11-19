@@ -389,6 +389,95 @@ async fn a_message_of_the_person_is_not_delayed_by_an_apps_writes() {
     world.stop().await;
 }
 
+/// A script that counts the records of each type it declares.
+const COUNTS: &str = r#"
+local app = { api = 1, types = { "card" } }
+function app.init(ctx)
+  data.list { type = "card", tag = "card" }
+  return { card = "?", column = "-", made = "" }
+end
+function app.view(s, ctx) return ui.text { "cards " .. s.card, "columns " .. s.column, s.made } end
+function app.reload(s, ctx) data.list { type = "column", tag = "column" } end
+function app.paste(s, text, ctx) data.create { type = "column", content = { title = text } } end
+function app.reply(s, r, ctx)
+  if r.op == "list" then s[r.tag] = r.ok and #r.records or r.error.code
+  else s.made = r.ok and ("made a " .. r.record.type) or (r.error.code .. ": " .. r.error.message) end
+end
+function app.push(s, p, ctx)
+  if p.change == "create" then s[p.record.type] = s[p.record.type] + 1 end
+end
+return app
+"#;
+
+#[tokio::test]
+async fn a_new_version_with_other_types_opens_its_records_again() {
+    let world = world().await;
+    let other = Keys::generate();
+    let card = board_card(&world.fence, &other, "A card", "todo", 1);
+    let column = sign(
+        world
+            .fence
+            .create("column", Uuid::new_v4(), &object(json!({"title": "Later"})))
+            .unwrap(),
+        &other,
+    );
+    // The relay holds a card and a column. The first version declares
+    // cards only: the column is not its own.
+    world
+        .script()
+        .syncs
+        .push_back(Sync::Set(vec![card.clone()]));
+    let mut pane = Pane::open(&world.service, world.channel, "board", COUNTS);
+    pane.until("the card", |screen, status| {
+        screen.starts_with("cards 1\ncolumns -") && status.sync == SyncState::Live
+    })
+    .await;
+    assert_eq!(pane.session.types(), ["card"]);
+    let filter = |world: &World, at: usize| world.requests()[at].value[2]["#type"].clone();
+    assert_eq!(filter(&world, 0), json!(["bzz.app.board.card"]));
+
+    // A version that declares columns too replaces it in place. The sync
+    // of the old types is closed, a new one is asked for both, and nothing
+    // the script asked meanwhile is lost: its list of columns is answered
+    // from what bzz holds, and the column the relay then sends is a push.
+    world
+        .script()
+        .syncs
+        .push_back(Sync::Set(vec![card, column]));
+    let next = COUNTS.replace(r#"types = { "card" }"#, r#"types = { "card", "column" }"#);
+    assert!(pane.session.reload(next));
+    pane.until("the column", |screen, status| {
+        screen.starts_with("cards 1\ncolumns 1") && status.sync == SyncState::Live
+    })
+    .await;
+    assert_eq!(pane.session.types(), ["card", "column"]);
+    assert_eq!(pane.status().error, None);
+    assert_eq!(world.requests().len(), 2);
+    assert_eq!(
+        filter(&world, 1),
+        json!(["bzz.app.board.card", "bzz.app.board.column"])
+    );
+    assert_eq!(
+        world.requests()[0].value[1],
+        world.requests()[1].value[1],
+        "one instance of an app in a channel: the same subscription"
+    );
+    assert_eq!(world.relay.frames_of("CLOSE").len(), 1);
+    assert_eq!(pane.session.records().count(), 2);
+    // And it writes the new type.
+    assert!(pane.session.paste("Sooner"));
+    pane.until("the write", |screen, _| screen.contains("made a column"))
+        .await;
+    let sent = world.writes();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        first_tag(&sent[0], "type").as_deref(),
+        Some("bzz.app.board.column")
+    );
+    drop(pane);
+    world.stop().await;
+}
+
 /// The resident memory of this process, in bytes. Linux only.
 fn resident() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
