@@ -3,8 +3,9 @@
 **Status:** in progress. Recorded below: M0; the first half of M1, the app
 runtime and its contract (M1-A); the service half of M2, the records of
 apps (M2-A); and the joining of the two in an app session, with M2's exit
-gate (M2-B, "M2 (session)"). Not here yet: the bench, the example host and
-the remaining apps of M1 (M1-B). Nothing was pushed: what only CI
+gate (M2-B, "M2 (session)"); and the second half of M1, the example host,
+the bench and the six apps, with M1's exit gate (M1-B, "M1 (bench and
+apps)"). Nothing was pushed: what only CI
 can show on macOS and Windows is listed as not seen. Plan:
 [`docs/planning/2026-11-17/v0.16.0.md`](planning/2026-11-17/v0.16.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
@@ -482,6 +483,282 @@ document changed afterwards.
 | A fault of bzz on a script's thread | seen once, in a red run; no test makes one |
 | An agent writing an app against `docs/app-api.md` | M5. The contract was read by nobody but its author |
 | The size of the runtime in the binary | nothing calls it, so the linker leaves it out |
+
+## M1 (bench and apps) — The example host, the bench, and the six apps
+
+Linux x86_64, Rust 1.98.1, 2026-11-19. Branch `t3/9c67a42d`, cut from
+`v0.16.0` at `d0dbb36` (after M2 (session) was merged). Another agent
+began the work on `t3/benchmark-apps` (six commits, the last an unfinished
+script), and it was merged here at `4335e29`. The code proven below is at
+`846b89b`. Every result in this section was run on this branch; none is
+taken from the earlier agent's notes. The machine was shared with another
+agent's builds (load 4 to 6).
+
+**Where it is.**
+
+| Path | What |
+|---|---|
+| `examples/app_host.rs` | the runtime alone in a terminal, on the bench's simulated data service; reload on save. The only place that knows the bench's protocol; the table at its top lists where that protocol and the contract differ |
+| `tests/apps-bench/` | the bench, from the experiment's `bench/` and `f2/bench/`: `run`, `reload`, `pushes`, `hostile`, `measure`, `drive`, `data-service`, `spec/`, `lib/`. Python 3.10+, standard library only, Linux only |
+| `scripts/test-apps-bench.sh` | runs all of it and prints one table |
+| `tests/fixtures/apps/{board,poll,rota,approvals,panel,board-priority}/` | the six apps at `api = 1`, each an `app.lua` and a `brief.md` (D16). `hello` has a brief too |
+| `src/apps/runtime/tests/{board,poll,rota,approvals,panel,board_priority}.rs` | the cases of each spec on the in-memory store, through an `AppSession`: 96 tests, each case at 40×16 and at 80×24 |
+
+Nothing was changed in `src/apps/runtime/` (outside its tests) or in
+`src/apps/session/`. No dependency was added; `Cargo.toml` gains the
+`[[example]]` entry of `app_host`, which needs the `apps` feature.
+
+**How to repeat.**
+
+```sh
+# the build environment of runs/v016/RULES.md, then:
+scripts/test-apps-bench.sh                        # debug host, ~7 min
+scripts/test-apps-bench.sh --release --measure    # release host, and the numbers
+cargo test --locked --lib apps::runtime::tests::  # the same cases, any platform
+```
+
+### The exit gate of M1
+
+| Claim | Rung | Result |
+|---|---|---|
+| On the example host, the six apps pass their cases | the bench: `scripts/test-apps-bench.sh`, every app at 80×24 and at 40×16 | pass: 85 of 85 cases at each size, in a debug build and in a release build |
+| The hostile script reaches nothing | the bench: `tests/apps-bench/hostile` | pass: 29 of 29 checks |
+| A broken save leaves the old version running | the bench: `tests/apps-bench/reload`, part `edit`, once for each app | pass, six apps at each size |
+| State survives a reload | the same: data, selection, filter or search, an open form with its text, and the connection, over 25 saves of each app; and the owner's example, the Board swapped for the Board with priority | pass: 20 of 20 at each size, 150 saves each |
+
+### The six apps on the example host
+
+`scripts/test-apps-bench.sh --release --measure`, the last full run. The
+debug run of the inherited code, before the change to pushes below, gave
+the same counts.
+
+| | 80×24 | 40×16 |
+|---|---|---|
+| Board, cases passed | 12/12 | 12/12 |
+| Poll | 12/12 | 12/12 |
+| Rota | 14/14 | 14/14 |
+| Approvals | 15/15 | 15/15 |
+| Panel | 15/15 | 15/15 |
+| Board with priority (the Board's 12, then 13 to 17) | 17/17 | 17/17 |
+| Reload: edit (six apps), swap (two seeds), a bad moment | 20/20 | 20/20 |
+| When pushes begin | 8/8, at 80×24 | |
+| The hostile script | 29/29, at 120×40 | |
+
+**Every case passed, so no failing case had to be blamed on the app, the
+runtime, the contract or the case.** Where a case of the experiment
+depended on something `api = 1` removed, the earlier agent changed the
+case before it ran here. I read each change against the experiment's
+`f2/bench/lib/`:
+
+| Case | In the experiment | Here | Why |
+|---|---|---|---|
+| Every case | starts at 80×24; 06 shrinks to 40×16 | starts at `--size` and resizes to the other of 80×24 and 40×16; the script runs both | every app works in the pane |
+| Board, Poll 01 | first draw at 80×24 and 120×40 | at 40×16 too | the same |
+| Board 06 | `Terminal too small. Need 60x16.` at 40×12 | `Need 40x16.` | M0 brought the Board down to 40 columns |
+| Board 03, Approvals 03 | the created record's content exactly | the same, plus an `order` greater than the seeded ones | the contract: order is a field, ids do not sort |
+| Rota 03 | the stored day | and every day keeps its `order` across the app's writes | an update replaces the whole content |
+| Board with priority 13, 17 | the stored card exactly | the card as before, with only the priority or the column changed | the same |
+| Poll 05 | one slow list on reload | one slow list of each type | a `data.list` names one type, and the Poll has two |
+| The data service | records in creation order, `seq` | the same, and seeded cards, days and requests carry `order` | the host hands the script no order and no `seq` |
+
+### The same cases on every platform
+
+`cargo test --locked --lib apps::runtime::tests::` runs each fixture
+through the cases of its spec that a store in memory can express. It uses
+the same `AppSession` that bzz's window will use, at 40×16 and at 80×24.
+
+| File | Tests | Cases |
+|---|---|---|
+| `board.rs` | 15 | 01 to 12, and three more (M1-A) |
+| `poll.rs` | 14 | 01 to 12, and two of the spec's rules |
+| `rota.rs` | 15 | 01 to 14, and one |
+| `approvals.rs` | 16 | 01 to 15, and one |
+| `panel.rs` | 15 | 01 to 15 |
+| `board_priority.rs` | 21 | the Board's 01 to 12 on cards with priorities, 13 to 17, and four: a merge, the selection under the filter, the running Board becoming the Board with priority, the Board keeping a priority it does not know |
+
+They leave out what a case checks of the process and its terminal: still
+running after the first draw; exit within 2 s with status 0; the terminal
+restored; no process left. Each file says so, case by case.
+
+**Red.** One rule was broken in each new fixture, all five at once, and
+`cargo test --lib` ran the five files: 76 passed, 5 failed. Each failure
+was the test of the rule broken, and no other test failed:
+
+| Broken | Failed |
+|---|---|
+| Rota: a list asked for before a take overwrites it | `rota::case_05_late_reload` |
+| Approvals: a conflict on a decided request decides it again | `approvals::case_12_conflict` |
+| Panel: a conflict on an acknowledged metric acknowledges it again | `panel::case_15_what_can_be_acknowledged` |
+| Board with priority: a move writes the card without its priority | `board_priority::case_17_a_move_keeps_the_priority` |
+| Poll: a vote for an option not in the poll counts | `poll::a_changed_vote_is_one_record_and_votes_for_no_option_count_nowhere` |
+
+The first four also ran on the bench (release host, 40×16, a copy of the
+fixtures outside the repository) and fail the same cases: Rota 05,
+Approvals 12, Panel 15, Board with priority 17, each against the screen the
+spec expects. With the fixtures restored, all of them pass (the full runs
+above).
+
+### Reload with real apps
+
+`tests/apps-bench/reload` (`lib/reload.py`) runs the scripts of the
+experiment's `g1/reload/`, brought to the fixtures. It has three parts:
+
+- **edit**, for each of the six apps. The app is brought into a user's
+  state: records, a selection that is not the first, a filter or a search,
+  and a form open with text. Then 25 saves each change a visible label.
+  After each save, the data, the selection, the filter and the form with
+  its text must still be there. Then comes a **broken save**: the error
+  names the file and line 4 on the screen, the log says the previous
+  version keeps running, and a change by another participant still shows.
+  The fix clears the error. Last, one write of the app's own and one
+  change by bo show that the connection survived.
+- **swap**, the owner's example. The Board runs with a search and a
+  selection, and its file is replaced by the Board with priority. The
+  indicator appears; the selection, the search and the data stay; `2`, `p`
+  and `1 3` work at once and are stored. It runs twice: on the Board's
+  cards, and on cards that already have priorities.
+- **moment**: a save while a write waits for its reply (the reply reaches
+  the new version, and there is one write), and a save while the first
+  list waits.
+
+On the release host, 150 saves at each size, from the write of the file to
+the new screen: **p50 26.9 ms, p95 48.9 ms** at 80×24, and p50 28.6 ms,
+p95 49.2 ms at 40×16. The host checks the file every 50 ms, and that wait
+is most of this time.
+
+**Red.** The host was made to start the app anew on every save instead of
+reloading it in place (`examples/app_host.rs`, `Msg::File`). Then `reload
+--saves 3 --only edit,swap board` at 40×16 passed **0 of 3**: edit 11 of
+22 checks (`data survived every save (lost after 3)`, and the same for the
+selection, the search, the form, and the old version after a broken save);
+swap 11 and 10 of 16 (`the selection is kept`, `the search is kept`, …).
+
+### When pushes begin
+
+M2 (session) changed the contract: pushes of a type begin with the app's
+first list of it. The simulated service pushes every change to whoever
+subscribed, so the host now applies the rule itself. A push of a type the
+script has not listed is dropped. A push that arrives while the first
+list of its type is on its way is held, and given after the reply if its
+`seq` is newer than the list's. The hostile app now lists its own type
+first, as the contract tells every app to.
+
+`tests/apps-bench/pushes` (`lib/pushes.py`) checks that an app that has
+listed nothing hears of no change, that its list holds the change, and
+that it hears of the next one. Then the Board runs with `slow-load`: the
+first list is answered after 3 s, from a snapshot taken before the wait. A
+card made during the wait is shown once, and counted in its column. **8 of
+8.**
+
+**Red**, on the debug host. With every push passed on, as before:
+`FAIL before its first list the app hears of no change (pushes: 1)`, 7 of
+8. With held pushes dropped instead: `FAIL a change made while the first
+list was on its way is shown`, `and shown once (0 times)`, `the column
+counts it`, 5 of 8.
+
+### The hostile script
+
+`tests/apps-bench/hostile` runs `tests/apps-bench/hostile-app/app.lua` on
+the release host at 120×40. The script is the prototype's
+`tests/hostile/app.lua` at `api = 1`. All 29 checks passed:
+
+- The 19 ways out are blocked: file, module, bytecode, native code,
+  environment, process, exit, debug, coroutine and the terminal. The
+  script's globals are the contract's.
+- Each of these is ended, and the app then answers the next key: an
+  endless loop (255 ms), a loop that catches its stop (254 ms), a pattern
+  that never ends (255 ms), endless recursion, and endless memory (host
+  peak 72 MiB, against the cap of 64 MiB).
+- Records outside the fence are refused. None of those requests reaches
+  the service, and its records are untouched. Of two pushes, only the one
+  of the declared type arrives.
+- Three stops in a row give the app up. The host goes on drawing, and a
+  save starts the app again.
+- Ctrl+C leaves while the script loops: in 121 ms, with status 0, the
+  terminal restored and no process left.
+
+These are the runtime's claims, and they were not made red here. M1-A made
+them red with the unit tests it names (`tests::reach`, `tests::hostile`,
+`tests::running`); this run shows the same behaviour in a real terminal.
+
+### Numbers
+
+`tests/apps-bench/measure` on the release host, with the `big` data set
+(200 records). The prototype's column is `f1/s-embedded` from
+`RESULTS-2.md`, "Medidas": the principal's runs, at 80×24.
+
+| | Prototype, 80×24 | bzz, 80×24 | bzz, 40×16 |
+|---|---|---|---|
+| Board: first complete draw | 9.5 ms | 11.3 ms | 12.0 ms |
+| Board: peak memory of the process | 5.5 MiB | 6.0 MiB | 5.8 MiB |
+| Board: key to screen, p95 (120 keys) | 0.96 ms | 1.0 ms | 0.92 ms |
+| Panel: first complete draw | 13.2 ms | 16.9 ms | 14.3 ms |
+| Panel: peak memory | 6.2 MiB | 6.4 MiB | 6.1 MiB |
+| Panel: key to screen, p95 | 3.0 ms | 4.37 ms | 4.37 ms |
+| Reload, save to screen, median | 29.9 ms | 26.9 ms (p95 48.9) | 28.6 ms (p95 49.2) |
+
+Each figure is from one run, on a machine running another agent's builds.
+bzz's runtime does more than the prototype's on each call: the hook that
+stops a call, the bounded library, raw reads of the script's tables, and
+its own layout. The first draw is 2 to 4 ms slower and a Panel key 1.4 ms
+slower at the 95th percentile. These gaps were not looked into.
+
+### The six apps: whose script
+
+| App | From | Why this one |
+|---|---|---|
+| Board | M1-A's fixture, from `f1/s-embedded/apps/board` | the only one |
+| Poll | written for this task from `spec/poll.md` | nobody had written it in Lua |
+| Rota | `f3/S-rota-1` (about half of its lines remain) | both deliveries passed 14 of 14 on their first run, and both draw the confirmation inside the column. S-rota-1 leans less on `seq`, which `api = 1` removed (7 uses against 10; S-rota-2 holds pushes that come before a slow list and replays them by `seq`), so less of it had to change; it is also the shorter (248 lines against 263) |
+| Approvals | `f3/S-approvals-3` | the only one of three written after `data.null` existed. S-approvals-1 and -2 failed case 03 on the missing null; S-approvals-3 passed 15 of 15 on its first run. It keeps the selection by record id, and a decision travels in the request's tag, so a conflict that finds the request still pending decides it again |
+| Panel | `f3/S-panel-2` | both passed 15 of 15. S-panel-2 chooses its layout from `ctx.width` in three places, where S-panel-1 does in one |
+| Board with priority | the Board fixture, with the priority added; the change follows both deliveries | the owner's example is a change to the running Board: the swap must find the same state, keys and layout. Both deliveries changed the experiment's Board, which this fixture no longer is |
+
+Rota, Approvals and Panel were rewritten for `api = 1`. With no `seq`, a
+list that predates a change must not undo it, so the apps track the ids
+they changed since they asked. Order comes from a field, and the apps read
+`ctx.user.name` and `p.by.name`. Each keeps about half of its source's
+lines. The earlier agent made this choice and recorded no reason; the
+reasons above are mine, from the deliveries and their result notes.
+
+### Gates
+
+On `846b89b`, run one after the other. Only this document changed
+afterwards.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets -- -D warnings` | clean |
+| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets` | 966 passed, 0 failed, 35 ignored, in 59 test programs |
+| Without the features | `cargo test --locked --no-default-features --lib` | 458 passed |
+| Supply chain (`Cargo.toml` changed, no dependency) | `cargo deny check`; `cargo audit` | `advisories ok, bans ok, licenses ok, sources ok`; no vulnerability, 5 allowed warnings |
+| The bench | `scripts/test-apps-bench.sh --release --measure` | everything passed (the tables above) |
+
+### Not proven in M1 (bench and apps)
+
+| Item | State |
+|---|---|
+| The bench on macOS, Windows | it reads `/proc` and drives a Linux pseudo-terminal. The cargo tests of the six apps are what CI runs there; they were not run on those platforms here |
+| The example host on macOS, Windows | built and run on Linux only. It uses nothing specific to Linux |
+| The red of the hostile script on the host | the runtime's reds are M1-A's unit tests; they were not repeated on the host |
+| The numbers | one run of each, on a shared machine. The prototype's were measured on the same machine two days earlier, not beside these |
+
+### Found on the way
+
+- **The fixtures store people by name** (`holder = "ana"`, and `author`,
+  `decided_by`, `acked_by`, `voter`), because the bench's data and cases
+  do. The contract says to compare and store the id. A record can name a
+  person only in a field, and the contract gives an app no way to show the
+  name of an id that has not signed a record it holds. The templates of D9
+  (M4) need an answer: store `{ id, name }`, or the id and a name the app
+  learned. The briefs say so.
+- **The earlier agent's unfinished script worked as it was.** Its only
+  fault was that `--help` also printed a line of the script itself.
+- **A host must apply "pushes begin with the first list" itself** when its
+  records come from something that pushes from the start; for bzz, the
+  session does it. The table at the top of `examples/app_host.rs` now says
+  so.
 
 ## M2 (service) — The records of apps, in bzz's artifact service
 
