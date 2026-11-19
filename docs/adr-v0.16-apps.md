@@ -208,6 +208,13 @@ From M0 question 3, run against the pinned relay
 - **Size.** Content up to 262,144 bytes and a frame up to 524,288. A script
   of 128 KiB with its manifest and brief travelled as one artifact. bzz
   refuses a script over 128 KiB and a brief over 16 KiB, on both sides.
+- **The budget of writes.** The relay has one budget for a person, 60
+  writes a minute, and that person's chat spends it too. bzz gives the
+  apps of one person half of it, 30 a minute for all of them together,
+  and answers the rest itself with the seconds to wait: an app cannot
+  keep its owner from sending a message. bzz lets a record be 16,384
+  bytes of content, so that the thousand an app may have fit the memory
+  of its interpreter (M2, the session).
 
 ## What Buzz desktop does with these records
 

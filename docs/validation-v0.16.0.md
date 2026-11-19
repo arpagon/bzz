@@ -1,9 +1,10 @@
 # bzz v0.16.0 validation
 
 **Status:** in progress. Recorded below: M0; the first half of M1, the app
-runtime and its contract (M1-A); and the service half of M2, the records of
-apps (M2-A). Not here yet: the bench, the example host and the remaining
-apps of M1 (M1-B), and the joining of the runtime to the records (M2-B). Nothing was pushed: what only CI
+runtime and its contract (M1-A); the service half of M2, the records of
+apps (M2-A); and the joining of the two in an app session, with M2's exit
+gate (M2-B, "M2 (session)"). Not here yet: the bench, the example host and
+the remaining apps of M1 (M1-B). Nothing was pushed: what only CI
 can show on macOS and Windows is listed as not seen. Plan:
 [`docs/planning/2026-11-17/v0.16.0.md`](planning/2026-11-17/v0.16.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
@@ -681,3 +682,267 @@ inside the worktree, so that Buzz at the pin builds in its own folder.
   `is_local_admission_error` first.
 - **The scripted relay could not send a frame unasked.** It can now
   (`ScriptedRelay::push`), to WebSockets only.
+
+## M2 (session) — An app on real records
+
+Linux x86_64, Rust 1.98.1, Buzz pin `bf3bdd0eaefe`, 2026-11-19. Branch
+`t3/m2-b-session`, cut from `v0.16.0` at `f3ab248`. This is the second
+half of M2: the runtime of M1 and the records service of M2 (service),
+joined into **an app session**, and milestone M2's exit gate with two bzz
+profiles on the pinned relay. No pane, no command, no store of scripts:
+what owns a session is the next task (M3).
+[`app-records.md`](app-records.md), "The session", is the interface in
+words; [`app-api.md`](app-api.md) is the contract a script sees.
+
+**Where it is.**
+
+| Path | What |
+|---|---|
+| `src/apps/session/mod.rs` | `AppSession`: one open app in one channel. The owner's calls, the rules between a script and its records, the status |
+| `src/apps/session/backend.rs` | the boundary to the records, in the service's types |
+| `src/apps/session/relay.rs` | that boundary on `service::records`, from a thread that must not wait |
+| `src/apps/session/memory.rs`, `headless.rs` | the store in memory and the headless driver, moved here from `apps::runtime` and put behind the session. `apps::runtime::{memory, headless}` still name them |
+| `src/protocol/record.rs` | content at 16,384 bytes; `WriteBudget`, 30 a minute; a record with no fields |
+| `src/service/records.rs` | `budget()`, `is_open()`, `owner_pubkey()`; no "unreadable" records |
+| `src/apps/runtime/limits.rs`, `records.rs`, `mod.rs` | the limits that are the service's are its constants; `Runtime::waiting()` |
+| `tests/app_session_test.rs`, `tests/support/app_pane.rs` | a session on the scripted relay, read as screens |
+| `tests/support/records_world.rs` | the scripted world of `tests/app_records_test.rs`, shared |
+| `tests/relay_integration.rs`, `scripts/test-relay.sh` | the two tests on the pinned relay; `BZZ_RELAY_OWN_QUOTA`, `BZZ_RELAY_NOCAPTURE` |
+
+No dependency was added; `Cargo.toml` and `Cargo.lock` are unchanged.
+
+**How to repeat.**
+
+```sh
+# the build environment of runs/v016/RULES.md, then:
+cargo test --locked --lib apps::                          # the session in memory, the runtime, the Board
+cargo test --locked --lib protocol::record
+cargo test --locked --test app_session_test               # a session on the scripted relay
+cargo test --locked --test app_session_test a_sync_of_a_thousand -- --nocapture
+cargo test --locked --test app_records_test frames_missed
+# pinned relay, Docker:
+BZZ_RELAY_NOCAPTURE=1 BZZ_RELAY_TEST_FILTER=real_relay_app_session BZZ_BUZZ_SOURCE=<main checkout>/runs/buzz-pin ./scripts/test-relay.sh
+BZZ_RELAY_OWN_QUOTA=1 BZZ_RELAY_NOCAPTURE=1 BZZ_BUZZ_SOURCE=<main checkout>/runs/buzz-pin ./scripts/test-relay.sh
+```
+
+### What the join settled
+
+Where the runtime and the service disagreed the contract decided; where the
+contract was silent or wrong it was changed, with its twin
+(`app-api.d.lua`), and the test that holds the three together
+(`apps::runtime::tests::contract`) was extended.
+
+| Question | Settled as | Contract |
+|---|---|---|
+| Content of a record: 65,536 (service) or 16,384 (contract) | 16,384 for every writer of this bzz: `protocol::record::MAX_CONTENT_BYTES`, which `runtime::limits` now names | unchanged |
+| Types, names, live records, title bytes | one constant each, the service's | unchanged |
+| The title rule: `title_of` (runtime) or `title` (service) | the service's, which the relay's validator was tried on: control characters to spaces, trimmed, cut at 512 bytes, else `<app> <type>`. `match` looks at it | changed: it said "the type's name" |
+| The resync rule: `differences` (runtime) or `difference` (service) | the service's, also in the store in memory; the runtime's is gone. A deletion found in a resync is pushed as by the record's last signer | said |
+| `list` | from the session's set, with `match`, at once, also offline. With no record held it waits for the first complete set, 5 s at most | changed: it said every request is `unavailable` without a connection |
+| When pushes begin | with the app's first list of a type. Otherwise the records an app starts with arrive as one push each and then as the list | new |
+| Identities | `{ id, name }`: the public key; the name its owner's profiles give, a short form of the key until one is known. When a name is learned or changes, that person's records are pushed again as updates with the same `rev` | new |
+| An app's writes | 30 a minute for the apps of one person, half of the relay's 60; past it `rate_limited` with the wait and no frame. One budget for a person's open apps, not one each: two apps with 30 each would be the whole 60 | changed: it said 60 |
+| `fenced` (service) has no code in the contract | `bad_request` | unchanged |
+| An artifact of an app's type whose content is no JSON object | a record with no fields: listed, counted, replaceable, deletable. It was hidden, counted, and nothing in bzz could delete it | new |
+| What the pane says by itself | one sentence in `status().notice`: the wait, too many records, an archived channel, no access, records not available | new |
+| A version with other types | the records are opened again for them | new |
+
+### Unit: the session in memory
+
+`U:` is a unit test under `apps::session::tests::`, on the store in memory:
+the session is the one the relay path uses, and these run on every
+platform. Each red is the named test with one thing taken out of
+`src/apps/session/mod.rs` (it is in the cell), seen failing with the quoted
+message, and restored.
+
+| Claim | Proof | Red without the change | Result |
+|---|---|---|---|
+| **An undeclared type is refused at the session.** Asked as if the runtime had let it through: a create and a list of another type, the long form of a declared one, an update and a delete that name another type or a record of another type. Each gets exactly one reply at once, `bad_request` or `not_found`; nothing reaches the records | `U: an_undeclared_type_is_refused_at_the_session` | the check of the type off: the request goes on to the store (`request 0: left: 0 right: 1` replies at once) | pass |
+| A list is answered from the session's set, with `match` over the title bzz gives the relay: case ignored, control characters as spaces, a record without a title found by `ledger note`, nothing past the cut at 512 bytes, another type not searched | `U: a_list_is_answered_from_the_sessions_set_with_match` | `match` over the raw `content.title`: `left: ["match 0:"] right: ["match 1:   brief_notes_"]` | pass |
+| A script hears of a type from its first list of it; the records an app starts with are no pushes | `U: a_script_hears_of_a_type_from_its_first_list_of_it` | every change pushed: four `push create` before `list 3` | pass |
+| Who is the public key and the name bzz knows: a short form (`c0c0c0c0…c0c0`) until then; a name learned or changed hands that person's records over again with the same revision, and nobody else's; the local participant's new name is in `ctx.user` | `U: who_is_an_id_and_the_name_bzz_knows` | no record handed over again: `left: "cy's by c0c0c0c0…c0c0" right: "cy's by cy"` | pass |
+| **An app's writes stop at 30 a minute.** The thirty-first is `rate_limited` with 60 s and is not sent; an update and a delete count; a list does not; the pane's sentence counts down with `tick()`; a minute after the first writes it writes again | `U: an_apps_writes_stop_at_half_the_persons_budget`, `the_board_shows_the_wait_and_the_pane_shows_it_too` (the Board fixture: `Too many changes. Retry in 60 s.` on its own status line, the card back in its column) | the budget not asked: `left: ["create ok mine 31"]` | pass |
+| The apps of one person share that budget: two apps, forty writes in turn, thirty sent | `U: the_apps_of_one_person_share_one_budget` | the same red: forty sent | pass |
+| The relay's own `rate_limited` is a wait the pane shows, and nothing is sent while it lasts | `U: the_relays_quota_is_a_wait_the_pane_shows` | the answer's wait not kept: `left: None right: Some("Too many changes: this app can write again in 40 s.")` | pass |
+| An app that holds no record waits for its first set and gets it as one reply, with no push; after 5 s without one the list is `unavailable` | `U: an_app_that_holds_nothing_waits_for_its_first_set` | the list answered at once: `the list waits: left: ["list 0"]` | pass |
+| After a restart the list has what bzz kept before the relay answers, a kept record can be written, and the relay's set then gives only what differs; with nothing differing the screen is the same | `U: a_restart_shows_what_bzz_kept_and_then_only_the_differences` | the stored set not taken at opening: `left: [] right: ["list 2"]` | pass |
+| `TooMany`, `Restricted`, `Unavailable` and `Resyncing`: the sentence of each, what a list and a write are answered, and that nothing bzz knows will fail is sent | `U: each_state_of_the_sync_has_its_sentence_and_its_answers` | `TooMany` not looked at before a create: `no frame for the create: left: 1 right: 0` | pass |
+| An archived channel: told by its owner, a write is `refused` without a frame; told by the relay's refusal, the pane says so until the relay takes a write or the sync starts anew | `U: an_archived_channel_says_so_and_refuses_before_a_frame` | the owner's word not looked at: `left: ["create ok mine 1", "update ok edited", "deleted edited", "list 3"]` | pass |
+| A change by someone else that is told before the answer to the app's own earlier write is not lost: the reply carries the app's revision, and the record as it is now follows it; the same for a deletion; in the usual order nothing is told twice | `U: a_change_told_before_the_answer_to_an_own_write_is_not_lost` | nothing after the reply: the script ends on its own, older revision (`left: [.., "update ok edited"]`) | pass |
+| A new version that declares other types gets their records, keeps the ones it had, and no longer hears of a type it dropped | `U: a_new_version_with_other_types_gets_other_records` | the records not opened again: `left: ["tags 0:"] right: ["tags 1: a card"]` | pass |
+| 500 changes found in one resync never fill the queue of a script that may be owed 64 events | `U: a_set_fetched_again_never_fills_the_scripts_queue` | all sent at once: `the queue was never filled` (the app is "not responding") | pass |
+| A session can be owned by a task (`Send`) | `U: a_session_can_be_owned_by_a_task` | — (it would not compile) | pass |
+| The 99 tests of M1-A, the Board's twelve cases among them, pass through the session: the headless driver has no rules of its own any more | `cargo test --lib apps::runtime` | while it was written: `case_08` selected `Echo` (the stored set arrived as pushes after a failed list); `every_error_code` listed a record the session had never been told was deleted | pass: 99 |
+| The budget itself: thirty at once, the wait until the oldest leaves the minute, never more than its number in any minute, none at all | `U: protocol::record::an_apps_writes_have_a_budget_of_half_the_persons` | — (new) | pass |
+| An artifact that is no JSON object is a record with no fields, which can be replaced and deleted; on the scripted relay it counts as the thousandth record and its deletion is sent | `U: protocol::record::what_another_client_wrote_is_carried_or_left_alone`; `T: nothing_is_sent_that_bzz_knows_would_be_refused` (`tests/app_records_test.rs`) | as it was in M2 (service): no record, `app.unreadable() == 1`, and no call that could name it | pass |
+| The content limit of 16,384: the largest revision the relay's validator passes is one frame (about 491,000 bytes), so the frame check cannot fire at the pin | `U: protocol::record::size_is_checked_before_anything_is_sent` | — (a measurement; with one tag more the relay's own validator refuses first: `total tag bytes exceeded`) | pass |
+
+### On the scripted relay
+
+`T:` is a test of `tests/app_session_test.rs`: a script, the runtime, the
+session, the real records service, supervisor and store, real sockets, and a
+relay that says what the pinned relay was measured to say. The app is drawn
+into a buffer of 40 by 16, the size of a docked app, and read as text
+(`tests/support/app_pane.rs`). These run on every platform.
+
+| Claim | Proof | Red without the change | Result |
+|---|---|---|---|
+| **A resync changes nothing on the screen.** The Board with three cards; the relay ends the sync (`CLOSED resync: redaction`) and sends the same set: every screen drawn meanwhile is the screen from before, the pane says nothing, and the state goes `live`, `syncing again`, `live` with one new request. A set that differs shows exactly its differences, and the script was not made to load again | `T: a_resync_changes_nothing_on_the_screen` | a join that empties its set when the sync ends: `the screen during a resync left: "To do (0)\nDoing (0)\nDone (0)…"` | pass |
+| **`TooMany`, `Restricted` and an archived channel each show their sentence.** `error: sync set exceeds max_events`: the sentence, the part of the set that arrived is not shown, a new card is `The board is full.` without a frame, no second request. `restricted:`: the sentence, `Load failed.`, a new card refused without a frame. `invalid: channel is archived` to a move: the app's `Refused: this channel is archived…`, the card back in its column, the sentence; once its owner says so, the next move costs no frame | `T: too_many_restricted_and_archived_each_show_their_sentence` | no sentence: `left: None right: Some("This app has more than 4096 records here, too many to load. None can be added.")` | pass |
+| **A message of the person is not delayed by an app's writes.** A script asks for forty writes at once: a message sent meanwhile goes out after at most three of them; thirty frames of the app reach the relay and ten requests are answered `rate_limited` (1 to 60 s) by bzz; five more asked are five more refused; the person's next five messages are each acknowledged within a second. With a relay that never acknowledges the app's write, a message is acknowledged within 2 s and the pane still draws | `T: a_message_of_the_person_is_not_delayed_by_an_apps_writes` | the budget not asked: `stored 32, told to wait 8` (the supervisor's own queue of 32 is then the only bound, and the relay's 60 the next) | pass |
+| **Frames missed inside bzz** (left untested in M2 (service)). With bzz's store busy and the task of the app's sync waiting for it, the relay sends a head and 2,600 more frames, more than a listener is kept (2,048). The head in hand is told live; then `Resyncing`, one new request, the missed head as the one difference, `Live` | `T: frames_missed_inside_bzz_are_made_up_by_a_whole_new_set` (`tests/app_records_test.rs`) | the lag ignored: `an event of the records in time: Elapsed(())`, the missed record never told | pass |
+| A new version that declares other types, on the relay: the sync of the old types is closed, one request follows for both under the same subscription, the script's list is answered, the record of the new type arrives, and a write of the new type is stored | `T: a_new_version_with_other_types_opens_its_records_again` | — (the red of the unit test above is the same change) | pass |
+| A second instance of an app in a channel: its script is answered `unavailable`, the pane says `the app board is already open in this channel`, the relay is asked nothing; when the first is gone, `retry()` opens it | `T: a_second_instance_in_the_channel_is_told_and_opens_when_the_first_is_gone` | — (new) | pass |
+
+The first four of these, the ones that existed then, were run 40 times, ten
+at once; the scripted tests of the service 30 times, ten at once; and the
+session's unit tests 20 times. None failed.
+
+### On the pinned relay
+
+`real_relay_app_session_two_profiles_share_a_board`, in
+`tests/relay_integration.rs`, so `scripts/test-relay.sh` runs it with the
+suite. It is milestone M2's exit gate to the letter. Each profile is a
+generated identity with its own store on disk, connection, records service
+and app session; relay members with the role `member`; a private channel one
+of them made. The app is the Board fixture
+(`tests/fixtures/apps/board/app.lua`), driven by keys through the session
+and read as screens of 40 by 16.
+
+| Claim | Observed | Result |
+|---|---|---|
+| **A change by one arrives live on the other's screen** | Ana presses `n`, types a title, Enter: her screen has the card under `To do (1)` and `Saved.`; Ben's screen has it 110 to 154 ms after her keys. Ben makes a card and moves it with `]`: Ana's screen has it under `Doing (1)`. Both screens list the same cards in the same columns | pass |
+| **A simultaneous change loses nothing** | Five rounds. The card is in the middle column on both screens; Ana presses `]` and Ben `[` before either request is carried, so both moves are made from the same revision. Each round exactly one status line says `Saved.` and the other `Conflict: merged with a newer change.`; both screens then show the card in the column of the one that merged; both sessions hold one record at one revision, signed by the one that merged; the relay still counts two artifacts. In three rounds both requests are carried at once: Ana's was the one stored, every time, in every run. In two rounds Ben's is carried 60 ms sooner, and Ana is the one told. Merged by `ben, ana, ben, ana, ben` | pass |
+| **A restart shows the same records** | Ana's session and store are closed. Opened again with nothing to reach (the relay's address replaced by a closed port): the screen has both cards in their columns and `Loaded 2 cards.`, and the sync stays `loading` for the half second watched. Opened again with the relay: every screen that says `Loaded 2 cards.` has the same cards, seen while the state was `loading` and then `live`, and for half a second after; it is what Ben's screen shows | pass |
+| **An undeclared type is refused, at the session and at the service** | At the session, asked past the runtime: a create of `vote`, a create of the long form `bzz.app.board.card`, a delete of a real card named as a `vote`. At the service, asked past the session with its own handle: `vote`, the long form and `buzz.task` are each `fenced`. The relay's count of the channel is 2 before and after, and the session holds 2 records | pass |
+| **At the quota the pane shows the wait: the app's own budget** | Dan has written nothing. His app asks for forty records at once: `stored 30`, `told to wait 10 (1 to 60 s)`, the pane's sentence `Too many changes: this app can write again in 57 s.`; the relay counts 32 artifacts, so it never saw the ten; his chat message is accepted at that moment | pass |
+| **At the quota the pane shows the wait: the relay's own quota** | A profile whose identity is an agent of Ana's (an owner attestation, the role `bot`), for which the suite does not raise the relay's quota. Its chat sends 120 messages, all accepted (15.0 s). The next write of its app is refused by the relay: `stored 0`, `told to wait 1 (1 to 60 s)`, the sentence `…write again in 45 s.`; a second write is answered within 2 s without a frame; the relay's count is unchanged; two seconds later the wait shown is smaller | pass |
+
+`real_relay_app_session_meets_a_persons_own_quota` is the same for a
+**person**, whose quota the suite raises to 5000 for its other tests. It
+runs only under `BZZ_RELAY_OWN_QUOTA=1`, which leaves the relay's quota as
+it ships and runs this test alone; in the suite it prints that it was
+skipped.
+
+| Claim | Observed | Result |
+|---|---|---|
+| A person's own sixty writes a minute, shared by chat and apps | Eva makes a channel and, in the Board, a card: two writes. Her chat then sends messages eight a second: the relay takes sixty writes in all, in 14 s, and answers the next `rate-limited: retry in 45s`. She moves the card: the Board's own line says `Too many changes. Retry in 45 s.`, the card is back under `To do (1)`, and the pane's sentence is `Too many changes: this app can write again in 45 s.`; the relay still counts one artifact | pass |
+
+Runs on this branch, each under the harness lock and torn down by the
+script (no `buzz-harness` container and no listener on 3030 afterwards, as
+the wrapper recorded after each):
+
+- 09:50 to 09:53, the gate alone, first run: passed in 31 s. Its binary
+  was built while a red edit was in the tree ("Found on the way"); it is
+  not counted.
+- 09:55 to 09:57, `BZZ_RELAY_OWN_QUOTA=1`: passed in 19 s.
+- 13:30 to 13:35, three **red** runs of the gate, each with one thing taken
+  out of the session and restored after:
+  - a change not pushed: `timed out waiting for ana's card on ben's
+    screen`, with `To do (0)`;
+  - the stored set not taken at opening: at the restart with no relay,
+    `timed out waiting for Loaded 2 cards.`, the Board saying `Load failed.
+    Press r to retry.` and the sync `loading`;
+  - the budget not asked: `timed out waiting for forty answers`, with
+    `stored 32`, `told to wait 8 (1 to 60 s)`.
+- 14:12 to 14:28, the whole suite on `96eda85`: 25 passed in 904 s (the 23
+  of M2 (service), the gate, and the person's quota, which skipped itself,
+  as the one with the owner's own programs does), then `agent_host_test` 7
+  and `agent_move_test` 8. 14:28, `BZZ_RELAY_OWN_QUOTA=1`: passed in 18 s.
+- 14:36 to 14:37, the gate alone with Ben made sooner in two rounds: passed
+  in 31 s.
+- 14:44 to 15:00, **the whole suite on `c1f3a0e`**: 25 passed in 900 s,
+  then 7 and 8. 15:00 to 15:01, `BZZ_RELAY_OWN_QUOTA=1` on `c1f3a0e`:
+  passed in 18 s. The numbers in the two tables are these runs'.
+
+In this worktree the script was run with a `cargo` first on the `PATH`
+that sets `CARGO_TARGET_DIR` to the main checkout's `target` only inside
+the worktree, as in M2 (service), and `BZZ_BUZZ_SOURCE` at the main
+checkout's `runs/buzz-pin`.
+
+### A sync of 1000 records through a session
+
+`T: a_sync_of_a_thousand_records_through_a_session`, on the scripted relay:
+the Board at 80 by 24, a store on disk, 1000 cards signed by another
+participant. Each number is the time until the screen shows it, with the
+test's loop looking every 3 ms. Three runs in a release build, five in a
+debug build; the spread was under 3 %.
+
+| | Release | Debug |
+|---|---|---|
+| The first open: nothing kept, one list reply with 1000 records, no push | 253 ms | 780 ms |
+| A resync in which all 1000 records differ: 1000 pushes, sent as the script takes them | 2.15 s | 4.2 s |
+| A restart with a relay that says nothing: the screen from the store | 80 ms | 420 ms |
+| Resident memory of the test process, before | 17.2 MiB | 24.5 MiB |
+| after the first sync (the service's set, the store, the session's set, the interpreter) | 28.6 MiB (+11.4) | 36.3 MiB (+11.8) |
+| after the thousand pushes | 35.5 MiB (+18.3) | 43.2 MiB (+18.7) |
+
+The two seconds of the resync are the Board's own: it sorts its thousand
+cards once for each push, on the script's thread. The owner's calls did not
+wait for it: the app stayed `responding`, and bzz never has more waiting
+for a script than half of what the script may be owed.
+
+### Gates
+
+On `c1f3a0e`, 2026-11-19 from 14:37 (UTC−5), one after the other. Only
+this document changed afterwards.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets -- -D warnings`; the same with `--no-default-features` | clean, both |
+| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets` | 884 passed, 0 failed, 35 ignored, in 58 test programs. New here: 16 of `apps::session`, 1 of `protocol::record`, 6 of `tests/app_session_test.rs`, 1 of `tests/app_records_test.rs`; 2 of `apps::runtime::records` went with the functions they tested; the 2 new ignored are the relay tests |
+| Tests without the features | `cargo test --locked --no-default-features --lib`; `cargo build --locked --no-default-features` | 458 passed; builds |
+| `apps` alone | `cargo test --locked --no-default-features --features apps --lib` | 584 passed, 2 ignored |
+| Supply chain | not run: `Cargo.toml` and `Cargo.lock` are unchanged | |
+| Pinned relay | above | the whole suite on `c1f3a0e`: 25 passed, then 7 and 8; the person's quota alone: passed |
+| Repeats | the scripted tests of the session 40 times and of the service 30 times, ten at once; `apps::session` 20 times | no failure (on `ef89cd1`, before the test of a second instance was added) |
+| Release | `cargo test --release --locked --test app_session_test a_sync_of_a_thousand -- --nocapture`, three times | passed; the numbers above |
+
+### Not proven in M2 (session)
+
+| Item | State |
+|---|---|
+| A session inside bzz's own loop | M3. The session was driven by a test's loop and by the headless driver; its waker was a test's. `app-records.md` says how it fits `App::run`; nothing in `src/app.rs` was changed |
+| Names from bzz's profiles | the session takes names from its owner (`set_names`) and says whom it lacks (`unnamed()`); that the pane feeds it from the profile store and looks the others up is M3. On the pinned relay the names were given; the Board shows none |
+| Where the pane's sentence is drawn | M3. It is `status().notice`, asserted as text; the app's region is not made smaller for it |
+| The two simultaneous moves on the wire | each round one move was stored and the other was told of the conflict and merged. Whether the relay refused the second frame or bzz answered it from the head it already held was not told apart: both are a conflict to the script, and M2 (service) proved each |
+| "Loses nothing" for two different fields | the Board changes one field, the column: the merged record has the loser's column on top of the winner's revision. Two fields both kept were shown at the service (M2 (service), five rounds) |
+| The relay's own quota through a session, for a person, inside the suite | only under `BZZ_RELAY_OWN_QUOTA=1`, a second start of the relay. In the suite it is met as an agent's identity |
+| `TooMany`, `Restricted` and an archived channel on the pinned relay through a session | scripted. M2 (service) saw `Restricted` and `Archived` at the pinned relay's service |
+| A write whose task ends without an answer | written (`unavailable`, so that the request has its one reply); no test ends a task |
+| A list that waits more than five seconds for a slow relay and gets its set later | the unit test only: the script is then told nothing of the set until it lists again |
+| A drop of the connection under a session | the service's own tests (M2 (service)); under a session only `CLOSED resync:` |
+| A record larger than 16,384 bytes written by another client | delivered as it is; a thousand of them would not fit the interpreter's memory, which the contract says |
+| macOS, Windows, Linux on arm64 | not compiled or run here. The unit tests and the scripted tests run on every platform in CI's build job; the relay tests on Linux |
+| The six apps on the bench, the example host | M1-B, in another worktree. Its host should run an app through `AppSession::in_memory`, as the headless driver now does |
+
+### Found on the way
+
+- **The rules of the store in memory were a second implementation.** It
+  answered lists itself, by its own title rule, and computed a resync by
+  its own function. Behind the session it is a relay and nothing more:
+  two of M1-A's tests showed the difference at once. `case_08` of the Board
+  expected no card after a failed list and got six pushes; a test of error
+  codes listed a record deleted "while the app was not told", which a
+  session only learns at the next resync, as on the relay.
+- **Without the app's budget the next bound is the supervisor's queue of
+  32**, not the relay's 60: forty writes at once gave `stored 32, told to
+  wait 8`, on the scripted and on the pinned relay.
+- **The check of the frame's size cannot fire at the pin** once content is
+  16,384 bytes: the relay's validator refuses more than about 65,000 bytes
+  of tags, and the largest revision it passes is about 491,000 bytes of
+  the 524,288 a frame may be. It stays, for a relay that takes more.
+- **Which card the Board selects after a resync depends on the order of
+  the pushes** when the selected card is among the deleted: the
+  differences come in the order of the records' ids. The first version of
+  the scripted test asserted the selection and failed two times in three.
+- **`scripts/test-relay.sh` gives a test no way to print.** The times
+  above are printed by the tests; `BZZ_RELAY_NOCAPTURE=1` shows them.
+- **A record with no fields is invisible in the Board fixture**, which
+  shows a card only in a column it knows. An app that means to clean up
+  after other clients has to list what it does not understand.
+- **A red run must not overlap a relay run of the same checkout.** The
+  relay script builds from the working tree: the first relay run of this
+  branch was compiled while a red edit of `service/records.rs` was in
+  place for another test. It was run again on the final commit.
