@@ -946,3 +946,169 @@ this document changed afterwards.
   relay script builds from the working tree: the first relay run of this
   branch was compiled while a red edit of `service/records.rs` was in
   place for another test. It was run again on the final commit.
+
+## M4 (store and command line) — Where apps are kept, and `bzz app`
+
+Linux x86_64, Rust 1.98.1, 2026-11-19. Branch `t3/m4-store-cli-1`, cut
+from `v0.16.0` at `d0dbb36` (after M2 (session)), with the six commits of
+an earlier agent's branch `t3/m4-store-cli` (cut before M2 (session))
+merged in. This is the half of M4 that needs no window: the store of
+installed apps, the rule that nothing runs unapproved, and the command
+line. The approval overlay and `:app` in the TUI are M4-B, after the pane
+(M3). [`apps.md`](apps.md) is the user's guide.
+
+**Where it is.**
+
+| Path | What |
+|---|---|
+| `migrations/0021_apps.sql`, `src/store/apps.rs` | migration 21: `apps`, `app_versions`, `app_channels`, and their queries |
+| `src/apps/store/mod.rs` | `Apps`: propose (`examine`, `record`), `review`, `approve`, `refuse`, `failed_to_run`, `rollback`, `remove`, and `runnable`, the one function that hands out a script to run |
+| `src/apps/store/manifest.rs` | the manifest (`app.toml`) and the brief: formats, limits, `visible` |
+| `src/apps/store/review.rs`, `diff.rs` | what the owner is shown; the line difference |
+| `src/apps/store/folder.rs`, `templates.rs`, `src/apps/templates/board/brief.md` | a folder of the owner's; the templates (the Board) |
+| `src/apps/dev.rs` | `try` and `dev`: a script on records in memory, through an `AppSession` |
+| `src/cli_app.rs`, `src/main.rs`, `src/paths.rs` | `bzz app …`; `<data>/apps`; `community remove --purge` removes the community's apps |
+| `tests/app_cli_test.rs`, `tests/secret_scan_test.rs`, `tests/store_migration_test.rs` | the command line end to end, the secret scan, migration 21 |
+| `docs/apps.md`, `docs/security.md` | the guide; "v0.16.0 trust boundaries" |
+
+No dependency was added; `Cargo.toml` and `Cargo.lock` are unchanged.
+
+**What was decided here** (the plan and the brief left these open):
+
+| Question | Decided |
+|---|---|
+| Files or database | **Files hold bytes, the database holds decisions.** A version's three files are written once under `<data>/apps/<community>/<name>/versions/<nnnn>/` and never changed; which version runs, the approved hash, who proposed each and what became of it are rows. Every read of a version compares the file with the hash recorded when it was proposed, so an edit on disk is found, and a copy of the folder elsewhere approves nothing |
+| Manifest or script | **The script is the authority** for `api` and `types`: bzz loads it and takes both from there, refuses a folder whose `app.toml` says otherwise, and writes the manifest it keeps itself. `name` and `title` are only in the manifest. An unknown field is an error |
+| Types a script computes | the approved types are kept with the version; `Runnable::check_loaded` holds what the runtime reports at load to them, for the pane (M4-B) to call |
+| `approve`, `refuse`, `pending`, `rollback` at the shell | they exist: the owner at his shell is the owner. Without a terminal an approval must name the script's whole hash; `add` then prints the command |
+| Versions kept | the one that runs, the one before it, the ten newest approved, every waiting one; lines without files: the fifty newest. A refused or failed version keeps no files |
+| Proposers | one waiting version per proposer (a later one supersedes it); at most eight waiting for one app |
+| A version that fails as it is put to run | `failed_to_run` records it and makes the version that ran before current again |
+| `dev --channel` | refused in this version, with the reason; what M4-B must add is in `docs/apps.md` |
+
+**How to repeat.**
+
+```sh
+# the build environment of runs/v016/RULES.md, then:
+cargo test --locked --lib apps::store            # the store, manifest, review, difference
+cargo test --locked --lib store::apps            # migration 21's queries
+cargo test --locked --lib apps::dev              # try and dev
+cargo build --locked --example scripted_harness  # the secret scan needs it
+cargo test --locked --test app_cli_test --test store_migration_test --test secret_scan_test
+```
+
+### Claims
+
+`U:` is a unit test under `apps::store::tests::` (on a store on disk in a
+temporary folder), `apps::dev::tests::` or `store::apps::tests::`; `C:` is
+`tests/app_cli_test.rs`, which runs the `bzz` binary with a temporary data
+directory and no terminal, and asks `Apps::runnable` of the same directory
+after each command. Each red is the named test run against the one change
+in its cell, seen failing with the quoted message, and the file restored
+(`git checkout`); the runs are logged in the worktree's `/tmp`, not kept.
+
+| Claim | Proof | Red without the change | Result |
+|---|---|---|---|
+| **A version that was not approved is never handed to a runtime**, tested at `Apps::runnable`: not installed, waiting (also the owner's own), refused, failed to load, rolled back to while unapproved, and disabled. Approved, it hands out exactly the approved bytes, version, hash and types | `U: a_version_that_was_not_approved_is_never_handed_to_a_runtime` | `runnable` taking the newest version and not looking at its state: `unwrap_err() on an Ok value: Runnable { … version: 1 … }` for the owner's waiting version | pass |
+| **Bytes changed on disk after approval do not run, and bzz says why**: `tasks: app.lua of version 1 is not what was approved: the recorded hash is …, and the file on disk has …. It was changed outside bzz, and it is not used`; one byte more is enough; a file removed is `Missing`; the approved bytes put back run again; an edited brief or manifest is found where it is shown, and the approved types are the database's, not the file's. A waiting version whose script is swapped on disk cannot be approved and is recorded as failed | `U: bytes_changed_on_disk_after_approval_do_not_run_and_bzz_says_why`, `approval_is_of_exact_bytes`; `C:` (`show` says `it does not run: …`) | the comparison with the recorded hash off: `unwrap_err() on an Ok value: Runnable { … script: … "edited behind bzz" … }` | pass |
+| **A proposal that fails to load is not offered and keeps the old version**: recorded as `failed` with the error and its file and line, no files kept, not in `waiting`, not approvable, and the approved version still the one `runnable` gives; the same for an empty brief, a brief over 16 KiB, a script over 128 KiB, `api = 2`, an error in the first `view`, and an empty script. A folder whose manifest disagrees with its script fails the same way (`a_folders_manifest_must_say_what_its_script_says`) | `U: a_proposal_that_fails_to_load_is_not_offered_and_keeps_the_old_version`; `C:` (`add` of a broken folder: `it does not load, and nothing was changed (recorded as version 3, failed)`) | a load error ignored: `Waiting { version: 2, … }` where `Failed` was expected | pass |
+| **A change of the declared types is marked in what the owner is shown**: a first version says all are new; the same types (in any order) say so; other types show `CHANGED from the version that runs:` with `+ vote   new: …` and `- tag   no longer declared: …` | `U: a_change_of_the_declared_types_is_marked_in_what_the_owner_is_shown`; `C:` (the same lines from `bzz app add`) | `TypesChange::between` comparing only the number of types: `left: Unchanged right: Changed { added: ["vote"], removed: ["tag"] }`. A first red, the review comparing the new types with themselves, failed earlier: `left: Unchanged right: First` | pass |
+| What the owner is shown besides: who (you, an agent, a person, with the key), the brief and whether it changed, sizes, the line difference from the version that runs; nothing a proposer wrote can draw on the terminal | `U: the_owner_is_shown_who_the_brief_the_sizes_and_the_difference`; `review::tests`, `diff::tests`, `manifest::tests::what_is_not_text_is_written_out` | — (inherited, run green; no red taken) | pass |
+| **Rollback restores the earlier version's exact bytes**, and its approved types; back twice, then forward to a named version; nothing earlier is said; an earlier version whose file changed is not gone back to | `U: rollback_restores_the_earlier_versions_exact_bytes`; `C:` (`rollback`, then `runnable` gives version 1's bytes) | every version written to one folder: `rollback … unwrap() on an Err value: Changed { name: "board", version: 2, … }` | pass |
+| An approved version that fails as it is put to run leaves the previous one current | `U: an_approved_version_that_fails_as_it_is_put_to_run_leaves_the_previous_one`; `store::apps::tests::a_version_that_fails_as_it_is_put_to_run_gives_way_to_the_one_before` | — (inherited, run green; no red taken). No runtime calls it yet: M4-B | pass |
+| **`remove` leaves the channel's records alone, and says so**: the app, its versions, its channels and its folder are gone; every artifact is still there, the app's own among them; the count it reports is the app's types only (`bzz.app.board.*`, not `bzz.app.board-2.*`); an app of the same name installed again finds them | `U: remove_leaves_the_channels_records_alone_and_says_so`; `C:` (`2 records of types bzz.app.tasks.* are stored by this bzz, in 1 channel`, and `typed_artifacts` still 2) | `remove` also deleting artifacts of `bzz.app.<name>.`: `left: 3 right: 6` artifacts | pass |
+| **Migration 21 on a v0.15 database: old data intact.** A database at schema 20 with an identity, a community, an agent's request and stored reply and an artifact opens at 21; a backup at 20 is made first; every row of every table v0.15 had is as it was; the three tables are empty; an app can be recorded | `T: store_migration_test::schema_twenty_of_v015_gains_the_apps_tables_and_keeps_every_row`; `fresh_database_has_expected_pragmas_and_schema` (21) | migration 21 taken out of `src/store/migrate.rs`: `no such table: app_channels` | pass |
+| Migration 21 on a profile a real old release wrote | `scripts/upgrade-test.sh` (v0.14.0 writes a profile; `upgrade_from_v0140_test` opens it, migrations 18 to 21) | migration 21 taken out: `migrations 18 to 21 ran (17 -> 20)` | pass; see "The upgrade from a real profile" |
+| **The command line end to end**, with a temporary data directory: `new` (and `--templates`, a folder that exists, a bad name), `check` (an error with `app.lua:11:`, a manifest that disagrees), `try` (keys, typing, a seed, a size), `add` (it waits: `runnable` is `NothingApproved`), `pending`, `approve` (refused without a terminal and without a hash, refused with another hash, done with the shown hash), `list`, `show`, `show --script` (the exact bytes), `add` of the same folder (nothing to approve), an update with its difference, a failing update, a change of types, `refuse` with a reason, `rollback`, an edit on disk, `disable`, `enable`, `dev` without a terminal and with `--channel`, `remove` | `C: the_command_line_from_a_new_folder_to_an_uninstalled_app`; `C: a_command_that_needs_a_community_says_so_and_the_others_need_none` | `add` approving by itself where there is no terminal: `` `tasks: version 1 waits for your approval. Nothing of it runs until then.` in: … `` | pass |
+| **No key or credential appears in anything a script or these commands print.** A profile with a real owner key sealed in its file, its passphrase, and a broker credential; every `bzz app` command run on it; a script that writes down every global, its `ctx`, and tries `os.getenv`, `io.open("/proc/self/environ")` and `require("os")`. None of the secrets and no environment variable of bzz is in what was printed or in any file of the profile; the three ways out gave nothing | `T: secret_scan_test::no_key_reaches_a_script_or_anything_the_app_commands_print` | `try` printing bzz's environment: `an environment variable of bzz leaked into try` | pass |
+| **`app dev` reloads on save**: a save draws the new version with the state of the old (keys, records); a broken save leaves the old version running and shows the error; a file gone for a moment is said once; the fix runs | `U: apps::dev::tests::a_save_reloads_the_running_app_and_a_broken_save_leaves_it_running` | the saved bytes not given to the session: `left: "first keys=2 notes=2" right: "second keys=2 notes=2"` | pass |
+| The same in a real terminal | below | — | pass |
+| The store's folders and files are private (`0700`, `0600`) | `U: an_apps_folder_and_files_are_private` | — (inherited, run green) | pass |
+| Every template loads apart and declares what its entry says | `U: every_template_loads_and_declares_what_its_entry_says` | — (inherited, run green) | pass |
+
+The other inherited tests of the store, the manifest, the difference and
+the queries (42 in `apps::store` and `store::apps`, 4 in `apps::dev`) were
+run green; for those without a red in the table, no red was taken in this
+task.
+
+### `bzz app dev` in a terminal
+
+The debug binary of `31fda03`, in tmux on a private socket (100 by 30), with
+throwaway `BZZ_*_DIR`s: `bzz app new tasks`, then `bzz app dev tasks`.
+
+| Step | Seen |
+|---|---|
+| start | the Board in a border of 42 by 18, `To do (0)`, `Loaded 0 cards.`; under it `…/app.lua · running · not reloaded yet · 0 records in memory` and `Ctrl+C leaves. Every other key is the app's. Saving the file reloads it.` |
+| `n`, `Buy milk`, Enter | `To do (1)`, `> Buy milk`, `Saved.`; `1 record in memory` |
+| `"To do"` replaced by `"Backlog"` in the script, saved | `Backlog (1)`, `> Buy milk` still there; `reloaded once` |
+| `return app(` appended, saved | the screen as it was, the error `app.lua:379: <eof> expected near 'return'` in the app's region and under it; `reloaded 2 times`, still `running` |
+| the good script saved again, then `Ctrl+C` | the terminal is the shell's again; printed: the log (`reloaded; state kept`, the error, `(reload failed: the previous version keeps running)`, `reloaded; state kept`) and `left …/app.lua. Its records were kept in memory and are gone. To install it: bzz app add …`; exit status 0 |
+
+The tmux server was killed afterwards; no `bzz app dev` process was left.
+
+### The upgrade from a real profile
+
+`scripts/upgrade-test.sh` builds v0.14.0 (`80e1b07`) in a temporary
+worktree, lets it write a whole profile (settings with a hosted agent of
+v0.13, its sealed key, a database with messages, at schema 17), and runs
+`tests/upgrade_from_v0140_test.rs` against it with this branch. The test
+now expects migrations 18 to 21 (`user_version` 21); the rest of what it
+checks (the backup at the old version, nothing v0.14.0 showed lost or
+changed, the hosted agent served and never started) is as in v0.15.0.
+
+| Run | Result |
+|---|---|
+| `31fda03`, 16:14 to 16:17, the old release's target under `/media/arpagon/archive-data/…/m4a-upgrade/` | `v0140_profile_upgrades_with_its_hosted_agent_served_and_nothing_lost ... ok` |
+| red: migration 21 taken out of `src/store/migrate.rs` | `migrations 18 to 21 ran (17 -> 20)`, `left: 20 right: 21` |
+
+No profile written by v0.15.0 itself was opened: the script has no seed
+for v0.15.0 (`tests/upgrade/seed_v0150.rs` does not exist), and writing one
+is M8's upgrade work. Migration 21 only adds tables, and the test above
+compares every row of every table of a schema-20 database before and after
+it.
+
+### Gates
+
+On `31fda03`, 2026-11-19 from 16:05 (UTC−5), one after the other. Only
+this document changed afterwards.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets -- -D warnings`; the same with `--no-default-features` | clean, both |
+| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets` | 934 passed, 0 failed, 35 ignored. New here against `v0.16.0`: 16 of `apps::store::tests`, 19 of `apps::store::{manifest, review, diff, folder}`, 7 of `store::apps`, 4 of `apps::dev`, 2 of `tests/app_cli_test.rs`, 1 of `tests/secret_scan_test.rs`, 1 of `tests/store_migration_test.rs` |
+| Tests without the features | `cargo test --locked --no-default-features --lib` | 465 passed |
+| Supply chain | not run: `Cargo.toml` and `Cargo.lock` are unchanged | |
+| Pinned relay | not run: nothing here reaches a relay | |
+| Upgrade | `scripts/upgrade-test.sh` (from v0.14.0) | passed; above |
+
+### Not proven in M4 (store and command line)
+
+| Item | State |
+|---|---|
+| A script added from a folder runs **in the pane** only after approval; an approval reaches an open app without a restart; a failing update keeps the old version **running** | M4-B. Proven at `Apps::runnable`, the only door the pane is to use; nothing calls `failed_to_run` or `Runnable::check_loaded` yet |
+| The approval overlay, `:app` commands | M4-B |
+| `bzz app dev --channel` | refused; `docs/apps.md` says what M4-B must add |
+| Poll and Approvals as templates (D9) | the mechanism and the Board ship; the two fixtures are on the bench's branch (`tests/fixtures/apps/{poll,approvals}/app.lua`), not on `v0.16.0` yet. Where they go is in `templates.rs` and `docs/apps.md` |
+| Herdr on the release binary (install, approve, roll back) | M4-B's row. `dev` was seen in tmux on a debug binary |
+| macOS, Windows | not compiled or run here. File permissions are `0700`/`0600` on Unix only, as bzz's other data |
+| A profile written by v0.15.0 itself | no seed for v0.15.0 in `scripts/upgrade-test.sh`; M8 |
+| Two bzz processes changing the store at once | each change is one SQLite transaction; not tested with two processes |
+
+### Found on the way
+
+- **The shared `target/` builds the same `libbzz` for every worktree.** The
+  hash of the artifacts does not depend on the checkout's path, so a
+  `cargo test` here once linked another worktree's newer `libbzz` and
+  failed on `could not find store in apps`: cargo judged it fresh because
+  the sources here were older than its output. Touching `src/lib.rs` and
+  `src/main.rs` before each cargo command made every run build this
+  checkout's own. Every run counted above was made that way.
+- **`AppSession` replaced `MemoryStore::serve`.** The earlier branch's
+  `dev` served the script's requests from the store itself; after M2
+  (session) it runs through `AppSession::in_memory`, as the headless driver
+  does, and shows the session's notice under the app.
+- The earlier branch's test of migration 21 makes its schema-20 database by
+  dropping the new tables from a new one. The upgrade from a profile a real
+  release wrote was run with `scripts/upgrade-test.sh` (v0.14.0); there is
+  no seed for v0.15.0 yet.
