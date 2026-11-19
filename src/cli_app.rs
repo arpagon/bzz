@@ -149,7 +149,7 @@ pub enum AppCommand {
         path: PathBuf,
         /// What to do to it, in order: a key (j, enter, esc, ctrl+u,
         /// shift+tab, f1), type:TEXT, paste:TEXT, resize:40x16, wait:MS.
-        #[arg(allow_hyphen_values = true)]
+        /// Put `--` before a step that starts with a hyphen.
         steps: Vec<String>,
         /// The app's region, in columns and rows. The pane gives 40x16.
         #[arg(long, default_value = "40x16")]
