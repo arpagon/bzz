@@ -22,10 +22,10 @@ mod vm;
 use serde_json::json;
 
 use super::clock::ManualClock;
-use super::headless::{Headless, HeadlessOptions, START_OF_TIME};
 use super::limits::Limits;
-use super::memory::{MemoryStore, content};
 use super::records::Who;
+use crate::apps::session::headless::{Headless, HeadlessOptions, START_OF_TIME};
+use crate::apps::session::memory::{MemoryStore, content};
 
 /// The fixtures: apps written against `api = 1`. The six of the experiment
 /// (Board, Poll, Rota, Approvals, Panel, the Board with priority) each have
