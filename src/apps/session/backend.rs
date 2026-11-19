@@ -105,6 +105,9 @@ pub trait Records: Send {
     /// Asks for the set again after a final state.
     fn retry(&mut self);
 
+    /// The app was closed: the records are let go of, and their sync ends.
+    fn close(&mut self) {}
+
     /// What happened since the last time. Never blocks.
     fn poll(&mut self) -> Vec<Told>;
 

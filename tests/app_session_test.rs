@@ -15,7 +15,7 @@ use bzz::service::records::SyncState;
 use bzz::store::Store;
 use nostr::{Event, Keys};
 use serde_json::{Value, json};
-use support::app_pane::{Pane, last_row};
+use support::app_pane::{Pane, board_cards, last_row};
 use support::records_world::*;
 use uuid::Uuid;
 
@@ -132,17 +132,16 @@ async fn a_resync_changes_nothing_on_the_screen() {
             status.sync == SyncState::Live && screen.contains("Done (1)")
         })
         .await;
-    for shown in [
-        "To do (1)",
-        "> Echo",
-        "Doing (1)",
-        "Delta",
-        "Done (1)",
-        "Alpha",
-    ] {
-        assert!(after.contains(shown), "{shown}:\n{after}");
-    }
-    assert!(!after.contains("Bravo"), "{after}");
+    assert_eq!(
+        board_cards(&after),
+        [
+            ("doing", vec!["Delta".to_owned()]),
+            ("done", vec!["Alpha".to_owned()]),
+            ("todo", vec!["Echo".to_owned()]),
+        ]
+        .into(),
+        "{after}"
+    );
     // The script was not made to load again: its own status line stands.
     assert_eq!(last_row(&after), "Loaded 3 cards.");
     assert!(world.writes().is_empty());

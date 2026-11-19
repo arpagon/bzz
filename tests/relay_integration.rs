@@ -9058,44 +9058,6 @@ async fn real_relay_app_records_are_shared_by_two_profiles() {
     }
 }
 
-/// The cards a Board's screen shows, by column. At 40 columns the three
-/// columns are stacked: a header such as `To do (2)`, then its cards.
-#[cfg(feature = "apps")]
-fn board_cards(screen: &str) -> std::collections::BTreeMap<&'static str, Vec<String>> {
-    let mut cards = std::collections::BTreeMap::new();
-    let mut column = None;
-    for line in screen.lines() {
-        let text = line.trim_start_matches("> ").trim();
-        let header = [
-            ("To do (", "todo"),
-            ("Doing (", "doing"),
-            ("Done (", "done"),
-        ]
-        .into_iter()
-        .find(|(prefix, _)| text.starts_with(prefix));
-        if let Some((_, name)) = header {
-            column = Some(name);
-            cards.insert(name, Vec::new());
-        } else if text.is_empty() || line == support::app_pane::last_row(screen) {
-            // A gap, or the app's own status line.
-        } else if let Some(name) = column {
-            cards
-                .entry(name)
-                .or_insert_with(Vec::new)
-                .push(text.to_owned());
-        }
-    }
-    cards
-}
-
-#[cfg(feature = "apps")]
-fn board_column(screen: &str, title: &str) -> Option<&'static str> {
-    board_cards(screen)
-        .into_iter()
-        .find(|(_, cards)| cards.iter().any(|card| card == title))
-        .map(|(column, _)| column)
-}
-
 /// A script that writes as many records at once as it is pasted a number,
 /// and counts what it is answered.
 #[cfg(feature = "apps")]
@@ -9131,7 +9093,7 @@ async fn real_relay_app_session_two_profiles_share_a_board() {
     use bzz::apps::session::SessionOptions;
     use bzz::service::records::SyncState;
     use serde_json::json;
-    use support::app_pane::{Pane, last_row};
+    use support::app_pane::{Pane, board_cards, board_column, last_row};
 
     const BOARD: &str = include_str!("fixtures/apps/board/app.lua");
     const SAVED: &str = "Saved.";

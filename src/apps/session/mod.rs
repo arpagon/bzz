@@ -414,7 +414,10 @@ impl AppSession {
                     outputs.push(Output::Loaded { types });
                 }
                 Output::Close => {
+                    // The script's thread has ended: its records are let
+                    // go of with it.
                     self.closed = true;
+                    self.records.close();
                     outputs.push(Output::Close);
                 }
                 other => outputs.push(other),
@@ -450,6 +453,7 @@ impl AppSession {
     pub fn close(&mut self) {
         self.closed = true;
         self.runtime.stop();
+        self.records.close();
     }
 
     /// The app asked to close (`host.quit()`), or its owner closed it.

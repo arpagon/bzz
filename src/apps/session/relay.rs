@@ -25,7 +25,7 @@ const REOPEN_STEP: Duration = Duration::from_millis(10);
 
 enum Inbound {
     /// The opening numbered so has ended.
-    Opened(u64, Result<AppRecords, RecordError>),
+    Opened(u64, Result<Box<AppRecords>, RecordError>),
     /// The service told the opening numbered so.
     Event(u64, RecordEvent),
     Answer(u64, Result<Record, RecordError>),
@@ -133,7 +133,10 @@ impl Records for RelayRecords {
             };
             match opened {
                 Ok((handle, mut events)) => {
-                    if sender.send(Inbound::Opened(opening, Ok(handle))).is_err() {
+                    if sender
+                        .send(Inbound::Opened(opening, Ok(Box::new(handle))))
+                        .is_err()
+                    {
                         return;
                     }
                     waker();
@@ -205,6 +208,13 @@ impl Records for RelayRecords {
         }
     }
 
+    fn close(&mut self) {
+        // With the last handle the sync ends; what an opening still under
+        // way brings is not listened to.
+        self.handle = None;
+        self.opening += 1;
+    }
+
     fn poll(&mut self) -> Vec<Told> {
         let mut told = Vec::new();
         while let Ok(inbound) = self.inbound.try_recv() {
@@ -212,7 +222,7 @@ impl Records for RelayRecords {
                 Inbound::Opened(opening, _) | Inbound::Event(opening, _)
                     if opening != self.opening => {}
                 Inbound::Opened(_, Ok(handle)) => {
-                    self.handle = Some(handle);
+                    self.handle = Some(*handle);
                     told.push(Told::Opened(Ok(())));
                 }
                 Inbound::Opened(_, Err(error)) => told.push(Told::Opened(Err(error))),

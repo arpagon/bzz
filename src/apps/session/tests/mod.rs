@@ -987,3 +987,11 @@ fn the_board_shows_the_wait_and_the_pane_shows_it_too() {
     // The card is back where it was.
     assert!(app.screen().contains("To do (1)"), "{}", app.screen());
 }
+
+#[test]
+fn a_session_can_be_owned_by_a_task() {
+    // bzz's loop is a task: what it owns across a wait must be `Send`.
+    fn sendable<T: Send>() {}
+    sendable::<AppSession>();
+    sendable::<SessionStatus>();
+}
