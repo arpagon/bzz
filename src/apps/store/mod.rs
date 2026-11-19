@@ -360,6 +360,9 @@ pub enum Recorded {
     /// Its script, brief and manifest are those of the version that runs:
     /// there is nothing to approve, and nothing was recorded.
     Running { version: u32 },
+    // The same bytes proposed again by a proposer whose version still
+    // waits are `Waiting` with that version's number: nothing is recorded
+    // twice.
 }
 
 /// The files of one version, read from disk and found to be the bytes that
@@ -690,9 +693,23 @@ impl<'a> Apps<'a> {
                 version: running.version,
             });
         }
-        let others_waiting = self
-            .store
-            .app_versions(community, &name)?
+        let versions = self.store.app_versions(community, &name)?;
+        // The same bytes from the same proposer, still waiting: it is that
+        // version, not another one.
+        if let Some(same) = versions.iter().find(|version| {
+            version.state == VersionState::Waiting
+                && version.proposer.is(&submission.from)
+                && version.script_sha256 == script_sha256
+                && version.brief_sha256 == new.brief_sha256
+                && version.manifest_sha256.as_deref() == Some(manifest_sha256.as_str())
+        }) {
+            return Ok(Recorded::Waiting {
+                version: same.version,
+                hash: script_sha256,
+                superseded: Vec::new(),
+            });
+        }
+        let others_waiting = versions
             .iter()
             .filter(|version| {
                 version.state == VersionState::Waiting && !version.proposer.is(&submission.from)
@@ -706,17 +723,17 @@ impl<'a> Apps<'a> {
         new.api = Some(API_VERSION);
         new.types = Some(types);
         new.manifest_sha256 = Some(manifest_sha256);
-        let versions = self.app_dir(community, &name).join("versions");
+        let versions_dir = self.app_dir(community, &name).join("versions");
         let (community_dir, app_dir) = (
             self.root.join(community.to_string()),
             self.app_dir(community, &name),
         );
         let root = self.root.clone();
         let recorded = self.store.app_record_version(&new, now(), |version| {
-            for dir in [&root, &community_dir, &app_dir, &versions] {
+            for dir in [&root, &community_dir, &app_dir, &versions_dir] {
                 create_private_dir(dir)?;
             }
-            let dir = versions.join(format!("{version:04}"));
+            let dir = versions_dir.join(format!("{version:04}"));
             // A folder with this number and no row is what a crash left.
             if dir.exists() {
                 fs::remove_dir_all(&dir).map_err(|error| Error::io(&dir, error))?;

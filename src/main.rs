@@ -17,6 +17,8 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 mod cli_agent;
+#[cfg(feature = "apps")]
+mod cli_app;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -58,6 +60,20 @@ enum Command {
     Agent {
         #[command(subcommand)]
         command: cli_agent::AgentCommand,
+    },
+    /// Write, try, install, approve and manage apps: small scripts that
+    /// bzz draws beside a channel's conversation. Nothing runs unapproved.
+    #[cfg(feature = "apps")]
+    App {
+        #[command(subcommand)]
+        command: cli_app::AppCommand,
+    },
+    /// Apps are not part of this build.
+    #[cfg(not(feature = "apps"))]
+    #[command(hide = true)]
+    App {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        arguments: Vec<String>,
     },
     /// The chat tools of one agent session, as an MCP server on standard
     /// streams. Started by an agent's harness, never by hand.
@@ -465,6 +481,12 @@ async fn run() -> Result<()> {
         Some(Command::Agents { command }) => agents_command(command, &paths, &config).await,
         Some(Command::Broker { command }) => broker_command(command, &paths, &mut config).await,
         Some(Command::Agent { command }) => cli_agent::command(command, &paths, &mut config).await,
+        #[cfg(feature = "apps")]
+        Some(Command::App { command }) => cli_app::command(command, &paths, &config),
+        #[cfg(not(feature = "apps"))]
+        Some(Command::App { .. }) => Err(Error::Unsupported(
+            "this bzz was built without apps (the cargo feature `apps`)".into(),
+        )),
         Some(Command::AgentTools) => Ok(()),
         Some(Command::Cache { command }) => cache_command(command, &paths, &mut config),
         Some(Command::Media { command }) => media_command(command, &paths, &config),
@@ -750,9 +772,12 @@ async fn community_command(
                     let store = Store::open(paths.database_file())?;
                     store.purge_community(id)?;
                 }
+                // The community's installed apps go with it: their rows went
+                // with the community's, and these are their files.
                 for cache in [
                     paths.media_cache_dir().join(id.to_string()),
                     paths.avatar_cache_dir().join(id.to_string()),
+                    paths.apps_dir().join(id.to_string()),
                 ] {
                     if cache.exists() {
                         std::fs::remove_dir_all(&cache)
@@ -1274,9 +1299,12 @@ fn cache_command(command: CacheCommand, paths: &Paths, config: &mut Config) -> R
             } else if let Some(id) = community {
                 let store = Store::open(paths.database_file())?;
                 store.purge_community(id)?;
+                // The community's installed apps go with it: their rows went
+                // with the community's, and these are their files.
                 for cache in [
                     paths.media_cache_dir().join(id.to_string()),
                     paths.avatar_cache_dir().join(id.to_string()),
+                    paths.apps_dir().join(id.to_string()),
                 ] {
                     if cache.exists() {
                         std::fs::remove_dir_all(&cache)

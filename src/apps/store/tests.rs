@@ -941,6 +941,20 @@ fn a_folders_manifest_must_say_what_its_script_says() {
     // As written by `bzz app new`: it waits.
     let folder = folder::Folder::read(&dir).unwrap();
     let (version, hash) = waiting(fixture.propose(folder.submission(Proposer::owner())));
+    // The same folder proposed again while it waits is the same version.
+    let folder = folder::Folder::read(&dir).unwrap();
+    assert_eq!(
+        fixture.propose(folder.submission(Proposer::owner())),
+        Recorded::Waiting {
+            version,
+            hash: hash.clone(),
+            superseded: Vec::new()
+        }
+    );
+    assert_eq!(
+        fixture.apps().versions(community, "board").unwrap().len(),
+        1
+    );
     fixture
         .apps()
         .approve(community, "board", version, &hash)
