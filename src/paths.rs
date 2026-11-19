@@ -67,6 +67,13 @@ impl Paths {
         self.data_dir.join("keys")
     }
 
+    /// Where the versions of installed apps are kept, a folder for each
+    /// community and app (`docs/apps.md`). Made when the first app is
+    /// proposed, with the permissions of bzz's other private data.
+    pub fn apps_dir(&self) -> PathBuf {
+        self.data_dir.join("apps")
+    }
+
     pub fn diagnostics_dir(&self) -> PathBuf {
         self.data_dir.join("diagnostics")
     }
