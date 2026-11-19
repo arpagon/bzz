@@ -9183,8 +9183,9 @@ async fn real_relay_app_session_two_profiles_share_a_board() {
     assert_eq!(board_cards(&hers), board_cards(&ben_pane.screen()));
     assert_eq!(ana.service.channel_total(channel).await.unwrap(), 2);
 
-    // 2. A simultaneous change loses nothing. Both move the same card at
-    // once, in opposite directions, five times over: one move is stored;
+    // 2. A simultaneous change loses nothing. Both move the same card from
+    // the same revision, in opposite directions, five times over: three
+    // times at once, twice with ben's a moment sooner. One move is stored;
     // the other is told of the conflict, puts its move on top of the
     // current card and stores that; both screens then show the same card.
     ben_pane.key("h");
@@ -9211,18 +9212,22 @@ async fn real_relay_app_session_two_profiles_share_a_board() {
             pane.key("r");
             pane.settled("Loaded 2 cards.").await;
         }
-        // Both at once, from the same revision: ana to the right, ben to
-        // the left. Each script has asked before either request is
-        // carried, and both writes are then on the wire before bzz hears
-        // of either: in turn one profile's first, then the other's.
+        // Both from the same revision: ana to the right, ben to the left.
+        // Each script has asked before either request is carried.
         ana_pane.key("]");
         ben_pane.key("[");
         tokio::time::sleep(Duration::from_millis(150)).await;
         if round % 2 == 0 {
+            // At once: both writes are on their way before bzz hears of
+            // either, and the relay stores the one it takes first.
             ana_pane.screen();
             ben_pane.screen();
         } else {
+            // Ben's a moment sooner: Ana's bzz may know the new head by
+            // the time her write would be sent. To her script the answer
+            // is the same conflict.
             ben_pane.screen();
+            tokio::time::sleep(Duration::from_millis(60)).await;
             ana_pane.screen();
         }
         let mut ends = Vec::new();
@@ -9273,6 +9278,10 @@ async fn real_relay_app_session_two_profiles_share_a_board() {
         );
     }
     eprintln!("the five simultaneous moves were merged by {merged_by:?}");
+    assert!(
+        merged_by.contains(&"ana"),
+        "ana was told of a conflict at least in the rounds ben was sooner: {merged_by:?}"
+    );
     assert_eq!(
         ana.service.channel_total(channel).await.unwrap(),
         2,
