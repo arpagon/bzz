@@ -20,6 +20,8 @@
 //! runs the real Node. Those paths are in the fixture's `env` file, which
 //! `scripts/test-tui-herdr.sh` adds to bzz's environment. `second/` is a
 //! second profile of the same owner with no agent, to receive one in.
+//! `looper/` is the folder of an app (v0.16) whose script keeps its thread
+//! busy, for the scenario that types in the composer beside it.
 //! Three more agents, one on each coding harness, have no program to run
 //! on: the same file names `grok`, `codex` and `claude` as a path that does
 //! not exist, so that no program of the user's own is ever started.
@@ -159,11 +161,53 @@ async fn main() {
         return;
     }
     println!("fixture ready: #t9-general, #t9-announcements (guest), #t9-agent-config (system)");
+    looper_app(&root.join("looper"));
     // BZZ_FIXTURE_AGENTS=0: no local agent (a capture that needs none).
     if std::env::var("BZZ_FIXTURE_AGENTS").as_deref() != Ok("0") {
         write_profile(&root.join("second"), &root, &viewer, &passphrase, None);
         local_agent(&root, &paths, config, &passphrase).await;
     }
+}
+
+/// The folder of an app whose script keeps its thread busy: each timer
+/// spins for 150 ms of the 250 a call may take and sets the next for 100 ms
+/// later, and `x` spins until the runtime stops it. bzz must keep its timing
+/// beside it.
+fn looper_app(folder: &std::path::Path) {
+    std::fs::create_dir_all(folder).unwrap();
+    std::fs::write(
+        folder.join("app.lua"),
+        r#"-- looper: keeps its thread busy. x spins until it is stopped.
+local app = { api = 1, types = { "beat" } }
+function app.init(ctx) data.list { type = "beat" } return { spins = 0, keys = 0 } end
+function app.reply(s, r, ctx) host.after(100, "spin") end
+function app.timer(s, tag, ctx)
+  local stop = host.time() + 0.15
+  while host.time() < stop do end
+  s.spins = s.spins + 1
+  host.after(100, "spin")
+end
+function app.key(s, key, ctx)
+  s.keys = s.keys + 1
+  if key.name == "x" then while true do end end
+end
+function app.view(s, ctx)
+  return ui.text { "Looper", "spins " .. s.spins, "keys " .. s.keys }
+end
+return app
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        folder.join("app.toml"),
+        "name = \"looper\"\ntitle = \"Looper\"\napi = 1\ntypes = [\"beat\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        folder.join("brief.md"),
+        "# Looper\n\nA test app that keeps its thread busy. It has one record type, `beat`, which it never writes.\n",
+    )
+    .unwrap();
 }
 
 /// The viewer's local agent `Scout` and its channel `#t15-agents`.
