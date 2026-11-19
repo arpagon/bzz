@@ -10,6 +10,7 @@ Start with the [README](../README.md). Everything here is plain Markdown.
 | [themes.md](themes.md) | The 60 built-in themes and `theme.toml` |
 | [media.md](media.md) | Images, avatars, attachments, terminal graphics and the media cache |
 | [inbox-dms-search.md](inbox-dms-search.md) | Inbox, direct messages and search |
+| [apps.md](apps.md) | Apps: write one, try it, install it, approve a version, roll back, and where it is kept. The script contract is [app-api.md](app-api.md) |
 | [agents.md](agents.md) | Local agents: create one, add it to a channel, what it can touch, real commands, private repositories, moving it, and Grok, Codex and Claude Code |
 | [troubleshooting.md](troubleshooting.md) | Symptoms and fixes |
 | [security.md](security.md) | Keys, trust boundaries, diagnostics and telemetry |

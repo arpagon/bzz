@@ -1,5 +1,6 @@
 pub mod agent_runtime;
 pub mod agents;
+pub mod apps;
 pub mod artifacts;
 pub mod dm;
 pub(crate) mod edits;

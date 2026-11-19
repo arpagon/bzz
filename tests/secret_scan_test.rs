@@ -1293,3 +1293,228 @@ async fn a_stored_git_credential_is_in_no_log_no_database_and_no_activity_line()
             .exists()
     );
 }
+
+/// v0.16, apps: a profile with a real owner key, an agent's key and a
+/// broker credential. Every `bzz app` command is run on it, and a script
+/// that writes down everything it can reach is tried and installed.
+/// Nothing secret is in anything the commands printed, in anything the
+/// script could see, or in any file bzz wrote for apps; and the script
+/// reaches no environment variable at all.
+#[cfg(all(unix, feature = "apps"))]
+#[test]
+fn no_key_reaches_a_script_or_anything_the_app_commands_print() {
+    use bzz::{
+        auth::IdentityManager,
+        config::{Config as Settings, KeyBackend},
+    };
+    use nostr::ToBech32 as _;
+
+    const MARKER: &str = "marker-in-the-environment-of-bzz-5f1c";
+    let temporary = tempfile::TempDir::new().unwrap();
+    let dirs = temporary.path();
+    let passphrase_text = "sentinel passphrase for the app scan";
+    let passphrase = dirs.join("pass");
+    std::fs::write(&passphrase, format!("{passphrase_text}\n")).unwrap();
+    let paths = Paths {
+        config_dir: dirs.join("c"),
+        data_dir: dirs.join("d"),
+        cache_dir: dirs.join("k"),
+    };
+    paths.ensure().unwrap();
+
+    // The owner: a key this test knows, sealed in bzz's own key file.
+    let owner = Keys::generate();
+    let secret_hex = owner.secret_key().to_secret_hex();
+    let nsec = owner.secret_key().to_bech32().unwrap();
+    let mut settings = Settings::default();
+    let identity = IdentityManager::new(&paths)
+        .import_keys(
+            &mut settings,
+            "owner".into(),
+            KeyBackend::EncryptedFile,
+            owner.clone(),
+            Some(&secrecy::SecretString::from(passphrase_text.to_owned())),
+        )
+        .unwrap();
+    settings
+        .add_community(
+            "scan".into(),
+            "ws://localhost:3030".into(),
+            identity.id,
+            true,
+        )
+        .unwrap();
+    settings.save(&paths).unwrap();
+
+    let run = |args: &[&str]| {
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg("exec \"$0\" \"$@\" 3<\"$BZZ_T8_PASSPHRASE\" </dev/null")
+            .arg(env!("CARGO_BIN_EXE_bzz"))
+            .args(args)
+            .env("BZZ_T8_PASSPHRASE", &passphrase)
+            .env("BZZ_CONFIG_DIR", dirs.join("c"))
+            .env("BZZ_DATA_DIR", dirs.join("d"))
+            .env("BZZ_CACHE_DIR", dirs.join("k"))
+            .env("BZZ_PASSPHRASE_FD", "3")
+            .env("BZZ_APP_SCAN_MARKER", MARKER)
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    };
+    // An agent whose key bzz holds, and its credential, printed once.
+    let (ok, created) = run(&["broker", "create", "Scout", "--yes"]);
+    assert!(ok, "{created}");
+    let credential = created
+        .split_whitespace()
+        .find(|word| word.starts_with("bzzb_"))
+        .expect("the broker credential, printed once")
+        .to_owned();
+
+    // A script that writes down everything it can reach: every global, by
+    // name and value, what it is told of its user, and what it finds where
+    // a program would look for the outside.
+    let snoop = r#"
+local app = {}
+app.api = 1
+app.types = { "note" }
+local seen, found = {}, {}
+local function walk(name, value, depth)
+  local t = type(value)
+  if t == "string" or t == "number" or t == "boolean" then
+    found[#found + 1] = name .. "=" .. tostring(value)
+  elseif t == "function" then
+    found[#found + 1] = name .. "()"
+  elseif t == "table" and not seen[value] and depth < 6 then
+    seen[value] = true
+    for k, v in pairs(value) do walk(name .. "." .. tostring(k), v, depth + 1) end
+  end
+end
+local function tell(ctx)
+  walk("_G", _G, 0)
+  walk("ctx", ctx, 0)
+  for _, name in ipairs { "os", "io", "package", "debug", "require", "load", "dofile", "coroutine" } do
+    found[#found + 1] = "outside." .. name .. "=" .. tostring(rawget(_G, name))
+  end
+  for _, try in ipairs {
+    function() return os.getenv("BZZ_APP_SCAN_MARKER") end,
+    function() return io.open("/proc/self/environ"):read("a") end,
+    function() return require("os").getenv("HOME") end,
+  } do
+    local ok, got = pcall(try)
+    found[#found + 1] = "reached=" .. tostring(ok and got)
+  end
+  table.sort(found)
+  local line = ""
+  for _, entry in ipairs(found) do
+    if #line + #entry > 900 then host.log(line) line = "" end
+    line = line .. entry .. " "
+  end
+  host.log(line)
+end
+function app.init(ctx) tell(ctx) return {} end
+function app.view(s, ctx) return ui.text { "snooped " .. #found } end
+return app
+"#;
+    let folder = dirs.join("snoop");
+    let folder_arg = folder.to_str().unwrap().to_owned();
+    let mut printed = vec![("broker create (stderr only)".to_owned(), String::new())];
+    let mut say = |what: &str, args: &[&str], must_succeed: bool| {
+        let (ok, said) = run(args);
+        assert!(ok || !must_succeed, "bzz {args:?}: {said}");
+        printed.push((what.to_owned(), said.clone()));
+        said
+    };
+    say("new", &["app", "new", "snoop", "--to", &folder_arg], true);
+    std::fs::write(folder.join("app.lua"), snoop).unwrap();
+    let manifest = std::fs::read_to_string(folder.join("app.toml")).unwrap();
+    std::fs::write(
+        folder.join("app.toml"),
+        manifest.replace("[\"card\"]", "[\"note\"]"),
+    )
+    .unwrap();
+    say("check", &["app", "check", &folder_arg], true);
+    let tried = say("try", &["app", "try", &folder_arg, "j", "--log"], true);
+    // The scan below looks at real output: the script ran and told.
+    assert!(tried.contains("snooped "), "{tried}");
+    for expected in [
+        "log: ",
+        "ctx.user.id=",
+        "ctx.width=40",
+        "outside.os=nil",
+        "outside.io=nil",
+        "outside.require=nil",
+        "reached=false",
+        "_G.host.time()",
+    ] {
+        assert!(tried.contains(expected), "`{expected}` in: {tried}");
+    }
+    assert_eq!(
+        tried.matches("reached=false").count(),
+        3,
+        "none of the three ways out gave anything: {tried}"
+    );
+    let added = say("add", &["app", "add", &folder_arg], true);
+    let hash = added
+        .split("--hash ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap()
+        .to_owned();
+    say("pending", &["app", "pending"], true);
+    say("pending snoop", &["app", "pending", "snoop"], true);
+    say(
+        "approve",
+        &["app", "approve", "snoop", "--hash", &hash],
+        true,
+    );
+    say("list", &["app", "list"], true);
+    say("show", &["app", "show", "snoop"], true);
+    say("show --script", &["app", "show", "snoop", "--script"], true);
+    say("rollback", &["app", "rollback", "snoop"], false);
+    say("disable", &["app", "disable", "snoop"], true);
+    say("enable", &["app", "enable", "snoop"], true);
+    say("dev", &["app", "dev", &folder_arg], false);
+    // Uninstalled last, after a copy of what it leaves is taken.
+    let mut files = Vec::new();
+    all_files(dirs, &mut files);
+    assert!(
+        files
+            .iter()
+            .any(|file| file.ends_with("versions/0001/app.lua")),
+        "the installed script is among the files scanned"
+    );
+    let mut kept = Vec::new();
+    for file in files.iter().filter(|file| *file != &passphrase) {
+        let bytes = std::fs::read(file).unwrap();
+        kept.push((
+            file.display().to_string(),
+            String::from_utf8_lossy(&bytes).into_owned(),
+        ));
+    }
+    say("remove", &["app", "remove", "snoop", "--yes"], true);
+
+    // Everything printed, and every file bzz wrote for apps or anywhere
+    // else in the profile but the passphrase file itself.
+    let mut haystacks = printed;
+    haystacks.extend(kept);
+    assert_absent(
+        &haystacks,
+        &[
+            ("the owner's key (hex)", &secret_hex),
+            ("the owner's key (nsec)", &nsec),
+            ("the owner's passphrase", passphrase_text),
+            ("the broker credential", &credential),
+            ("an environment variable of bzz", MARKER),
+        ],
+    );
+    // What a script is told of its user is public, and made up here.
+    assert!(tried.contains(&format!("ctx.user.id={}", "0".repeat(64))));
+}
