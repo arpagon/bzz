@@ -463,8 +463,14 @@ impl AppSession {
 
     /// Asks for the records again after a state that is final: too many
     /// records (once some were deleted), or a relay that refused.
+    /// Records that could not be opened at all are opened again.
     pub fn retry(&mut self) {
-        self.records.retry();
+        if matches!(self.door, Door::Failed(_)) {
+            self.door = Door::Opening;
+            self.records.open(&self.types);
+        } else {
+            self.records.retry();
+        }
     }
 
     /// The channel was archived, or is no longer. While it is, a write is
@@ -752,8 +758,9 @@ impl AppSession {
                 return;
             }
             Door::Failed(error) => {
-                let error = error.clone();
-                self.reply(request.id, Err(error));
+                // Not a fault of the request: the records cannot be had.
+                let reason = error.to_string();
+                self.reply(request.id, Err(RecordError::Unavailable { reason }));
                 return;
             }
             Door::Open => {}
@@ -933,7 +940,11 @@ impl AppSession {
     /// with records. `None`: it waits.
     fn listable(&self, since: Duration) -> Option<Result<(), RecordError>> {
         match &self.door {
-            Door::Failed(error) => return Some(Err(error.clone())),
+            Door::Failed(error) => {
+                return Some(Err(RecordError::Unavailable {
+                    reason: error.to_string(),
+                }));
+            }
             Door::Shut | Door::Opening => {}
             Door::Open => match &self.sync {
                 SyncState::Restricted => {

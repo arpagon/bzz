@@ -478,6 +478,56 @@ async fn a_new_version_with_other_types_opens_its_records_again() {
     world.stop().await;
 }
 
+#[tokio::test]
+async fn a_second_instance_in_the_channel_is_told_and_opens_when_the_first_is_gone() {
+    let world = world().await;
+    let other = Keys::generate();
+    let card = board_card(&world.fence, &other, "A card", "todo", 1);
+    for _ in 0..2 {
+        world
+            .script()
+            .syncs
+            .push_back(Sync::Set(vec![card.clone()]));
+    }
+    let mut first = Pane::open(&world.service, world.channel, "board", COUNTS);
+    first
+        .until("the first", |screen, _| screen.starts_with("cards 1"))
+        .await;
+    // One instance of an app per channel. A second waits a few seconds
+    // for the first to end, as a version with other types does, and is
+    // then told: its script's request is answered, and the pane says why.
+    let mut second = Pane::open(&world.service, world.channel, "board", COUNTS);
+    let screen = second
+        .until("the refusal", |screen, _| {
+            screen.starts_with("cards ") && !screen.starts_with("cards ?")
+        })
+        .await;
+    assert!(screen.starts_with("cards unavailable"), "{screen}");
+    let status = second.status();
+    assert_eq!(status.sync_words, "unavailable");
+    assert_eq!(
+        status.notice.as_deref(),
+        Some(
+            "This app's records are not available: the app board is already open in this channel."
+        )
+    );
+    assert_eq!(
+        world.requests().len(),
+        1,
+        "the second asked the relay nothing"
+    );
+    // The first is closed; the second asks again and has its records.
+    drop(first);
+    second.session.retry();
+    second
+        .until("the records", |_, status| status.sync == SyncState::Live)
+        .await;
+    assert_eq!(second.status().notice, None);
+    assert_eq!(second.session.records().count(), 1);
+    drop(second);
+    world.stop().await;
+}
+
 /// The resident memory of this process, in bytes. Linux only.
 fn resident() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;

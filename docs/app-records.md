@@ -361,6 +361,28 @@ relay takes a write or the sync starts anew. `status().wait` is the
 seconds left; `tick()` answers true when that number has changed, for the
 owner to draw again.
 
+**In bzz's loop** (`src/app.rs`, for M3). The loop of `App::run` waits on
+its background channel among other things (`background_tx`, a Tokio channel
+of 128 made in `App::new_with_diagnostics` and read in the `select!` of
+`run`), and has a tick of 100 ms (`on_tick`). A session fits it so:
+
+- the waker is a closure that does `background_tx.try_send(…)`: it never
+  blocks, and is called from the script's thread and from Tokio's;
+- on that message, and on every tick, the loop calls `session.poll()`; on
+  every tick also `session.tick()`. A wake lost to a full channel is made
+  up by the next tick, a tenth of a second later;
+- `Output::Redraw`, or `tick()` answering true, asks for a frame; `draw`
+  goes in `render`, with the pane's inner area;
+- keys and pastes go to `session.key` and `session.paste` while the pane
+  has the focus, except `Ctrl+C`; the runtime gives that key to no script
+  even if it is sent;
+- names: `session.set_names` with the community's profiles when they
+  change (`App::profiles`), and `session.unnamed()` for whom to look up;
+- `session.set_archived` with the channel's own state.
+
+`AppSession` is `Send`. Dropping it ends the script's thread after the
+call it is in and ends the sync; nothing waits.
+
 For M7: `session.relay()` is the `AppRecords` of the open app, for
 `create_as` and its siblings.
 
