@@ -6,10 +6,14 @@
 //! loads every template apart and holds [`Template::types`] to what the
 //! script says.
 //!
-//! **To add a template** (Poll and Approvals are to come from the fixtures
-//! of M1): put its brief at `src/apps/templates/<name>/brief.md`, point
-//! `script` at its script, and add it to [`TEMPLATES`]. The tests of this
-//! file then cover it without a change.
+//! **To add a template**: put its brief at
+//! `src/apps/templates/<name>/brief.md`, point `script` at its fixture, and
+//! add it to [`TEMPLATES`] with the types the script declares. The test
+//! `every_template_loads_and_declares_what_its_entry_says` then covers it.
+//! Poll and Approvals (plan D9) are to come this way from the fixtures
+//! `tests/fixtures/apps/poll/app.lua` (types `poll`, `vote`) and
+//! `tests/fixtures/apps/approvals/app.lua` (type `request`), once they are
+//! merged; `docs/apps.md` gets a row for each.
 
 use std::path::Path;
 
