@@ -1266,3 +1266,440 @@ visible = "quit bzz?"
 [[scenario.step]]
 keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.16 M3: the app pane. The Board is written from its template, added and
+# approved at the shell (`bzz app add`, `bzz app approve`), opened beside the
+# conversation in #t9-general, typed into with the composer beside it,
+# narrowed through 144, 100, 72 and 60 columns and back, shown beside a
+# thread, and left with the terminal restored. A second profile changes a
+# card and the first sees it; a script that keeps its thread busy sits in
+# the pane while the composer types.
+#
+# Fields only these scenarios use (scripts/test-tui-tmux.py and
+# scripts/test-tui-herdr.sh read them): `size = "WxH"` on a scenario or a
+# step sets the window's size; `paste = "text"` on a step is a bracketed
+# paste before its keys; `beside = "second"` runs the second profile's TUI
+# in a second pane, which steps with `pane = "second"` drive; `restored =
+# true` checks after the exit that the terminal was given back.
+
+[[scenario]]
+id = "t16-cli-app-new"
+kind = "harness"
+description = "v0.16 M3: the Board is written from its template into the fixture's folder."
+args = ["app", "new", "board", "--to", "{fixture}/board-app"]
+ready = "from the template board"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-cli-app-add"
+kind = "harness"
+description = "v0.16 M3: bzz app add proposes the folder and shows it; answered no, it waits and nothing runs."
+args = ["app", "add", "{fixture}/board-app"]
+ready = "Approve these exact bytes as version 1 of board"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["n", "enter"]
+visible = "board: version 1 waits for your answer"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-cli-app-approve"
+kind = "harness"
+description = "v0.16 M3: bzz app approve shows the waiting version and approves its exact bytes."
+args = ["app", "approve", "board"]
+ready = "Approve these exact bytes as version 1 of board"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["y", "enter"]
+visible = "board: version 1 is approved and is the version that runs now"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-cli-app-add-second"
+kind = "harness"
+description = "v0.16 M3: the second profile installs and approves the same Board."
+args = ["app", "add", "{fixture}/board-app"]
+profile = "second"
+ready = "Approve these exact bytes as version 1 of board"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["y", "enter"]
+visible = "board: version 1 is approved and is the version that runs now"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-cli-app-add-looper"
+kind = "harness"
+description = "v0.16 M3: the looper, an app that keeps its thread busy, is added and approved."
+args = ["app", "add", "{fixture}/looper"]
+ready = "Approve these exact bytes as version 1 of looper"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["y", "enter"]
+visible = "looper: version 1 is approved and is the version that runs now"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-app-pane"
+kind = "harness"
+description = "v0.16 M3 exit gate: open the Board beside #t9-general; type in it and in the composer without one reaching the other (letters, digits, q, :, Esc, Tab, Enter, a paste of two lines); narrow the window through 144, 100, 72 and 60 columns and back; open a thread beside it; quit with the terminal restored."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x30"
+restored = true
+
+[[scenario.step]]
+keys = [":", "type:apps", "enter"]
+visible = "board (Board) · version 1 · open nowhere"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "NORMAL"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = [":", "type:app open board", "enter"]
+visible = "Board · Ctrl-c leave"
+
+[[scenario.step]]
+keys = []
+visible = "Loaded 0 cards."
+
+[[scenario.step]]
+keys = []
+visible = "Ctrl-c leaves the app"
+
+# Keys bzz uses itself are the app's: n opens the Board's form, and q, :,
+# digits, Tab and Space are text in it. Nothing of bzz opens.
+[[scenario.step]]
+keys = ["n"]
+visible = "New card"
+
+[[scenario.step]]
+keys = ["type:q:1 ?5 gg", "tab", "enter"]
+visible = "q:1 ?5 gg"
+absent = "quit bzz?"
+
+[[scenario.step]]
+keys = []
+visible = "To do (1)"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = " APP "
+absent = "INSERT"
+
+# A paste of two lines is one piece of text, into the app's open field.
+[[scenario.step]]
+keys = ["n"]
+visible = "New card"
+
+[[scenario.step]]
+paste = "pasted one\npasted two"
+keys = []
+visible = "pasted two"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "To do (1)"
+absent = "New card"
+
+# Ctrl+C gives the keyboard back; the app sees none of what follows.
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "Board · 5 focus"
+
+[[scenario.step]]
+keys = []
+visible = " NORMAL "
+
+[[scenario.step]]
+keys = ["i"]
+visible = "message #t9-general · Enter send"
+
+[[scenario.step]]
+keys = ["type:typed in the composer q:1 n"]
+visible = "typed in the composer q:1 n"
+
+# Before v0.16 a pasted line break sent the first line and ran the rest as
+# bzz's keys. Now the composer keeps both lines and stays open.
+[[scenario.step]]
+paste = "first pasted line\nsecond pasted line"
+keys = []
+visible = "second pasted line"
+
+[[scenario.step]]
+keys = []
+visible = "INSERT"
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "clear draft?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "To do (1)"
+absent = "New card"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = " NORMAL "
+
+# Narrow the window through 144, 100, 72 and 60 columns, and back.
+[[scenario.step]]
+size = "144x30"
+keys = []
+visible = "communities"
+
+[[scenario.step]]
+keys = []
+visible = "Board · 5 focus"
+
+[[scenario.step]]
+size = "100x30"
+keys = []
+visible = "Board · 5 focus"
+absent = "communities"
+
+[[scenario.step]]
+size = "72x30"
+keys = []
+visible = "Board · 5 focus"
+
+[[scenario.step]]
+size = "60x30"
+keys = []
+visible = "app hidden · 5"
+
+[[scenario.step]]
+keys = ["5"]
+visible = "Board · zoomed · Ctrl-c leave"
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "app hidden · 5"
+
+[[scenario.step]]
+size = "120x30"
+keys = []
+visible = "Board · 5 focus"
+
+# A thread asked for last takes the right side under 144 columns, and the
+# composer replies into it; 5 brings the app back and the thread waits.
+[[scenario.step]]
+keys = ["3", "k", "enter"]
+visible = "context ·"
+
+[[scenario.step]]
+keys = []
+visible = "app behind thread · 5"
+
+[[scenario.step]]
+keys = ["5"]
+visible = "Board · Ctrl-c leave"
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "message #t9-general"
+
+[[scenario.step]]
+size = "160x40"
+keys = []
+visible = "context ·"
+
+[[scenario.step]]
+keys = []
+visible = "Board · 5 focus"
+
+[[scenario.step]]
+keys = []
+visible = "reply in #t9-general"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "message #t9-general"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-app-live-second-profile"
+kind = "harness"
+description = "v0.16 M3: the Board is open in #t9-general in two profiles at once; a card the second adds shows in the first one's pane."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x30"
+beside = "second"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Board · 5 focus"
+
+[[scenario.step]]
+keys = []
+visible = "q:1 ?5 gg"
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "online"
+timeout = 30000
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "#t9-general"
+timeout = 30000
+
+[[scenario.step]]
+pane = "second"
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+pane = "second"
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+pane = "second"
+keys = [":", "type:app open board", "enter"]
+visible = "q:1 ?5 gg"
+
+[[scenario.step]]
+pane = "second"
+keys = ["n", "type:from the second profile", "enter"]
+visible = "To do (2)"
+
+[[scenario.step]]
+keys = []
+visible = "from the second profile"
+
+[[scenario.step]]
+keys = []
+visible = "To do (2)"
+
+[[scenario.step]]
+pane = "second"
+keys = ["ctrl+c", "q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+pane = "second"
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-app-looper-composer"
+kind = "harness"
+description = "v0.16 M3: a script that keeps its thread busy is open in the pane; the composer still types a long line at once, and a key that loops forever is stopped with the error in the pane and the status line."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x30"
+restored = true
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Board · 5 focus"
+
+# Beside the Board, idle: a baseline.
+[[scenario.step]]
+keys = ["i", "type:baseline the quick brown fox jumps over the lazy dog 0123456789 again the quick brown fox jumps over"]
+visible = "baseline the quick brown fox jumps over the lazy dog 0123456789 again the quick brown fox jumps over"
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "clear draft?"
+
+[[scenario.step]]
+keys = ["y", "esc"]
+visible = " NORMAL "
+
+[[scenario.step]]
+keys = [":", "type:app open looper", "enter"]
+visible = "Looper · Ctrl-c leave"
+
+[[scenario.step]]
+keys = []
+visible = "spins [1-9]"
+regex = true
+
+[[scenario.step]]
+keys = ["ctrl+c", "i", "type:beside the looper the quick brown fox jumps over the lazy dog 0123456789 again the quick brown"]
+visible = "beside the looper the quick brown fox jumps over the lazy dog 0123456789 again the quick brown"
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "clear draft?"
+
+[[scenario.step]]
+keys = ["y", "esc"]
+visible = " NORMAL "
+
+[[scenario.step]]
+keys = ["5", "x"]
+visible = "250 ms and was stopped"
+
+[[scenario.step]]
+keys = []
+visible = "app looper: looper.lua:13"
+
+[[scenario.step]]
+keys = ["ctrl+c", ":", "type:app close", "enter"]
+visible = "looper is closed here"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
