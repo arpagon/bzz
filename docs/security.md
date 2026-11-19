@@ -487,6 +487,43 @@ unlocked. The owner's guide is [`agents.md`](agents.md#moving-an-agent).
   agent's owner. Whether the agent left is read from its presence on the
   relay, which the relay forgets three minutes after a crash.
 
+## v0.16.0 trust boundaries
+
+**Apps.** bzz runs a Lua script it did not ship, inside itself, with only
+what it lends the script ([`adr-v0.16-apps.md`](adr-v0.16-apps.md),
+[`app-api.md`](app-api.md)). The user's guide is [`apps.md`](apps.md).
+
+- **What a script reaches.** No file, network, process, environment variable
+  or native code; no key, credential or passphrase. It is told the local
+  participant's public key and name. `tests/secret_scan_test.rs` runs every
+  `bzz app` command on a profile with a real owner key, an agent key and a
+  broker credential, with a script that writes down every global it can
+  reach, and finds none of them in anything printed or written.
+- **Nothing runs unapproved.** A version runs only after the owner approved
+  its exact bytes, by their SHA-256, also one he added himself. One function
+  hands out a script to run (`Apps::runnable`); it reads the approved
+  version's file and compares it with the approved hash each time, so a file
+  edited in `<data>/apps/` behind bzz's back is not run, and bzz says why.
+  The database holds the decisions; the files hold only bytes.
+- **What the owner is shown** before he answers: who proposed the version,
+  the brief, the record types with any change in them marked, the sizes and
+  the line difference from the version that runs. What a proposer wrote is
+  shown with every control and bidirectional character written out
+  (`<U+001B>`), so that it cannot draw on the terminal.
+- **The owner's own folder.** `bzz app dev <folder>` runs a folder without
+  approval (plan D5). It is a folder only the owner can name at his own
+  shell, and in this version it runs on records kept in memory only.
+- **Whose shell it is.** `bzz app approve`, `refuse` and `rollback` are the
+  owner's answers because they are typed at his shell. An agent that he lets
+  run commands without asking can type them too.
+- **Storage.** `<data>/apps/` and every file in it are private (`0700` and
+  `0600` on Unix), as bzz's other data. Uninstalling an app deletes its
+  versions and leaves the channel's records alone.
+
+<!-- M5, M6: an agent's proposal and an app offered in the channel reach
+     the same approval; say here what each may propose and what is checked
+     of an offer (size, hash, signer). -->
+
 ## Media
 
 Message media is fetched only from a complete `imeta` descriptor bound to the
