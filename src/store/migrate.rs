@@ -56,6 +56,7 @@ const MIGRATIONS: &[(u32, &str)] = &[
         20,
         include_str!("../../migrations/0020_agent_reply_refusal.sql"),
     ),
+    (21, include_str!("../../migrations/0021_apps.sql")),
 ];
 
 pub fn configure(connection: &Connection) -> Result<()> {

@@ -21,7 +21,7 @@ fn fresh_database_has_expected_pragmas_and_schema() {
     let foreign_keys: u32 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 20);
+    assert_eq!(version, 21);
     assert_eq!(
         foreign_keys, 1,
         "foreign-key enforcement must remain enabled"
@@ -175,7 +175,7 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
     let version: u32 = upgraded
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 20);
+    assert_eq!(version, 21);
     let inbox_projection_table: u32 = upgraded
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='inbox_conversations'",
@@ -278,7 +278,10 @@ fn schema_eight_repairs_historical_bot_roles_and_duplicate_projection_drift() {
         .unwrap();
     connection
         .execute_batch(
-            "DELETE FROM schema_migrations WHERE version IN (8,9,10,11,12,13,14,15,16,17,18,19,20);
+            "DELETE FROM schema_migrations WHERE version IN (8,9,10,11,12,13,14,15,16,17,18,19,20,21);
+             DROP TABLE app_channels;
+             DROP TABLE app_versions;
+             DROP TABLE apps;
              DROP INDEX memberships_by_member;
              DROP TABLE agent_replies;
              DROP TABLE agent_inbox;
@@ -459,6 +462,9 @@ fn schema_nine_projects_guest_roles_and_repairs_channel_facts_on_reingest() {
         .execute_batch(&format!(
             "UPDATE memberships SET role='member' WHERE channel_id='{channel_id}';
              ALTER TABLE channels DROP COLUMN facts_json;
+             DROP TABLE app_channels;
+             DROP TABLE app_versions;
+             DROP TABLE apps;
              DROP TABLE agent_replies;
              DROP TABLE agent_inbox;
              DROP TABLE agent_sessions;
@@ -472,7 +478,7 @@ fn schema_nine_projects_guest_roles_and_repairs_channel_facts_on_reingest() {
              DROP TABLE emoji_contributions;
              ALTER TABLE reactions DROP COLUMN emoji_url;
              DROP INDEX memberships_by_member;
-             DELETE FROM schema_migrations WHERE version IN (9,10,11,12,13,14,15,16,17,18,19,20);"
+             DELETE FROM schema_migrations WHERE version IN (9,10,11,12,13,14,15,16,17,18,19,20,21);"
         ))
         .unwrap();
     connection.pragma_update(None, "user_version", 8).unwrap();
@@ -595,7 +601,10 @@ fn schema_nineteen_keeps_the_stored_replies_of_schema_eighteen() {
              ALTER TABLE agent_replies DROP COLUMN refused_at;
              ALTER TABLE agent_replies DROP COLUMN refusal;
              CREATE INDEX agent_replies_unpublished ON agent_replies (agent_id) WHERE published_at IS NULL;
-             DELETE FROM schema_migrations WHERE version=20;",
+             DROP TABLE app_channels;
+             DROP TABLE app_versions;
+             DROP TABLE apps;
+             DELETE FROM schema_migrations WHERE version IN (20,21);",
         )
         .unwrap();
     connection.pragma_update(None, "user_version", 19).unwrap();
@@ -629,5 +638,228 @@ fn schema_nineteen_keeps_the_stored_replies_of_schema_eighteen() {
         .unwrap()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 20);
+    assert_eq!(version, 21);
+}
+
+/// Every row of every table, as text, for comparing a database with itself
+/// after a migration. The search index is left out: opening a store
+/// maintains it.
+fn dump(path: &std::path::Path) -> std::collections::BTreeMap<String, Vec<String>> {
+    let connection = rusqlite::Connection::open(path).unwrap();
+    let tables = connection
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'search_%' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    tables
+        .into_iter()
+        .map(|table| {
+            let mut statement = connection
+                .prepare(&format!("SELECT * FROM \"{table}\""))
+                .unwrap();
+            let columns = statement.column_count();
+            let mut rows = statement
+                .query_map([], |row| {
+                    (0..columns)
+                        .map(|index| {
+                            row.get::<_, rusqlite::types::Value>(index)
+                                .map(|value| format!("{value:?}"))
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(|cells| cells.join("|"))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows.sort();
+            (table, rows)
+        })
+        .collect()
+}
+
+/// Migration 21 (v0.16, apps): a database as v0.15.0 left it, at schema 20
+/// with an identity, a community, an agent's request and stored reply, and
+/// an artifact, opens at schema 21. A backup at schema 20 is made first;
+/// every row of every table v0.15.0 had is as it was; the three tables of
+/// apps exist and are empty; and an app can be recorded in them.
+#[test]
+fn schema_twenty_of_v015_gains_the_apps_tables_and_keeps_every_row() {
+    use bzz::store::agent_runtime::{NewRequest, ReplyOrigin, ReplyStanding};
+    use bzz::store::apps::{NewAppVersion, Proposer, VersionState};
+    let temporary = TempDir::new().unwrap();
+    let path = temporary.path().join("bzz.db");
+    let identity = IdentityConfig {
+        id: Uuid::new_v4(),
+        label: "owner".into(),
+        pubkey: Keys::generate().public_key().to_hex(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "owner".into(),
+    };
+    let mut config = Config {
+        identities: vec![identity.clone()],
+        ..Config::default()
+    };
+    let community = config
+        .add_community("c".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    let agent = Uuid::new_v4();
+    let channel = Uuid::new_v4();
+    let task = {
+        let tags = [
+            ["ar", "1"],
+            ["d", &Uuid::new_v4().to_string()],
+            ["h", &channel.to_string()],
+            ["type", "buzz.task"],
+            ["title", "Kept across the upgrade"],
+            ["op", "create"],
+        ]
+        .map(|parts| Tag::parse(parts).unwrap());
+        bzz::protocol::artifact::parse(
+            &EventBuilder::new(Kind::Custom(45_010), "{}")
+                .tags(tags)
+                .sign_with_keys(&Keys::generate())
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let mut store = Store::open(&path).unwrap();
+    store.sync_config(&config).unwrap();
+    store
+        .agent_inbox_offer(&NewRequest {
+            agent_id: agent,
+            request_id: "m1".into(),
+            community_id: community,
+            channel_id: channel,
+            place: channel.to_string(),
+            author: "a".repeat(64),
+            created_at: 10,
+            event_json: "{}".into(),
+        })
+        .unwrap();
+    store
+        .agent_reply_claim(agent, "m1", "r", "{}", ReplyOrigin::Send, None)
+        .unwrap();
+    store.apply_artifact_head(community, &task).unwrap();
+    drop(store);
+
+    // The database as schema 20 (v0.15.0) left it.
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "DROP TABLE app_channels; DROP TABLE app_versions; DROP TABLE apps;
+             DELETE FROM schema_migrations WHERE version=21;",
+        )
+        .unwrap();
+    connection.pragma_update(None, "user_version", 20).unwrap();
+    drop(connection);
+    for entry in std::fs::read_dir(temporary.path()).unwrap().flatten() {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .contains("pre-migration")
+        {
+            std::fs::remove_file(entry.path()).unwrap();
+        }
+    }
+    let before = dump(&path);
+    assert!(!before.contains_key("apps"), "{:?}", before.keys());
+    assert_eq!(before["agent_replies"].len(), 1);
+    assert_eq!(before["artifacts"].len(), 1);
+    assert_eq!(before["schema_migrations"].len(), 20);
+
+    let mut store = Store::open(&path).unwrap();
+    // The backup made before the migration is the database at schema 20.
+    let backup = std::fs::read_dir(temporary.path())
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|candidate| {
+            candidate
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().contains("pre-migration"))
+        })
+        .expect("a backup made before migration 21");
+    let backed_up: u32 = rusqlite::Connection::open(&backup)
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(backed_up, 20);
+
+    // Old data, read through the store as v0.15 code reads it.
+    assert_eq!(
+        store
+            .agent_reply_get(agent, "m1")
+            .unwrap()
+            .unwrap()
+            .standing(),
+        ReplyStanding::Pending
+    );
+    assert_eq!(
+        store
+            .artifact(community, task.id)
+            .unwrap()
+            .unwrap()
+            .head
+            .title,
+        task.title
+    );
+    // Apps: nothing is installed, and the tables take a version.
+    assert!(store.apps(community).unwrap().is_empty());
+    let recorded = store
+        .app_record_version(
+            &NewAppVersion {
+                community,
+                name: "board".into(),
+                state: VersionState::Waiting,
+                detail: None,
+                title: Some("Board".into()),
+                api: Some(1),
+                types: Some(vec!["card".into()]),
+                script_sha256: "1".repeat(64),
+                manifest_sha256: Some("2".repeat(64)),
+                brief_sha256: "3".repeat(64),
+                script_bytes: 1,
+                brief_bytes: 1,
+                proposer: Proposer::owner(),
+            },
+            1,
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(recorded.version, 1);
+    assert!(store.app_remove(community, "board").unwrap());
+    drop(store);
+
+    // Every row of every table v0.15.0 had is as it was.
+    let after = dump(&path);
+    for (table, rows) in &before {
+        if table == "schema_migrations" {
+            assert_eq!(after[table].len(), 21);
+            assert!(rows.iter().all(|row| after[table].contains(row)));
+        } else {
+            assert_eq!(&after[table], rows, "table {table}");
+        }
+    }
+    let new: Vec<&String> = after
+        .keys()
+        .filter(|table| !before.contains_key(*table))
+        .collect();
+    assert_eq!(new, ["app_channels", "app_versions", "apps"]);
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let version: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 21);
+    let integrity: String = connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(integrity, "ok");
+    let violations: u32 = connection
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(violations, 0);
 }
