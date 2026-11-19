@@ -113,6 +113,11 @@ tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 
 [[example]]
+name = "app_host"
+# The app runtime alone in a terminal, for the apps bench.
+required-features = ["apps"]
+
+[[example]]
 name = "promo_fixture"
 # Its huddle scene joins with live audio.
 required-features = ["huddles-audio"]
