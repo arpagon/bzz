@@ -76,6 +76,7 @@ end
 
 local function load(s)
   s.list_id = data.list { type = "card", match = s.query, tag = "load" }
+  s.touched = {} -- ids changed since this list was asked for
   s.status = "Loading..."
 end
 
@@ -89,6 +90,28 @@ local function put(s, rec)
   local i = index_of(s, rec.id)
   if i then s.cards[i] = rec else s.cards[#s.cards + 1] = rec end
   table.sort(s.cards, by_order)
+  if s.touched then s.touched[rec.id] = true end
+end
+
+local function remove(s, id)
+  local i = index_of(s, id)
+  if i then table.remove(s.cards, i) end
+  if s.touched then s.touched[id] = true end
+end
+
+-- A list that was asked for before a change must not undo it: a card that
+-- changed while the list was on its way keeps what the app has.
+local function merge(s, records)
+  local touched, out = s.touched or {}, {}
+  for _, rec in ipairs(records) do
+    if not touched[rec.id] then out[#out + 1] = rec end
+  end
+  for _, rec in ipairs(s.cards) do
+    if touched[rec.id] then out[#out + 1] = rec end
+  end
+  table.sort(out, by_order)
+  s.touched = {}
+  return out
 end
 
 function app.init(ctx)
@@ -193,6 +216,7 @@ local function move(s, dir)
   s.undo[id] = { id = card.id, content = before }
   -- Shown in its new column at once; undone if the write fails.
   card.content = content
+  if s.touched then s.touched[card.id] = true end
   s.status = "Saving..."
 end
 
@@ -310,8 +334,7 @@ function app.reply(s, r, ctx)
       s.status = "Load failed. Press r to retry."
       return
     end
-    s.cards = r.records
-    table.sort(s.cards, by_order)
+    s.cards = merge(s, r.records)
     keep_selection(s)
     s.status = "Loaded " .. #r.records .. " cards."
   elseif r.tag == "create" then
@@ -347,7 +370,7 @@ function app.reply(s, r, ctx)
         s.cards[i].content = undo.content
         table.sort(s.cards, by_order)
       end
-      if r.error.code == "not_found" and i then table.remove(s.cards, i) end
+      if r.error.code == "not_found" and undo then remove(s, undo.id) end
       keep_selection(s)
       s.status = failure(r.error)
     end
@@ -358,19 +381,18 @@ function app.push(s, p, ctx)
   local rec = p.record
   local i = index_of(s, rec.id)
   if p.change == "delete" then
-    if i then
-      local ci, pos = where(s)
-      local was_selected = s.sel == rec.id
-      table.remove(s.cards, i)
-      if was_selected then
-        local list = columns(s)[COLS[ci]]
-        s.sel = list[pos] and list[pos].id or nil
-      end
+    local ci, pos = where(s)
+    local was_selected = i and s.sel == rec.id
+    remove(s, rec.id)
+    if was_selected then
+      -- The card now at the same place in its column, if there is one.
+      local list = columns(s)[COLS[ci]]
+      s.sel = list[pos] and list[pos].id or nil
     end
   elseif matches(s, rec) then
     put(s, rec)
-  elseif i then
-    table.remove(s.cards, i)
+  else
+    remove(s, rec.id) -- it no longer matches the search
   end
   keep_selection(s)
 end
