@@ -268,7 +268,7 @@ and the type's name otherwise. `match` looks at the same text.
 | Content of one record | 16384 bytes of JSON |
 | Nesting of content | 32 levels |
 | Live records of one app | 1000 |
-| Writes in a minute | 60, shared with the person's chat |
+| Writes in a minute | 30 for the apps of one person: half of the 60 the relay gives that person, chat included |
 
 Every element, line, span, table cell, bar and sparkline point counts as an
 element of a screen. Past a limit the call that passed it gets an error that

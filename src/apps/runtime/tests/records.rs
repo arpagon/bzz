@@ -243,6 +243,12 @@ fn every_error_code_reaches_the_script() {
     app.store().set_available(true);
     app.key("d");
     assert_eq!(told(&mut app), ["delete not_found: no such record"]);
+    // When bzz has fetched the records again, the app hears of it: nobody
+    // says who deleted a record that is simply gone, so it is by whoever
+    // signed it last.
+    let found = app.store().resync();
+    app.deliver(found);
+    assert_eq!(told(&mut app)[1], "push delete bo's by bo");
     // unavailable.
     app.key("x").key("r");
     app.store().lose_connection();
@@ -283,15 +289,15 @@ fn every_error_code_reaches_the_script() {
     app.key("c");
     assert_eq!(
         told(&mut app),
-        ["create limit: the app has 4 records, the most it may have"]
+        ["create limit: this app already holds 4 records here"]
     );
     // bad_request and too_large from the store itself, as a relay service
     // would send them.
     app.key("x");
     app.store().fail_next(
         "list",
-        RecordError::BadRequest {
-            message: "no such channel".into(),
+        crate::protocol::record::RecordError::Invalid {
+            reason: "no such channel".into(),
         },
     );
     app.store().content_limit = 10;
@@ -300,7 +306,7 @@ fn every_error_code_reaches_the_script() {
     let told = told(&mut app);
     assert_eq!(told[0], "list bad_request: no such channel");
     assert!(
-        told[1].starts_with("create too_large: the content is "),
+        told[1].starts_with("create too_large: the record's content is "),
         "{told:?}"
     );
 }

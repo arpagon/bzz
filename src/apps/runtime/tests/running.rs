@@ -607,7 +607,8 @@ fn the_top_level_of_a_script_can_only_compute() {
             ))
         );
         assert!(!app.closed());
-        assert_eq!(app.store().count("list") + app.store().count("create"), 0);
+        let lists = app.store().count("list");
+        assert_eq!(lists + app.store().count("create"), 0);
     }
     // It may compute, build elements, log and read the clock.
     let mut app = start(

@@ -6,8 +6,8 @@
 use serde_json::json;
 
 use super::*;
-use crate::apps::runtime::Phase;
 use crate::apps::runtime::memory::content;
+use crate::apps::runtime::{Change, Event, Phase, RecordPush};
 
 /// The prototype's hostile app at `api = 1`. Each attempt runs in `pcall`
 /// and its outcome is a line of the screen. Keys trigger the attempts that
@@ -209,16 +209,23 @@ fn the_fence_holds_a_script_to_its_declared_types() {
     let dir = tempfile::tempdir().expect("a folder");
     let mut app = hostile_app(&dir.path().join("pwned"));
     // Another participant has a record of a type the app did not declare.
-    let (card, pushes) = app.store().remote_create(
+    // The session would never hand it over; here the runtime is given it
+    // all the same, as if its owner had not looked.
+    let (card, _) = app.store().remote_create(
         &bo(),
         "card",
         content(json!({ "title": "secret", "column": "todo" })),
     );
-    app.deliver(pushes);
-    let (_, pushes) = app
+    let (note, _) = app
         .store()
         .remote_create(&bo(), "note", content(json!({ "text": "hi" })));
-    app.deliver(pushes);
+    for record in [card.clone(), note] {
+        app.send(Event::Push(RecordPush {
+            change: Change::Create,
+            record,
+            by: bo(),
+        }));
+    }
     // Of the two pushes only the note arrived.
     assert!(
         app.screen().contains("pushes received: 1"),

@@ -1,24 +1,31 @@
-//! An app without a window: load a script on the in-memory record store,
+//! An app without a window: load a script on the record store in memory,
 //! feed it keys and pastes, and read the screen it draws as text, with any
 //! error. `bzz app try` and the agents' "try" tool are this.
+//!
+//! Between the script and the store stands an [`AppSession`], the one
+//! bzz's window uses on the relay: a list is answered, a write is counted
+//! against the app's budget and a change becomes a push by the same code.
 //!
 //! Time does not pass by itself here. The clock is a [`ManualClock`];
 //! [`Headless::advance`] moves it and fires the timers that fall due, so a
 //! run of the same steps gives the same screen every time.
 
-use std::sync::Arc;
+use std::sync::{Arc, MutexGuard};
 use std::time::{Duration, Instant};
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 
-use super::clock::ManualClock;
-use super::draw::text_of;
-use super::limits::Limits;
-use super::memory::MemoryStore;
-use super::records::Who;
-use super::ui::AppTheme;
-use super::{Event, Key, Options, Output, Phase, Runtime, Signal, Status};
+use super::backend::Told;
+use super::memory::{MemoryStore, SharedStore};
+use super::{AppSession, SessionOptions, SessionStatus};
+use crate::apps::runtime::clock::ManualClock;
+use crate::apps::runtime::draw::text_of;
+use crate::apps::runtime::limits::Limits;
+use crate::apps::runtime::records::Who;
+use crate::apps::runtime::ui::AppTheme;
+use crate::apps::runtime::{Event, Key, Output, Phase, Runtime, Signal, Status};
+use crate::protocol::record::valid_name;
 
 /// The clock a headless app starts at: 2026-11-18 00:00:00 UTC.
 pub const START_OF_TIME: u64 = 1_794_960_000;
@@ -26,6 +33,10 @@ pub const START_OF_TIME: u64 = 1_794_960_000;
 pub struct HeadlessOptions {
     /// The script's name in error messages.
     pub name: String,
+    /// The app's name, which with a channel says whose records these are.
+    /// None: the script's name without `.lua` if that is an app's name,
+    /// else `app`.
+    pub app: Option<String>,
     pub user: Who,
     pub width: u16,
     pub height: u16,
@@ -37,6 +48,7 @@ impl HeadlessOptions {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            app: None,
             user: Who::new(
                 "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
                 "ana",
@@ -61,6 +73,23 @@ impl HeadlessOptions {
     pub fn user(mut self, user: Who) -> Self {
         self.user = user;
         self
+    }
+
+    pub fn app(mut self, app: impl Into<String>) -> Self {
+        self.app = Some(app.into());
+        self
+    }
+
+    /// The name the app's records go by.
+    fn app_name(&self) -> String {
+        self.app.clone().unwrap_or_else(|| {
+            let stem = self.name.strip_suffix(".lua").unwrap_or(&self.name);
+            if valid_name(stem) {
+                stem.to_string()
+            } else {
+                "app".to_string()
+            }
+        })
     }
 }
 
@@ -124,6 +153,9 @@ pub struct Tried {
     /// False when the script was still inside a call when it was given up
     /// on.
     pub responding: bool,
+    /// What the app's pane would say by itself, whatever the script draws:
+    /// the wait at the quota, too many records, an archived channel.
+    pub notice: Option<String>,
 }
 
 /// Loads `source`, does `steps` to it, and tells what it drew.
@@ -138,8 +170,8 @@ pub fn try_app(
 }
 
 pub struct Headless {
-    runtime: Runtime,
-    store: MemoryStore,
+    session: AppSession,
+    store: SharedStore,
     clock: Arc<ManualClock>,
     signal: Signal,
     size: (u16, u16),
@@ -171,16 +203,19 @@ impl Headless {
         let signal = Signal::new();
         // Long enough for a call to run out its budget and be given up on.
         let patience = options.limits.call_time * 4 + options.limits.not_responding_after;
-        let runtime = Runtime::start(
+        let store = SharedStore::new(store);
+        let session = AppSession::in_memory(
             source,
-            Options::new(options.name, options.user)
+            SessionOptions::new(options.app_name())
+                .script(options.name)
                 .size(options.width, options.height)
                 .limits(options.limits)
                 .clock(clock.clone())
                 .waker(signal.waker()),
+            &store,
         )?;
         let mut app = Self {
-            runtime,
+            session,
             store,
             clock,
             signal,
@@ -199,14 +234,19 @@ impl Headless {
 
     /// The store behind the app: to look at its records, or to make it
     /// misbehave. What a call on it returns is given to [`Headless::deliver`].
-    pub fn store(&mut self) -> &mut MemoryStore {
-        &mut self.store
+    pub fn store(&mut self) -> MutexGuard<'_, MemoryStore> {
+        self.store.lock()
+    }
+
+    /// The session between the script and the store.
+    pub fn session(&mut self) -> &mut AppSession {
+        &mut self.session
     }
 
     /// The runtime itself: to draw it somewhere else than
     /// [`Headless::buffer`] does.
     pub fn runtime_mut(&mut self) -> &mut Runtime {
-        &mut self.runtime
+        self.session.runtime_mut()
     }
 
     /// The clock the app sees.
@@ -215,17 +255,15 @@ impl Headless {
     }
 
     /// Gives the app what the store produced, and waits for it to rest.
-    pub fn deliver(&mut self, events: Vec<Event>) -> &mut Self {
-        for event in events {
-            self.runtime.send(event);
-        }
+    pub fn deliver(&mut self, told: Vec<Told>) -> &mut Self {
+        self.store.tell(told);
         self.settle();
         self
     }
 
     /// Sends one event and waits for the app to rest.
     pub fn send(&mut self, event: Event) -> &mut Self {
-        self.runtime.send(event);
+        self.session.send(event);
         self.settle();
         self
     }
@@ -247,7 +285,7 @@ impl Headless {
             } else {
                 Key::named(&c.to_string())
             };
-            self.runtime.send(Event::Key(key));
+            self.session.send(Event::Key(key));
         }
         self.settle();
         self
@@ -259,13 +297,17 @@ impl Headless {
 
     pub fn resize(&mut self, width: u16, height: u16) -> &mut Self {
         self.size = (width, height);
-        self.send(Event::Resize { width, height })
+        self.session.resize(width, height);
+        self.settle();
+        self
     }
 
     /// Lets time pass and fires the timers that fall due.
     pub fn advance(&mut self, ms: u64) -> &mut Self {
         self.clock.advance(Duration::from_millis(ms));
-        self.send(Event::Tick)
+        self.session.tick();
+        self.settle();
+        self
     }
 
     /// Replaces the script while the app runs.
@@ -286,9 +328,10 @@ impl Headless {
         self
     }
 
-    /// Serves the app's record requests from the store until the app has
-    /// nothing left to do. False when it did not come to rest in time: the
-    /// time a call may take, a few times over.
+    /// Lets the session carry requests, replies and changes between the
+    /// script and the store until neither has anything left to do. False
+    /// when the app did not come to rest in time: the time a call may
+    /// take, a few times over.
     pub fn settle(&mut self) -> bool {
         self.wait(self.patience)
     }
@@ -297,41 +340,16 @@ impl Headless {
     pub fn wait(&mut self, patience: Duration) -> bool {
         let deadline = Instant::now() + patience;
         loop {
-            let mut asked = false;
-            for output in self.runtime.poll() {
-                match output {
-                    Output::Request(request) => {
-                        asked = true;
-                        for event in self.store.serve(request) {
-                            self.runtime.send(event);
-                        }
-                    }
-                    Output::Log(line) => self.logs.push(line),
-                    Output::Loaded { types } => self.types = types,
-                    Output::Close => self.closed = true,
-                    Output::Redraw => {}
-                }
-            }
-            if !asked && self.runtime.is_idle() {
-                // What was reported between the poll and the look at the
+            // Whoever wrote in the store has a name there.
+            let names = self.store.lock().names().clone();
+            self.session.set_names(names);
+            let quiet = self.take() == 0;
+            if quiet && self.session.is_idle() {
+                // What was reported between the look and the look at the
                 // counter is still in the queue.
-                let late = self.runtime.poll();
-                if late.is_empty() {
+                if self.take() == 0 {
                     self.settled = true;
                     return true;
-                }
-                for output in late {
-                    match output {
-                        Output::Request(request) => {
-                            for event in self.store.serve(request) {
-                                self.runtime.send(event);
-                            }
-                        }
-                        Output::Log(line) => self.logs.push(line),
-                        Output::Loaded { types } => self.types = types,
-                        Output::Close => self.closed = true,
-                        Output::Redraw => {}
-                    }
                 }
                 continue;
             }
@@ -339,15 +357,32 @@ impl Headless {
                 self.settled = false;
                 return false;
             }
-            self.signal.wait(Duration::from_millis(20));
+            if quiet {
+                self.signal.wait(Duration::from_millis(20));
+            }
         }
+    }
+
+    /// One look at the session. How many things it had to tell.
+    fn take(&mut self) -> usize {
+        let outputs = self.session.poll();
+        let told = outputs.len();
+        for output in outputs {
+            match output {
+                Output::Log(line) => self.logs.push(line),
+                Output::Loaded { types } => self.types = types,
+                Output::Close => self.closed = true,
+                Output::Redraw | Output::Request(_) => {}
+            }
+        }
+        told
     }
 
     /// The app's region as Ratatui drew it.
     pub fn buffer(&mut self) -> Buffer {
         let area = Rect::new(0, 0, self.size.0, self.size.1);
         let mut buffer = Buffer::empty(area);
-        self.cursor = self.runtime.draw(area, &mut buffer, &self.theme);
+        self.cursor = self.session.draw(area, &mut buffer, &self.theme);
         buffer
     }
 
@@ -362,16 +397,26 @@ impl Headless {
     }
 
     pub fn status(&self) -> Status {
-        self.runtime.status()
+        self.session.runtime().status()
+    }
+
+    /// The status of the session: the script's, and its records'.
+    pub fn session_status(&self) -> SessionStatus {
+        self.session.status()
+    }
+
+    /// What the app's pane would say by itself, if anything.
+    pub fn notice(&self) -> Option<String> {
+        self.session.status().notice
     }
 
     /// What is wrong with the app, if anything.
     pub fn error(&self) -> Option<String> {
-        self.runtime.status().error
+        self.session.runtime().status().error
     }
 
     pub fn phase(&self) -> Phase {
-        self.runtime.status().phase
+        self.session.runtime().status().phase
     }
 
     pub fn logs(&self) -> &[String] {
@@ -395,7 +440,8 @@ impl Headless {
             logs: self.logs.clone(),
             types: self.types.clone(),
             closed: self.closed,
-            responding: self.settled && self.runtime.status().responding,
+            responding: self.settled && self.session.runtime().status().responding,
+            notice: self.notice(),
         }
     }
 }

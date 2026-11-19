@@ -6,11 +6,14 @@
 //! - what **the runtime** holds a script to: time, memory, the size of what
 //!   it hands to bzz (a screen, a request, a log line, a timer);
 //! - what **the records service** holds an app to: how many records, how
-//!   large, how often. The runtime only checks the size of content, which
-//!   it has in hand; the service behind it (the in-memory store here, the
-//!   relay service from M2) checks the rest.
+//!   large, how often. These are the service's own constants
+//!   (`protocol::record`), named here so that there is one set of numbers.
+//!   The runtime checks the size of content, which it has in hand; the
+//!   session (`apps::session`) and the service behind it check the rest.
 
 use std::time::Duration;
+
+use crate::protocol::record;
 
 const KIB: usize = 1024;
 const MIB: usize = 1024 * KIB;
@@ -90,7 +93,7 @@ pub const LOG_LINE_BYTES: usize = KIB;
 /// The relay takes 262,144 bytes. 16 KiB keeps the fullest set an app may
 /// have (1000 records) at 16 MiB, inside the memory of the interpreter that
 /// has to hold it, and is far more than a card, a vote or a request needs.
-pub const CONTENT_BYTES: usize = 16 * KIB;
+pub const CONTENT_BYTES: usize = record::MAX_CONTENT_BYTES;
 
 /// How deep the content of a record, a tag or a log value may nest.
 pub const DATA_DEPTH: usize = 32;
@@ -110,10 +113,10 @@ pub const PASTE_BYTES: usize = 64 * KIB;
 pub const TEXT_ARGUMENT_BYTES: usize = 64 * KIB;
 
 /// Record types one app may declare. A sync filter names each.
-pub const TYPES: usize = 16;
+pub const TYPES: usize = record::MAX_TYPES;
 
 /// A record type's name: `[a-z][a-z0-9_-]{0,31}`.
-pub const TYPE_NAME_BYTES: usize = 32;
+pub const TYPE_NAME_BYTES: usize = record::MAX_NAME_BYTES;
 
 /// After this many stops of the same handler in a row the app is given up.
 /// One stop can be a loaded machine; three are a loop.
@@ -129,14 +132,23 @@ pub const NOT_RESPONDING_AFTER: Duration = Duration::from_secs(2);
 
 /// Live records of one app in one channel. The relay closes a sync at 4096
 /// matched artifacts; bzz stops an app long before.
-pub const LIVE_RECORDS: usize = 1000;
+pub const LIVE_RECORDS: usize = record::MAX_LIVE_RECORDS;
 
 /// A record's title for other clients, in bytes (the relay's own rule).
-pub const TITLE_BYTES: usize = 512;
+pub const TITLE_BYTES: usize = record::MAX_TITLE_BYTES;
 
-/// Writes in a minute for one person, shared with that person's chat (the
-/// relay's quota at the pin).
-pub const WRITES_PER_MINUTE: u32 = 60;
+/// Writes in a minute for the apps of one person: half of what the relay
+/// gives that person, whose chat spends the same budget. An app that could
+/// spend all of it would keep its owner from sending a message.
+pub const WRITES_PER_MINUTE: u32 = record::APP_WRITES_PER_MINUTE;
+
+/// The relay's own budget for one person in a minute, at the pin.
+pub const PERSON_WRITES_PER_MINUTE: u32 = record::PERSON_WRITES_PER_MINUTE;
+
+/// How long a `data.list` waits for the first complete set of an app that
+/// holds no record yet, before it is answered `unavailable`. The pinned
+/// relay sent a thousand records in a quarter of a second.
+pub const FIRST_SET_WAIT: Duration = Duration::from_secs(5);
 
 /// The limits one runtime runs with. [`Limits::default`] is what is
 /// published; a test may give a call more time on a loaded machine.
@@ -256,7 +268,9 @@ pub fn published() -> Vec<(&'static str, String)> {
         ("Live records of one app", format!("{LIVE_RECORDS}")),
         (
             "Writes in a minute",
-            format!("{WRITES_PER_MINUTE}, shared with the person's chat"),
+            format!(
+                "{WRITES_PER_MINUTE} for the apps of one person: half of the {PERSON_WRITES_PER_MINUTE} the relay gives that person, chat included"
+            ),
         ),
     ]
 }

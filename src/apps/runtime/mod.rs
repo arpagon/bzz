@@ -16,7 +16,8 @@
 //!
 //! The runtime has no terminal and no socket. Records cross a pair of plain
 //! types ([`records`]): requests go out in [`Output::Request`], replies and
-//! pushes come in as [`Event::Reply`] and [`Event::Push`].
+//! pushes come in as [`Event::Reply`] and [`Event::Push`]. What answers
+//! them is an app session (`apps::session`), which owns a runtime.
 //!
 //! What a script is held to is in [`limits`]; how it is stopped is in
 //! [`vm`]; what it can call is in [`api`], and `docs/app-api.md` is the
@@ -26,10 +27,8 @@ pub mod api;
 mod bounded;
 pub mod clock;
 pub mod draw;
-pub mod headless;
 mod layout;
 pub mod limits;
-pub mod memory;
 mod pattern;
 pub mod records;
 pub mod ui;
@@ -39,6 +38,11 @@ mod worker;
 
 #[cfg(test)]
 mod tests;
+
+/// The headless driver and the store in memory run an app through a
+/// session (`apps::session`), as bzz's window does. They are named here
+/// too, where they were before the session existed.
+pub use super::session::{headless, memory};
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -473,6 +477,17 @@ impl Runtime {
     /// has, [`Runtime::poll`] gives the last of what it produced.
     pub fn is_idle(&self) -> bool {
         self.shared.handled.load(Ordering::SeqCst) >= self.shared.sent.load(Ordering::SeqCst)
+    }
+
+    /// Events sent that the script's thread has not finished. An owner with
+    /// many to send (a set of records fetched again) sends them a part at a
+    /// time and looks here, so that [`Limits::event_backlog`] is never
+    /// reached by bzz's own doing.
+    pub fn waiting(&self) -> u64 {
+        self.shared
+            .sent
+            .load(Ordering::SeqCst)
+            .saturating_sub(self.shared.handled.load(Ordering::SeqCst))
     }
 
     /// Timers the app has waiting. While it is zero a tick does nothing.

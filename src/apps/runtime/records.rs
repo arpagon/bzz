@@ -2,11 +2,11 @@
 //! and pushes come in. Plain types; nothing here knows a relay.
 //!
 //! The runtime turns a script's `data.*` call into a [`RecordRequest`] and
-//! hands it to whoever owns the runtime. That owner answers every request
-//! with exactly one [`RecordReply`], and sends a [`RecordPush`] for each
-//! change another participant made. Behind the boundary sits the in-memory
-//! store of [`super::memory`] (the headless driver, tests) or, from M2, the
-//! relay's artifact service.
+//! hands it to whoever owns the runtime: an app session
+//! (`apps::session`). The session answers every request with exactly one
+//! [`RecordReply`], and sends a [`RecordPush`] for each change another
+//! participant made. Behind the session sit the relay's records service
+//! (`service::records`) or the store in memory of [`super::memory`].
 //!
 //! What the two sides owe each other:
 //!
@@ -16,14 +16,10 @@
 //! - **A list has no order** a script may rely on.
 //! - **The requester's own writes are not pushed** back to it.
 //! - **A resync is not a change**: when the set had to be fetched again,
-//!   the owner sends only the real differences, which [`differences`]
-//!   computes.
-
-use std::collections::HashMap;
+//!   the session sends only the real differences
+//!   (`protocol::record::difference`).
 
 use serde_json::{Map, Value};
-
-use super::limits;
 
 /// A participant: an id that does not change, and a name for showing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -223,41 +219,9 @@ pub struct RecordPush {
 }
 
 /// Is `name` a record type an app may declare: `[a-z][a-z0-9_-]{0,31}`?
+/// The rule is the records service's own.
 pub fn valid_type_name(name: &str) -> bool {
-    let bytes = name.as_bytes();
-    !bytes.is_empty()
-        && bytes.len() <= limits::TYPE_NAME_BYTES
-        && bytes[0].is_ascii_lowercase()
-        && bytes
-            .iter()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_' || *b == b'-')
-}
-
-/// The title bzz gives a record for other clients: `content.title` when it
-/// is a string with something in it, cut to the relay's 512 bytes, and the
-/// type's name otherwise. It is also what `match` of a list looks at.
-pub fn title_of(record_type: &str, content: &Map<String, Value>) -> String {
-    match content.get("title") {
-        Some(Value::String(title)) if !title.trim().is_empty() => {
-            let mut end = title.len().min(limits::TITLE_BYTES);
-            while !title.is_char_boundary(end) {
-                end -= 1;
-            }
-            title[..end].to_string()
-        }
-        _ => record_type.to_string(),
-    }
-}
-
-/// Does `record` pass the `match` of a list: its title contains `matching`,
-/// ignoring case?
-pub fn matches(record: &Record, matching: Option<&str>) -> bool {
-    match matching {
-        None | Some("") => true,
-        Some(wanted) => title_of(&record.record_type, &record.content)
-            .to_lowercase()
-            .contains(&wanted.to_lowercase()),
-    }
+    crate::protocol::record::valid_name(name)
 }
 
 /// The size of `content` as the JSON text that is sent.
@@ -265,60 +229,9 @@ pub fn content_bytes(content: &Map<String, Value>) -> usize {
     serde_json::to_string(content).map_or(usize::MAX, |text| text.len())
 }
 
-/// What a script must be told after the set of records was fetched again:
-/// **only the real differences**, as pushes. A record in `after` and not in
-/// `before` was created; one in both with another revision was updated; one
-/// only in `before` was deleted, and is pushed with its last known state. A
-/// record that is the same in both gives nothing: a resync is not a change.
-///
-/// Creations and updates come in the order of `after`, then deletions in
-/// the order of `before`.
-pub fn differences(before: &[Record], after: &[Record]) -> Vec<RecordPush> {
-    let old: HashMap<&str, &Record> = before.iter().map(|r| (r.id.as_str(), r)).collect();
-    let new: HashMap<&str, &Record> = after.iter().map(|r| (r.id.as_str(), r)).collect();
-    let mut pushes = Vec::new();
-    for record in after {
-        let change = match old.get(record.id.as_str()) {
-            None => Change::Create,
-            Some(was) if was.rev != record.rev => Change::Update,
-            Some(_) => continue,
-        };
-        pushes.push(RecordPush {
-            change,
-            record: record.clone(),
-            by: record.by.clone(),
-        });
-    }
-    for record in before {
-        if !new.contains_key(record.id.as_str()) {
-            pushes.push(RecordPush {
-                change: Change::Delete,
-                record: record.clone(),
-                // Who deleted it is not in either set.
-                by: record.by.clone(),
-            });
-        }
-    }
-    pushes
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
-    fn record(id: &str, rev: &str, title: &str) -> Record {
-        let Value::Object(content) = json!({ "title": title }) else {
-            unreachable!()
-        };
-        Record {
-            id: id.into(),
-            record_type: "card".into(),
-            rev: rev.into(),
-            content,
-            by: Who::new("aa", "ana"),
-        }
-    }
 
     #[test]
     fn a_type_name_follows_the_rule() {
@@ -337,51 +250,5 @@ mod tests {
         ] {
             assert!(!valid_type_name(bad), "{bad}");
         }
-    }
-
-    #[test]
-    fn a_title_is_the_content_title_or_the_type() {
-        let Value::Object(with) = json!({ "title": "Alpha" }) else {
-            unreachable!()
-        };
-        let Value::Object(without) = json!({ "title": "  ", "n": 1 }) else {
-            unreachable!()
-        };
-        let Value::Object(long) = json!({ "title": "\u{e9}".repeat(400) }) else {
-            unreachable!()
-        };
-        assert_eq!(title_of("card", &with), "Alpha");
-        assert_eq!(title_of("card", &without), "card");
-        // 400 characters of two bytes: cut at 512 bytes, on a character.
-        assert_eq!(title_of("card", &long), "\u{e9}".repeat(256));
-        assert!(matches(&record("1", "a", "Write Tests"), Some("TEST")));
-        assert!(!matches(&record("1", "a", "Write Tests"), Some("ship")));
-        assert!(matches(&record("1", "a", "Write Tests"), None));
-    }
-
-    #[test]
-    fn a_resync_gives_only_the_real_differences() {
-        let before = vec![
-            record("1", "a", "Alpha"),
-            record("2", "a", "Bravo"),
-            record("3", "a", "Charlie"),
-        ];
-        // The same set, in another order: nothing to tell.
-        let shuffled = vec![before[2].clone(), before[0].clone(), before[1].clone()];
-        assert_eq!(differences(&before, &shuffled), Vec::new());
-
-        let after = vec![
-            record("4", "a", "Delta"),
-            record("2", "b", "Bravo v2"),
-            record("1", "a", "Alpha"),
-        ];
-        let pushes = differences(&before, &after);
-        let seen: Vec<(&str, &str)> = pushes
-            .iter()
-            .map(|p| (p.change.name(), p.record.id.as_str()))
-            .collect();
-        assert_eq!(seen, [("create", "4"), ("update", "2"), ("delete", "3")]);
-        // A deletion carries the record's last state.
-        assert_eq!(pushes[2].record, before[2]);
     }
 }

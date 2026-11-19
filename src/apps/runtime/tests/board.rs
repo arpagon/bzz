@@ -14,7 +14,7 @@ use unicode_width::UnicodeWidthChar;
 use super::*;
 use crate::apps::runtime::Phase;
 use crate::apps::runtime::memory::content;
-use crate::apps::runtime::records::RecordError;
+use crate::protocol::record::RecordError as Failure;
 
 const SIZES: [(u16, u16); 2] = [(40, 16), (80, 24)];
 const HEADERS: [&str; 3] = ["To do (", "Doing (", "Done ("];
@@ -373,8 +373,8 @@ fn case_08_load_error() {
             six_cards(store);
             store.fail_next(
                 "list",
-                RecordError::Unavailable {
-                    message: "no connection".into(),
+                Failure::Unavailable {
+                    reason: "no connection".into(),
                 },
             );
         });
@@ -386,8 +386,8 @@ fn case_08_load_error() {
         app.key("j");
         app.store().fail_next(
             "list",
-            RecordError::Unavailable {
-                message: "no connection".into(),
+            Failure::Unavailable {
+                reason: "no connection".into(),
             },
         );
         app.key("r");
