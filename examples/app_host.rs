@@ -644,26 +644,17 @@ fn watch(path: PathBuf, mut last: Vec<u8>, tx: Sender<Msg>) {
     });
 }
 
-/// The script's name in error messages: relative to the current folder
-/// when it is inside it, and never so long that Lua cuts it.
+/// The script's name in error messages: its folder and its file, as
+/// `board/app.lua`. An error is shown in a row or two of a region that may
+/// be 40 columns wide, and Lua cuts a long name.
 fn display_name(path: &Path) -> String {
     let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let relative = std::env::current_dir()
-        .ok()
-        .and_then(|cwd| absolute.strip_prefix(cwd).ok().map(Path::to_path_buf));
-    let name = relative.unwrap_or(absolute).display().to_string();
-    if name.chars().count() > 55 {
-        let part = |p: Option<&std::ffi::OsStr>| {
-            p.map(|f| f.to_string_lossy().to_string())
-                .unwrap_or_default()
-        };
-        return format!(
-            "{}/{}",
-            part(path.parent().and_then(Path::file_name)),
-            part(path.file_name())
-        );
+    let part = |p: Option<&std::ffi::OsStr>| p.map(|f| f.to_string_lossy().to_string());
+    let file = part(absolute.file_name()).unwrap_or_else(|| "app.lua".into());
+    match part(absolute.parent().and_then(Path::file_name)) {
+        Some(folder) => format!("{folder}/{file}"),
+        None => file,
     }
-    name
 }
 
 // ------------------------------------------------------------------- the log
