@@ -139,7 +139,8 @@ fn stored(app: &mut Headless, title: &str) -> Value {
 }
 
 fn writes(app: &mut Headless) -> usize {
-    app.store().count("create") + app.store().count("update")
+    let store = app.store();
+    store.count("create") + store.count("update")
 }
 
 fn start_approvals(size: (u16, u16)) -> Headless {

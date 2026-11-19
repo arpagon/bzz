@@ -60,9 +60,9 @@ pub fn cy() -> Who {
 }
 
 /// "The relay did not answer": what a failed load is made of.
-pub fn unavailable() -> super::records::RecordError {
-    super::records::RecordError::Unavailable {
-        message: "no connection".into(),
+pub fn unavailable() -> crate::protocol::record::RecordError {
+    crate::protocol::record::RecordError::Unavailable {
+        reason: "no connection".into(),
     }
 }
 

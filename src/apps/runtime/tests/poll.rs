@@ -106,7 +106,7 @@ fn options(app: &mut Headless) -> Value {
     let poll = app
         .store()
         .records()
-        .iter()
+        .into_iter()
         .find(|r| r.record_type == "poll")
         .expect("the poll");
     poll.content.get("options").cloned().unwrap_or(Value::Null)
@@ -116,14 +116,15 @@ fn poll_id(app: &mut Headless) -> String {
     let poll = app
         .store()
         .records()
-        .iter()
+        .into_iter()
         .find(|r| r.record_type == "poll")
         .expect("the poll");
-    poll.id.clone()
+    poll.id
 }
 
 fn writes(app: &mut Headless) -> usize {
-    app.store().count("create") + app.store().count("update")
+    let store = app.store();
+    store.count("create") + store.count("update")
 }
 
 fn start_poll(size: (u16, u16)) -> Headless {
