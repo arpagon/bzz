@@ -7,12 +7,12 @@ bytes. This guide is for whoever installs, writes or approves one. The
 reasons behind it are in [`adr-v0.16-apps.md`](adr-v0.16-apps.md); what a
 script is written against is [`app-api.md`](app-api.md).
 
-> **What this version has.** The store of installed apps, approval, and the
-> command line `bzz app`. An app can be written, checked, tried, run from
-> your own folder in a terminal, installed, approved, rolled back and
-> removed. **It cannot yet be opened beside a conversation**: the pane, the
-> agents' tools and sharing in the channel are not built, and each has a
-> marked section below.
+> **What this version has.** The store of installed apps, approval, the
+> command line `bzz app`, and the pane: an app can be written, checked,
+> tried, run from your own folder in a terminal, installed, approved,
+> rolled back, removed, and opened beside a conversation. The approval of a
+> version inside the TUI, the agents' tools and sharing in the channel are
+> not built, and each has a marked section below.
 
 An app is four things, kept apart:
 
@@ -21,7 +21,7 @@ An app is four things, kept apart:
 | Its **script** | one Lua file, in bzz's data folder on your machine | it runs only after you approve its bytes, with only what bzz lends it |
 | Its **brief** | a short text kept with the script | it says what the app does and what its records hold |
 | Its **records** | artifacts of the channel, on the relay | bzz signs them; the script never sees a key |
-| Its **pane** | a region of bzz's window | *not in this version, see [The pane](#the-pane)* |
+| Its **pane** | a region of bzz's window, beside the conversation | bzz draws it; see [The pane](#the-pane) |
 
 ## What a script can and cannot do
 
@@ -320,15 +320,76 @@ screen, records and writes) is in [`app-api.md`](app-api.md#limits).
 
 ## The pane
 
-> **Not in this version.** An installed app cannot be opened beside a
-> conversation yet.
+```text
+:apps                     the installed apps, and where each is open
+:app open board           open the Board in the selected channel
+:app close                close the app of the selected channel
+:app zoom                 the app takes the whole window, or gives it back
+```
 
-<!-- M3: the pane to the right of the conversation, 42 columns with its
-     border; `:apps`, `:app open <name>`, `:app close`; focus and keys
-     (Ctrl+C leaves); zoom; narrow windows. Say here where an app is open
-     (`bzz app show` already lists the channels: `Apps::open_in`,
-     `Apps::close_in`, `Apps::open_in_channel` record them), and that the
-     pane starts a script only from `Apps::runnable`. -->
+**An app is opened in a channel** and follows it: bzz remembers where each
+app is open (`bzz app show` lists the channels), and selecting a channel
+shows its app, or none. One app is shown in a channel; opening another
+there closes the first. An app is never opened in a direct message. Its
+records are the channel's, so closing the app, or opening it again, loses
+nothing.
+
+**Only an approved app opens.** The pane starts a script only from the
+version you approved (`Apps::runnable`); one that waits says so and how to
+approve it at the shell (`bzz app approve <name>`). If the approved version
+fails as it is started, or declares other record types than you approved,
+bzz records the failure and runs the version you approved before it,
+when there is one.
+
+**Where it goes.** The pane is 42 columns at the right of the window: 40
+for the app and its border. The conversation keeps its 30 columns.
+
+| Window | What is drawn |
+|---|---|
+| under 72 columns | the conversation alone; the app takes the whole window while it has the focus, and the status line says `app hidden · 5` otherwise |
+| 72 to 99 | conversation and app |
+| from 100 | the channel list too, then the communities from 122 |
+| a thread and the app both open | both from 144 columns (116 with the channel list off); below that the one you asked for last, and the status line says `app behind thread · 5` |
+| an app that would have fewer than 16 rows beside the conversation | it takes the whole window while it has the focus, when that gives it 16 (a window of 19 rows) |
+
+An app needs 40 columns by 16 rows. In less, bzz says so in the pane and
+the app draws nothing. While a thread waits behind the app, a message you
+write goes to the channel, not into that thread.
+
+**Keys.** `5` gives the app the keyboard (`1` to `4` are the other panes;
+`Tab` reaches it too, and so does a click on it). **While it has the
+keyboard every key is the app's except `Ctrl+C`, which gives it back** to
+the conversation. The pane's border and the status line say so. Help,
+`:` and `q` are two keys away: `Ctrl+C`, then the key. `Space 5` zooms the
+app to the whole window, or back; `Ctrl+C` also leaves the zoom. `Ctrl+Y`
+still opens a command one of your agents waits to run. An overlay or the
+writing dock, when open, takes the keys before the app.
+
+**A paste** reaches the app as one piece of text, never as keys, when the
+app has the keyboard and nothing else is open; otherwise it goes into the
+writing dock, also as one piece of text. On Windows the terminal library
+gives bzz no paste event: there a paste arrives as keys, in the app as in
+the writing dock.
+
+**The mouse.** A click on the pane gives the app the keyboard; the app is
+told nothing of it. The wheel over the pane does nothing, and the wheel
+over another pane scrolls that pane without taking the keyboard from the
+app.
+
+**What the pane says by itself**, in its bottom border, where it costs the
+app no row: a wait at the quota of writes, too many records, an archived
+channel, records that cannot be read. An app's error, with its file and
+line, is on the last row of the app and in the status line; so is an app
+that no longer responds. Neither costs the conversation anything: bzz
+never waits for a script, and a script that loops is stopped by its own
+time budget.
+
+**Colours** are the theme's, and follow it when you change it.
+
+**While it is not shown** an app keeps running, so its state is there when
+you come back to its channel; bzz keeps four running at most and closes the
+one shown least recently. Every app is closed when you switch community,
+lock bzz or quit.
 
 ## Agents
 

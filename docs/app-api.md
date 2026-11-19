@@ -248,7 +248,9 @@ such as `board card`. `match` looks at the same text.
 
 ## The host
 
-- `host.quit()` closes the app after the handler returns.
+- `host.quit()` closes the app after the handler returns. In bzz's
+  window that is `:app close`: the pane closes and the app is no longer
+  open in that channel; its records stay.
 - `host.log(...)` writes a line to the app's log. `print` is the same.
 - `host.after(ms, tag)` calls `app.timer(state, tag, ctx)` once, after `ms`
   milliseconds. `tag` is plain data.
