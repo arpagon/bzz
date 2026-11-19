@@ -117,9 +117,12 @@ The templates:
 |---|---|
 | `board` | Cards in three columns: To do, Doing, Done. |
 
-<!-- M1-B: Poll and Approvals (plan D9) are added in
-     src/apps/store/templates.rs, from the fixtures of M1. Add a row here
-     for each. -->
+<!-- Poll and Approvals (plan D9) come from the fixtures
+     tests/fixtures/apps/poll/app.lua (types poll, vote) and
+     tests/fixtures/apps/approvals/app.lua (type request). For each: a
+     brief at src/apps/templates/<name>/brief.md, an entry in TEMPLATES in
+     src/apps/store/templates.rs, and a row here. The test
+     every_template_loads_and_declares_what_its_entry_says covers it. -->
 
 Three commands need no community, no relay and no key:
 
@@ -161,9 +164,12 @@ bzz app dev tasks                 # run it here, reload it on every save
   channel's real records needs the pane. <!-- M4-B: `bzz app dev <folder>
   --channel <name>` opens the folder's app in that channel's pane of the
   running TUI, on the channel's records, reloading on save and marked as
-  unapproved in the pane's border. It needs: the pane (M3), an app session
-  on the records service (M2-B) started from a folder instead of from
-  `Apps::runnable`, and a way for the command to reach the running bzz. -->
+  unapproved in the pane's border. It needs: the pane (M3); an
+  `AppSession::on_relay` started from the folder's bytes instead of from
+  `Apps::runnable`, with the app's name from the folder's app.toml, given
+  each save with `AppSession::reload` (`apps::dev::Dev` already does this
+  on `AppSession::in_memory`); and a way for the command to reach the
+  running bzz, or `:app dev <folder>` inside it. -->
 
 ## Installing an app
 
