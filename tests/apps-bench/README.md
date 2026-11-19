@@ -1,7 +1,27 @@
-# Mini-app acceptance bench
+# The apps bench
 
-Judges a terminal mini-app by driving it like a user in a pseudo-terminal.
-Linux, Python 3.10+ standard library only; no tmux, Herdr or visible terminal.
+Judges bzz's app runtime the way the experiment judged its prototypes: a
+real terminal program, driven like a user in a pseudo-terminal, with real
+apps. The program is `examples/app_host.rs`, the runtime alone in a
+terminal, on this bench's simulated data service; the apps are the six
+fixtures of `tests/fixtures/apps/`, written against `docs/app-api.md`
+(`api = 1`). It was copied from the experiment
+(`runs/experiments/bzz/react-terminal-plugins-2026-11-16/bench/` and its
+extension `f2/bench/`) and brought to the contract: see "What changed from
+the experiment" below.
+
+**Needs:** Linux, Python 3.10 or newer (standard library only) and cargo.
+No Docker, relay, network, tmux or visible terminal. It is not part of
+`cargo test`; the same cases, as far as a store in memory can express
+them, are cargo tests that run on every platform
+(`src/apps/runtime/tests/{board,poll,rota,approvals,panel,board_priority}.rs`).
+
+Everything at once, one table at the end (about seven minutes):
+
+```sh
+scripts/test-apps-bench.sh                       # debug build
+scripts/test-apps-bench.sh --release --measure   # and the numbers
+```
 
 | App (`--app`) | Spec | Cases |
 | --- | --- | --- |
@@ -12,25 +32,55 @@ Linux, Python 3.10+ standard library only; no tmux, Herdr or visible terminal.
 | `panel` | `spec/panel.md` (sparkline, gauge, table, tabs) | 01-15 |
 | `board-priority` | `spec/board.md` + change request `spec/board-priority.md` | Board's 01-12, then 13-17 |
 
-Data protocol for all: `spec/data-protocol.md`.
+Data protocol for all: `spec/data-protocol.md`. It is the service's, not
+what an app sees.
 
-## Run
+| Program | What it checks |
+| --- | --- |
+| `run` | one app's cases |
+| `reload` | the six apps edited while a person uses them; the Board swapped for the Board with priority; a save at a bad moment (`lib/reload.py`) |
+| `pushes` | pushes of a type begin with the app's first list of it (`lib/pushes.py`) |
+| `hostile` | the hostile script reaches nothing, and the host stays usable (`lib/hostile.py`) |
+| `measure` | first draw with 200 records, peak memory, key to screen |
+| `drive` | an app by hand: keys in, the screen out (`lib/drive.py`) |
+
+## What changed from the experiment
+
+- The program under test is always `examples/app_host.rs` with a fixture.
+  The host maps the service's protocol onto the contract; the table at the
+  top of that file lists every difference.
+- The cases do not depend on what `api = 1` took away: no `seq`, ids
+  that do not sort, a revision that is an opaque string, a participant as
+  `{ id, name }`. The service gives every record an `order` field
+  (`card`, `day`, `request`), and the apps sort by it.
+- `--size`: every case starts at the size given (default 80x24, the
+  bench's own) and resizes to the other of 80x24 and 40x16, the pane's.
+  `scripts/test-apps-bench.sh` runs every app at both.
+- Runs leave their files under `APPS_BENCH_OUT` (default
+  `$TMPDIR/bzz-apps-bench`), never in the repository: `runs.jsonl`,
+  `measures.jsonl` and each case's folder.
+- The experiment's plain-Python reference apps and their self-test are not
+  copied: they validated the bench, which passed them there.
+
+## Run one app
 
 ```sh
-bench/run --app board --option A -- node e2/a-ink/board.mjs
-bench/run --app panel --option f1-s-1 --case 3,14 -- ./target/debug/host panel.toml
+cargo build --example app_host
+tests/apps-bench/run --app board --option bzz --size 40x16 -- \
+    "$CARGO_TARGET_DIR/debug/examples/app_host" tests/fixtures/apps/board
+tests/apps-bench/run --app panel --option bzz --case 3,14 -- <host> tests/fixtures/apps/panel
 ```
 
 - Everything after `--` is the command (no shell; use `sh -c '...'` if needed).
   It runs in your current directory.
-- Each case starts a fresh data service and a fresh program, at 80x24 unless
-  the case says otherwise, with `MINIAPP_DATA_ADDR`, `MINIAPP_USER=ana`,
-  `TERM=xterm-256color` and `LANG=C.UTF-8`.
+- Each case starts a fresh data service and a fresh program, with
+  `MINIAPP_DATA_ADDR`, `MINIAPP_USER=ana`, `TERM=xterm-256color` and
+  `LANG=C.UTF-8`.
 - `--case 3,5` runs a subset. `--artifacts DIR` keeps the per-case files
-  there (default: a new folder under `/tmp/miniapp-bench/`).
-- Exit status 0 only if every case passed. Every invocation appends one line to
-  `bench/runs.jsonl`: UTC `time`, `app`, `option`, `passed`, `failed`,
-  `failed_cases`, `cases_run`, `command`, `cwd`.
+  there.
+- Exit status 0 only if every case passed. Every invocation appends one line
+  to `runs.jsonl`: UTC `time`, `app`, `option`, `size`, `passed`,
+  `failed`, `failed_cases`, `cases_run`, `command`, `cwd`.
 
 ## Cases
 
@@ -65,7 +115,7 @@ FAIL rota 12 conflict (3.1s): expected rota rows '  Mon  bo', '> Tue  bo', ... a
      screen seen:
      +----...----+ 80x24
      |> Tue      ana      ...|  2      <- row number on the right
-     artifacts: /tmp/miniapp-bench/rota-A-.../case-12
+     artifacts: $APPS_BENCH_OUT/rota-bzz-80x24-.../case-12
 ```
 
 `expected` is the state the bench waited for (exact texts from the spec);
@@ -88,7 +138,7 @@ How the bench reads the screen:
   `History: <name>`, the rows with `▁▂▃▄▅▆▇█` give one column per value; a
   column's height is the sum of its eighths; checks are order properties, not
   pictures. The gauge is the row with `N%` and `█` cells. Both were written
-  against what stock Ratatui 0.30 `Sparkline` and `Gauge` print (`f2/probe/`).
+  against what stock Ratatui 0.30 `Sparkline` and `Gauge` print (the experiment's `f2/probe/`).
 - **Overflow** = a character autowrapped past the last column, or a non-blank
   line scrolled off the top. A full-screen erase (`ESC[2J`, or `ESC[J` from
   the top-left) forgives overflow written before it.
@@ -105,11 +155,11 @@ How the bench reads the screen:
 ## Measure
 
 ```sh
-bench/measure --app rota --option A -- <command>
+tests/apps-bench/measure --app board --option bzz-release -- <host> tests/fixtures/apps/board
 ```
 
-Uses the `big` data set (200 records) at 80x24. Prints and appends to
-`bench/measures.jsonl`: time from start to first output and to the first
+Uses the `big` data set (200 records), at 80x24 unless `--size` says
+otherwise. Prints and appends to `measures.jsonl`: time from start to first output and to the first
 complete draw (`Loaded 200 cards.` / `options.` / `days.` / `requests.` /
 `metrics.` on the status line), peak resident memory of the process tree (sum
 of `VmRSS` over the session, sampled every 10 ms), and key-to-screen-change
@@ -117,15 +167,6 @@ p50/p95/max over 120 presses of `j`/`k`.
 
 ## Data service by hand
 
-`bench/data-service --app panel --scenario slow-load` prints its addresses;
+`tests/apps-bench/data-service --app panel --scenario slow-load` prints its
+addresses;
 see `spec/data-protocol.md` for scenarios and the control port.
-
-## Self-test (bench developers only)
-
-`bench/reference/` holds plain-Python references of all six apps that exist
-only to validate the bench, with deliberate faults (`--fault NAME`; list in
-each app file, round-one faults in `common.py`). The Panel reference draws its
-sparkline and gauge by hand, without a widget library.
-`bench/reference/selftest [--app A,B] [--jobs N]` runs each clean reference
-three times and every fault once, and checks that each fault fails exactly its
-case(s). Last full output: `reference/selftest-last.txt`.
