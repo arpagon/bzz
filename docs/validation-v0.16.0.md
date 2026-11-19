@@ -1,9 +1,8 @@
 # bzz v0.16.0 validation
 
-**Status:** in progress. M0 is recorded below for the parts that touch the
-repository (the baseline, the interpreter in the build, questions 1, 2 and
-6). Questions 3, 4 and 5 are answered by other work and are marked pending
-here until their answers are brought in. Nothing was pushed: what only CI
+**Status:** in progress. M0 is recorded below, and the first half of M1:
+the app runtime and its contract (M1-A). The bench, the example host and
+the remaining apps of M1 (M1-B) are not here yet. Nothing was pushed: what only CI
 can show on macOS and Windows is listed as not seen. Plan:
 [`docs/planning/2026-11-17/v0.16.0.md`](planning/2026-11-17/v0.16.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
@@ -309,3 +308,175 @@ room. The prototype's sandbox failed 32 of 80, as reported.
 - **An error raised by a Rust function of `mlua` reaches a script as a
   userdata**, not as a string: `"failed: " .. err` then fails. The functions
   of the app contract will need the same wrapper the bounded library uses.
+
+## M1 — The app runtime, first half: the runtime and its contract
+
+Linux x86_64, 2026-11-18 and 19. Code at `bc0f875` on
+`t3/m1-runtime-implementation`, cut from `v0.16.0` at `5eabee9`. The
+machine was shared with another agent's builds (load 1 to 13). Nothing in
+bzz calls the runtime yet: no pane, no command, no relay.
+
+What is there:
+
+| Path | What |
+|---|---|
+| `src/apps/runtime/vm.rs`, `bounded.rs`, `pattern.rs`, `prelude.lua` | the interpreter and the three things that stop a script (M0, question 2) |
+| `worker.rs`, `mod.rs` | one script on a thread of its own; the owner's end: events in, reports out, a waker |
+| `api.rs`, `api.lua` | the closed API: `ui`, `data`, `host`, `print` |
+| `ui.rs`, `draw.rs`, `layout.rs` | the eighteen elements, their drawing, and how rows and columns divide |
+| `records.rs`, `memory.rs` | the boundary to records, and a store in memory behind it |
+| `headless.rs` | a script without a window: steps in, the screen as text out |
+| `limits.rs` | every limit, each with its reason |
+| `docs/app-api.md`, `docs/app-api.d.lua` | the contract `api = 1`, and its twin for an editor |
+| `tests/fixtures/apps/hello`, `board` | two apps written against the contract |
+
+9,026 lines under `src/apps/runtime/`, 5,170 of tests under
+`src/apps/runtime/tests/`. No `unsafe`. One dependency became direct:
+`memchr`, locked already (the lock file gains one line).
+
+### The limits, and why each number
+
+`src/apps/runtime/limits.rs` holds them with their reasons, and
+`docs/app-api.md` publishes them; a test compares the two tables.
+
+| Limit | Value | Why |
+|---|---|---|
+| Time for one call | 250 ms | a hundred times the slowest key of the experiment (2.6 ms at the 95th percentile); three stops, which give an app up, cost under a second of one core |
+| Memory | 64 MiB | ten times the experiment's peak (6.3 MiB); holds the fullest set of text records the limits allow, twice; the cap M0's hostile scripts ran under |
+| Script | 128 KiB | compiling is outside the time budget and linear in the source; what travels as one artifact in M6 |
+| Elements in a screen | 10,000 | laying out and drawing are one pass over them, on the owner's thread |
+| Text in a screen | 128 KiB | a wrapped text is the one element whose drawing reads every byte: 8.6 ms at this size, 17.6 ms at the 256 KiB first chosen |
+| Nesting of a screen | 32 | the experiment's apps nest six deep |
+| Timers | 32 waiting, 100 ms to a day | the plan gives no timer finer than a tick of bzz's loop |
+| Requests | 64 waiting, 600 a minute | a search sends one for each key; the rate bounds how often an app can make bzz's loop turn |
+| Log | 120 lines a minute, 1 KiB each | lines past it are dropped and counted |
+| Content of a record | 16,384 bytes of JSON | a thousand such records are 16 MiB, inside the memory that has to hold them; the relay takes 262,144 |
+| Live records, writes | 1000; 60 a minute | the plan's; the service behind the boundary holds an app to them |
+
+### Claims
+
+`U:` is a unit test of the library, named under `apps::runtime::`. All of
+them run with `cargo test --lib apps::`, which CI's build job runs on the
+four platforms. Each red was produced by the change named, run, and
+reverted; where a script exists for it, that is said.
+
+| Claim | Proof | Red without the change | Result |
+|---|---|---|---|
+| Every hostile script ends within the budget (200 ms, and a margin of 800 ms; a late end is tried again twice, a script that never ends is not), and the interpreter then answers or is replaced. The yield was enough everywhere: none was ended by the hook's error | `U: tests::hostile::every_hostile_script_is_stopped_in_budget`: M0's 80 scripts, each on a thread of its own. 36 stopped, 14 ended with an error, 12 with a memory error, 18 returned in time; the slowest call 239 ms | `U: tests::hostile::the_prototype_sandbox_fails_the_suite` (ignored; run with `--ignored`): **31 of 80 "NOT STOPPED: still running after 8s"**. M0 counted 32: its thirty-second, a sort of two million numbers, is ended here while it still builds its table | pass: 80 of 80, in 5 runs in a row, in a release build, and in every run of the whole library's tests (11 seen, one of them with clippy compiling beside it) |
+| No function a script can reach has a call that runs past the budget (100 ms, same margin) | `U: tests::sweep::no_function_a_script_can_reach_runs_past_the_budget`: 107 functions, the 76 of Lua and the 31 of the API, with 5,029 argument lists each from a pool of 20 awkward values: 538,103 calls. With `BZZ_APPS_SWEEP=full`, M0's 12,517 lists: **1,339,319 calls, the slowest 125 ms** | `U: tests::sweep::the_prototype_sandbox_fails_the_sweep` (ignored): `NOT STOPPED: string.find(BIG(1 MiB of a), ".-.-.-.-.-x") has been running for 10.46 s` | pass: 0 |
+| The replaced functions answer as Lua's own | `U: tests::differential::the_bounded_functions_answer_as_lua_does`: 180,000 random calls of both; with `BZZ_APPS_DIFF=1000000`, **3,000,000 comparisons, 0 differences** | `string.rep` made to drop its separator: 649 of 180,000 differ | pass |
+| A thousand stopped calls in a row, each with a to-be-closed variable, leave the interpreter's memory flat and the interpreter answering (M0 had left it open) | `U: tests::vm::a_thousand_stops_in_a_row_leave_the_interpreter_as_it_was` | — (a measurement) | pass |
+| A script reaches no file, network, process, environment, native code or bytecode | `U: tests::reach::a_script_reaches_no_file_network_process_environment_native_code_or_bytecode`: the prototype's `tests/hostile/app.lua` at `api = 1`, 19 attempts, each blocked; and the script's 27 globals and every member of `ui`, `data`, `host` by name. `U: tests::vm::a_script_has_no_library_that_reaches_outside`, `bytecode_is_refused` (M0's, kept) | the base functions not removed: `read file loadfile: REACHED nil` | pass |
+| The fence: a type that was not declared cannot be listed, created, pushed, updated or deleted, also with the record's real id | `U: tests::reach::the_fence_holds_a_script_to_its_declared_types` | the check of the type off: the create of a `card` went through with no error | pass |
+| bzz never runs a metamethod of a script | `U: tests::reach::bzz_never_runs_a_metamethod_of_a_script`: a metatable that counts its calls on everything a script hands over (the app, the state, every element, request, tag, field and key): 0 calls, also across a reload | one `raw_get` of `ui.rs` made a `get`: `calls 188` | pass |
+| A broken reload leaves the old version running, with the error and its line; seven ways a version can fail to load | `U: tests::running::a_broken_reload_leaves_the_old_version_running`, `a_version_that_never_finishes_loading_is_stopped_and_refused` | the old version dropped on a failed load: the error lacks `(reload failed: the previous version keeps running)` | pass |
+| State survives a reload: records, the selection, an open form with its text; a request that was waiting is answered to the new version; `init` is not called again | `U: tests::running::state_survives_a_reload`, `a_reload_drops_what_cannot_move_and_lets_the_script_migrate`, `a_state_too_deep_to_carry_starts_the_app_again` | the state not handed to the new version: the form is gone and the status is `Loaded 2 notes.` | pass |
+| Memory past the cap is an error in the script, not an abort; the app answers the next key | `U: tests::vm::the_memory_cap_is_an_error_in_the_script`, `tests::reach::memory_past_the_cap_is_an_error_in_the_script_not_an_abort`, `tests::limits::a_record_set_too_big_for_the_memory_is_an_error_in_the_app` | without `set_memory_limit`: `left: Ok(Integer(1073741824)) right: Err(Memory)` | pass |
+| The Board fixture passes the twelve cases of the bench, at 40×16 and at 80×24 | `U: tests::board::case_01` to `case_12`, on the in-memory store, without a window | the sort by the order field removed: `todo: ["Bravo", "Charlie", "Alpha"]` in every case | pass |
+| The Board works in 40 columns: a title of 16 characters is shown in full | `U: tests::board::a_title_of_sixteen_characters_is_shown_in_full_at_every_size` | the stacked layout off: `todo: ["Sixteen let"]`. **The twelve cases passed without it**: their titles are short. This test was written because of that | pass |
+| A stuck script does not delay its owner | `U: tests::running::a_stuck_script_does_not_delay_its_owner`: with the script in a loop for 2 s, the worst of some 460 rounds of `send`, `poll` and `draw`: **54 µs, against 53 µs idle** (release); 354 µs against 351 µs (debug). Starting a runtime returns in 0.1 ms, dropping one does not wait | `poll` made to wait for the script: the test finds the script at rest where it must still be in its loop, 2.3 s later | pass |
+| `api` other than 1 is refused with a message that names 1 | `U: tests::running::an_api_other_than_1_is_refused_with_a_message_that_names_1`: 2, 0, 1.5, `"1"` and none | the check off: `left: None right: Some("app.lua: the script is written for api 2, and this bzz knows only api 1")` | pass |
+| bzz without the `apps` feature builds and passes | `cargo build --locked --no-default-features`; `cargo test --locked --no-default-features --lib`: 458 passed, none of `apps::`; Clippy without the features | — | pass |
+| An error carries the script's file and line, also when the call is the last of a function (`return ui.column { … }`), and a wrong value in a screen is told with the line of its element | `U: tests::running::an_error_carries_the_file_and_the_line_and_the_app_goes_on` | the API's functions wrapped in Lua functions: `in app.key: ui.text: unknown property 'colour'…`, the line lost | pass |
+| Every error a script catches is a string: 29 ways to fail a function of the API and of the library | `U: tests::running::every_error_of_the_api_is_a_string_a_script_can_catch`, `tests::vm::an_error_a_script_catches_is_a_string` | the script's `pcall` Lua's own: `1 false userdata` | pass |
+| A stopped call leaves done what it had done, and what it had asked for is done; the app goes on | `U: tests::running::a_stopped_call_leaves_its_work_half_done_and_the_app_goes_on` | the hook raising an error instead of a yield: the call ends as an error of the script | pass |
+| Three stops of one handler in a row give the app up; stops that are not in a row do not; a reload starts it fresh | `U: tests::running::an_app_is_given_up_after_three_stops_of_one_handler_in_a_row`, `a_view_that_never_returns_gives_the_app_up_too` | never given up: `right: GivenUp` | pass |
+| An error covers the last row or two of the app's region, and goes with the next key | the two tests of errors and of a broken reload above | — | pass |
+| `Ctrl+C` never reaches a script, however its owner sends it; `host.quit()` closes the app | `U: tests::running::ctrl_c_never_reaches_a_script_and_host_quit_closes_the_app` | the check off: `keys: ctrl+c ctrl+C ctrl+c ctrl+C ctrl+d` | pass |
+| The top level of a script can only compute: a version that is then refused has asked for nothing | `U: tests::running::the_top_level_of_a_script_can_only_compute` | the rule off: the request is made | pass |
+| Each limit, reached and passed, is told to the script and the app goes on | `U: tests::limits::` (9 tests) | the count of elements off: the script's thread panicked on its own arithmetic and the app showed `the app's runtime failed: a fault in bzz, not in the script`. The only time the path for a fault of bzz itself was seen | pass |
+| The published limits fit together: a thousand records of 16 KiB of text are listed, held, and listed twice more | `U: tests::limits::the_published_limits_fit_in_the_memory_of_one_app` | — | pass |
+| A resync is not a change: nothing when nothing changed, else only the real differences | `U: tests::records::a_resync_is_not_a_change`, `records::tests::a_resync_gives_only_the_real_differences` | every record deleted and created again: `assertion failed: pushes.is_empty()` | pass |
+| Every error code reaches the script, `rate_limited` with its seconds, `conflict` with the record; who signed a record; no order; null and numbers | `U: tests::records::` (6 tests) | — (the contract's new parts) | pass |
+| Nothing is drawn outside the area: two apps, three pages, 106 areas each, in a window whose every other cell is checked | `U: tests::drawing::nothing_is_drawn_outside_the_area` | the screen drawn straight into the owner's buffer: `the cell at 22,13 was drawn on` (Ratatui's `List`) | pass |
+| An app follows the theme: the eight names of meaning under three themes, fixed colours unchanged | `U: tests::drawing::an_app_follows_the_theme` | — | pass |
+| No number a script gives an element breaks the drawing: 21 elements with 15 numbers each, at five sizes | `U: tests::drawing::no_value_a_script_can_give_an_element_breaks_the_drawing` | before the bars were bounded: `ratatui-widgets-0.3.2/src/barchart.rs:444: attempt to multiply with overflow` | pass |
+| Rows and columns divide as Ratatui divides them wherever there is room for the parts, and ten thousand parts cost their number | `U: layout::tests::` (3 tests): 18,805 of 18,805 divisions the same as Ratatui's; without room, 1,501 of 1,765 | while it was written: a centred part one cell off for an odd remainder | pass |
+| The document, its twin and the runtime name the same functions, globals, elements, properties, handlers, record calls, codes, fields and limits | `U: tests::contract::` (6 tests); the runtime's side is asked of a running interpreter | `ui.truncate` renamed in the document; the time of a call changed in `limits.rs` | pass |
+| A script is tried without a window | `U: tests::running::a_script_is_tried_without_a_window` | — (the driver itself) | pass |
+
+What the twelve cases leave out, because the in-memory store and a buffer
+cannot express it: that the process is still running half a second after
+its first draw (case 1); that it exits within 2 s with status 0, leaves no
+child, and restores the terminal (case 9: here the app asks to close, at
+once, with a request unanswered). Those are bzz's own and M3's.
+
+### How long the largest screens take to draw
+
+`U: tests::drawing::the_largest_screen_a_script_can_return_is_drawn_in_good_time`,
+in a window of 200 by 60, the median of five draws. The owner draws on its
+own thread, so this is what a script can make that thread do.
+
+| Screen, at the limits | Release | Debug |
+|---|---|---|
+| 131,070 bytes of text, wrapped | 8.6 ms | 77.8 ms |
+| a list of 9,990 items | 2.0 ms | 11.0 ms |
+| blocks nested 31 deep | 1.1 ms | 11.7 ms |
+| a grid of 384 rows of 8 bordered cells | 0.8 ms | 8.6 ms |
+| an input of 60,000 characters | 0.7 ms | 6.3 ms |
+| a row, a column, of 4,990 parts | 0.5 ms | 4.8 ms, 4.4 ms |
+| a table of 1,240 rows of 7 cells | 0.4 ms | 3.3 ms |
+
+### Found on the way
+
+- **Ratatui's `Layout` cannot be given a script's sizes.** Its solver gets
+  one constraint for every pair of parts that fill. Measured in a release
+  build of Ratatui 0.30.2 alone: 16 parts 5 ms, 24 parts 25 ms, 32 parts
+  102 ms, 48 parts not done after two minutes; and with 64 parts in 40
+  columns it ended in a panic, `failed to split:
+  InternalSolverError(ObjectiveUnbounded)`. Twelve columns of fixed width
+  take 1 ms. So `layout.rs` divides rows and columns itself, by the order
+  of strengths Ratatui gives its constraints, and a table is drawn in
+  `draw.rs`, because Ratatui's `Table` uses the same solver for its
+  columns. Where the parts do not fit, the result is the rule of
+  `layout.rs` (the last parts give way first), not what the solver happens
+  to settle on.
+- **Ratatui's `List` writes one cell past its area** when the area is
+  narrower than the selection symbol. An app's screen is therefore drawn
+  on a buffer of its own and copied into the owner's.
+- **Ratatui's `BarChart` multiplies the number of bars by their width in
+  sixteen bits** and panics on overflow in a debug build. It gets only the
+  bars that can be seen.
+- **A Lua wrapper around a function of the API loses the script's line**
+  when the call is the last of a function, which the last line of every
+  view is: Lua drops the frame. The API's functions are therefore Rust
+  functions called directly, and the script's `pcall` turns the error they
+  raise into the string it stands for. That `pcall` also raises the hook's
+  own error again, so no `pcall` of a script swallows the second line.
+- **A panic on a script's thread is caught**, and the app says so. But
+  bzz's panic hook (`src/ui/terminal.rs:110`) restores the terminal for a
+  panic on any thread. M3 has to decide what it does for this one.
+- **`df -h /home` reads another file system.** The shared `target/` is on
+  `/home/arpagon`, which had 8.5 GB free when `/` had 26. `cargo test
+  --locked --all-targets` failed twice with "No space left on device"; it
+  passed the next morning with 15 GB free.
+
+### Gates
+
+On `bc0f875`, 2026-11-18 from 18:35 (UTC−5), one after the other; the
+all-targets run on 2026-11-19 at 08:35, on the same commit. Only this
+document changed afterwards.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets -- -D warnings`; the same with `--no-default-features`, with `--no-default-features --features huddles-audio`, and with `--no-default-features --features apps` | clean, all four |
+| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets -j 6` | 836 passed, 0 failed, 32 ignored, in 56 test programs. 94 more than M0's 742: 101 tests of `apps::` in place of 7. Two of the ignored are the red runs of the suite and the sweep |
+| Tests without the features | `cargo test --locked --no-default-features --lib`; `cargo build --locked --no-default-features` | 458 passed; builds |
+| `apps` alone | `cargo test --locked --no-default-features --features apps --lib` | 553 passed, 2 ignored |
+| Supply chain | `cargo deny check`; `cargo audit` | `advisories ok, bans ok, licenses ok, sources ok`; no vulnerability, the same 5 allowed warnings as in M0 |
+| The long runs | `BZZ_APPS_SWEEP=full …sweep::no_function`; `BZZ_APPS_DIFF=1000000 …differential` | 1,339,319 calls, 0 past the budget, in 93 s; 3,000,000 comparisons, 0 differences, in 120 s |
+| Release | `cargo test --locked --release --lib apps::`; `cargo build --release --locked` | 101 passed, 2 ignored; `bzz 0.15.0`, 28,392,672 bytes: 8,960 more than M0's build, and nothing calls the runtime yet |
+
+### Not proven in M1-A
+
+| Item | State |
+|---|---|
+| macOS, Windows, Linux on arm64 | never run. Every test here is a unit test of the library, which CI's build job runs on the four platforms when the branch is pushed. The timing of the C library there is what M0 named |
+| The six apps on the bench, the example host | M1-B |
+| Records on the relay; the pane in bzz's window | M2; M3. The runtime has run on the in-memory store only, and has been drawn into a buffer only |
+| An app that does not respond | no call is known that the budget does not end. What its owner then sees was shown by telling the owner's end a shorter budget than the script's thread has, and by a backlog of events |
+| The hook's second line | never taken: the hostile suite fails if it is |
+| A fault of bzz on a script's thread | seen once, in a red run; no test makes one |
+| An agent writing an app against `docs/app-api.md` | M5. The contract was read by nobody but its author |
+| The size of the runtime in the binary | nothing calls it, so the linker leaves it out |
