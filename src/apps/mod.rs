@@ -10,6 +10,11 @@
 //! runs unapproved: versions, proposals, approval and rollback, and the one
 //! function that hands out a script to run. `docs/apps.md` is its guide.
 
+//! [`dev`] runs a script outside bzz's window, on records kept in memory:
+//! once, to see what it draws, or from the owner's own folder, reloaded on
+//! every save.
+
+pub mod dev;
 pub mod runtime;
 pub mod store;
 
