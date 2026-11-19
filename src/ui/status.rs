@@ -37,7 +37,14 @@ pub struct StatusBarView<'a> {
     pub notice: &'a str,
     pub connection: &'a str,
     pub media: &'a str,
+    /// An app has the keyboard: `?` and `q` are its keys, so the hint
+    /// names the one key bzz keeps, and that hint is the last to go when
+    /// the row is short.
+    pub app_focused: bool,
 }
+
+/// The status line's hint while an app has the keyboard.
+pub const APP_LEAVE_HINT: &str = " Ctrl-c leaves the app ";
 
 /// Renders one responsive row of adjacent, theme-owned status nuggets.
 ///
@@ -66,13 +73,26 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, theme: &Theme, view: StatusBarV
     let connection = format!(" {} ", view.connection);
     let media = format!(" {} ", view.media.to_uppercase());
     let help = " ? help · q quit ".to_owned();
+    let nuggets = if view.app_focused {
+        [
+            (
+                0_usize,
+                APP_LEAVE_HINT.to_owned(),
+                HighlightGroup::StatusBar,
+            ),
+            (60, connection, HighlightGroup::StatusConnection),
+            (72, media, HighlightGroup::StatusMedia),
+        ]
+    } else {
+        [
+            (0_usize, connection, HighlightGroup::StatusConnection),
+            (44, media, HighlightGroup::StatusMedia),
+            (72, help, HighlightGroup::StatusBar),
+        ]
+    };
     let mut right = Vec::new();
     let mut right_width = 0_usize;
-    for (minimum_terminal_width, text, group) in [
-        (0_usize, connection, HighlightGroup::StatusConnection),
-        (44, media, HighlightGroup::StatusMedia),
-        (72, help, HighlightGroup::StatusBar),
-    ] {
+    for (minimum_terminal_width, text, group) in nuggets {
         let width = text.as_str().width();
         if total_width >= minimum_terminal_width
             && mode_width
@@ -157,6 +177,7 @@ mod tests {
             notice: "",
             connection: "online",
             media: "kitty",
+            app_focused: false,
         };
         let mut wide = Terminal::new(TestBackend::new(100, 1)).unwrap();
         wide.draw(|frame| render(frame, frame.area(), &theme, view))
@@ -180,6 +201,37 @@ mod tests {
         assert!(!narrow.contains("help"));
     }
 
+    /// While an app has the keyboard the status line never offers `?` or
+    /// `q`, which are the app's, and says how to leave, down to 40 columns.
+    #[test]
+    fn with_an_app_focused_the_status_line_says_how_to_leave_it() {
+        let theme = Theme::default();
+        for width in [40_u16, 60, 80, 160] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+            terminal
+                .draw(|frame| {
+                    render(
+                        frame,
+                        frame.area(),
+                        &theme,
+                        StatusBarView {
+                            mode: "APP",
+                            mode_group: HighlightGroup::StatusMode,
+                            activity: None,
+                            notice: "a notice",
+                            connection: "online",
+                            media: "kitty",
+                            app_focused: true,
+                        },
+                    );
+                })
+                .unwrap();
+            let row = row(&terminal);
+            assert!(row.contains("Ctrl-c leaves the app"), "{width}: {row}");
+            assert!(!row.contains("q quit"), "{width}: {row}");
+        }
+    }
+
     #[test]
     fn notice_and_activity_share_the_flexible_segment_without_overflow() {
         let theme = Theme::default();
@@ -197,6 +249,7 @@ mod tests {
                         notice: "generated notice without private content",
                         connection: "online",
                         media: "kitty",
+                        app_focused: false,
                     },
                 );
             })

@@ -1,0 +1,1169 @@
+//! The app pane in bzz's loop (v0.16 M3): one session for each open app,
+//! the commands that open and close one, its keys, its paste, and its
+//! drawing. The rules that need no app are in `ui::app_pane`; the layout is
+//! `ui::layout::panes_with_app`.
+//!
+//! **An app follows its channel (plan D4).** `:app open <name>` opens an
+//! installed, enabled and approved app in the selected channel, and the
+//! store remembers it there (`Apps::open_in`). Selecting another channel
+//! shows that channel's app, or none. One app is shown in a channel:
+//! opening another there closes the first.
+//!
+//! **A session stays alive while its channel is not selected,** so the
+//! app's own state (its selection, an open form) is there when the owner
+//! comes back, and its records keep syncing. At most `LIVE_SESSIONS` are
+//! kept; past that the one shown least recently is closed, and opened
+//! again from the store's records when its channel is selected. Every
+//! session ends when bzz switches community or locks, and when it quits.
+//!
+//! **Nothing of an app costs the conversation anything.** The session never
+//! blocks this loop: its waker sends one message on the background channel
+//! and never waits; the loop polls every session on that message and on
+//! every tick (a wake lost to a full channel is made up a tenth of a second
+//! later), and the pane polls again just before it draws. A script that
+//! loops is stopped by its own thread's budget; one stuck in a call costs a
+//! stale screen and "not responding" in its pane.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crossterm::event::KeyEvent;
+use ratatui::{Frame, layout::Rect};
+use uuid::Uuid;
+
+use super::App;
+use crate::{
+    error::Result,
+    ui::{
+        app_pane::{
+            self, KeyContext, KeyOwner, PaneView, PasteContext, PasteTarget, key_owner,
+            paste_target,
+        },
+        hit_map::{HitMap, HitTarget},
+        layout::{self, AppPlacement, AppRequest},
+        state::{FocusSurface, Overlay, Route},
+    },
+};
+
+/// Sessions kept alive at once, the shown one among them.
+#[cfg(feature = "apps")]
+pub const LIVE_SESSIONS: usize = 4;
+
+/// One line of `:apps`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppRow {
+    pub name: String,
+    pub line: String,
+}
+
+/// The `:apps` panel.
+#[derive(Clone, Debug, Default)]
+pub struct AppList {
+    pub rows: Vec<AppRow>,
+    pub selected: usize,
+    /// A word under the list.
+    pub note: Option<String>,
+}
+
+/// What bzz holds of apps in its window.
+#[derive(Default)]
+pub struct AppPanes {
+    /// Of the thread and the app, the app was asked for last.
+    pub front: bool,
+    /// The owner asked for the whole window while the app has the focus.
+    pub zoom: bool,
+    /// Where the last layout put the pane.
+    pub placement: AppPlacement,
+    /// Where apps are open in the selected community, as the store keeps
+    /// it: channel, app's name.
+    pub open: HashMap<Uuid, String>,
+    /// The community `open` was read for.
+    pub open_of: Option<Uuid>,
+    /// The `:apps` panel, while it is open.
+    pub list: Option<AppList>,
+    /// A message for the loop has been sent and not yet taken: further
+    /// wakes need not send another.
+    wake: std::sync::Arc<AtomicBool>,
+    /// Counts what was shown, to close the session shown least recently.
+    #[cfg(feature = "apps")]
+    clock: u64,
+    #[cfg(feature = "apps")]
+    live: Vec<live::Live>,
+    /// Failures and closings found while polling, for the loop to record
+    /// in the store.
+    #[cfg(feature = "apps")]
+    pending: Vec<live::Pending>,
+}
+
+impl App {
+    /// The selected channel of the workspace, if an app is open there.
+    pub(super) fn shown_app(&self) -> Option<(Uuid, &str)> {
+        if self.presentation.route != Route::Workspace {
+            return None;
+        }
+        let channel = self.current_channel()?.id;
+        self.apps
+            .open
+            .get(&channel)
+            .map(|name| (channel, name.as_str()))
+    }
+
+    /// The app of the selected channel has the keyboard.
+    pub(super) fn app_has_focus(&self) -> bool {
+        self.presentation.focus == FocusSurface::App && self.shown_app().is_some()
+    }
+
+    pub(super) fn app_request(&self) -> AppRequest {
+        AppRequest {
+            open: self.shown_app().is_some(),
+            focused: self.app_has_focus(),
+            zoom: self.apps.zoom,
+            front: self.apps.front,
+        }
+    }
+
+    /// Gives the app of the selected channel the keyboard and the right
+    /// side. Says so when there is none.
+    pub(super) fn focus_app(&mut self) {
+        if self.shown_app().is_none() {
+            self.status_error = Some(self.no_app_here());
+            return;
+        }
+        self.apps.front = true;
+        self.presentation.set_workspace_focus(FocusSurface::App);
+    }
+
+    fn no_app_here(&self) -> String {
+        match self.current_channel() {
+            Some(channel) if channel.kind.is_dm() => {
+                "no app here: an app cannot be opened in a direct message".into()
+            }
+            Some(_) => "no app is open in this channel; :apps lists the installed ones".into(),
+            None => "select a channel first".into(),
+        }
+    }
+
+    /// The thread a new message replies into: the open thread, only while it
+    /// is drawn. Never one the owner cannot see because it does not fit or
+    /// waits behind the app.
+    pub(super) fn reply_root(&self) -> Option<String> {
+        self.thread_root.clone().filter(|_| self.thread_drawn)
+    }
+
+    /// `Ctrl+C`: the keyboard goes back to the conversation, and the
+    /// workspace is shown again.
+    pub(super) fn leave_app(&mut self) {
+        self.apps.zoom = false;
+        self.presentation
+            .set_workspace_focus(FocusSurface::Timeline);
+    }
+
+    /// Who owns `key` now (`ui::app_pane::key_owner`).
+    pub(super) fn key_owner(&self, key: KeyEvent) -> KeyOwner {
+        key_owner(
+            key,
+            KeyContext {
+                approval_waiting: !self.approvals.is_empty(),
+                approval_open: self.presentation.overlay == Some(Overlay::Approval),
+                overlay_open: self.presentation.overlay.is_some(),
+                composer_open: self.presentation.composer_target.is_some(),
+                app_focused: self.app_has_focus(),
+            },
+        )
+    }
+
+    /// A key while the app has the focus. Answers whether it was the app's
+    /// (or the one that leaves it).
+    pub(super) fn app_key(&mut self, key: KeyEvent) -> bool {
+        match self.key_owner(key) {
+            KeyOwner::LeaveApp => {
+                self.leave_app();
+                true
+            }
+            KeyOwner::App => {
+                self.send_to_app(key);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    #[cfg(feature = "apps")]
+    fn send_to_app(&mut self, key: KeyEvent) {
+        let Some((channel, _)) = self.shown_app() else {
+            return;
+        };
+        if let Some(key) = crate::apps::runtime::Key::from_crossterm(key)
+            && let Some(session) = self.apps.session_mut(channel)
+        {
+            session.key(key);
+        }
+    }
+
+    #[cfg(not(feature = "apps"))]
+    fn send_to_app(&mut self, _key: KeyEvent) {}
+
+    /// Where a bracketed paste goes now.
+    pub(super) fn paste_target(&self) -> PasteTarget {
+        paste_target(PasteContext {
+            overlay: self.presentation.overlay,
+            composer_open: self.presentation.composer_target.is_some(),
+            app_focused: self.app_has_focus(),
+        })
+    }
+
+    /// A paste for the app with the focus: one piece of text.
+    pub(super) fn paste_to_app(&mut self, text: &str) {
+        let Some(text) = app_pane::app_paste_text(text) else {
+            return;
+        };
+        #[cfg(feature = "apps")]
+        if let Some((channel, _)) = self.shown_app()
+            && let Some(session) = self.apps.session_mut(channel)
+        {
+            session.paste(text);
+        }
+        #[cfg(not(feature = "apps"))]
+        let _ = text;
+    }
+
+    /// What the status line says of the app, if anything: an app that is
+    /// open and not drawn, an app's error, an app that does not respond.
+    pub(super) fn app_status_line(&self) -> Option<String> {
+        let (channel, _) = self.shown_app()?;
+        match self.apps.placement {
+            AppPlacement::HiddenNarrow => return Some("app hidden · 5".into()),
+            AppPlacement::HiddenBehindThread => return Some("app behind thread · 5".into()),
+            _ => {}
+        }
+        #[cfg(feature = "apps")]
+        {
+            self.apps.trouble(channel)
+        }
+        #[cfg(not(feature = "apps"))]
+        {
+            let _ = channel;
+            None
+        }
+    }
+
+    /// Draws the pane of the selected channel's app into `area`.
+    pub(super) fn render_app_pane(
+        &mut self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        zoomed: bool,
+        hit_map: &mut HitMap,
+    ) {
+        hit_map.push(area, HitTarget::App);
+        let focused = self.app_has_focus();
+        let Some((channel, name)) = self.shown_app() else {
+            return;
+        };
+        let name = name.to_owned();
+        let takes_cursor = focused
+            && self.presentation.overlay.is_none()
+            && self.presentation.composer_target.is_none();
+        #[cfg(feature = "apps")]
+        {
+            let theme = &self.theme;
+            let live = self
+                .apps
+                .live
+                .iter_mut()
+                .find(|live| live.channel == channel);
+            let title = live
+                .as_ref()
+                .map_or_else(|| name.clone(), |live| live.title.clone());
+            let notice = live.as_ref().and_then(|live| live.notice());
+            let region = app_pane::render_frame(
+                frame,
+                area,
+                PaneView {
+                    title: &title,
+                    focused,
+                    zoomed,
+                    notice: notice.as_deref(),
+                },
+                theme,
+            );
+            if !layout::fits_an_app(region) {
+                app_pane::render_words(
+                    frame,
+                    region,
+                    &app_pane::too_small_text(region, zoomed),
+                    false,
+                    theme,
+                );
+                return;
+            }
+            match live {
+                Some(live) => {
+                    if let Some(cursor) = live.draw(frame, region, theme)
+                        && takes_cursor
+                    {
+                        frame.set_cursor_position(cursor);
+                    }
+                }
+                None => app_pane::render_words(frame, region, "Opening...", false, theme),
+            }
+        }
+        #[cfg(not(feature = "apps"))]
+        {
+            let _ = (channel, takes_cursor);
+            let region = app_pane::render_frame(
+                frame,
+                area,
+                PaneView {
+                    title: &name,
+                    focused,
+                    zoomed,
+                    notice: None,
+                },
+                &self.theme,
+            );
+            if layout::fits_an_app(region) {
+                app_pane::render_words(
+                    frame,
+                    region,
+                    "This bzz was built without apps.",
+                    true,
+                    &self.theme,
+                );
+            }
+        }
+    }
+
+    /// The loop took the wake message.
+    pub(super) fn app_woken(&mut self) {
+        self.apps.wake.store(false, Ordering::SeqCst);
+    }
+
+    /// Polls every session: what the scripts and the records produced is
+    /// carried between them. Answers whether the shown app has something
+    /// new to draw. Never waits.
+    pub(super) fn poll_apps(&mut self) -> bool {
+        #[cfg(feature = "apps")]
+        {
+            let shown = self.shown_app().map(|(channel, _)| channel);
+            self.apps.poll(shown)
+        }
+        #[cfg(not(feature = "apps"))]
+        {
+            false
+        }
+    }
+
+    /// Every tick: time for the sessions (timers fire only in an app that
+    /// has them), names from bzz's profiles, the store's word on where apps
+    /// are open, the session of the selected channel's app started, and
+    /// what polling found recorded. Answers whether to draw again.
+    pub(super) async fn tick_apps(&mut self) -> Result<bool> {
+        #[cfg(feature = "apps")]
+        {
+            let mut changed = self.reconcile_apps().await?;
+            let shown = self.shown_app().map(|(channel, _)| channel);
+            let profiles = &self.profiles;
+            changed |= self
+                .apps
+                .tick(shown, |id| profiles.get(id).map(|profile| profile.label()));
+            changed |= self.poll_apps();
+            changed |= self.settle_apps().await?;
+            Ok(changed)
+        }
+        #[cfg(not(feature = "apps"))]
+        {
+            Ok(false)
+        }
+    }
+
+    /// Ends every session: bzz locks, quits, or leaves the community.
+    pub(super) fn close_all_apps(&mut self) {
+        #[cfg(feature = "apps")]
+        self.apps.live.clear();
+        self.apps.open.clear();
+        self.apps.open_of = None;
+        self.apps.zoom = false;
+        if self.presentation.focus == FocusSurface::App {
+            self.presentation
+                .set_workspace_focus(FocusSurface::Timeline);
+        }
+    }
+
+    /// `:app open <name> | close | zoom`.
+    pub(super) async fn app_command(&mut self, arguments: &str) -> Result<()> {
+        let mut words = arguments.split_whitespace();
+        match (words.next(), words.next(), words.next()) {
+            (Some("open"), Some(name), None) => self.open_app_here(name).await,
+            (Some("close"), None, None) => self.close_app_here().await,
+            (Some("zoom"), None, None) => {
+                if self.shown_app().is_some() {
+                    self.apps.zoom = !self.apps.zoom;
+                    self.focus_app();
+                } else {
+                    self.status_error = Some(self.no_app_here());
+                }
+                Ok(())
+            }
+            _ => {
+                self.status_error = Some(
+                    "usage: :app open <name> | :app close | :app zoom · :apps lists them".into(),
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// `Space 5`: zoom the app of this channel, or back.
+    pub(super) fn zoom_app(&mut self) {
+        if self.shown_app().is_some() {
+            self.apps.zoom = !self.apps.zoom;
+            self.focus_app();
+        } else {
+            self.status_error = Some(self.no_app_here());
+        }
+    }
+
+    #[cfg(not(feature = "apps"))]
+    async fn open_app_here(&mut self, _name: &str) -> Result<()> {
+        self.status_error = Some("this bzz was built without apps".into());
+        Ok(())
+    }
+
+    #[cfg(not(feature = "apps"))]
+    async fn close_app_here(&mut self) -> Result<()> {
+        self.status_error = Some("this bzz was built without apps".into());
+        Ok(())
+    }
+
+    #[cfg(not(feature = "apps"))]
+    pub(super) async fn open_apps_panel(&mut self) -> Result<()> {
+        self.status_error = Some("this bzz was built without apps".into());
+        Ok(())
+    }
+
+    /// A key in the `:apps` panel: `j`/`k` move, `Enter` opens the app in
+    /// the selected channel, `Esc`/`q` close.
+    pub(super) async fn apps_panel_key(&mut self, key: KeyEvent) -> Result<()> {
+        use crossterm::event::KeyCode;
+        let Some(list) = self.apps.list.as_mut() else {
+            self.presentation.close_overlay();
+            return Ok(());
+        };
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.apps.list = None;
+                self.presentation.close_overlay();
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                list.selected = (list.selected + 1).min(list.rows.len().saturating_sub(1));
+            }
+            KeyCode::Char('k') | KeyCode::Up => list.selected = list.selected.saturating_sub(1),
+            KeyCode::Enter => {
+                let name = list.rows.get(list.selected).map(|row| row.name.clone());
+                self.apps.list = None;
+                self.presentation.close_overlay();
+                if let Some(name) = name {
+                    return self.open_app_here(&name).await;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// The `:apps` panel's lines, and which is selected.
+    pub(super) fn apps_panel_lines(&self) -> Vec<(String, bool)> {
+        let Some(list) = &self.apps.list else {
+            return Vec::new();
+        };
+        let mut lines: Vec<(String, bool)> = list
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| (row.line.clone(), index == list.selected))
+            .collect();
+        if let Some(note) = &list.note {
+            if !lines.is_empty() {
+                lines.push((String::new(), false));
+            }
+            lines.push((note.clone(), false));
+        }
+        lines
+    }
+}
+
+#[cfg(feature = "apps")]
+impl App {
+    /// A waker for a session: one message on the background channel, sent
+    /// without waiting, and none while one is still to be taken.
+    fn app_waker(&self) -> crate::apps::runtime::Waker {
+        let sender = self.background_tx.clone();
+        let pending = self.apps.wake.clone();
+        std::sync::Arc::new(move || {
+            if !pending.swap(true, Ordering::SeqCst)
+                && sender.try_send(super::Background::AppWake).is_err()
+            {
+                // The channel is full: the next tick polls anyway.
+                pending.store(false, Ordering::SeqCst);
+            }
+        })
+    }
+
+    /// Reads where apps are open when the community changed, and starts the
+    /// session of the selected channel's app if it is not running.
+    async fn reconcile_apps(&mut self) -> Result<bool> {
+        let community = self.active_community_id();
+        if self.runtime.is_none() {
+            // Records need the relay: a locked or offline bzz runs no app.
+            let before = self.apps.live.len();
+            self.apps
+                .live
+                .retain(|live| matches!(live.run, live::Run::Problem(_)));
+            if self.apps.live.len() != before {
+                return Ok(true);
+            }
+        }
+        if self.apps.open_of != community {
+            self.apps.live.clear();
+            self.apps.open.clear();
+            self.apps.open_of = community;
+            if let Some(community) = community {
+                let root = self.paths.apps_dir();
+                let open = self
+                    .store
+                    .call(move |store| {
+                        let mut open = HashMap::new();
+                        if let Ok(listed) =
+                            crate::apps::store::Apps::at(store, root).list(community)
+                        {
+                            for app in listed {
+                                for channel in app.channels {
+                                    open.entry(channel).or_insert_with(|| app.app.name.clone());
+                                }
+                            }
+                        }
+                        Ok(open)
+                    })
+                    .await?;
+                self.apps.open = open;
+            }
+            return Ok(true);
+        }
+        let Some((channel, name)) = self
+            .shown_app()
+            .map(|(channel, name)| (channel, name.to_owned()))
+        else {
+            return Ok(false);
+        };
+        self.apps.clock += 1;
+        let clock = self.apps.clock;
+        if let Some(live) = self
+            .apps
+            .live
+            .iter_mut()
+            .find(|live| live.channel == channel)
+        {
+            live.shown_at = clock;
+            return Ok(false);
+        }
+        self.start_app(channel, &name).await?;
+        Ok(true)
+    }
+
+    /// Starts the session of `name` in `channel`, from the one function
+    /// that hands out an approved script (`Apps::runnable`). What keeps it
+    /// from running is shown in its pane.
+    async fn start_app(&mut self, channel: Uuid, name: &str) -> Result<()> {
+        let Some(community) = self.active_community_id() else {
+            return Ok(());
+        };
+        let root = self.paths.apps_dir();
+        let wanted = name.to_owned();
+        let runnable = self
+            .store
+            .call(move |store| {
+                Ok(crate::apps::store::Apps::at(store, root)
+                    .runnable(community, &wanted)
+                    .map_err(|error| live::why_not(&wanted, &error)))
+            })
+            .await?;
+        let archived = self
+            .channels
+            .iter()
+            .find(|value| value.id == channel)
+            .is_some_and(|value| value.facts.archived);
+        let names: HashMap<String, String> = self
+            .profiles
+            .iter()
+            .map(|(id, profile)| (id.clone(), profile.label()))
+            .collect();
+        let waker = self.app_waker();
+        let run = match (runnable, &self.runtime) {
+            (Err(why), _) => live::Run::Problem(why),
+            (Ok(_), None) => live::Run::Problem(
+                "This app's records are on the relay, and bzz is not connected.".into(),
+            ),
+            (Ok(runnable), Some(runtime)) => {
+                live::Run::start(runnable, waker, names, archived, &runtime.records, channel)
+            }
+        };
+        self.apps.clock += 1;
+        let title = match &run {
+            live::Run::Session { runnable, .. } => runnable.title().to_owned(),
+            _ => name.to_owned(),
+        };
+        self.apps.live.push(live::Live {
+            community,
+            channel,
+            name: name.to_owned(),
+            title,
+            shown_at: self.apps.clock,
+            run,
+        });
+        self.apps.evict(LIVE_SESSIONS);
+        Ok(())
+    }
+
+    /// Records what polling found: a version that failed as it was put to
+    /// run goes back to the one before it (`Apps::failed_to_run`), and an
+    /// app that asked to close is closed in its channel.
+    async fn settle_apps(&mut self) -> Result<bool> {
+        let pending = std::mem::take(&mut self.apps.pending);
+        if pending.is_empty() {
+            return Ok(false);
+        }
+        let root = self.paths.apps_dir();
+        for item in pending {
+            match item {
+                live::Pending::Failed {
+                    community,
+                    channel,
+                    name,
+                    version,
+                    error,
+                } => {
+                    let (store_root, failed_name, failed_error) =
+                        (root.clone(), name.clone(), error.clone());
+                    let current = self
+                        .store
+                        .call(move |store| {
+                            Ok(crate::apps::store::Apps::at(store, store_root)
+                                .failed_to_run(community, &failed_name, version, &failed_error)
+                                .ok()
+                                .flatten())
+                        })
+                        .await?;
+                    match current {
+                        Some(earlier) if earlier != version => {
+                            // The version that ran before is current again;
+                            // it starts at the next tick.
+                            self.apps.live.retain(|live| live.channel != channel);
+                            self.status_error = Some(format!(
+                                "{name}: version {version} failed to run, and version {earlier} runs again"
+                            ));
+                        }
+                        _ => {
+                            if let Some(live) = self
+                                .apps
+                                .live
+                                .iter_mut()
+                                .find(|live| live.channel == channel)
+                            {
+                                live.run = live::Run::Problem(format!(
+                                    "{error}\n\nNo earlier approved version can run instead."
+                                ));
+                            }
+                        }
+                    }
+                }
+                live::Pending::Closed { channel } => self.forget_app(channel).await?,
+            }
+        }
+        Ok(true)
+    }
+
+    async fn open_app_here(&mut self, name: &str) -> Result<()> {
+        let Some(community) = self.active_community_id() else {
+            self.status_error = Some("select a community first".into());
+            return Ok(());
+        };
+        let Some(channel) = self.current_channel().cloned() else {
+            self.status_error = Some("select a channel first".into());
+            return Ok(());
+        };
+        if channel.kind.is_dm() {
+            self.status_error =
+                Some("an app cannot be opened in a direct message; open it in a channel".into());
+            return Ok(());
+        }
+        if self.runtime.is_none() {
+            self.status_error = Some(
+                "an app's records are on the relay: unlock the identity and connect first".into(),
+            );
+            return Ok(());
+        }
+        let root = self.paths.apps_dir();
+        let wanted = name.to_owned();
+        let channel_id = channel.id;
+        let replaced = self.apps.open.get(&channel_id).cloned();
+        let opened = self
+            .store
+            .call(move |store| {
+                let mut apps = crate::apps::store::Apps::at(store, root);
+                if let Err(error) = apps.runnable(community, &wanted) {
+                    return Ok(Err(live::why_not(&wanted, &error)));
+                }
+                if let Some(previous) = replaced.filter(|previous| *previous != wanted) {
+                    let _ = apps.close_in(community, &previous, channel_id);
+                }
+                Ok(apps
+                    .open_in(community, &wanted, channel_id)
+                    .map_err(|error| error.to_string()))
+            })
+            .await?;
+        if let Err(why) = opened {
+            self.status_error = Some(why);
+            return Ok(());
+        }
+        if self.apps.open.get(&channel_id).map(String::as_str) != Some(name) {
+            self.apps.live.retain(|live| live.channel != channel_id);
+        }
+        self.apps.open.insert(channel_id, name.to_owned());
+        self.apps.open_of = Some(community);
+        self.apps.zoom = false;
+        if !self.apps.live.iter().any(|live| live.channel == channel_id) {
+            self.start_app(channel_id, name).await?;
+        }
+        self.focus_app();
+        self.status_error = Some(format!(
+            "{name} is open in #{} · Ctrl-c leaves it, 5 comes back to it",
+            crate::render::sanitize::single_line(&channel.name)
+        ));
+        Ok(())
+    }
+
+    async fn close_app_here(&mut self) -> Result<()> {
+        let Some((channel, name)) = self
+            .shown_app()
+            .map(|(channel, name)| (channel, name.to_owned()))
+        else {
+            self.status_error = Some(self.no_app_here());
+            return Ok(());
+        };
+        self.forget_app(channel).await?;
+        self.status_error = Some(format!(
+            "{name} is closed here; its records stay in the channel"
+        ));
+        Ok(())
+    }
+
+    /// Closes the app of `channel` and forgets it there.
+    async fn forget_app(&mut self, channel: Uuid) -> Result<()> {
+        let Some(community) = self.active_community_id() else {
+            return Ok(());
+        };
+        self.apps.live.retain(|live| live.channel != channel);
+        if let Some(name) = self.apps.open.remove(&channel) {
+            let root = self.paths.apps_dir();
+            self.store
+                .call(move |store| {
+                    let _ = crate::apps::store::Apps::at(store, root)
+                        .close_in(community, &name, channel);
+                    Ok(())
+                })
+                .await?;
+        }
+        if self.presentation.focus == FocusSurface::App {
+            self.leave_app();
+        }
+        Ok(())
+    }
+
+    /// `:apps`: the installed apps of the community and where each is open.
+    pub(super) async fn open_apps_panel(&mut self) -> Result<()> {
+        let Some(community) = self.active_community_id() else {
+            self.status_error = Some("select a community first".into());
+            return Ok(());
+        };
+        let root = self.paths.apps_dir();
+        let listed = self
+            .store
+            .call(move |store| {
+                Ok(crate::apps::store::Apps::at(store, root)
+                    .list(community)
+                    .map_err(|error| error.to_string()))
+            })
+            .await?;
+        let listed = match listed {
+            Ok(listed) => listed,
+            Err(error) => {
+                self.status_error = Some(error);
+                return Ok(());
+            }
+        };
+        let channel_name = |id: &Uuid| {
+            self.channels
+                .iter()
+                .find(|channel| channel.id == *id)
+                .map_or_else(
+                    || "a channel not listed here".to_owned(),
+                    |channel| format!("#{}", crate::render::sanitize::single_line(&channel.name)),
+                )
+        };
+        let rows = listed
+            .iter()
+            .map(|app| {
+                let state = match (&app.running, app.app.enabled) {
+                    (_, false) => "disabled".to_owned(),
+                    (Some(version), true) => format!("version {}", version.version),
+                    (None, true) => "not approved".to_owned(),
+                };
+                let waiting = match app.waiting.len() {
+                    0 => String::new(),
+                    n => format!(" · {n} waiting"),
+                };
+                let open = if app.channels.is_empty() {
+                    "open nowhere".to_owned()
+                } else {
+                    format!(
+                        "open in {}",
+                        app.channels
+                            .iter()
+                            .map(channel_name)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                AppRow {
+                    name: app.app.name.clone(),
+                    line: format!(
+                        "{} ({}) · {state}{waiting} · {open}",
+                        app.app.name,
+                        crate::render::sanitize::single_line(&app.title())
+                    ),
+                }
+            })
+            .collect::<Vec<_>>();
+        let note = if rows.is_empty() {
+            "No app is installed in this community. At the shell: bzz app new <name>, then bzz app add <folder>."
+        } else {
+            "Enter opens the selected app in this channel · :app close closes it · Esc closes this list. Only an approved app runs: bzz app approve <name>."
+        };
+        self.apps.list = Some(AppList {
+            rows,
+            selected: 0,
+            note: Some(note.to_owned()),
+        });
+        self.presentation.open_overlay(Overlay::Apps);
+        Ok(())
+    }
+
+    /// Tests open an app on records in memory, with no store behind it.
+    #[cfg(test)]
+    pub(super) fn open_app_in_memory(&mut self, channel: Uuid, name: &str, source: &str) {
+        let community = self.active_community_id().unwrap_or_default();
+        let session = crate::apps::session::AppSession::in_memory(
+            source.as_bytes().to_vec(),
+            crate::apps::session::SessionOptions::new(name).waker(self.app_waker()),
+            &crate::apps::session::SharedStore::new(crate::apps::session::MemoryStore::new(
+                crate::apps::runtime::Who::new("a".repeat(64), "you"),
+                crate::apps::runtime::SystemClock::shared(),
+            )),
+        )
+        .expect("a session in memory");
+        self.apps.open.insert(channel, name.to_owned());
+        self.apps.open_of = Some(community);
+        self.apps.live.retain(|live| live.channel != channel);
+        self.apps.live.push(live::Live {
+            community,
+            channel,
+            name: name.to_owned(),
+            title: name.to_owned(),
+            shown_at: 0,
+            run: live::Run::Tested {
+                session: Box::new(session),
+            },
+        });
+    }
+}
+
+#[cfg(feature = "apps")]
+impl AppPanes {
+    fn session_mut(&mut self, channel: Uuid) -> Option<&mut crate::apps::session::AppSession> {
+        self.live
+            .iter_mut()
+            .find(|live| live.channel == channel)
+            .and_then(live::Live::session_mut)
+    }
+
+    /// The app's error, or that it does not respond, for the status line.
+    fn trouble(&self, channel: Uuid) -> Option<String> {
+        self.live
+            .iter()
+            .find(|live| live.channel == channel)?
+            .trouble()
+    }
+
+    /// Closes the sessions shown least recently beyond `keep`.
+    fn evict(&mut self, keep: usize) {
+        while self.live.len() > keep {
+            let Some(oldest) = self
+                .live
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, live)| live.shown_at)
+                .map(|(index, _)| index)
+            else {
+                return;
+            };
+            self.live.remove(oldest);
+        }
+    }
+
+    fn poll(&mut self, shown: Option<Uuid>) -> bool {
+        let mut redraw = false;
+        for live in &mut self.live {
+            let found = live.poll(&mut self.pending);
+            redraw |= found && Some(live.channel) == shown;
+        }
+        redraw
+    }
+
+    fn tick(&mut self, shown: Option<Uuid>, name_of: impl Fn(&str) -> Option<String>) -> bool {
+        let mut redraw = false;
+        for live in &mut self.live {
+            let changed = live.tick(&name_of);
+            redraw |= changed && Some(live.channel) == shown;
+        }
+        redraw
+    }
+}
+
+#[cfg(all(test, feature = "apps"))]
+mod tests;
+
+#[cfg(feature = "apps")]
+mod live {
+    use std::collections::HashMap;
+
+    use ratatui::{
+        Frame,
+        layout::{Position, Rect},
+    };
+    use uuid::Uuid;
+
+    use crate::apps::runtime::{AppTheme, Output, Phase, Waker};
+    use crate::apps::session::{AppSession, SessionOptions};
+    use crate::apps::store::{AppError, Runnable};
+    use crate::service::records::RecordsService;
+    use crate::ui::{app_pane, theme::Theme};
+
+    /// One open app, in one channel.
+    pub struct Live {
+        pub community: Uuid,
+        pub channel: Uuid,
+        pub name: String,
+        pub title: String,
+        pub shown_at: u64,
+        pub run: Run,
+    }
+
+    pub enum Run {
+        Session {
+            session: Box<AppSession>,
+            runnable: Runnable,
+            /// The approved bytes have loaded once.
+            loaded: bool,
+        },
+        /// Why the app does not run here.
+        Problem(String),
+        /// A session of a test, with no store behind it.
+        #[cfg(test)]
+        Tested { session: Box<AppSession> },
+    }
+
+    /// What the loop is to record in the store.
+    pub enum Pending {
+        Failed {
+            community: Uuid,
+            channel: Uuid,
+            name: String,
+            version: u32,
+            error: String,
+        },
+        /// The app asked to close (`host.quit()`).
+        Closed { channel: Uuid },
+    }
+
+    impl Run {
+        pub fn start(
+            runnable: Runnable,
+            waker: Waker,
+            names: HashMap<String, String>,
+            archived: bool,
+            service: &RecordsService,
+            channel: Uuid,
+        ) -> Self {
+            let options = SessionOptions::new(runnable.name())
+                .script(runnable.script_name())
+                .waker(waker)
+                .names(names)
+                .archived(archived);
+            match AppSession::on_relay(runnable.script().to_vec(), options, service, channel) {
+                Ok(session) => Self::Session {
+                    session: Box::new(session),
+                    runnable,
+                    loaded: false,
+                },
+                Err(error) => Self::Problem(format!("This app could not be started: {error}")),
+            }
+        }
+    }
+
+    /// What keeps an app from running, in the owner's words, with the way
+    /// out at the shell.
+    pub fn why_not(name: &str, error: &AppError) -> String {
+        match error {
+            AppError::NothingApproved { .. } => format!(
+                "{error}. Approve it at the shell: bzz app pending {name}, then bzz app approve {name}"
+            ),
+            _ => error.to_string(),
+        }
+    }
+
+    impl Live {
+        pub fn session_mut(&mut self) -> Option<&mut AppSession> {
+            match &mut self.run {
+                Run::Session { session, .. } => Some(session),
+                #[cfg(test)]
+                Run::Tested { session } => Some(session),
+                Run::Problem(_) => None,
+            }
+        }
+
+        fn session(&self) -> Option<&AppSession> {
+            match &self.run {
+                Run::Session { session, .. } => Some(session),
+                #[cfg(test)]
+                Run::Tested { session } => Some(session),
+                Run::Problem(_) => None,
+            }
+        }
+
+        /// The session's own sentence, for the pane's bottom border.
+        pub fn notice(&self) -> Option<String> {
+            self.session()?.status().notice
+        }
+
+        pub fn trouble(&self) -> Option<String> {
+            let first = |text: &str| text.lines().next().unwrap_or_default().to_owned();
+            if let Run::Problem(why) = &self.run {
+                return Some(format!("app {}: {}", self.name, first(why)));
+            }
+            let status = self.session()?.status();
+            if !status.responding {
+                Some(format!("app {} is not responding", self.name))
+            } else {
+                status
+                    .error
+                    .map(|error| format!("app {}: {}", self.name, first(&error)))
+            }
+        }
+
+        pub fn draw(
+            &mut self,
+            frame: &mut Frame<'_>,
+            region: Rect,
+            theme: &Theme,
+        ) -> Option<Position> {
+            if let Run::Problem(why) = &self.run {
+                app_pane::render_words(frame, region, why, true, theme);
+                return None;
+            }
+            let session = self.session_mut()?;
+            session.draw(region, frame.buffer_mut(), &AppTheme::from(theme))
+        }
+
+        /// Carries what the script and the records produced; notes a version
+        /// that failed as it was put to run, and an app that asked to close.
+        /// Answers whether there is something new to draw.
+        pub fn poll(&mut self, pending: &mut Vec<Pending>) -> bool {
+            let (community, channel) = (self.community, self.channel);
+            let mut redraw = false;
+            let failure = match &mut self.run {
+                Run::Problem(_) => return false,
+                #[cfg(test)]
+                Run::Tested { session } => {
+                    for output in session.poll() {
+                        redraw |= matches!(output, Output::Redraw | Output::Loaded { .. });
+                    }
+                    return redraw;
+                }
+                Run::Session {
+                    session,
+                    runnable,
+                    loaded,
+                } => {
+                    let mut failed = None;
+                    for output in session.poll() {
+                        match output {
+                            Output::Loaded { types } => {
+                                redraw = true;
+                                match runnable.check_loaded(&types) {
+                                    Ok(()) => *loaded = true,
+                                    Err(error) => failed = Some(error),
+                                }
+                            }
+                            Output::Close => {
+                                pending.push(Pending::Closed { channel });
+                                return true;
+                            }
+                            Output::Redraw => redraw = true,
+                            Output::Log(_) | Output::Request(_) => {}
+                        }
+                    }
+                    let status = session.status();
+                    if failed.is_none() && !*loaded && status.phase == Phase::NotLoaded {
+                        failed = Some(status.error.unwrap_or_else(|| {
+                            format!("{}: the approved version did not load", runnable.name())
+                        }));
+                    }
+                    failed.map(|error| {
+                        session.close();
+                        (runnable.version(), error)
+                    })
+                }
+            };
+            if let Some((version, error)) = failure {
+                pending.push(Pending::Failed {
+                    community,
+                    channel,
+                    name: self.name.clone(),
+                    version,
+                    error: error.clone(),
+                });
+                self.run = Run::Problem(error);
+                return true;
+            }
+            redraw
+        }
+
+        /// Time for the session, and the names it lacks from bzz's
+        /// profiles. Answers whether there is something new to draw.
+        pub fn tick(&mut self, name_of: &impl Fn(&str) -> Option<String>) -> bool {
+            let Some(session) = self.session_mut() else {
+                return false;
+            };
+            let names: Vec<(String, String)> = session
+                .unnamed()
+                .into_iter()
+                .filter_map(|id| name_of(&id).map(|name| (id, name)))
+                .collect();
+            if !names.is_empty() {
+                session.set_names(names);
+            }
+            session.tick()
+        }
+    }
+}

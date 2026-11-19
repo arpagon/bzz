@@ -27,6 +27,8 @@ pub enum UiAction {
     FocusChannels,
     FocusTimeline,
     FocusContext,
+    FocusApp,
+    ZoomApp,
     NextFocus,
     PreviousFocus,
     ResizeFocusedNarrow,
@@ -94,6 +96,8 @@ impl UiAction {
             Self::FocusChannels => "focus channels",
             Self::FocusTimeline => "focus timeline",
             Self::FocusContext => "focus context",
+            Self::FocusApp => "focus the app (Ctrl-c leaves it)",
+            Self::ZoomApp => "zoom the app",
             Self::NextFocus => "next focus",
             Self::PreviousFocus => "previous focus",
             Self::ResizeFocusedNarrow => "narrow focused side pane",
@@ -393,6 +397,7 @@ impl KeyMap {
         add(KeyScope::Global, &["2"], UiAction::FocusChannels);
         add(KeyScope::Global, &["3"], UiAction::FocusTimeline);
         add(KeyScope::Global, &["4"], UiAction::FocusContext);
+        add(KeyScope::Global, &["5"], UiAction::FocusApp);
         add(KeyScope::Global, &["tab"], UiAction::NextFocus);
         add(KeyScope::Global, &["backtab"], UiAction::PreviousFocus);
         add(KeyScope::Global, &["h"], UiAction::PreviousFocus);
@@ -441,6 +446,7 @@ impl KeyMap {
         );
         add(KeyScope::Global, &["space", "2"], UiAction::ToggleChannels);
         add(KeyScope::Global, &["space", "4"], UiAction::ToggleContext);
+        add(KeyScope::Global, &["space", "5"], UiAction::ZoomApp);
         add(KeyScope::Global, &["space", "r"], UiAction::Refresh);
         add(KeyScope::Global, &["space", "p"], UiAction::ViewProfile);
         add(KeyScope::Global, &["space", "o"], UiAction::OpenOptions);
