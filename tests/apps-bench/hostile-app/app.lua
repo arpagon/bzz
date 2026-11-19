@@ -48,6 +48,8 @@ function app.init(ctx)
     table.sort(members)
     add(lib .. ": " .. table.concat(members, " "))
   end
+  -- Pushes of a type begin with the first list of it.
+  data.list { type = "note" }
   return { lines = out, pushes = 0, note = "", keys = 0 }
 end
 

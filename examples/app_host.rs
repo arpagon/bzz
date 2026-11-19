@@ -26,20 +26,24 @@
 //! | ids `r0001`, `r0002`: they sort by creation | ids that say nothing; the host keeps the service's id of each |
 //! | `list` returns records in creation order | in the order of those ids: no order a script may rely on |
 //! | `list` without a `type` returns every record | never asked: the contract's `data.list` names one type |
-//! | every reply and push carries `seq`, a change counter | nothing: the contract has no `seq` |
+//! | every reply and push carries `seq`, a change counter | nothing: the contract has no `seq`. The host uses it for the next row |
+//! | a subscriber is pushed every change from the moment it subscribes | pushes of a type begin with the script's first list of it: before the reply to that list a push of the type is dropped, or, while the list is on its way, held and given after the reply if its `seq` is newer than the list's |
+//! | `list` is answered when the service answers, late in some scenarios (`slow-load`, `late-search`) and failing in one (`load-error`) | the same, passed on: bzz answers a list at once from the records it holds, and only waits (up to five seconds) for an app that holds none yet. The scenarios stand for that wait and for a relay that did not answer |
 //! | a participant is a name (`"by": "bo"`, `MINIAPP_USER`) | `{ id, name }`; the id is made from the name, so two people of one name are one |
 //! | a record does not say who wrote it | `record.by` is who the host last saw write it (a push, the app's own write), and a participant without a name for a record it has only listed |
 //! | a type is any string, stored as given | the app's short name, unchanged: no `bzz.app.<app>.<record>` is made |
 //! | `match` looks at `content.title`, and at nothing when there is none | passed on as it is; the contract matches the type's name when a record has no title |
 //! | errors: `unavailable`, `conflict`, `not_found`, `bad_request` | the same four. `rate_limited`, `limit` and `refused` never happen here; `too_large` is the runtime's own check |
-//! | no limit of records, and none of writes | none here either: 1000 records and 60 writes a minute are the relay service's |
+//! | no limit of records, and none of writes | none here either: the 1000 records of an app and the 30 writes a minute of a person's apps are bzz's session's (`src/apps/session/`) |
+//! | content of any size | the runtime refuses content past 16,384 bytes with `too_large` before it is sent, as it does in bzz |
+//! | names in record fields (`holder: "bo"`, `author: "ana"`) | passed on as they are: the fixtures store the names the bench's cases expect, where the contract advises ids |
 //! | a connection that closes is closed for good | every later request is answered `unavailable`; there is no resync |
 //!
 //! The process and its terminal are the host's, not the runtime's: raw
 //! mode, the alternate screen and bracketed paste on the way in, all of it
 //! undone on the way out, with status 0.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -264,11 +268,14 @@ impl Host {
             Msg::Term(_) => {}
             Msg::Net(message) => {
                 if message.get("push").is_some() {
-                    if let Some(push) = self.bridge.push(&message) {
+                    if let Some(push) = self.bridge.pushed(message) {
                         self.runtime.send(Event::Push(push));
                     }
-                } else if let Some(reply) = self.bridge.reply(&message) {
+                } else if let Some((reply, pushes)) = self.bridge.reply(&message) {
                     self.runtime.send(Event::Reply(reply));
+                    for push in pushes {
+                        self.runtime.send(Event::Push(push));
+                    }
                 }
             }
             Msg::NetEnd => {
@@ -343,6 +350,11 @@ struct Bridge {
     writers: HashMap<String, Who>,
     /// What was asked and not answered yet.
     waiting: HashMap<u64, RecordOp>,
+    /// The types the script has been given a list of: it hears of their
+    /// changes from then on.
+    heard: HashSet<String>,
+    /// Pushes of a type whose first list is on its way, with their `seq`.
+    held: HashMap<String, Vec<(i64, Value)>>,
 }
 
 fn digest(what: &str) -> String {
@@ -382,7 +394,36 @@ impl Bridge {
             revisions: HashMap::new(),
             writers: HashMap::new(),
             waiting: HashMap::new(),
+            heard: HashSet::new(),
+            held: HashMap::new(),
         }
+    }
+
+    /// Is a list of `record_type` waiting for its reply?
+    fn listing(&self, record_type: &str) -> bool {
+        self.waiting.values().any(
+            |op| matches!(op, RecordOp::List { record_type: listed, .. } if listed == record_type),
+        )
+    }
+
+    /// A push of the service, as the contract has it: of a type the script
+    /// has listed, it is given now; while the first list of its type is on
+    /// its way, it is held for the reply; before that, there is nothing the
+    /// script holds that it could change.
+    fn pushed(&mut self, json: Value) -> Option<RecordPush> {
+        let record_type = json
+            .get("record")
+            .and_then(|r| r.get("type"))
+            .and_then(Value::as_str)?
+            .to_string();
+        if self.heard.contains(&record_type) {
+            return self.push(&json);
+        }
+        if self.listing(&record_type) {
+            let seq = json.get("seq").and_then(Value::as_i64).unwrap_or(i64::MAX);
+            self.held.entry(record_type).or_default().push((seq, json));
+        }
+        None
     }
 
     /// A record of the service as the contract's. `writer` is who is known
@@ -486,17 +527,43 @@ impl Bridge {
             .collect()
     }
 
-    /// A reply of the service as the contract's. None for what is not the
-    /// answer to a request of the script (the host's own `subscribe`).
-    fn reply(&mut self, json: &Value) -> Option<RecordReply> {
+    /// A reply of the service as the contract's, and the pushes the script
+    /// is to be given after it. None for what is not the answer to a
+    /// request of the script (the host's own `subscribe`).
+    fn reply(&mut self, json: &Value) -> Option<(RecordReply, Vec<RecordPush>)> {
         let id = json.get("id")?.as_u64()?;
         let op = self.waiting.remove(&id)?;
         let ok = json.get("ok").and_then(Value::as_bool).unwrap_or(false);
+        let mut after = Vec::new();
+        if let RecordOp::List { record_type, .. } = &op {
+            if ok {
+                // The list holds every change up to its `seq`: what was
+                // held and is newer follows it.
+                let seq = json.get("seq").and_then(Value::as_i64).unwrap_or(i64::MIN);
+                self.heard.insert(record_type.clone());
+                let held = self.held.remove(record_type).unwrap_or_default();
+                for (pushed_at, push) in held {
+                    if pushed_at > seq
+                        && let Some(push) = self.push(&push)
+                    {
+                        after.push(push);
+                    }
+                }
+            } else if !self.listing(record_type) {
+                // The next list will hold what was held.
+                self.held.remove(record_type);
+            }
+        }
+        let reply = self.answer(id, &op, ok, json);
+        Some((reply, after))
+    }
+
+    fn answer(&mut self, id: u64, op: &RecordOp, ok: bool, json: &Value) -> RecordReply {
         let broken = |what: &str| RecordError::Unavailable {
             message: format!("the data service sent no {what}"),
         };
         let result = if ok {
-            match &op {
+            match op {
                 RecordOp::List { .. } => {
                     let mut records: Vec<Record> = json
                         .get("records")
@@ -548,7 +615,7 @@ impl Bridge {
                 _ => RecordError::Unavailable { message },
             })
         };
-        Some(RecordReply { id, result })
+        RecordReply { id, result }
     }
 
     /// A push of the service as the contract's.

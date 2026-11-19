@@ -132,8 +132,11 @@ def main(argv):
             check(f"key {key}: refused with '{wanted}'", logged(wanted, 3))
         sess.sleep(0.3)
         counts = svc.control(cmd="stats")["counts"]
-        check("no request of the script reached the service",
-              all(counts.get(op, 0) == 0 for op in ("list", "create", "update", "delete")), str(counts))
+        # The one list that reaches it is the app's own, of its notes, from
+        # app.init: pushes of a type begin with the first list of it.
+        check("no request outside the fence reached the service",
+              counts.get("list", 0) == 1
+              and all(counts.get(op, 0) == 0 for op in ("create", "update", "delete")), str(counts))
         check("the service's records are untouched",
               not any(r["content"].get("title") in ("smuggled", "hijacked") for r in svc.records()))
 

@@ -5,8 +5,8 @@
 # bench's simulated data service) and drives the six fixtures of
 # `tests/fixtures/apps/` through the cases of their specs in a
 # pseudo-terminal, at the bench's own size (80x24) and at the size of bzz's
-# app pane (40x16). Then reload with the six apps, and the hostile script.
-# Prints one table; exit status 0 only if everything passed.
+# app pane (40x16). Then reload with the six apps, when pushes begin, and
+# the hostile script. Prints one table; exit status 0 only if everything passed.
 #
 # Needs: Linux, Python 3.10 or newer (standard library only), and cargo.
 # No Docker, no relay, no network. About seven minutes.
@@ -18,7 +18,7 @@
 #               (first draw, peak memory, key to screen); use with --release
 #   --saves N   saves of each app in the reload test (default 25)
 #   app ...     only these of: board poll rota approvals panel board-priority
-#               (reload and the hostile script still run)
+#               (reload, pushes and the hostile script still run)
 #
 # APP_HOST_BIN=<path> uses a host that is already built. APPS_BENCH_OUT=<dir>
 # is where the runs leave their screens and logs (default: a new folder
@@ -39,7 +39,7 @@ while [ $# -gt 0 ]; do
     --release) profile=release ;;
     --measure) measure=1 ;;
     --saves) shift; saves="${1:?--saves needs a number}" ;;
-    -h|--help) sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     board|poll|rota|approvals|panel|board-priority) apps+=("$1") ;;
     *) echo "test-apps-bench: unknown argument '$1'" >&2; exit 2 ;;
   esac
@@ -103,6 +103,13 @@ for size in "${sizes[@]}"; do
   cell["saves-$size"]="$(sed -n 's/^RESULT reload.*; \([0-9]* saves.*\)$/\1/p' "$log" | tail -1)"
 done
 
+log="$APPS_BENCH_OUT/pushes.txt"
+echo "== when pushes begin"
+"$bench/pushes" >"$log" 2>&1 || failed=1
+grep -E '^(FAIL|RESULT)' "$log"
+pushes="$(count "$log")"
+[ -n "$pushes" ] || pushes="did not run"
+
 log="$APPS_BENCH_OUT/hostile.txt"
 echo "== the hostile script"
 "$bench/hostile" >"$log" 2>&1 || failed=1
@@ -129,6 +136,7 @@ for app in "${apps[@]}"; do
   printf '| %-34s | %-9s | %-9s |\n' "$app, cases passed" "${cell["$app-80x24"]}" "${cell["$app-40x16"]}"
 done
 printf '| %-34s | %-9s | %-9s |\n' "reload: edit, swap, bad moment" "${cell["reload-80x24"]}" "${cell["reload-40x16"]}"
+printf '| %-34s | %-21s |\n' "when pushes begin, checks passed" "$pushes (80x24)"
 printf '| %-34s | %-21s |\n' "the hostile script, checks passed" "$hostile (120x40)"
 echo
 for size in "${sizes[@]}"; do
