@@ -48,10 +48,12 @@
 ---those of init and reload. The top level of the script can only compute:
 ---data.list/create/update/delete, host.after and host.quit are for handlers.
 
----A participant.
+---A participant. Compare and store `id`; show `name`. When bzz learns a name
+---or a name changes, the records that person signed are pushed again as
+---updates with the same rev.
 ---@class Who
----@field id string   never changes
----@field name string for showing; it can change
+---@field id string   the public key, 64 hex digits; it never changes
+---@field name string for showing: the name bzz knows now, or a short form of the id
 
 ---@class Ctx
 ---@field width integer  columns of the app's region
@@ -80,13 +82,13 @@
 ---@field id string      set by the relay; ids do not sort by creation
 ---@field type string    the app's own short name of the type
 ---@field rev string     the revision: opaque; pass it back unchanged
----@field content table  the app's own fields (a JSON null arrives as nil)
+---@field content table  the app's own fields (a JSON null arrives as nil); empty if another client wrote no table
 ---@field by Who         who signed this revision: the last writer
 
 ---@class DataError
 ---@field code "unavailable"|"conflict"|"not_found"|"bad_request"|"rate_limited"|"too_large"|"limit"|"refused"
 ---@field message string
----@field retry_after? integer rate_limited: the seconds to wait
+---@field retry_after? integer rate_limited: the seconds to wait; until then no write is sent
 
 ---@class Reply
 ---@field id integer        the id data.* returned
@@ -99,10 +101,11 @@
 ---@field current? Record   on a conflict: the record as it is now
 ---@field request table     the request as sent (id, op, type, match, record_id, rev, content)
 
+---Pushes of a type begin with the app's first list of that type.
 ---@class Push
 ---@field change "create"|"update"|"delete"
 ---@field record Record     for delete: its last state
----@field by Who            who made the change
+---@field by Who            who made the change; for a record simply gone after a resync, who signed it last
 
 data = {}
 
@@ -112,13 +115,17 @@ data = {}
 ---@type lightuserdata
 data.null = nil
 
----Lists the records of a declared type, in no order. `match` keeps records
----whose title (content.title) contains it, ignoring case.
+---Lists the records of a declared type, in no order, from what bzz holds:
+---the reply comes at once, also without a connection. `match` keeps records
+---whose title (content.title, or the app's and the type's names) contains
+---it, ignoring case.
 ---@param req {type: string, match?: string, tag?: any}
 ---@return integer id
 function data.list(req) end
 
----Creates a record. `content` must be a table with named fields.
+---Creates a record. `content` must be a table with named fields. The apps
+---of one person may write 30 times a minute; past it the reply is
+---rate_limited with retry_after and nothing is sent.
 ---@param req {type: string, content: table, tag?: any}
 ---@return integer id
 function data.create(req) end

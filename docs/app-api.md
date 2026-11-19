@@ -50,10 +50,10 @@ at every reload. It can only compute: `data.list`, `data.create`,
 Send the first `data.list` from `app.init`.
 
 **`ctx`** is `{ width, height, user }`: the columns and rows of the app's
-region, and the local participant as `{ id, name }`. `id` never changes;
-`name` is for showing and can change. An app is drawn in 40 columns by 16
-rows when it is docked beside the conversation, and larger when it is
-zoomed: choose the layout from `ctx.width`.
+region, and the local participant as `{ id, name }` (see "Who" below). `id`
+never changes; `name` is for showing and can change. An app is drawn in 40
+columns by 16 rows when it is docked beside the conversation, and larger
+when it is zoomed: choose the layout from `ctx.width`.
 
 **`key`** is `{ name, text, ctrl, alt, shift }`. `name` is the character
 itself for a printable key (`"j"`, `"J"`, `"/"`, `"日"`), `"f1"` to `"f12"`,
@@ -138,7 +138,7 @@ the relay; bzz signs them, and a script never sees a key.
 
 | Call | Fields | Does |
 |---|---|---|
-| `data.list` | type, match, tag | Asks for the records of one type. With `match`, those whose title contains it, ignoring case. |
+| `data.list` | type, match, tag | Asks for the records of one type. With `match`, those whose title contains it, ignoring case. bzz answers from the records it holds, at once. |
 | `data.create` | type, content, tag | Creates a record. `content` is a table with named fields. |
 | `data.update` | record_id, rev, content, tag | Replaces the whole content. `rev` is the record's current `rev`. |
 | `data.delete` | record_id, rev, tag | Deletes a record. |
@@ -149,7 +149,9 @@ the newest `data.list` and ignore a reply with another id.
 
 - **A record** is `{ id, type, rev, content, by }`. `rev` is an opaque
   string: pass it back unchanged. `by` is who signed this revision, as
-  `{ id, name }`.
+  `{ id, name }`. A record that another client wrote with content that is
+  no table of named fields arrives with an empty `content`; it can be
+  replaced and deleted like any other.
 - **A reply** is `{ id, tag, op, ok, request }`, and `records` (a list), or
   `record` (create and update: the record as stored; delete: its last
   state). When `ok` is false it has `error = { code, message }`. `request`
@@ -157,7 +159,10 @@ the newest `data.list` and ignore a reply with another id.
 - **A push** is `{ change, record, by }`: `change` is `"create"`,
   `"update"` or `"delete"`, and `by` is who made it. The app's own writes do
   not come back as pushes: apply them from the reply. The same person's
-  writes from another place do.
+  writes from another place do. **Pushes of a type begin with the app's
+  first list of it**: a push says that what the app was given has changed,
+  so before a list there is nothing to say. Send the first `data.list` of
+  each type from `app.init`.
 - **The fence.** A type is the app's own short name, such as `card`. bzz
   makes the type the relay sees from it; a script never writes that form.
   A request for a type that is not in `app.types` is an error, pushes of
@@ -166,14 +171,14 @@ the newest `data.list` and ignore a reply with another id.
 
 | Code | Means |
 |---|---|
-| `unavailable` | No connection, or the relay did not answer. Try again later. |
+| `unavailable` | For a write: no connection, or the relay did not answer; it may or may not have been stored, and if it was it arrives as a push. For a list: bzz holds no record of the app and the relay has not sent any within five seconds. Try again later. |
 | `conflict` | The `rev` was stale. `reply.current` is the record as it is now: apply the change on top of `reply.current.content` and send it again with `reply.current.rev`. What a conflict means is the app's rule: a board merges, an approval must not. |
 | `not_found` | No such record: it was deleted meanwhile. |
-| `bad_request` | The request itself is wrong. |
-| `rate_limited` | The person's writes for this minute are used up. `reply.error.retry_after` is the seconds to wait; say so on the screen. |
+| `bad_request` | The request itself is wrong: bzz or the relay would not take it, whoever sent it. |
+| `rate_limited` | The app's writes for this minute are used up, or the person's at the relay. `reply.error.retry_after` is the seconds to wait; say so on the screen. Until then every write is answered the same way and nothing is sent. |
 | `too_large` | The content is larger than a record may be. `reply.request` then has no `content`. |
-| `limit` | The app has as many records as it may have. |
-| `refused` | The relay refused, and `message` is its reason: a guest, an archived channel. |
+| `limit` | The app has as many records as it may have, or more than bzz can load. Records can still be changed and deleted. |
+| `refused` | The relay refused, or bzz knew it would: `message` is the reason. A guest, an archived channel, a channel whose records this person cannot read. |
 
 **No promised order.** A list arrives in no order a script may rely on, and
 ids do not sort by creation. Keep the order in the record and sort by it:
@@ -188,18 +193,45 @@ end
 -- after any change: table.sort(state.cards, by_order)
 ```
 
-**Who.** Any member of the channel, an agent included, can revise or delete
+**Who.** A participant is `{ id, name }`. `id` is the person's or the
+agent's public key, 64 hexadecimal digits; it never changes, and it is what
+to compare and to store in a record. `name` is the name bzz knows for it
+when it hands the table over, and a short form of the id (`c0c0c0c0…c0c0`)
+while it knows none. When bzz learns the name of someone, or a name
+changes, the records that person signed are handed over again, each as a
+push with `change = "update"` and the `rev` the app already has; a new name
+of the local participant is in `ctx.user` from the next call on.
+
+Any member of the channel, an agent included, can revise or delete
 any record and set any field of it. `record.by` is whoever wrote it last,
 not an owner. A rule such as "you cannot approve your own request" rests on
 a field any member can set: it is a convention between honest participants,
 and bzz cannot enforce it. Read fields with care: another client may have
 written a record the app did not expect.
 
+**What bzz holds.** bzz keeps an app's records on disk, and keeps them
+current while the app is open. A list is answered from them at once, also
+before the relay has answered and without a connection; what the relay
+then says differently arrives as pushes. Only an app of which bzz holds no
+record yet waits for the relay's first complete set, so that an app opened
+for the first time gets its records in one reply.
+
 **A resync is not a change.** When bzz has had to fetch the records again
 (the connection came back, or the relay restarted the sync), the script
 sees only the real differences, as pushes: a record that did not change is
-neither deleted nor created again. While there is no connection a request
-is answered `unavailable`.
+neither deleted nor created again. A record that is simply gone from the
+set is pushed as a delete by whoever signed it last, because nothing says
+who deleted it. Without a connection a write is answered `unavailable`.
+
+**What the pane says by itself.** Some things concern the person whatever
+the app draws, and bzz says them beside the app: the seconds to wait when
+writes are used up, that the app has too many records, that the channel is
+archived, that this person cannot read the channel's records. An app need
+not repeat them, and may: a script is told each through its replies.
+
+**A new version with other types.** `app.types` of the running version is
+what counts. A version that declares a type more gets no push of it before
+it lists it; one that drops a type no longer hears of it.
 
 **Content as JSON.** A table with keys 1 to n is a list, any other an
 object; an empty table inside content is a list. A nil field is left out;
@@ -209,8 +241,10 @@ number arrives as a Lua integer, any other as a float. Text must be valid
 UTF-8: cut a string with `ui.truncate` or `utf8.offset`, not by bytes.
 
 **The title.** Other clients list a record by its title. bzz takes
-`content.title` when it is a string with something in it, cut to 512 bytes,
-and the type's name otherwise. `match` looks at the same text.
+`content.title` when it is a string with something to show: control
+characters become spaces, the ends are trimmed, and it is
+cut to 512 bytes. Otherwise the title is the app's name and the type's,
+such as `board card`. `match` looks at the same text.
 
 ## The host
 
@@ -273,9 +307,13 @@ and the type's name otherwise. `match` looks at the same text.
 Every element, line, span, table cell, bar and sparkline point counts as an
 element of a screen. Past a limit the call that passed it gets an error that
 names the limit; a write past the limit of records or of writes is answered
-`limit` or `rate_limited`. A thousand records of text fit in the memory; a
-thousand records that are each a long list of small values do not, and the
-app that lists them gets a memory error.
+`limit` or `rate_limited`. The relay has one budget of writes for a person,
+which that person's chat spends too; the apps of one person share half of
+it, so that no app can keep its owner from sending a message. Content
+another client wrote can be larger than bzz lets an app write. A thousand
+records of text fit in the memory; a thousand records that are each a long
+list of small values do not, and the app that lists them gets a memory
+error.
 
 ## What a script has, and has not
 

@@ -1,14 +1,17 @@
-# The records of apps: the service
+# The records of apps: the service and the session
 
-For whoever joins an app's script to its records (v0.16 M2-B), gives agents
-record tools (M7), or writes the record calls of `docs/app-api.md`. This is
-the Rust interface in words. It knows the relay; it knows nothing of Lua or
-of drawing.
+For whoever shows an app in a pane (v0.16 M3), gives agents record tools
+(M7), or writes the record calls of `docs/app-api.md`. This is the Rust
+interface in words: first the service, which knows the relay and nothing of
+Lua or of drawing; then, under "The session", what joins it to a script.
 
 - `src/protocol/record.rs`: names, the fence, the mapping between a record
-  and its revisions, the title rule, the checks, what a refusal means.
+  and its revisions, the title rule, the checks, the budget of writes, what
+  a refusal means.
 - `src/service/records.rs`: the sync of an open app, and the writes.
-- Feature `apps`. Without it neither module is built.
+- `src/apps/session/`: one open app: a runtime, its records, and the rules
+  between them.
+- Feature `apps`. Without it none of these is built.
 
 The relay facts behind every rule here were measured on the pinned relay in
 M0 question 3 and are summed up in `docs/adr-v0.16-apps.md`, "Records on the
@@ -33,7 +36,10 @@ pub struct Record {
 
 - `revision` is the event id of the head. A caller treats it as opaque.
 - `content` is a JSON object. Integers, floats and `null` come back as they
-  were sent (`3`, `3.0`, `null`).
+  were sent (`3`, `3.0`, `null`). An artifact of the app's type whose
+  content is not a JSON object (another client wrote it) is a record with
+  no fields: it is shown, counts against the limit, and can be replaced or
+  deleted.
 - `author` is the last writer. Any writer of the channel may revise or delete
   any record, so nothing here says who created it. A rule such as "you
   cannot decide your own request" rests on a field any member can set.
@@ -56,7 +62,8 @@ panel's channel-wide sync is not used.
 
 One instance of an app per channel: a second `open` of the same app in the
 same channel is refused while the first is open. Dropping every clone of
-`app` closes the sync.
+`app` closes the sync; `service.is_open(channel, app)` stays true until its
+task has ended, a moment later.
 
 `events` then tells two things:
 
@@ -161,12 +168,15 @@ nothing it knows the relay would refuse:
 
 - the names (below), and the fence;
 - that the app holds fewer than 1000 live records;
-- the content: at most 65,536 bytes of JSON;
+- the content: at most 16,384 bytes of JSON, the number of the contract;
 - the signed revision, with the relay's own envelope validator
   (`buzz_core::artifact::validate`), which covers the title, the tags and
   the identifiers;
 - the whole escaped frame: at most 524,288 bytes. Past it the relay drops
-  the connection without an answer;
+  the connection without an answer. With content at 16,384 bytes the
+  largest revision the relay's validator passes is about 491,000 bytes, so
+  this check cannot fire at the pin; it stays for a relay that takes more
+  tag bytes;
 - for a revision or a deletion: that the record is in the app's set, at the
   revision the caller names.
 
@@ -196,16 +206,25 @@ checks are in `AppRecords`, not in its callers.
 | Types one app declares | 1 to 16, no duplicates | `MAX_TYPES` |
 | Artifact type | `bzz.app.<app>.<record>`, at most 73 bytes; the relay takes 128 | |
 | Live records of one app in one channel | 1000, all its types together | `MAX_LIVE_RECORDS` |
-| Content of one record | 65,536 bytes of JSON | `MAX_CONTENT_BYTES` |
+| Content of one record | 16,384 bytes of JSON | `MAX_CONTENT_BYTES` |
 | One frame | 524,288 bytes after escaping (the relay's `max_message_length`) | `MAX_FRAME_BYTES` |
 | Title | 1 to 512 bytes | `MAX_TITLE_BYTES` |
-| Writes | the relay's: 60 a minute per person, shared with chat | |
+| Writes | the relay's: 60 a minute per person, shared with chat | `PERSON_WRITES_PER_MINUTE` |
+| Writes of one person's apps | 30 a minute, all the person's open apps together | `APP_WRITES_PER_MINUTE`, `WriteBudget` |
+
+These are the one set of numbers: `apps::runtime::limits` names the same
+constants, and `docs/app-api.md` publishes them.
 
 The relay ends a sync at 4096 heads **of that sync's filter**, so an app is
 limited by its own records. The writer is never told; 1000 is where bzz
-stops a create and says so. Records that other clients wrote with content
-that is not a JSON object are not shown; `app.unreadable()` counts them, and
-they count against the 1000.
+stops a create and says so.
+
+**The budget of an app's writes.** `service.budget()` is one `WriteBudget`
+for every app the owner has open in this community: 30 writes in any
+minute. The service does not spend it; whoever runs an app for the owner
+does, before `create`, `update` or `delete` (the session, below). Writes
+through `create_as` and its siblings are an agent's and count against the
+agent's own quota at the relay, not against this.
 
 `RecordsService::channel_total(channel)` is the relay's count of every live
 artifact of the channel. Past 4096 the artifact panel's channel-wide sync
@@ -221,8 +240,8 @@ An artifact needs a title; a record has only its fields.
 > `<app> <record>`, such as `board card`.
 
 The title is for other clients' lists. An app never reads it back, and a
-script has nothing to do for it. The contract should say that a field named
-`title` is what other clients show.
+script has nothing to do for it. It is also the text the `match` of
+`data.list` looks at; the contract says both.
 
 ## Who signs
 
@@ -286,19 +305,65 @@ Records are rows of `artifacts` (migration 15); the schema stays at 20.
   `bzz.app.<app>.<record>`. The type `bzz.app` itself (a shared script, M6)
   is still listed.
 
-## For the script contract
+## The session
 
-What `docs/app-api.md` can promise from this:
+`apps::session::AppSession` is one open app in one channel: it owns the
+script's runtime and the records, and is what the app's pane owns.
 
-| Contract | Here |
+```rust
+let mut session = AppSession::on_relay(source, SessionOptions::new("board").waker(waker).names(names), &service, channel)?;
+session.key(key);                    // paste, resize, reload, tick, close
+for output in session.poll() { … }   // when woken: Log, Loaded, Close, Redraw
+session.draw(area, buffer, &theme);  // the cursor of a focused input comes back
+let status = session.status();       // phase, error, sync, notice, wait
+```
+
+No call waits for the script or for the relay. `on_relay` must be called
+inside a Tokio runtime; its tasks do the waiting and call the waker. The
+same session runs on a store in memory (`AppSession::in_memory`), which is
+what the headless driver, `bzz app try` and the tests of every platform
+use: `apps::session::backend::Records` is the boundary, in the service's
+own types, and `RelayRecords` and `SharedStore` are its two sides.
+
+What the session does between the two halves:
+
+| Rule | How |
 |---|---|
-| `data.list` | `app.records()`, filtered by `record_type` |
-| `data.create` / `update` / `delete` | the three calls; `rev` is `revision` |
-| a push | one `Change` of a `Changes` event; `by` is `record.author` for an upsert, `Removed.by` for a removal |
-| error codes | `RecordError::code()`; `conflict` carries `current`, `rate_limited` carries `seconds`, `refused` carries `reason` |
-| the local participant's id | `app.identity()` |
-| an undeclared type | the runtime raises at the calling line; if it did not, the service answers `fenced` |
-| limits to publish | the table above |
+| Every request gets exactly one reply | a write is answered by its task, also when the task ends without an answer (`unavailable`); a request made before the records are open waits for them |
+| The fence, once more | a type the running version did not declare is `bad_request`; a record the session does not hold, or holds under another type, is `not_found`. The runtime refuses before, the service after |
+| `list` | from the session's set, with `match` over the title rule, at once. With no record held and the first complete set not there, it waits; after 5 s it is `unavailable` |
+| A push | one for each `Change` the service tells, of a type the script has listed. A `Removed` without `by` is by the record's last signer. The same revision again is no push |
+| Own writes | answered, never pushed. The set takes the answer if it is what the service holds; if the service already holds something later that the script was told, the script is told it again after the reply |
+| Names | `{ id, name }` from the names its owner gives (`set_names`); a short form of the key until one is known (`unnamed()` lists whom to look up); the records of someone whose name became known or changed are pushed again as updates |
+| The budget | one write out of `service.budget()` before each write; past it `rate_limited` with the wait, and no call of the service. The relay's own `RateLimited` closes the same gate |
+| A new version | `Loaded { types }`: if the types changed, the records are opened again for them; requests wait meanwhile |
+| A long batch | replies and pushes are sent to the script as it takes them, never more than half of what it may be owed |
 
-Not here: a name to show for an identity (bzz's profiles have it), a filter
-such as `match` (the caller filters `records()`), and any order.
+What a script sees for each `SyncState`, and what the pane shows by itself
+(`status().notice`; `status().sync_words` is the state in a word or two):
+
+| State | `list` | a write | The pane's sentence |
+|---|---|---|---|
+| `Loading` | the stored records; with none, waits for the first set | sent | none |
+| `Live` | the set | sent | none |
+| `Resyncing` | the set as it was | sent | none |
+| `TooMany { max }` | the set bzz holds | a create is `limit`; an update or a delete is sent | "This app has more than 4096 records here, too many to load. None can be added." |
+| `Restricted` | `refused` | `refused`, not sent | "You cannot read this channel's records: this app cannot be used here." |
+| `Unavailable { reason }` | the stored records; with none, `unavailable` | `unavailable`, not sent | "This app's records are not available: <reason>." |
+| the channel is archived | as above | `refused`; not sent once bzz knows | "This channel is archived: its records can be read, not changed." |
+| a wait at the quota | as above | `rate_limited`, not sent | "Too many changes: this app can write again in 23 s." |
+| 1000 records held | as above | a create is `limit`, not sent | "This app holds 1000 records here, the most it may. Delete some to add more." |
+
+The session learns of an archived channel from its owner
+(`set_archived`, which the pane takes from the channel's own state) or
+from the relay's refusal of a write; the second is forgotten when the
+relay takes a write or the sync starts anew. `status().wait` is the
+seconds left; `tick()` answers true when that number has changed, for the
+owner to draw again.
+
+For M7: `session.relay()` is the `AppRecords` of the open app, for
+`create_as` and its siblings.
+
+Not in the session: where the sentence is drawn (the pane's border is the
+place that costs the app no row), the title of the pane, the approval of a
+version, and any command.

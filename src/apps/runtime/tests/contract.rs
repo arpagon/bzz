@@ -378,6 +378,16 @@ fn the_document_publishes_the_limits() {
     assert!(DOCUMENT.contains("1 to 16 names, each `[a-z][a-z0-9_-]{0,31}`"));
     assert_eq!((limits::TYPES, limits::TYPE_NAME_BYTES), (16, 32));
     assert!(TWIN.contains("after `ms` milliseconds (100 at\n---least)"));
+    // What the session holds an app to.
+    assert!(DOCUMENT.contains("has not sent any within five seconds"));
+    assert_eq!(limits::FIRST_SET_WAIT, Duration::from_secs(5));
+    assert!(DOCUMENT.contains("the apps of one person share half of\nit"));
+    assert_eq!(
+        limits::WRITES_PER_MINUTE * 2,
+        limits::PERSON_WRITES_PER_MINUTE
+    );
+    assert!(TWIN.contains("of one person may write 30 times a minute"));
+    assert_eq!(limits::WRITES_PER_MINUTE, 30);
 }
 
 // ------------------------------------------------------------------ shapes
