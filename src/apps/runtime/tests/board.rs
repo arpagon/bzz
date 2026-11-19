@@ -7,6 +7,12 @@
 //! side. What a case of the bench checks about the process and its terminal
 //! (the exit status, echo and the alternate screen restored, no child left)
 //! has no meaning here; each case says what it leaves out.
+//!
+//! The same twelve cases are run on the Board with priority
+//! (`board_priority.rs`), as the bench does: a [`Kit`] says which script and
+//! which cards a case starts from.
+
+use std::cell::Cell;
 
 use serde_json::json;
 use unicode_width::UnicodeWidthChar;
@@ -16,17 +22,49 @@ use crate::apps::runtime::Phase;
 use crate::apps::runtime::memory::content;
 use crate::protocol::record::RecordError as Failure;
 
-const SIZES: [(u16, u16); 2] = [(40, 16), (80, 24)];
+/// Which board the cases run on.
+#[derive(Clone, Copy)]
+pub(super) struct Kit {
+    pub name: &'static str,
+    pub source: &'static str,
+    /// The six cards every case starts from.
+    pub seed: fn(&mut MemoryStore),
+    /// The cards carry a priority, shown after the title (` P1`): the
+    /// twelve cases read a board by its titles alone.
+    pub priorities: bool,
+}
+
+const PLAIN: Kit = Kit {
+    name: "board.lua",
+    source: BOARD,
+    seed: six_cards,
+    priorities: false,
+};
+
+thread_local! {
+    static KIT: Cell<Kit> = const { Cell::new(PLAIN) };
+}
+
+fn kit() -> Kit {
+    KIT.with(Cell::get)
+}
+
+/// Runs a case of this file on another board.
+pub(super) fn with_kit(kit: Kit, case: fn()) {
+    KIT.with(|k| k.set(kit));
+    case();
+    KIT.with(|k| k.set(PLAIN));
+}
 const HEADERS: [&str; 3] = ["To do (", "Doing (", "Done ("];
 
 /// What a person sees of the board: the cards under each header, and which
 /// is marked as selected.
 #[derive(Debug, PartialEq, Eq)]
-struct Seen {
-    todo: Vec<String>,
-    doing: Vec<String>,
-    done: Vec<String>,
-    selected: Option<String>,
+pub(super) struct Seen {
+    pub todo: Vec<String>,
+    pub doing: Vec<String>,
+    pub done: Vec<String>,
+    pub selected: Option<String>,
 }
 
 /// The text of a row from display column `from` up to `to`.
@@ -48,8 +86,30 @@ fn column_of(row: &str, needle: &str) -> Option<usize> {
 }
 
 /// Reads a board as the bench does: a card belongs to the header it stands
-/// under, and a card row is a marker (`> ` or two spaces) and a title.
+/// under, and a card row is a marker (`> ` or two spaces) and a title. On a
+/// board with priorities the title is read without its ` P1`.
 fn read(screen: &str) -> Seen {
+    let mut seen = read_whole(screen);
+    if kit().priorities {
+        let plain = |title: &mut String| {
+            for tag in [" P1", " P2", " P3"] {
+                if let Some(without) = title.strip_suffix(tag) {
+                    *title = without.to_string();
+                }
+            }
+        };
+        seen.todo.iter_mut().for_each(plain);
+        seen.doing.iter_mut().for_each(plain);
+        seen.done.iter_mut().for_each(plain);
+        if let Some(selected) = &mut seen.selected {
+            plain(selected);
+        }
+    }
+    seen
+}
+
+/// A board with everything its card rows say.
+pub(super) fn read_whole(screen: &str) -> Seen {
     let rows: Vec<&str> = screen.lines().collect();
     let mut seen = Seen {
         todo: vec![],
@@ -108,7 +168,7 @@ fn read(screen: &str) -> Seen {
     seen
 }
 
-fn board(todo: &[&str], doing: &[&str], done: &[&str], selected: Option<&str>) -> Seen {
+pub(super) fn board(todo: &[&str], doing: &[&str], done: &[&str], selected: Option<&str>) -> Seen {
     let own = |titles: &[&str]| titles.iter().map(|t| t.to_string()).collect();
     Seen {
         todo: own(todo),
@@ -129,7 +189,8 @@ fn initial(selected: &str) -> Seen {
 }
 
 fn start_board(size: (u16, u16)) -> Headless {
-    let mut app = start_on("board.lua", BOARD, size, six_cards);
+    let kit = kit();
+    let mut app = start_on(kit.name, kit.source, size, kit.seed);
     let screen = app.screen();
     assert_eq!(read(&screen), initial("Alpha"), "{size:?}\n{screen}");
     assert_eq!(last_row(&screen), "Loaded 6 cards.", "{screen}");
@@ -137,14 +198,8 @@ fn start_board(size: (u16, u16)) -> Headless {
     app
 }
 
-fn at_each_size(case: impl Fn((u16, u16))) {
-    for size in SIZES {
-        case(size);
-    }
-}
-
 #[test]
-fn case_01_first_draw() {
+pub(super) fn case_01_first_draw() {
     // Bench: the board is right at two sizes and nothing is written outside
     // the screen. Here: three sizes, and that drawing stays inside its
     // area is `drawing::nothing_is_drawn_outside_the_area`.
@@ -195,7 +250,7 @@ fn a_title_of_sixteen_characters_is_shown_in_full_at_every_size() {
 }
 
 #[test]
-fn case_02_form_cancel() {
+pub(super) fn case_02_form_cancel() {
     at_each_size(|size| {
         let mut app = start_board(size);
         app.key("j");
@@ -226,7 +281,7 @@ fn case_02_form_cancel() {
 }
 
 #[test]
-fn case_03_save_once() {
+pub(super) fn case_03_save_once() {
     at_each_size(|size| {
         let mut app = start_board(size);
         app.key("n").key("enter");
@@ -270,7 +325,7 @@ fn case_03_save_once() {
 }
 
 #[test]
-fn case_04_search_clear() {
+pub(super) fn case_04_search_clear() {
     at_each_size(|size| {
         let mut app = start_board(size);
         app.key("j");
@@ -295,7 +350,7 @@ fn case_04_search_clear() {
 }
 
 #[test]
-fn case_05_late_search() {
+pub(super) fn case_05_late_search() {
     at_each_size(|size| {
         let mut app = start_board(size);
         app.key("/");
@@ -317,7 +372,7 @@ fn case_05_late_search() {
 }
 
 #[test]
-fn case_06_small_screen() {
+pub(super) fn case_06_small_screen() {
     // Bench: 40x12 is too small for a board that needs 60x16. The fixture
     // needs 40x16, so one row or one column less is too small here.
     at_each_size(|size| {
@@ -347,7 +402,7 @@ fn case_06_small_screen() {
 }
 
 #[test]
-fn case_07_paste() {
+pub(super) fn case_07_paste() {
     at_each_size(|size| {
         let mut app = start_board(size);
         // A paste on the board is ignored: one piece of text, never keys.
@@ -367,10 +422,11 @@ fn case_07_paste() {
 }
 
 #[test]
-fn case_08_load_error() {
+pub(super) fn case_08_load_error() {
     at_each_size(|size| {
-        let mut app = start_on("board.lua", BOARD, size, |store| {
-            six_cards(store);
+        let kit = kit();
+        let mut app = start_on(kit.name, kit.source, size, |store| {
+            (kit.seed)(store);
             store.fail_next(
                 "list",
                 Failure::Unavailable {
@@ -403,7 +459,7 @@ fn case_08_load_error() {
 }
 
 #[test]
-fn case_09_quit_while_a_load_is_pending() {
+pub(super) fn case_09_quit_while_a_load_is_pending() {
     // Bench: `q` ends the process within 2 s with status 0, no child left
     // and the terminal restored. Here: the app asks to close, at once, with
     // a request still unanswered. The process and the terminal are bzz's.
@@ -419,7 +475,7 @@ fn case_09_quit_while_a_load_is_pending() {
 }
 
 #[test]
-fn case_10_repeatable() {
+pub(super) fn case_10_repeatable() {
     at_each_size(|size| {
         let mut screens = Vec::new();
         for _ in 0..3 {
@@ -456,7 +512,7 @@ fn case_10_repeatable() {
 }
 
 #[test]
-fn case_11_remote_change() {
+pub(super) fn case_11_remote_change() {
     at_each_size(|size| {
         let mut app = start_board(size);
         let lists = app.store().count("list");
@@ -500,7 +556,7 @@ fn case_11_remote_change() {
 }
 
 #[test]
-fn case_12_conflict() {
+pub(super) fn case_12_conflict() {
     at_each_size(|size| {
         let mut app = start_board(size);
         let alpha = app
@@ -564,4 +620,54 @@ fn a_failed_move_puts_the_card_back() {
     let screen = app.screen();
     assert_eq!(last_row(&screen), "Refused: the channel is archived");
     assert_eq!(read(&screen), moved, "{screen}");
+}
+
+#[test]
+fn a_late_list_does_not_undo_a_newer_move() {
+    // Not a case of the bench's Board, but of its other apps ("late load"),
+    // and the contract has no counter to compare: a card that changed while
+    // a list was on its way keeps what the app has.
+    at_each_size(|size| {
+        let mut app = start_board(size);
+        app.store().hold_next("list");
+        app.key("r");
+        assert_eq!(last_row(&app.screen()), "Loading...");
+        app.key("]");
+        let moved = board(
+            &["Bravo", "Charlie"],
+            &["Alpha", "Delta", "Echo"],
+            &["Foxtrot"],
+            Some("Alpha"),
+        );
+        assert_eq!(read(&app.screen()), moved);
+        // bo deletes a card and adds one meanwhile.
+        let charlie = app
+            .store()
+            .find_by("title", "Charlie")
+            .expect("Charlie")
+            .id
+            .clone();
+        let deleted = app.store().remote_delete(&bo(), &charlie);
+        app.deliver(deleted);
+        let (_, created) = app.store().remote_create(
+            &bo(),
+            "card",
+            content(json!({ "title": "Zulu", "column": "done", "order": 9 })),
+        );
+        app.deliver(created);
+        // The list that was asked for before all that arrives now: it has
+        // Alpha in its old column, Charlie, and no Zulu.
+        let late = app.store().release();
+        assert_eq!(late.len(), 1);
+        app.deliver(late);
+        let screen = app.screen();
+        let after = board(
+            &["Bravo"],
+            &["Alpha", "Delta", "Echo"],
+            &["Foxtrot", "Zulu"],
+            Some("Alpha"),
+        );
+        assert_eq!(read(&screen), after, "{screen}");
+        assert_eq!(last_row(&screen), "Loaded 6 cards.");
+    });
 }

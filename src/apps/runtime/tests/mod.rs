@@ -2,14 +2,19 @@
 //! runtime driven without a window, the fixtures, the drawing, and the
 //! contract against its document.
 
+mod approvals;
 mod board;
+mod board_priority;
 mod contract;
 mod differential;
 mod drawing;
 mod hostile;
 mod limits;
+mod panel;
+mod poll;
 mod reach;
 mod records;
+mod rota;
 mod running;
 mod sweep;
 mod vm;
@@ -22,9 +27,70 @@ use super::limits::Limits;
 use super::memory::{MemoryStore, content};
 use super::records::Who;
 
-/// The fixtures: two apps written against `api = 1`.
+/// The fixtures: apps written against `api = 1`. The six of the experiment
+/// (Board, Poll, Rota, Approvals, Panel, the Board with priority) each have
+/// a file of cases here, the ones their spec in `tests/apps-bench/spec/`
+/// fixes and the in-memory store can express; the bench runs the same
+/// cases against a terminal, on Linux.
 pub const HELLO: &str = include_str!("../../../../tests/fixtures/apps/hello/app.lua");
 pub const BOARD: &str = include_str!("../../../../tests/fixtures/apps/board/app.lua");
+pub const BOARD_PRIORITY: &str =
+    include_str!("../../../../tests/fixtures/apps/board-priority/app.lua");
+pub const POLL: &str = include_str!("../../../../tests/fixtures/apps/poll/app.lua");
+pub const ROTA: &str = include_str!("../../../../tests/fixtures/apps/rota/app.lua");
+pub const APPROVALS: &str = include_str!("../../../../tests/fixtures/apps/approvals/app.lua");
+pub const PANEL: &str = include_str!("../../../../tests/fixtures/apps/panel/app.lua");
+
+/// The pane of bzz, and the bench's own size: every case runs at both.
+pub const SIZES: [(u16, u16); 2] = [(40, 16), (80, 24)];
+
+pub fn at_each_size(case: impl Fn((u16, u16))) {
+    for size in SIZES {
+        case(size);
+    }
+}
+
+/// The other of the two sizes: what a case resizes to and comes back from.
+pub fn other_size(size: (u16, u16)) -> (u16, u16) {
+    if size == SIZES[0] { SIZES[1] } else { SIZES[0] }
+}
+
+pub fn cy() -> Who {
+    Who::new("c7".repeat(32), "cy")
+}
+
+/// "The relay did not answer": what a failed load is made of.
+pub fn unavailable() -> super::records::RecordError {
+    super::records::RecordError::Unavailable {
+        message: "no connection".into(),
+    }
+}
+
+/// The rows of a screen above its status line.
+pub fn above_status(screen: &str) -> Vec<&str> {
+    let rows: Vec<&str> = screen.lines().collect();
+    rows[..rows.len().saturating_sub(1)].to_vec()
+}
+
+/// A row as a marker (`>` when it is the selected one) and what follows.
+pub fn marked(row: &str) -> Option<(bool, &str)> {
+    if let Some(rest) = row.strip_prefix("> ") {
+        Some((true, rest))
+    } else {
+        row.strip_prefix("  ").map(|rest| (false, rest))
+    }
+}
+
+/// No row of the screen is wider than the region, and there are as many
+/// rows as the region has.
+pub fn fits(screen: &str, size: (u16, u16)) {
+    use unicode_width::UnicodeWidthStr;
+    assert_eq!(screen.lines().count(), size.1 as usize, "{screen}");
+    assert!(
+        screen.lines().all(|row| row.width() <= size.0 as usize),
+        "{screen}"
+    );
+}
 
 pub fn ana() -> Who {
     Who::new("a1".repeat(32), "ana")

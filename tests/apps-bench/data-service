@@ -1,0 +1,438 @@
+#!/usr/bin/env python3
+"""Simulated data service for the apps bench.
+
+One process, Python standard library only. Newline-delimited JSON over TCP on
+127.0.0.1. The protocol is documented in spec/data-protocol.md. It is the
+experiment's protocol, unchanged: `examples/app_host.rs` turns it into the
+records of the contract `api = 1`. Only the seed data follows the contract:
+records whose order matters carry it in a field, `order`, because an app is
+given its records in no order.
+
+Usage:
+    data-service --app board|poll|rota|approvals|panel|board-priority [--scenario NAME[,NAME...]] [--log FILE]
+
+On start it prints one JSON line to stdout:
+    {"data_addr": "127.0.0.1:PORT", "control_addr": "127.0.0.1:PORT"}
+Give data_addr to the program under test as MINIAPP_DATA_ADDR.
+"""
+import argparse
+import asyncio
+import copy
+import json
+import signal
+import sys
+
+APPS = ["board", "poll", "rota", "approvals", "panel", "board-priority"]
+
+SCENARIOS = {
+    "default": "seed data, no delays, no failures",
+    "slow-load": "the first list response is delayed 3000 ms",
+    "load-error": "the first list request fails with code 'unavailable'; later ones succeed",
+    "late-search": "the response to the first list request with a non-empty 'match' is delayed 1500 ms",
+    "slow-write": "every create, update and delete response is delayed 500 ms",
+    "big": "200-record data set instead of the small seed",
+}
+
+
+def seed_records(app, big):
+    """Return a list of (type, content) in creation order. Cards, days and
+    requests say their place in `order`."""
+    return [(rtype, dict(content, order=i) if rtype in ORDERED else content)
+            for i, (rtype, content) in enumerate(seed_contents(app, big), 1)]
+
+
+ORDERED = ("card", "day", "request")
+
+
+def seed_contents(app, big):
+    if app == "board":
+        if big:
+            cols = ["todo", "doing", "done"]
+            return [("card", {"title": f"Card {i:03d}", "column": cols[(i - 1) * 3 // 200]})
+                    for i in range(1, 201)]
+        return [
+            ("card", {"title": "Alpha", "column": "todo"}),
+            ("card", {"title": "Bravo", "column": "todo"}),
+            ("card", {"title": "Charlie", "column": "todo"}),
+            ("card", {"title": "Delta", "column": "doing"}),
+            ("card", {"title": "Echo", "column": "doing"}),
+            ("card", {"title": "Foxtrot", "column": "done"}),
+        ]
+    if app == "poll":
+        if big:
+            opts = [f"Option {i:03d}" for i in range(1, 201)]
+            recs = [("poll", {"question": "Pick a number", "options": opts})]
+            recs += [("vote", {"voter": f"u{i:03d}", "option": opts[(i * 7) % 200]})
+                     for i in range(1, 200)]
+            return recs
+        return [
+            ("poll", {"question": "Lunch on Friday?",
+                      "options": ["Tacos", "Sushi", "Pizza", "Salad"]}),
+            ("vote", {"voter": "bo", "option": "Sushi"}),
+            ("vote", {"voter": "cy", "option": "Sushi"}),
+            ("vote", {"voter": "di", "option": "Pizza"}),
+        ]
+    if app == "board-priority":
+        if big:
+            cols = ["todo", "doing", "done"]
+            recs = []
+            for i in range(1, 201):
+                content = {"title": f"Card {i:03d}", "column": cols[(i - 1) * 3 // 200]}
+                if i % 4:
+                    content["priority"] = i % 4
+                recs.append(("card", content))
+            return recs
+        return [
+            ("card", {"title": "Alpha", "column": "todo", "priority": 1}),
+            ("card", {"title": "Bravo", "column": "todo"}),
+            ("card", {"title": "Charlie", "column": "todo", "priority": 2}),
+            ("card", {"title": "Delta", "column": "doing", "priority": 1}),
+            ("card", {"title": "Echo", "column": "doing", "priority": 3}),
+            ("card", {"title": "Foxtrot", "column": "done"}),
+        ]
+    if app == "rota":
+        if big:
+            holders = ["bo", None, "cy", None, "di"]
+            return [("day", {"day": f"Day {i:03d}", "holder": holders[i % 5]}) for i in range(1, 201)]
+        return [
+            ("day", {"day": "Mon", "holder": "bo"}),
+            ("day", {"day": "Tue", "holder": None}),
+            ("day", {"day": "Wed", "holder": "cy"}),
+            ("day", {"day": "Thu", "holder": None}),
+            ("day", {"day": "Fri", "holder": "bo"}),
+            ("day", {"day": "Sat", "holder": None}),
+            ("day", {"day": "Sun", "holder": None}),
+        ]
+    if app == "approvals":
+        def req(title, author, state="pending", by=None, reason=None):
+            return ("request", {"title": title, "author": author, "state": state,
+                                "decided_by": by, "reason": reason})
+        if big:
+            states = ["pending", "approved", "rejected", "pending"]
+            out = []
+            for i in range(1, 201):
+                st = states[i % 4]
+                out.append(req(f"Request {i:03d}", ["bo", "cy", "di"][i % 3], st,
+                               None if st == "pending" else "eve",
+                               "No budget" if st == "rejected" else None))
+            return out
+        return [
+            req("New laptop", "bo"),
+            req("Team lunch", "ana"),
+            req("Conference trip", "cy", "approved", "bo"),
+            req("Standing desk", "di", "rejected", "bo", "No budget"),
+            req("Extra monitor", "cy"),
+        ]
+    if app == "panel":
+        def metric(name, unit, status, mx, history, acked_by=None, note=None):
+            return ("metric", {"name": name, "unit": unit, "status": status, "max": mx,
+                               "history": history, "acked_by": acked_by, "note": note})
+        if big:
+            out = []
+            for i in range(1, 201):
+                hist = [20 + (i * 7 + k * 13) % 80 for k in range(7)]
+                status = ["ok", "alert", "ok", "acked"][i % 4]
+                out.append(metric(f"M{i:03d}", "%", status, 100, hist,
+                                  "eve" if status == "acked" else None,
+                                  "seen" if status == "acked" else None))
+            return out
+        return [
+            metric("CPU", "%", "alert", 100, [35, 42, 50, 61, 70, 88, 93]),
+            metric("Disk", "%", "ok", 100, [40, 41, 41, 42, 43, 43, 44]),
+            metric("Latency", "ms", "alert", 500, [120, 180, 260, 310, 420, 450, 480]),
+            metric("Memory", "GiB", "ok", 16, [6, 7, 7, 8, 9, 8, 8]),
+            metric("Queue", "jobs", "acked", 1000, [300, 280, 350, 400, 380, 420, 390], "bo", "Known batch"),
+        ]
+    raise SystemExit(f"unknown app {app!r}")
+
+
+class Service:
+    def __init__(self, app, scenarios, log):
+        self.records = {}
+        self.next_id = 1
+        self.seq = 0
+        self.scenarios = set(scenarios)
+        self.log = log
+        self.conns = {}  # writer -> {"subscribed": bool, "n": int}
+        self.conn_counter = 0
+        self.counts = {}
+        self.fail_next = {}   # op -> remaining count
+        self.delay_next = {}  # op -> list of ms
+        self.armed = {}       # record_id -> {"user", "content"}
+        self.list_count = 0
+        self.match_list_count = 0
+        self.matches = []
+        for rtype, content in seed_records(app, "big" in scenarios):
+            self._create(rtype, content)
+
+    # ---- store -------------------------------------------------------
+    def _create(self, rtype, content):
+        rid = f"r{self.next_id:04d}"
+        self.next_id += 1
+        self.seq += 1
+        rec = {"id": rid, "type": rtype, "rev": 1, "content": copy.deepcopy(content)}
+        self.records[rid] = rec
+        return copy.deepcopy(rec)
+
+    def _update(self, rid, content):
+        rec = self.records[rid]
+        rec["rev"] += 1
+        rec["content"] = copy.deepcopy(content)
+        self.seq += 1
+        return copy.deepcopy(rec)
+
+    def _delete(self, rid):
+        rec = self.records.pop(rid)
+        self.seq += 1
+        return copy.deepcopy(rec)
+
+    def snapshot(self, rtype=None, match=None):
+        out = []
+        for rid in sorted(self.records):
+            rec = self.records[rid]
+            if rtype and rec["type"] != rtype:
+                continue
+            if match:
+                title = str(rec["content"].get("title", ""))
+                if match.lower() not in title.lower():
+                    continue
+            out.append(copy.deepcopy(rec))
+        return out
+
+    # ---- io helpers --------------------------------------------------
+    def write_log(self, direction, obj):
+        if self.log:
+            self.log.write(json.dumps({"dir": direction, "msg": obj}, ensure_ascii=False) + "\n")
+            self.log.flush()
+
+    def send(self, writer, obj, label):
+        if writer.is_closing():
+            return
+        self.write_log(label, obj)
+        writer.write((json.dumps(obj, ensure_ascii=False) + "\n").encode())
+
+    def reply(self, writer, obj, delay_ms):
+        if delay_ms:
+            async def later():
+                await asyncio.sleep(delay_ms / 1000)
+                self.send(writer, obj, "out")
+            asyncio.get_running_loop().create_task(later())
+        else:
+            self.send(writer, obj, "out")
+
+    def push(self, change, record, by, origin):
+        msg = {"push": "change", "change": change, "record": record, "by": by, "seq": self.seq}
+        for w, info in list(self.conns.items()):
+            if w is origin or not info["subscribed"]:
+                continue
+            self.send(w, msg, "push")
+
+    def take(self, table, op):
+        n = table.get(op)
+        if not n:
+            return None
+        if isinstance(n, list):
+            v = n.pop(0)
+            if not n:
+                del table[op]
+            return v
+        table[op] = n - 1
+        if table[op] == 0:
+            del table[op]
+        return True
+
+    # ---- data protocol ---------------------------------------------
+    def handle(self, writer, msg):
+        rid = msg.get("id")
+        op = msg.get("op")
+        self.counts[op] = self.counts.get(op, 0) + 1
+
+        def err(code, message, extra=None, delay=0):
+            body = {"id": rid, "ok": False, "error": {"code": code, "message": message}}
+            if extra:
+                body.update(extra)
+            self.reply(writer, body, delay)
+
+        if op not in ("list", "create", "update", "delete", "subscribe"):
+            return err("bad_request", f"unknown op {op!r}")
+
+        if op == "subscribe":
+            self.conns[writer]["subscribed"] = True
+            return self.reply(writer, {"id": rid, "ok": True, "seq": self.seq}, 0)
+
+        delay = 0
+        extra_delay = self.take(self.delay_next, op)
+        if isinstance(extra_delay, (int, float)) and extra_delay is not True:
+            delay = extra_delay
+
+        if op == "list":
+            self.list_count += 1
+            match = msg.get("match") or ""
+            self.matches.append(match)
+            if match:
+                self.match_list_count += 1
+            if "slow-load" in self.scenarios and self.list_count == 1:
+                delay = max(delay, 3000)
+            if "late-search" in self.scenarios and match and self.match_list_count == 1:
+                delay = max(delay, 1500)
+            if ("load-error" in self.scenarios and self.list_count == 1) or self.take(self.fail_next, "list"):
+                return err("unavailable", "simulated load failure", delay=delay)
+            records = self.snapshot(msg.get("type"), match)
+            return self.reply(writer, {"id": rid, "ok": True, "records": records, "seq": self.seq}, delay)
+
+        if "slow-write" in self.scenarios:
+            delay = max(delay, 500)
+        if self.take(self.fail_next, op):
+            return err("unavailable", "simulated write failure", delay=delay)
+
+        if op == "create":
+            rtype, content = msg.get("type"), msg.get("content")
+            if not isinstance(rtype, str) or not isinstance(content, dict):
+                return err("bad_request", "create needs 'type' (string) and 'content' (object)")
+            rec = self._create(rtype, content)
+            self.reply(writer, {"id": rid, "ok": True, "record": rec, "seq": self.seq}, delay)
+            self.push("create", rec, "peer", writer)
+            return
+
+        target = msg.get("record_id")
+        if target not in self.records:
+            return err("not_found", f"no record {target!r}", delay=delay)
+
+        if op == "update":
+            content = msg.get("content")
+            if not isinstance(content, dict) or not isinstance(msg.get("rev"), int):
+                return err("bad_request", "update needs 'rev' (integer) and 'content' (object)")
+            armed = self.armed.pop(target, None)
+            if armed:
+                rec = self._update(target, armed["content"])
+                self.push("update", rec, armed["user"], None)
+            current = self.records[target]
+            if msg["rev"] != current["rev"]:
+                return err("conflict", "rev is stale", {"current": copy.deepcopy(current)}, delay)
+            rec = self._update(target, content)
+            self.reply(writer, {"id": rid, "ok": True, "record": rec, "seq": self.seq}, delay)
+            self.push("update", rec, "peer", writer)
+            return
+
+        if op == "delete":
+            current = self.records[target]
+            if msg.get("rev") != current["rev"]:
+                return err("conflict", "rev is stale", {"current": copy.deepcopy(current)}, delay)
+            rec = self._delete(target)
+            self.reply(writer, {"id": rid, "ok": True, "record": rec, "seq": self.seq}, delay)
+            self.push("delete", rec, "peer", writer)
+            return
+
+    # ---- control protocol (used by the bench, not by programs) ------
+    def control(self, msg):
+        cmd = msg.get("cmd")
+        if cmd == "dump":
+            return {"ok": True, "records": self.snapshot(), "seq": self.seq}
+        if cmd == "stats":
+            return {"ok": True, "counts": dict(self.counts),
+                    "connections": len(self.conns),
+                    "subscribers": sum(1 for i in self.conns.values() if i["subscribed"]),
+                    "list_matches": list(self.matches)}
+        if cmd == "remote":
+            user = msg.get("user", "bo")
+            op = msg.get("op")
+            if op == "create":
+                rec = self._create(msg["type"], msg["content"])
+                self.push("create", rec, user, None)
+            elif op == "update":
+                if msg["record_id"] not in self.records:
+                    return {"ok": False, "error": "not_found"}
+                rec = self._update(msg["record_id"], msg["content"])
+                self.push("update", rec, user, None)
+            elif op == "delete":
+                if msg["record_id"] not in self.records:
+                    return {"ok": False, "error": "not_found"}
+                rec = self._delete(msg["record_id"])
+                self.push("delete", rec, user, None)
+            else:
+                return {"ok": False, "error": f"bad op {op!r}"}
+            return {"ok": True, "record": rec, "seq": self.seq}
+        if cmd == "arm_conflict":
+            self.armed[msg["record_id"]] = {"user": msg.get("user", "bo"), "content": msg["content"]}
+            return {"ok": True}
+        if cmd == "fail_next":
+            self.fail_next[msg["op"]] = self.fail_next.get(msg["op"], 0) + int(msg.get("count", 1))
+            return {"ok": True}
+        if cmd == "delay_next":
+            self.delay_next.setdefault(msg["op"], []).append(int(msg["ms"]))
+            return {"ok": True}
+        return {"ok": False, "error": f"unknown cmd {cmd!r}"}
+
+
+async def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--app", required=True, choices=APPS)
+    ap.add_argument("--scenario", default="default",
+                    help="comma-separated: " + ", ".join(SCENARIOS))
+    ap.add_argument("--log", help="append every message to this file (JSON lines)")
+    args = ap.parse_args()
+    scenarios = [s for s in args.scenario.split(",") if s]
+    for s in scenarios:
+        if s not in SCENARIOS:
+            raise SystemExit(f"unknown scenario {s!r}; known: {', '.join(SCENARIOS)}")
+    log = open(args.log, "a", encoding="utf-8") if args.log else None
+    svc = Service(args.app, scenarios, log)
+
+    async def on_data(reader, writer):
+        svc.conns[writer] = {"subscribed": False}
+        try:
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+                try:
+                    msg = json.loads(line)
+                    if not isinstance(msg, dict):
+                        raise ValueError("not an object")
+                except ValueError as e:
+                    svc.send(writer, {"id": None, "ok": False,
+                                      "error": {"code": "bad_request", "message": f"invalid JSON: {e}"}}, "out")
+                    continue
+                svc.write_log("in", msg)
+                svc.handle(writer, msg)
+        except (ConnectionError, asyncio.IncompleteReadError):
+            pass
+        finally:
+            svc.conns.pop(writer, None)
+            writer.close()
+
+    async def on_control(reader, writer):
+        try:
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+                try:
+                    reply = svc.control(json.loads(line))
+                except Exception as e:  # report, keep serving
+                    reply = {"ok": False, "error": repr(e)}
+                svc.write_log("control", {"in": json.loads(line) if line.strip() else None, "out": reply})
+                writer.write((json.dumps(reply, ensure_ascii=False) + "\n").encode())
+                await writer.drain()
+        except ConnectionError:
+            pass
+        finally:
+            writer.close()
+
+    data = await asyncio.start_server(on_data, "127.0.0.1", 0)
+    ctrl = await asyncio.start_server(on_control, "127.0.0.1", 0)
+    dport = data.sockets[0].getsockname()[1]
+    cport = ctrl.sockets[0].getsockname()[1]
+    print(json.dumps({"data_addr": f"127.0.0.1:{dport}", "control_addr": f"127.0.0.1:{cport}"}), flush=True)
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+    await stop.wait()
+    data.close()
+    ctrl.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
