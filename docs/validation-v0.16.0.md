@@ -4,8 +4,9 @@
 M1 (the runtime and its contract; the example host, the bench and the six
 apps); M2 (the records service; the app session); M3 (the app pane); M4
 (the store and command line; approval and managing inside bzz, and the
-templates); and M7 (agents use an app's records). Each has its milestone's
-exit gate, on Linux. Not here yet: M5, M6 and M8. Nothing was pushed: what only CI
+templates); M7 (agents use an app's records); and M5 (agents write and
+change apps; its real-model gate prepared and not run). Each has its
+milestone's exit gate, on Linux. Not here yet: M6 and M8. Nothing was pushed: what only CI
 can show on macOS and Windows is listed as not seen. Plan:
 [`docs/planning/2026-11-17/v0.16.0.md`](planning/2026-11-17/v0.16.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
@@ -1977,3 +1978,53 @@ worktree's directory, then removed), ran the one test, and tore the
 harness down: `docker ps -a` listed no `buzz-harness` container after it.
 Log: `/media/arpagon/archive-data/experiment-artifacts/arpagon-01-med/bzz/m5/author-scripted.log`,
 output `…/m5/author-scripted/`.
+
+### Gates
+
+On `2bb6d21`, 2026-11-19 from 23:58 to 00:07 (UTC−5), one after the
+other. Afterwards only two lines changed for clippy (a `format!` in a test,
+and `brief_message` behind the feature), checked as shown, and the
+scenario of the release binary and this document were added.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets -- -D warnings`; the same with `--no-default-features` | two findings on `2bb6d21` (above), fixed in `5c6997e`; clean, both, on `5c6997e` |
+| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets` | exit 0: 1071 passed, 0 failed, 37 ignored, in 62 test programs; `agent_host_test` ran the real Pi host (Node 26.5). New here: 5 of `agent_authors_app_test`, 1 ignored of `relay_integration` (the pinned relay's), 1 of `store_migration_test`, 2 of `authoring_test`, 1 of `app_tools`, 2 of `agent::apps::authoring`, 2 of the store, 2 of the pane, 1 of the capability records |
+| Tests without the features | `cargo test --locked --no-default-features --lib` | 482 passed, on `2bb6d21` and again on `5c6997e` |
+| After the lint fix | `cargo test --locked --test agent_authors_app_test`; `--lib app::pane::tests::managed` | 5 and 6 passed |
+| The Pi host | `node --test test/*.test.mjs` in `agent-host/`, with the main checkout's `node_modules` linked for the run and removed after (no `npm ci` here) | 100 passed |
+| Pinned relay | `scripts/test-agent-authors-app.sh scripted` (the relay test, then the bench) | 1 passed; bench 17/17 at 80×24 and 17/17 at 40×16 |
+| Supply chain | not run: `Cargo.toml` and `Cargo.lock` are unchanged | |
+
+### Not proven in M5
+
+| Item | State |
+|---|---|
+| **A real model on each harness** (the plan's last gate of M5, D13) | not run: no real model or account in this task. Prepared: `scripts/test-agent-authors-app.sh pi-durable|grok|codex|claude-code` with `BZZ_AUTHOR_ALLOWED=yes`, proven end to end with `scripted`. Whether a model, from the tools' descriptions alone, finds `app_guide`, writes a version that passes the bench's 17 cases, and keeps the brief true is what that run will say; the brief is printed for a person to judge |
+| `:app brief` reaching the relay | the message is built and sent with `MessageService::send`, the composer's own path; the unit test has no relay and checks the text and what is refused |
+| An app made new by an agent, approved and opened by the owner | the store and the tool allow it (`notes`, `poll` wait in the bounds test); not approved and opened in a test |
+| A version approved, then failing as it is put to run, told to the agent | `Outcome::Failed` is said (`outcome_words`, unit) and M4's test shows the pane records it; not run with an agent's version end to end |
+| Waking the agent when the owner answers | not done, by decision (above): the agent is told at its next turn in the channel |
+| Two bzz processes, one answering in the TUI while the agent's turn reads the outcome | `app_version_told` marks only an untold row, in one statement; not tested with two processes |
+| Windows and macOS | not compiled or run here; the scripted tests are `cfg(unix)` as the harness tests are |
+| A coding harness's own sandbox and the store's files | an agent has no tool that writes them; a coding harness writes only where its guard lets it (v0.15), and a file changed on disk is found out by its hash (M4). Not tested with a coding harness trying to write `<data>/apps` |
+
+### Found on the way
+
+- **The `From:` line of the approval reaches the edge at 120 columns**
+  with an agent's key and the channel's id: the person who asked was cut
+  off. It has a line of its own now (`Asked by:`); the `From:` line itself
+  is as M4 left it, and still loses the end of the channel's id there.
+- **An agent's failed proposals are not recorded,** unlike the owner's
+  folder in M4: recording them would make an app row for every name an
+  agent tries.
+- **Ana must be allowed to wake the agent** for "a person who may wake it
+  asks": the default rule is the owner only, so the scripted test sets an
+  allow-list, as an owner would.
+- **The scripted harness's `fill` does not touch a script** whose text
+  holds `$`: only a whole string that starts with `$` is replaced, so a
+  Lua script passes through a step's arguments unchanged.
+- **`test-relay.sh` with `CARGO_TARGET_DIR` unset** and `./target` linked
+  to the worktree's directory builds nothing of Buzz and runs the pin's
+  own `target/` (M7 found the opposite with the variable set).

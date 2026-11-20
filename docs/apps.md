@@ -291,7 +291,9 @@ disk after you were shown them, it is not approved and can no longer be.
 A version that does not load is recorded as failed, with its error, and is
 never offered to you. One proposer has one version waiting at a time: a
 later one from the same proposer takes the earlier one's place. Up to
-eight versions of one app can wait.
+eight versions of one app can wait, and one agent of yours has at most
+three waiting of all apps. An agent's version that does not load is not
+recorded at all: the agent is told the error and you are not asked.
 
 ### Inside bzz
 
@@ -391,6 +393,8 @@ A rollback of an open app changes it in place, as an approval does.
 | A name | `[a-z][a-z0-9_-]{0,31}`, and not a name Windows keeps for a device (`con`, `nul`, `com1`…) |
 | Record types of one app | 16 |
 | Versions of one app waiting for an answer | 8, one for each proposer |
+| Versions one agent has waiting, of all apps | 3 |
+| An agent's proposals, and its tries | 6 and 20 a minute; one try at a time, 30 s at most |
 | Approved versions kept with their files | the 10 newest, the one that runs and the one before it |
 | Lines kept of versions without files | 50 |
 | A refusal's reason | 200 characters, one line |
