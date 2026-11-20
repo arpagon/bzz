@@ -18,6 +18,8 @@ pub struct WorkspaceState {
     pub communities_visible: bool,
     pub channels_visible: bool,
     pub context_visible: bool,
+    /// The app pane is drawn, so it is in the focus order.
+    pub app_visible: bool,
 }
 
 impl WorkspaceState {
@@ -36,7 +38,14 @@ impl WorkspaceState {
             communities_visible,
             channels_visible,
             context_visible,
+            app_visible: false,
         }
+    }
+
+    /// The same, with the app pane drawn or not.
+    pub const fn with_app(mut self, app_visible: bool) -> Self {
+        self.app_visible = app_visible;
+        self
     }
 
     fn focus_workspace(&mut self, focus: FocusSurface) {
@@ -44,7 +53,7 @@ impl WorkspaceState {
     }
 
     fn cycle_focus(&mut self, delta: isize) {
-        let mut surfaces = Vec::with_capacity(4);
+        let mut surfaces = Vec::with_capacity(5);
         if self.communities_visible && self.community_count > 0 {
             surfaces.push(FocusSurface::Communities);
         }
@@ -54,6 +63,9 @@ impl WorkspaceState {
         surfaces.push(FocusSurface::Timeline);
         if self.context_visible {
             surfaces.push(FocusSurface::Context);
+        }
+        if self.app_visible {
+            surfaces.push(FocusSurface::App);
         }
         let current = surfaces
             .iter()
@@ -97,7 +109,9 @@ pub enum WorkspaceEffect {
     CloseContext,
     EnsureContext,
     MoveSelection(isize),
-    MoveSelectionToEdge { last: bool },
+    MoveSelectionToEdge {
+        last: bool,
+    },
     ScrollViewport(ViewportScroll),
     ResizeFocusedSidePane(isize),
     ActivateFocused,
@@ -121,6 +135,10 @@ pub enum WorkspaceEffect {
     OpenEdit,
     MarkUnread,
     OpenProfile,
+    /// Give the app pane the focus, if an app is open here.
+    FocusApp,
+    /// Zoom the app pane to the whole window, or back.
+    ZoomApp,
     Unavailable(UiAction),
 }
 
@@ -313,6 +331,8 @@ pub fn reduce_workspace(state: &mut WorkspaceState, action: UiAction) -> Workspa
                 WorkspaceEffect::EnsureContext
             }
         }
+        UiAction::FocusApp => WorkspaceEffect::FocusApp,
+        UiAction::ZoomApp => WorkspaceEffect::ZoomApp,
         UiAction::NextFocus => {
             state.cycle_focus(1);
             WorkspaceEffect::None
@@ -547,6 +567,29 @@ mod tests {
         );
         assert!(!state.narrow_detail);
         assert_eq!(state.presentation.route, Route::Inbox);
+    }
+
+    #[test]
+    fn the_app_pane_is_in_the_focus_cycle_only_while_it_is_drawn() {
+        let mut state = WorkspaceState::new(PresentationState::default(), 0, 1, false, false, true);
+        reduce_workspace(&mut state, UiAction::NextFocus);
+        assert_eq!(state.presentation.focus, FocusSurface::Context);
+        reduce_workspace(&mut state, UiAction::NextFocus);
+        assert_eq!(state.presentation.focus, FocusSurface::Timeline);
+        let mut state = state.with_app(true);
+        reduce_workspace(&mut state, UiAction::NextFocus);
+        reduce_workspace(&mut state, UiAction::NextFocus);
+        assert_eq!(state.presentation.focus, FocusSurface::App);
+        reduce_workspace(&mut state, UiAction::PreviousFocus);
+        assert_eq!(state.presentation.focus, FocusSurface::Context);
+        assert_eq!(
+            reduce_workspace(&mut state, UiAction::FocusApp),
+            WorkspaceEffect::FocusApp
+        );
+        assert_eq!(
+            reduce_workspace(&mut state, UiAction::ZoomApp),
+            WorkspaceEffect::ZoomApp
+        );
     }
 
     #[test]

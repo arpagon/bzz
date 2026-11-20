@@ -24,6 +24,8 @@ Optional environment:
   BZZ_HERDR_FIXTURE=<absolute dir> harness scenarios: the disposable profile
                               written by examples/harness_fixture.rs (use
                               scripts/test-relay.sh --herdr)
+  BZZ_HERDR_SECOND_PANE=<pane-id> a second disposable shell pane, for a
+                              scenario with `beside = "second"` (v0.16)
 
 Only automated empty-profile scenarios run by default. Operator scenarios
 require the public disposable fixture and postconditions in docs/e2e-herdr.md;
@@ -53,6 +55,7 @@ fi
 mapfile -t scenarios < <(python3 - "$manifest" "$selection" <<'PY'
 import base64
 import os
+import re
 import sys
 import tomllib
 
@@ -76,7 +79,7 @@ if not isinstance(values, list) or not values:
     raise SystemExit("Herdr scenario manifest contains no scenarios")
 wanted = None if selected in {"all", "automated", "harness"} else set(selected.split(","))
 for scenario in values:
-    if set(scenario) - {"id", "kind", "description", "ready", "exit", "keymap", "step", "args", "profile"}:
+    if set(scenario) - {"id", "kind", "description", "ready", "exit", "keymap", "step", "args", "profile", "size", "beside", "restored"}:
         raise SystemExit("Herdr scenario manifest contains an unknown scenario field")
     identifier = scenario.get("id")
     kind = scenario.get("kind")
@@ -101,13 +104,28 @@ for scenario in values:
         raise SystemExit("Herdr scenario has invalid args")
     if profile not in {"first", "second"} or (kind != "harness" and (args or profile != "first")):
         raise SystemExit("Herdr scenario has an invalid profile, or args outside a harness scenario")
+    # v0.16: `size` (WxH), `beside = "second"`, `restored` (checked by
+    # scripts/test-tui-tmux.py only: Herdr does not show what bzz wrote).
+    size = scenario.get("size", "-")
+    beside = scenario.get("beside", "-")
+    if not re.fullmatch(r"-|[0-9]{2,3}x[0-9]{2,3}", size) or beside not in {"-", "second"}:
+        raise SystemExit("Herdr scenario has an invalid size or beside")
+    if not isinstance(scenario.get("restored", False), bool):
+        raise SystemExit("Herdr scenario has an invalid restored flag")
     safe = [identifier, kind, ready, exit_marker, scenario.get("keymap", "")]
     if any(control(value) for value in safe[:-1] + args):
         raise SystemExit("Herdr scenario manifest contains unsupported control characters")
-    print("\t".join(["H"] + safe[:4] + [encoded(safe[4]), profile, encoded("\x1f".join(args))]))
+    print("\t".join(["H"] + safe[:4] + [encoded(safe[4]), profile, encoded("\x1f".join(args)), size, beside]))
     for step in steps:
-        if not {"keys", "visible"} <= set(step) or set(step) - {"keys", "visible", "absent", "timeout", "regex", "pause"}:
-            raise SystemExit("Herdr scenario step takes keys, visible, absent, timeout, regex and pause")
+        if not {"keys", "visible"} <= set(step) or set(step) - {"keys", "visible", "absent", "timeout", "regex", "pause", "size", "paste", "pane"}:
+            raise SystemExit("Herdr scenario step takes keys, visible, absent, timeout, regex, pause, size, paste and pane")
+        step_size = step.get("size", "-")
+        step_pane = step.get("pane", "first")
+        paste = step.get("paste", "")
+        if not re.fullmatch(r"-|[0-9]{2,3}x[0-9]{2,3}", step_size) or step_pane not in {"first", "second"}:
+            raise SystemExit("Herdr scenario step has an invalid size or pane")
+        if not isinstance(paste, str) or any(c in paste for c in "\t\r\x1b\x1f"):
+            raise SystemExit("Herdr scenario step has an invalid paste")
         keys = step["keys"]
         visible = step["visible"]
         absent = step.get("absent", "")
@@ -140,7 +158,7 @@ for scenario in values:
                 events.extend("space" if character == " " else character for character in text)
             else:
                 events.append(key)
-        print("\t".join(["S", encoded("\x1f".join(events)), visible, str(timeout), encoded(absent), "regex" if pattern else "match", str(pause)]))
+        print("\t".join(["S", encoded("\x1f".join(events)), visible, str(timeout), encoded(absent), "regex" if pattern else "match", str(pause), step_size, encoded(paste), step_pane]))
 PY
 )
 
@@ -246,8 +264,8 @@ run_scenario() {
 # argument or in typed text is the fixture's folder. The fixture's `env` file
 # (v0.15: where the stand-in for `node` and Pi's empty folder are) is added
 # to the environment; it holds paths, never a secret.
-run_harness_scenario() {
-    local identifier=$1 ready=$2 profile=$3 encoded_args=$4
+harness_command() {
+    local profile=$1 encoded_args=$2
     local fixture=${BZZ_HERDR_FIXTURE:?harness scenarios need BZZ_HERDR_FIXTURE}
     [[ $fixture = /* && -f $fixture/passphrase && -d $fixture/config ]] || {
         echo "BZZ_HERDR_FIXTURE must be an absolute harness fixture directory" >&2
@@ -285,13 +303,36 @@ run_harness_scenario() {
     fi
     printf -v word ' 3<%q; status=$?; printf "__BZZ_HERDR_EXIT__:%%s\\n" "$status"' "$fixture/passphrase"
     command+=$word
+    printf '%s' "$command"
+}
+
+# Starts a command in a pane at its prompt: the screen cleared, the pane's
+# terminal written down (for `size` steps), and the scenario's size set.
+launch_in() {
+    local target=$1 which=$2 command=$3
+    herdr pane run "$target" "printf '\\033[3J\\033[2J\\033[H'" >/dev/null
+    herdr pane run "$target" "tty > $(printf %q "$root/tty-$which")" >/dev/null
+    if [[ $scenario_size != - ]]; then
+        herdr pane run "$target" "stty cols ${scenario_size%x*} rows ${scenario_size#*x}" >/dev/null
+    fi
+    sleep 0.3
+    herdr pane run "$target" "$command" >/dev/null
+}
+
+run_harness_scenario() {
+    local identifier=$1 ready=$2 profile=$3 encoded_args=$4
+    local fixture=$BZZ_HERDR_FIXTURE command
+    command=$(harness_command "$profile" "$encoded_args")
     # A command's output scrolls: what it printed is read from the pane's
     # recent output, with wrapped lines joined. The TUI is read as shown.
     source=visible
     [[ $encoded_args == "=" ]] || source=recent-unwrapped
     require_shell
-    herdr pane run "$pane" "printf '\\033[3J\\033[2J\\033[H'" >/dev/null
-    herdr pane run "$pane" "$command" >/dev/null
+    launch_in "$pane" first "$command"
+    if [[ $scenario_beside == second ]]; then
+        second_pane=${BZZ_HERDR_SECOND_PANE:?a scenario with beside = "second" needs BZZ_HERDR_SECOND_PANE}
+        launch_in "$second_pane" second "$(harness_command second "=")"
+    fi
     herdr pane wait-output "$pane" --source "$source" --lines 400 --match "$ready" --timeout 30000 >/dev/null || {
         echo "scenario '$identifier': \"$ready\" did not show. The pane shows:" >&2
         herdr pane read "$pane" --source "$source" --lines 400 >&2 || true
@@ -303,8 +344,11 @@ run_harness_scenario() {
 source=visible
 active_identifier=
 active_exit=
+scenario_size=-
+scenario_beside=-
+second_pane=
 for row in "${scenarios[@]}"; do
-    IFS=$'\t' read -r tag first second third fourth fifth sixth seventh <<<"$row"
+    IFS=$'\t' read -r tag first second third fourth fifth sixth seventh eighth ninth tenth <<<"$row"
     case $tag in
         H)
             [[ -z $active_identifier ]] || {
@@ -312,6 +356,8 @@ for row in "${scenarios[@]}"; do
                 exit 2
             }
             source=visible
+            scenario_size=$eighth
+            scenario_beside=$ninth
             run_scenario "$first" "$second" "$third" "$fourth" "$fifth" "$sixth" "$seventh"
             active_identifier=$first
             active_exit=$fourth
@@ -323,15 +369,29 @@ for row in "${scenarios[@]}"; do
             if ((sixth > 0)); then
                 sleep "$(printf '%d.%03d' $((sixth / 1000)) $((sixth % 1000)))"
             fi
-            # Deliberately never use `send-text`: this is key-event coverage.
+            # v0.16: `pane = "second"`, a `size` set on the pane's terminal
+            # (its foreground program gets SIGWINCH), a bracketed paste.
+            target=$pane
+            [[ $tenth != second ]] || target=$second_pane
+            if [[ $eighth != - ]]; then
+                stty -F "$(cat "$root/tty-$tenth")" cols "${eighth%x*}" rows "${eighth#*x}"
+            fi
+            paste=$(decoded "$ninth")
+            if [[ -n $paste ]]; then
+                # The one use of `send-text`: a paste is text, not keys. The
+                # brackets are what a terminal sends around a paste.
+                herdr pane send-text "$target" $'\e[200~'"$paste"$'\e[201~' >/dev/null
+            fi
+            # Otherwise never `send-text`: this is key-event coverage.
             # Herdr takes a bounded number of keys at a time.
             for ((index = 0; index < ${#keys[@]}; index += 40)); do
-                herdr pane send-keys "$pane" "${keys[@]:index:40}" >/dev/null
+                ((${#keys[@]} > 0)) || break
+                herdr pane send-keys "$target" "${keys[@]:index:40}" >/dev/null
             done
             [[ $fifth == regex ]] || second=${second//\{fixture\}/$fixture_text}
-            herdr pane wait-output "$pane" --source "$source" --lines 400 "--$fifth" "$second" --timeout "$third" >/dev/null || {
+            herdr pane wait-output "$target" --source "$source" --lines 400 "--$fifth" "$second" --timeout "$third" >/dev/null || {
                 echo "scenario '$active_identifier': \"$second\" did not show within $third ms. The pane shows:" >&2
-                herdr pane read "$pane" --source "$source" --lines 400 >&2 || true
+                herdr pane read "$target" --source "$source" --lines 400 >&2 || true
                 exit 1
             }
             # What must not be on the screen, such as a secret typed at a
@@ -345,7 +405,7 @@ for row in "${scenarios[@]}"; do
                 # text gets five seconds to go; what a command printed stays
                 # in the pane's recent output and never goes.
                 for attempt in {1..10}; do
-                    shown=$(herdr pane read "$pane" --source visible; herdr pane read "$pane" --source recent-unwrapped --lines 200)
+                    shown=$(herdr pane read "$target" --source visible; herdr pane read "$target" --source recent-unwrapped --lines 200)
                     [[ $shown == *"$absent"* ]] || break
                     if ((attempt == 10)); then
                         echo "scenario '$active_identifier': \"$absent\" is on the screen and must not be" >&2

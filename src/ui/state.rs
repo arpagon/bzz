@@ -20,6 +20,9 @@ pub enum FocusSurface {
     #[default]
     Timeline,
     Context,
+    /// The app pane (v0.16). While it has the focus every key but Ctrl+C
+    /// is the app's.
+    App,
     InboxList,
     InboxDetail,
 }
@@ -46,6 +49,8 @@ pub enum Overlay {
     /// A real command an agent wants to run, put to its owner (v0.15 M7).
     Approval,
     Artifacts,
+    /// `:apps`: the installed apps and where each is open (v0.16).
+    Apps,
     Broker,
     Huddle,
     /// A person's profile card (NIP-CL public channels where offered).
@@ -253,6 +258,7 @@ impl PresentationState {
                     | FocusSurface::Channels
                     | FocusSurface::Timeline
                     | FocusSurface::Context
+                    | FocusSurface::App
             )
         {
             return;

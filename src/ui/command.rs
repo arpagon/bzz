@@ -54,6 +54,10 @@ pub enum Command {
     Sort(String),
     /// Create a Solo chat: `:solo <name>`.
     Solo(String),
+    /// `:apps`: the installed apps, and where each is open.
+    Apps,
+    /// `:app open <name> | close | zoom`: the app of the selected channel.
+    App(String),
     Unknown(String),
 }
 
@@ -83,6 +87,10 @@ pub fn parse(input: &str) -> Command {
         "signin" | "sign-in" => Command::SignIn,
         "tochannel" | "send-to-channel" => Command::ToChannel,
         "artifacts" => Command::Artifacts,
+        "apps" => Command::Apps,
+        value if value == "app" || value.starts_with("app ") => {
+            Command::App(value.trim_start_matches("app").trim().to_owned())
+        }
         "tasks" | "my-tasks" => Command::Tasks,
         "broker" => Command::Broker,
         value if value == "presence" || value.starts_with("presence ") => {
@@ -154,6 +162,11 @@ mod tests {
         assert_eq!(parse(":sort alpha"), Command::Sort("alpha".into()));
         assert_eq!(parse(":solo Plans"), Command::Solo("Plans".into()));
         assert_eq!(parse(":artifacts"), Command::Artifacts);
+        assert_eq!(parse(":apps"), Command::Apps);
+        assert_eq!(parse(":app open board"), Command::App("open board".into()));
+        assert_eq!(parse(":app close"), Command::App("close".into()));
+        assert_eq!(parse(":app"), Command::App(String::new()));
+        assert!(matches!(parse(":application"), Command::Unknown(_)));
         assert_eq!(parse(":tasks"), Command::Tasks);
         assert_eq!(parse(":broker"), Command::Broker);
         assert_eq!(parse(":profile"), Command::Profile(String::new()));

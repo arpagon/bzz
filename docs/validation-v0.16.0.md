@@ -1,11 +1,12 @@
 # bzz v0.16.0 validation
 
-**Status:** in progress. Recorded below: M0; the first half of M1, the app
-runtime and its contract (M1-A); the service half of M2, the records of
-apps (M2-A); and the joining of the two in an app session, with M2's exit
-gate (M2-B, "M2 (session)"); and the second half of M1, the example host,
-the bench and the six apps, with M1's exit gate (M1-B, "M1 (bench and
-apps)"). Nothing was pushed: what only CI
+**Status:** in progress. Recorded below, each under its own heading: M0;
+M1, the app runtime and its contract (M1-A) and the example host, the bench
+and the six apps with M1's exit gate (M1-B); M2, the records service (M2-A)
+and the app session with M2's exit gate (M2-B); M3, the app pane with its
+exit gate; and the first half of M4, the store of apps and the command line
+(M4-A). Not here yet: approval inside bzz and the templates (M4-B), and M5
+to M8. Nothing was pushed: what only CI
 can show on macOS and Windows is listed as not seen. Plan:
 [`docs/planning/2026-11-17/v0.16.0.md`](planning/2026-11-17/v0.16.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
@@ -1389,3 +1390,169 @@ this document changed afterwards.
   dropping the new tables from a new one. The upgrade from a profile a real
   release wrote was run with `scripts/upgrade-test.sh` (v0.14.0); there is
   no seed for v0.15.0 yet.
+
+## M3 — The app pane
+
+Linux x86_64, Rust 1.98.1, Buzz pin `bf3bdd0eaefe`, 2026-11-19. Branch
+`t3/implement-m3-pane`, cut from `v0.16.0` at `4a765df` (before M1-B was
+merged). An app inside bzz's window, beside the conversation: the layout
+of M0's trial (q5), focus and keys, bracketed paste, `:apps` and `:app`,
+one session per open app in the loop, and M3's exit gate on the release
+binary with the pinned relay. The approval overlay is M4-B's.
+
+**Where it is.**
+
+| Path | What |
+|---|---|
+| `src/ui/layout.rs` | `panes_with_app`: the app pane, zoom, and the order of admission (the right-side pane asked for last, then the sidebar, the other one, the rail) |
+| `src/ui/app_pane.rs` | the rules that need no app: `key_owner`, `paste_target`, `app_paste_text`, the pane's border, the "too small" sentence |
+| `src/app/pane.rs` | the sessions in bzz's loop: start from `Apps::runnable`, waker, poll, tick, names, `failed_to_run`, `:apps`, `:app open/close/zoom`, keys, paste, drawing |
+| `src/app.rs` | the loop's arms (`Background::AppWake`, the tick, poll before a frame), `handle_key`, paste, mouse, render, the status line, the composer's target |
+| `src/ui/{state,action,keymap,hit_map,command,status,terminal}.rs` | `FocusSurface::App`, the focus cycle, `5` and `Space 5`, `HitTarget::App`, the commands, `APP` and the leave hint, bracketed paste and the panic hook |
+| `src/app/pane/tests.rs` | the pane inside `App`, on Ratatui's test backend, on records in memory |
+| `scripts/tui-herdr-scenarios.toml`, `scripts/test-tui-herdr.sh`, `scripts/test-tui-tmux.py`, `scripts/test-relay.sh` | the `t16-*` scenarios; the Herdr runner reads their fields; the same manifest through tmux (`--tmux`) |
+| `examples/harness_fixture.rs` | `looper/`, an app that keeps its thread busy |
+| `docs/apps.md`, `docs/app-api.md`, `docs/e2e-herdr.md` | the pane; what `host.quit()` is in bzz; the app scenarios |
+
+No dependency was added; `Cargo.toml` and `Cargo.lock` are unchanged.
+
+**What was decided here** (the plan and the brief left these open):
+
+| Question | Decided |
+|---|---|
+| A session whose channel is not selected | kept alive, so the app's state is there on return and its records keep syncing; at most four, the one shown least recently is closed and opened again from the store's records. All end on a switch of community, `:lock`, quit, and when bzz has no connection |
+| The focus when another channel is selected | back to the conversation if that channel has no app (render checks it) |
+| Several apps in one channel | the store can hold several; the pane shows one: `:app open` of another closes the first there |
+| `host.quit()` | `:app close`: the pane closes and the app is no longer open in that channel (`docs/app-api.md` says so) |
+| Under 40×16 | bzz's sentence, and `view` is not called; zoom when the docked pane is short and zoom gives 16 rows |
+| Zoom | `:app zoom`, and `Space 5`; it applies only while the app has the focus; `Ctrl+C` leaves it |
+| The thread between 74 and 101 columns | for everyone, app or not: the pane asked for last goes before the sidebar, so a thread asked for is drawn from 74 columns and the sidebar gives way; no rail beside a sidebar that gave way. The composer replies into a thread only while it is drawn (`reply_root`) |
+| A paste with no composer and no app focused | dropped, as before |
+| A paste into an app | the composer's rule (`sanitize_pasted_text`): CR and CRLF to LF, controls dropped, its size bounded |
+| A panic on an app's thread | the panic hook leaves the terminal alone and prints nothing for a thread named `bzz-app …`; the runtime already catches it and the pane says so |
+| Windows | crossterm 0.29 gives no paste event there: a paste arrives as keys, in the app as in the composer (`docs/apps.md`). Not run |
+| Names | from bzz's profiles: all at start, and on every tick those `unnamed()` lists that bzz has. Profiles bzz does not have are not fetched for the app |
+| Command completion | bzz has none for any command; `:apps`/`:app` are in `docs/apps.md`, `5` and `Space 5` in the generated help |
+
+**How to repeat.**
+
+```sh
+# the build environment of runs/v016/RULES.md, then:
+cargo test --locked --lib ui::layout ui::app_pane ui::status ui::terminal ui::action app::pane
+cargo build --locked --release
+ln -sfn "$CARGO_TARGET_DIR" target            # test-relay.sh uses ./target
+BZZ_TMUX_SCENARIOS=t16-cli-app-new,t16-cli-app-add,t16-cli-app-approve,t16-cli-app-add-second,t16-cli-app-add-looper,t16-app-pane,t16-app-live-second-profile,t16-app-looper-composer \
+  BZZ_TMUX_CAPTURES=/tmp/captures BZZ_BUZZ_SOURCE=<main checkout>/runs/buzz-pin ./scripts/test-relay.sh --tmux
+BZZ_TMUX_SIZE=200x50 BZZ_TMUX_SCENARIOS=harness BZZ_BUZZ_SOURCE=… ./scripts/test-relay.sh --tmux   # every harness scenario
+rm target
+```
+
+### Unit
+
+`U:` is a unit test; each red is the named test run with the one change in
+its cell, seen failing with the quoted message, and the file restored
+(`git checkout`). The runs are `/tmp/m3/reds.sh` and `reds2.sh` of the
+worktree, not kept.
+
+| Claim | Proof | Red without the change | Result |
+|---|---|---|---|
+| **With no app open the layout is v0.15's**, compared with a copy of v0.15's function over 65,160 cases (widths 40 to 220, five heights, every combination of rail, sidebar and thread, three pairs of widths, three docks), except where v0.15 left an open thread undrawn: there the thread is drawn at its width and the conversation keeps 30 | `U: ui::layout::tests::with_no_app_open_the_workspace_is_laid_out_as_in_v015` | the narrow body at 72 instead of 70: `left: (Some(Rect { … width: 22 …}), None, Rect { x: 22, … width: 48 …` `right: (None, None, Rect { x: 0, … width: 70 …` | pass |
+| A thread asked for is drawn from 74 columns, the sidebar giving way, and from 102 both | `U: a_thread_asked_for_is_drawn_from_74_columns` | v0.15's order (the sidebar before the thread): panic at `layout.rs:493` (`thread drawn`) | pass |
+| The trial's thresholds: 72 docks, 100 the sidebar too, 122 the rail; thread and app 116 and 144, everything 166; the one asked for last in front, the focused app always in front; 80×24 gives the conversation 38 and the app 40×18 | `U: the_thresholds_of_the_default_widths_are_the_trials` | the focused app not always in front: `left: HiddenBehindThread right: Docked` | pass |
+| A focused app that cannot dock takes the window; docked under 16 rows it is zoomed when that gives 16 (19 rows); zoom on request only while focused | `U: a_focused_app_that_cannot_dock_takes_the_window_and_leaves_it_with_the_focus` | no zoom for a short dock: `left: Docked right: Zoomed` | pass |
+| The panes never overlap, fill the body in order, keep the conversation's 30; the focused app is never undrawn; no rail beside a sidebar that gave way (171 widths × 6 heights × 64 requests) | `U: the_app_pane_never_overlaps_and_the_conversation_keeps_its_thirty_columns` | the rail shown beside a sidebar that gave way: panic at `layout.rs:584` | pass |
+| The exit gate's widths: 144, 100, 72, 60 | `U: the_widths_of_the_exit_gate` | — (written after the rule; no red taken) | pass |
+| **Who owns a key**: with the app focused every key but `Ctrl+C` is the app's (53 keys, among them `q ? : / i j k h l 1 2 3 4 5 [ ]`, Space, Enter, Esc, Tab, Shift+Tab, arrows, F1, F6, `Ctrl+U/Y/N/D/G/V/O/J`, `Alt+x`); `Ctrl+C` (and Ctrl+Shift+C) leaves | `U: ui::app_pane::tests::with_the_app_focused_every_key_but_ctrl_c_is_the_apps` | Ctrl+C given to the app: `left: App right: LeaveApp` | pass |
+| An overlay, then the composer, own every key before the app | `U: overlays_and_the_composer_come_before_the_app` | the app before the composer: `left: App right: Composer` | pass |
+| `Ctrl+Y` opens a waiting command first, and is the app's when nothing waits | `U: ctrl_y_opens_a_waiting_command_before_everything_and_is_the_apps_otherwise` | — (no red taken) | pass |
+| **Where a paste goes**: the agent form, a refusal's reason, the composer, the app only when nothing else takes text, else nowhere | `U: a_paste_goes_to_the_app_only_when_nothing_else_takes_text` | the app before the composer: `left: App right: Composer` | pass |
+| A pasted line break reaches an app as LF; an escape is dropped | `U: a_pasted_line_break_reaches_an_app_as_lf` | — (no red taken) | pass |
+| The border says how to leave, the notice is in the bottom border and costs no row (inside 40×18 of 42×20); under 40×16 bzz says so | `U: the_border_says_how_to_leave_and_the_notice_costs_no_row`, `under_forty_by_sixteen_bzz_says_so` | — (no red taken) | pass |
+| The status line names `Ctrl-c` and never offers `q quit` while an app has the keyboard, from 40 to 160 columns | `U: ui::status::tests::with_an_app_focused_the_status_line_says_how_to_leave_it` | the app ignored: panic at `status.rs:230` | pass |
+| The app pane is in the Tab cycle only while drawn; `5` and `Space 5` are effects | `U: ui::action::tests::the_app_pane_is_in_the_focus_cycle_only_while_it_is_drawn` | the pane left out of the cycle: `left: Timeline right: App` | pass |
+| A panic on an app's thread leaves the terminal alone | `U: ui::terminal::tests::a_panic_on_an_apps_thread_leaves_the_terminal_alone` | the name compared whole: panic at `terminal.rs:157` | pass |
+| `:apps`, `:app …` parse | `U: ui::command::tests::theme_reload_is_an_explicit_command` | — | pass |
+| **Keys and a paste reach the focused app and nothing else**, in bzz's own `App`: `q : 1 5 i ? Esc Tab Enter` reach the app, no overlay, composer or quit; a paste of two lines arrives as one, with LF; `Ctrl+C` leaves and the status line shows `? help · q quit` again; then the composer and an overlay own the keys and a paste, and the app gets nothing more | `U: app::pane::tests::keys_and_a_paste_reach_the_focused_app_and_nothing_else` | keys not sent to the session: `no "keys q : 1 5 i ? esc tab enter" on:`; the paste not given to the app: `no "pasted line one/line two" on:` | pass |
+| The pane follows the window and its channel: 80×24 docked 40×18; 60 columns zoomed while focused, hidden (`app hidden · 5`) otherwise; zoom at 160×40; under 40×16 bzz's sentence and no `view`; another channel shows no app and gives the focus back; coming back finds the session | `U: the_pane_follows_the_window_and_its_channel` | `view` called under 40×16: panic at `tests.rs:256` | pass |
+| The thread and the app share the right side; the composer replies into the thread only while it is drawn | `U: the_thread_and_the_app_share_the_right_side` | `reply_root` ignoring whether the thread is drawn: `left: Some("eeee…") right: None` | pass |
+| The hit map has the pane at the far right; the wheel elsewhere keeps the app's focus; the wheel over the app does nothing | `U: the_mouse_focuses_the_pane_and_the_wheel_keeps_the_apps_focus` | the pane not in the hit map: `left: None right: Some(App)`; the wheel taking the focus: `left: Timeline right: App` | pass |
+| A script stuck in a call costs the window nothing: twenty keys, polls and frames under 1.5 s with the script looping; the composer types twelve characters meanwhile | `U: a_looping_script_costs_the_window_nothing` | — (no red taken) | pass |
+
+### The exit gate, on the release binary
+
+**Run through tmux, not Herdr.** `herdr --session t3code pane list`
+answered `server_not_running`; the session was not started. The scenarios
+are written in the manifest's form, and `scripts/test-tui-herdr.sh` reads
+their new fields, but that runner has not run them: its `size` (by
+`stty` on the pane's terminal), `paste` (by `send-text` with the bracket
+sequences) and second pane are untried. `scripts/test-tui-tmux.py` ran the
+same manifest on a private tmux socket (tmux 3.6), on the release binary of
+this branch, with a disposable profile from `examples/harness_fixture.rs`
+on the pinned relay (`scripts/test-relay.sh --tmux`: the lock taken, the
+harness torn down after; `docker ps` showed no `buzz-harness` container
+after each run). The Board was written by `bzz app new`, proposed with
+`bzz app add` (answered no), approved with `bzz app approve`.
+
+Captures of every step, and the logs with the relay's lines removed, are in
+`runs/v016/m3-pane-captures/` of the main checkout (untracked):
+`t16-run/` (the eight `t16-*` scenarios), `all-harness/` (every harness
+scenario), `red-no-bracketed-paste/`.
+
+| Claim | Scenario | Seen | Result |
+|---|---|---|---|
+| Open an app | `t16-app-pane` | `:apps` lists `board (Board) · version 1 · open nowhere`; `:app open board` draws `Board · Ctrl-c leave` beside `#t9-general` with `Loaded 0 cards.`, and the status line `APP` and `Ctrl-c leaves the app` | pass |
+| Type in it and in the composer without one reaching the other | `t16-app-pane` | `n`, then `q:1 ?5 gg`, Tab, Enter: the card `q:1 ?5 gg` is saved, no quit question; Esc stays in `APP`; a paste of two lines shows `Title: pasted one pasted two` in the form; after `Ctrl+C`, `i` and `typed in the composer q:1 n` go to the composer and the Board still has one card; a paste of two lines stays in the draft, both lines, with the composer open | pass |
+| Narrow the window through 144, 100, 72 and 60 columns and back | `t16-app-pane` | 144: communities, channels, conversation, Board; 100: no communities, Board; 72: Board; 60: `app hidden · 5`, `5` zooms it, `Ctrl+C` hides it; 120: `Board · 5 focus` | pass |
+| Open a thread beside it | `t16-app-pane` | at 120 a thread takes the right side (`app behind thread · 5`), `5` brings the Board back and the dock says `message #t9-general`; at 160 both, and the dock says `reply in #t9-general` | pass |
+| Quit with the terminal restored | `t16-app-pane`, `t16-app-looper-composer` | exit 0; after it tmux reports `alternate_on=0 mouse_any_flag=0 mouse_sgr_flag=0 cursor_flag=1`, and in what bzz wrote the last `?1049l`, `?2004l`, `?1000l`, `?25h` come after the last switch on | pass |
+| A second profile changes a card and it shows in the pane | `t16-app-live-second-profile` | both TUIs open the Board in `#t9-general`; the second adds `from the second profile` (`To do (2)` in it after 972 ms); the first pane, untouched, shows it 3 ms after that | pass |
+| A looping script in the pane, and the composer still typing | `t16-app-looper-composer` | the looper spins 150 ms of every 250 on its thread; 98 characters sent to the composer at once were all on screen in 67 ms beside the idle Board and 65 ms beside the looper (`t16-run.log`; the full run at 200×50: 66 and 65 ms); `x` loops forever: `looper.lua:13: app.key ran longer than 250 ms and was stopped` in the pane and `app looper: looper.lua:13…` in the status line; `:app close` | pass |
+| Red: the same scenario with bracketed paste not switched on | `t16-app-pane` on a release binary with `EnableBracketedPaste` commented out | the paste into the Board's form arrived as keys (`pasted onepasted two`, then saved by its Enter); the paste into the composer sent its first line and ran the second as bzz's keys, which opened a profile card: `'second pasted line' did not show` | fail, as expected |
+
+The v0.15 behaviour while no app is open: every harness scenario of the
+manifest, v0.13 to v0.16, 29 of 29, through tmux at 200×50
+(`all-harness.log`). At 160×45 one v0.15 scenario failed only because a
+line wrapped at another column (`t15-coding-harnesses-in-panel`, the text
+was on screen). The first runs found two faults of the tmux runner (a `;`
+was taken by tmux as a separator; Esc was sent apart from the key after
+it, where Herdr sends a step's keys together); both fixed in the runner.
+
+### Gates
+
+On `4043a30`, 2026-11-19 at 19:10 (UTC−5), one after the other. Only
+this document changed afterwards.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets -- -D warnings`; the same with `--no-default-features` | clean, both |
+| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets` | exit 0: 955 passed, 0 failed, 35 ignored, in 59 test programs. New here: 6 of `ui::layout` (2 of v0.15 kept), 7 of `ui::app_pane`, 5 of `app::pane`, 1 each of `ui::status`, `ui::terminal`, `ui::action` |
+| Tests without the features | `cargo test --locked --no-default-features --lib` | 481 passed |
+| Supply chain | not run: `Cargo.toml` and `Cargo.lock` are unchanged | |
+| Release binary | `cargo build --locked --release`, the scenarios above | 8 of 8 `t16-*`; 29 of 29 harness scenarios |
+
+### Not proven in M3
+
+| Item | State |
+|---|---|
+| Herdr | the session `t3code` was not running. The scenarios ran through tmux; the Herdr runner's handling of `size`, `paste` and a second pane is written and untried |
+| A click on the pane, on the binary | the hit map and the focus are unit-tested; no mouse event was sent to the binary (tmux cannot synthesise one) |
+| Windows (no paste event), macOS, the Linux console | not compiled or run here |
+| A version that fails as the pane starts it (`failed_to_run`) | written; no test makes approved bytes fail to load in the pane. M4-B's approval brings new versions to an open pane |
+| An approval at the shell reaching an open app without a restart | M4-B |
+| Names of people bzz has no profile of | not fetched for the app; they show as the short key |
+| The session's notice in the border on the relay (quota, archived) | unit-tested on the frame; not seen on the binary |
+| A panic on an app's thread on the binary | the hook's rule is unit-tested; no panic was caused |
+
+### Found on the way
+
+- **tmux 3.6 exits when a window is created with `window-size manual`
+  set globally** (`new-window` answers `server exited unexpectedly`). The
+  runner sets sizes with `resize-window`, which makes that window's size
+  manual alone.
+- **Bracketed paste also fixes the composer** for everyone: before it, a
+  pasted line break sent the message and the rest ran as bzz's keys (the
+  red above opened a profile card).
+- **The Board saves a pasted line break as a space** (`ui.paste` into a
+  single-line input).
+

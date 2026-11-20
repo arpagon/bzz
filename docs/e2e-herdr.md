@@ -124,6 +124,54 @@ Two things to know when writing one. Never follow `esc` with another key in
 the same step: a terminal reads Esc and a key sent together as Alt and that
 key. And a line bzz draws in a narrow pane wraps: match a short piece of it.
 
+### Harness scenarios for the app pane (v0.16.0)
+
+The `t16-*` scenarios prove the app pane on the release binary, in the same
+run and on the same fixture. At the shell they write the Board from its
+template (`bzz app new board --to {fixture}/board-app`), propose it with
+`bzz app add` (answered no: it waits, nothing runs) and approve it with
+`bzz app approve`; the second profile adds and approves the same folder;
+and the fixture's `looper/`, an app whose script keeps its thread busy, is
+added and approved. Then, in the TUI:
+
+- `t16-app-pane`, M3's exit gate: `:apps` lists the Board; `:app open
+  board` opens it beside `#t9-general`; letters, digits, `q`, `:`, `?`,
+  Tab, Enter and Esc go to the Board's form and none opens anything of
+  bzz's; a paste of two lines reaches the form as one piece of text;
+  `Ctrl+C` gives the keyboard back; the composer then types, and a paste
+  of two lines stays in the draft; the window is narrowed through 144,
+  100, 72 and 60 columns (the app is hidden, `5` zooms it, `Ctrl+C` hides
+  it again) and widened back; a thread opened beside it takes the right
+  side, `5` brings the app back, and at 160 columns both show; `q`, `q`,
+  `y` quit, and the terminal is checked to be given back.
+- `t16-app-live-second-profile`: the Board is open in both profiles at
+  once, in two panes; a card the second adds shows in the first one's pane.
+- `t16-app-looper-composer`: the looper is open in the pane and the
+  composer types a long line at once; `x` loops forever in the script,
+  which is stopped and says so in the pane and the status line.
+
+Fields only these use:
+
+| Field | Meaning |
+|---|---|
+| `size = "WxH"` (scenario or step) | the window's size. Through Herdr the runner sets it on the pane's terminal with `stty`, which a Herdr pane narrower than that cannot show whole |
+| `paste = "text"` (step) | a bracketed paste before the keys. Through Herdr it is the runner's one use of `send-text`, with the bracket sequences around the text |
+| `beside = "second"` (scenario) | the second profile's TUI runs in a second pane (`BZZ_HERDR_SECOND_PANE`); steps with `pane = "second"` drive it |
+| `restored = true` (scenario) | after the exit, the bytes bzz wrote and tmux's own state show the alternate screen left, the mouse and bracketed paste off and the cursor shown. Only `scripts/test-tui-tmux.py` checks it |
+
+The same manifest runs through tmux on a private socket, for a machine
+where Herdr is not running, or to keep text captures of every step:
+
+```bash
+export BZZ_BUZZ_SOURCE=/path/to/pinned/buzz
+BZZ_TMUX_SCENARIOS=t16-cli-app-new,t16-cli-app-add,t16-cli-app-approve,t16-cli-app-add-second,t16-cli-app-add-looper,t16-app-pane,t16-app-live-second-profile,t16-app-looper-composer \
+  BZZ_TMUX_CAPTURES=/tmp/bzz-captures ./scripts/test-relay.sh --tmux
+```
+
+`BZZ_TMUX_SCENARIOS=harness` (the default) runs every harness scenario,
+v0.13 to v0.16, in order. The runner prints how long each step took to
+show what it waits for.
+
 ### Manual disposable-fixture journey
 
 Create `.env` from the template and set only non-secret values:
