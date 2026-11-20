@@ -1,6 +1,7 @@
 //! What an agent asked of its owner and what it was answered: each real
 //! command put to bzz for approval, and each git credential asked for
-//! (plan v0.15.0, M7 and M3). `bzz agent show` prints the end of it.
+//! (plan v0.15.0, M7 and M3); and each record of an app it created,
+//! changed or deleted (v0.16 M7). `bzz agent show` prints the end of it.
 //!
 //! It is a file of the machine, `<data>/agents/<id>/activity.jsonl`, one
 //! JSON object per line, for the owner only. It holds the first line of a
@@ -46,6 +47,18 @@ pub enum What {
     /// Something else a coding harness asked leave for and was refused:
     /// a file edit outside its folders, or what bzz has no rule for.
     Request { asked: String },
+    /// A record of an app the agent wrote, or tried to: which app, which
+    /// change, the record's type and id. Never its content.
+    Record {
+        app: String,
+        /// `create`, `update` or `delete`.
+        change: String,
+        #[serde(rename = "type")]
+        record_type: String,
+        /// The record's id; none for a create that was not stored.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -112,6 +125,26 @@ impl Entry {
         Self::now(What::Request { asked: kept }, answer)
     }
 
+    /// An entry for a record of an app the agent wrote or tried to write.
+    pub fn record(
+        app: &str,
+        change: &str,
+        record_type: &str,
+        id: Option<String>,
+        answer: impl Into<String>,
+    ) -> Self {
+        let short = |text: &str| sanitize::visible(text).chars().take(64).collect();
+        Self::now(
+            What::Record {
+                app: short(app),
+                change: short(change),
+                record_type: short(record_type),
+                id: id.map(|id| short(&id)),
+            },
+            answer,
+        )
+    }
+
     /// An entry for a credential asked for. Only the host is kept.
     pub fn credential(host: &str, answer: impl Into<String>) -> Self {
         Self::now(
@@ -146,6 +179,18 @@ impl Entry {
                 format!("{when} · git credential for {host} · {}", self.answer)
             }
             What::Request { asked } => format!("{when} · {asked} · {}", self.answer),
+            What::Record {
+                app,
+                change,
+                record_type,
+                id,
+            } => format!(
+                "{when} · {change} a {record_type} of the app {app}{} · {}",
+                id.as_deref()
+                    .map(|id| format!(" ({})", id.chars().take(8).collect::<String>()))
+                    .unwrap_or_default(),
+                self.answer
+            ),
         }
     }
 }

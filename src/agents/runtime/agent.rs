@@ -37,6 +37,8 @@
 //!   Its sandbox or its mode is set before a session is prompted, and each
 //!   thing it asks leave for is answered by rule ([`guard`]).
 
+#[cfg(feature = "apps")]
+mod apps;
 mod guard;
 
 use std::{
@@ -406,6 +408,9 @@ pub struct Agent {
     /// only to decide whether a request is handed to the harness while the
     /// relay cannot be asked again; never to publish.
     admitted: Mutex<HashMap<Uuid, (Instant, bool)>>,
+    /// The records of apps the agent uses, and its budget of writes.
+    #[cfg(feature = "apps")]
+    apps: apps::AgentApps,
 }
 
 /// The kind a request fails with when the relay refuses its reply.
@@ -487,6 +492,8 @@ impl Agent {
             presence_changed: Notify::new(),
             pruned: Mutex::new(None),
             admitted: Mutex::new(HashMap::new()),
+            #[cfg(feature = "apps")]
+            apps: apps::AgentApps::default(),
         })
     }
 
@@ -1036,6 +1043,11 @@ impl Agent {
         // Only `false` means something to the host: no Pi package's code runs.
         if !local.packages {
             bzz["packages"] = json!(false);
+        }
+        // The host offers the tools of apps' records only when this bzz
+        // serves them.
+        if cfg!(feature = "apps") {
+            bzz["apps"] = json!(true);
         }
         json!({
             "protocolVersion": 1,
@@ -2222,8 +2234,9 @@ impl Agent {
             Ok(call) => call,
             Err(text) => return ToolReply::refused(text),
         };
-        let publishes = !matches!(call, ToolCall::Read { .. });
+        let publishes = call.publishes();
         let is_final = matches!(call, ToolCall::Send { is_final: true, .. });
+        let chat_effect = call.is_chat_effect();
         let (row, request) = {
             let mut state = self.state();
             let Some(turn) = state.turns.get_mut(session).filter(|turn| turn.run == run) else {
@@ -2237,12 +2250,14 @@ impl Agent {
                         "This turn already has its final reply. Nothing more can be posted for this message.",
                     );
                 }
-                if turn.effects >= self.limits().effects_per_turn {
-                    return ToolReply::refused(
-                        "This turn has posted as much as one turn may. Send your final reply.",
-                    );
+                if chat_effect {
+                    if turn.effects >= self.limits().effects_per_turn {
+                        return ToolReply::refused(
+                            "This turn has posted as much as one turn may. Send your final reply.",
+                        );
+                    }
+                    turn.effects += 1;
                 }
-                turn.effects += 1;
             }
             turn.in_flight += 1;
             (turn.row.clone(), turn.request.clone())
@@ -2287,12 +2302,16 @@ impl Agent {
             }
             ToolCall::Read { limit, before } => self.read(&row, &request, limit, before).await,
             ToolCall::React { emoji, event } => self.react(&row, &request, &emoji, event).await,
+            #[cfg(feature = "apps")]
+            ToolCall::App(call) => self.app_tool(&row, call).await,
         };
         {
             let mut state = self.state();
             if let Some(turn) = state.turns.get_mut(session) {
                 turn.in_flight = turn.in_flight.saturating_sub(1);
-                if publishes && !is_final && !reply.is_error {
+                // A record of an app is no message: the turn's plain text
+                // can still be its reply.
+                if chat_effect && !reply.is_error {
                     turn.sent_any = true;
                 }
                 if reply.is_final {

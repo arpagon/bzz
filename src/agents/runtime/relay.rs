@@ -82,6 +82,14 @@ pub trait AgentRelay: Send + Sync + 'static {
     /// present while a connection of it is open: an agent that runs
     /// elsewhere must not look present because of a bzz that let it go.
     async fn close(&self) {}
+    /// The records of apps as this agent reads and writes them (v0.16 M7):
+    /// a records service on the agent's own key, connection and HTTP
+    /// client, so that what it writes is signed by it and spends its own
+    /// quota. `None`: this relay has none, and the record tools say so.
+    #[cfg(feature = "apps")]
+    fn records(&self) -> Option<crate::service::records::RecordsService> {
+        None
+    }
 }
 
 fn newest_first(events: &mut Vec<Event>) {
@@ -294,6 +302,9 @@ pub struct RelayPort {
     /// reads them, for `bzz agent show`: it then says the role the agent
     /// has now, also when no bzz of this profile is open.
     records: Option<(StoreHandle, Uuid)>,
+    /// The agent's own records service, made with the store above.
+    #[cfg(feature = "apps")]
+    app_records: Option<crate::service::records::RecordsService>,
 }
 
 impl RelayPort {
@@ -314,13 +325,26 @@ impl RelayPort {
             channels: Mutex::new(HashMap::new()),
             listening: AtomicBool::new(false),
             records: None,
+            #[cfg(feature = "apps")]
+            app_records: None,
         }
     }
 
     /// Keeps the relay's own records of the agent's channels in `store`,
-    /// as any bzz keeps them, each time they are read.
+    /// as any bzz keeps them, each time they are read. With the feature
+    /// `apps`, the records of apps the agent reads and writes are kept
+    /// there too.
     #[must_use]
     pub fn keeping_records(mut self, store: StoreHandle, community: Uuid) -> Self {
+        #[cfg(feature = "apps")]
+        {
+            self.app_records = Some(crate::service::records::RecordsService::new(
+                community,
+                self.http.clone(),
+                store.clone(),
+                crate::service::records::Writer::new(self.signer.clone(), self.supervisor.clone()),
+            ));
+        }
         self.records = Some((store, community));
         self
     }
@@ -441,6 +465,11 @@ impl AgentRelay for RelayPort {
         self.listening.store(false, Ordering::Release);
         self.supervisor.shutdown().await;
         self.signer.lock().await;
+    }
+
+    #[cfg(feature = "apps")]
+    fn records(&self) -> Option<crate::service::records::RecordsService> {
+        self.app_records.clone()
     }
 }
 
