@@ -159,13 +159,7 @@ pub struct Gate {
 /// writes an author it has no profile of (`c0c0c0c0…c0c0`). Cut on
 /// characters, whatever a script gives.
 pub fn short_id(id: &str) -> String {
-    let count = id.chars().count();
-    if count <= 12 {
-        return id.to_string();
-    }
-    let head: String = id.chars().take(8).collect();
-    let tail: String = id.chars().skip(count - 4).collect();
-    format!("{head}…{tail}")
+    crate::domain::abbreviated_pubkey(id)
 }
 
 /// The most ids an app is answered a short form for and the owner is asked
