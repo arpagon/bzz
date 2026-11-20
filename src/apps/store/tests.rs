@@ -996,6 +996,122 @@ fn a_folders_manifest_must_say_what_its_script_says() {
 
 /// Every template loads, declares the types its entry says, and has a
 /// brief that may be one. A template added to the table is covered here.
+/// The three templates of plan D9 at the pane's 40 by 16: a person is
+/// stored by id and shown by the name bzz knows (`host.name`), and the
+/// name of someone bzz learns of later replaces the short id on screen.
+#[test]
+fn the_templates_store_ids_and_show_names_at_forty_by_sixteen() {
+    use crate::apps::runtime::clock::ManualClock;
+    use crate::apps::runtime::{Limits, Who};
+    use crate::apps::session::headless::{Headless, HeadlessOptions, START_OF_TIME};
+    use crate::apps::session::memory::{MemoryStore, content};
+    use serde_json::json;
+
+    let ana = Who::new("a1".repeat(32), "ana");
+    let bo = Who::new("b0".repeat(32), "bo");
+    let cy = Who::new("c7".repeat(32), "cy");
+    let start = |name: &str, seed: &dyn Fn(&mut MemoryStore)| {
+        let template = templates::find(name).expect(name);
+        let clock = ManualClock::new(START_OF_TIME);
+        let mut store = MemoryStore::new(ana.clone(), clock.clone());
+        seed(&mut store);
+        Headless::start_on(
+            template.script,
+            HeadlessOptions::new(format!("{name}.lua"))
+                .size(40, 16)
+                .limits(Limits::patient()),
+            store,
+            clock,
+        )
+        .expect("starts")
+    };
+    let fits = |screen: &str| {
+        use unicode_width::UnicodeWidthStr;
+        assert_eq!(screen.lines().count(), 16, "{screen}");
+        assert!(screen.lines().all(|row| row.width() <= 40), "{screen}");
+    };
+
+    // The Board: a card holds no person; it fits.
+    let mut board = start("board", &|_| {});
+    board.key("n").type_text("Buy milk").key("enter");
+    let screen = board.screen();
+    fits(&screen);
+    assert!(screen.contains("Buy milk"), "{screen}");
+
+    // The Poll: a vote stores the voter's id; who voted is shown by name.
+    let mut poll = start("poll", &|store| {
+        store.seed(
+            "poll",
+            content(json!({ "question": "Lunch?", "options": ["Tacos", "Sushi"] })),
+            &bo,
+        );
+        store.seed(
+            "vote",
+            content(json!({ "voter": bo.id, "option": "Tacos" })),
+            &bo,
+        );
+        // cy voted; bzz has no name for cy yet.
+        store.seed(
+            "vote",
+            content(json!({ "voter": cy.id, "option": "Tacos" })),
+            &bo,
+        );
+    });
+    poll.key("enter");
+    let screen = poll.screen();
+    fits(&screen);
+    let short = crate::apps::session::short_name(&cy.id);
+    assert!(
+        screen.contains(&format!("By: bo, {short}, you")),
+        "{screen}"
+    );
+    let mine = poll.store().find_by("voter", &ana.id).expect("ana's vote");
+    assert_eq!(mine.content.get("option"), Some(&json!("Tacos")));
+    assert!(poll.session().unnamed().contains(&cy.id));
+    poll.session()
+        .set_names([(cy.id.clone(), "cy".to_string())]);
+    poll.settle();
+    assert!(
+        poll.screen().contains("By: bo, cy, you"),
+        "{}",
+        poll.screen()
+    );
+
+    // The Approvals: author and decider are ids, shown by name.
+    let mut approvals = start("approvals", &|store| {
+        store.seed(
+            "request",
+            content(json!({
+                "title": "New laptop", "author": bo.id, "state": "pending",
+                "decided_by": null, "reason": null, "order": 1,
+            })),
+            &bo,
+        );
+    });
+    let screen = approvals.screen();
+    fits(&screen);
+    assert!(screen.contains("New laptop  bo"), "{screen}");
+    approvals.key("a");
+    approvals.key("enter");
+    let screen = approvals.screen();
+    fits(&screen);
+    assert!(screen.contains("Author: bo"), "{screen}");
+    assert!(screen.contains("Decided by: ana"), "{screen}");
+    let decided = approvals.store().find_by("title", "New laptop").unwrap();
+    assert_eq!(decided.content.get("author"), Some(&json!(bo.id)));
+    assert_eq!(decided.content.get("decided_by"), Some(&json!(ana.id)));
+    // Nobody decides their own request: the id is compared.
+    approvals.key("n").type_text("Gym pass").key("enter");
+    approvals.key("a");
+    assert!(
+        approvals
+            .screen()
+            .contains("You cannot decide your own request."),
+        "{}",
+        approvals.screen()
+    );
+}
+
 #[test]
 fn every_template_loads_and_declares_what_its_entry_says() {
     assert!(templates::find(templates::DEFAULT).is_some());

@@ -1,22 +1,37 @@
 # Board
 
-Shared cards in three columns, To do, Doing and Done. Anyone in the channel
-adds cards and moves them; everyone sees the same board.
+A task board that a channel shares: cards in three columns, To do, Doing
+and Done. Anyone in the channel adds a card and moves it between columns,
+and everyone who has the board open sees the change at once.
 
-**Use.** `j`/`k` and the arrows move the selection, `h`/`l` change
-column, `]` and `[` move the selected card to the next or previous
-column, `n` adds a card to To do, `/` searches titles, `r` lists again,
-`q` closes. From 60 columns the three columns stand side by side; below,
-they are stacked.
+## Records
 
-**Records.** One type, `card`:
+One record type, `card`. A card's content:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `title` | string | what the card says |
-| `column` | `"todo"`, `"doing"` or `"done"` | where it stands |
-| `order` | number | its place in a column, lowest first; a new card takes the time it was made |
+| `title` | string | What the card says. Required; a card without one is shown as "(no title)". |
+| `column` | string | `"todo"`, `"doing"` or `"done"`. A card with another value is kept and not shown. |
+| `order` | number | Where the card stands in its column, smallest first. A new card gets the time it was made, in seconds since 1970. Two cards with the same `order` are ordered by their id. |
 
-**Rules.** When two people change one card at once, the move is applied on
-top of the other's change: a board merges. A field this version does not
-know (such as `priority`) is kept when it writes.
+Rules another client must keep to share these records:
+
+- A new card starts in `"todo"`.
+- Moving a card changes only `column`. Every other field is written back as
+  it was read, also fields this version does not know.
+- When two people move the same card at once, the later one takes the card
+  as the first left it and sets its own `column` on top.
+- Cards are never deleted by this app. A card that another client deletes
+  disappears from the board.
+
+## Keys
+
+`j`/`k` or the arrows move the selection, `h`/`l` change column, `]` and `[`
+move the selected card to the next or the previous column, `n` opens a form
+for a new card (Enter saves, Esc cancels), `/` searches the titles (Esc
+clears the search), `r` loads the cards again, `q` closes the board.
+
+## Screen
+
+From 60 columns the three columns stand side by side; below that they are
+stacked, so that it fits the 40 columns by 16 rows of bzz's app pane.

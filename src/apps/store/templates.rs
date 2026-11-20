@@ -1,19 +1,21 @@
 //! The apps bzz ships to start from (plan D9): `bzz app new <name>
-//! --template <template>` writes one as a folder of the owner's.
+//! --template <template>` writes one as a folder of the owner's, and so
+//! does `:app new` in the TUI.
 //!
 //! A template is a script and its brief. Its manifest is written for the
 //! name the owner gives, with the record types the script declares; a test
 //! loads every template apart and holds [`Template::types`] to what the
 //! script says.
 //!
-//! **To add a template**: put its brief at
-//! `src/apps/templates/<name>/brief.md`, point `script` at its fixture, and
-//! add it to [`TEMPLATES`] with the types the script declares. The test
-//! `every_template_loads_and_declares_what_its_entry_says` then covers it.
-//! Poll and Approvals (plan D9) are to come this way from the fixtures
-//! `tests/fixtures/apps/poll/app.lua` (types `poll`, `vote`) and
-//! `tests/fixtures/apps/approvals/app.lua` (type `request`), once they are
-//! merged; `docs/apps.md` gets a row for each.
+//! **One source.** A template's script and brief are the fixture of the
+//! same name, `tests/fixtures/apps/<name>/{app.lua,brief.md}`: what ships
+//! is what the runtime's tests (`apps::runtime::tests`) and the apps bench
+//! (`scripts/test-apps-bench.sh`) run, so the two cannot drift.
+//!
+//! **To add a template**: write the fixture and its brief, and add it to
+//! [`TEMPLATES`] with the types the script declares. The test
+//! `every_template_loads_and_declares_what_its_entry_says` then covers it;
+//! `docs/apps.md` gets a row.
 
 use std::path::Path;
 
@@ -34,16 +36,35 @@ pub struct Template {
     pub brief: &'static str,
 }
 
-/// The Board is the fixture the runtime's own tests and the bench run, so
-/// that what ships is what is tested.
-pub const TEMPLATES: &[Template] = &[Template {
-    name: "board",
-    title: "Board",
-    about: "cards in three columns: To do, Doing, Done",
-    types: &["card"],
-    script: include_str!("../../../tests/fixtures/apps/board/app.lua"),
-    brief: include_str!("../templates/board/brief.md"),
-}];
+/// The three of plan D9. Each stores people by id and shows them with
+/// `host.name`, keeps to the order field, handles a conflict as its brief
+/// says, and fits the pane's 40 by 16.
+pub const TEMPLATES: &[Template] = &[
+    Template {
+        name: "board",
+        title: "Board",
+        about: "cards in three columns: To do, Doing, Done",
+        types: &["card"],
+        script: include_str!("../../../tests/fixtures/apps/board/app.lua"),
+        brief: include_str!("../../../tests/fixtures/apps/board/brief.md"),
+    },
+    Template {
+        name: "poll",
+        title: "Poll",
+        about: "one question, its options, one vote for each person",
+        types: &["poll", "vote"],
+        script: include_str!("../../../tests/fixtures/apps/poll/app.lua"),
+        brief: include_str!("../../../tests/fixtures/apps/poll/brief.md"),
+    },
+    Template {
+        name: "approvals",
+        title: "Approvals",
+        about: "requests that someone else approves, or rejects with a reason",
+        types: &["request"],
+        script: include_str!("../../../tests/fixtures/apps/approvals/app.lua"),
+        brief: include_str!("../../../tests/fixtures/apps/approvals/brief.md"),
+    },
+];
 
 /// The template `bzz app new` uses when none is named.
 pub const DEFAULT: &str = "board";
