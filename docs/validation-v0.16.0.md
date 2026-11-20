@@ -2057,7 +2057,8 @@ release binary left in the worktree's target is the one the gates built.
 
 Linux x86_64, Rust 1.98.1, Buzz pin `bf3bdd0eaefe`, 2026-11-19 and 20.
 Branch `t3/implement-m5-agent-apps`, cut from `v0.16.0` at `429bbd5`
-(after M4 inside bzz was merged). A person asks an agent in a channel to
+(after M4 inside bzz was merged), with `v0.16.0` merged in at `7729603`
+(M6) so that its migration follows M6's 22. A person asks an agent in a channel to
 make or change an app; the agent reads the guide and the app, tries its
 script apart, and proposes it; the owner approves it in the overlay; the
 open app changes in place; the agent is told what became of it. Four tools,
@@ -2142,6 +2143,7 @@ its cell, seen failing with the quoted message, and the file restored
 | **Exit gate 5, nothing of an agent's runs unapproved, by any path**: five proposals in one turn: the Board, `notes`, `poll` wait; `tally` is `3 versions proposed by this agent already wait …`; a fifth Board replaces its own version 2 (`replaces: [2]`); `apps` with `notes` (not open here) gives only `your_versions`, no script; `approve` and `open_app` are no tools; afterwards `Apps::runnable` gives the Board's version 1 and nothing of `notes`; the only app open anywhere is the Board | `S: an_agents_proposals_never_run_unapproved_and_are_bounded`; `U: apps::store::tests::an_agent_has_at_most_three_versions_waiting_of_all_apps` | the bound lifted (`+ 100`): the fourth `Waiting` (`the fourth app: Ok(Waiting { version: 1, … })`), and the scripted test's list of waiting versions differs | pass |
 | **Exit gate 5, the secret scan covers the new tools**: on each of the four harnesses the guide, the Rota read whole, a try of the Rota on a copy of its days, a try of a script that looks for a key everywhere a script can reach (`os.getenv`, `/proc/self/environ`, `require`, `debug`, every global, `ctx.user`), and a proposal: the snooping script draws only `blocked`; the harness logs with every answer, the database and every file hold no key, no broker credential and no key of bzz's environment | `S: secret_scan_test::no_key_reaches_a_harness_environment_arguments_or_logs` | — (no red taken for the new steps; M7's red of the same test, a sentinel in a tool's answer, stands) | pass |
 | **Exit gate 6, one reply per mention on the pinned relay; and the whole gate there**: a disposable profile; Scout with the `bot` role in a new private channel; the Board installed, approved, open, three cards; the owner's mention carries the change request of `board-priority.md`; the scripted harness, run by `agents::runtime::service::serve` as the TUI runs it, reads, tries and proposes; one reply (`Proposed: the Board with priority and filter.`), 3 s after the mention; the version waits `From: your agent Scout (<key>), in channel …` `Asked by: <owner's short key> (<key>)`; approved; the agent's next turn says `applied`; one reply to the second mention; no record of the agent's on the relay. Then the bench: the approved script passes **17 of 17** `board-priority` cases at 80×24 and **17 of 17** at 40×16 | `R: real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied`, through `scripts/test-agent-authors-app.sh scripted` | — (the same code as the scripted claims; no separate red on the relay) | pass (23.6 s for the test) |
+| **The exit gate on the release binary, through the tmux runner** (Herdr's session `t3code` was not used; `scripts/test-tui-tmux.py` drives tmux on a private socket): in `#t15-agents` of the fixture profile, the owner adds the Board as `tasks` (`:app add`, `G`, `a`), opens it, makes `Alpha` and `Bravo` and selects `Bravo`; mentions Scout, whose real Pi Durable host on its stand-in model calls `buzz_propose_app` with the Board with priority read from a file; the banner says `tasks: version 2 from your agent Scout, asked by …`; the pane still shows `> Bravo` and no `Priority:`; Ctrl-Y shows `tasks (Tasks), version 2`, `Asked by: `, the brief CHANGED; `G`, `a`: `tasks: version 2 runs in place of 1, its state kept`, the pane shows `Priority: all` with `> Bravo`, and `5`, `2` give `> Bravo P2`; `:app brief` says `tasks: its brief is posted to #t15-agents as your message` and the timeline shows `The brief of the app Tasks`; a second mention a second later has Scout report `apps` with `app`, whose answer in the thread holds `tasks: applied. The owner approved`; quit with code 0 | `scripts/test-relay.sh --tmux` with `BZZ_TMUX_SCENARIOS=t16-m5-agent-changes-the-open-board` (`scripts/tui-herdr-scenarios.toml`) | — (its first five runs failed on the scenario's own steps: a status line M4 words differently, a thread opened on the wrong message, `q` closing the thread first; fixed in the scenario, not in bzz) | pass (29 steps, 6.1 s once ready), on the merged head |
 | The outcome is told once, in the channel it was proposed in, only after an answer; a superseded version and the owner's own are not told; approved, refused with the reason word for word, failed with the error are said as such | `U: apps::store::tests::an_agent_is_told_once_what_became_of_its_versions_in_that_channel`; `U: agent::apps::authoring::tests::an_outcome_is_said_with_the_owners_reason_word_for_word` | `told` not recorded: `assertion failed: fixture.apps().told(…)` | pass |
 | The prompt has nothing about apps beforehand (D17): no section without an outcome; the Pi host's system prompt names no app or record with the new tools offered | `U: prompt::tests::the_prompt_says_who_where_what_and_what_came_before`; `S:` the first prompt of the exit-gate test; `N: acp.test.mjs` "the tools of apps' records are offered only when bzz serves them…" (now with the three new names) | — | pass |
 | Migration 23: a database at the schema before it (22, set as `user_version`, so that on `v0.16.0` M6's 22 is not run again) with an agent's answered version opens at 23, reads back as it was, nobody named as having asked, and counts as told; v0.15's schema 20 still migrates with every row kept | `U: store_migration_test::the_schema_before_twenty_three_gains_who_asked_and_counts_every_version_as_told`, `schema_twenty_of_v015_gains_the_apps_tables_and_keeps_every_row` and the others with the version 23 | the `UPDATE … told_at` taken out: `told as of when it was answered`, `left: None` | pass |
@@ -2159,21 +2161,29 @@ output `…/m5/author-scripted/`.
 
 ### Gates
 
-On `2bb6d21`, 2026-11-19 from 23:58 to 00:07 (UTC−5), one after the
-other. Afterwards only two lines changed for clippy (a `format!` in a test,
-and `brief_message` behind the feature), checked as shown, and the
-scenario of the release binary and this document were added.
+On `b3cef85` (this branch with `v0.16.0` merged in), 2026-11-20 from
+01:37 to 01:44 (UTC−5), one after the other; then the pinned relay and the
+release binary, on the same commit. Only this document changed after.
+Before the merge the same gates ran on `2bb6d21` (1071 passed; clippy's two
+findings there fixed in `5c6997e`).
 
 | Gate | Command | Result |
 |---|---|---|
 | Format | `cargo fmt --check` | clean |
-| Lint | `cargo clippy --locked --all-targets -- -D warnings`; the same with `--no-default-features` | two findings on `2bb6d21` (above), fixed in `5c6997e`; clean, both, on `5c6997e` |
-| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets` | exit 0: 1071 passed, 0 failed, 37 ignored, in 62 test programs; `agent_host_test` ran the real Pi host (Node 26.5). New here: 5 of `agent_authors_app_test`, 1 ignored of `relay_integration` (the pinned relay's), 1 of `store_migration_test`, 2 of `authoring_test`, 1 of `app_tools`, 2 of `agent::apps::authoring`, 2 of the store, 2 of the pane, 1 of the capability records |
-| Tests without the features | `cargo test --locked --no-default-features --lib` | 482 passed, on `2bb6d21` and again on `5c6997e` |
-| After the lint fix | `cargo test --locked --test agent_authors_app_test`; `--lib app::pane::tests::managed` | 5 and 6 passed |
-| The Pi host | `node --test test/*.test.mjs` in `agent-host/`, with the main checkout's `node_modules` linked for the run and removed after (no `npm ci` here) | 100 passed |
-| Pinned relay | `scripts/test-agent-authors-app.sh scripted` (the relay test, then the bench) | 1 passed; bench 17/17 at 80×24 and 17/17 at 40×16 |
+| Lint | `cargo clippy --locked --all-targets -- -D warnings`; the same with `--no-default-features` | clean, both |
+| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets` | exit 0: 1088 passed, 0 failed, 38 ignored, in 62 test programs; `agent_host_test` ran the real Pi host (Node 26.5). New here: 5 of `agent_authors_app_test`, 1 ignored of `relay_integration` (the pinned relay's), 1 of `store_migration_test`, 2 of `authoring_test`, 1 of `app_tools`, 2 of `agent::apps::authoring`, 2 of the store, 2 of the pane, 1 of the capability records |
+| Tests without the features | `cargo test --locked --no-default-features --lib` | 484 passed |
+| The Pi host | `node --test test/*.test.mjs` in `agent-host/`, with the main checkout's `node_modules` linked for the run and removed after (no `npm ci` here); before the merge | 100 passed |
+| Pinned relay | `scripts/test-agent-authors-app.sh scripted` (the relay test, then the bench) | 1 passed (23.7 s); bench 17/17 at 80×24 and 17/17 at 40×16; before the merge the same |
+| Release binary | `cargo build --locked --release`, `scripts/test-relay.sh --tmux` with the M5 scenario | 1 of 1 scenarios passed |
 | Supply chain | not run: `Cargo.toml` and `Cargo.lock` are unchanged | |
+
+Every relay run took the lock, built nothing of Buzz, and tore the
+harness down: `docker ps -a` listed no `buzz-harness` container after the
+last. Logs in `/media/arpagon/archive-data/experiment-artifacts/arpagon-01-med/bzz/m5/`:
+`author-scripted.log`, `author-merged.log`, `tmux.log` to `tmux6.log`
+(the first five failed, the sixth passed), `tmux-merged.log`, with the
+screens of each step in `tmux-captures*/`.
 
 ### Not proven in M5
 
@@ -2183,6 +2193,7 @@ scenario of the release binary and this document were added.
 | `:app brief` reaching the relay | the message is built and sent with `MessageService::send`, the composer's own path; the unit test has no relay and checks the text and what is refused |
 | An app made new by an agent, approved and opened by the owner | the store and the tool allow it (`notes`, `poll` wait in the bounds test); not approved and opened in a test |
 | A version approved, then failing as it is put to run, told to the agent | `Outcome::Failed` is said (`outcome_words`, unit) and M4's test shows the pane records it; not run with an agent's version end to end |
+| The migration on `v0.16.0` order | on this branch with M6's 22 merged: 21, 22, 23 apply in turn (v0.15's and M6's tests count to 23); a database that already had 22 opens at 23. M6's test of 22 now drops 23's columns too, and compares `app_versions` rows as starting with what they were |
 | Waking the agent when the owner answers | not done, by decision (above): the agent is told at its next turn in the channel |
 | Two bzz processes, one answering in the TUI while the agent's turn reads the outcome | `app_version_told` marks only an untold row, in one statement; not tested with two processes |
 | Windows and macOS | not compiled or run here; the scripted tests are `cfg(unix)` as the harness tests are |
