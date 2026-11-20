@@ -458,6 +458,9 @@ fn approve(
         }
     };
     let approved = apps.approve(community, name, version, &hash)?;
+    if let Some(channel) = approved.opened_in {
+        println!("{name}: it was offered in channel {channel}, and opens there");
+    }
     match approved.replaced {
         Some(replaced) => println!(
             "{name}: version {version} is approved and is the version that runs now, in place of version {replaced}. `bzz app rollback {name}` goes back"

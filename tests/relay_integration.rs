@@ -8482,6 +8482,10 @@ struct RecordsProfile {
     signer: SignerHandle,
     supervisor: SupervisorHandle,
     service: bzz::service::records::RecordsService,
+    /// The store and the HTTP client the service was made with, for the
+    /// offers of apps (M6).
+    handle: StoreHandle,
+    http: HttpClient,
     config: Config,
     community: uuid::Uuid,
     store: std::path::PathBuf,
@@ -8532,10 +8536,11 @@ impl RecordsProfile {
             url::Url::parse("ws://localhost:3030/").unwrap(),
             signer.clone(),
         );
+        let handle = StoreHandle::spawn(database).unwrap();
         let service = bzz::service::records::RecordsService::new(
             community,
-            http,
-            StoreHandle::spawn(database).unwrap(),
+            http.clone(),
+            handle.clone(),
             bzz::service::records::Writer::new(signer.clone(), supervisor.clone()),
         );
         Self {
@@ -8543,6 +8548,8 @@ impl RecordsProfile {
             signer,
             supervisor,
             service,
+            handle,
+            http,
             config,
             community,
             store,
@@ -8603,10 +8610,11 @@ impl RecordsProfile {
             url::Url::parse("ws://127.0.0.1:9/").unwrap(),
             signer.clone(),
         );
+        let handle = StoreHandle::spawn(database).unwrap();
         let service = bzz::service::records::RecordsService::new(
             community,
-            http,
-            StoreHandle::spawn(database).unwrap(),
+            http.clone(),
+            handle.clone(),
             bzz::service::records::Writer::new(signer.clone(), supervisor.clone()),
         );
         Self {
@@ -8614,6 +8622,8 @@ impl RecordsProfile {
             signer,
             supervisor,
             service,
+            handle,
+            http,
             config,
             community,
             store,
@@ -9922,4 +9932,576 @@ async fn real_relay_agent_takes_a_day_in_the_rota_with_its_bot_role() {
         supervisor.shutdown().await;
     }
     owner.lock().await;
+}
+
+/// v0.16 M6 on the pinned relay: one profile shares the Board in a channel;
+/// another sees the offer with its brief and who signed it, runs nothing of
+/// it before approving it, approves it, and both use the same records. A
+/// later version with another type list, a revision by a third member, a
+/// tampered and an oversized artifact, offers from a guest and from
+/// someone outside the channel, the withdrawal, the brief posted once per
+/// version, and no key in any artifact.
+///
+/// Relay mode: the harness's default, `BUZZ_REQUIRE_RELAY_MEMBERSHIP` off;
+/// the channel is private. Everyone is a relay member; "outside" is a relay
+/// member who is not in the channel.
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_an_app_shared_in_a_channel_runs_elsewhere_only_after_approval() {
+    use bzz::apps::share;
+    use bzz::apps::store::{
+        AppError, Apps, Bundle, Proposer, Recorded, Submission, manifest::Manifest, offers::Told,
+        review::TypesChange,
+    };
+    use bzz::protocol::record::Change;
+    use bzz::service::messages::MessageService;
+    use bzz::service::offers::{OfferNews, OffersService};
+    use bzz::service::records::{RecordEvent, SyncState};
+    use nostr::nips::nip19::ToBech32 as _;
+    use serde_json::{Value, json};
+    use tokio::sync::mpsc::{self, UnboundedReceiver};
+
+    fn offers_of(
+        profile: &RecordsProfile,
+        root: std::path::PathBuf,
+    ) -> (OffersService, UnboundedReceiver<OfferNews>) {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let service = OffersService::new(
+            profile.community,
+            profile.http.clone(),
+            profile.handle.clone(),
+            profile.signer.clone(),
+            profile.supervisor.clone(),
+            MessageService::new(
+                profile.community,
+                profile.signer.clone(),
+                profile.handle.clone(),
+                profile.supervisor.clone(),
+            ),
+            root,
+            std::sync::Arc::new(move |news| {
+                let _ = sender.send(news);
+            }),
+        );
+        (service, receiver)
+    }
+    async fn news(receiver: &mut UnboundedReceiver<OfferNews>) -> OfferNews {
+        tokio::time::timeout(Duration::from_secs(30), receiver.recv())
+            .await
+            .expect("news of offers in time")
+            .expect("the offers are watched")
+    }
+    async fn told_next(receiver: &mut UnboundedReceiver<OfferNews>) -> Vec<Told> {
+        loop {
+            if let OfferNews::Told { told, .. } = news(receiver).await {
+                return told;
+            }
+        }
+    }
+    async fn synced(receiver: &mut UnboundedReceiver<OfferNews>) {
+        while !matches!(news(receiver).await, OfferNews::Synced { .. }) {}
+    }
+    async fn quiet(receiver: &mut UnboundedReceiver<OfferNews>, wait: Duration) -> Vec<OfferNews> {
+        let mut seen = Vec::new();
+        let until = tokio::time::Instant::now() + wait;
+        while let Ok(Some(news)) = tokio::time::timeout_at(until, receiver.recv()).await {
+            seen.push(news);
+        }
+        seen
+    }
+    async fn install(profile: &RecordsProfile, root: std::path::PathBuf, script: String) -> u32 {
+        let community = profile.community;
+        let brief = bzz::apps::store::templates::find("board").unwrap().brief;
+        profile
+            .handle
+            .call(move |store| {
+                let mut apps = Apps::at(store, root);
+                let recorded = apps
+                    .propose(
+                        community,
+                        Submission::new("board", script, brief, Proposer::owner()).titled("Board"),
+                    )
+                    .map_err(bzz::Error::from)?;
+                let Recorded::Waiting { version, hash, .. } = recorded else {
+                    panic!("{recorded:?}")
+                };
+                apps.approve(community, "board", version, &hash)
+                    .map_err(bzz::Error::from)?;
+                Ok(version)
+            })
+            .await
+            .unwrap()
+    }
+    async fn on_apps<T: Send + 'static>(
+        profile: &RecordsProfile,
+        root: std::path::PathBuf,
+        call: impl FnOnce(&mut Apps<'_>, uuid::Uuid) -> T + Send + 'static,
+    ) -> T {
+        let community = profile.community;
+        profile
+            .handle
+            .call(move |store| Ok(call(&mut Apps::at(store, root), community)))
+            .await
+            .unwrap()
+    }
+    async fn briefs(profile: &RecordsProfile, channel: uuid::Uuid) -> usize {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        profile
+            .http
+            .query_raw(&[json!({"kinds": [9], "#h": [channel.to_string()], "limit": 100})])
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| event.content.starts_with("I shared the app Board (board"))
+            .count()
+    }
+    fn bundle(script: String, brief: &str, types: &[&str]) -> Bundle {
+        let manifest = Manifest {
+            name: "board".into(),
+            title: "Board".into(),
+            api: 1,
+            types: types.iter().map(|name| (*name).to_owned()).collect(),
+        };
+        Bundle {
+            script: script.into_bytes(),
+            manifest_text: manifest.to_text(),
+            manifest,
+            brief: brief.into(),
+        }
+    }
+    fn raw_offer(channel: uuid::Uuid, content: String) -> EventBuilder {
+        let tags = [
+            ["ar", "1"],
+            ["d", &uuid::Uuid::new_v4().to_string()],
+            ["h", &channel.to_string()],
+            ["type", share::OFFER_TYPE],
+            ["title", "Board"],
+            ["op", "create"],
+            [share::APP_TAG, "board"],
+        ]
+        .map(|parts| nostr::Tag::parse(parts).unwrap());
+        EventBuilder::new(Kind::Custom(45_010), content).tags(tags)
+    }
+
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let folder = tempfile::tempdir().unwrap();
+    let ana = RecordsProfile::person(&source, folder.path(), "ana", "member").await;
+    let ben = RecordsProfile::person(&source, folder.path(), "ben", "member").await;
+    let cara = RecordsProfile::person(&source, folder.path(), "cara", "member").await;
+    let guest = RecordsProfile::person(&source, folder.path(), "guest", "member").await;
+    let outsider = RecordsProfile::person(&source, folder.path(), "outsider", "member").await;
+    let (ana_root, ben_root) = (
+        folder.path().join("ana-apps"),
+        folder.path().join("ben-apps"),
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let channel = uuid::Uuid::new_v4();
+    ana.send(
+        buzz_sdk::build_create_channel(
+            channel,
+            &format!("share-{}", &channel.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Private),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    for (member, role) in [
+        (&ben, None),
+        (&cara, None),
+        (&guest, Some(buzz_sdk::MemberRole::Guest)),
+    ] {
+        ana.send(buzz_sdk::build_add_member(channel, &member.pubkey(), role).unwrap())
+            .await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Ana has the Board, approved; Ben has nothing.
+    let template = bzz::apps::store::templates::find("board").unwrap();
+    let first = install(&ana, ana_root.clone(), template.script.to_owned()).await;
+    let (ana_offers, mut ana_news) = offers_of(&ana, ana_root.clone());
+    let (ben_offers, mut ben_news) = offers_of(&ben, ben_root.clone());
+    ana_offers.watch(Some((channel, false)));
+    ben_offers.watch(Some((channel, false)));
+    synced(&mut ana_news).await;
+    synced(&mut ben_news).await;
+
+    // 1. Ana shares it; Ben sees the offer, from her, by key, with its brief.
+    let shared = ana_offers.share(channel, "board").await.unwrap();
+    assert!(
+        shared.brief_posted && !shared.revised && !shared.unchanged,
+        "{shared:?}"
+    );
+    assert_eq!(shared.version, first);
+    let told = told_next(&mut ben_news).await;
+    let [
+        Told::Offered {
+            name,
+            version,
+            from,
+            replaces: None,
+            installed_from: None,
+            types_changed: false,
+        },
+    ] = told.as_slice()
+    else {
+        panic!("{told:?}")
+    };
+    assert_eq!(name, "board");
+    assert_eq!(from.id.as_deref(), Some(ana.pubkey().as_str()));
+    assert_eq!(from.channel, Some(channel));
+    let offered = *version;
+    // Ana's own offer is offered to nobody on her side.
+    assert!(
+        quiet(&mut ana_news, Duration::from_millis(500))
+            .await
+            .iter()
+            .all(|news| !matches!(news, OfferNews::Told { .. })),
+        "Ana's own offer was offered to her"
+    );
+
+    // 2. Before the approval nothing of it runs, at the one function that
+    // hands out a script to run.
+    let refused = on_apps(&ben, ben_root.clone(), |apps, community| {
+        apps.runnable(community, "board").map(|_| ())
+    })
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(refused, AppError::NothingApproved { waiting: 1, .. }),
+        "{refused}"
+    );
+    let review = on_apps(&ben, ben_root.clone(), move |apps, community| {
+        apps.review(community, "board", offered).unwrap()
+    })
+    .await;
+    let text = review.render(|_| "then".into());
+    assert!(
+        text.contains(&format!("a person of the channel ({})", ana.pubkey())),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "this exact revision ({}…)",
+            &shared.revision[..16]
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains(template.brief.lines().next().unwrap()),
+        "{text}"
+    );
+    assert_eq!(review.types_change, TypesChange::First);
+    let hash = review.hash.clone();
+    let approved = on_apps(&ben, ben_root.clone(), move |apps, community| {
+        apps.approve(community, "board", offered, &hash).unwrap()
+    })
+    .await;
+    assert_eq!(
+        approved.opened_in,
+        Some(channel),
+        "opened where it was offered"
+    );
+    let runnable = on_apps(&ben, ben_root.clone(), |apps, community| {
+        apps.runnable(community, "board").unwrap()
+    })
+    .await;
+    assert_eq!(runnable.script(), template.script.as_bytes());
+
+    // Both use the same records: a card by one shows for the other.
+    let (ana_board, mut ana_events) = ana.service.open(channel, "board", &["card"]).await.unwrap();
+    let (_ben_board, mut ben_events) = ben
+        .service
+        .open(channel, "board", runnable.types())
+        .await
+        .unwrap();
+    for events in [&mut ana_events, &mut ben_events] {
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if event == RecordEvent::State(SyncState::Live) {
+                break;
+            }
+        }
+    }
+    let card = ana_board
+        .create(
+            "card",
+            json!({"title": "shared board", "column": "todo", "order": 1.0})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .await
+        .unwrap();
+    let arrived = loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), ben_events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if let RecordEvent::Changes { changes, .. } = event {
+            break changes;
+        }
+    };
+    assert!(
+        matches!(arrived.as_slice(), [Change::Upsert(record)] if record.id == card.id && record.author == ana.pubkey()),
+        "{arrived:?}"
+    );
+
+    // 8. The brief was posted once; sharing the same version again posts
+    // nothing and publishes nothing.
+    assert_eq!(briefs(&ana, channel).await, 1);
+    let again = ana_offers.share(channel, "board").await.unwrap();
+    assert!(again.unchanged && !again.brief_posted, "{again:?}");
+    assert_eq!(briefs(&ana, channel).await, 1);
+
+    // 3. A later version, with a changed type list, is a new revision and a
+    // new offer, marked as such; it is never applied by itself.
+    let tagged = template.script.replace(
+        "app.types = { \"card\" }",
+        "app.types = { \"card\", \"tag\" }",
+    );
+    assert_ne!(tagged, template.script);
+    let second = install(&ana, ana_root.clone(), tagged.clone()).await;
+    let shared_again = ana_offers.share(channel, "board").await.unwrap();
+    assert!(
+        shared_again.revised && shared_again.brief_posted && shared_again.version == second,
+        "{shared_again:?}"
+    );
+    assert_eq!(shared_again.artifact, shared.artifact, "the same artifact");
+    assert_eq!(briefs(&ana, channel).await, 2, "once for each version");
+    let told = told_next(&mut ben_news).await;
+    let [
+        Told::Offered {
+            version: later,
+            types_changed: true,
+            installed_from: Some(installed_from),
+            ..
+        },
+    ] = told.as_slice()
+    else {
+        panic!("{told:?}")
+    };
+    assert_eq!(installed_from.id.as_deref(), Some(ana.pubkey().as_str()));
+    let later = *later;
+    let review = on_apps(&ben, ben_root.clone(), move |apps, community| {
+        apps.review(community, "board", later).unwrap()
+    })
+    .await;
+    assert_eq!(
+        review.types_change,
+        TypesChange::Changed {
+            added: vec!["tag".into()],
+            removed: vec![]
+        }
+    );
+    assert!(
+        review
+            .render(|_| String::new())
+            .contains("CHANGED from the version that runs:")
+    );
+    let running = on_apps(&ben, ben_root.clone(), |apps, community| {
+        apps.runnable(community, "board").unwrap().version()
+    })
+    .await;
+    assert_eq!(
+        running, offered,
+        "the installed version runs until Ben answers"
+    );
+
+    // 6. Cara publishes a new revision of Ana's offer: Ben is shown Cara.
+    let head = cara
+        .http
+        .query_raw(&[bzz::protocol::artifact::head_filter(shared.artifact)])
+        .await
+        .unwrap()
+        .iter()
+        .find_map(|event| bzz::protocol::artifact::parse(event).ok())
+        .unwrap();
+    assert_eq!(head.author, ana.pubkey());
+    let caras = bundle(
+        format!("{tagged}-- Cara's\n"),
+        "Cara's board.\n",
+        &["card", "tag"],
+    );
+    cara.send(share::revise(&head, &caras).unwrap()).await;
+    let told = told_next(&mut ben_news).await;
+    let [
+        Told::Offered {
+            version: caras_version,
+            from,
+            replaces: Some(replaces),
+            ..
+        },
+    ] = told.as_slice()
+    else {
+        panic!("{told:?}")
+    };
+    assert_eq!(from.id.as_deref(), Some(cara.pubkey().as_str()));
+    assert_eq!(replaces.id.as_deref(), Some(ana.pubkey().as_str()));
+    let caras_version = *caras_version;
+    let review = on_apps(&ben, ben_root.clone(), move |apps, community| {
+        apps.review(community, "board", caras_version).unwrap()
+    })
+    .await;
+    let text = review.render(|_| String::new());
+    assert!(
+        text.contains(&format!("a person of the channel ({})", cara.pubkey()))
+            && text.contains("Source:   CHANGED: the version installed here came from"),
+        "{text}"
+    );
+    let waiting = on_apps(&ben, ben_root.clone(), |apps, community| {
+        apps.waiting(community).unwrap()
+    })
+    .await;
+    assert_eq!(
+        waiting.len(),
+        1,
+        "Ana's later version no longer waits: {waiting:?}"
+    );
+
+    // 4. Tampered and oversized: refused on the sender's side before
+    // anything is sent, and on the receiver's when another client sends it.
+    let oversized = format!("--{}\n", "x".repeat(130 * 1024));
+    let error = share::create(
+        channel,
+        uuid::Uuid::new_v4(),
+        &bundle(oversized.clone(), "Big.", &["card"]),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("too large"), "{error}");
+    let wire = |script: &str, hash: &str| {
+        json!({"v":1,"manifest":{"name":"board","title":"Board","api":1,"types":["card"],
+               "script_sha256":hash},"brief":"A board.","script":script})
+        .to_string()
+    };
+    let good_hash = bzz::apps::store::manifest::sha256(template.script.as_bytes());
+    cara.send(raw_offer(channel, wire("os.exit()\n", &good_hash)))
+        .await;
+    let told = told_next(&mut ben_news).await;
+    assert!(
+        matches!(told.as_slice(), [Told::Refused { why, .. }] if why.contains("changed on the way")),
+        "{told:?}"
+    );
+    let big_hash = bzz::apps::store::manifest::sha256(oversized.as_bytes());
+    cara.send(raw_offer(channel, wire(&oversized, &big_hash)))
+        .await;
+    let told = told_next(&mut ben_news).await;
+    assert!(
+        matches!(told.as_slice(), [Told::Refused { why, .. }] if why.contains("too large")),
+        "{told:?}"
+    );
+
+    // 5. Someone who cannot write to the channel: the relay refuses, and
+    // nothing arrives.
+    for stranger in [&guest, &outsider] {
+        let event = stranger
+            .signer
+            .sign(
+                share::create(
+                    channel,
+                    uuid::Uuid::new_v4(),
+                    &bundle(template.script.to_owned(), "Mine.", &["card"]),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let ack = stranger.supervisor.publish(event).await.unwrap();
+        assert!(
+            !ack.accepted && ack.message.starts_with("restricted:"),
+            "{}",
+            ack.message
+        );
+    }
+    let heard = quiet(&mut ben_news, Duration::from_secs(2)).await;
+    assert!(
+        heard
+            .iter()
+            .all(|news| !matches!(news, OfferNews::Told { .. })),
+        "an offer from someone who cannot write arrived: {heard:?}"
+    );
+
+    // 7. Ana withdraws: the offer that waits goes (its head was Cara's, so
+    // the deletion is told as Ana's of Cara's offer); the installed copy
+    // stays.
+    let unshared = ana_offers.unshare(channel, "board").await.unwrap();
+    assert_eq!(unshared.already_by, None);
+    let told = told_next(&mut ben_news).await;
+    let [
+        Told::Withdrawn {
+            signer,
+            by: Some(by),
+            ..
+        },
+    ] = told.as_slice()
+    else {
+        panic!("{told:?}")
+    };
+    assert_eq!(signer.id.as_deref(), Some(cara.pubkey().as_str()));
+    assert_eq!(by.id.as_deref(), Some(ana.pubkey().as_str()));
+    let (waiting, running) = on_apps(&ben, ben_root.clone(), |apps, community| {
+        (
+            apps.waiting(community).unwrap(),
+            apps.runnable(community, "board").unwrap().version(),
+        )
+    })
+    .await;
+    assert!(waiting.is_empty(), "{waiting:?}");
+    assert_eq!(running, offered, "the installed copy stays");
+
+    // 9. No key or credential in any revision of any offer.
+    // Every artifact of the channel's offers, then every revision of each.
+    let heads = ben
+        .http
+        .query_raw(&[json!({"artifact": "current", "#h": [channel.to_string()], "#type": [share::OFFER_TYPE], "limit": 200})])
+        .await
+        .unwrap();
+    let mut ids: Vec<uuid::Uuid> = heads
+        .iter()
+        .filter_map(|event| bzz::protocol::artifact::parse(event).ok())
+        .map(|head| head.id)
+        .collect();
+    ids.push(shared.artifact);
+    ids.sort();
+    ids.dedup();
+    let mut offers: Vec<nostr::Event> = Vec::new();
+    for id in ids {
+        offers.extend(
+            ben.http
+                .query_raw(&[json!({"artifact": "history", "#d": [id.to_string()]})])
+                .await
+                .unwrap(),
+        );
+    }
+    // Ana's create and update, Cara's update, Ana's deletion, the tampered
+    // and the oversized offer.
+    assert!(offers.len() >= 6, "{} revisions of offers", offers.len());
+    for profile in [&ana, &ben, &cara, &guest, &outsider] {
+        let secrets = [
+            profile.keys.secret_key().to_secret_hex(),
+            profile.keys.secret_key().to_bech32().unwrap(),
+        ];
+        for event in &offers {
+            let text = serde_json::to_string(event).unwrap();
+            for secret in &secrets {
+                assert!(!text.contains(secret.as_str()), "a key in an offer");
+            }
+            let content: Value = serde_json::from_str(&event.content).unwrap_or(Value::Null);
+            assert!(content.get("key").is_none() && content.get("nsec").is_none());
+        }
+    }
+
+    ana_offers.watch(None);
+    ben_offers.watch(None);
+    drop((ana_board, ana_events, ben_events));
+    for profile in [ana, ben, cara, guest, outsider] {
+        profile.stop().await;
+    }
 }

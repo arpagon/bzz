@@ -19,7 +19,8 @@ What the manifest may say besides what test-tui-herdr.sh documents:
   scenario `size = "WxH"`     the window's size for the scenario
   scenario `beside = "second"` a second window runs the TUI of the fixture's
                                second profile; steps with `pane = "second"`
-                               go to it
+                               go to it. `beside = "other"`: that window
+                               runs another person's profile (v0.16 M6)
   scenario `restored = true`  after the exit, the terminal is checked: the
                                alternate screen left, the mouse and bracketed
                                paste off, the cursor shown, in what bzz wrote
@@ -157,7 +158,9 @@ def command_for(scenario, binary, fixture, work, profile):
         return "env " + " ".join(words) + '; printf "__BZZ_HERDR_EXIT__:%s\\n" "$?"'
     if not fixture:
         raise SystemExit("harness scenarios need BZZ_HERDR_FIXTURE")
-    home = fixture if profile == "first" else os.path.join(fixture, "second")
+    if profile not in {"first", "second", "other"}:
+        raise SystemExit(f"no profile {profile!r} in the harness fixture")
+    home = fixture if profile == "first" else os.path.join(fixture, profile)
     words = [f"BZZ_CONFIG_DIR={shlex.quote(home + '/config')}",
              f"BZZ_DATA_DIR={shlex.quote(home + '/data')}",
              f"BZZ_CACHE_DIR={shlex.quote(home + '/cache')}",

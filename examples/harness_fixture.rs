@@ -20,6 +20,8 @@
 //! runs the real Node. Those paths are in the fixture's `env` file, which
 //! `scripts/test-tui-herdr.sh` adds to bzz's environment. `second/` is a
 //! second profile of the same owner with no agent, to receive one in.
+//! `other/` is another person's profile, a member of `#t9-general`, for an
+//! app the viewer shares there (v0.16 M6).
 //! `looper/` is the folder of an app (v0.16) whose script keeps its thread
 //! busy, for the scenario that types in the composer beside it.
 //! Three more agents, one on each coding harness, have no program to run
@@ -138,8 +140,13 @@ async fn main() {
     );
     let owner = Keys::generate();
     let viewer = Keys::generate();
+    // Another person, a member of #t9-general with a profile of their own
+    // (`other/`): an app the viewer shares reaches them as an offer (v0.16
+    // M6). The viewer's own offers are never offered to the viewer.
+    let other = Keys::generate();
     seed_member(&source, &owner.public_key().to_hex());
     seed_member(&source, &viewer.public_key().to_hex());
+    seed_member(&source, &other.public_key().to_hex());
     // Two people named alike, for contextual names in the mention chooser.
     let namesakes = [Keys::generate(), Keys::generate()];
     for keys in &namesakes {
@@ -152,7 +159,7 @@ async fn main() {
     let adapter = std::env::var("BZZ_FIXTURE_IDENTITY_ADAPTER").ok();
     let fi = adapter.is_some();
     if !fi {
-        publish_content(&owner, &viewer, &namesakes, history).await;
+        publish_content(&owner, &viewer, &other, &namesakes, history).await;
     }
     let passphrase = hex::encode(rand::random::<[u8; 16]>());
     let (paths, config) = write_profile(&root, &root, &viewer, &passphrase, adapter);
@@ -163,6 +170,9 @@ async fn main() {
     println!("fixture ready: #t9-general, #t9-announcements (guest), #t9-agent-config (system)");
     looper_app(&root.join("looper"));
     // BZZ_FIXTURE_AGENTS=0: no local agent (a capture that needs none).
+    if !fi {
+        write_profile(&root.join("other"), &root, &other, &passphrase, None);
+    }
     if std::env::var("BZZ_FIXTURE_AGENTS").as_deref() != Ok("0") {
         write_profile(&root.join("second"), &root, &viewer, &passphrase, None);
         local_agent(&root, &paths, config, &passphrase).await;
@@ -388,11 +398,19 @@ async fn local_agent(root: &std::path::Path, paths: &Paths, mut config: Config, 
     );
 }
 
-async fn publish_content(owner: &Keys, viewer: &Keys, namesakes: &[Keys], history: u64) {
+async fn publish_content(
+    owner: &Keys,
+    viewer: &Keys,
+    other: &Keys,
+    namesakes: &[Keys],
+    history: u64,
+) {
     let owner_signer = SignerHandle::spawn(owner.clone());
     let viewer_signer = SignerHandle::spawn(viewer.clone());
+    let other_signer = SignerHandle::spawn(other.clone());
     let owner_session = connect(&owner_signer).await;
     let viewer_session = connect(&viewer_signer).await;
+    let other_session = connect(&other_signer).await;
     use buzz_sdk::{ChannelKind, Visibility};
 
     // general: open stream with generated history, a thread and a reaction.
@@ -406,6 +424,12 @@ async fn publish_content(owner: &Keys, viewer: &Keys, namesakes: &[Keys], histor
     publish(
         &viewer_session,
         &viewer_signer,
+        buzz_sdk::build_join(general).unwrap(),
+    )
+    .await;
+    publish(
+        &other_session,
+        &other_signer,
         buzz_sdk::build_join(general).unwrap(),
     )
     .await;
