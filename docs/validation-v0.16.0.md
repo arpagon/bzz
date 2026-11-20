@@ -1684,7 +1684,7 @@ templates (above).
 On `2806f53`, 2026-11-19 from 21:17 (UTC−5), one after the other
 (`/tmp/m4b/gates.sh` of the worktree). Only this document changed
 afterwards. The release binary of the exit gate was built from the same
-sources (the run at 21:05; the commits after it changed documents only).
+sources (the run that ended at 21:07; the commits after it changed documents only). The release binary left in the worktree's target is the red one of the table above.
 
 | Gate | Command | Result |
 |---|---|---|
