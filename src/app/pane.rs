@@ -911,7 +911,7 @@ impl App {
                         // the pane, and is the current one again.
                         (Some(kept), _) => {
                             self.status_error = Some(format!(
-                                "{name}: version {version} failed as it was put to run, and version {kept} goes on running: {first}"
+                                "{name}: version {version} failed to run; version {kept} goes on: {first}"
                             ));
                         }
                         (None, Some(earlier)) if earlier != version => {
@@ -944,7 +944,7 @@ impl App {
                     version,
                 } => {
                     self.status_error = Some(format!(
-                        "{name}: version {version} runs now in place of version {from}; the app kept its state"
+                        "{name}: version {version} runs in place of {from}, its state kept"
                     ));
                 }
                 live::Pending::Closed { channel } => self.forget_app(channel).await?,

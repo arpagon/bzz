@@ -330,7 +330,7 @@ its error, the version before goes on running with its state, and the
 status line says so:
 
 ```text
-tasks: version 3 failed as it was put to run, and version 2 goes on running: app.lua:41: in app.reload: …
+tasks: version 3 failed to run; version 2 goes on: app.lua:41: in app.reload: …
 ```
 
 **For whoever proposes a version** (M5's agents, M6's channel):
@@ -519,6 +519,6 @@ as it can do anything else that you can. Grant that with this in mind.
 | `… is not what was approved … It was changed outside bzz` | A file of an installed version was edited. Put it back, `bzz app rollback <name> --to <n>`, or add your folder again. |
 | `version N of <name> cannot be used: it was approved, and bzz no longer keeps its files` | It is older than the versions kept. Add its folder again. |
 | `<name> is disabled` | `bzz app enable <name>`, or `:app enable <name>`. |
-| `<name>: version N failed as it was put to run, and version M goes on running: …` | The approved version loaded apart and failed in the open app: in `app.reload`, in its first `app.view`, or with other record types. It is recorded as failed (`bzz app show <name>`). |
+| `<name>: version N failed to run; version M goes on: …` | The approved version loaded apart and failed in the open app: in `app.reload`, in its first `app.view`, or with other record types. It is recorded as failed (`bzz app show <name>`). |
 | `scroll to the end first (j, PgDn): an approval is of all of it` | The approval takes a yes only after its last row was on screen. |
 | `the seed has records of type …, which the script does not declare` | The script will never see those records: check the seed's `type`. |

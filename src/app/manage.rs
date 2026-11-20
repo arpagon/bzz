@@ -382,7 +382,7 @@ impl App {
                 self.with_store(name, |apps, community, name| {
                     apps.remove(community, name).map(|removed| {
                         format!(
-                            "{name} is uninstalled: every version bzz kept of it is deleted. {} record{} of types {}* that this bzz has stored stay in the channel{}; an app of the same name installed again finds them",
+                            "{name} uninstalled; {} record{} of {}* stay in the channel{}, for an app of that name installed again",
                             removed.records,
                             if removed.records == 1 { "" } else { "s" },
                             removed.type_prefix,
@@ -504,7 +504,7 @@ impl App {
             }
             Ok(Recorded::Failed { version, error }) => {
                 self.status_error = Some(format!(
-                    "{name}: it does not load, and nothing was changed (recorded as version {version}, failed): {}",
+                    "{name}: version {version} does not load, nothing changed: {}",
                     error.lines().next().unwrap_or_default()
                 ));
             }

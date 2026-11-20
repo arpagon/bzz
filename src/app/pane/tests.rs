@@ -567,9 +567,7 @@ return app
         assert!(!shown.contains("waits for your approval"), "{shown}");
         let said = app.status_error.clone().unwrap_or_default();
         assert!(
-            said.contains(
-                "counter: version 2 runs now in place of version 1; the app kept its state"
-            ),
+            said.contains("counter: version 2 runs in place of 1, its state kept"),
             "{said}"
         );
         assert_eq!(state_of(&app, 2).await.1, Outcome::Applied);
@@ -644,9 +642,8 @@ return app
         assert!(!shown.contains("v2 count"), "{shown}");
         let said = app.status_error.clone().unwrap_or_default();
         assert!(
-            said.contains(
-                "counter: version 2 failed as it was put to run, and version 1 goes on running"
-            ) && said.contains("v2 cannot take this state"),
+            said.contains("counter: version 2 failed to run; version 1 goes on")
+                && said.contains("v2 cannot take this state"),
             "{said}"
         );
         let (_, outcome, current) = state_of(&app, 2).await;
@@ -732,7 +729,9 @@ return app
         command(&mut app, "remove counter").await;
         let said = app.status_error.clone().unwrap_or_default();
         assert!(
-            said.contains("counter is uninstalled") && said.contains("stay in the channel"),
+            said.contains(
+                "counter uninstalled; 0 records of bzz.app.counter.* stay in the channel"
+            ),
             "{said}"
         );
         app.apps.checked = None;
