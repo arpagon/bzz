@@ -2217,3 +2217,30 @@ screens of each step in `tmux-captures*/`.
 - **`test-relay.sh` with `CARGO_TARGET_DIR` unset** and `./target` linked
   to the worktree's directory builds nothing of Buzz and runs the pin's
   own `target/` (M7 found the opposite with the variable set).
+
+## M8 — Release candidate
+
+### What counts as a regression
+
+Written before anything was measured (2026-11-20, 03:30 UTC−5).
+
+For a profile with no app, v0.16.0 is compared with v0.15.0 on the
+benchmarks both releases have (`benches/timeline.rs`, `store.rs`,
+`media.rs`, `agents.rs`), each side built before either is measured, the
+two measured in turn, each at least twice, with the machine's load
+recorded; and on the time the release binary takes to start (`bzz check`
+on the same profile, 30 runs of each). For each benchmark the lowest
+median of each side is compared, as for v0.15.0.
+
+- **No regression:** v0.16.0 is at most 5 % slower.
+- **Noise:** more than 5 % slower, but by less than v0.15.0's own runs
+  differ among themselves on that benchmark.
+- **A regression:** more than 5 % slower and more than that spread, in
+  every run. It is looked into: fixed if it is v0.16's code, or explained
+  and accepted in the release notes if it is not.
+
+For one app open there is no earlier release to compare with: memory and
+the time of a redraw and of a key are recorded, against two marks fixed
+here. A redraw of the docked app must take less than 1 ms (bzz draws at
+most 60 frames a second, and the app is one pane of the frame), and one
+open app must add less than the 64 MiB its interpreter may use.
