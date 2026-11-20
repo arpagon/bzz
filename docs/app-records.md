@@ -222,9 +222,11 @@ stops a create and says so.
 **The budget of an app's writes.** `service.budget()` is one `WriteBudget`
 for every app the owner has open in this community: 30 writes in any
 minute. The service does not spend it; whoever runs an app for the owner
-does, before `create`, `update` or `delete` (the session, below). Writes
-through `create_as` and its siblings are an agent's and count against the
-agent's own quota at the relay, not against this.
+does, before `create`, `update` or `delete` (the session, below). An
+agent's writes go through its own service (see "Who signs"), count against
+the agent's own quota at the relay, not against this, and have a budget of
+their own in bzz: 60 a minute, half the relay's 120 for an agent
+(`AGENT_RECORD_WRITES_PER_MINUTE`).
 
 `RecordsService::channel_total(channel)` is the relay's count of every live
 artifact of the channel. Past 4096 the artifact panel's channel-wide sync
@@ -250,14 +252,27 @@ A write is signed by a `Writer`: a signer and the connection it is sent on.
 `create`, `update` and `delete` use it. `app.identity()` is that identity's
 public key, which does not change.
 
-`create_as`, `update_as` and `delete_as` take another `Writer`. M7 makes one
-from a local agent's signer and that agent's own connection: the relay
-accepts an event only from a connection authenticated as its signer, and
-counts an agent's writes against the agent's quota. The fence and every check
-are the same. The open app is told of such a write once, as of any
-participant's change. On the pinned relay an agent with the role `bot`,
-writing this way, was stopped at the relay's own 120 a minute while its
-owner's write went through.
+`create_as`, `update_as` and `delete_as` take another `Writer`: another
+signer of this bzz, on its own connection, through an app the owner has
+open. The open app is told of such a write once, as of any participant's
+change.
+
+**What M7 does instead.** A local agent has a `RecordsService` of its own
+(`AgentRelay::records`; `RelayPort` makes it from the agent's key, its
+connection, its HTTP client and the owner's store), and opens on it the
+apps it uses. Its writes are that service's own `create`, `update` and
+`delete`: signed by the agent, on the connection authenticated as the
+agent, so the relay takes them and counts them against the agent's quota.
+The agent reads through its own sync, as the relay lets the agent read. It
+needs no app of the owner's open (`bzz agent run` has none), and it never
+holds the one instance of an app in a channel that the owner's pane takes.
+The owner's open app learns of the agent's change from its own sync, as of
+anyone's. The fence and every check are the same, in `AppRecords`; above
+them, `agents::runtime::agent::apps` lets an agent name only an app the
+owner installed, enabled, approved and opened in the channel of the turn,
+with the types of the approved version. On the pinned relay an agent with
+the role `bot`, writing this way, was stopped at the relay's own 120 a
+minute while its owner's write went through (M0).
 
 ## Where app writes stand in bzz's own queue
 
@@ -383,8 +398,8 @@ of 128 made in `App::new_with_diagnostics` and read in the `select!` of
 `AppSession` is `Send`. Dropping it ends the script's thread after the
 call it is in and ends the sync; nothing waits.
 
-For M7: `session.relay()` is the `AppRecords` of the open app, for
-`create_as` and its siblings.
+`session.relay()` is the `AppRecords` of the open app, for `create_as` and
+its siblings. M7 does not use them: see "Who signs".
 
 Not in the session: where the sentence is drawn (the pane's border is the
 place that costs the app no row), the title of the pane, the approval of a

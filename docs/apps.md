@@ -393,8 +393,36 @@ lock bzz or quit.
 
 ## Agents
 
-> **Not in this version.** Your agents cannot read, try or propose an app
-> yet.
+An agent woken in a channel can use the records of the apps open there,
+without a screen and without the app's script: it reads each app's brief
+to learn what the records mean, then lists, creates, changes and deletes
+them, as a person does through the pane. Every harness has the tools
+(`docs/agent-host-protocol.md`, section 5):
+
+| Tool | Does |
+|---|---|
+| `apps` | the apps open in this channel, each with its brief and record types |
+| `records` | the records of one type, with a `match` as a script's `data.list` |
+| `create_record`, `update_record`, `delete_record` | a whole record's content, with the `rev` it saw; a conflict gives it the record as it is now |
+
+- **Only what you opened here.** An app you installed, enabled and opened
+  in that channel, and only the record types of the version you approved.
+  An app open in another channel, or disabled, is not there for it. bzz
+  checks this where it serves the tool, whatever the harness sends.
+- **Signed by the agent.** bzz signs each record with the agent's key, on
+  the agent's own connection: the record's author is the agent, and the
+  relay counts its writes against the agent's quota, not yours. bzz sends
+  at most 60 of them a minute; past that, or past the relay's quota, the
+  agent is told how long to wait.
+- **No question to you**, as for a message: the channel already lets the
+  agent write there, and the fence is narrow. Each write is a line of the
+  agent's activity (`bzz agent show`). An app you have open shows the
+  agent's change at once, as anyone's.
+- A guest of the channel can read and not write: the agent is told the
+  relay's refusal.
+
+> **Not in this version yet.** Your agents cannot read, try or propose an
+> app's script.
 
 <!-- M5: an agent asked in the channel proposes a version through a tool
      (`apps::store::examine`, then `Apps::record` with

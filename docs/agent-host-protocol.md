@@ -151,7 +151,8 @@ they ask leave for.
    "mounts": [{"name": "site", "path": "/home/ann/site", "write": false, "exec": false}],
    "network": ["github.com"],
    "piDir": "/home/ann/.pi/agent",
-   "packages": true
+   "packages": true,
+   "apps": true
  }}}
 ```
 
@@ -196,6 +197,9 @@ they ask leave for.
 - `packages`: `false` switches Pi packages off for this agent. Absent or
   anything else: on (section 10). bzz always sends it, `true` or `false`,
   from the agent's settings.
+- `apps`: `true` from a bzz built with apps (v0.16): the host then
+  offers the model the tools of apps' records (section 5), which bzz
+  serves. Absent or anything else: it does not.
 - A bad `mounts` or `network` entry fails `initialize` with `-32602` and the
   reason. `initialize` may then be sent again, corrected. A second
   `initialize` after a successful one gets `-32600`, and so does any other
@@ -408,20 +412,61 @@ arguments never say which mention is answered.
 | `send` | `text` (string, required), `final` (boolean), `mentions` (array of pubkeys) | posts `text` in the turn's place, as a reply to the request. With `final`, ends the turn: one per request, under the rule of the ADR |
 | `read` | `limit` (1–100), `before` (event id) | returns recent messages of the place, newest last |
 | `react` | `emoji` (string, required), `event` (event id; default: the request) | adds a reaction |
+| `apps` | none | the apps open in the turn's channel: `{"apps": [{name, title, types, brief}], "unusable": [{name, why}]}` |
+| `records` | `app`, `type` (required), `match` (string, at most 256 bytes), `limit` (1–200, default 50) | the records of one declared type: `{"app", "type", "count", "records": [{id, type, rev, content, by: {id, name}}]}`, with `more` and `note` when not all fit (at most 64 KiB) |
+| `create_record` | `app`, `type`, `content` (object), all required | creates a record, signed by bzz with the agent's key: `{"record": {…}}` |
+| `update_record` | `app`, `id`, `rev`, `content`, all required | replaces the record's whole content if `rev` is its head: `{"record": {…}}` |
+| `delete_record` | `app`, `id`, `rev`, all required | deletes it under the same rule: `{"record": <its last state>, "deleted": true}` |
 
 - These are the names on the wire. **The model sees them as `buzz_send`,
-  `buzz_read` and `buzz_react`**, because Pi's file tools own the name
-  `read`. bzz never sees the prefixed names.
+  `buzz_read`, `buzz_react`, `buzz_apps`, and so on**, because Pi's file
+  tools own the name `read`. bzz never sees the prefixed names.
 - A call with a missing or misnamed argument is refused with a text that
   names the right one. `message` and `content` are accepted as other names
   for `text`; the host renames them before it asks.
 - A JSON-RPC error, or no answer before the turn is cancelled, reaches the
   model as a failed tool call.
 
+**The tools of apps' records** (v0.16, feature `apps`; `docs/apps.md`,
+`docs/app-api.md`). An app's records are what the people of a channel share
+through it; an agent reads and writes them without the app's script.
+
+- **The fence is bzz's**, whatever the harness sends: an app the owner
+  installed, enabled, approved and opened in the channel of the turn's
+  request; only the record types its approved version declares; only the
+  records of that channel. No argument names a channel. An app open
+  elsewhere, a disabled one, a type it did not declare (the long form
+  `bzz.app.<app>.<type>` included) and a record of another channel are
+  refused, and nothing is sent.
+- **A record is what a script is given**: `{id, type, rev, content, by}`.
+  `rev` is opaque; `by` is `{id, name}` of whoever wrote it last. There is
+  no order: an order is a field of the content. `match` looks at the
+  record's title, as a script's `data.list` does.
+- **Signed by bzz with the agent's key**, on the agent's own connection:
+  the author is the agent, and the relay counts the write against the
+  agent's quota, not its owner's. bzz sends at most 60 of an agent's
+  record writes in any minute.
+- **A write is allowed as `send` is**: no answer of the owner. Before each,
+  bzz asks the relay's records whether the agent may still write in the
+  channel; after the turn's final reply it is refused; each is a line of
+  the agent's activity. A record write is no message: it does not count
+  against the messages a turn may post, and the turn's plain text can
+  still be its reply.
+- **A failure** is `"isError": true` with a text whose first line is
+  `<code>: <reason>. <what to do>` and whose last line is JSON:
+  `{"error": {"code", "message", "retry_after"?}, "current"?}`. The codes
+  are a script's (`docs/app-api.md`): `conflict` with `current`, the record
+  as it is now; `rate_limited` with `retry_after`, the seconds to wait,
+  during which nothing is sent; `too_large`, `limit`, `refused`,
+  `not_found`, `unavailable`, `fenced`, `bad_request`. A wrong argument, an
+  app that is not open here, or an agent that may no longer write there is
+  a plain sentence.
+
 ## 6. Tools for other harnesses: `bzz agent-tools`
 
 `bzz agent-tools` is a hidden command: an MCP server over stdio with the same
-three tools. A harness starts it because bzz listed it in `mcpServers`:
+tools: the three of the chat and, from a bzz built with apps, the five of
+apps' records. A harness starts it because bzz listed it in `mcpServers`:
 
 ```json
 {"name": "buzz", "command": "<path to bzz>", "args": ["agent-tools"],

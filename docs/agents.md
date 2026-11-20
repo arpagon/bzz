@@ -167,6 +167,13 @@ A `pi-durable` agent's world is its own disk:
   every step of a redirect.
 - **The chat**: only through three tools bzz serves: send, read and react, in
   the conversation it was woken in. It has no key and no relay connection.
+- **The apps of that channel** ([`apps.md`](apps.md#agents)): through five
+  more tools, `apps`, `records`, `create_record`, `update_record` and
+  `delete_record`, it reads and changes the records of the apps you opened
+  in the channel it was woken in, and only the record types each declares.
+  bzz signs them with the agent's key; they count against the agent's quota
+  at the relay, at most 60 a minute. They need no yes from you, as a
+  message does not, and each is a line of its activity in `bzz agent show`.
 - **Your key and its own key**: never. Neither is in its process, its
   environment, its files or anything a tool returns.
 
