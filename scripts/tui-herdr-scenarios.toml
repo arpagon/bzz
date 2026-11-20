@@ -1860,10 +1860,12 @@ visible = "In all: 1 vote"
 keys = []
 visible = "> [ ] Sushi"
 
-# Rollback with the app open: version 1 again, the selection kept.
+# Rollback with the app open: version 1 again, the selection kept. The
+# command's own answer is replaced on the status line as soon as the pane
+# has taken the version, so either sentence shows that the rollback happened.
 [[scenario.step]]
 keys = [":", "type:app rollback poll", "enter"]
-visible = "poll: back to version 1 from 4"
+visible = "(poll: back to version 1 from 4|poll: version 1 runs in place of 4, its state kept)"
 
 [[scenario.step]]
 keys = []
