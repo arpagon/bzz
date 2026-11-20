@@ -26,6 +26,9 @@ pub const MAX_RECONCILE: usize = 3;
 /// The prefix of every record type of an app, `bzz.app.<app>.<record>`
 /// (v0.16). The type `bzz.app` itself, a shared script, does not have it.
 pub const APP_RECORD_TYPE_PREFIX: &str = "bzz.app.";
+/// The type of an app offered in a channel: its script, manifest and brief
+/// (v0.16 M6). The artifact panel lists it, and says what it is.
+pub const APP_OFFER_TYPE: &str = "bzz.app";
 /// The prefix of the subscription of an app's records. bzz's own handling of
 /// relay messages leaves these to the records service.
 pub const APP_RECORDS_SUBSCRIPTION_PREFIX: &str = "apprec-";

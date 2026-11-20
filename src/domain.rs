@@ -648,6 +648,9 @@ mod tests {
         // An id that is not hex, which a byte slice would cut inside a
         // character and panic on: two bytes for each `é`, four for the emoji.
         assert_eq!(abbreviated_pubkey(&"é".repeat(20)), "éééééééé…éééé");
-        assert_eq!(abbreviated_pubkey("a🐝🐝🐝🐝🐝🐝🐝🐝🐝🐝🐝🐝"), "a🐝🐝🐝🐝🐝🐝🐝…🐝🐝🐝🐝");
+        assert_eq!(
+            abbreviated_pubkey("a🐝🐝🐝🐝🐝🐝🐝🐝🐝🐝🐝🐝"),
+            "a🐝🐝🐝🐝🐝🐝🐝…🐝🐝🐝🐝"
+        );
     }
 }

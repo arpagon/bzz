@@ -2,6 +2,11 @@
 //! the cross-channel "My tasks" view. Content schemas are unpublished, so
 //! every type renders the safe fallback: title, type, home and its
 //! client-defined tags, never interpreted content.
+//!
+//! An app offered in the channel (`bzz.app`, v0.16) is listed like any
+//! artifact, as Buzz lets any member rename or delete it; the panel says
+//! what it is and what a rename or a delete here does to the offer. An
+//! app's records (`bzz.app.<app>.<record>`) are not listed.
 
 use std::collections::HashMap;
 
@@ -15,7 +20,7 @@ use uuid::Uuid;
 
 use crate::{
     domain::Profile,
-    protocol::artifact::display,
+    protocol::artifact::{APP_OFFER_TYPE, display},
     store::artifacts::StoredArtifact,
     ui::theme::{BorderSurface, HighlightGroup, Theme},
 };
@@ -81,6 +86,13 @@ impl ArtifactPanelState {
         self.selected = Some(self.items[next].head.id);
     }
 }
+
+/// What the panel says of an app offered in the channel.
+const APP_OFFER_LINES: [&str; 3] = [
+    "An app offered in this channel: its script, manifest and brief. Read and answer it with Ctrl-Y; :apps lists it.",
+    "A rename here publishes a new revision signed by you, which every bzz of the channel then offers as yours. A delete here withdraws the offer for everyone.",
+    "Copies people installed, and the app's records, stay either way. To withdraw your own offer, :app unshare.",
+];
 
 fn short(pubkey: &str, profiles: &HashMap<String, Profile>) -> String {
     profiles
@@ -168,12 +180,14 @@ pub fn render(
             } else {
                 display(head.title.as_deref().unwrap_or("untitled"), 60)
             };
+            let kind = if head.artifact_type == APP_OFFER_TYPE {
+                format!("  {APP_OFFER_TYPE} · an app offered here")
+            } else {
+                format!("  {}", display(&head.artifact_type, 32))
+            };
             ListItem::new(Line::from(vec![
                 Span::styled(title, theme.style(HighlightGroup::Normal)),
-                Span::styled(
-                    format!("  {}", display(&head.artifact_type, 32)),
-                    theme.style(HighlightGroup::Muted),
-                ),
+                Span::styled(kind, theme.style(HighlightGroup::Muted)),
             ]))
         })
         .collect::<Vec<_>>();
@@ -236,14 +250,112 @@ pub fn render(
         };
         lines.push(Line::from(format!("{}: {value}", display(&name, 24))));
     }
-    lines.push(Line::from(Span::styled(
-        "Content uses a schema bzz does not edit; it is kept unchanged.",
-        theme.style(HighlightGroup::Muted),
-    )));
+    if head.artifact_type == APP_OFFER_TYPE {
+        for line in APP_OFFER_LINES {
+            lines.push(Line::from(Span::styled(
+                line,
+                theme.style(HighlightGroup::Muted),
+            )));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Content uses a schema bzz does not edit; it is kept unchanged.",
+            theme.style(HighlightGroup::Muted),
+        )));
+    }
     frame.render_widget(
         Paragraph::new(lines)
             .style(theme.style(HighlightGroup::Normal))
             .wrap(Wrap { trim: true }),
         panes[1],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use nostr::{EventBuilder, Keys, Kind, Tag};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+    use crate::protocol::artifact::{KIND_ARTIFACT, parse};
+
+    fn artifact(keys: &Keys, home: Uuid, kind: &str, title: &str) -> StoredArtifact {
+        let tags = [
+            ["ar", "1"],
+            ["d", &Uuid::new_v4().to_string()],
+            ["h", &home.to_string()],
+            ["type", kind],
+            ["title", title],
+            ["op", "create"],
+        ]
+        .map(|parts| Tag::parse(parts).unwrap());
+        let head = parse(
+            &EventBuilder::new(Kind::Custom(KIND_ARTIFACT), "{}")
+                .tags(tags)
+                .sign_with_keys(keys)
+                .unwrap(),
+        )
+        .unwrap();
+        StoredArtifact {
+            live: Some(head.clone()),
+            head,
+        }
+    }
+
+    fn drawn(state: &ArtifactPanelState) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(160, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    frame.area(),
+                    state,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &Theme::default(),
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn an_app_offered_in_the_channel_is_listed_and_said_for_what_it_is() {
+        let keys = Keys::generate();
+        let channel = Uuid::new_v4();
+        let offer = artifact(&keys, channel, APP_OFFER_TYPE, "Board");
+        let task = artifact(&keys, channel, "buzz.task", "A task");
+        let mut state = ArtifactPanelState {
+            scope: ArtifactScope::Channel(channel),
+            ..ArtifactPanelState::default()
+        };
+        state.set_items(vec![offer, task.clone()]);
+        let shown = drawn(&state);
+        assert!(shown.contains("bzz.app · an app offered here"), "{shown}");
+        for words in [
+            "An app offered in this channel",
+            "A rename here publishes a new revision signed by you",
+            "A delete here withdraws the offer for everyone",
+            ":app unshare",
+        ] {
+            assert!(shown.contains(words), "`{words}` in:\n{shown}");
+        }
+        assert!(!shown.contains("Content uses a schema"), "{shown}");
+        // Any other type is as before.
+        state.selected = Some(task.head.id);
+        let shown = drawn(&state);
+        assert!(
+            shown.contains("Content uses a schema bzz does not edit"),
+            "{shown}"
+        );
+        assert!(!shown.contains("An app offered in this channel"), "{shown}");
+    }
 }

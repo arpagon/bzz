@@ -47,7 +47,7 @@ use crate::protocol::{
 };
 
 /// The artifact type of an offered app.
-pub const OFFER_TYPE: &str = "bzz.app";
+pub const OFFER_TYPE: &str = crate::protocol::artifact::APP_OFFER_TYPE;
 /// The number of the content's format.
 pub const FORMAT: u64 = 1;
 /// The client tag that names the app on every revision.
