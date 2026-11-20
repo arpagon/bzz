@@ -9613,3 +9613,313 @@ async fn real_relay_app_session_meets_a_persons_own_quota() {
     drop(pane);
     eva.stop().await;
 }
+
+/// v0.16 M7, the exit gate on the pinned relay: an agent with the `bot`
+/// role in a private channel where its owner opened the Rota takes a day
+/// when it is mentioned, through its tools, signed by bzz with the agent's
+/// key; another profile's Rota shows it. The relay runs with
+/// `BUZZ_REQUIRE_RELAY_MEMBERSHIP` as the wrapper was started: off by
+/// default; with it `true`, the agent is first shown to be refused at the
+/// relay's door, then made a relay member.
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_agent_takes_a_day_in_the_rota_with_its_bot_role() {
+    use bzz::{
+        agents::runtime::{Limits, service},
+        apps::store::{Apps, Proposer, Recorded, Submission},
+        auth::IdentityManager,
+        broker::custody,
+        config::{Harness, LocalAgentConfig},
+        diagnostics::DiagnosticHandle,
+        paths::Paths,
+        service::records::SyncState,
+    };
+    use serde_json::json;
+    use support::{agent_harness::Script, app_pane::Pane};
+
+    const ROTA: &str = include_str!("fixtures/apps/rota/app.lua");
+    const BRIEF: &str = include_str!("fixtures/apps/rota/brief.md");
+    const WAIT: Duration = Duration::from_secs(30);
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let closed = std::env::var("BUZZ_REQUIRE_RELAY_MEMBERSHIP").is_ok_and(|value| value == "true");
+    eprintln!(
+        "the relay requires membership: {closed} (BUZZ_REQUIRE_RELAY_MEMBERSHIP={:?})",
+        std::env::var("BUZZ_REQUIRE_RELAY_MEMBERSHIP").ok()
+    );
+    let temporary = tempfile::TempDir::new().unwrap();
+    let dirs = temporary.path();
+    let passphrase = "m7 disposable passphrase";
+    std::fs::write(dirs.join("pass"), format!("{passphrase}\n")).unwrap();
+    let cli = |args: &[&str]| {
+        let output = bzz_on_profile(dirs, args, None).output().unwrap();
+        assert!(
+            output.status.success(),
+            "bzz {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    // The owner's profile, made by bzz, with an agent whose key bzz holds.
+    cli(&[
+        "identity",
+        "new",
+        "--label",
+        "owner",
+        "--backend",
+        "encrypted-file",
+    ]);
+    let paths = Paths {
+        config_dir: dirs.join("c"),
+        data_dir: dirs.join("d"),
+        cache_dir: dirs.join("k"),
+    };
+    let mut config = Config::load(&paths).unwrap();
+    let identity = config.identities[0].clone();
+    let community = config
+        .add_community("m7".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    config.save(&paths).unwrap();
+    cli(&["broker", "create", "Scout", "--yes"]);
+    let config = Config::load(&paths).unwrap();
+    let mut agent = config.hosted_agents[0].clone();
+    let agent_hex = agent.pubkey.clone();
+    let _ = seed_member(&source, &identity.pubkey);
+    let bo = RecordsProfile::person(&source, dirs, "bo", "member").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let secret = secrecy::SecretString::from(passphrase.to_owned());
+    let owner = IdentityManager::new(&paths)
+        .signer(&identity, Some(&secret))
+        .unwrap();
+    let ws = url::Url::parse("ws://localhost:3030/").unwrap();
+    let http_base = url::Url::parse("http://localhost:3030/").unwrap();
+    let owner_supervisor = SupervisorHandle::spawn(ws.clone(), owner.clone());
+    let owner_http = HttpClient::new(http_base.clone(), owner.clone()).unwrap();
+    let publish = |builder: EventBuilder| {
+        let (owner, supervisor) = (owner.clone(), owner_supervisor.clone());
+        async move {
+            let event = owner.sign(builder).await.unwrap();
+            let ack = supervisor.publish(event.clone()).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+            event
+        }
+    };
+    // A private channel: the agent writes there because it was added, with
+    // the role `bot`; bo is a plain member.
+    let channel = uuid::Uuid::new_v4();
+    publish(
+        buzz_sdk::build_create_channel(
+            channel,
+            &format!("m7-{}", &channel.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Private),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    publish(buzz_sdk::build_add_member(channel, &bo.pubkey(), None).unwrap()).await;
+    publish(
+        buzz_sdk::build_add_member(channel, &agent_hex, Some(buzz_sdk::MemberRole::Bot)).unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // The owner's bzz: the Rota installed, approved, open in the channel.
+    let mut store = Store::open(paths.database_file()).unwrap();
+    store.sync_config(&config).unwrap();
+    {
+        let mut apps = Apps::new(&mut store, &paths);
+        let Recorded::Waiting { version, hash, .. } = apps
+            .propose(
+                community,
+                Submission::new("rota", ROTA, BRIEF, Proposer::owner()),
+            )
+            .unwrap()
+        else {
+            panic!("the Rota loads");
+        };
+        apps.approve(community, "rota", version, &hash).unwrap();
+        apps.open_in(community, "rota", channel).unwrap();
+    }
+    let relay_key = bzz::protocol::http::relay_signing_pubkey(&owner_http.nip11().await.unwrap())
+        .unwrap()
+        .to_owned();
+    store.pin_relay_pubkey(community, &relay_key).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    // The week, written by the owner.
+    let owners = bzz::service::records::RecordsService::new(
+        community,
+        owner_http.clone(),
+        store.clone(),
+        bzz::service::records::Writer::new(owner.clone(), owner_supervisor.clone()),
+    );
+    let (week, mut week_events) = owners.open(channel, "rota", &["day"]).await.unwrap();
+    while week.state() != SyncState::Live {
+        let _ = tokio::time::timeout(WAIT, week_events.recv())
+            .await
+            .unwrap();
+    }
+    for (order, day) in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        .iter()
+        .enumerate()
+    {
+        let content = json!({"day": day, "holder": null, "order": order + 1});
+        week.create("day", content.as_object().unwrap().clone())
+            .await
+            .unwrap();
+    }
+    // Another profile's Rota.
+    let mut theirs = Pane::open(&bo.service, channel, "rota", ROTA);
+    let screen = theirs
+        .until("the week on bo's screen", |screen, _| {
+            screen.contains("Loaded 7 days.")
+        })
+        .await;
+    assert!(screen.contains("Tue  free"), "{screen}");
+
+    if closed {
+        // Not a relay member: the agent's own connection is refused at the
+        // door, and so is any write of its.
+        let agent_signer = custody::unlock(&paths.keys_dir(), &owner, &agent)
+            .await
+            .unwrap();
+        let agent_supervisor = SupervisorHandle::spawn(ws.clone(), agent_signer.clone());
+        let message = agent_signer
+            .sign(buzz_sdk::build_message(channel, "hello", None, &[], false, &[], &[]).unwrap())
+            .await
+            .unwrap();
+        let ack =
+            tokio::time::timeout(Duration::from_secs(15), agent_supervisor.publish(message)).await;
+        eprintln!("an agent that is no relay member, writing: {ack:?}");
+        assert!(
+            !matches!(&ack, Ok(Ok(ack)) if ack.accepted),
+            "the relay took a write of an agent that is no member: {ack:?}"
+        );
+        agent_supervisor.shutdown().await;
+        agent_signer.lock().await;
+        let _ = seed_member(&source, &agent_hex);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    // The agent, run as the TUI runs it, on the scripted harness.
+    let script = Script::new(&dirs.join("harness"));
+    script.write(
+        json!({"own_host": true}),
+        json!([{"match": "take Tuesday", "steps": [
+            {"tool": "apps", "keep": "apps"},
+            {"tool": "records", "arguments": {"app": "rota", "type": "day"},
+             "keep": {"as": "tue", "find": "/records", "where": {"/content/day": "Tue"}}},
+            {"tool": "update_record", "arguments": {
+                "app": "rota", "id": "$tue/id", "rev": "$tue/rev",
+                "content": {"day": "Tue", "holder": "Scout", "order": "$tue/content/order"}}},
+            {"tool": "send", "arguments": {"text": "Tuesday is mine.", "final": true}},
+        ]}]),
+    );
+    let mut local = LocalAgentConfig::new(Harness::PiDurable);
+    local.command = script.command();
+    agent.local = Some(local);
+    let running = service::serve(service::ServeOptions {
+        paths: &paths,
+        store: store.clone(),
+        diagnostics: DiagnosticHandle::disabled(),
+        community: &config.communities[0],
+        agents: &[agent],
+        owner: &owner,
+        owner_identity: identity.id,
+        federated: None,
+        limits: Limits {
+            stop_grace: Duration::from_millis(500),
+            ..Limits::default()
+        },
+        owner_present: false,
+        environment: None,
+    })
+    .await
+    .unwrap()
+    .expect("one local agent");
+    assert!(running.problems.is_empty(), "{:?}", running.problems);
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !running.listening() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the agent's intake never subscribed"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let started = std::time::Instant::now();
+    let request = publish(
+        buzz_sdk::build_message(
+            channel,
+            "take Tuesday",
+            None,
+            &[agent_hex.as_str()],
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
+    )
+    .await;
+    // Bo's Rota shows the agent's day.
+    let screen = theirs
+        .until("the agent's day on bo's screen", |screen, _| {
+            screen.contains("Tue  Scout")
+        })
+        .await;
+    eprintln!(
+        "the agent's day was on bo's screen {} ms after the mention",
+        started.elapsed().as_millis()
+    );
+    assert!(screen.contains("Days: Scout 1"), "{screen}");
+    let tuesday = theirs
+        .session
+        .records()
+        .find(|record| record.content["day"] == "Tue")
+        .cloned()
+        .unwrap();
+    assert_eq!(tuesday.author, agent_hex, "signed with the agent's key");
+    // And so does the relay's own head, read by the owner.
+    let heads = owner_http
+        .query_raw(&[bzz::protocol::artifact::head_filter(tuesday.id)])
+        .await
+        .unwrap();
+    assert!(
+        heads
+            .iter()
+            .any(|head| head.pubkey.to_hex() == agent_hex && head.content.contains("\"Scout\"")),
+        "{heads:?}"
+    );
+    // The mention has its one reply.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let replies = loop {
+        let replies = owner_http
+            .query_raw(&[json!({"kinds": [9], "#h": [channel.to_string()], "authors": [agent_hex], "limit": 50})])
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                bzz::protocol::events::event_references(event).contains(&request.id.to_hex())
+            })
+            .collect::<Vec<_>>();
+        if !replies.is_empty() || tokio::time::Instant::now() > deadline {
+            break replies;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert_eq!(replies[0].content, "Tuesday is mine.");
+    let answered = script.tool_results("update_record");
+    assert_eq!(answered.len(), 1);
+    assert_ne!(answered[0]["isError"], true, "{answered:?}");
+
+    drop(theirs);
+    drop(week);
+    running.stop().await;
+    for supervisor in [&owner_supervisor, &bo.supervisor] {
+        supervisor.shutdown().await;
+    }
+    owner.lock().await;
+}

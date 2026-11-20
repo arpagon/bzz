@@ -41,6 +41,10 @@ RELAY_ENV=(
   BUZZ_RATE_LIMIT_HUMAN_API_CALLS_PER_MIN
   BUZZ_MEMBERSHIP_SNAPSHOT_ENABLED BUZZ_MEMBERSHIP_PUBLIC_ENABLED BUZZ_NIP_FI_MODE BUZZ_NIP_FI_ISSUERS
   BUZZ_NIP_FI_COMMUNITIES BUZZ_NIP_FI_MAX_CONNECTION_LIFETIME_SECS
+  # Off unless the caller sets it: with `true` the relay admits only its
+  # members, and needs RELAY_OWNER_PUBKEY (v0.16 M7 runs its agent test
+  # both ways; the rest of the suite needs it off).
+  BUZZ_REQUIRE_RELAY_MEMBERSHIP RELAY_OWNER_PUBKEY
 )
 ISSUER_PID=
 cleanup() {
