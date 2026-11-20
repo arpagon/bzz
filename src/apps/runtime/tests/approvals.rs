@@ -28,10 +28,18 @@ fn request(
     by: Option<&str>,
     reason: Option<&str>,
 ) -> Value {
-    json!({ "title": title, "author": author, "state": state, "decided_by": by, "reason": reason })
+    // A person in a field is an id; the cases name them.
+    json!({
+        "title": title,
+        "author": id_of(author),
+        "state": state,
+        "decided_by": by.map(id_of),
+        "reason": reason,
+    })
 }
 
 fn five_requests(store: &mut MemoryStore) {
+    everyone_named(store);
     let seed = [
         request("New laptop", "bo", "pending", None, None),
         request("Team lunch", "ana", "pending", None, None),
@@ -421,7 +429,7 @@ fn case_11_remote_change() {
         app.deliver(created);
         let mut decided = laptop.content.clone();
         decided.insert("state".into(), json!("approved"));
-        decided.insert("decided_by".into(), json!("cy"));
+        decided.insert("decided_by".into(), json!(id_of("cy")));
         let updated = app.store().remote_update(&cy(), &laptop.id, decided);
         app.deliver(updated);
         let deleted = app.store().remote_delete(&bo(), &desk);
@@ -451,7 +459,7 @@ fn case_12_conflict() {
         // While ana approves it, bo rejects it.
         let mut theirs = laptop.content.clone();
         theirs.insert("state".into(), json!("rejected"));
-        theirs.insert("decided_by".into(), json!("bo"));
+        theirs.insert("decided_by".into(), json!(id_of("bo")));
         theirs.insert("reason".into(), json!("Duplicate"));
         app.store().arm_conflict(&laptop.id, &bo(), theirs.clone());
         app.key("a");
@@ -523,7 +531,7 @@ fn case_14_reject_needs_a_reason() {
         // The decision on top of the record: title, author and order kept.
         let mut after = before;
         after["state"] = json!("rejected");
-        after["decided_by"] = json!("ana");
+        after["decided_by"] = json!(id_of("ana"));
         after["reason"] = json!("Over budget");
         assert_eq!(stored(&mut app, "New laptop"), after);
     });

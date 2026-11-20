@@ -14,8 +14,10 @@ hints) is free.
 - Records:
   - exactly one of type `poll`: `{"question": string, "options": [string, ...]}`;
   - any number of type `vote`: `{"voter": string, "option": string}`. A
-    participant's vote is the `vote` record whose `voter` equals their name,
-    `ctx.user.name` (for example `ana`).
+    participant's vote is the `vote` record whose `voter` equals their id,
+    `ctx.user.id`, which never changes (v0.16 M4: the template stores ids;
+    the bench's host makes the id of `ana` from her name). A name is shown
+    with `host.name(id)`.
 - Load with one `data.list` for each of the two types (a list names one
   type); nothing of a load is shown until both have answered. Other
   participants' changes arrive as pushes; never poll.
@@ -77,7 +79,7 @@ Initial selection: the first option.
 | `q` | Quit |
 
 **Voting.** If you have no vote record, send `data.create` of type `vote`
-with `{"voter": <ctx.user.name>, "option": <label>}`; otherwise send
+with `{"voter": <ctx.user.id>, "option": <label>}`; otherwise send
 `data.update` of your vote record with its current `rev`. Voting for
 the option that already holds your vote does nothing. While a write is pending
 (`Saving...`), `Enter` and `Space` are ignored: one confirmation, one vote. On

@@ -93,7 +93,25 @@ pub struct AppPanes {
     /// in the store.
     #[cfg(feature = "apps")]
     pending: Vec<live::Pending>,
+    /// The versions that wait for the owner's answer in the selected
+    /// community, the one that has waited longest first.
+    pub waiting: Vec<crate::store::apps::AppVersion>,
+    /// When the store was last asked what runs, what waits and where apps
+    /// are open; None: ask at the next tick.
+    #[cfg(feature = "apps")]
+    pub checked: Option<std::time::Instant>,
+    /// The approval of a version, while its overlay is open.
+    #[cfg(feature = "apps")]
+    pub review: crate::ui::app_approval::AppApprovalState,
+    /// A test's records in memory, in place of the relay's.
+    #[cfg(all(test, feature = "apps"))]
+    pub memory: Option<crate::apps::session::SharedStore>,
 }
+
+/// How often the store is asked again: an answer given at the shell, or by
+/// another bzz of the owner's, reaches an open app within this.
+#[cfg(feature = "apps")]
+pub const STORE_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl App {
     /// The selected channel of the workspace, if an app is open there.
@@ -163,8 +181,13 @@ impl App {
         key_owner(
             key,
             KeyContext {
-                approval_waiting: !self.approvals.is_empty(),
-                approval_open: self.presentation.overlay == Some(Overlay::Approval),
+                // An agent's command, or a version of an app: Ctrl+Y opens
+                // it even while the app has the keyboard.
+                approval_waiting: !self.approvals.is_empty() || !self.apps.waiting.is_empty(),
+                approval_open: matches!(
+                    self.presentation.overlay,
+                    Some(Overlay::Approval | Overlay::AppApproval)
+                ),
                 overlay_open: self.presentation.overlay.is_some(),
                 composer_open: self.presentation.composer_target.is_some(),
                 app_focused: self.app_has_focus(),
@@ -362,11 +385,22 @@ impl App {
         #[cfg(feature = "apps")]
         {
             let mut changed = self.reconcile_apps().await?;
+            if self
+                .apps
+                .checked
+                .is_none_or(|checked| checked.elapsed() >= STORE_CHECK)
+            {
+                changed |= self.sync_apps().await?;
+            }
+            for live in &mut self.apps.live {
+                changed |= live.watch();
+            }
             let shown = self.shown_app().map(|(channel, _)| channel);
             let profiles = &self.profiles;
             changed |= self
                 .apps
                 .tick(shown, |id| profiles.get(id).map(|profile| profile.label()));
+            self.look_up_app_names();
             changed |= self.poll_apps();
             changed |= self.settle_apps().await?;
             Ok(changed)
@@ -374,6 +408,49 @@ impl App {
         #[cfg(not(feature = "apps"))]
         {
             Ok(false)
+        }
+    }
+
+    /// The ids an app shows (`host.name`, or a record's signer) that bzz
+    /// has no profile of are looked up as the timeline's authors are; when
+    /// a profile arrives, the next tick gives the name to the app, which
+    /// is drawn again. Only what can be a public key is asked for, each id
+    /// once, and a bounded number at a time.
+    #[cfg(feature = "apps")]
+    fn look_up_app_names(&mut self) {
+        {
+            const AT_ONCE: usize = 64;
+            let is_key =
+                |id: &str| id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit());
+            let unknown: std::collections::HashSet<String> = self
+                .apps
+                .unnamed()
+                .into_iter()
+                .filter(|id| {
+                    is_key(id)
+                        && !self.profiles.contains_key(id)
+                        && !self.profile_requested.contains(id)
+                })
+                .take(AT_ONCE)
+                .collect();
+            if unknown.is_empty() {
+                return;
+            }
+            let Some(runtime) = &self.runtime else {
+                return;
+            };
+            self.profile_requested.extend(unknown.iter().cloned());
+            let profiles = runtime.profiles.clone();
+            let tx = self.background_tx.clone();
+            tokio::spawn(async move {
+                let result = profiles.hydrate(unknown).await;
+                let _ = tx
+                    .send(match result {
+                        Ok(_) => super::Background::Changed,
+                        Err(error) => super::Background::Failed(error.to_string()),
+                    })
+                    .await;
+            });
         }
     }
 
@@ -405,10 +482,18 @@ impl App {
                 }
                 Ok(())
             }
-            _ => {
-                self.status_error = Some(
-                    "usage: :app open <name> | :app close | :app zoom · :apps lists them".into(),
-                );
+            (Some(verb), _, _) => {
+                let rest = arguments
+                    .trim_start()
+                    .strip_prefix(verb)
+                    .unwrap_or_default();
+                if !self.manage_command(verb, rest).await? {
+                    self.status_error = Some(super::manage::USAGE.into());
+                }
+                Ok(())
+            }
+            (None, _, _) => {
+                self.status_error = Some(super::manage::USAGE.into());
                 Ok(())
             }
         }
@@ -459,6 +544,14 @@ impl App {
                 list.selected = (list.selected + 1).min(list.rows.len().saturating_sub(1));
             }
             KeyCode::Char('k') | KeyCode::Up => list.selected = list.selected.saturating_sub(1),
+            KeyCode::Char('a') => {
+                let name = list.rows.get(list.selected).map(|row| row.name.clone());
+                self.apps.list = None;
+                self.presentation.close_overlay();
+                if let Some(name) = name {
+                    return self.open_app_review(Some(&name)).await;
+                }
+            }
             KeyCode::Enter => {
                 let name = list.rows.get(list.selected).map(|row| row.name.clone());
                 self.apps.list = None;
@@ -514,7 +607,7 @@ impl App {
     /// session of the selected channel's app if it is not running.
     async fn reconcile_apps(&mut self) -> Result<bool> {
         let community = self.active_community_id();
-        if self.runtime.is_none() {
+        if self.records_here().is_none() {
             // Records need the relay: a locked or offline bzz runs no app.
             let before = self.apps.live.len();
             self.apps
@@ -527,6 +620,8 @@ impl App {
         if self.apps.open_of != community {
             self.apps.live.clear();
             self.apps.open.clear();
+            self.apps.waiting.clear();
+            self.apps.checked = None;
             self.apps.open_of = community;
             if let Some(community) = community {
                 let root = self.paths.apps_dir();
@@ -537,7 +632,9 @@ impl App {
                         if let Ok(listed) =
                             crate::apps::store::Apps::at(store, root).list(community)
                         {
-                            for app in listed {
+                            // A disabled app is open nowhere until it is
+                            // enabled again.
+                            for app in listed.into_iter().filter(|app| app.app.enabled) {
                                 for channel in app.channels {
                                     open.entry(channel).or_insert_with(|| app.app.name.clone());
                                 }
@@ -571,6 +668,18 @@ impl App {
         Ok(true)
     }
 
+    /// Where an app's records are: the relay's service, or (in a test) a
+    /// store in memory. None while bzz is not connected.
+    fn records_here(&self) -> Option<live::Where<'_>> {
+        #[cfg(test)]
+        if let Some(memory) = &self.apps.memory {
+            return Some(live::Where::Memory(memory));
+        }
+        self.runtime
+            .as_ref()
+            .map(|runtime| live::Where::Relay(&runtime.records))
+    }
+
     /// Starts the session of `name` in `channel`, from the one function
     /// that hands out an approved script (`Apps::runnable`). What keeps it
     /// from running is shown in its pane.
@@ -599,13 +708,13 @@ impl App {
             .map(|(id, profile)| (id.clone(), profile.label()))
             .collect();
         let waker = self.app_waker();
-        let run = match (runnable, &self.runtime) {
+        let run = match (runnable, self.records_here()) {
             (Err(why), _) => live::Run::Problem(why),
             (Ok(_), None) => live::Run::Problem(
                 "This app's records are on the relay, and bzz is not connected.".into(),
             ),
-            (Ok(runnable), Some(runtime)) => {
-                live::Run::start(runnable, waker, names, archived, &runtime.records, channel)
+            (Ok(runnable), Some(records)) => {
+                live::Run::start(runnable, waker, names, archived, records, channel)
             }
         };
         self.apps.clock += 1;
@@ -625,6 +734,147 @@ impl App {
         Ok(())
     }
 
+    /// Asks the store what runs, what waits and where apps are open, and
+    /// brings the open apps to it: one whose current version changed (an
+    /// approval here or at the shell, a rollback, a version that failed)
+    /// is given that version in place; one that is disabled or removed
+    /// closes; one that could not run before and can now is started. The
+    /// versions that wait are what the banner and `Ctrl+Y` show.
+    pub(super) async fn sync_apps(&mut self) -> Result<bool> {
+        use crate::apps::store::{AppError, Apps};
+        self.apps.checked = Some(std::time::Instant::now());
+        let Some(community) = self.active_community_id() else {
+            let changed = !self.apps.waiting.is_empty();
+            self.apps.waiting.clear();
+            return Ok(changed);
+        };
+        if self.apps.open_of != Some(community) {
+            return Ok(false);
+        }
+        enum Now {
+            Same,
+            Gone,
+            Disabled,
+            Run(Box<crate::apps::store::Runnable>),
+            Problem(String),
+        }
+        let asked: Vec<(Uuid, String, Option<u32>, bool)> = self
+            .apps
+            .live
+            .iter()
+            .filter(|live| !live.is_dev() && live.community == community)
+            .map(|live| {
+                (
+                    live.channel,
+                    live.name.clone(),
+                    live.version(),
+                    live.is_problem(),
+                )
+            })
+            .collect();
+        let root = self.paths.apps_dir();
+        let (open, waiting, now) = self
+            .store
+            .call(move |store| {
+                let apps = Apps::at(store, root);
+                let mut open = HashMap::new();
+                if let Ok(listed) = apps.list(community) {
+                    for app in listed.into_iter().filter(|app| app.app.enabled) {
+                        for channel in app.channels {
+                            open.entry(channel).or_insert_with(|| app.app.name.clone());
+                        }
+                    }
+                }
+                let waiting = apps.waiting(community).unwrap_or_default();
+                let mut now = Vec::new();
+                for (channel, name, running, problem) in asked {
+                    let state = match apps.get(community, &name) {
+                        Err(AppError::NotInstalled(_)) => Now::Gone,
+                        Err(_) => Now::Same,
+                        Ok(listed) if !listed.app.enabled => Now::Disabled,
+                        Ok(listed) if listed.app.current == running && !problem => Now::Same,
+                        Ok(_) => match apps.runnable(community, &name) {
+                            Ok(runnable) => Now::Run(Box::new(runnable)),
+                            Err(error) => Now::Problem(live::why_not(&name, &error)),
+                        },
+                    };
+                    now.push((channel, name, state));
+                }
+                Ok((open, waiting, now))
+            })
+            .await?;
+        let ids = |list: &[crate::store::apps::AppVersion]| {
+            list.iter()
+                .map(|version| (version.name.clone(), version.version))
+                .collect::<Vec<_>>()
+        };
+        let mut changed = ids(&waiting) != ids(&self.apps.waiting);
+        self.apps.waiting = waiting;
+        if self.presentation.overlay == Some(Overlay::AppApproval) {
+            self.review_still_waits();
+        }
+        // Where apps are open, as the store says; a folder in development
+        // is open only here.
+        let mut open = open;
+        for live in self.apps.live.iter().filter(|live| live.is_dev()) {
+            open.insert(live.channel, live.name.clone());
+        }
+        if open != self.apps.open {
+            self.apps.open = open;
+            changed = true;
+        }
+        for (channel, name, state) in now {
+            match state {
+                Now::Same => {}
+                Now::Gone | Now::Disabled => {
+                    let removed = matches!(state, Now::Gone);
+                    self.apps.live.retain(|live| live.channel != channel);
+                    if self.apps.open.get(&channel) == Some(&name) {
+                        self.apps.open.remove(&channel);
+                    }
+                    self.status_error = Some(if removed {
+                        format!(
+                            "{name} was removed, and is closed; its records stay in the channel"
+                        )
+                    } else {
+                        format!(
+                            "{name} is disabled, and is closed; :app enable {name} lets it run again"
+                        )
+                    });
+                    changed = true;
+                }
+                Now::Run(runnable) => {
+                    let Some(live) = self
+                        .apps
+                        .live
+                        .iter_mut()
+                        .find(|live| live.channel == channel)
+                    else {
+                        continue;
+                    };
+                    if !live.update(*runnable) {
+                        // Nothing runs to give it to: it starts afresh.
+                        self.apps.live.retain(|live| live.channel != channel);
+                    }
+                    changed = true;
+                }
+                Now::Problem(why) => {
+                    if let Some(live) = self
+                        .apps
+                        .live
+                        .iter_mut()
+                        .find(|live| live.channel == channel)
+                        && !matches!(&live.run, live::Run::Problem(was) if *was == why)
+                    {
+                        live.run = live::Run::Problem(why);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        Ok(changed)
+    }
+
     /// Records what polling found: a version that failed as it was put to
     /// run goes back to the one before it (`Apps::failed_to_run`), and an
     /// app that asked to close is closed in its channel.
@@ -642,6 +892,7 @@ impl App {
                     name,
                     version,
                     error,
+                    kept,
                 } => {
                     let (store_root, failed_name, failed_error) =
                         (root.clone(), name.clone(), error.clone());
@@ -654,8 +905,16 @@ impl App {
                                 .flatten())
                         })
                         .await?;
-                    match current {
-                        Some(earlier) if earlier != version => {
+                    let first = error.lines().next().unwrap_or_default().to_owned();
+                    match (kept, current) {
+                        // The version before it never stopped running in
+                        // the pane, and is the current one again.
+                        (Some(kept), _) => {
+                            self.status_error = Some(format!(
+                                "{name}: version {version} failed to run; version {kept} goes on: {first}"
+                            ));
+                        }
+                        (None, Some(earlier)) if earlier != version => {
                             // The version that ran before is current again;
                             // it starts at the next tick.
                             self.apps.live.retain(|live| live.channel != channel);
@@ -676,11 +935,102 @@ impl App {
                             }
                         }
                     }
+                    // What the store says runs now is checked at once.
+                    self.apps.checked = None;
+                }
+                live::Pending::Updated {
+                    name,
+                    from,
+                    version,
+                } => {
+                    self.status_error = Some(format!(
+                        "{name}: version {version} runs in place of {from}, its state kept"
+                    ));
                 }
                 live::Pending::Closed { channel } => self.forget_app(channel).await?,
             }
         }
         Ok(true)
+    }
+
+    /// `:app dev <folder>`: the owner's own folder in the pane of this
+    /// channel, on its records, reloaded on save, without approval (plan
+    /// D5; `app/pane/dev.rs` says whose records and what ends it).
+    pub(super) async fn open_dev_here(&mut self, path: &std::path::Path) -> Result<()> {
+        let Some(community) = self.active_community_id() else {
+            self.status_error = Some("select a community first".into());
+            return Ok(());
+        };
+        let Some(channel) = self.current_channel().cloned() else {
+            self.status_error = Some("select a channel first".into());
+            return Ok(());
+        };
+        if channel.kind.is_dm() {
+            self.status_error =
+                Some("an app cannot be opened in a direct message; open it in a channel".into());
+            return Ok(());
+        }
+        let opened = match dev::DevFolder::open(path) {
+            Ok(opened) => opened,
+            Err(error) => {
+                self.status_error = Some(error);
+                return Ok(());
+            }
+        };
+        let Some(records) = self.records_here() else {
+            self.status_error = Some(
+                "an app's records are on the relay: unlock the identity and connect first".into(),
+            );
+            return Ok(());
+        };
+        let names: HashMap<String, String> = self
+            .profiles
+            .iter()
+            .map(|(id, profile)| (id.clone(), profile.label()))
+            .collect();
+        let script_name = opened.folder.script.file_name().map_or_else(
+            || "app.lua".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let options = crate::apps::session::SessionOptions::new(opened.name.clone())
+            .script(script_name)
+            .waker(self.app_waker())
+            .names(names)
+            .archived(channel.facts.archived);
+        let session = match records.session(opened.script, options, channel.id) {
+            Ok(session) => session,
+            Err(error) => {
+                self.status_error = Some(format!("the folder's app could not be started: {error}"));
+                return Ok(());
+            }
+        };
+        self.apps.live.retain(|live| live.channel != channel.id);
+        self.apps.clock += 1;
+        let title = opened.folder.label(&opened.title);
+        let place = opened.folder.dir.display().to_string();
+        self.apps.live.push(live::Live {
+            community,
+            channel: channel.id,
+            name: opened.name.clone(),
+            title,
+            shown_at: self.apps.clock,
+            run: live::Run::Dev {
+                session: Box::new(session),
+                folder: opened.folder,
+            },
+        });
+        self.apps.evict(LIVE_SESSIONS);
+        self.apps.open.insert(channel.id, opened.name.clone());
+        self.apps.open_of = Some(community);
+        self.apps.zoom = false;
+        self.focus_app();
+        self.status_error = Some(format!(
+            "dev: {} runs in #{} on its records (bzz.app.{}.*), not approved, reloaded on every save · :app close ends it",
+            crate::render::sanitize::single_line(&place),
+            crate::render::sanitize::single_line(&channel.name),
+            opened.name
+        ));
+        Ok(())
     }
 
     async fn open_app_here(&mut self, name: &str) -> Result<()> {
@@ -697,7 +1047,7 @@ impl App {
                 Some("an app cannot be opened in a direct message; open it in a channel".into());
             return Ok(());
         }
-        if self.runtime.is_none() {
+        if self.records_here().is_none() {
             self.status_error = Some(
                 "an app's records are on the relay: unlock the identity and connect first".into(),
             );
@@ -726,6 +1076,10 @@ impl App {
             self.status_error = Some(why);
             return Ok(());
         }
+        // A folder in development there ends: what opens is approved.
+        self.apps
+            .live
+            .retain(|live| !(live.channel == channel_id && live.is_dev()));
         if self.apps.open.get(&channel_id).map(String::as_str) != Some(name) {
             self.apps.live.retain(|live| live.channel != channel_id);
         }
@@ -758,12 +1112,27 @@ impl App {
         Ok(())
     }
 
-    /// Closes the app of `channel` and forgets it there.
+    /// Closes the app of `channel` and forgets it there. A folder in
+    /// development was never remembered: what the store has open there
+    /// shows again.
     async fn forget_app(&mut self, channel: Uuid) -> Result<()> {
         let Some(community) = self.active_community_id() else {
             return Ok(());
         };
+        let dev = self
+            .apps
+            .live
+            .iter()
+            .any(|live| live.channel == channel && live.is_dev());
         self.apps.live.retain(|live| live.channel != channel);
+        if dev {
+            self.apps.open.remove(&channel);
+            self.apps.checked = None;
+            if self.presentation.focus == FocusSurface::App {
+                self.leave_app();
+            }
+            return Ok(());
+        }
         if let Some(name) = self.apps.open.remove(&channel) {
             let root = self.paths.apps_dir();
             self.store
@@ -848,7 +1217,7 @@ impl App {
         let note = if rows.is_empty() {
             "No app is installed in this community. At the shell: bzz app new <name>, then bzz app add <folder>."
         } else {
-            "Enter opens the selected app in this channel · :app close closes it · Esc closes this list. Only an approved app runs: bzz app approve <name>."
+            "Enter opens the selected app in this channel · a shows its waiting version for your answer · :app close closes it · Esc closes this list. Only an approved app runs."
         };
         self.apps.list = Some(AppList {
             rows,
@@ -930,6 +1299,19 @@ impl AppPanes {
         redraw
     }
 
+    /// The ids the open apps have no name for.
+    fn unnamed(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .live
+            .iter()
+            .filter_map(live::Live::session_ref)
+            .flat_map(crate::apps::session::AppSession::unnamed)
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
     fn tick(&mut self, shown: Option<Uuid>, name_of: impl Fn(&str) -> Option<String>) -> bool {
         let mut redraw = false;
         for live in &mut self.live {
@@ -942,6 +1324,9 @@ impl AppPanes {
 
 #[cfg(all(test, feature = "apps"))]
 mod tests;
+
+#[cfg(feature = "apps")]
+mod dev;
 
 #[cfg(feature = "apps")]
 mod live {
@@ -972,9 +1357,17 @@ mod live {
     pub enum Run {
         Session {
             session: Box<AppSession>,
-            runnable: Runnable,
+            runnable: Box<Runnable>,
             /// The approved bytes have loaded once.
             loaded: bool,
+            /// A newer approved version given to the running session, which
+            /// has not said yet whether it runs.
+            trial: Option<Box<Trial>>,
+        },
+        /// The owner's own folder, run without approval (plan D5).
+        Dev {
+            session: Box<AppSession>,
+            folder: super::dev::DevFolder,
         },
         /// Why the app does not run here.
         Problem(String),
@@ -983,7 +1376,17 @@ mod live {
         Tested { session: Box<AppSession> },
     }
 
-    /// What the loop is to record in the store.
+    /// A version given to a running app in place of the one it runs: an
+    /// approval, a rollback, an approval at the shell. It replaces the
+    /// running version only if it loads, declares the approved types and
+    /// draws without an error; otherwise the version before goes on.
+    pub struct Trial {
+        pub next: Runnable,
+        /// What the new version declared when it loaded, if it did.
+        pub types: Option<Vec<String>>,
+    }
+
+    /// What the loop is to record in the store, or to say.
     pub enum Pending {
         Failed {
             community: Uuid,
@@ -991,6 +1394,14 @@ mod live {
             name: String,
             version: u32,
             error: String,
+            /// The version before it still runs in the pane.
+            kept: Option<u32>,
+        },
+        /// A version given to the running app runs now, with its state.
+        Updated {
+            name: String,
+            from: u32,
+            version: u32,
         },
         /// The app asked to close (`host.quit()`).
         Closed { channel: Uuid },
@@ -1002,7 +1413,7 @@ mod live {
             waker: Waker,
             names: HashMap<String, String>,
             archived: bool,
-            service: &RecordsService,
+            records: Where<'_>,
             channel: Uuid,
         ) -> Self {
             let options = SessionOptions::new(runnable.name())
@@ -1010,13 +1421,39 @@ mod live {
                 .waker(waker)
                 .names(names)
                 .archived(archived);
-            match AppSession::on_relay(runnable.script().to_vec(), options, service, channel) {
+            match records.session(runnable.script().to_vec(), options, channel) {
                 Ok(session) => Self::Session {
                     session: Box::new(session),
-                    runnable,
+                    runnable: Box::new(runnable),
                     loaded: false,
+                    trial: None,
                 },
                 Err(error) => Self::Problem(format!("This app could not be started: {error}")),
+            }
+        }
+    }
+
+    /// Where a session's records are.
+    pub enum Where<'a> {
+        Relay(&'a RecordsService),
+        #[cfg(test)]
+        Memory(&'a crate::apps::session::SharedStore),
+    }
+
+    impl Where<'_> {
+        pub fn session(
+            &self,
+            script: Vec<u8>,
+            options: SessionOptions,
+            channel: Uuid,
+        ) -> std::io::Result<AppSession> {
+            match self {
+                Self::Relay(service) => AppSession::on_relay(script, options, service, channel),
+                #[cfg(test)]
+                Self::Memory(store) => {
+                    let _ = channel;
+                    AppSession::in_memory(script, options, store)
+                }
             }
         }
     }
@@ -1025,8 +1462,11 @@ mod live {
     /// out at the shell.
     pub fn why_not(name: &str, error: &AppError) -> String {
         match error {
+            AppError::NothingApproved { waiting, .. } if *waiting > 0 => format!(
+                "{error}. Ctrl-Y or :app pending {name} shows it for your answer (at the shell: bzz app approve {name})"
+            ),
             AppError::NothingApproved { .. } => format!(
-                "{error}. Approve it at the shell: bzz app pending {name}, then bzz app approve {name}"
+                "{error}. Propose a version: :app add <folder> (at the shell: bzz app add <folder>)"
             ),
             _ => error.to_string(),
         }
@@ -1035,16 +1475,20 @@ mod live {
     impl Live {
         pub fn session_mut(&mut self) -> Option<&mut AppSession> {
             match &mut self.run {
-                Run::Session { session, .. } => Some(session),
+                Run::Session { session, .. } | Run::Dev { session, .. } => Some(session),
                 #[cfg(test)]
                 Run::Tested { session } => Some(session),
                 Run::Problem(_) => None,
             }
         }
 
+        pub fn session_ref(&self) -> Option<&AppSession> {
+            self.session()
+        }
+
         fn session(&self) -> Option<&AppSession> {
             match &self.run {
-                Run::Session { session, .. } => Some(session),
+                Run::Session { session, .. } | Run::Dev { session, .. } => Some(session),
                 #[cfg(test)]
                 Run::Tested { session } => Some(session),
                 Run::Problem(_) => None,
@@ -1056,10 +1500,25 @@ mod live {
             self.session()?.status().notice
         }
 
+        /// The script's whole error, for a test.
+        #[cfg(test)]
+        pub fn error(&self) -> Option<String> {
+            self.session()?.status().error
+        }
+
         pub fn trouble(&self) -> Option<String> {
             let first = |text: &str| text.lines().next().unwrap_or_default().to_owned();
             if let Run::Problem(why) = &self.run {
                 return Some(format!("app {}: {}", self.name, first(why)));
+            }
+            if let Run::Dev { folder, .. } = &self.run
+                && folder.missing
+            {
+                return Some(format!(
+                    "app {}: {} is missing; the version before goes on running",
+                    self.name,
+                    folder.script.display()
+                ));
             }
             let status = self.session()?.status();
             if !status.responding {
@@ -1100,16 +1559,37 @@ mod live {
                     }
                     return redraw;
                 }
+                Run::Dev { session, .. } => {
+                    for output in session.poll() {
+                        match output {
+                            Output::Close => {
+                                pending.push(Pending::Closed { channel });
+                                return true;
+                            }
+                            Output::Redraw | Output::Loaded { .. } => redraw = true,
+                            Output::Log(_) | Output::Request(_) => {}
+                        }
+                    }
+                    return redraw;
+                }
                 Run::Session {
                     session,
                     runnable,
                     loaded,
+                    trial,
                 } => {
+                    // What the script's thread reported before it was idle
+                    // is all there is of what it was given.
+                    let idle = session.runtime().is_idle();
                     let mut failed = None;
                     for output in session.poll() {
                         match output {
                             Output::Loaded { types } => {
                                 redraw = true;
+                                if let Some(trial) = trial.as_mut() {
+                                    trial.types = Some(types);
+                                    continue;
+                                }
                                 match runnable.check_loaded(&types) {
                                     Ok(()) => *loaded = true,
                                     Err(error) => failed = Some(error),
@@ -1122,6 +1602,55 @@ mod live {
                             Output::Redraw => redraw = true,
                             Output::Log(_) | Output::Request(_) => {}
                         }
+                    }
+                    if idle && let Some(Trial { next, types }) = trial.take().map(|trial| *trial) {
+                        redraw = true;
+                        let status = session.status();
+                        // The new version is held to what was approved,
+                        // and must draw: an error in `app.reload` or in its
+                        // first `view` is a failure to run.
+                        let verdict = match &types {
+                            None => Err((
+                                status.error.unwrap_or_else(|| {
+                                    format!("version {} did not load", next.version())
+                                }),
+                                false,
+                            )),
+                            Some(types) => match next.check_loaded(types) {
+                                Err(error) => Err((error, true)),
+                                Ok(()) => status.error.map_or(Ok(()), |error| Err((error, true))),
+                            },
+                        };
+                        match verdict {
+                            Ok(()) => {
+                                pending.push(Pending::Updated {
+                                    name: next.name().to_owned(),
+                                    from: runnable.version(),
+                                    version: next.version(),
+                                });
+                                self.title = next.title().to_owned();
+                                **runnable = next;
+                            }
+                            Err((error, loaded_new)) => {
+                                // A version that loaded replaced the old one
+                                // in its thread: the old bytes, which were
+                                // approved, are given back, and its state
+                                // goes with them. One that did not load
+                                // never replaced it.
+                                if loaded_new {
+                                    session.reload(runnable.script().to_vec());
+                                }
+                                pending.push(Pending::Failed {
+                                    community,
+                                    channel,
+                                    name: self.name.clone(),
+                                    version: next.version(),
+                                    error,
+                                    kept: Some(runnable.version()),
+                                });
+                            }
+                        }
+                        return redraw;
                     }
                     let status = session.status();
                     if failed.is_none() && !*loaded && status.phase == Phase::NotLoaded {
@@ -1142,11 +1671,68 @@ mod live {
                     name: self.name.clone(),
                     version,
                     error: error.clone(),
+                    kept: None,
                 });
                 self.run = Run::Problem(error);
                 return true;
             }
             redraw
+        }
+
+        /// The version the pane runs, or tries, of an approved app.
+        pub fn version(&self) -> Option<u32> {
+            match &self.run {
+                Run::Session {
+                    runnable, trial, ..
+                } => Some(
+                    trial
+                        .as_ref()
+                        .map_or(runnable.version(), |trial| trial.next.version()),
+                ),
+                _ => None,
+            }
+        }
+
+        /// Gives a newer approved version to the running app, which keeps
+        /// its state if the version runs. False when there is no running
+        /// session to give it to: the caller starts one instead.
+        pub fn update(&mut self, next: Runnable) -> bool {
+            match &mut self.run {
+                Run::Session {
+                    session,
+                    loaded: true,
+                    trial,
+                    ..
+                } if trial.is_none() && session.status().responding => {
+                    session.reload(next.script().to_vec());
+                    *trial = Some(Box::new(Trial { next, types: None }));
+                    true
+                }
+                _ => false,
+            }
+        }
+
+        pub fn is_dev(&self) -> bool {
+            matches!(self.run, Run::Dev { .. })
+        }
+
+        pub fn is_problem(&self) -> bool {
+            matches!(self.run, Run::Problem(_))
+        }
+
+        /// A folder in development: a save of its script is given to the
+        /// running app. Answers whether there is something new to draw.
+        pub fn watch(&mut self) -> bool {
+            let Run::Dev { session, folder } = &mut self.run else {
+                return false;
+            };
+            match folder.changed() {
+                Some(script) => {
+                    session.reload(script);
+                    true
+                }
+                None => false,
+            }
         }
 
         /// Time for the session, and the names it lacks from bzz's

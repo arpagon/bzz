@@ -165,6 +165,13 @@ function host.after(ms, tag) end
 ---@return number
 function host.time() end
 
+---The name bzz knows for a participant's id, or a short form of the id
+---while it knows none. bzz then looks it up and, when it learns it, calls
+---app.view again. For showing a person stored by id in a field.
+---@param id string at most 256 bytes
+---@return string
+function host.name(id) end
+
 ---The same as host.log: print never writes to the terminal.
 ---@param ... any
 function print(...) end

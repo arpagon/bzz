@@ -247,6 +247,13 @@ def run(tmux, scenario, binary, fixture, work, captures, default_size):
         if "size" in step:
             w, h = size_of(step["size"])
             tmux("resize-window", "-t", target, "-x", w, "-y", h)
+        if "run" in step:
+            # What the owner does outside bzz meanwhile: save a file, run a
+            # command at another shell. `{fixture}` is the fixture's folder.
+            done = subprocess.run(["bash", "-c", step["run"].replace("{fixture}", fixture)],
+                                  env=dict(os.environ, BZZ_BIN=binary), capture_output=True, text=True)
+            if done.returncode != 0:
+                raise Failure(f"step {number}: `{step['run']}` failed: {done.stderr.strip()}")
         started = time.monotonic()
         if "paste" in step:
             tmux("set-buffer", "-b", "scenario", step["paste"])

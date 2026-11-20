@@ -200,7 +200,9 @@ when it hands the table over, and a short form of the id (`c0c0c0c0…c0c0`)
 while it knows none. When bzz learns the name of someone, or a name
 changes, the records that person signed are handed over again, each as a
 push with `change = "update"` and the `rev` the app already has; a new name
-of the local participant is in `ctx.user` from the next call on.
+of the local participant is in `ctx.user` from the next call on. To show
+a person whose id is stored in a field, call `host.name(id)` (see "The
+host"): never store a name to show it.
 
 Any member of the channel, an agent included, can revise or delete
 any record and set any field of it. `record.by` is whoever wrote it last,
@@ -255,6 +257,14 @@ such as `board card`. `match` looks at the same text.
 - `host.after(ms, tag)` calls `app.timer(state, tag, ctx)` once, after `ms`
   milliseconds. `tag` is plain data.
 - `host.time()` is the seconds since 1970-01-01 UTC, with fractions.
+- `host.name(id)` is the name bzz knows for a participant's id, or a short
+  form of the id (`c0c0c0c0…c0c0`) while it knows none. It is how an app
+  shows a person it stores by id (`voter = ctx.user.id`) and who has not
+  signed a record it holds. bzz then looks the name up, as it does for an
+  author in the conversation, and when it learns it, the app is drawn
+  again (`app.view` is called; no handler is). Call it from `view` and
+  from handlers alike; it never waits. An id is a string of at most 256
+  bytes.
 
 ## When a call fails or is stopped
 

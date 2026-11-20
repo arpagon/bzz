@@ -158,14 +158,42 @@ Fields only these use:
 | `paste = "text"` (step) | a bracketed paste before the keys. Through Herdr it is the runner's one use of `send-text`, with the bracket sequences around the text |
 | `beside = "second"` (scenario) | the second profile's TUI runs in a second pane (`BZZ_HERDR_SECOND_PANE`); steps with `pane = "second"` drive it |
 | `restored = true` (scenario) | after the exit, the bytes bzz wrote and tmux's own state show the alternate screen left, the mouse and bracketed paste off and the cursor shown. Only `scripts/test-tui-tmux.py` checks it |
+| `run = "command"` (step, v0.16 M4) | a command of this machine's shell, run before the step's keys, with `{fixture}` the fixture's folder and `$BZZ_BIN` the binary under test: what the owner does outside bzz, such as saving the script of a folder. Both runners run it |
+
+**Approving and managing apps inside bzz (M4).** These follow the scenarios
+above, which leave the Board installed, approved and open in
+`#t9-general` in both profiles, with a card each:
+
+- `t16-m4-poll-approve-update-rollback`: the Poll, written from its
+  template, is added in the TUI (`:app add {fixture}/poll-app`) and shown
+  at once for an answer; left waiting, the banner announces it and
+  `:app open poll` refuses; `Ctrl+Y` shows it again, `a` is refused until
+  the end was on screen, `G a` approves it, and it opens. A poll, two
+  options and a vote later, with the selection on the second option: a
+  version that does not load is recorded as failed and never shown; one
+  that loads apart and raises in `app.reload` is approved and fails as it
+  is put to run, and version 1 goes on with its selection; a change of a
+  word is approved and replaces it in place with its selection; `:app
+  rollback poll` brings version 1 back, with the selection.
+- `t16-m4-approvals-template`: the Approvals template, added, approved
+  and opened in `#t14-names`; a request filed there is the owner's, and
+  he may not decide it.
+- `t16-m4-dev-remove-reinstall`: `:app dev {fixture}/board-app` runs the
+  Board's folder in `#t9-general`, marked `not approved`, on the
+  channel's records (the card the second profile made is there); a save
+  reloads it with its cards; a broken save leaves it running with the
+  error; `:app close` ends it and the installed Board shows again. `:app
+  remove board` closes it and says the records stay; installed again from
+  a new folder, it shows the same cards. A version that declares a second
+  record type is shown as a change and refused with a reason.
 
 The same manifest runs through tmux on a private socket, for a machine
 where Herdr is not running, or to keep text captures of every step:
 
 ```bash
 export BZZ_BUZZ_SOURCE=/path/to/pinned/buzz
-BZZ_TMUX_SCENARIOS=t16-cli-app-new,t16-cli-app-add,t16-cli-app-approve,t16-cli-app-add-second,t16-cli-app-add-looper,t16-app-pane,t16-app-live-second-profile,t16-app-looper-composer \
-  BZZ_TMUX_CAPTURES=/tmp/bzz-captures ./scripts/test-relay.sh --tmux
+BZZ_TMUX_SCENARIOS=t16-cli-app-new,t16-cli-app-add,t16-cli-app-approve,t16-cli-app-add-second,t16-cli-app-add-looper,t16-app-pane,t16-app-live-second-profile,t16-app-looper-composer,t16-m4-poll-approve-update-rollback,t16-m4-approvals-template,t16-m4-dev-remove-reinstall \
+  BZZ_TMUX_SIZE=120x30 BZZ_TMUX_CAPTURES=/tmp/bzz-captures ./scripts/test-relay.sh --tmux
 ```
 
 `BZZ_TMUX_SCENARIOS=harness` (the default) runs every harness scenario,

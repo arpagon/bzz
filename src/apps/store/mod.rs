@@ -453,6 +453,43 @@ impl Runnable {
     }
 }
 
+/// What became of a proposed version, as its proposer is told it (an
+/// agent's tool in M5, an offer in the channel in M6). A proposer calls
+/// [`Apps::record`] (after [`examine`]) and then asks [`Apps::outcome`]
+/// until it is no longer [`Outcome::Waiting`]; the owner answers in the
+/// TUI's approval or at the shell.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Outcome {
+    /// The owner has not answered.
+    Waiting,
+    /// Approved, and the version that runs (or ran: a later one may have
+    /// replaced it since).
+    Applied,
+    /// The owner refused it, with his reason if he gave one.
+    Refused { reason: Option<String> },
+    /// It did not load, or it failed as it was put to run: the error, with
+    /// file and line when the script is at fault.
+    Failed { error: String },
+    /// Its proposer replaced it with a later version before an answer.
+    Superseded,
+}
+
+impl Outcome {
+    pub fn of(version: &AppVersion) -> Self {
+        match version.state {
+            VersionState::Waiting => Self::Waiting,
+            VersionState::Approved => Self::Applied,
+            VersionState::Refused => Self::Refused {
+                reason: version.detail.clone(),
+            },
+            VersionState::Failed => Self::Failed {
+                error: version.detail.clone().unwrap_or_default(),
+            },
+            VersionState::Superseded => Self::Superseded,
+        }
+    }
+}
+
 /// What approving a version did.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Approved {
@@ -606,6 +643,12 @@ impl<'a> Apps<'a> {
     pub fn versions(&self, community: Uuid, name: &str) -> AppResult<Vec<AppVersion>> {
         self.installed(community, name)?;
         Ok(self.store.app_versions(community, name)?)
+    }
+
+    /// What became of a version, for whoever proposed it.
+    pub fn outcome(&self, community: Uuid, name: &str, version: u32) -> AppResult<Outcome> {
+        self.installed(community, name)?;
+        Ok(Outcome::of(&self.version_row(community, name, version)?))
     }
 
     /// The versions that wait for the owner's answer in a community, the

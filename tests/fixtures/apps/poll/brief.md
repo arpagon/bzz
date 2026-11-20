@@ -1,27 +1,49 @@
 # Poll
 
-One question, a list of options, one vote for each person.
+One question for the channel, a list of options, and one vote for each
+person. Anyone adds an option or moves their vote; everyone sees the
+tallies change at once.
 
-**Use.** With no poll yet, `a` asks for the question. Then `j`/`k` and
-the arrows move, Enter or Space votes for the selected option (again: moves
-the vote), `a` adds an option, `/` searches the options, `r` lists
-again, `q` closes. Each option shows its votes, and `x` marks the one
-you voted for.
+## Records
 
-**Records.** Two types:
+Two record types.
 
-| Type | Field | Type | Meaning |
-|---|---|---|---|
-| `poll` | `question` | string | the question; there is one poll record |
-| | `options` | list of strings | the options, in the order they were added |
-| `vote` | `voter` | string | the name of who voted; one vote record for each person |
-| | `option` | string | the option voted for, as written in `options` |
+`poll`, one record for the channel:
 
-**Rules.** A vote for an option that is not in `options` counts for
-nothing. When adding an option conflicts, it is added again on top of the
-current list; when a vote conflicts, it is applied on top of the current
-vote.
+| Field | Type | Meaning |
+|---|---|---|
+| `question` | string | The question. |
+| `options` | list of strings | The options, in the order they were added. |
 
-People in fields are written by name (`"ana"`), as the bench's data has
-them. The contract advises the id (`ctx.user.id`), which never changes; a
-version for real use should store the id and show the name.
+`vote`, one record for each person who voted:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `voter` | string | The id of who voted: their public key (`ctx.user.id`), which never changes. |
+| `option` | string | The option voted for, as written in `options`. |
+
+Rules another client must keep to share these records:
+
+- A person's vote is the `vote` record whose `voter` is their id. Voting
+  again changes that record; it never makes a second one.
+- A vote for an option that is not in `options` counts for nothing.
+- Of several `poll` records, the one with the smallest id is the poll.
+- When adding an option conflicts with someone else's change, the option
+  is added on top of the current list: theirs keep their place, the new
+  one goes last. When a vote conflicts, it is applied on top of the
+  current vote record.
+- A person is stored by id and shown by name (`host.name`): a name can
+  change, an id cannot.
+
+## Keys
+
+With no poll yet, `a` asks for the question. Then `j`/`k` or the arrows
+move, Enter or Space votes for the selected option (again: moves the vote),
+`a` adds an option, `/` searches the options (Esc clears it), `r` loads
+again, `q` closes.
+
+## Screen
+
+The question, each option with its votes (`[x]` marks yours), the total,
+who voted for the selected option, and a status line. It fits the 40
+columns by 16 rows of bzz's app pane.

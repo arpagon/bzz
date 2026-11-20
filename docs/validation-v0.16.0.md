@@ -1,12 +1,11 @@
 # bzz v0.16.0 validation
 
 **Status:** in progress. Recorded below, each under its own heading: M0;
-M1, the app runtime and its contract (M1-A) and the example host, the bench
-and the six apps with M1's exit gate (M1-B); M2, the records service (M2-A)
-and the app session with M2's exit gate (M2-B); M3, the app pane with its
-exit gate; and the first half of M4, the store of apps and the command line
-(M4-A). Not here yet: approval inside bzz and the templates (M4-B), and M5
-to M8. Nothing was pushed: what only CI
+M1 (the runtime and its contract; the example host, the bench and the six
+apps); M2 (the records service; the app session); M3 (the app pane); M4
+(the store and command line; approval and managing inside bzz, and the
+templates); and M7 (agents use an app's records). Each has its milestone's
+exit gate, on Linux. Not here yet: M5, M6 and M8. Nothing was pushed: what only CI
 can show on macOS and Windows is listed as not seen. Plan:
 [`docs/planning/2026-11-17/v0.16.0.md`](planning/2026-11-17/v0.16.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
@@ -1704,3 +1703,173 @@ Only this document changed afterwards.
   for `buzz-cli` and `buzz-acp`, while it runs them from the pin's own
   `target/`: a first run in a worktree spends minutes building what it then
   does not use.
+
+## M4 (inside bzz) — Approving and managing apps in the TUI, `:app dev`, `host.name`, the templates
+
+Linux x86_64, Rust 1.98.1, Buzz pin `bf3bdd0eaefe`, 2026-11-19. Branch
+`t3/approval-tui`, cut from `v0.16.0` at `2c05263` (after M3). The second
+half of M4: the approval of a version on v0.15's overlay, managing apps
+from `:app`, an approval or a rollback reaching an open app in place,
+`:app dev` on a channel's records, `host.name(id)` in `api = 1`, the three
+templates of D9, and M4's exit gate on the release binary.
+[`apps.md`](apps.md) is the user's guide.
+
+**Where it is.**
+
+| Path | What |
+|---|---|
+| `src/ui/app_approval.rs` | the overlay: the head (who, hash, sizes, types with `CHANGED`) always on screen, the brief and the difference scrolling, the end to be seen before a yes; the banner |
+| `src/app/manage.rs` | `Ctrl+Y`, `:approvals`, `:app pending|approve|refuse|rollback|enable|disable|remove|add|new|dev`; every answer a call of `apps::store::Apps` |
+| `src/app/pane.rs` | `sync_apps` (the store asked every second: what runs, what waits, where apps are open); `Live::update` and the trial of a new version in the running session; `Pending::Failed { kept }` and `Updated`; `:app dev`; profiles looked up for ids an app names |
+| `src/app/pane/dev.rs` | a folder in development: its name, its title, its saves |
+| `src/app/pane/tests.rs` (`managed`) | the above inside bzz's `App`, with a store of apps on disk and records in memory |
+| `src/apps/runtime/{api,worker,mod}.rs`, `src/apps/session/mod.rs` | `host.name(id)`: the names the owner knows, a short form and a lookup for the others, a redraw when one is learnt |
+| `src/apps/store/mod.rs` | `Apps::outcome`, for the proposers of M5 and M6 |
+| `src/apps/store/templates.rs`, `tests/fixtures/apps/{board,poll,approvals}/` | the three templates, one source with their fixtures (script and brief) |
+| `examples/app_host.rs`, `tests/apps-bench/` | `host.name` on the example host (`MINIAPP_PEOPLE`); the Poll and the Approvals store ids, and the bench writes the id of a name |
+| `docs/app-api.md`, `docs/app-api.d.lua` | `host.name` in the contract and its twin |
+| `scripts/tui-herdr-scenarios.toml`, `scripts/test-tui-{tmux.py,herdr.sh}` | the `t16-m4-*` scenarios; a step's `run` field in both runners |
+| `docs/apps.md`, `docs/e2e-herdr.md` | approval and managing inside bzz, `:app dev`, the templates; the M4 scenarios |
+
+No dependency was added; `Cargo.toml` and `Cargo.lock` are unchanged.
+Migration 21 is unchanged; the schema stays at 21.
+
+**What was decided here** (the plan and the brief left these open):
+
+| Question | Decided |
+|---|---|
+| How a version is announced, and how it is opened | as an agent's command: a line at the top of every screen; `Ctrl+Y` (also while an app has the keyboard), `:approvals`, `:app pending [name]`. An agent's command comes first, because it is refused when its time is up |
+| Approve from a command | never: `:app approve <name>` opens the overlay, and the approval is given there, of the hash its head shows, after its last row was on screen. `:app refuse <name> [reason]` refuses at once |
+| How an answer reaches an open app | the pane asks the store every second (`STORE_CHECK`) and at once after an answer given here: one rule for an answer in the TUI, at the shell, a rollback, and a version that failed. A disabled app is open nowhere; a removed one closes |
+| What "fails when it is put to run" is | the new bytes are given to the running session as a reload (state kept). They replace the old version only if they load, declare the approved types (`Runnable::check_loaded`) and run `app.reload` and the first `app.view` without an error. Otherwise the old bytes, approved and held in memory, are given back as a reload (state kept), `Apps::failed_to_run` records the version, and the status line says which goes on |
+| `dev` (D5) | `:app dev <folder>` in the selected channel. Its records are those of the name in its `app.toml` (the folder's name without one): a folder named as an installed app meets that app's records, which is how a change is tried on real data. Marked `not approved · dev <folder>` in the border; the script is looked at every 300 ms; a broken save leaves the old version running. Ended by `:app close`, `:app open` of another app there, `host.quit()`, a switch of community, `:lock`, quitting. Never remembered in the store |
+| `bzz app dev --channel` | still refused, and says to type `:app dev <folder>` in that channel: the command line cannot reach a running bzz |
+| `host.name(id)` | answers from the names bzz has (its profiles), else `c0c0c0c0…c0c0`, cut on characters whatever a script gives. An id not named is told to the owner once (at most 4096); bzz looks up only what can be a key (64 hex), 64 at a time, as the timeline looks up authors. A name learnt later calls `app.view` again, and no handler: no record changed. On the example host the names are `MINIAPP_PEOPLE` and whoever it sees write |
+| Templates and fixtures | one source: `templates.rs` takes script and brief from `tests/fixtures/apps/<name>/`, the files the runtime's tests and the bench run. The Board's brief of `src/apps/templates/board/` moved there. The Board stores no person; the Poll's `voter` and the Approvals' `author` and `decided_by` are ids, shown with `host.name`; the Poll shows who voted for the selected option (`By: bo, you`) |
+| The bench's specs | `spec/poll.md` and `spec/approvals.md` say id where they said name; the service seeds, and the cases write, `sha256("participant:<name>")`, the id the example host makes of a name |
+| `:app new` | writes `./<name>` from a template, as `bzz app new` does without `--to` |
+| For M5 and M6 | a proposer calls `examine`, then `Apps::record` (with `Proposer::agent(…)` or `Proposer::member(…)`), and asks `Apps::outcome`: waiting, applied, refused with the reason, failed with the error, superseded. The approval and its announcement need nothing else |
+| Long answers on the status line | written short, the fact first (`board uninstalled; 2 records of bzz.app.board.* stay in the channel …`): the status line cuts what does not fit |
+
+**How to repeat.**
+
+```sh
+# the build environment of runs/v016/RULES.md, then:
+cargo test --locked --lib app::pane ui::app_approval apps::session::tests::host_name apps::store::tests::the_templates
+scripts/test-apps-bench.sh poll approvals board        # the templates' specs, at 80x24 and 40x16
+cargo build --locked --release
+ln -sfn "$CARGO_TARGET_DIR" target                      # test-relay.sh uses ./target
+BZZ_TMUX_SIZE=120x30 BZZ_TMUX_CAPTURES=/tmp/captures BZZ_BUZZ_SOURCE=<main checkout>/runs/buzz-pin \
+BZZ_TMUX_SCENARIOS=t16-cli-app-new,t16-cli-app-add,t16-cli-app-approve,t16-cli-app-add-second,t16-cli-app-add-looper,t16-app-pane,t16-app-live-second-profile,t16-app-looper-composer,t16-m4-poll-approve-update-rollback,t16-m4-approvals-template,t16-m4-dev-remove-reinstall \
+  ./scripts/test-relay.sh --tmux
+rm target
+```
+
+### Unit and scripted
+
+`U:` is a unit test; `P:` is `app::pane::tests::managed::…`, bzz's own
+`App` drawn on Ratatui's test backend, with a store of apps on disk in a
+temporary folder and records in memory (`AppPanes::memory`, a test seam in
+place of the relay). Each red is the named test run with the one change in
+its cell, seen failing with the quoted message, and the file restored; the
+runs are `/tmp/m4b/reds.sh` and `reds2.sh` of the worktree, not kept.
+
+| Claim | Proof | Red without the change | Result |
+|---|---|---|---|
+| **Rule 16 end to end in bzz's window**: a version added runs only after its approval: before it `:app open` says `counter has no approved version (one waits for your answer)` and nothing is open or running; the banner says `counter: version 1 from you waits for your approval · Ctrl-Y to see and answer it`; the overlay shows who, the hash, the types, the brief, the script; `a` approves; then it opens and runs those bytes | `P: a_version_runs_only_after_its_approval_and_an_approval_changes_the_open_app_in_place` | — (the door is `Apps::runnable`, proven in M4-A; no red taken here) | pass |
+| **An approval of a version of an open app changes it in place, keeping its state**: count 3 under version 1 is count 3 under version 2; the status line says `counter: version 2 runs in place of 1, its state kept` | the same | the new version given to a new session instead of the running one (`if true {` for `if !live.update(…)`): `no "v2 count 3" on: … v2 count 0` | pass |
+| **A change of the declared types is shown as a change** in the overlay: `CHANGED from the version that runs:`, `+ tag   new: the app could not read or write these records before`, from your agent Scout with its key | the same; `U: ui::app_approval::tests::the_head_stays_and_the_end_must_be_seen` | — (the words are `Review::types_lines`, M4-A's red) | pass |
+| `Ctrl+Y` reaches bzz while the app has the keyboard, when a version waits | the same | `approval_waiting` counting agents' commands only: `left: App right: Approval` | pass |
+| **The head stays and the end must be seen**: a long difference scrolls under the head, `scroll to the end before you approve`; the end seen, it stays seen; a short version is seen whole; a version no longer waiting takes no answer | `U: the_head_stays_and_the_end_must_be_seen`; `P: a_version_that_fails…` (`a` before the end: `scroll to the end first`, and the version still waits) | the end counted as seen at once: `assertion failed: !state.seen_end`; no such check in the key: `None` where the notice was expected | pass |
+| **A version that fails as it is put to run leaves the one before running** (M3 left this): approved bytes that load apart and raise in `app.reload` in the open app; version 1 goes on with its count; version 2 is recorded `failed` with `counter.lua:…: in app.reload: …`, `Apps::outcome` says so, the store's current is 1 again, and the same session goes on counting | `P: a_version_that_fails_as_it_is_put_to_run_leaves_the_one_before_running` | the old bytes not given back: `no "v1 count 2" on: … v2 count 2`; the trial blind to an error after the load: `version 2 is recorded as failed` timed out | pass |
+| **Rollback, refuse, disable, enable, remove from the TUI** with the app open: rollback in place with the count; a refusal's reason kept (`Outcome::Refused`); disabled closes; enabled opens again; removed closes and says the records stay, and `:app open` then says it is not installed | `P: rollback_refuse_disable_enable_and_remove_from_the_tui` | a disabled app kept in the map of open apps: `assertion failed: app.shown_app().is_none()` | pass |
+| **`:app dev` runs the owner's folder here, on the channel's records, and reloads it on save**: marked `Tasks · not approved · dev …`; a card, then a save (`"To do"` → `"Backlog"`) shows `Backlog (1)` with the card; a broken save leaves it running with `reload failed: the previous version keeps running`; no app is installed by it; `:app close` ends it | `P: app_dev_runs_the_owners_folder_here_and_reloads_it_on_save` | the folder not looked at on a tick: the screen stays `To do (1)` | pass |
+| **`host.name(id)`**: the name bzz knows, the short form for an id it does not (`c0c0c0c0…c0c0`), the short form cut on characters (`éééééééé…éééé`), an error with file and line for what is not a string; the unnamed id is asked of the owner; a name learnt later draws the app again, with no push | `U: apps::session::tests::host_name_is_the_name_bzz_knows_and_a_name_learnt_later_draws_again` | a learnt name not redrawing (`learn_names(…) && false`): panic at `tests/mod.rs:457` (`voter: cy`); the asked ids not given to the owner: `[]` where cy's id was expected | pass |
+| **The templates store ids and show names at 40×16**: the Board fits; the Poll's vote stores the voter's id and shows `By: bo, c7c7c7c7…c7c7, you`, then `By: bo, cy, you` once cy is named; the Approvals' author and decider are ids, shown `Author: bo`, `Decided by: ana`; "not your own request" compares ids | `U: apps::store::tests::the_templates_store_ids_and_show_names_at_forty_by_sixteen`; `every_template_loads_and_declares_what_its_entry_says` | the Approvals storing `ctx.user.name`: panic at `tests.rs:1106`; the Poll showing the stored id: panic at `tests.rs:1064` | pass |
+| **The templates' specs on the bench**: the Poll, the Approvals and the Board, at 80×24 and 40×16, with reload, pushes and the hostile script | `scripts/test-apps-bench.sh poll approvals board` | — | 12/12, 15/15, 12/12 at each size; reload 20/20 at each size; pushes 8/8; hostile 29/29 |
+| The fixtures' cases in cargo with ids (Poll, Approvals) | `apps::runtime::tests::{poll,approvals}` | — | pass |
+| The v0.15 approvals (agents' commands) behave as before | the v0.15 tests of `app.rs` (`Ctrl+Y`, `:approvals`, the dialog), all green in the gate below | — | pass |
+
+### The exit gate, on the release binary
+
+**Run through tmux, not Herdr.** `herdr --session t3code pane list`
+answered `server_not_running`; the session was not started.
+`scripts/test-tui-tmux.py` ran the manifest on a private tmux socket, on
+the release binary of this branch, with a disposable profile from
+`examples/harness_fixture.rs` on the pinned relay (`scripts/test-relay.sh
+--tmux`, the lock taken; `docker ps` showed no `buzz-harness` container
+after each run). The M3 scenarios run first and leave the Board installed,
+approved and open in both profiles with a card each. Captures of every step
+are in `runs/v016/m4b-approval-captures/` of the main checkout
+(untracked).
+
+| Exit gate | Scenario | Seen | Result |
+|---|---|---|---|
+| 1. A script added from a folder runs only after approval | `t16-m4-poll-approve-update-rollback` | `:app add {fixture}/poll-app` shows `poll (Poll), version 1`, `Record types: poll, vote`; Esc: the banner `poll: version 1 from you waits for your approval · Ctrl-Y …`; `:app open poll`: `poll has no approved version (one waits for your answer)`, and no poll is drawn; `Ctrl+Y`, `a`: `scroll to the end first`; `G`: `rows 487–501 of 501: the end`; `a`: `poll: version 1 approved, the script of hash …`; `:app open poll`: `No poll yet. Press a to ask a question.` | pass |
+| 2a. A new version that fails to load is never offered | the same | the script with `return app(` appended, `:app add`: `poll: version 2 does not load, nothing changed: …`, no banner, the pane as it was | pass |
+| 2b. One that loads and fails when put to run leaves the old one running in the pane | the same | version 3 raises in `app.reload`; approved in the overlay: `poll: version 3 failed to run; version 1 goes on`; the pane still `> [ ] Sushi`, `Total: 1 vote` | pass |
+| 3. Rollback works with the app open, the state kept | the same | version 4 (`Total:` → `In all:`) approved: `poll: version 4 runs in place of 1, its state kept`, `In all: 1 vote`, `> [ ] Sushi`; `:app rollback poll`: `poll: back to version 1 from 4`, `Total: 1 vote`, `> [ ] Sushi` | pass |
+| 4. `app dev` reloads on save, on the channel's records, with a card a second profile made | `t16-m4-dev-remove-reinstall` | `:app dev {fixture}/board-app` in `#t9-general`: `Board · not approved · dev …`, `> q:1 ?5 gg` and `from the second profile` (the second profile's card, M3's scenario); `sed` of `"To do"`: `Backlog (2)` in 376 ms; `return app(` appended: `app board: app.lua:409: <eof> exp…` and still `Backlog (2)`; `:app close`: the installed Board again, `To do (2)` | pass |
+| 5. Uninstalling leaves the channel's records alone | the same | `:app remove board`: `board uninstalled; 2 records of bzz.app.board.* stay in the channel`, the pane gone; a new folder added and approved, `:app open board`: `q:1 ?5 gg` and `from the second profile` | pass |
+| 6. A change of the declared types is shown as a change | the same | the folder with `types = { "card", "tag" }`, `:app add`: `CHANGED from the version that runs:`, `+ tag   new: …`; `r`, a reason, Enter: `board: version 2 refused ("no tags on this board"); nothing of it runs`, the Board as it was | pass |
+| 7. The three templates: `new`, `add`, approve, open | the Board in M3's `t16-cli-app-*` (at the shell), the Poll above, `t16-m4-approvals-template` | the Approvals in `#t14-names`: added, approved, `Filter: all`; `n`, `Gym pass`: `Request filed.`; its detail `Author: …`; `a`: `You cannot decide your own request.` | pass |
+| M3's scenarios with this branch | `t16-cli-app-*`, `t16-app-pane`, `t16-app-live-second-profile`, `t16-app-looper-composer` | as in M3 | 8 of 8 |
+| Red: the old bytes not given back after a failed trial | `t16-m4-poll-approve-update-rollback` on a release binary with `session.reload(runnable.script())` taken out of the trial's failure | the pane goes on running version 3, with `in app.reload: poll.lua:448: version 3 cannot take this state` in its region, although the store made version 1 current again; `poll: version 3 failed to run; version 1 goes on` did not show whole (the app's error took the status line's room) | fail, as expected |
+
+What was not run on the binary: the session's notices (the wait at the
+quota, an archived channel) and a panic on an app's thread, which M3 left
+unit-tested only. The fixture has no archived channel an app is open in,
+and reaching the quota of writes in a scenario takes thirty writes in a
+minute; neither was added. Names of other people through `host.name` on the
+binary: the fixture's viewer has no profile, and no other person writes in
+the scenarios' channels, so the Approvals' `Author:` shows the viewer's
+short id; the lookup and the redraw are proven on the session and on the
+templates (above).
+
+### Gates
+
+On `2806f53`, 2026-11-19 from 21:17 (UTC−5), one after the other
+(`/tmp/m4b/gates.sh` of the worktree). Only this document changed
+afterwards. The release binary of the exit gate was built from the same
+sources (the run that ended at 21:07; the commits after it changed documents only). The release binary left in the worktree's target is the red one of the table above.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets -- -D warnings`; the same with `--no-default-features` | clean, both |
+| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets` | exit 0: 1045 passed, 0 failed, 35 ignored, in 60 test programs. New here: 4 of `app::pane::tests::managed`, 2 of `ui::app_approval`, 1 of `apps::session::tests` (`host.name`), 1 of `apps::store::tests` (the templates) |
+| Tests without the features | `cargo test --locked --no-default-features --lib` | 481 passed |
+| The apps bench | `scripts/test-apps-bench.sh poll approvals board` (debug host) | everything passed; above |
+| Supply chain | not run: `Cargo.toml` and `Cargo.lock` are unchanged | |
+| Release binary | `cargo build --locked --release`, the scenarios above | 11 of 11 |
+
+### Not proven in M4 (inside bzz)
+
+| Item | State |
+|---|---|
+| Herdr | the session `t3code` was not running; the scenarios ran through tmux. The Herdr runner reads the new `run` field (checked with `bash -n` and by reading), and has not run it |
+| macOS, Windows | not compiled or run here |
+| The session's notices on the binary (quota, archived), a panic on an app's thread on the binary | unit-tested only, as M3 left them; no scenario added |
+| `host.name` of another person on the binary | proven on the session and the templates in memory, and on the bench's host; on the binary only the viewer's own short id was seen |
+| The whole harness suite, v0.13 to v0.16 | not run: only M3's eight `t16-*` and M4's three. Nothing outside the app pane, `:app` and the approval banner changed in the TUI |
+| `:app new` on the binary | unit-tested through `templates::write`; the scenarios write folders with `bzz app new` |
+| Two bzz processes answering the same version at once | the store answers each in one SQLite transaction, and the TUI asks again after every answer; not tested with two processes |
+| A version whose computed types differ only in the open app | `Runnable::check_loaded` is called in the trial; no script that declares other types at run time than apart was written for a test |
+
+### Found on the way
+
+- **A `G` and an `a` sent together approve nothing,** and that is right:
+  the end counts as seen only when it was drawn. The first run of the
+  scenarios sent them in one step and the overlay said `scroll to the end
+  first`; the scenarios now send `G`, wait for the end, then `a`. v0.15's
+  overlay has the same rule.
+- **The status line cuts a long answer.** `board is uninstalled: every
+  version bzz kept of it is deleted. 2 records …` lost its point at 120
+  columns; every answer of `:app` is now written with the fact first.
+- **The looper of M3's scenarios closes the Board in `#t9-general`** (one
+  app in a channel), so M4's scenario opens the Board there again before
+  it tries `:app dev` beside it.
+- **`crate::domain::abbreviated_pubkey` slices bytes,** and would panic on
+  an id a script gives that is not ASCII; `host.name` cuts on characters
+  (`runtime::api::short_id`). Record authors are always hex, so the
+  session's own use is safe.

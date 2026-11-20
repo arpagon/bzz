@@ -15,8 +15,10 @@ spacing, extra hints) is free.
 - A request is a record of type `request` with content
   `{"title": string, "author": string, "state": "pending" | "approved" |
   "rejected", "decided_by": string | null, "reason": string | null,
-  "order": number}`. `author` and `decided_by` are participants' names; the
-  local participant's is `ctx.user.name` (for example `ana`).
+  "order": number}`. `author` and `decided_by` are participants' ids; the
+  local participant's is `ctx.user.id` (v0.16 M4: the template stores ids;
+  the bench's host makes the id of `ana` from her name). Wherever a person
+  is shown below (`<name>`), it is `host.name` of the id.
 - Load with one `data.list` with `type = "request"`; show requests in the
   order of their `order` field (a list arrives in no order; a new request
   gets an order that puts it last, `host.time()`). Other participants'
@@ -93,7 +95,7 @@ shown beside it at all times. While it is shown, `j`/`k`, `a`, `x`, `f`, `n`,
 
 **Deciding.** `a` on a pending request by someone else sends one
 `data.update` with its current `rev` and its whole content with
-`"state": "approved"`, `"decided_by": <ctx.user.name>` (its title, author,
+`"state": "approved"`, `"decided_by": <ctx.user.id>` (its title, author,
 `order` and a `null` reason are kept); `Saving...`, then the row shows `approved`
 and the status `Approved.`. `a` or `x` on your own request sends nothing and
 shows `You cannot decide your own request.`; on a decided request it sends
@@ -109,7 +111,7 @@ nothing and returns to the list with the selection it had.
 - **New request**: heading `New request`, field `Title: `. `Enter` with an
   empty or blank title shows `Title is required.` and sends nothing.
   Otherwise one `data.create` of type `request` with `{"title": <trimmed
-  title>, "author": <ctx.user.name>, "state": "pending", "decided_by": null,
+  title>, "author": <ctx.user.id>, "state": "pending", "decided_by": null,
   "reason": null, "order": <a number that puts it last>}` (a `null` is
   written `data.null`). On success the form closes, the new request is selected
   and the status is `Request filed.`.

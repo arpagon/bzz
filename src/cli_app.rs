@@ -168,8 +168,8 @@ pub enum AppCommand {
     Dev {
         /// A folder with app.lua, or the script itself.
         folder: PathBuf,
-        /// Run it on a channel's records. Not in this version: it needs
-        /// the app pane of bzz's window.
+        /// Run it on a channel's records: that is done in bzz's window,
+        /// with `:app dev <folder>` in the channel; this says how.
         #[arg(long)]
         channel: Option<String>,
         /// The app's region, in columns and rows. The pane gives 40x16.
@@ -633,7 +633,8 @@ fn try_app(
 fn dev(folder: &Path, channel: Option<&str>, size: &str, seed: Option<&Path>) -> Result<()> {
     if let Some(channel) = channel {
         return Err(failed(format!(
-            "`bzz app dev --channel {channel}` needs the app pane of bzz's window, which this version does not have yet. Without --channel the folder's app runs in this terminal, on records kept in memory"
+            "a folder runs on a channel's records in the pane of bzz's window, not from here: open bzz, select #{channel}, and type :app dev {}. Without --channel the folder's app runs in this terminal, on records kept in memory",
+            visible(&folder.display().to_string())
         )));
     }
     if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {

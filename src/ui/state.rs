@@ -51,6 +51,8 @@ pub enum Overlay {
     Artifacts,
     /// `:apps`: the installed apps and where each is open (v0.16).
     Apps,
+    /// A version of an app put to its owner (v0.16 M4).
+    AppApproval,
     Broker,
     Huddle,
     /// A person's profile card (NIP-CL public channels where offered).

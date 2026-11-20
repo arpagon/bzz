@@ -36,7 +36,7 @@ import sys
 import time
 
 from drive import REPO, launch, stop
-from harness import out_dir, parse_size
+from harness import out_dir, parse_size, pid
 
 FIXTURES = os.path.join(REPO, "tests", "fixtures", "apps")
 
@@ -210,11 +210,11 @@ def poll():
             "search": lambda t: all_of(text_has("Search: s"), text_lacks("Pizza")),
             "form": lambda t: all_of(text_has("New option"), text_has("Option: half")),
         },
-        bo4=lambda svc: remote_create(svc, "vote", {"voter": "eve", "option": "Salad"}, user="eve"),
+        bo4=lambda svc: remote_create(svc, "vote", {"voter": pid("eve"), "option": "Salad"}, user="eve"),
         bo4_shows=row("Salad", "1 vote"),
         own=["enter"], own_desc="Enter in the form adds the option 'half' to the poll",
         own_check=lambda svc: content_of(svc, "poll").get("options", [])[-1:] == ["half"],
-        bo5=lambda svc: remote_update(svc, "vote", {"voter": "bo"}, {"option": "Tacos"}),
+        bo5=lambda svc: remote_update(svc, "vote", {"voter": pid("bo")}, {"option": "Tacos"}),
         bo5_shows=row("Tacos", "1 vote"),
         write=["enter"], write_ok="Voted for Tacos.", loaded="Loaded 4 options.", lists=2,
         # While the first load waits the poll shows no total: the new label
@@ -249,7 +249,7 @@ def rota():
 
 def approvals():
     def request(title, order):
-        return {"title": title, "author": "bo", "state": "pending", "decided_by": None, "reason": None,
+        return {"title": title, "author": pid("bo"), "state": "pending", "decided_by": None, "reason": None,
                 "order": order}
 
     return dict(

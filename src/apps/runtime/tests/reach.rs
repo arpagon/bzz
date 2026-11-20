@@ -133,7 +133,7 @@ fn a_script_reaches_no_file_network_process_environment_native_code_or_bytecode(
         all.contains(
             "globals: _G _VERSION assert data error getmetatable host ipairs math next pairs \
              pcall print rawequal rawget rawlen rawset select setmetatable string table tonumber \
-             tostring type ui utf8 xpcall host: after log quit time data: create delete list \
+             tostring type ui utf8 xpcall host: after log name quit time data: create delete list \
              null update ui: bar_chart block column edit gauge input layers line line_gauge list \
              paste popup row scrollbar spacer span sparkline table tabs text truncate width \
              pushes received: 0"

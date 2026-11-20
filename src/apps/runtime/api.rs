@@ -15,7 +15,7 @@
 //!   nobody caught.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -43,6 +43,7 @@ pub const FUNCTIONS: &[&str] = &[
     "data.update",
     "host.after",
     "host.log",
+    "host.name",
     "host.quit",
     "host.time",
     "print",
@@ -144,7 +145,35 @@ pub struct Gate {
     pub log_window: Window,
     pub logs_dropped: u32,
     pub request_window: Window,
+    /// The names the owner knows, by id: what `host.name` answers.
+    pub names: HashMap<String, String>,
+    /// Ids `host.name` was asked for and had no name for, not yet told to
+    /// the owner, who looks them up.
+    pub asked: Vec<String>,
+    /// Every id `host.name` had no name for: a name learnt for one of
+    /// these draws the app again.
+    pub asked_ever: HashSet<String>,
 }
+
+/// What an id is called while no name is known for it: its ends, as bzz
+/// writes an author it has no profile of (`c0c0c0c0…c0c0`). Cut on
+/// characters, whatever a script gives.
+pub fn short_id(id: &str) -> String {
+    let count = id.chars().count();
+    if count <= 12 {
+        return id.to_string();
+    }
+    let head: String = id.chars().take(8).collect();
+    let tail: String = id.chars().skip(count - 4).collect();
+    format!("{head}…{tail}")
+}
+
+/// The most ids an app is answered a short form for and the owner is asked
+/// to look up. Past it `host.name` still answers, and asks for nothing.
+pub const ASKED_NAMES: usize = 4096;
+
+/// The longest id `host.name` takes, in bytes. A public key is 64.
+pub const NAME_ID_BYTES: usize = 256;
 
 /// More known records than the relay lets one sync hold are not kept.
 const KNOWN_RECORDS: usize = 8192;
@@ -168,7 +197,35 @@ impl Gate {
             log_window: Window::default(),
             logs_dropped: 0,
             request_window: Window::default(),
+            names: HashMap::new(),
+            asked: Vec::new(),
+            asked_ever: HashSet::new(),
         }
+    }
+
+    /// What `host.name(id)` answers: the name the owner knows, or a short
+    /// form of the id, which is then asked of the owner.
+    pub fn name_of(&mut self, id: &str) -> String {
+        if let Some(name) = self.names.get(id) {
+            return name.clone();
+        }
+        if self.asked_ever.len() < ASKED_NAMES && self.asked_ever.insert(id.to_string()) {
+            self.asked.push(id.to_string());
+        }
+        short_id(id)
+    }
+
+    /// Names the owner learnt. Answers whether one of them is a name the
+    /// app asked for and was given a short form instead: it is drawn again.
+    pub fn learn_names(&mut self, names: Vec<(String, String)>) -> bool {
+        let mut asked = false;
+        for (id, name) in names {
+            if self.names.get(&id) != Some(&name) {
+                asked |= self.asked_ever.contains(&id);
+                self.names.insert(id, name);
+            }
+        }
+        asked
     }
 
     pub fn declares(&self, record_type: &str) -> bool {
@@ -395,6 +452,28 @@ pub fn install(lua: &Lua, gate: &SharedGate) -> mlua::Result<()> {
         "host.after",
         function(lua, move |_, args| {
             after(&shared, arg(args, 0), arg(args, 1))
+        })?,
+    )?;
+    let shared = gate.clone();
+    raw.raw_set(
+        "host.name",
+        function(lua, move |lua, args| {
+            let id = match arg(args, 0) {
+                Value::String(s) if s.as_bytes().len() <= NAME_ID_BYTES => {
+                    String::from_utf8_lossy(&s.as_bytes()).into_owned()
+                }
+                Value::String(_) => {
+                    return say(format!("host.name: an id is at most {NAME_ID_BYTES} bytes"));
+                }
+                other => {
+                    return say(format!(
+                        "host.name: the id must be a string, got {}",
+                        type_of(other)
+                    ));
+                }
+            };
+            let name = shared.borrow_mut().name_of(&id);
+            Ok(vec![Value::String(lua.create_string(name)?)])
         })?,
     )?;
     let shared = gate.clone();

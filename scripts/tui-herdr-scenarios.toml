@@ -1703,3 +1703,351 @@ visible = "quit bzz?"
 [[scenario.step]]
 keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.16 M4: approving and managing apps inside bzz, on the release binary.
+# They follow the t16 scenarios above, which leave the Board installed,
+# approved and open in #t9-general in both profiles, with a card each.
+#
+# One more field (both runners read it): `run = "command"` on a step is run
+# by this machine's shell before the step's keys, with `{fixture}` the
+# fixture's folder and `$BZZ_BIN` the binary under test: what the owner
+# does outside bzz, such as saving the script of a folder.
+
+[[scenario]]
+id = "t16-m4-poll-approve-update-rollback"
+kind = "harness"
+description = "v0.16 M4 exit gate: the Poll, written from its template, is added in the TUI and runs only after its approval there; a version that does not load is never offered; one that loads and fails as it is put to run leaves the old one running; an approved change replaces it in place with its state, and a rollback brings the old one back, with the state."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x30"
+
+[[scenario.step]]
+run = "\"$BZZ_BIN\" app new poll --template poll --to {fixture}/poll-app"
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t15-ag", "enter"]
+visible = "Generated agents channel"
+
+# Added in the TUI: shown at once for an answer, and nothing of it runs.
+[[scenario.step]]
+keys = [":", "type:app add {fixture}/poll-app", "enter"]
+visible = "a version of an app waits for your answer"
+timeout = 30000
+
+[[scenario.step]]
+keys = []
+visible = "poll (Poll), version 1"
+
+[[scenario.step]]
+keys = []
+visible = "Record types: poll, vote"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "poll: version 1 from you waits for your approval · Ctrl-Y to see and answer it"
+
+[[scenario.step]]
+keys = [":", "type:app open poll", "enter"]
+visible = "poll has no approved version (one waits for your answer)"
+absent = "No poll yet"
+
+# Approved where it is shown, after all of it was on screen.
+[[scenario.step]]
+keys = ["ctrl+y"]
+visible = "poll (Poll), version 1"
+
+[[scenario.step]]
+keys = ["a"]
+visible = "scroll to the end first"
+
+[[scenario.step]]
+keys = ["G"]
+visible = "(: the end|that is the whole version)"
+regex = true
+
+[[scenario.step]]
+keys = ["a"]
+visible = "poll: version 1 approved, the script of hash"
+
+[[scenario.step]]
+keys = [":", "type:app open poll", "enter"]
+visible = "No poll yet. Press a to ask a question."
+
+[[scenario.step]]
+keys = ["a", "type:Lunch?", "enter"]
+visible = "Poll created."
+
+[[scenario.step]]
+keys = ["a", "type:Tacos", "enter"]
+visible = "Option added."
+
+[[scenario.step]]
+keys = ["a", "type:Sushi", "enter"]
+visible = "[ ] Sushi"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Voted for Tacos."
+
+[[scenario.step]]
+keys = []
+visible = "By: you"
+
+# The selection on Sushi is the app's own state: it must survive.
+[[scenario.step]]
+keys = ["j"]
+visible = "> [ ] Sushi"
+
+# A version that does not load: recorded as failed, never offered.
+[[scenario.step]]
+run = "printf '\\nreturn app(\\n' >> {fixture}/poll-app/app.lua"
+keys = ["ctrl+c", ":", "type:app add {fixture}/poll-app", "enter"]
+visible = "poll: version 2 does not load, nothing changed"
+timeout = 30000
+absent = "waits for your approval"
+
+# One that loads apart and fails in the open app: app.reload raises.
+[[scenario.step]]
+run = "\"$BZZ_BIN\" app new poll --template poll --to {fixture}/poll-3 && printf 'function app.reload(s, ctx) error(\"version 3 cannot take this state\") end\\n' > {fixture}/reload.lua && python3 -c 'import sys; p=sys.argv[1]; s=open(p).read(); s=s.replace(\"\\nreturn app\", \"\\n\" + open(sys.argv[2]).read() + \"return app\"); open(p, \"w\").write(s)' {fixture}/poll-3/app.lua {fixture}/reload.lua"
+keys = [":", "type:app add {fixture}/poll-3", "enter"]
+visible = "poll (Poll), version 3"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["G"]
+visible = "(: the end|that is the whole version)"
+regex = true
+
+[[scenario.step]]
+keys = ["a"]
+visible = "poll: version 3 failed to run; version 1 goes on"
+
+[[scenario.step]]
+keys = []
+visible = "> [ ] Sushi"
+
+[[scenario.step]]
+keys = []
+visible = "Total: 1 vote"
+
+# An approved change: in place, with the selection.
+[[scenario.step]]
+run = "\"$BZZ_BIN\" app new poll --template poll --to {fixture}/poll-4 && sed -i 's/\"Total: \"/\"In all: \"/' {fixture}/poll-4/app.lua"
+keys = [":", "type:app add {fixture}/poll-4", "enter"]
+visible = "poll (Poll), version 4"
+timeout = 30000
+
+[[scenario.step]]
+keys = []
+visible = "The same as the version that runs."
+
+[[scenario.step]]
+keys = ["G"]
+visible = "(: the end|that is the whole version)"
+regex = true
+
+[[scenario.step]]
+keys = ["a"]
+visible = "poll: version 4 runs in place of 1, its state kept"
+
+[[scenario.step]]
+keys = []
+visible = "In all: 1 vote"
+
+[[scenario.step]]
+keys = []
+visible = "> [ ] Sushi"
+
+# Rollback with the app open: version 1 again, the selection kept.
+[[scenario.step]]
+keys = [":", "type:app rollback poll", "enter"]
+visible = "poll: back to version 1 from 4"
+
+[[scenario.step]]
+keys = []
+visible = "Total: 1 vote"
+
+[[scenario.step]]
+keys = []
+visible = "> [ ] Sushi"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-m4-approvals-template"
+kind = "harness"
+description = "v0.16 M4: the Approvals template is written, added and approved in the TUI, and opened in #t14-names; a request it files stores the owner's id and shows his name."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x30"
+
+[[scenario.step]]
+run = "\"$BZZ_BIN\" app new approvals --template approvals --to {fixture}/approvals-app"
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t14-na", "enter"]
+visible = "t14-names"
+
+[[scenario.step]]
+keys = [":", "type:app add {fixture}/approvals-app", "enter"]
+visible = "approvals (Approvals), version 1"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["G"]
+visible = "(: the end|that is the whole version)"
+regex = true
+
+[[scenario.step]]
+keys = ["a"]
+visible = "approvals: version 1 approved"
+
+[[scenario.step]]
+keys = [":", "type:app open approvals", "enter"]
+visible = "Filter: all"
+
+[[scenario.step]]
+keys = ["n", "type:Gym pass", "enter"]
+visible = "Request filed."
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Author: "
+
+[[scenario.step]]
+keys = ["a"]
+visible = "You cannot decide your own request."
+
+[[scenario.step]]
+keys = ["ctrl+c", "q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-m4-dev-remove-reinstall"
+kind = "harness"
+description = "v0.16 M4 exit gate: :app dev runs the Board's folder in #t9-general on the channel's records, with the card the second profile made, reloads it on save and keeps the old version on a broken save; uninstalling the Board leaves the cards in the channel, and installed again it finds them; a version with another record type is shown as a change and refused with a reason."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x30"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Generated custom emoji"
+
+# The looper took #t9-general above; the Board is opened there again.
+[[scenario.step]]
+keys = [":", "type:app open board", "enter"]
+visible = "Board · Ctrl-c leave"
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "Board · 5 focus"
+
+# The owner's own folder, not approved, on the channel's real records.
+[[scenario.step]]
+keys = [":", "type:app dev {fixture}/board-app", "enter"]
+visible = "Board · not approved · dev"
+
+[[scenario.step]]
+keys = []
+visible = "from the second profile"
+
+[[scenario.step]]
+keys = []
+visible = "dev: "
+
+[[scenario.step]]
+run = "sed -i 's/\"To do\"/\"Backlog\"/' {fixture}/board-app/app.lua"
+keys = []
+visible = "Backlog (2)"
+
+[[scenario.step]]
+run = "printf '\\nreturn app(\\n' >> {fixture}/board-app/app.lua"
+keys = []
+visible = "app.lua:"
+
+[[scenario.step]]
+keys = []
+visible = "Backlog (2)"
+
+[[scenario.step]]
+keys = ["ctrl+c", ":", "type:app close", "enter"]
+visible = "Board · 5 focus"
+
+[[scenario.step]]
+keys = []
+visible = "To do (2)"
+
+# Uninstalled: the pane closes; the cards stay in the channel.
+[[scenario.step]]
+keys = [":", "type:app remove board", "enter"]
+visible = "board uninstalled; 2 records of bzz.app.board.* stay in the channel"
+absent = "Board · 5 focus"
+
+[[scenario.step]]
+run = "\"$BZZ_BIN\" app new board --to {fixture}/board-again"
+keys = [":", "type:app add {fixture}/board-again", "enter"]
+visible = "board (Board), version 1"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["G"]
+visible = "(: the end|that is the whole version)"
+regex = true
+
+[[scenario.step]]
+keys = ["a"]
+visible = "board: version 1 approved"
+
+[[scenario.step]]
+keys = [":", "type:app open board", "enter"]
+visible = "from the second profile"
+
+[[scenario.step]]
+keys = []
+visible = "q:1 ?5 gg"
+
+# A version that declares one record type more: shown as a change.
+[[scenario.step]]
+run = "sed -i 's/app.types = { \"card\" }/app.types = { \"card\", \"tag\" }/' {fixture}/board-again/app.lua && sed -i 's/types = \\[\"card\"\\]/types = [\"card\", \"tag\"]/' {fixture}/board-again/app.toml"
+keys = ["ctrl+c", ":", "type:app add {fixture}/board-again", "enter"]
+visible = "CHANGED from the version that runs:"
+timeout = 30000
+
+[[scenario.step]]
+keys = []
+visible = "+ tag   new: the app could not read or write these records before"
+
+[[scenario.step]]
+keys = ["r", "type:no tags on this board", "enter"]
+visible = "board: version 2 refused (\"no tags on this board\")"
+
+[[scenario.step]]
+keys = []
+visible = "To do (2)"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"

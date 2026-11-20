@@ -19,6 +19,7 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
+mod manage;
 mod pane;
 
 use crate::clock::WallClock as _;
@@ -3271,7 +3272,12 @@ impl App {
             // of a refusal that is being written.
             crate::ui::app_pane::PasteTarget::ApprovalReason => {
                 if let Ok(text) = sanitize_pasted_text(&text) {
-                    self.approval.type_reason(&text);
+                    if self.presentation.overlay == Some(Overlay::AppApproval) {
+                        #[cfg(feature = "apps")]
+                        self.apps.review.type_reason(&text);
+                    } else {
+                        self.approval.type_reason(&text);
+                    }
                 }
                 return Ok(());
             }
@@ -3302,6 +3308,10 @@ impl App {
         terminal: &mut Tui,
     ) -> Result<()> {
         if self.global_key(key) {
+            return Ok(());
+        }
+        // Ctrl+Y when what waits is a version of an app (v0.16 M4).
+        if self.app_review_key(key).await? {
             return Ok(());
         }
         // While the app has the focus every key is its own but Ctrl+C,
@@ -3497,6 +3507,7 @@ impl App {
             Some(Overlay::LocalAgents) => self.local_agents_key(key).await?,
             Some(Overlay::AgentNew) => self.agent_form_key(key).await?,
             Some(Overlay::Approval) => self.approval_key(key),
+            Some(Overlay::AppApproval) => self.app_review_answer_key(key).await?,
             Some(Overlay::Artifacts) => self.artifact_panel_key(key).await?,
             Some(Overlay::Huddle) => self.huddle_key(key).await?,
             Some(Overlay::Profile) => self.profile_key(key),
@@ -9612,6 +9623,12 @@ impl App {
             }
             crate::ui::command::Command::Approvals => {
                 self.presentation.close_overlay();
+                self.refresh_approvals();
+                // An agent's command first: it is refused when its time is
+                // up. Then the versions of apps.
+                if self.approvals.is_empty() && !self.apps.waiting.is_empty() {
+                    return self.open_app_review(None).await;
+                }
                 self.open_approval();
             }
             crate::ui::command::Command::DmHide => self.hide_current_dm(),
@@ -9994,6 +10011,23 @@ impl App {
                 seconds_left(first),
             );
             crate::ui::approval::render_banner(frame, area, &text, &self.theme);
+        } else if let Some(first) = self.apps.waiting.first()
+            && !matches!(
+                self.presentation.overlay,
+                Some(Overlay::Approval | Overlay::AppApproval)
+            )
+            && area.width >= 50
+            && area.height >= 12
+        {
+            // A version of an app waits: said in the same place, the same
+            // way, after an agent's command.
+            #[cfg(feature = "apps")]
+            {
+                let text = crate::ui::app_approval::banner_text(first, self.apps.waiting.len());
+                crate::ui::approval::render_banner(frame, area, &text, &self.theme);
+            }
+            #[cfg(not(feature = "apps"))]
+            let _ = first;
         }
     }
 
@@ -10612,7 +10646,7 @@ impl App {
             Some(Overlay::DmPicker) => "DM",
             Some(Overlay::Agents | Overlay::LocalAgents) => "AGENTS",
             Some(Overlay::AgentNew) => "NEW AGENT",
-            Some(Overlay::Approval) => "APPROVE",
+            Some(Overlay::Approval | Overlay::AppApproval) => "APPROVE",
             Some(Overlay::Artifacts) => "ARTIFACTS",
             Some(Overlay::Broker) => "BROKER",
             Some(Overlay::Profile) => "PROFILE",
@@ -11031,6 +11065,22 @@ impl App {
                     self.local_agents.is_some(),
                     &self.theme,
                 );
+            }
+            Some(Overlay::AppApproval) => {
+                let popup = centered(area, 100, area.height.saturating_sub(2).min(48));
+                #[cfg(feature = "apps")]
+                {
+                    let others = self.apps.waiting.len().saturating_sub(1);
+                    crate::ui::app_approval::render(
+                        frame,
+                        popup,
+                        &mut self.apps.review,
+                        others,
+                        &self.theme,
+                    );
+                }
+                #[cfg(not(feature = "apps"))]
+                let _ = popup;
             }
             Some(Overlay::Approval) => {
                 let popup = centered(area, 96, area.height.saturating_sub(2).min(40));

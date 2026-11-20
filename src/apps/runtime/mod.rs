@@ -44,6 +44,7 @@ mod tests;
 /// too, where they were before the session existed.
 pub use super::session::{headless, memory};
 
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
@@ -276,6 +277,9 @@ pub enum Event {
     Reload(Vec<u8>),
     /// The local participant's name or id changed.
     User(Who),
+    /// Names the owner learnt, by id: what `host.name` answers from now on.
+    /// An app that was given a short form for one of these is drawn again.
+    Names(Vec<(String, String)>),
     /// The owner is done with the app.
     Stop,
 }
@@ -339,6 +343,8 @@ pub struct Options {
     pub limits: Limits,
     pub clock: SharedClock,
     pub waker: Waker,
+    /// The names the owner knows, by id, for `host.name`.
+    pub names: HashMap<String, String>,
 }
 
 impl Options {
@@ -351,7 +357,13 @@ impl Options {
             limits: Limits::default(),
             clock: SystemClock::shared(),
             waker: no_waker(),
+            names: HashMap::new(),
         }
+    }
+
+    pub fn names(mut self, names: HashMap<String, String>) -> Self {
+        self.names = names;
+        self
     }
 
     pub fn size(mut self, width: u16, height: u16) -> Self {
@@ -406,6 +418,7 @@ impl Runtime {
             clock: options.clock,
             waker: options.waker,
             source: source.into(),
+            names: options.names,
         };
         let for_thread = shared.clone();
         std::thread::Builder::new()
@@ -488,6 +501,13 @@ impl Runtime {
             .sent
             .load(Ordering::SeqCst)
             .saturating_sub(self.shared.handled.load(Ordering::SeqCst))
+    }
+
+    /// The ids `host.name` had no name for since the last time: for the
+    /// owner to look up, and to send back with [`Event::Names`]. Each id is
+    /// given once.
+    pub fn asked_names(&self) -> Vec<String> {
+        std::mem::take(&mut *self.shared.asked.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Timers the app has waiting. While it is zero a tick does nothing.

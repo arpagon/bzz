@@ -92,7 +92,7 @@ def main(argv):
         check("the script has no os, io, package, debug, load, require or coroutine",
               "globals: _G _VERSION assert data error getmetatable host ipairs math next pairs pcall print "
               "rawequal rawget rawlen rawset select setmetatable string table tonumber tostring type ui utf8 "
-              "xpcall host: after log quit time data: create delete list null update" in text)
+              "xpcall host: after log name quit time data: create delete list null update" in text)
         check("os.execute made no file", not os.path.exists(marker))
         print(sess.screen.dump("hostile: what the script reached at start"))
 
