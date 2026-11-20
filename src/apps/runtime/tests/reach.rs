@@ -98,7 +98,9 @@ fn hostile_app(marker: &std::path::Path) -> Headless {
 }
 
 fn hostile_app_with(marker: &std::path::Path, limits: Limits) -> Headless {
-    let source = HOSTILE_APP.replace("MARKER", &marker.display().to_string());
+    // The path goes into Lua source inside a string: a Windows path's
+    // backslashes would be escapes there.
+    let source = HOSTILE_APP.replace("MARKER", &marker.display().to_string().replace('\\', "/"));
     Headless::start(
         source,
         HeadlessOptions::new("hostile.lua")

@@ -747,7 +747,17 @@ mod tests {
             lines[1]
         );
         assert!(lines[17].starts_with('└'), "16 rows inside: {}", lines[17]);
-        assert!(lines[18].contains("app.lua · running · not reloaded yet · 0 records in memory"));
+        // The line under the app begins with the script's whole path, which
+        // on Windows is longer than this window is wide: the line is read
+        // whole from where it is made, and the window shows its beginning.
+        let under = dev.status_lines();
+        assert!(
+            under[0].ends_with("app.lua · running · not reloaded yet · 0 records in memory"),
+            "{}",
+            under[0]
+        );
+        let shown: String = under[0].chars().take(20).collect();
+        assert!(lines[18].starts_with(&shown), "{}", lines[18]);
         assert!(lines[19].starts_with("Ctrl+C leaves."), "{}", lines[19]);
 
         // A terminal smaller than the app: nothing is drawn outside it.
