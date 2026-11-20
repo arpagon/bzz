@@ -70,9 +70,22 @@ pub struct Running {
     pub types: Vec<String>,
 }
 
+/// The offer in a channel a version was taken in from (M6).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfferFacts {
+    /// The artifact of the offer.
+    pub artifact: Uuid,
+    /// The event id of the exact revision, which `from` signed.
+    pub revision: String,
+}
+
 /// One version, as the owner is shown it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Review {
+    /// Who the version that runs came from, when one runs.
+    pub installed_from: Option<Proposer>,
+    /// The revision of an offer in a channel it came from, if it did.
+    pub offer: Option<OfferFacts>,
     pub community: Uuid,
     pub name: String,
     pub title: String,
@@ -117,6 +130,13 @@ pub fn from_whom(proposer: &Proposer) -> String {
 }
 
 impl Review {
+    /// The version comes from a person of the channel, and the version
+    /// installed here from another one (or from you, or your agent).
+    pub fn another_source(&self) -> Option<&Proposer> {
+        let installed = self.installed_from.as_ref()?;
+        (self.from.kind == ProposerKind::Member && !installed.is(&self.from)).then_some(installed)
+    }
+
     /// May this version be approved on what is shown alone: it differs in
     /// nothing from the one that runs but in its brief or title.
     pub fn script_unchanged(&self) -> bool {
@@ -167,6 +187,22 @@ impl Review {
             None => String::new(),
         };
         out.push(format!("From:     {}{place}", from_whom(&self.from)));
+        if let Some(offer) = &self.offer {
+            out.push(format!(
+                "Offer:    shared in the channel; this exact revision ({}…) is signed by {}",
+                &offer.revision[..16.min(offer.revision.len())],
+                self.from
+                    .name
+                    .as_deref()
+                    .map_or_else(|| "them".to_owned(), visible)
+            ));
+        }
+        if let Some(installed) = self.another_source() {
+            out.push(format!(
+                "Source:   CHANGED: the version installed here came from {}",
+                from_whom(installed)
+            ));
+        }
         out.push(format!("Proposed: {}", when(self.proposed_at)));
         out.push(format!("Hash:     {}", self.hash));
         match &self.running {
