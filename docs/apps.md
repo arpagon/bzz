@@ -7,12 +7,14 @@ bytes. This guide is for whoever installs, writes or approves one. The
 reasons behind it are in [`adr-v0.16-apps.md`](adr-v0.16-apps.md); what a
 script is written against is [`app-api.md`](app-api.md).
 
-> **What this version has.** The store of installed apps, approval, the
-> command line `bzz app`, and the pane: an app can be written, checked,
-> tried, run from your own folder in a terminal, installed, approved,
-> rolled back, removed, and opened beside a conversation. The approval of a
-> version inside the TUI, the agents' tools and sharing in the channel are
-> not built, and each has a marked section below.
+> **What this version has.** The store of installed apps, approval at the
+> shell and inside bzz, the command line `bzz app`, the pane, and three
+> templates: an app can be written, checked, tried, run from your own
+> folder (in a terminal, or in a channel's pane on its records),
+> installed, approved, rolled back, removed, and opened beside a
+> conversation, where a new version replaces the running one in place.
+> The agents' tools and sharing in the channel are not built, and each has
+> a marked section below.
 
 An app is four things, kept apart:
 
@@ -113,16 +115,23 @@ script changes. It is text: bzz refuses one with control characters.
 
 The templates:
 
-| Template | What it is |
-|---|---|
-| `board` | Cards in three columns: To do, Doing, Done. |
+| Template | Record types | What it is |
+|---|---|---|
+| `board` | `card` | Cards in three columns: To do, Doing, Done. A move is applied on top of someone else's change: a board merges. |
+| `poll` | `poll`, `vote` | One question, its options, one vote for each person; who voted for the selected option is shown by name. |
+| `approvals` | `request` | Requests that someone else approves, or rejects with a reason. A decision is never written over another. |
 
-<!-- Poll and Approvals (plan D9) come from the fixtures
-     tests/fixtures/apps/poll/app.lua (types poll, vote) and
-     tests/fixtures/apps/approvals/app.lua (type request). For each: a
-     brief at src/apps/templates/<name>/brief.md, an entry in TEMPLATES in
-     src/apps/store/templates.rs, and a row here. The test
-     every_template_loads_and_declares_what_its_entry_says covers it. -->
+Each fits the pane's 40 columns by 16 rows, and each is written to be read:
+the comments say where a rule of the contract is not obvious (the order
+field, what a conflict means for it, the answer `rate_limited`, a list
+asked for again). **A person is stored by id, and shown by name**: the
+Poll's `voter`, the Approvals' `author` and `decided_by` are public keys
+(`ctx.user.id`), and the app shows them with `host.name(id)`, the name bzz
+knows; a name can change, an id cannot. A template's script and brief are
+the files the runtime's tests and the apps bench run
+(`tests/fixtures/apps/<name>/`), so what you start from is what is tested.
+`:app new <name> [template]` writes the same folder from inside bzz, at
+`./<name>`.
 
 Three commands need no community, no relay and no key:
 
@@ -160,16 +169,32 @@ bzz app dev tasks                 # run it here, reload it on every save
   looking at. `Ctrl+C` leaves; every other key is the app's. Its records
   are kept in memory (`--seed` as for `try`) and are gone when you leave.
 
-  `--channel` is refused in this version: running your folder on a
-  channel's real records needs the pane. <!-- M4-B: `bzz app dev <folder>
-  --channel <name>` opens the folder's app in that channel's pane of the
-  running TUI, on the channel's records, reloading on save and marked as
-  unapproved in the pane's border. It needs: the pane (M3); an
-  `AppSession::on_relay` started from the folder's bytes instead of from
-  `Apps::runnable`, with the app's name from the folder's app.toml, given
-  each save with `AppSession::reload` (`apps::dev::Dev` already does this
-  on `AppSession::in_memory`); and a way for the command to reach the
-  running bzz, or `:app dev <folder>` inside it. -->
+  To run your folder **on a channel's real records**, do it inside bzz:
+  select the channel and type `:app dev <folder>` (below, "Your folder
+  in a channel"). `bzz app dev --channel` says so; the command line
+  cannot reach a running bzz.
+
+### Your folder in a channel
+
+```text
+:app dev ~/apps/tasks       in the selected channel's pane, on its records
+```
+
+- **No approval**, because it is your own folder that you are looking at
+  (plan D5). The pane's border says `not approved · dev <folder>`.
+- **Its records** are the channel's records of the name its `app.toml`
+  gives (`bzz.app.<name>.*`), or of the folder's name if it has none. A
+  folder named as an installed app works on that app's records: that is
+  how you try a change on the real cards. To keep apart from them, give
+  the folder another name.
+- **A save** of its script is given to the running app within a third
+  of a second, which keeps its state. A save that does not load leaves
+  the version before running, with the error on its last row.
+- **What ends it**: `:app close`, `:app open` of another app in the
+  channel, the script's `host.quit()`, a switch of community, `:lock`,
+  and quitting. It is never remembered: a restart of bzz does not run the
+  folder again, and the app installed in that channel, if any, shows
+  again when it ends.
 
 ## Installing an app
 
@@ -266,12 +291,52 @@ never offered to you. One proposer has one version waiting at a time: a
 later one from the same proposer takes the earlier one's place. Up to
 eight versions of one app can wait.
 
-<!-- M4-B: in the TUI a waiting version opens an approval overlay built on
-     v0.15's (`src/ui/approval.rs`), from `Apps::review`. An approval made
-     there or at the shell reaches the open app without a restart: the pane
-     takes `Apps::runnable` again and reloads. A version that fails as the
-     pane puts it to run is recorded with `Apps::failed_to_run`, and the
-     version before it goes on running. -->
+### Inside bzz
+
+A version that waits is announced at the top of the screen, wherever you
+are, as an agent's command is:
+
+```text
+ tasks: version 2 from your agent Scout (e5e5e5e5…e5e5) waits for your approval · Ctrl-Y to see and answer it
+```
+
+`Ctrl+Y` (even while an app has the keyboard), `:approvals` or `:app
+pending [name]` shows it, after any command of an agent's, which has a
+time limit. You see what the shell shows: who it comes from, the hash,
+the sizes, the record types **with any change marked `CHANGED`** in the
+warning colour, then the brief and the difference, which scroll (`j`/`k`,
+`PgUp`/`PgDn`, `g`/`G`). The head stays on screen.
+
+| Key | |
+|---|---|
+| `a` | approve the hash shown. Taken only once the last row has been on screen |
+| `r` | refuse: type a reason (one line, optional), `Enter` |
+| `Tab` | the next version that waits |
+| `Esc` | decide later: it keeps waiting |
+
+`:app approve <name>` opens the same: an approval is never given by a
+command alone. `:app refuse <name> [reason…]` refuses the waiting version
+at once. `:app add <folder>` proposes your folder, as `bzz app add` does,
+and shows it for your answer.
+
+**An approval reaches an open app without a restart**, whether given
+here or at the shell, and so do a rollback and an answer at the shell
+(bzz looks at the store every second): the open app is given the new
+version's exact bytes **in place**, and keeps its state (its selection,
+an open form). The new version replaces the running one only if it loads,
+declares the record types you approved, and runs its `app.reload` and its
+first `app.view` without an error. If not, it is recorded as failed, with
+its error, the version before goes on running with its state, and the
+status line says so:
+
+```text
+tasks: version 3 failed as it was put to run, and version 2 goes on running: app.lua:41: in app.reload: …
+```
+
+**For whoever proposes a version** (M5's agents, M6's channel):
+`Apps::record` after `examine`, then `Apps::outcome` says what became of
+it: waiting, applied, refused with your reason, or failed with the
+error.
 
 ## Managing apps
 
@@ -299,6 +364,18 @@ bzz app remove tasks              # uninstall
   installed again finds them. To delete records, delete them in the app
   before you uninstall it.
 - `bzz community remove <id> --purge` removes the community's apps with it.
+
+The same from inside bzz, by the same functions:
+
+```text
+:apps                          the apps; Enter opens one here, a shows its waiting version
+:app rollback <name> [version]
+:app disable <name>            closed wherever it is open
+:app enable <name>             open again where it was
+:app remove <name>             closed; the channel's records stay
+```
+
+A rollback of an open app changes it in place, as an approval does.
 
 ## Limits
 
@@ -336,7 +413,7 @@ nothing.
 
 **Only an approved app opens.** The pane starts a script only from the
 version you approved (`Apps::runnable`); one that waits says so and how to
-approve it at the shell (`bzz app approve <name>`). If the approved version
+answer it (`Ctrl+Y`, `:app pending <name>`). If the approved version
 fails as it is started, or declares other record types than you approved,
 bzz records the failure and runs the version you approved before it,
 when there is one.
@@ -441,5 +518,7 @@ as it can do anything else that you can. Grant that with this in mind.
 | `the hash does not name version N` | The hash you gave is not that version's. Take it from `bzz app pending <name>`. |
 | `… is not what was approved … It was changed outside bzz` | A file of an installed version was edited. Put it back, `bzz app rollback <name> --to <n>`, or add your folder again. |
 | `version N of <name> cannot be used: it was approved, and bzz no longer keeps its files` | It is older than the versions kept. Add its folder again. |
-| `<name> is disabled` | `bzz app enable <name>`. |
+| `<name> is disabled` | `bzz app enable <name>`, or `:app enable <name>`. |
+| `<name>: version N failed as it was put to run, and version M goes on running: …` | The approved version loaded apart and failed in the open app: in `app.reload`, in its first `app.view`, or with other record types. It is recorded as failed (`bzz app show <name>`). |
+| `scroll to the end first (j, PgDn): an approval is of all of it` | The approval takes a yes only after its last row was on screen. |
 | `the seed has records of type …, which the script does not declare` | The script will never see those records: check the seed's `type`. |
