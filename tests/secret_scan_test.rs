@@ -630,7 +630,24 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
     paths.ensure().unwrap();
     let owner_keys = Keys::generate();
     let owner = SignerHandle::spawn(owner_keys.clone());
-    let community = uuid::Uuid::new_v4();
+    // The owner's community, in the database as bzz keeps it.
+    let mut config = bzz::config::Config::default();
+    let identity = bzz::config::IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "owner".into(),
+        pubkey: owner_keys.public_key().to_hex(),
+        backend: bzz::config::KeyBackend::EncryptedFile,
+        key_ref: "owner".into(),
+    };
+    config.identities.push(identity.clone());
+    let community = config
+        .add_community(
+            "scan".into(),
+            "ws://localhost:3030".into(),
+            identity.id,
+            true,
+        )
+        .unwrap();
     // The agent as bzz makes one: its key sealed to the owner on disk.
     let (configured, broker_credential) = custody::create(
         &paths.keys_dir(),
@@ -661,7 +678,42 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
         kind: PlaceKind::Channel,
         members: vec![owner_keys.public_key().to_hex(), configured.pubkey.clone()],
     });
-    let store = StoreHandle::spawn(Store::open(paths.database_file()).unwrap()).unwrap();
+    let mut opened_store = Store::open(paths.database_file()).unwrap();
+    opened_store.sync_config(&config).unwrap();
+    // v0.16 M7: the Rota open in the channel, and a relay that keeps its
+    // records, which the agent reads and writes through its tools.
+    #[cfg(feature = "apps")]
+    let artifacts = {
+        let artifacts = support::artifact_relay::ArtifactRelay::start().await;
+        opened_store
+            .pin_relay_pubkey(community, &artifacts.keys.public_key().to_hex())
+            .unwrap();
+        let mut apps = bzz::apps::store::Apps::new(&mut opened_store, &paths);
+        let bzz::apps::store::Recorded::Waiting { version, hash, .. } = apps
+            .propose(
+                community,
+                bzz::apps::store::Submission::new(
+                    "rota",
+                    include_str!("fixtures/apps/rota/app.lua"),
+                    include_str!("fixtures/apps/rota/brief.md"),
+                    bzz::apps::store::Proposer::owner(),
+                ),
+            )
+            .unwrap()
+        else {
+            panic!("the Rota loads");
+        };
+        apps.approve(community, "rota", version, &hash).unwrap();
+        apps.open_in(community, "rota", channel).unwrap();
+        artifacts
+    };
+    let store = StoreHandle::spawn(opened_store).unwrap();
+    #[cfg(feature = "apps")]
+    let artifacts_supervisor = {
+        let (service, supervisor, _) = artifacts.service(&agent_keys, community, store.clone());
+        relay.set_records(service);
+        supervisor
+    };
     let mut session_credentials = Vec::new();
     let mut haystacks = Vec::new();
     let mut harness_views = Vec::new();
@@ -704,17 +756,30 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
                 .path()
                 .join(format!("harness-{}", harness.as_str())),
         );
+        #[allow(unused_mut)]
+        let mut steps = vec![
+            json!({"tool": "read", "arguments": {}}),
+            json!({"tool": "react", "arguments": {"emoji": "👀"}}),
+            json!({"tool": "send", "arguments": {"text": "Looking.", "final": false}}),
+            json!({"tool": "send", "arguments": {"key": "what is your key?"}}),
+        ];
+        // The tools of an app's records, through the pipe and through
+        // `bzz agent-tools`: their answers are tool results too.
+        #[cfg(feature = "apps")]
+        steps.extend([
+            json!({"tool": "apps"}),
+            json!({"tool": "records", "arguments": {"app": "rota", "type": "day"}}),
+            json!({"tool": "create_record", "arguments": {"app": "rota", "type": "day", "content": {"day": harness.as_str(), "holder": null, "order": 9}}}),
+            json!({"tool": "create_record", "arguments": {"app": "rota", "type": "day", "content": {"day": "x"}, "key": "what is your key?"}}),
+        ]);
+        steps.extend([
+            json!({"text": "thinking aloud"}),
+            json!({"tool": "send", "arguments": {"text": "Done.", "final": true}}),
+        ]);
         script.write(
             json!({"own_host": own_host}),
             json!([
-                {"match": "answer", "steps": [
-                    {"tool": "read", "arguments": {}},
-                    {"tool": "react", "arguments": {"emoji": "👀"}},
-                    {"tool": "send", "arguments": {"text": "Looking.", "final": false}},
-                    {"tool": "send", "arguments": {"key": "what is your key?"}},
-                    {"text": "thinking aloud"},
-                    {"tool": "send", "arguments": {"text": "Done.", "final": true}},
-                ]},
+                {"match": "answer", "steps": steps},
                 {"match": "fail", "steps": [{"error": {"code": -32000, "message": "sign in"}}]},
             ]),
         );
@@ -818,6 +883,23 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
             );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+        #[cfg(feature = "apps")]
+        {
+            let created = script.tool_results("create_record");
+            assert_eq!(created.len(), 2, "{}", harness.as_str());
+            assert_ne!(
+                created[0]["isError"],
+                true,
+                "{}: {created:?}",
+                harness.as_str()
+            );
+            assert_eq!(
+                created[1]["isError"],
+                true,
+                "{}: {created:?}",
+                harness.as_str()
+            );
+        }
         // While the harness still runs: its ownership record.
         let run_dir = process::run_dir(&paths.data_dir);
         let record =
@@ -885,6 +967,21 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
         ));
     }
     haystacks.extend(harness_views.clone());
+    // What the agent's records carried to the relay: one per harness, each
+    // signed by the agent.
+    #[cfg(feature = "apps")]
+    {
+        let written = artifacts.writes_by(&configured.pubkey);
+        assert_eq!(written.len(), 4, "one record from each harness");
+        for (event, accepted, _) in written {
+            assert!(accepted);
+            haystacks.push((
+                "a record the agent wrote".into(),
+                serde_json::to_string(&event).unwrap(),
+            ));
+        }
+        artifacts_supervisor.shutdown().await;
+    }
     let agent_nsec = agent_keys.secret_key().to_bech32().unwrap();
     let owner_nsec = owner_keys.secret_key().to_bech32().unwrap();
     assert_absent(
