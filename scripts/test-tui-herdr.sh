@@ -108,7 +108,7 @@ for scenario in values:
     # scripts/test-tui-tmux.py only: Herdr does not show what bzz wrote).
     size = scenario.get("size", "-")
     beside = scenario.get("beside", "-")
-    if not re.fullmatch(r"-|[0-9]{2,3}x[0-9]{2,3}", size) or beside not in {"-", "second"}:
+    if not re.fullmatch(r"-|[0-9]{2,3}x[0-9]{2,3}", size) or beside not in {"-", "second", "other"}:
         raise SystemExit("Herdr scenario has an invalid size or beside")
     if not isinstance(scenario.get("restored", False), bool):
         raise SystemExit("Herdr scenario has an invalid restored flag")
@@ -277,9 +277,9 @@ harness_command() {
         exit 2
     }
     local home=$fixture
-    if [[ $profile == second ]]; then
-        home=$fixture/second
-        [[ -d $home/config ]] || { echo "the harness fixture has no second profile" >&2; exit 2; }
+    if [[ $profile == second || $profile == other ]]; then
+        home=$fixture/$profile
+        [[ -d $home/config ]] || { echo "the harness fixture has no $profile profile" >&2; exit 2; }
     fi
     printf '%s\n' 'pcm.!default { type null }' >"$root/null-asound.conf"
     local command word
@@ -334,9 +334,9 @@ run_harness_scenario() {
     [[ $encoded_args == "=" ]] || source=recent-unwrapped
     require_shell
     launch_in "$pane" first "$command"
-    if [[ $scenario_beside == second ]]; then
-        second_pane=${BZZ_HERDR_SECOND_PANE:?a scenario with beside = "second" needs BZZ_HERDR_SECOND_PANE}
-        launch_in "$second_pane" second "$(harness_command second "=")"
+    if [[ $scenario_beside != - ]]; then
+        second_pane=${BZZ_HERDR_SECOND_PANE:?a scenario with beside needs BZZ_HERDR_SECOND_PANE}
+        launch_in "$second_pane" second "$(harness_command "$scenario_beside" "=")"
     fi
     herdr pane wait-output "$pane" --source "$source" --lines 400 --match "$ready" --timeout 30000 >/dev/null || {
         echo "scenario '$identifier': \"$ready\" did not show. The pane shows:" >&2

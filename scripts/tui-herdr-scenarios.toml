@@ -2051,3 +2051,178 @@ visible = "quit bzz?"
 [[scenario.step]]
 keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-m6-share-offer-approve"
+kind = "harness"
+description = "v0.16 M6 exit gate: the viewer shares the Board in #t9-general; another person's bzz shows the offer with the brief posted as a message and who signed it, nothing of it runs, the approval opens it there, and a card by each shows for the other; withdrawing leaves the installed copy. Needs t16-cli-app-new, -add and -approve first."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "160x40"
+beside = "other"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = [":", "type:app open board", "enter"]
+visible = "To do (0)"
+
+[[scenario.step]]
+keys = ["ctrl+c", ":", "type:app share", "enter"]
+visible = "board, version 1, is shared in #t9-general; its brief was posted there"
+timeout = 20000
+
+# The brief, posted as an ordinary message: all Buzz desktop shows. Its
+# first line (`I shared the app Board …`) has scrolled up by then.
+[[scenario.step]]
+keys = []
+visible = "One record type, card. A card's content:"
+
+# Another person, in the same channel: the offer, from the viewer.
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "online"
+timeout = 30000
+
+[[scenario.step]]
+pane = "second"
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+pane = "second"
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "from the channel waits for your approval"
+timeout = 30000
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "One record type, card. A card's content:"
+
+# Nothing of it runs before the approval.
+[[scenario.step]]
+pane = "second"
+keys = [":", "type:app open board", "enter"]
+visible = "board has no approved version (one waits for your answer)"
+
+[[scenario.step]]
+pane = "second"
+keys = ["ctrl+y"]
+visible = "Offer:    shared in the channel; this exact revision"
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "a person of the channel ("
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "No version of this app runs yet: all of them are new."
+
+[[scenario.step]]
+pane = "second"
+keys = ["G"]
+visible = ": the end"
+
+[[scenario.step]]
+pane = "second"
+keys = ["a"]
+visible = "it is open in #t9-general, where it was offered"
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "To do (0)"
+timeout = 20000
+
+# The same records: a card by the other person shows for the viewer, and
+# one by the viewer for the other person.
+[[scenario.step]]
+pane = "second"
+keys = [":", "type:app open board", "enter"]
+visible = "board is open in #t9-general"
+
+[[scenario.step]]
+pane = "second"
+keys = ["n", "type:from the other person", "enter"]
+visible = "from the other person"
+
+[[scenario.step]]
+keys = []
+visible = "from the other person"
+timeout = 20000
+
+[[scenario.step]]
+keys = [":", "type:app open board", "enter", "n", "type:from the viewer", "enter"]
+visible = "from the viewer"
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "from the viewer"
+timeout = 20000
+
+# Where it is shared, in the viewer's :apps.
+[[scenario.step]]
+keys = ["ctrl+c", ":", "type:apps", "enter"]
+visible = "shared in #t9-general"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+# Withdrawn: the installed copy stays where it was approved.
+[[scenario.step]]
+keys = [":", "type:app unshare", "enter"]
+visible = "the offer of board is withdrawn from #t9-general; copies people installed stay"
+timeout = 20000
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "from the viewer"
+
+[[scenario.step]]
+pane = "second"
+keys = ["ctrl+c", ":", "type:apps", "enter"]
+visible = "board (Board) · version 1"
+
+[[scenario.step]]
+pane = "second"
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+pane = "second"
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+pane = "second"
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "type:apps", "enter"]
+visible = "open in #t9-general"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
