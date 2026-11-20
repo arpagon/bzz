@@ -117,8 +117,13 @@ for scenario in values:
         raise SystemExit("Herdr scenario manifest contains unsupported control characters")
     print("\t".join(["H"] + safe[:4] + [encoded(safe[4]), profile, encoded("\x1f".join(args)), size, beside]))
     for step in steps:
-        if not {"keys", "visible"} <= set(step) or set(step) - {"keys", "visible", "absent", "timeout", "regex", "pause", "size", "paste", "pane"}:
-            raise SystemExit("Herdr scenario step takes keys, visible, absent, timeout, regex, pause, size, paste and pane")
+        if not {"keys", "visible"} <= set(step) or set(step) - {"keys", "visible", "absent", "timeout", "regex", "pause", "size", "paste", "pane", "run"}:
+            raise SystemExit("Herdr scenario step takes keys, visible, absent, timeout, regex, pause, size, paste, pane and run")
+        # v0.16 M4: `run`, a command of this machine's shell before the
+        # keys: what the owner does outside bzz (saving a file).
+        run = step.get("run", "")
+        if not isinstance(run, str) or any(c in run for c in "\t\r\x1f\n"):
+            raise SystemExit("Herdr scenario step has an invalid run")
         step_size = step.get("size", "-")
         step_pane = step.get("pane", "first")
         paste = step.get("paste", "")
@@ -158,7 +163,7 @@ for scenario in values:
                 events.extend("space" if character == " " else character for character in text)
             else:
                 events.append(key)
-        print("\t".join(["S", encoded("\x1f".join(events)), visible, str(timeout), encoded(absent), "regex" if pattern else "match", str(pause), step_size, encoded(paste), step_pane]))
+        print("\t".join(["S", encoded("\x1f".join(events)), visible, str(timeout), encoded(absent), "regex" if pattern else "match", str(pause), step_size, encoded(paste), step_pane, encoded(run)]))
 PY
 )
 
@@ -348,7 +353,7 @@ scenario_size=-
 scenario_beside=-
 second_pane=
 for row in "${scenarios[@]}"; do
-    IFS=$'\t' read -r tag first second third fourth fifth sixth seventh eighth ninth tenth <<<"$row"
+    IFS=$'\t' read -r tag first second third fourth fifth sixth seventh eighth ninth tenth eleventh <<<"$row"
     case $tag in
         H)
             [[ -z $active_identifier ]] || {
@@ -375,6 +380,13 @@ for row in "${scenarios[@]}"; do
             [[ $tenth != second ]] || target=$second_pane
             if [[ $eighth != - ]]; then
                 stty -F "$(cat "$root/tty-$tenth")" cols "${eighth%x*}" rows "${eighth#*x}"
+            fi
+            run=$(decoded "${eleventh:-}")
+            if [[ -n $run ]]; then
+                BZZ_BIN=$binary bash -c "${run//\{fixture\}/$fixture_text}" || {
+                    echo "scenario '$active_identifier': \`$run\` failed" >&2
+                    exit 1
+                }
             fi
             paste=$(decoded "$ninth")
             if [[ -n $paste ]]; then
