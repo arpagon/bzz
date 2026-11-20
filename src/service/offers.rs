@@ -44,7 +44,7 @@ use crate::{
     protocol::{
         artifact::{self, Artifact, KIND_ARTIFACT},
         http::HttpClient,
-        record::{Verdict, verdict},
+        record::{Refusal, Verdict, verdict},
     },
     realtime::{
         admission::{self, ClosedReason, SubscriptionPriority},
@@ -139,7 +139,14 @@ fn refused(message: &str) -> String {
         Verdict::RateLimited { seconds } => {
             format!("too many writes; the relay asks to wait {seconds} s")
         }
-        Verdict::Refused { reason, .. } => reason,
+        Verdict::Refused { refusal, reason } => match refusal {
+            Refusal::Guest => {
+                "you are a guest of this channel, and a guest cannot offer an app there".into()
+            }
+            Refusal::NotMember => "you are not a member of this channel".into(),
+            Refusal::Archived => "this channel is archived; nothing can be offered in it".into(),
+            _ => reason,
+        },
         Verdict::TooLarge => "the relay refused it as too large".into(),
         Verdict::HeadChanged | Verdict::Gone => {
             "the offer changed in the channel meanwhile; try again".into()
@@ -650,5 +657,25 @@ impl Watch {
         self.tell(OfferNews::Synced {
             channel: self.channel,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refused;
+
+    #[test]
+    fn a_refused_offer_is_said_in_the_owners_terms() {
+        assert!(
+            refused("restricted: only members can post in this channel")
+                .contains("a guest cannot offer")
+        );
+        assert_eq!(
+            refused("restricted: not a channel member"),
+            "you are not a member of this channel"
+        );
+        assert!(refused("invalid: channel is archived").contains("archived"));
+        assert!(refused("rate-limited: quota exceeded; retry in 40s").contains("wait 40 s"));
+        assert_eq!(refused("blocked: nope"), "blocked: nope");
     }
 }
