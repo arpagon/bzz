@@ -1,0 +1,19 @@
+# v0.16 apps: the same bytes on every platform, whatever the checkout's
+# core.autocrlf (it is true on GitHub's Windows runners). A template's
+# script and brief are hashed and approved by their bytes, the contract and
+# the guide are handed to agents and compared by tests line by line, and
+# migrations are checksummed in the database.
+#
+# Only files that no earlier release shipped are listed. A Windows build of
+# an earlier release may have checksummed migrations 1 to 20 with the line
+# endings of its checkout; changing theirs could make bzz refuse a database
+# that build wrote.
+docs/app-api.md text eol=lf
+docs/app-api.d.lua text eol=lf
+docs/app-authoring.md text eol=lf
+src/apps/** text eol=lf
+tests/fixtures/apps/** text eol=lf
+tests/apps-bench/** text eol=lf
+migrations/0021_apps.sql text eol=lf
+migrations/0022_app_sharing.sql text eol=lf
+migrations/0023_app_agent_proposals.sql text eol=lf
