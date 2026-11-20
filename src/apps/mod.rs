@@ -22,4 +22,6 @@ pub mod session;
 pub mod store;
 
 #[cfg(test)]
+mod authoring_test;
+#[cfg(test)]
 mod widgets_test;
