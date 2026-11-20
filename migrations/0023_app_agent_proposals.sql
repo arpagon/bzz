@@ -1,4 +1,5 @@
--- v0.16 M5: agents write and change apps (plan D7).
+-- v0.16 M5: agents write and change apps (plan D7). Migration 23: 22 is
+-- M6's sharing, merged into v0.16.0 beside this one.
 --
 -- A version an agent proposes records, beside the agent (proposer_*), the
 -- person whose message asked for it: the approval shows both. NULL for a

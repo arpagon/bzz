@@ -21,7 +21,7 @@ fn fresh_database_has_expected_pragmas_and_schema() {
     let foreign_keys: u32 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 22);
+    assert_eq!(version, 23);
     assert_eq!(
         foreign_keys, 1,
         "foreign-key enforcement must remain enabled"
@@ -175,7 +175,7 @@ fn version_two_database_upgrades_with_backup_and_fts_rebuild() {
     let version: u32 = upgraded
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 22);
+    assert_eq!(version, 23);
     let inbox_projection_table: u32 = upgraded
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='inbox_conversations'",
@@ -278,7 +278,7 @@ fn schema_eight_repairs_historical_bot_roles_and_duplicate_projection_drift() {
         .unwrap();
     connection
         .execute_batch(
-            "DELETE FROM schema_migrations WHERE version IN (8,9,10,11,12,13,14,15,16,17,18,19,20,21,22);
+            "DELETE FROM schema_migrations WHERE version IN (8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23);
              DROP TABLE app_channels;
              DROP TABLE app_versions;
              DROP TABLE apps;
@@ -478,7 +478,7 @@ fn schema_nine_projects_guest_roles_and_repairs_channel_facts_on_reingest() {
              DROP TABLE emoji_contributions;
              ALTER TABLE reactions DROP COLUMN emoji_url;
              DROP INDEX memberships_by_member;
-             DELETE FROM schema_migrations WHERE version IN (9,10,11,12,13,14,15,16,17,18,19,20,21,22);"
+             DELETE FROM schema_migrations WHERE version IN (9,10,11,12,13,14,15,16,17,18,19,20,21,22,23);"
         ))
         .unwrap();
     connection.pragma_update(None, "user_version", 8).unwrap();
@@ -604,7 +604,7 @@ fn schema_nineteen_keeps_the_stored_replies_of_schema_eighteen() {
              DROP TABLE app_channels;
              DROP TABLE app_versions;
              DROP TABLE apps;
-             DELETE FROM schema_migrations WHERE version IN (20,21,22);",
+             DELETE FROM schema_migrations WHERE version IN (20,21,22,23);",
         )
         .unwrap();
     connection.pragma_update(None, "user_version", 19).unwrap();
@@ -638,7 +638,7 @@ fn schema_nineteen_keeps_the_stored_replies_of_schema_eighteen() {
         .unwrap()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 22);
+    assert_eq!(version, 23);
 }
 
 /// Every row of every table, as text, for comparing a database with itself
@@ -749,7 +749,7 @@ fn schema_twenty_of_v015_gains_the_apps_tables_and_keeps_every_row() {
     connection
         .execute_batch(
             "DROP TABLE app_channels; DROP TABLE app_versions; DROP TABLE apps;
-             DELETE FROM schema_migrations WHERE version IN (21,22);",
+             DELETE FROM schema_migrations WHERE version IN (21,22,23);",
         )
         .unwrap();
     connection.pragma_update(None, "user_version", 20).unwrap();
@@ -851,7 +851,7 @@ fn schema_twenty_of_v015_gains_the_apps_tables_and_keeps_every_row() {
     let version: u32 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 22);
+    assert_eq!(version, 23);
     let integrity: String = connection
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .unwrap();
@@ -864,13 +864,13 @@ fn schema_twenty_of_v015_gains_the_apps_tables_and_keeps_every_row() {
     assert_eq!(violations, 0);
 }
 
-/// Migration 22 (v0.16 M5, agents write apps): a database at schema 21
-/// with an app whose version an agent proposed and the owner answered
-/// opens at schema 22. The version reads back as it was, with nobody named
+/// Migration 23 (v0.16 M5, agents write apps): a database at the schema
+/// before it (22, M6's, on v0.16.0) with an app whose version an agent
+/// proposed and the owner answered opens at schema 23. The version reads back as it was, with nobody named
 /// as having asked for it, and counts as told: no agent is told of
 /// something from before it could be told anything.
 #[test]
-fn schema_twenty_one_gains_who_asked_and_counts_every_version_as_told() {
+fn the_schema_before_twenty_three_gains_who_asked_and_counts_every_version_as_told() {
     use bzz::store::apps::{NewAppVersion, Proposer, VersionState};
     let temporary = TempDir::new().unwrap();
     let path = temporary.path().join("bzz.db");
@@ -919,7 +919,7 @@ fn schema_twenty_one_gains_who_asked_and_counts_every_version_as_told() {
             .unwrap()
     );
     drop(store);
-    // The database as schema 21 left it.
+    // The database as the schema before 23 left it.
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection
         .execute_batch(
@@ -927,10 +927,10 @@ fn schema_twenty_one_gains_who_asked_and_counts_every_version_as_told() {
              ALTER TABLE app_versions DROP COLUMN told_at;
              ALTER TABLE app_versions DROP COLUMN asked_by_name;
              ALTER TABLE app_versions DROP COLUMN asked_by_id;
-             DELETE FROM schema_migrations WHERE version=22;",
+             DELETE FROM schema_migrations WHERE version=23;",
         )
         .unwrap();
-    connection.pragma_update(None, "user_version", 21).unwrap();
+    connection.pragma_update(None, "user_version", 22).unwrap();
     drop(connection);
 
     let store = Store::open(&path).unwrap();
@@ -953,5 +953,5 @@ fn schema_twenty_one_gains_who_asked_and_counts_every_version_as_told() {
     let schema: u32 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(schema, 22);
+    assert_eq!(schema, 23);
 }
