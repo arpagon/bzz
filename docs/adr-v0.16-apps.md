@@ -1,6 +1,10 @@
 # ADR: v0.16 apps
 
-**Status:** Proposed. Its decisions are those of the plan the owner approved
+**Status:** Accepted and built, in the release candidate of v0.16.0
+(2026-11-20; not published). Every decision below holds as written; what
+the milestones settled that it left open, and the one place where the
+build went another way than it says, are in "What was decided while it
+was built", at the end. Its decisions are those of the plan the owner approved
 on 2026-11-17 ([`planning/2026-11-17/v0.16.0.md`](planning/2026-11-17/v0.16.0.md),
 D1 to D17, rules 14 to 18), written out here with what milestone M0 found.
 Narrows one line of
@@ -293,3 +297,22 @@ stand-in pane on the pinned relay, through tmux.
 - **Removing what cannot be bounded instead of replacing it.** A script
   without `string.find`, `gsub` and `table.sort` is not one an agent can
   write a board in.
+
+## What was decided while it was built
+
+Each milestone's section of [`validation-v0.16.0.md`](validation-v0.16.0.md)
+lists, under "What was decided here", what the plan and its brief left
+open. The ones that shape the design:
+
+| Where | Decided |
+|---|---|
+| Decision 4, for agents (M7) | **An agent's record is signed with the agent's key**, by bzz, on the agent's own connection and records service, not on the owner's open app. The fence is the same and is checked where bzz serves the tool: installed, enabled, approved, open in the turn's channel, of the approved types. An agent holds to 60 record writes a minute; the owner is not asked, as for a message |
+| Decision 8 (M5) | An agent learns what became of its version **at its next turn in the channel**, once, in its prompt; bzz starts no turn for it. A version that does not load is answered to the agent at once and **not recorded**. An agent has at most three versions waiting, of all apps. `app_guide` returns `app-authoring.md` and `app-api.md` as one text (plan D17) |
+| Decision 9 (M6) | **An offer is a revision and its signer.** Any writer of the channel can publish a new revision of someone's offer, which bzz then shows as coming from that person, with `Source: CHANGED` against the installed version's. A revision signed by this bzz's own identity is never offered to it. The brief is posted as a message once for each version shared. At most 3 offers of one person and 8 in one channel wait; bytes refused do not come back. The artifact panel lists an offer, as Buzz lets any member rename or delete it, and says what it is (M8) |
+| Records (M2) | Content of 16,384 bytes, so that 1000 records fit an interpreter's memory; **30 writes a minute for all of a person's apps**, half of the relay's 60, answered by bzz itself past it; a list answered at once from what bzz holds; pushes of a type begin with the script's first list of it; a person is `{ id, name }`, and `host.name(id)` names an id (M4) |
+| Storage and approval (M4) | **Files hold bytes, the database holds decisions**: a version's files are written once, and every read compares them with the hash recorded when they were proposed. The script, not the manifest, says `api` and `types`. A new version replaces the running one in place only if it loads, declares the approved types and runs `app.reload` and its first `app.view`; otherwise the version before goes on and the new one is recorded as failed. `Ctrl+Y` opens a waiting version as it opens an agent's command; no command approves by itself |
+| The pane (M3) | An app's session lives on while its channel is not shown, four at most; `host.quit()` is `:app close`; a panic on an app's thread leaves the terminal alone. bzz enables bracketed paste for everyone; on Windows a paste is still keys. A thread asked for is drawn from 74 columns, the channel list giving way, with or without an app |
+| `dev` (M4) | `bzz app dev <folder>` on records in memory; `:app dev <folder>` in a channel's pane on its real records, never remembered; `bzz app dev --channel` refused, since the command line cannot reach a running bzz |
+
+None of these changed a decision of the plan or a rule of it. A later
+change to any of them is a change to this record.
