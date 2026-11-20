@@ -2783,3 +2783,34 @@ three relay jobs, the upgrades from v0.15.0 on Linux, macOS and Windows and
 from v0.14.0 on Linux, the agent host on three platforms. `audio
 (windows-latest)` fails as it did before v0.16; it is marked experimental.
 
+### M5 with a real model: Pi Durable (2026-11-20)
+
+The plan's last gate of M5, which the owner allowed for this harness and
+this model (D13): `BZZ_AUTHOR_ALLOWED=yes BZZ_AUTHOR_MODEL=openai-codex/gpt-6.1-sol
+scripts/test-agent-authors-app.sh pi-durable`, on the pinned relay with a
+generated identity, through the owner's own Pi sign-in. Run by the
+principal.
+
+| Step | What was seen |
+|---|---|
+| The owner's mention, with the change of `board-priority.md` | The agent said what it was about to do (a `send` that is not final), read the guide and the Board, tried its script, and proposed version 2. Its final reply came 182 s after the mention |
+| What waits for the owner | `board (Board), version 2`, from the agent Scout, `Asked by:` the owner; script 9.6 KiB against the 11.9 KiB that ran; brief `CHANGED`; record types the same |
+| Approved, and the next mention | The agent's next turn was told, and it answered that version 2 is approved and running |
+| The approved script on the bench | `board-priority` 17 of 17 at 80×24 and 17 of 17 at 40×16 |
+| Its brief | Names the record type and each field, the new keys (`1`/`2`/`3`, `0`, `p`), how the filter and the search combine, and that state is migrated on reload: it says what the script now does |
+| Records of the agent's in the channel | none: its tries stayed apart |
+
+The script is the model's own: 215 lines, not the fixture's.
+
+Two runs before it failed, and neither reached a verdict on bzz:
+
+- **Without a model named**, the agent answered "the model my owner chose
+  for me is not available" after 8 s. Pi's default model on this machine is
+  not one this host can load. The gate now takes `BZZ_AUTHOR_MODEL`.
+- **With the model named**, the test took the agent's first message for its
+  answer, 35 s in, and looked for a proposal that the agent was still
+  writing. With a real model the gate now waits for the turn to end in
+  bzz's inbox. The scripted run is unchanged.
+
+Not run: Grok, Codex and Claude Code, each of which needs the owner's word.
+
