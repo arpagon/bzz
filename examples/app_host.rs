@@ -36,7 +36,8 @@
 //! | errors: `unavailable`, `conflict`, `not_found`, `bad_request` | the same four. `rate_limited`, `limit` and `refused` never happen here; `too_large` is the runtime's own check |
 //! | no limit of records, and none of writes | none here either: the 1000 records of an app and the 30 writes a minute of a person's apps are bzz's session's (`src/apps/session/`) |
 //! | content of any size | the runtime refuses content past 16,384 bytes with `too_large` before it is sent, as it does in bzz |
-//! | names in record fields (`holder: "bo"`, `author: "ana"`) | passed on as they are: the fixtures store the names the bench's cases expect, where the contract advises ids |
+//! | names in record fields (`holder: "bo"`) | passed on as they are. The Rota stores names; the Poll and the Approvals, which are templates, store ids (`voter`, `author`, `decided_by`), and the bench's cases write the id of a name as this host makes it |
+//! | the service knows no profiles | `host.name(id)` knows the people named in `MINIAPP_PEOPLE` (`ana,bo,cy`), the local participant, and whoever it sees write; for any other id it gives the short form |
 //! | a connection that closes is closed for good | every later request is answered `unavailable`; there is no resync |
 //!
 //! The process and its terminal are the host's, not the runtime's: raw
@@ -106,6 +107,18 @@ fn run() -> Result<(), String> {
     log.write(&format!("start {name}"));
     let user = std::env::var("MINIAPP_USER").unwrap_or_else(|_| "you".into());
     let user = person(&user);
+    // What bzz would know from profiles: the bench names its people.
+    let mut people: HashMap<String, String> = std::env::var("MINIAPP_PEOPLE")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| {
+            let who = person(name);
+            (who.id, who.name)
+        })
+        .collect();
+    people.insert(user.id.clone(), user.name.clone());
 
     let (tx, rx) = mpsc::channel::<Msg>();
     let mut net = connect(&tx, &log);
@@ -137,7 +150,8 @@ fn run() -> Result<(), String> {
             source,
             Options::new(name.clone(), user.clone())
                 .size(width, height)
-                .waker(waker.clone()),
+                .waker(waker.clone())
+                .names(people.clone()),
         )
         .map_err(|e| format!("cannot start the app's thread: {e}"))
     };
@@ -145,6 +159,7 @@ fn run() -> Result<(), String> {
     let mut host = Host {
         runtime: start(source)?,
         bridge: Bridge::new(user.clone()),
+        people: people.clone(),
         theme: AppTheme::default(),
         log,
         responding: true,
@@ -159,6 +174,8 @@ fn run() -> Result<(), String> {
 struct Host {
     runtime: Runtime,
     bridge: Bridge,
+    /// Names by id, for `host.name`: what the runtime has been told.
+    people: HashMap<String, String>,
     theme: AppTheme,
     log: Log,
     responding: bool,
@@ -269,11 +286,13 @@ impl Host {
             Msg::Net(message) => {
                 if message.get("push").is_some() {
                     if let Some(push) = self.bridge.pushed(message) {
+                        self.met(&push.by);
                         self.runtime.send(Event::Push(push));
                     }
                 } else if let Some((reply, pushes)) = self.bridge.reply(&message) {
                     self.runtime.send(Event::Reply(reply));
                     for push in pushes {
+                        self.met(&push.by);
                         self.runtime.send(Event::Push(push));
                     }
                 }
@@ -304,6 +323,15 @@ impl Host {
             Msg::Wake => {}
         }
         Ok(false)
+    }
+
+    /// Someone was seen to write: `host.name` knows them from now on.
+    fn met(&mut self, who: &Who) {
+        if !who.name.is_empty() && self.people.get(&who.id) != Some(&who.name) {
+            self.people.insert(who.id.clone(), who.name.clone());
+            self.runtime
+                .send(Event::Names(vec![(who.id.clone(), who.name.clone())]));
+        }
     }
 
     /// Sends a request of the script to the service, or answers it at once

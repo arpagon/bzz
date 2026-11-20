@@ -18,6 +18,7 @@ Give data_addr to the program under test as MINIAPP_DATA_ADDR.
 import argparse
 import asyncio
 import copy
+import hashlib
 import json
 import signal
 import sys
@@ -32,6 +33,13 @@ SCENARIOS = {
     "slow-write": "every create, update and delete response is delayed 500 ms",
     "big": "200-record data set instead of the small seed",
 }
+
+
+def pid(name):
+    """A participant's id as examples/app_host.rs makes it from a name. The
+    Poll and the Approvals store ids, as the contract advises; the Rota
+    stores names."""
+    return hashlib.sha256(f"participant:{name}".encode()).hexdigest()
 
 
 def seed_records(app, big):
@@ -62,15 +70,15 @@ def seed_contents(app, big):
         if big:
             opts = [f"Option {i:03d}" for i in range(1, 201)]
             recs = [("poll", {"question": "Pick a number", "options": opts})]
-            recs += [("vote", {"voter": f"u{i:03d}", "option": opts[(i * 7) % 200]})
+            recs += [("vote", {"voter": pid(f"u{i:03d}"), "option": opts[(i * 7) % 200]})
                      for i in range(1, 200)]
             return recs
         return [
             ("poll", {"question": "Lunch on Friday?",
                       "options": ["Tacos", "Sushi", "Pizza", "Salad"]}),
-            ("vote", {"voter": "bo", "option": "Sushi"}),
-            ("vote", {"voter": "cy", "option": "Sushi"}),
-            ("vote", {"voter": "di", "option": "Pizza"}),
+            ("vote", {"voter": pid("bo"), "option": "Sushi"}),
+            ("vote", {"voter": pid("cy"), "option": "Sushi"}),
+            ("vote", {"voter": pid("di"), "option": "Pizza"}),
         ]
     if app == "board-priority":
         if big:
@@ -105,8 +113,8 @@ def seed_contents(app, big):
         ]
     if app == "approvals":
         def req(title, author, state="pending", by=None, reason=None):
-            return ("request", {"title": title, "author": author, "state": state,
-                                "decided_by": by, "reason": reason})
+            return ("request", {"title": title, "author": pid(author), "state": state,
+                                "decided_by": by and pid(by), "reason": reason})
         if big:
             states = ["pending", "approved", "rejected", "pending"]
             out = []

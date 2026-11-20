@@ -2,7 +2,7 @@
 import re
 
 from cases_board import check_quit
-from harness import CaseFail, check, contains, expect, hold, lacks, no_overflow, status_is
+from harness import CaseFail, check, contains, expect, hold, lacks, no_overflow, pid, status_is
 
 TITLES = ["New laptop", "Team lunch", "Conference trip", "Standing desk", "Extra monitor",
           "Gym pass", "Desk lamp", "Café 日本", "one two q"]
@@ -124,7 +124,7 @@ def c03_save_once(ctx):
     want(sess, rows, "Gym pass", extra=" 0.8 s later (no duplicate)")
     recs = [r for r in svc.records("request") if r["content"].get("title") == "Gym pass"]
     check(len(recs) == 1, f"exactly one 'Gym pass' record in the service, found {len(recs)}", sess)
-    want_c = {"title": "Gym pass", "author": "ana", "state": "pending", "decided_by": None, "reason": None}
+    want_c = {"title": "Gym pass", "author": pid("ana"), "state": "pending", "decided_by": None, "reason": None}
     got = dict(recs[0]["content"])
     order = got.pop("order", None)
     check(got == want_c and isinstance(order, (int, float)) and not isinstance(order, bool) and order > 5,
@@ -277,10 +277,10 @@ def c11_remote_change(ctx):
     laptop = svc.find("request", title="New laptop")
     desk = svc.find("request", title="Standing desk")
     svc.control(cmd="remote", user="bo", op="create", type="request",
-                content={"title": "Desk lamp", "author": "bo", "state": "pending", "decided_by": None,
+                content={"title": "Desk lamp", "author": pid("bo"), "state": "pending", "decided_by": None,
                          "reason": None, "order": 1001})
     svc.control(cmd="remote", user="cy", op="update", record_id=laptop["id"],
-                content=dict(laptop["content"], state="approved", decided_by="cy"))
+                content=dict(laptop["content"], state="approved", decided_by=pid("cy")))
     svc.control(cmd="remote", user="bo", op="delete", record_id=desk["id"])
     rows = [("approved", "New laptop"), ("pending", "Team lunch"), ("approved", "Conference trip"),
             ("pending", "Extra monitor"), ("pending", "Desk lamp")]
@@ -292,7 +292,7 @@ def c11_remote_change(ctx):
 def c12_conflict(ctx):
     sess, svc = start(ctx)
     laptop = svc.find("request", title="New laptop")
-    theirs = dict(laptop["content"], state="rejected", decided_by="bo", reason="Duplicate")
+    theirs = dict(laptop["content"], state="rejected", decided_by=pid("bo"), reason="Duplicate")
     svc.control(cmd="arm_conflict", record_id=laptop["id"], user="bo", content=theirs)
     sess.key("a")
     rows = with_state(INIT, "New laptop", "rejected")
@@ -346,7 +346,7 @@ def c14_reject_reason(ctx):
     expect(sess, detail_shows("Request: New laptop", "State: rejected", "Decided by: ana", "Reason: Over budget"),
            "the detail with 'State: rejected', 'Decided by: ana' and 'Reason: Over budget'")
     got = content(svc, "New laptop")
-    want_c = dict(before, state="rejected", decided_by="ana", reason="Over budget")
+    want_c = dict(before, state="rejected", decided_by=pid("ana"), reason="Over budget")
     check(got == want_c, f"service content {want_c} (title, author and order kept), got {got}", sess)
 
 

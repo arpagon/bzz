@@ -1,7 +1,7 @@
 """Acceptance cases for the Poll app (spec/poll.md)."""
 from cases_board import check_quit
 from harness import (CaseFail, check, contains, describe_poll, expect, hold, lacks,
-                     no_overflow, poll_is, status_is)
+                     no_overflow, pid, poll_is, status_is)
 
 LABELS = ["Tacos", "Sushi", "Pizza", "Salad", "Ramen", "Curry", "Café 日本", "one two q"]
 INIT = [("Tacos", 0), ("Sushi", 2), ("Pizza", 1), ("Salad", 0)]
@@ -94,7 +94,7 @@ def c03_save_once(ctx):
     expect(sess, status_is("Voted for Tacos."), "status 'Voted for Tacos.'")
     sess.sleep(0.8)
     want(voted, sess, "Tacos", "Tacos", 4, extra=" 0.8 s later")
-    mine = [r for r in svc.records("vote") if r["content"].get("voter") == "ana"]
+    mine = [r for r in svc.records("vote") if r["content"].get("voter") == pid("ana")]
     check(len(mine) == 1, f"exactly one vote record for ana in the service, found {len(mine)}", sess)
 
 
@@ -228,12 +228,12 @@ def c11_remote_change(ctx):
     sess, svc = start(ctx)
     check(svc.wait_subscribed(), "the program subscribes to changes (subscribe request)", sess)
     lists = counts(svc).get("list", 0)
-    bo = svc.find("vote", voter="bo")
+    bo = svc.find("vote", voter=pid("bo"))
     poll = poll_record(svc)
     svc.control(cmd="remote", user="bo", op="update", record_id=bo["id"],
-                content={"voter": "bo", "option": "Tacos"})
+                content={"voter": pid("bo"), "option": "Tacos"})
     svc.control(cmd="remote", user="eve", op="create", type="vote",
-                content={"voter": "eve", "option": "Salad"})
+                content={"voter": pid("eve"), "option": "Salad"})
     svc.control(cmd="remote", user="bo", op="update", record_id=poll["id"],
                 content={"question": QUESTION, "options": ["Tacos", "Sushi", "Pizza", "Salad", "Ramen"]})
     rows = [("Tacos", 1), ("Sushi", 1), ("Pizza", 1), ("Salad", 1), ("Ramen", 0)]

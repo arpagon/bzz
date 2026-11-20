@@ -17,11 +17,13 @@ fn lunch(store: &mut MemoryStore) {
         content(json!({ "question": QUESTION, "options": ["Tacos", "Sushi", "Pizza", "Salad"] })),
         &bo(),
     );
-    for (voter, option) in [("bo", "Sushi"), ("cy", "Sushi"), ("di", "Pizza")] {
+    // A vote stores its voter's id; bzz knows their names.
+    everyone_named(store);
+    for (voter, option) in [(bo(), "Sushi"), (cy(), "Sushi"), (di(), "Pizza")] {
         store.seed(
             "vote",
-            content(json!({ "voter": voter, "option": option })),
-            &bo(),
+            content(json!({ "voter": voter.id, "option": option })),
+            &voter,
         );
     }
 }
@@ -246,7 +248,7 @@ fn case_03_save_once() {
             .store()
             .records()
             .iter()
-            .filter(|r| r.content.get("voter") == Some(&json!("ana")))
+            .filter(|r| r.content.get("voter") == Some(&json!(id_of("ana"))))
             .count();
         assert_eq!(mine, 1);
     });
@@ -417,7 +419,7 @@ fn case_11_remote_change() {
         let mut app = start_poll(size);
         let theirs = app
             .store()
-            .find_by("voter", "bo")
+            .find_by("voter", &id_of("bo"))
             .expect("bo's vote")
             .id
             .clone();
@@ -425,13 +427,13 @@ fn case_11_remote_change() {
         let pushed = app.store().remote_update(
             &bo(),
             &theirs,
-            content(json!({ "voter": "bo", "option": "Tacos" })),
+            content(json!({ "voter": id_of("bo"), "option": "Tacos" })),
         );
         app.deliver(pushed);
         let (_, pushed) = app.store().remote_create(
             &cy(),
             "vote",
-            content(json!({ "voter": "eve", "option": "Salad" })),
+            content(json!({ "voter": id_of("eve"), "option": "Salad" })),
         );
         app.deliver(pushed);
         let pushed = app.store().remote_update(
@@ -499,7 +501,7 @@ fn a_changed_vote_is_one_record_and_votes_for_no_option_count_nowhere() {
         lunch(store);
         store.seed(
             "vote",
-            content(json!({ "voter": "eve", "option": "Burgers" })),
+            content(json!({ "voter": id_of("eve"), "option": "Burgers" })),
             &cy(),
         );
     });

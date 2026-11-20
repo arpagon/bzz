@@ -100,6 +100,36 @@ pub fn bo() -> Who {
     Who::new("b0".repeat(32), "bo")
 }
 
+pub fn di() -> Who {
+    Who::new("d1".repeat(32), "di")
+}
+
+pub fn eve() -> Who {
+    Who::new("e5".repeat(32), "eve")
+}
+
+/// The id of one of the cases' people, by name: what a template stores
+/// in a field where the bench's spec once had the name.
+pub fn id_of(name: &str) -> String {
+    match name {
+        "ana" => ana(),
+        "bo" => bo(),
+        "cy" => cy(),
+        "di" => di(),
+        "eve" => eve(),
+        other => panic!("no person {other} in the cases"),
+    }
+    .id
+}
+
+/// bzz knows the names of every person of the cases, as it knows the
+/// profiles of a channel's members.
+pub fn everyone_named(store: &mut MemoryStore) {
+    for who in [ana(), bo(), cy(), di(), eve()] {
+        store.set_name(&who.id, &who.name);
+    }
+}
+
 /// A script on an empty store, with time for its calls on a busy machine.
 pub fn start(name: &str, source: &str) -> Headless {
     Headless::start(source, HeadlessOptions::new(name).limits(Limits::patient())).expect("starts")

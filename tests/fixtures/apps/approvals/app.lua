@@ -3,7 +3,9 @@
 --   { title = string, author = string, state = "pending" | "approved" |
 --     "rejected", decided_by = string or null, reason = string or null,
 --     order = number }.
--- `author` and `decided_by` are names of participants.
+-- `author` and `decided_by` are participants' ids (`ctx.user.id`, a public
+-- key), which never change; the app shows them with `host.name(id)`, the
+-- name bzz knows for an id, and draws again when it learns one.
 -- Keys: j/k and arrows move, Enter detail, Esc closes it, n new request,
 -- a approve, x reject (asks for a reason), f filter, r reload, q close.
 
@@ -18,6 +20,12 @@ local function trim(t) return (t:gsub("^%s+", ""):gsub("%s+$", "")) end
 -- Any member of the channel can write any field: read them with care.
 local function text(v, default)
   if type(v) == "string" then return v end
+  return default or "?"
+end
+
+-- A participant stored in a field, as a name to show.
+local function who(id, default)
+  if type(id) == "string" and id ~= "" then return host.name(id) end
   return default or "?"
 end
 
@@ -115,7 +123,7 @@ local function merge(s, records)
 end
 
 local function already(rec)
-  return "Already " .. state_of(rec) .. " by " .. text(rec.content.decided_by, "someone") .. "."
+  return "Already " .. state_of(rec) .. " by " .. who(rec.content.decided_by, "someone") .. "."
 end
 
 -- The decision on top of the record as it is: an update replaces the whole
@@ -156,10 +164,10 @@ local function detail_lines(rec)
   local c = rec.content
   local lines = {
     "Request: " .. text(c.title),
-    "Author: " .. text(c.author),
+    "Author: " .. who(c.author),
     "State: " .. state_of(rec),
   }
-  if state_of(rec) ~= "pending" then lines[#lines + 1] = "Decided by: " .. text(c.decided_by) end
+  if state_of(rec) ~= "pending" then lines[#lines + 1] = "Decided by: " .. who(c.decided_by) end
   if state_of(rec) == "rejected" then lines[#lines + 1] = "Reason: " .. text(c.reason, "") end
   return lines
 end
@@ -197,7 +205,7 @@ function app.view(s, ctx)
       local st = state_of(r)
       items[i] = ui.line {
         st .. string.rep(" ", 8 - #st) .. "  " .. text(r.content.title) .. "  ",
-        ui.span { text(r.content.author, ""), fg = "muted" },
+        ui.span { who(r.content.author, ""), fg = "muted" },
       }
       if r.id == s.sel then sel = i end
     end
@@ -249,7 +257,7 @@ local function form_key(s, key, ctx)
     data.create {
       type = "request", tag = { kind = "create" },
       content = {
-        title = value, author = ctx.user.name, state = "pending",
+        title = value, author = ctx.user.id, state = "pending",
         decided_by = data.null, reason = data.null, order = host.time(),
       },
     }
@@ -268,14 +276,14 @@ local function form_key(s, key, ctx)
       s.form = nil
       s.status = already(rec)
     else
-      send_decision(s, rec, "rejected", value, ctx.user.name)
+      send_decision(s, rec, "rejected", value, ctx.user.id)
     end
   end
   f.error = nil
 end
 
 function app.key(s, key, ctx)
-  local me = ctx.user.name
+  local me = ctx.user.id
   if s.form then return form_key(s, key, ctx) end
   local n = key.name
   local list = shown(s)
@@ -354,7 +362,7 @@ function app.reply(s, r, ctx)
       if s.form and s.form.kind == "reject" then s.form = nil end
       s.status = already(now)
     else
-      send_decision(s, now, tag.state, tag.reason, ctx.user.name) -- still pending: decide it
+      send_decision(s, now, tag.state, tag.reason, ctx.user.id) -- still pending: decide it
     end
   else
     s.saving = false

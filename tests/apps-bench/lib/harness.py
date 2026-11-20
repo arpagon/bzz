@@ -12,6 +12,15 @@ from term import Session
 
 BENCH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 USER = "ana"
+# The people of the cases: the host names their ids, as bzz names the ids
+# of a channel's members from their profiles (`host.name`).
+PEOPLE = "ana,bo,cy,di,eve"
+
+
+def pid(name):
+    """A participant's id as examples/app_host.rs makes it from a name."""
+    import hashlib
+    return hashlib.sha256(f"participant:{name}".encode()).hexdigest()
 # app name -> module with its CASES
 APPS = {"board": "cases_board", "poll": "cases_poll", "rota": "cases_rota",
         "approvals": "cases_approvals", "panel": "cases_panel", "board-priority": "cases_board_priority"}
@@ -122,7 +131,7 @@ class Context:
         self.n += 1
         svc = Service(self.app, scenario, os.path.join(self.dir, f"service-{self.n}.jsonl"))
         env = dict(os.environ)
-        env.update({"MINIAPP_DATA_ADDR": svc.data_addr, "MINIAPP_USER": USER,
+        env.update({"MINIAPP_DATA_ADDR": svc.data_addr, "MINIAPP_USER": USER, "MINIAPP_PEOPLE": PEOPLE,
                     "TERM": "xterm-256color", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"})
         for k in ("COLUMNS", "LINES", "TMUX", "HERDR_ENV", "STY"):
             env.pop(k, None)

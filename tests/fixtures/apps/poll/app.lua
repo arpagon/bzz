@@ -2,7 +2,9 @@
 -- Two record types:
 --   "poll": { question = string, options = { string, ... } }  (one record)
 --   "vote": { voter = string, option = string }  (one for each participant)
--- `voter` is a participant's name; a vote counts for the option it names.
+-- `voter` is the participant's id (`ctx.user.id`, a public key), which never
+-- changes; a vote counts for the option it names. Who voted for the
+-- selected option is shown by name, with `host.name(id)`.
 -- Keys: j/k and arrows move, Enter or Space vote, a add an option,
 -- / search, r reload, q close. With no poll yet, a asks for the question.
 
@@ -150,7 +152,7 @@ local function form_view(s, ctx)
 end
 
 function app.view(s, ctx)
-  local me = ctx.user.name
+  local me = ctx.user.id
   local poll = the_poll(s)
   local options = options_of(poll)
   local tally, total = {}, 0
@@ -196,6 +198,20 @@ function app.view(s, ctx)
       }
     end
     if s.loaded then parts[#parts + 1] = ui.text { "Total: " .. votes_text(total) } end
+    -- Who voted for the selected option. A vote stores an id; the name is
+    -- bzz's (`host.name`), and the app is drawn again when bzz learns one.
+    local names = {}
+    for _, v in ipairs(s.loaded and s.votes or {}) do
+      if v.content.option == s.sel and type(v.content.voter) == "string" then
+        names[#names + 1] = v.content.voter == me and "you" or host.name(v.content.voter)
+      end
+    end
+    if #names > 0 then
+      table.sort(names)
+      parts[#parts + 1] = ui.text {
+        ui.truncate("By: " .. table.concat(names, ", "), ctx.width), fg = "muted", size = 1,
+      }
+    end
   end
   if s.search_open or s.query ~= "" then
     parts[#parts + 1] = ui.row { size = 1,
@@ -312,7 +328,7 @@ function app.key(s, key, ctx)
     if i and i < #list then s.sel = list[i + 1] end
   elseif n == "k" or n == "up" then
     if i and i > 1 then s.sel = list[i - 1] end
-  elseif n == "enter" or n == "space" then vote(s, ctx.user.name)
+  elseif n == "enter" or n == "space" then vote(s, ctx.user.id)
   elseif n == "a" then
     if s.loaded then s.form = { kind = the_poll(s) and "option" or "poll", value = "" } end
   elseif n == "/" then s.search_open = true; s.search_cursor = nil
