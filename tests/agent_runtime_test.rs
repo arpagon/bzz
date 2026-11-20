@@ -483,18 +483,22 @@ async fn a_mention_is_answered_once_through_the_tool_over_the_pipe() {
         initialize["clientInfo"],
         json!({"name": "bzz", "version": env!("CARGO_PKG_VERSION")})
     );
-    assert_eq!(
-        initialize["_meta"]["bzz"],
-        json!({
-            "agent": {"id": world.agent, "pubkey": world.agent_pubkey(), "name": "Scout"},
-            "model": {"provider": "openai-codex", "modelId": "gpt-6-luna", "thinkingLevel": "low"},
-            "instructions": "Be brief.",
-            "mounts": [{"name": "site", "path": "/home/ann/site", "write": false, "exec": false}],
-            "network": ["github.com"],
-            "packages": true,
-            "piDir": "/nonexistent/pi/agent",
-        })
-    );
+    #[allow(unused_mut)]
+    let mut told = json!({
+        "agent": {"id": world.agent, "pubkey": world.agent_pubkey(), "name": "Scout"},
+        "model": {"provider": "openai-codex", "modelId": "gpt-6-luna", "thinkingLevel": "low"},
+        "instructions": "Be brief.",
+        "mounts": [{"name": "site", "path": "/home/ann/site", "write": false, "exec": false}],
+        "network": ["github.com"],
+        "packages": true,
+        "piDir": "/nonexistent/pi/agent",
+    });
+    // The host offers the tools of apps' records only from a bzz with apps.
+    #[cfg(feature = "apps")]
+    {
+        told["apps"] = json!(true);
+    }
+    assert_eq!(initialize["_meta"]["bzz"], told);
     let place = format!("{}/{request_id}", world.channel);
     assert_eq!(
         world.script.received("session/new"),
@@ -584,7 +588,8 @@ async fn another_harness_calls_bzz_agent_tools_with_a_credential_per_session() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap().to_owned())
         .collect::<Vec<_>>();
-    assert_eq!(names, ["send", "read", "react"]);
+    assert_eq!(names, bzz::agents::runtime::tools::names());
+    assert_eq!(&names[..3], ["send", "read", "react"]);
     // A coding harness never received the instructions, so the prompt has them.
     let text = world.script.received("session/prompt")[0]["prompt"][0]["text"]
         .as_str()
