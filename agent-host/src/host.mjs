@@ -109,6 +109,46 @@ const CHAT_TOOLS = [
 		},
 	},
 ];
+/**
+ * The tools of the apps open in the conversation's channel (bzz v0.16, docs/agent-host-protocol.md section 5). bzz
+ * serves them and checks every argument and the fence; a remote copy has no bzz to serve them and does not offer them.
+ */
+const APP = { type: "string", description: "The app's name, as apps lists it." };
+const RECORD_TYPE = { type: "string", description: "One of the record types the app declared, as apps lists them." };
+const RECORD_ID = { type: "string", description: "The record's id, as records gives it." };
+const REV = { type: "string", description: "The record's rev as you last saw it. If the record changed since, nothing is written and you get its current state." };
+const CONTENT = { type: "object", description: "The record's whole content: every field, not only the ones you change. The app's brief says what the fields mean." };
+const APP_TOOLS = [
+	{
+		name: "apps",
+		description: "List the apps open in the channel of this conversation, each with its brief, which says what its records mean, and its record types. People of the channel share an app's records; read and change them with the record tools.",
+		parameters: { type: "object", properties: {} },
+	},
+	{
+		name: "records",
+		description: "List the records of one type of an app open in this channel. Each is {id, type, rev, content, by}: rev is what you pass back to change or delete it. Records come in no order: an order, when the app has one, is a field of the content.",
+		parameters: {
+			type: "object",
+			properties: { app: APP, type: RECORD_TYPE, match: { type: "string", description: "Only records whose title contains this, ignoring case." }, limit: { type: "integer", minimum: 1, maximum: 200, description: "How many at most. Default 50." } },
+			required: ["app", "type"],
+		},
+	},
+	{
+		name: "create_record",
+		description: "Create a record of an app open in this channel. Everyone who has the app open sees it at once. Answers the record as stored, with its id and rev.",
+		parameters: { type: "object", properties: { app: APP, type: RECORD_TYPE, content: CONTENT }, required: ["app", "type", "content"] },
+	},
+	{
+		name: "update_record",
+		description: "Replace the whole content of a record of an app open in this channel. If someone changed it after the rev you give, nothing is written and the answer holds the record as it is now: decide again from that, as the app's brief says.",
+		parameters: { type: "object", properties: { app: APP, id: RECORD_ID, rev: REV, content: CONTENT }, required: ["app", "id", "rev", "content"] },
+	},
+	{
+		name: "delete_record",
+		description: "Delete a record of an app open in this channel, under the same rule as update_record. Answers the record's last state.",
+		parameters: { type: "object", properties: { app: APP, id: RECORD_ID, rev: REV }, required: ["app", "id", "rev"] },
+	},
+];
 const TOOL_KIND = { read: "read", write: "edit", edit: "edit", bash: "execute", run: "execute" };
 
 /**
@@ -277,7 +317,7 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 		made.install(defineExtension({
 			name: "bzz",
 			tools: [
-				...CHAT_TOOLS.map(({ name, ...tool }) => defineTool({ ...tool, name: `${PREFIX}${name}`, execute: (args, api, context) => chat(name, args, api, context) })),
+				...[...CHAT_TOOLS, ...(config.local && config.apps ? APP_TOOLS : [])].map(({ name, ...tool }) => defineTool({ ...tool, name: `${PREFIX}${name}`, execute: (args, api, context) => chat(name, args, api, context) })),
 				// Without a folder granted for it, the tool is not there, and nothing tells the model of it.
 				...(run ? [run.tool] : []),
 			],
@@ -391,7 +431,7 @@ export function serve({ folder, input, output, env = process.env, log = () => un
 		const bzz = params._meta?.bzz;
 		// Without bzz's fields this is a remote copy under buzz-acp: the settings moved with the agent.
 		const settings = bzz
-			? { local: true, agent: bzz.agent ?? {}, model: bzz.model, instructions: bzz.instructions ?? "", mounts: bzz.mounts ?? [], network: bzz.network ?? [], piDir: bzz.piDir, packages: bzz.packages }
+			? { local: true, agent: bzz.agent ?? {}, model: bzz.model, instructions: bzz.instructions ?? "", mounts: bzz.mounts ?? [], network: bzz.network ?? [], piDir: bzz.piDir, packages: bzz.packages, apps: bzz.apps === true }
 			: { local: false, ...(await readAgentFile(folder)), mounts: [] };
 		let net;
 		try {

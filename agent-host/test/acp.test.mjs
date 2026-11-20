@@ -70,6 +70,29 @@ test("two sessions at once in one process, each tool call on its own session", a
 	assert.equal(host.child.exitCode, null);
 });
 
+test("the tools of apps' records are offered only when bzz serves them, and go to bzz over the pipe", async (t) => {
+	const described = async (bzz) => {
+		const host = agent(t).start();
+		await host.initialize(bzz);
+		await host.prompt(await host.session(THREAD), "d1", script(["describe"]));
+		return { host, tools: JSON.parse(host.tools.at(-1).arguments.text).tools };
+	};
+	const { tools: without } = await described({});
+	assert.deepEqual(without.filter((name) => name.startsWith("buzz_")), ["buzz_send", "buzz_read", "buzz_react"]);
+	const { host, tools } = await described({ apps: true });
+	assert.deepEqual(tools.filter((name) => name.startsWith("buzz_")), ["buzz_send", "buzz_read", "buzz_react", "buzz_apps", "buzz_records", "buzz_create_record", "buzz_update_record", "buzz_delete_record"]);
+	// What bzz answers is what the model reads; the arguments go as the model gave them, under the name on the wire.
+	host.onTool = (call) => (call.name === "records" ? { text: '{"records":[]}' } : { text: "sent", final: true });
+	const session = await host.session(DM);
+	assert.deepEqual(await host.prompt(session, "e1", script(["buzz_records", { app: "rota", type: "day" }], ["report"])), { stopReason: "end_turn" });
+	const calls = host.tools.filter((call) => call.sessionId === session);
+	assert.deepEqual(calls[0], { sessionId: session, name: "records", arguments: { app: "rota", type: "day" } });
+	assert.equal(calls[1].arguments.text, '{"records":[]}');
+	// The prompt says nothing of apps beforehand (plan v0.16.0, D17).
+	await host.prompt(session, "d2", script(["describe"]));
+	assert.doesNotMatch(JSON.parse(host.tools.at(-1).arguments.text).system, /\bapps?\b|record/i);
+});
+
 test("one conversation per place, found again whatever the session and after a restart", async (t) => {
 	const { start } = agent(t);
 	let host = start();
