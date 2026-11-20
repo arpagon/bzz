@@ -1738,9 +1738,11 @@ run = "\"$BZZ_BIN\" app new poll --template poll --to {fixture}/poll-app"
 keys = ["space", "space"]
 visible = "channel finder"
 
+# The writing dock names the channel. Not its first message: after the
+# v0.15 scenarios have talked in #t15-agents it is no longer on screen.
 [[scenario.step]]
 keys = ["type:t15-ag", "enter"]
-visible = "Generated agents channel"
+visible = "message #t15-agents"
 
 # Added in the TUI: shown at once for an answer, and nothing of it runs.
 [[scenario.step]]
