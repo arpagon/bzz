@@ -12,6 +12,8 @@ pub mod membership_snapshot;
 pub mod mention_rules;
 pub mod presence;
 pub mod read_state_snapshot;
+#[cfg(feature = "apps")]
+pub mod record;
 pub mod sent_from_thread;
 pub mod sidebar;
 pub mod sidebar_doc;

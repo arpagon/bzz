@@ -124,6 +124,102 @@ Two things to know when writing one. Never follow `esc` with another key in
 the same step: a terminal reads Esc and a key sent together as Alt and that
 key. And a line bzz draws in a narrow pane wraps: match a short piece of it.
 
+### Harness scenarios for the app pane (v0.16.0)
+
+The `t16-*` scenarios prove the app pane on the release binary, in the same
+run and on the same fixture. At the shell they write the Board from its
+template (`bzz app new board --to {fixture}/board-app`), propose it with
+`bzz app add` (answered no: it waits, nothing runs) and approve it with
+`bzz app approve`; the second profile adds and approves the same folder;
+and the fixture's `looper/`, an app whose script keeps its thread busy, is
+added and approved. Then, in the TUI:
+
+- `t16-app-pane`, M3's exit gate: `:apps` lists the Board; `:app open
+  board` opens it beside `#t9-general`; letters, digits, `q`, `:`, `?`,
+  Tab, Enter and Esc go to the Board's form and none opens anything of
+  bzz's; a paste of two lines reaches the form as one piece of text;
+  `Ctrl+C` gives the keyboard back; the composer then types, and a paste
+  of two lines stays in the draft; the window is narrowed through 144,
+  100, 72 and 60 columns (the app is hidden, `5` zooms it, `Ctrl+C` hides
+  it again) and widened back; a thread opened beside it takes the right
+  side, `5` brings the app back, and at 160 columns both show; `q`, `q`,
+  `y` quit, and the terminal is checked to be given back.
+- `t16-app-live-second-profile`: the Board is open in both profiles at
+  once, in two panes; a card the second adds shows in the first one's pane.
+- `t16-app-looper-composer`: the looper is open in the pane and the
+  composer types a long line at once; `x` loops forever in the script,
+  which is stopped and says so in the pane and the status line.
+
+Fields only these use:
+
+| Field | Meaning |
+|---|---|
+| `size = "WxH"` (scenario or step) | the window's size. Through Herdr the runner sets it on the pane's terminal with `stty`, which a Herdr pane narrower than that cannot show whole |
+| `paste = "text"` (step) | a bracketed paste before the keys. Through Herdr it is the runner's one use of `send-text`, with the bracket sequences around the text |
+| `beside = "second"` (scenario) | the second profile's TUI runs in a second pane (`BZZ_HERDR_SECOND_PANE`); steps with `pane = "second"` drive it |
+| `restored = true` (scenario) | after the exit, the bytes bzz wrote and tmux's own state show the alternate screen left, the mouse and bracketed paste off and the cursor shown. Only `scripts/test-tui-tmux.py` checks it |
+| `run = "command"` (step, v0.16 M4) | a command of this machine's shell, run before the step's keys, with `{fixture}` the fixture's folder and `$BZZ_BIN` the binary under test: what the owner does outside bzz, such as saving the script of a folder. Both runners run it |
+
+**Approving and managing apps inside bzz (M4).** These follow the scenarios
+above, which leave the Board installed, approved and open in
+`#t9-general` in both profiles, with a card each:
+
+- `t16-m4-poll-approve-update-rollback`: the Poll, written from its
+  template, is added in the TUI (`:app add {fixture}/poll-app`) and shown
+  at once for an answer; left waiting, the banner announces it and
+  `:app open poll` refuses; `Ctrl+Y` shows it again, `a` is refused until
+  the end was on screen, `G a` approves it, and it opens. A poll, two
+  options and a vote later, with the selection on the second option: a
+  version that does not load is recorded as failed and never shown; one
+  that loads apart and raises in `app.reload` is approved and fails as it
+  is put to run, and version 1 goes on with its selection; a change of a
+  word is approved and replaces it in place with its selection; `:app
+  rollback poll` brings version 1 back, with the selection.
+- `t16-m4-approvals-template`: the Approvals template, added, approved
+  and opened in `#t14-names`; a request filed there is the owner's, and
+  he may not decide it.
+- `t16-m4-dev-remove-reinstall`: `:app dev {fixture}/board-app` runs the
+  Board's folder in `#t9-general`, marked `not approved`, on the
+  channel's records (the card the second profile made is there); a save
+  reloads it with its cards; a broken save leaves it running with the
+  error; `:app close` ends it and the installed Board shows again. `:app
+  remove board` closes it and says the records stay; installed again from
+  a new folder, it shows the same cards. A version that declares a second
+  record type is shown as a change and refused with a reason.
+
+**Sharing, agents, and the version (M6, M5, M8).**
+
+- `t16-m6-share-offer-approve`: the viewer shares the Board in
+  `#t9-general` (`beside = "other"`, another person's profile of the
+  fixture); the other person sees the offer and its brief, `:app open`
+  refuses before the approval, `Ctrl+Y` shows who signed the revision,
+  `G a` approves it and it opens there; a card of each shows in the
+  other's pane; `:app unshare` leaves the installed copy.
+- `t16-m5-agent-changes-the-open-board`: the owner's Board is open in
+  `#t15-agents` with a card selected; Scout, on the real Pi host and its
+  stand-in model, is asked for the priority and the filter and proposes the
+  Board with priority; the approval says it comes from the agent and who
+  asked; approved, the Board changes in place with the same card selected;
+  `:app brief` posts the brief; at its next turn Scout reports the version
+  applied.
+- `t16-cli-version`: `bzz --version` says `bzz 0.16.0`.
+
+The same manifest runs through tmux on a private socket, for a machine
+where Herdr is not running, or to keep text captures of every step:
+
+```bash
+export BZZ_BUZZ_SOURCE=/path/to/pinned/buzz
+BZZ_TMUX_SCENARIOS=t16-cli-version,t16-cli-app-new,t16-cli-app-add,t16-cli-app-approve,t16-cli-app-add-second,t16-cli-app-add-looper,t16-app-pane,t16-app-live-second-profile,t16-app-looper-composer,t16-m4-poll-approve-update-rollback,t16-m4-approvals-template,t16-m4-dev-remove-reinstall,t16-m6-share-offer-approve,t16-m5-agent-changes-the-open-board \
+  BZZ_TMUX_SIZE=120x30 BZZ_TMUX_CAPTURES=/tmp/bzz-captures ./scripts/test-relay.sh --tmux
+```
+
+`BZZ_TMUX_SCENARIOS=harness` (the default) runs every harness scenario,
+v0.13 to v0.16, in order, in one fixture: 35 for v0.16.0. The scenarios of
+v0.16 build on one another (the M3 scenarios install the Board the later
+ones use), and must not depend on what the scenarios of earlier releases
+leave in the fixture: those run first and talk in its channels. The runner prints how long each step took to
+show what it waits for.
+
 ### Manual disposable-fixture journey
 
 Create `.env` from the template and set only non-secret values:

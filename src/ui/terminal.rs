@@ -7,7 +7,7 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -69,10 +69,17 @@ impl TerminalGuard {
             let _ = disable_raw_mode();
             return Err(Error::io("terminal", error));
         }
+        // A paste arrives as one piece of text, not as keys (v0.16): a line
+        // break in it no longer sends a message, and the rest no longer runs
+        // as bzz's own keys. A terminal that does not know the mode ignores
+        // it. On Windows crossterm gives no paste event: there a paste still
+        // arrives as keys.
+        let _ = execute!(stdout, EnableBracketedPaste);
         let backend = CrosstermBackend::new(stdout);
         let terminal = match Terminal::new(backend) {
             Ok(terminal) => terminal,
             Err(error) => {
+                let _ = execute!(io::stdout(), DisableBracketedPaste);
                 let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
                 let _ = disable_raw_mode();
                 return Err(Error::io("terminal", error));
@@ -92,6 +99,9 @@ impl TerminalGuard {
             if self.mouse_capture {
                 let _ = execute!(io::stdout(), DisableMouseCapture);
             }
+            // Apart: on a Windows console without escape sequences crossterm
+            // refuses this one, and `execute!` stops at the first refusal.
+            let _ = execute!(io::stdout(), DisableBracketedPaste);
             let _ = execute!(io::stdout(), LeaveAlternateScreen);
             let _ = disable_raw_mode();
             self.active = false;
@@ -105,10 +115,25 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// The name of an app's thread starts so (`apps::runtime`).
+const APP_THREAD_PREFIX: &str = "bzz-app ";
+
+/// Whether a panic on a thread of this name is an app's. The runtime
+/// catches it there and the app says so in its own pane; bzz goes on
+/// drawing, so the terminal must be left as it is, and nothing may be
+/// printed over the screen.
+pub fn is_app_thread(name: Option<&str>) -> bool {
+    name.is_some_and(|name| name.starts_with(APP_THREAD_PREFIX))
+}
+
 fn install_panic_hook() {
     PANIC_HOOK.call_once(|| {
         let previous = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
+            if is_app_thread(std::thread::current().name()) {
+                return;
+            }
+            let _ = execute!(io::stdout(), DisableBracketedPaste);
             let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
             let _ = disable_raw_mode();
             previous(info);
@@ -118,7 +143,17 @@ fn install_panic_hook() {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_CLIPBOARD_BYTES, osc52_sequence};
+    use super::{MAX_CLIPBOARD_BYTES, is_app_thread, osc52_sequence};
+
+    /// The runtime names an app's thread `bzz-app <script>`; the hook
+    /// must know it by that name and no other.
+    #[test]
+    fn a_panic_on_an_apps_thread_leaves_the_terminal_alone() {
+        assert!(is_app_thread(Some("bzz-app board.lua")));
+        assert!(!is_app_thread(Some("main")));
+        assert!(!is_app_thread(Some("tokio-runtime-worker")));
+        assert!(!is_app_thread(None));
+    }
 
     #[test]
     fn osc52_encodes_text_without_interpolating_terminal_controls() {

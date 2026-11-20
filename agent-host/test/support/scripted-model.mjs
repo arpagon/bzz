@@ -9,7 +9,12 @@
 // result as the final message; ["error", "why"] fails as a provider would;
 // ["describe"] sends what the model was given, as JSON: `{ system, tools }`,
 // the text of its system prompt and the names of the tools it was offered;
-// ["calls", [[name, {arguments}], ...]] calls several tools in one answer.
+// ["calls", [[name, {arguments}], ...]] calls several tools in one answer;
+// ["with_files", name, {arguments}, {argument: path, ...}] calls a tool with
+// each named argument read from a file of this machine, for an argument too
+// long to type in a message, such as a script (bzz v0.16 M5's scenario).
+import { readFileSync } from "node:fs";
+
 const textOf = (message) => (typeof message.content === "string" ? message.content : message.content.map((part) => part.text ?? "").join(""));
 
 export default async function respond(context, { call, message, toolCall }, options) {
@@ -44,6 +49,11 @@ export default async function respond(context, { call, message, toolCall }, opti
 			for (const tool of entry.toolsRemoved ?? []) tools.delete(typeof tool === "string" ? tool : tool.name);
 		}
 		return call("buzz_send", { text: JSON.stringify({ system: Object.values(sections).join("\n"), tools: [...tools] }), final: true });
+	}
+	if (name === "with_files") {
+		const [, tool, args, files] = step;
+		const read = Object.fromEntries(Object.entries(files).map(([key, path]) => [key, readFileSync(path, "utf8")]));
+		return call(tool, { ...args, ...read });
 	}
 	if (name === "calls") return message(argument.map(([tool, args]) => toolCall(tool, args)), { stopReason: "toolUse" });
 	if (name === "error") return message("", { stopReason: "error", errorMessage: argument });

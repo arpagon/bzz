@@ -548,12 +548,27 @@ pub enum ConnectionState {
     ClockSkew,
 }
 
+/// The ends of a public key, as bzz writes someone it has no name for:
+/// eight characters, an ellipsis, the last four. Counted in characters, not
+/// bytes, so an id that is not hex (a script's `host.name`, a malformed
+/// tag) is cut on a character instead of panicking.
 pub fn abbreviated_pubkey(pubkey: &str) -> String {
-    if pubkey.len() <= 12 {
-        pubkey.to_owned()
-    } else {
-        format!("{}…{}", &pubkey[..8], &pubkey[pubkey.len() - 4..])
+    // A public key is ASCII: cut it by bytes, as fast as ever (the mention
+    // candidates ask this of every member without a name).
+    if pubkey.is_ascii() {
+        return if pubkey.len() <= 12 {
+            pubkey.to_owned()
+        } else {
+            format!("{}…{}", &pubkey[..8], &pubkey[pubkey.len() - 4..])
+        };
     }
+    let count = pubkey.chars().count();
+    if count <= 12 {
+        return pubkey.to_owned();
+    }
+    let head: String = pubkey.chars().take(8).collect();
+    let tail: String = pubkey.chars().skip(count - 4).collect();
+    format!("{head}…{tail}")
 }
 
 /// Most mention rows shown at once (mention rules v3, section 6).
@@ -618,4 +633,24 @@ pub struct SidebarLayout {
     /// Group key (`channels`, `forums`, `dms`, `section:<id>`) → `alpha` or
     /// `recent`.
     pub sort: std::collections::BTreeMap<String, String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::abbreviated_pubkey;
+
+    #[test]
+    fn an_abbreviated_key_is_cut_on_characters_whatever_the_id() {
+        let hex = "c0".repeat(32);
+        assert_eq!(abbreviated_pubkey(&hex), "c0c0c0c0…c0c0");
+        assert_eq!(abbreviated_pubkey("short"), "short");
+        assert_eq!(abbreviated_pubkey("abcdefghijkl"), "abcdefghijkl");
+        // An id that is not hex, which a byte slice would cut inside a
+        // character and panic on: two bytes for each `é`, four for the emoji.
+        assert_eq!(abbreviated_pubkey(&"é".repeat(20)), "éééééééé…éééé");
+        assert_eq!(
+            abbreviated_pubkey("a🐝🐝🐝🐝🐝🐝🐝🐝🐝🐝🐝🐝"),
+            "a🐝🐝🐝🐝🐝🐝🐝…🐝🐝🐝🐝"
+        );
+    }
 }

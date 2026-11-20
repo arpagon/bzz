@@ -33,7 +33,8 @@
     bzz
   </a>
   <div class="links">
-    <a href="#new">new in 0.15</a>
+    <a href="#new">new in 0.16</a>
+    <a href="#apps">apps</a>
     <a href="#harnesses">agents</a>
     <a href="#features">features</a>
     <a href="#keys">keys</a>
@@ -108,7 +109,159 @@
 
 <section id="new">
 <div class="wrap">
-  <span class="kicker">new in v0.15.0</span>
+  <span class="kicker">new in v0.16.0</span>
+  <h2>Apps in the channel, written by your agent.</h2>
+  <div class="grid">
+    <div class="card">
+      <span class="k">/// the pane</span>
+      <h3>An app beside the conversation</h3>
+      <p>A task board, a poll, an approvals queue: a small app that bzz
+      draws at the right of a channel. <code>5</code> gives it the keyboard,
+      <code>Ctrl-c</code> gives it back. The people of the channel share its
+      records.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// your agent</span>
+      <h3>Ask your agent for a change</h3>
+      <p>"Add a priority and a filter to the board." The agent reads the
+      guide, tries its script and proposes it. You approve, and the open
+      board changes in place, with the same card still selected.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// approval</span>
+      <h3>Nothing runs that you did not read</h3>
+      <p>Every version waits for your answer: who it comes from, its brief,
+      the record types it declares with any change marked, and its difference
+      from the version that runs. You approve its exact bytes.</p>
+    </div>
+  </div>
+  <div class="shot"><p class="cap">Apps need nothing installed. Full notes:
+  <a href="https://github.com/arpagon/bzz/blob/main/docs/release-v0.16.0.md">bzz v0.16.0 release notes</a> ·
+  <a href="#apps">how apps work</a>.</p></div>
+</div>
+</section>
+
+<section id="apps">
+<div class="wrap">
+  <span class="kicker">apps</span>
+  <h2>A small script for the channel. Only what bzz lends it.</h2>
+  <p class="lead">An app is one Lua file that bzz runs inside itself, with a
+  closed set of functions: draw elements in its pane, react to keys, and ask
+  bzz to list, create, change and delete records of the types it declared,
+  in the channel it is open in. bzz signs the records; the script never sees
+  a key.</p>
+
+  <!-- Capture pending (the v0.16 film is a later task): a sanitized capture
+       of the real TUI through `bzz-visual-capture`, on an isolated pinned
+       relay with generated people. It needs, in one shot or a short loop,
+       the Board open beside #general, the line "tasks: version 2 from your
+       agent Scout, asked by …", the approval overlay with the brief CHANGED
+       and the difference, and the Board after `a` with "Priority: all" and
+       the same card selected. Place it here as a .shot block, as the hero
+       video is placed. See site/README.md, "Apps". -->
+
+  <div class="card feature">
+    <div class="feature-head">
+      <span class="k">/// the board, changed in place</span>
+      <span class="badge">api = 1</span>
+    </div>
+    <h3>From a mention to a new version, without a restart</h3>
+    <p>A person in the channel asks your agent for a change. The agent writes
+    the script, tries it apart and sees the screen it draws, and proposes
+    it. You read it at the top of the screen with <code>Ctrl-y</code> and
+    approve it with <code>a</code>. The open app takes the new version in
+    place and keeps its state: the selection, a search, an open form.</p>
+    <ul class="points">
+      <li><b>No file, network, process or key.</b> A script reaches only what
+      one document, <code>app-api.md</code>, lists. Every call has a time
+      budget and the interpreter a memory cap, so a script cannot hold
+      bzz.</li>
+      <li><b>Approval is of exact bytes.</b> Whoever wrote the version: you,
+      your agent, or a person of the channel. A file changed behind bzz's
+      back does not run.</li>
+      <li><b>Shared records.</b> The records are artifacts of the channel.
+      Two people with the app open see each other's changes, and a change
+      made at the same moment is not lost.</li>
+      <li><b>Shared apps.</b> <code>:app share</code> offers the app to the
+      channel. Another bzz there shows who offered it and runs it only after
+      that person approves its bytes.</li>
+      <li><b>Agents take part.</b> An agent woken in the channel reads the
+      app's brief and works with its records, without a screen.</li>
+    </ul>
+    <div class="install-line feature-cmd">
+      <span class="prompt">$</span>
+      <code>bzz app new tasks &amp;&amp; bzz app add tasks</code>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="feature-head">
+        <span class="k">/// board</span>
+        <span class="badge">template</span>
+      </div>
+      <h3>Board</h3>
+      <p>Cards in three columns: To do, Doing, Done. A move is applied on
+      top of someone else's change: a board merges.</p>
+    </div>
+    <div class="card">
+      <div class="feature-head">
+        <span class="k">/// poll</span>
+        <span class="badge">template</span>
+      </div>
+      <h3>Poll</h3>
+      <p>One question, its options, one vote for each person, and who voted
+      for the selected option, by name.</p>
+    </div>
+    <div class="card">
+      <div class="feature-head">
+        <span class="k">/// approvals</span>
+        <span class="badge">template</span>
+      </div>
+      <h3>Approvals</h3>
+      <p>Requests that someone else approves, or rejects with a reason. A
+      decision is never written over another.</p>
+    </div>
+  </div>
+
+  <div class="cmp" role="table" aria-label="A bzz app compared with a Buzz desktop plugin">
+    <div class="cmp-row cmp-head" role="row">
+      <span role="columnheader"></span>
+      <span role="columnheader">a bzz app</span>
+      <span role="columnheader">a Buzz desktop plugin</span>
+    </div>
+    <div class="cmp-row" role="row">
+      <span class="cmp-k" role="rowheader">written in</span>
+      <span role="cell">Lua, one file</span>
+      <span role="cell">React</span>
+    </div>
+    <div class="cmp-row" role="row">
+      <span class="cmp-k" role="rowheader">how an agent writes it</span>
+      <span role="cell">through bzz's tools; it never writes a file</span>
+      <span role="cell">in a folder on the device</span>
+    </div>
+    <div class="cmp-row" role="row">
+      <span class="cmp-k" role="rowheader">how it reaches another person</span>
+      <span role="cell">offered in the channel, approved by that person</span>
+      <span role="cell">installed by each person, from a folder, Git or a URL</span>
+    </div>
+    <div class="cmp-row" role="row">
+      <span class="cmp-k" role="rowheader">what crosses between the two</span>
+      <span role="cell">its records and its brief, not its code</span>
+      <span role="cell">a plugin can use the same records, from the brief</span>
+    </div>
+  </div>
+  <div class="shot"><p class="cap">People on Buzz desktop see nothing of an
+  app but its brief, which bzz posts as a message. Apps were run on Linux;
+  on macOS and Windows their tests run in CI. What a script has, and what
+  people on Buzz desktop see, is in the
+  <a href="https://github.com/arpagon/bzz/blob/main/docs/apps.md">apps guide</a>.</p></div>
+</div>
+</section>
+
+<section id="agents-new">
+<div class="wrap">
+  <span class="kicker">since v0.15.0</span>
   <h2>Your own agents, run by bzz.</h2>
   <div class="grid">
     <div class="card">
@@ -177,7 +330,7 @@
   <div class="card feature">
     <div class="feature-head">
       <span class="k">/// pi durable</span>
-      <span class="badge">default · everything in v0.15.0</span>
+      <span class="badge">default · everything in v0.16.0</span>
     </div>
     <h3 class="with-logo"><svg class="hlogo pi" viewBox="0 0 4 4" shape-rendering="crispEdges" role="img" aria-label="Pi"><rect width="3" height="1" fill="#e48a7a"/><rect x="2" y="1" width="1" height="1" fill="#e48a7a"/><rect y="1" width="1" height="3" fill="#4f8eb3"/><rect x="1" y="2" width="1" height="1" fill="#4f8eb3"/><rect x="3" y="2" width="1" height="2" fill="#eab65d"/></svg><span>Pi Durable: the agent that picks up where it stopped</span></h3>
     <p>bzz's own agent host is built on

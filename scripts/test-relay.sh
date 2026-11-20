@@ -3,10 +3,15 @@
 # --nip-fi: start a test-only NIP-FA issuer (examples/fake_nip_fa.rs) on
 # localhost:3093 and the relay in BUZZ_NIP_FI_MODE=enforce trusting it, then
 # run tests/relay_nip_fi_integration.rs.
+# BZZ_RELAY_OWN_QUOTA=1: keep the relay's own quota for people and run only
+# the test of it.
 # --herdr: write a disposable viewer profile and generated content with
 # examples/harness_fixture.rs, then drive the release TUI through the
 # `harness` scenarios of scripts/tui-herdr-scenarios.toml (run this from a
 # Herdr pane with BZZ_HERDR_PANE set; see docs/e2e-herdr.md).
+# --tmux: the same profile and scenarios, driven through tmux on a private
+# socket by scripts/test-tui-tmux.py (v0.16), for where Herdr is not running.
+# BZZ_TMUX_SCENARIOS and BZZ_TMUX_CAPTURES pass through.
 set -euo pipefail
 : "${BZZ_BUZZ_SOURCE:?set BZZ_BUZZ_SOURCE to the pinned block/buzz checkout}"
 # One run at a time on a machine: the harness has one port (3030) and one
@@ -25,6 +30,7 @@ done
 PROFILE=default
 if [[ "${1:-}" == "--nip-fi" ]]; then PROFILE=nip-fi; fi
 if [[ "${1:-}" == "--herdr" ]]; then PROFILE=herdr; fi
+if [[ "${1:-}" == "--tmux" ]]; then PROFILE=tmux; fi
 PIN=bf3bdd0eaefe39289bf9620594f254c7f68897f5
 HEAD=$(git -C "$BZZ_BUZZ_SOURCE" rev-parse HEAD)
 if [[ "$HEAD" != "$PIN" && "${BZZ_ALLOW_UNPINNED_RELAY:-}" != 1 ]]; then
@@ -35,6 +41,10 @@ RELAY_ENV=(
   BUZZ_RATE_LIMIT_HUMAN_API_CALLS_PER_MIN
   BUZZ_MEMBERSHIP_SNAPSHOT_ENABLED BUZZ_MEMBERSHIP_PUBLIC_ENABLED BUZZ_NIP_FI_MODE BUZZ_NIP_FI_ISSUERS
   BUZZ_NIP_FI_COMMUNITIES BUZZ_NIP_FI_MAX_CONNECTION_LIFETIME_SECS
+  # Off unless the caller sets it: with `true` the relay admits only its
+  # members, and needs RELAY_OWNER_PUBKEY (v0.16 M7 runs its agent test
+  # both ways; the rest of the suite needs it off).
+  BUZZ_REQUIRE_RELAY_MEMBERSHIP RELAY_OWNER_PUBKEY
 )
 ISSUER_PID=
 cleanup() {
@@ -55,15 +65,23 @@ cleanup() {
 trap cleanup EXIT INT TERM
 # Dense same-second pagination coverage intentionally publishes more than the
 # production human quota inside this isolated, disposable harness.
-export BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN=5000
-export BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC=5000
+# BZZ_RELAY_OWN_QUOTA=1 leaves a person's quota as the relay ships it (60
+# writes a minute, 50 in five seconds) and runs the one test that has to
+# meet it (v0.16 M2); the rest of the suite cannot pass under it.
+if [[ -z "${BZZ_RELAY_OWN_QUOTA:-}" ]]; then
+  export BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN=5000
+  export BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC=5000
+else
+  export BZZ_RELAY_OWN_QUOTA
+  export BZZ_RELAY_TEST_FILTER="${BZZ_RELAY_TEST_FILTER:-real_relay_app_session_meets_a_persons_own_quota}"
+fi
 # The Herdr run starts bzz more than twenty times in a few minutes as one
 # person, each start a whole sync: its first six starts, twenty seconds
 # apart in all, made about 190 queries and the relay's quota for a person
 # refused the next. No person starts bzz like that. The other two profiles
 # keep the relay's own quota, which is how a client that asks in a loop is
 # caught (v0.15 M1).
-if [[ "$PROFILE" == herdr ]]; then
+if [[ "$PROFILE" == herdr || "$PROFILE" == tmux ]]; then
   export BUZZ_RATE_LIMIT_HUMAN_API_CALLS_PER_MIN=5000
 fi
 # v0.13 exercises optional relay capabilities that are off by default.
@@ -123,15 +141,20 @@ done
 for _ in $(seq 1 60); do curl -fsS http://localhost:3030/ >/dev/null && break; sleep 1; done
 if [[ "$PROFILE" == nip-fi ]]; then
   cargo test --locked --test relay_nip_fi_integration -- --ignored --test-threads=1
-elif [[ "$PROFILE" == herdr ]]; then
+elif [[ "$PROFILE" == herdr || "$PROFILE" == tmux ]]; then
   cargo build --locked --release
   cargo build --locked --example harness_fixture
   fixture=$(mktemp -d "${TMPDIR:-/tmp}/bzz-harness-fixture.XXXXXXXX")
   chmod 700 "$fixture"
   ./target/debug/examples/harness_fixture "$fixture/profile" "$BZZ_BUZZ_SOURCE"
   status=0
-  BZZ_BIN="$PWD/target/release/bzz" BZZ_HERDR_FIXTURE="$fixture/profile" BZZ_HERDR_SCENARIOS=harness \
-    ./scripts/test-tui-herdr.sh || status=$?
+  if [[ "$PROFILE" == tmux ]]; then
+    BZZ_BIN="$PWD/target/release/bzz" BZZ_HERDR_FIXTURE="$fixture/profile" \
+      BZZ_TMUX_SCENARIOS="${BZZ_TMUX_SCENARIOS:-harness}" ./scripts/test-tui-tmux.py || status=$?
+  else
+    BZZ_BIN="$PWD/target/release/bzz" BZZ_HERDR_FIXTURE="$fixture/profile" BZZ_HERDR_SCENARIOS=harness \
+      ./scripts/test-tui-herdr.sh || status=$?
+  fi
   rm -rf -- "$fixture"
   exit "$status"
 else
@@ -141,9 +164,10 @@ else
   # The scripted agent harness (v0.15 M1); `cargo test --test` does not build examples.
   cargo build --locked --example scripted_harness
   # BZZ_RELAY_TEST_FILTER runs only the tests whose name contains it.
+  # BZZ_RELAY_NOCAPTURE=1 shows what the tests print: the times they measure.
   BZZ_BUZZ_CLI="$BZZ_BUZZ_SOURCE/target/debug/buzz" \
   BZZ_BUZZ_ACP="$BZZ_BUZZ_SOURCE/target/debug/buzz-acp" \
-  BZZ_E2E_RELAY_URL=ws://localhost:3030 cargo test --locked --test relay_integration ${BZZ_RELAY_TEST_FILTER:+"$BZZ_RELAY_TEST_FILTER"} -- --ignored --test-threads=1
+  BZZ_E2E_RELAY_URL=ws://localhost:3030 cargo test --locked --test relay_integration ${BZZ_RELAY_TEST_FILTER:+"$BZZ_RELAY_TEST_FILTER"} -- --ignored --test-threads=1 ${BZZ_RELAY_NOCAPTURE:+--nocapture}
   # bzz's real agent host against a recorded relay (v0.15 M2). It needs
   # Node.js 22.19 or newer and no relay; it runs here because this is the
   # job that has Node (BZZ_TEST_REQUIRE_NODE=1 turns its skip into a failure).

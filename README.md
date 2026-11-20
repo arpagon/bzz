@@ -28,7 +28,7 @@
   <a href="#install">Install</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="#keys">Keys</a> ·
-  <a href="docs/release-v0.15.0.md">What's new in 0.15</a> ·
+  <a href="docs/release-v0.16.0.md">What's new in 0.16</a> ·
   <a href="docs/README.md">Docs</a>
 </p>
 
@@ -44,12 +44,16 @@ the keyboard. It speaks the Buzz protocol directly and is tested against
 the real Buzz relay, so your teammates on Buzz desktop and mobile see exactly
 what you send.
 
-> **New in 0.15 — your own agents.** `bzz agent new` creates an agent and
-> bzz runs it on your machine: it answers mentions in your team's channels,
-> on a disk of its own, with git. It touches your folders, the network and
-> your shell only where you say so, and it can move to another machine with
-> its memory. [Release notes](docs/release-v0.15.0.md) ·
-> [guide](docs/agents.md).
+> **New in 0.16 — apps in the channel.** A small app beside the
+> conversation: a task board, a poll, a rota. Ask your agent for one, or
+> for a change to the one that is open ("add a priority and a filter to the
+> board"); you read and approve its exact bytes, and the board changes in
+> place. The people of the channel share its records, and you can offer it
+> to them. A script runs inside bzz with no file, network or key to reach.
+> [Release notes](docs/release-v0.16.0.md) · [guide](docs/apps.md).
+>
+> **Since 0.15 — your own agents.** `bzz agent new` creates an agent and
+> bzz runs it on your machine. [Guide](docs/agents.md).
 
 ## Why bzz
 
@@ -68,6 +72,10 @@ what you send.
   gets a folder, a host or a real command only by your grant. Or bring your
   own process and let it act through bzz's broker, with per-action
   permissions.
+- **Apps beside the conversation.** A board, a poll, an approvals queue,
+  or whatever your agent writes for the channel: a small Lua script that
+  bzz draws in a pane and runs only after you approve its exact bytes. Its
+  records are the channel's, shared by its people and their agents.
 - **Real media.** Images, avatars and custom emoji render inline in Kitty,
   Sixel and iTerm2 terminals, with a Unicode fallback everywhere else.
   Huddles have real audio.
@@ -173,6 +181,29 @@ installed (`--harness grok`; Codex and Claude Code are experimental). They
 are your real shell at work, and [the guide](docs/agents.md) says what each
 can reach.
 
+### An app beside the conversation
+
+An app is a small Lua script for a channel that bzz draws in a pane at the
+right. Nothing of it runs until you approve its exact bytes (your own
+folder under `bzz app dev` is the one exception), and it reaches no file,
+network, process or key: only its pane, your keys while it has them, and
+the records of its channel.
+
+```sh
+bzz app new tasks                   # ./tasks, from the Board (also: poll, approvals)
+bzz app try tasks n "type:Buy milk" enter   # the screen it draws, as text
+bzz app add tasks                   # shows it, then asks you to approve it
+```
+
+In bzz, select a channel and type `:app open tasks`. `5` gives the app the
+keyboard, and `Ctrl-c` gives it back. Mention your agent and ask it for a
+change; its version waits for you at the top of the screen (`Ctrl-y` to
+read it, `a` to approve) and the app changes in place, keeping its state.
+`:app share` offers the app to the channel: another bzz there shows the
+offer and runs it after that person approves it. People on Buzz desktop
+see none of this but the brief, which bzz posts as a message
+([guide](docs/apps.md#buzz-desktop)).
+
 ## Keys
 
 Press `?` in bzz for the complete, current list.
@@ -192,7 +223,8 @@ Press `?` in bzz for the complete, current list.
 | `Space o` | Themes |
 | `y` · `v` | Copy a message · select a range to copy |
 | `Ctrl-o` · `Ctrl-v` (writing) | Attach a file · paste a file, image or text |
-| `Ctrl-y` | Read and answer a command one of your agents asks to run |
+| `5` · `Space 5` | Give the app the keyboard · zoom it (`Ctrl-c` gives the keyboard back) |
+| `Ctrl-y` | Read and answer a command an agent asks to run, or a version of an app |
 | `:` | Commands (below) |
 | `q` | Back, then quit |
 
@@ -211,7 +243,11 @@ another, `Tab` shows the agents other people run.
 | `:inbox` · `:search` | Inbox · search |
 | `:agents` · `:agents directory` | Your agents: state, turns, pause, stop · the agents other people run |
 | `:agent new [name]` | Create an agent, in a form that asks what `bzz agent new` asks |
-| `:approvals` | The command an agent waits to run (also `Ctrl-y`) |
+| `:approvals` | The command an agent waits to run, or a version of an app (also `Ctrl-y`) |
+| `:apps` · `:app open <name>` · `:app close` · `:app zoom` | The installed apps · open one beside the channel · close it · zoom it |
+| `:app add <folder>` · `:app new <name>` · `:app dev <folder>` | Propose your folder · write one from a template · run your folder on the channel's records |
+| `:app pending\|approve\|refuse\|rollback\|enable\|disable\|remove <name>` | Answer and manage apps |
+| `:app share\|unshare\|brief [name]` | Offer the open app to the channel · withdraw it · post its brief |
 | `:huddle start\|join\|leave\|end\|mute` | Huddles with audio |
 | `:status <text>` · `:presence on\|off` | Your status · publish your presence (off by default) |
 | `:profile` | The selected author's profile and verified identity |
@@ -225,8 +261,10 @@ another, `Tab` shows the agents other people run.
 Outside the TUI, `bzz --help` lists everything: identities, communities,
 themes, media cache, your agents (`bzz agent`: `new`, `list`, `show`, `add`,
 `edit`, `pause`, `resume`, `delete`, `doctor`, `run`, `move`, `receive`,
-`launch-kit`, `shutdown`, `credential`), the broker for an agent process of
-your own (`bzz broker`), diagnostics and shell completions.
+`launch-kit`, `shutdown`, `credential`), apps (`bzz app`: `new`, `check`,
+`try`, `dev`, `add`, `pending`, `approve`, `refuse`, `list`, `show`,
+`rollback`, `enable`, `disable`, `remove`), the broker for an agent process
+of your own (`bzz broker`), diagnostics and shell completions.
 
 ## Privacy and security
 
@@ -242,6 +280,10 @@ your own (`bzz broker`), diagnostics and shell completions.
   agent. Its model and its tools see only the conversation they were woken
   in. A real command an agent wants to run waits for your yes, and you read
   the whole command first.
+- An app runs inside bzz only after you approve its exact bytes, by their
+  SHA-256, whoever wrote it: you, your agent or a person of the channel. Its
+  script has no file, network, process, environment or key to reach, a call
+  that runs too long is stopped, and its memory is capped.
 - Diagnostics are local, content-free and owner-only. Telemetry is off unless
   you configure it.
 - Workspace DMs are private relay channels, **not** end-to-end encrypted.
@@ -255,10 +297,16 @@ relay revision; the revision and every supported surface are listed in
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md). It runs on
 Linux, macOS (Intel and Apple Silicon) and Windows. Huddle audio on Windows
 is experimental. Agents need Node.js 22.19 or newer and were proven on Linux;
-on macOS and Windows no agent has been run in 0.15, only its tests in CI.
+on macOS and Windows no agent has been run, only its tests in CI. Apps need
+nothing installed; they were run on Linux, and on macOS and Windows only
+their tests run, in CI. On Windows a paste reaches an app (and the writing
+dock) as keys.
 
 ## Documentation
 
+- [Apps](docs/apps.md): write one, try it, install and approve it, the
+  pane, your agents writing and changing apps, sharing one in a channel;
+  the script contract is [`app-api.md`](docs/app-api.md)
 - [Your own agents](docs/agents.md): create one, what it can touch, real
   commands, private repositories, moving it, Grok, Codex and Claude Code
 - [Configuration](docs/configuration.md) · [Themes](docs/themes.md) ·
@@ -277,7 +325,8 @@ cargo fmt --check && cargo clippy --locked --all-targets --all-features -- -D wa
 cargo deny check && cargo audit
 ```
 
-`--no-default-features` builds without huddle audio. Debug builds use
+`--no-default-features` builds without huddle audio and without apps (the
+Lua interpreter). Debug builds use
 separate `bzz-dev` paths and keychain entries, so they never touch your real
 identity.
 
@@ -294,6 +343,13 @@ The agent host is a Node program in `agent-host/` with tests of its own
 
 ```sh
 cd agent-host && npm ci --ignore-scripts --omit=optional && npm test
+```
+
+The app runtime has a bench of its own, which drives the six fixture apps
+in a pseudo-terminal (Linux, Python 3.10 or newer):
+
+```sh
+./scripts/test-apps-bench.sh --release
 ```
 
 How changes are proven before release: [`.agents/skills/bzz-prove-it-works`](.agents/skills/bzz-prove-it-works/SKILL.md).

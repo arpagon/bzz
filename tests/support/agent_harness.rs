@@ -195,6 +195,9 @@ pub struct RecordedRelay {
     closed: std::sync::atomic::AtomicBool,
     /// While set, the relay's records of a channel cannot be read.
     unreadable: std::sync::atomic::AtomicBool,
+    /// The agent's records of apps, on a relay of their own (v0.16 M7).
+    #[cfg(feature = "apps")]
+    records: Mutex<Option<bzz::service::records::RecordsService>>,
 }
 
 impl RecordedRelay {
@@ -209,7 +212,16 @@ impl RecordedRelay {
             release: tokio::sync::Notify::new(),
             closed: std::sync::atomic::AtomicBool::new(false),
             unreadable: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "apps")]
+            records: Mutex::default(),
         })
+    }
+
+    /// Gives the agent a records service of apps: one on the agent's own
+    /// key and on a relay that speaks the artifact protocol.
+    #[cfg(feature = "apps")]
+    pub fn set_records(&self, records: bzz::service::records::RecordsService) {
+        *self.records.lock().unwrap() = Some(records);
     }
 
     /// Whether a bzz closed the agent's connection: it will not run the
@@ -385,5 +397,10 @@ impl AgentRelay for RecordedRelay {
     async fn close(&self) {
         self.closed
             .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(feature = "apps")]
+    fn records(&self) -> Option<bzz::service::records::RecordsService> {
+        self.records.lock().unwrap().clone()
     }
 }

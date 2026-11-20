@@ -19,6 +19,11 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
+mod manage;
+mod pane;
+#[cfg(feature = "apps")]
+mod share;
+
 use crate::clock::WallClock as _;
 use crate::{
     agents::typing::{AgentTypingState, TypingScope},
@@ -103,6 +108,9 @@ struct Runtime {
     /// The community's NIP-FA adapter origin, when configured.
     identity_adapter: Option<url::Url>,
     data_dir: std::path::PathBuf,
+    /// The records of the community's apps (v0.16).
+    #[cfg(feature = "apps")]
+    records: crate::service::records::RecordsService,
 }
 
 impl Runtime {
@@ -195,6 +203,13 @@ impl Runtime {
                 supervisor.clone(),
             ),
             media,
+            #[cfg(feature = "apps")]
+            records: crate::service::records::RecordsService::new(
+                community.id,
+                http.clone(),
+                store.clone(),
+                crate::service::records::Writer::new(signer.clone(), supervisor.clone()),
+            ),
             read_state: ReadStateService::new(community.id, signer, store, supervisor),
             evidence,
             identity_adapter,
@@ -306,6 +321,13 @@ enum AttachmentBackground {
 #[derive(Debug)]
 enum Background {
     Changed,
+    /// An app's session has something for the loop (v0.16). One at a time:
+    /// the session's waker sends no other until this one is taken.
+    #[cfg_attr(not(feature = "apps"), allow(dead_code))]
+    AppWake,
+    /// What came of the offers of apps in the channel shown (v0.16 M6).
+    #[cfg(feature = "apps")]
+    AppOffers(crate::service::offers::OfferNews),
     /// A federated sign-in finished; evidence is installed, reconnect now.
     FederatedReady,
     /// A fixed status notice (federated identity, reports, send to channel).
@@ -601,6 +623,11 @@ pub struct App {
     render_generation: u64,
     last_hit_map: Option<HitMap>,
     last_primary_click: Option<(HitTarget, Instant)>,
+    /// The apps open in the community's channels, and their pane (v0.16).
+    apps: pane::AppPanes,
+    /// The last layout drew the open thread. A reply goes into a thread
+    /// only while it is drawn.
+    thread_drawn: bool,
 }
 
 const LEADER_TIMEOUT: Duration = Duration::from_millis(750);
@@ -611,6 +638,9 @@ const AGENT_SPINNER_INTERVAL: Duration = Duration::from_millis(200);
 const RELAY_EVENT_DEDUP_CAPACITY: usize = 16_384;
 const AGENT_TYPING_SUBSCRIPTION: &str = "agent-typing-selected";
 const ARTIFACT_SYNC_SUBSCRIPTION: &str = "artifact-sync-selected";
+/// The panel's note when the channel holds more live artifacts, of all
+/// types together, than the relay returns in one sync.
+const ARTIFACT_SYNC_OVERFLOW_NOTE: &str = "too many artifacts here to sync · list may be stale";
 const HUDDLE_LIFECYCLE_SUBSCRIPTION: &str = "huddle-lifecycle-selected";
 const HUDDLE_BACKING_SUBSCRIPTION: &str = "huddle-backing-selected";
 
@@ -674,6 +704,10 @@ struct ArtifactSync {
     retry_at: Option<Instant>,
     /// `restricted`: this reader cannot read the channel's artifacts.
     blocked: bool,
+    /// `error: sync set exceeds max_events`: the channel holds more live
+    /// artifacts than one sync returns. Asking again gives the same answer
+    /// and downloads the relay's whole bound each time, so bzz does not.
+    overflowed: bool,
 }
 
 impl ArtifactSync {
@@ -686,7 +720,17 @@ impl ArtifactSync {
             failures: 0,
             retry_at: None,
             blocked: false,
+            overflowed: false,
         }
+    }
+
+    /// The relay cannot give this channel's set in one sync. The last
+    /// complete set stays; nothing is scheduled.
+    fn overflow(&mut self) {
+        self.buffer.clear();
+        self.complete = false;
+        self.retry_at = None;
+        self.overflowed = true;
     }
 
     /// Exponential backoff with jitter before the next sync attempt.
@@ -1062,6 +1106,8 @@ impl App {
             render_generation: 0,
             last_hit_map: None,
             last_primary_click: None,
+            apps: pane::AppPanes::default(),
+            thread_drawn: false,
         };
         app.sync_workspace_viewports();
         app.hydrate_cache().await?;
@@ -1110,12 +1156,22 @@ impl App {
                 },
                 _=frame_tick.tick()=>{
                     if redraw.take() {
+                        // What the apps produced is taken before the frame
+                        // that shows them.
+                        self.poll_apps();
                         terminal
                             .draw(|frame| self.render(frame))
                             .map_err(|error| Error::io("terminal", error))?;
                     }
                 },
                 background=self.background_rx.recv()=>if let Some(event)=background{match event{
+                    Background::AppWake=>{
+                        self.app_woken();
+                        redraw.request_if(self.poll_apps());
+                        continue;
+                    },
+                    #[cfg(feature = "apps")]
+                    Background::AppOffers(news)=>self.offer_news(news),
                     Background::Changed | Background::DraftAcknowledged=>{
                         self.cache_dirty=true;
                         if matches!(event, Background::DraftAcknowledged) {
@@ -1349,7 +1405,11 @@ impl App {
                     }
                     redraw.request();
                 },
-                _=tick.tick()=>redraw.request_if(self.on_tick().await?),
+                _=tick.tick()=>{
+                    let changed=self.on_tick().await?;
+                    let apps=self.tick_apps().await?;
+                    redraw.request_if(changed || apps);
+                },
                 network=next_network(&mut self.runtime)=>{
                     if let Some(event)=network {
                         let visible_changed = self.handle_network(event).await?;
@@ -1371,6 +1431,7 @@ impl App {
         {
             task.abort();
         }
+        self.close_all_apps();
         self.shutdown().await;
         guard.restore();
         self.diagnostics.emit(DiagnosticEvent::ClientStopped {
@@ -2451,7 +2512,10 @@ impl App {
                 let community = runtime.community_id;
                 // Sync may resend a known head (resync, reconnect); it must
                 // reach the buffer, so artifacts bypass the relay dedupe.
+                // What arrives on an app's records subscription is the
+                // records service's, whatever its kind.
                 if subscription == ARTIFACT_SYNC_SUBSCRIPTION
+                    || crate::protocol::artifact::is_apps_subscription(&subscription)
                     || matches!(event.kind.as_u16(), 45_010 | 45_011)
                 {
                     return self.apply_artifact_sync_event(&subscription, &event).await;
@@ -2618,16 +2682,25 @@ impl App {
             }) => {
                 if subscription == ARTIFACT_SYNC_SUBSCRIPTION {
                     if let Some(sync) = &mut self.artifact_sync {
+                        use crate::realtime::admission::{ClosedReason, closed_reason};
                         // The last complete set stays; it is possibly stale.
-                        if message.starts_with("restricted:") {
-                            sync.blocked = true;
-                            sync.buffer.clear();
-                        } else {
-                            sync.schedule_retry();
+                        match closed_reason(&message) {
+                            ClosedReason::Restricted => {
+                                sync.blocked = true;
+                                sync.buffer.clear();
+                            }
+                            ClosedReason::SyncOverflow => sync.overflow(),
+                            ClosedReason::Resync | ClosedReason::Other => sync.schedule_retry(),
                         }
                     }
                     self.refresh_artifact_panel().await?;
                     return Ok(true);
+                }
+                // The state of an app's records is its pane's to show, and
+                // that of the offers of apps the offers service's: not the
+                // status line's.
+                if crate::protocol::artifact::is_apps_subscription(&subscription) {
+                    return Ok(false);
                 }
                 if subscription == AGENT_TYPING_SUBSCRIPTION {
                     self.closed_typing_channel = self.typing_subscription_channel.take();
@@ -2905,38 +2978,7 @@ impl App {
                 } else {
                     3
                 };
-                match target {
-                    HitTarget::Community(_) => {
-                        self.presentation
-                            .set_workspace_focus(FocusSurface::Communities);
-                        self.scroll_focused_viewport(ViewportScroll::Lines(delta));
-                    }
-                    HitTarget::ChannelPane | HitTarget::Channel(_) => {
-                        self.presentation
-                            .set_workspace_focus(FocusSurface::Channels);
-                        self.scroll_focused_viewport(ViewportScroll::Lines(delta));
-                    }
-                    HitTarget::Timeline | HitTarget::TimelineMessage(_) => {
-                        self.presentation
-                            .set_workspace_focus(FocusSurface::Timeline);
-                        self.scroll_focused_viewport(ViewportScroll::Lines(delta));
-                    }
-                    HitTarget::Thread | HitTarget::ThreadMessage(_) => {
-                        self.presentation.set_workspace_focus(FocusSurface::Context);
-                        self.scroll_focused_viewport(ViewportScroll::Lines(delta));
-                    }
-                    HitTarget::InboxList | HitTarget::InboxItem(_)
-                        if self.presentation.route == Route::Inbox =>
-                    {
-                        self.presentation.set_inbox_focus(false);
-                        self.inbox_state.scroll_list(delta, &self.inbox_items);
-                    }
-                    HitTarget::InboxDetail if self.presentation.route == Route::Inbox => {
-                        self.presentation.set_inbox_focus(true);
-                        self.inbox_state.scroll_detail(delta, &self.inbox_messages);
-                    }
-                    _ => {}
-                }
+                self.wheel_over(target, delta);
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.activate_mouse_target(target, mouse, guard, terminal)
@@ -2945,6 +2987,49 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    /// The wheel scrolls the pane under it. With an app focused, the app
+    /// keeps the keyboard; an app has no mouse, so the wheel over its pane
+    /// does nothing.
+    fn wheel_over(&mut self, target: HitTarget, delta: isize) {
+        let app_focused = self.app_has_focus();
+        match target {
+            HitTarget::App => {}
+            HitTarget::Community(_) => {
+                self.presentation
+                    .set_workspace_focus(FocusSurface::Communities);
+                self.scroll_focused_viewport(ViewportScroll::Lines(delta));
+            }
+            HitTarget::ChannelPane | HitTarget::Channel(_) => {
+                self.presentation
+                    .set_workspace_focus(FocusSurface::Channels);
+                self.scroll_focused_viewport(ViewportScroll::Lines(delta));
+            }
+            HitTarget::Timeline | HitTarget::TimelineMessage(_) => {
+                self.presentation
+                    .set_workspace_focus(FocusSurface::Timeline);
+                self.scroll_focused_viewport(ViewportScroll::Lines(delta));
+            }
+            HitTarget::Thread | HitTarget::ThreadMessage(_) => {
+                self.presentation.set_workspace_focus(FocusSurface::Context);
+                self.scroll_focused_viewport(ViewportScroll::Lines(delta));
+            }
+            HitTarget::InboxList | HitTarget::InboxItem(_)
+                if self.presentation.route == Route::Inbox =>
+            {
+                self.presentation.set_inbox_focus(false);
+                self.inbox_state.scroll_list(delta, &self.inbox_items);
+            }
+            HitTarget::InboxDetail if self.presentation.route == Route::Inbox => {
+                self.presentation.set_inbox_focus(true);
+                self.inbox_state.scroll_detail(delta, &self.inbox_messages);
+            }
+            _ => {}
+        }
+        if app_focused {
+            self.presentation.set_workspace_focus(FocusSurface::App);
+        }
     }
 
     async fn activate_mouse_target(
@@ -3012,6 +3097,14 @@ impl App {
                     && self.presentation.composer_target.is_none() =>
             {
                 self.presentation.set_workspace_focus(FocusSurface::Context)
+            }
+            // A click on the app's pane gives it the focus, and the app is
+            // told nothing.
+            HitTarget::App
+                if self.presentation.overlay.is_none()
+                    && self.presentation.composer_target.is_none() =>
+            {
+                self.focus_app();
             }
             HitTarget::ThreadMessage(event_id)
                 if self.presentation.overlay.is_none()
@@ -3168,24 +3261,37 @@ impl App {
         Ok(())
     }
 
+    /// A bracketed paste: always one piece of text, never keys
+    /// (`ui::app_pane::paste_target`).
     async fn handle_terminal_paste(&mut self, text: String) -> Result<()> {
-        // The form of `:agent new` takes a paste into the answer in focus.
-        if self.presentation.overlay == Some(Overlay::AgentNew) {
-            if let (Ok(text), Some(form)) = (sanitize_pasted_text(&text), &mut self.agent_form) {
-                form.insert(&text);
+        match self.paste_target() {
+            // The form of `:agent new` takes a paste into the answer in focus.
+            crate::ui::app_pane::PasteTarget::AgentForm => {
+                if let (Ok(text), Some(form)) = (sanitize_pasted_text(&text), &mut self.agent_form)
+                {
+                    form.insert(&text);
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
-        // A paste never answers a question: it only adds to the reason of a
-        // refusal that is being written.
-        if self.presentation.overlay == Some(Overlay::Approval) {
-            if let Ok(text) = sanitize_pasted_text(&text) {
-                self.approval.type_reason(&text);
+            // A paste never answers a question: it only adds to the reason
+            // of a refusal that is being written.
+            crate::ui::app_pane::PasteTarget::ApprovalReason => {
+                if let Ok(text) = sanitize_pasted_text(&text) {
+                    if self.presentation.overlay == Some(Overlay::AppApproval) {
+                        #[cfg(feature = "apps")]
+                        self.apps.review.type_reason(&text);
+                    } else {
+                        self.approval.type_reason(&text);
+                    }
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
-        if self.presentation.overlay.is_some() || self.presentation.composer_target.is_none() {
-            return Ok(());
+            crate::ui::app_pane::PasteTarget::App => {
+                self.paste_to_app(&text);
+                return Ok(());
+            }
+            crate::ui::app_pane::PasteTarget::Dropped => return Ok(()),
+            crate::ui::app_pane::PasteTarget::Composer => {}
         }
         match sanitize_pasted_text(&text) {
             Ok(text) if text.is_empty() => {}
@@ -3207,6 +3313,16 @@ impl App {
         terminal: &mut Tui,
     ) -> Result<()> {
         if self.global_key(key) {
+            return Ok(());
+        }
+        // Ctrl+Y when what waits is a version of an app (v0.16 M4).
+        if self.app_review_key(key).await? {
+            return Ok(());
+        }
+        // While the app has the focus every key is its own but Ctrl+C,
+        // which leaves it. An overlay and the writing dock come first
+        // (`ui::app_pane::key_owner`).
+        if self.app_key(key) {
             return Ok(());
         }
         match self.presentation.overlay {
@@ -3396,9 +3512,11 @@ impl App {
             Some(Overlay::LocalAgents) => self.local_agents_key(key).await?,
             Some(Overlay::AgentNew) => self.agent_form_key(key).await?,
             Some(Overlay::Approval) => self.approval_key(key),
+            Some(Overlay::AppApproval) => self.app_review_answer_key(key).await?,
             Some(Overlay::Artifacts) => self.artifact_panel_key(key).await?,
             Some(Overlay::Huddle) => self.huddle_key(key).await?,
             Some(Overlay::Profile) => self.profile_key(key),
+            Some(Overlay::Apps) => self.apps_panel_key(key).await?,
             Some(Overlay::Broker) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
                 // The owner's one-key pause for every hosted agent.
@@ -3743,7 +3861,12 @@ impl App {
             self.community_rail,
             self.sidebar,
             self.thread_root.is_some(),
-        );
+        )
+        .with_app(self.shown_app().is_some() && self.apps.placement.is_drawn());
+        if matches!(action, UiAction::FocusContext | UiAction::ToggleContext) {
+            // The thread was asked for last: it takes the right side.
+            self.apps.front = false;
+        }
         let effect = reduce_workspace(&mut state, action);
         self.presentation = state.presentation;
         self.community_cursor = state.community_cursor;
@@ -3847,6 +3970,8 @@ impl App {
                     self.mark_unread().await?;
                 }
             }
+            WorkspaceEffect::FocusApp => self.focus_app(),
+            WorkspaceEffect::ZoomApp => self.zoom_app(),
             WorkspaceEffect::OpenProfile => {
                 match self
                     .selected_message()
@@ -3904,7 +4029,7 @@ impl App {
                     }
                 }
             }
-            FocusSurface::InboxList | FocusSurface::InboxDetail => {}
+            FocusSurface::InboxList | FocusSurface::InboxDetail | FocusSurface::App => {}
         }
     }
 
@@ -4061,7 +4186,7 @@ impl App {
                     self.spawn_thread_window(root, Some(next));
                 }
             }
-            FocusSurface::InboxList | FocusSurface::InboxDetail => {}
+            FocusSurface::InboxList | FocusSurface::InboxDetail | FocusSurface::App => {}
         }
     }
 
@@ -4897,6 +5022,7 @@ impl App {
         }
         if let Some(sync) = &mut self.artifact_sync
             && !sync.blocked
+            && !sync.overflowed
             && sync.retry_at.is_some_and(|at| Instant::now() >= at)
         {
             sync.retry_at = None;
@@ -5000,6 +5126,8 @@ impl App {
         Some(
             if sync.blocked {
                 "artifacts unavailable here"
+            } else if sync.overflowed {
+                ARTIFACT_SYNC_OVERFLOW_NOTE
             } else if sync.complete {
                 "synced"
             } else if sync.retry_at.is_some() {
@@ -5535,7 +5663,7 @@ impl App {
                 self.thread_timeline.at_live_bottom = last;
                 self.thread_timeline.keep_selection_visible = true;
             }
-            FocusSurface::InboxList | FocusSurface::InboxDetail => {}
+            FocusSurface::InboxList | FocusSurface::InboxDetail | FocusSurface::App => {}
         }
     }
 
@@ -5548,7 +5676,7 @@ impl App {
                     .set_workspace_focus(FocusSurface::Timeline);
             }
             FocusSurface::Timeline | FocusSurface::Context => self.toggle_thread().await?,
-            FocusSurface::InboxList | FocusSurface::InboxDetail => {}
+            FocusSurface::InboxList | FocusSurface::InboxDetail | FocusSurface::App => {}
         }
         Ok(())
     }
@@ -5592,6 +5720,8 @@ impl App {
             self.thread_root = Some(root.clone());
             self.thread_window = None;
             self.spawn_thread_window(root, None);
+            // The thread was asked for last: it takes the right side.
+            self.apps.front = false;
             self.presentation.set_workspace_focus(FocusSurface::Context);
             self.cache_dirty = true;
             self.hydrate_cache().await?;
@@ -5605,7 +5735,7 @@ impl App {
         let Some(channel) = self.current_channel().map(|channel| channel.id) else {
             return Ok(());
         };
-        let root = self.thread_root.clone();
+        let root = self.reply_root();
         let parent = self
             .selected_message()
             .map(|message| message.event_id.clone())
@@ -9333,6 +9463,8 @@ impl App {
                 }
                 // No audio runs while bzz is locked.
                 self.stop_huddle_call().await;
+                // Nor any app: its records need the relay.
+                self.close_all_apps();
                 if let Some(runtime) = self.runtime.take() {
                     if self.config.ui.publish_presence
                         && self.last_presence_publish.take().is_some()
@@ -9496,6 +9628,12 @@ impl App {
             }
             crate::ui::command::Command::Approvals => {
                 self.presentation.close_overlay();
+                self.refresh_approvals();
+                // An agent's command first: it is refused when its time is
+                // up. Then the versions of apps.
+                if self.approvals.is_empty() && !self.apps.waiting.is_empty() {
+                    return self.open_app_review(None).await;
+                }
                 self.open_approval();
             }
             crate::ui::command::Command::DmHide => self.hide_current_dm(),
@@ -9514,6 +9652,10 @@ impl App {
                     self.channels.clear();
                     self.messages.clear()
                 }
+            }
+            crate::ui::command::Command::Apps => return self.open_apps_panel().await,
+            crate::ui::command::Command::App(arguments) => {
+                return self.app_command(&arguments).await;
             }
             crate::ui::command::Command::Unknown(value) => {
                 self.status_error = Some(format!("unknown command: {value}"))
@@ -9564,6 +9706,7 @@ impl App {
         }
         match built {
             Ok(runtime) => {
+                self.close_all_apps();
                 if let Some(old) = self.runtime.take() {
                     old.supervisor.shutdown().await;
                     if old.identity_id != runtime.identity_id {
@@ -9608,11 +9751,13 @@ impl App {
             Err(error) => {
                 let recovery = identity_recovery_connection(&error);
                 if let Some(connection) = recovery {
+                    let target_identity = target.identity_id;
+                    self.close_all_apps();
                     if let Some(old) = self.runtime.take() {
                         old.supervisor.shutdown().await;
                         old.signer.lock().await;
                     }
-                    self.media.select_cached(target_id, target.identity_id);
+                    self.media.select_cached(target_id, target_identity);
                     self.selected_community = index;
                     self.select_community_index(index);
                     self.config.default_community = Some(target_id);
@@ -9871,6 +10016,23 @@ impl App {
                 seconds_left(first),
             );
             crate::ui::approval::render_banner(frame, area, &text, &self.theme);
+        } else if let Some(first) = self.apps.waiting.first()
+            && !matches!(
+                self.presentation.overlay,
+                Some(Overlay::Approval | Overlay::AppApproval)
+            )
+            && area.width >= 50
+            && area.height >= 12
+        {
+            // A version of an app waits: said in the same place, the same
+            // way, after an agent's command.
+            #[cfg(feature = "apps")]
+            {
+                let text = crate::ui::app_approval::banner_text(first, self.apps.waiting.len());
+                crate::ui::approval::render_banner(frame, area, &text, &self.theme);
+            }
+            #[cfg(not(feature = "apps"))]
+            let _ = first;
         }
     }
 
@@ -9879,8 +10041,14 @@ impl App {
         let mut hit_map = HitMap::new(self.render_generation);
         let area = frame.area();
         if area.width < 50 || area.height < 12 {
+            // While an app has the focus `q` is the app's.
+            let way_out = if self.app_has_focus() {
+                "Resize the terminal; Ctrl-c leaves the app"
+            } else {
+                "Resize the terminal or press q to quit"
+            };
             frame.render_widget(
-                Paragraph::new("bzz needs at least 50×12\nResize the terminal or press q to quit")
+                Paragraph::new(format!("bzz needs at least 50×12\n{way_out}"))
                     .style(self.theme.style(HighlightGroup::Normal))
                     .alignment(Alignment::Center)
                     .block(
@@ -9907,7 +10075,12 @@ impl App {
             self.last_hit_map = Some(hit_map);
             return;
         }
-        let panes = layout::panes_with_composer(
+        // The focus is on a pane that is drawn: an app that is no longer
+        // open here (another channel was selected) gives it back first.
+        if self.presentation.focus == FocusSurface::App && self.shown_app().is_none() {
+            self.leave_app();
+        }
+        let panes = layout::panes_with_app(
             area,
             self.community_rail,
             self.sidebar,
@@ -9915,13 +10088,27 @@ impl App {
             self.config.ui.sidebar_width,
             self.config.ui.thread_width,
             self.composer_dock_height(),
+            self.app_request(),
         );
+        self.apps.placement = panes.app_placement;
+        self.thread_drawn = panes.thread.is_some();
         if (self.presentation.focus == FocusSurface::Communities && panes.community.is_none())
             || (self.presentation.focus == FocusSurface::Channels && panes.sidebar.is_none())
             || (self.presentation.focus == FocusSurface::Context && panes.thread.is_none())
+            || (self.presentation.focus == FocusSurface::App && panes.app.is_none())
         {
             self.presentation
                 .set_workspace_focus(FocusSurface::Timeline);
+        }
+        if panes.app_placement == layout::AppPlacement::Zoomed {
+            // Zoom: the app and the status line, and the overlays over them.
+            if let Some(app) = panes.app {
+                self.render_app_pane(frame, app, true, &mut hit_map);
+            }
+            self.render_status(frame, panes.status);
+            self.render_overlay(frame, area, &mut hit_map);
+            self.last_hit_map = Some(hit_map);
+            return;
         }
         if let Some(rail) = panes.community {
             let ids = self.community_ids();
@@ -10108,6 +10295,9 @@ impl App {
                 hit_map.push(hit.area, HitTarget::ThreadMessage(hit.event_id));
             }
         }
+        if let Some(app) = panes.app {
+            self.render_app_pane(frame, app, false, &mut hit_map);
+        }
         if let Some(composer) = panes.composer {
             self.render_composer_dock(frame, composer, &mut hit_map);
         }
@@ -10284,7 +10474,13 @@ impl App {
             .current_channel()
             .map(|channel| sanitize::single_line(&channel.name))
             .unwrap_or_else(|| "conversation".into());
-        let target = if self.thread_root.is_some() {
+        // An open composer says where it sends; a closed one says where it
+        // would: into the thread only while the thread is drawn.
+        let into_thread = match &self.presentation.composer_target {
+            Some(target) => target.thread_root_id.is_some(),
+            None => self.thread_root.is_some() && self.thread_drawn,
+        };
+        let target = if into_thread {
             format!("reply in #{channel}")
         } else {
             format!("message #{channel}")
@@ -10455,11 +10651,12 @@ impl App {
             Some(Overlay::DmPicker) => "DM",
             Some(Overlay::Agents | Overlay::LocalAgents) => "AGENTS",
             Some(Overlay::AgentNew) => "NEW AGENT",
-            Some(Overlay::Approval) => "APPROVE",
+            Some(Overlay::Approval | Overlay::AppApproval) => "APPROVE",
             Some(Overlay::Artifacts) => "ARTIFACTS",
             Some(Overlay::Broker) => "BROKER",
             Some(Overlay::Profile) => "PROFILE",
             Some(Overlay::Huddle) => "HUDDLE",
+            Some(Overlay::Apps) => "APPS",
             Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) | None
                 if self.presentation.composer_target.is_some() =>
             {
@@ -10470,6 +10667,7 @@ impl App {
             {
                 "INBOX"
             }
+            None if self.app_has_focus() => "APP",
             Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) | None => "NORMAL",
         };
         let mode_group = match self.presentation.overlay {
@@ -10498,7 +10696,11 @@ impl App {
                 active.participants.len()
             )
         });
-        let activity = self.visible_agent_typing_line(area.width).or(huddle_line);
+        let activity = self
+            .app_status_line()
+            .or_else(|| self.visible_agent_typing_line(area.width))
+            .or(huddle_line);
+        let app_focused = self.app_has_focus() && self.presentation.overlay.is_none();
         crate::ui::status::render(
             frame,
             area,
@@ -10510,6 +10712,7 @@ impl App {
                 notice: &notice,
                 connection: crate::ui::status::connection_label(self.connection),
                 media: self.media.protocol_name(),
+                app_focused,
             },
         );
     }
@@ -10760,6 +10963,38 @@ impl App {
                     );
                 }
             }
+            Some(Overlay::Apps) => {
+                let lines = self.apps_panel_lines();
+                let height = u16::try_from(lines.len().saturating_add(2))
+                    .unwrap_or(u16::MAX)
+                    .min(area.height.saturating_sub(2))
+                    .max(4);
+                let popup = centered(area, 90, height);
+                frame.render_widget(Clear, popup);
+                let text = lines
+                    .into_iter()
+                    .map(|(line, selected)| {
+                        if selected {
+                            Line::styled(format!("› {line}"), self.theme.style(HighlightGroup::Selection))
+                        } else {
+                            Line::from(format!("  {line}"))
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                frame.render_widget(
+                    Paragraph::new(text)
+                        .style(self.theme.style(HighlightGroup::Normal))
+                        .wrap(Wrap { trim: false })
+                        .block(
+                            Block::bordered()
+                                .border_type(self.theme.border_type(BorderSurface::Modal))
+                                .border_style(self.theme.style(HighlightGroup::ModalBorder))
+                                .title_style(self.theme.style(HighlightGroup::ModalTitle))
+                                .title(" apps · Enter open here · Esc close "),
+                        ),
+                    popup,
+                );
+            }
             Some(Overlay::Huddle) => {
                 let popup = centered(area, 90, area.height.saturating_sub(2).min(30));
                 let view = self.huddle_panel_view();
@@ -10835,6 +11070,22 @@ impl App {
                     self.local_agents.is_some(),
                     &self.theme,
                 );
+            }
+            Some(Overlay::AppApproval) => {
+                let popup = centered(area, 100, area.height.saturating_sub(2).min(48));
+                #[cfg(feature = "apps")]
+                {
+                    let others = self.apps.waiting.len().saturating_sub(1);
+                    crate::ui::app_approval::render(
+                        frame,
+                        popup,
+                        &mut self.apps.review,
+                        others,
+                        &self.theme,
+                    );
+                }
+                #[cfg(not(feature = "apps"))]
+                let _ = popup;
             }
             Some(Overlay::Approval) => {
                 let popup = centered(area, 96, area.height.saturating_sub(2).min(40));
@@ -14594,6 +14845,60 @@ mod tests {
             2,
             "nothing dropped before the new cut"
         );
+
+        // More live artifacts in the channel than one sync returns: the
+        // relay ends every attempt with the same error. The held set stays,
+        // nothing is scheduled, and the panel says so in plain words.
+        app.artifact_sync = Some(super::ArtifactSync::new(community, channel));
+        app.artifact_sync.as_mut().unwrap().complete = true;
+        app.artifact_panel.scope = crate::ui::artifacts::ArtifactScope::Channel(channel);
+        app.presentation.open_overlay(Overlay::Artifacts);
+        app.handle_network(crate::realtime::supervisor::SupervisorEvent::Session(
+            crate::realtime::session::SessionEvent::Closed {
+                subscription: sync.into(),
+                message: crate::realtime::admission::CLOSED_SYNC_OVERFLOW.into(),
+            },
+        ))
+        .await
+        .unwrap();
+        let over = app.artifact_sync.as_ref().unwrap();
+        assert!(over.overflowed && !over.complete && !over.blocked);
+        assert!(over.retry_at.is_none(), "not asked again on a timer");
+        assert_eq!(stored(&app).await.len(), 2, "the last complete set stays");
+        assert_eq!(
+            app.artifact_panel.sync_note.as_deref(),
+            Some("too many artifacts here to sync · list may be stale")
+        );
+        assert_eq!(app.artifact_panel.items.len(), 2);
+        // A dropped connection does not turn it back into "syncing".
+        app.handle_network(crate::realtime::supervisor::SupervisorEvent::Session(
+            crate::realtime::session::SessionEvent::Disconnected("generated".into()),
+        ))
+        .await
+        .unwrap();
+        app.refresh_artifact_panel().await.unwrap();
+        assert_eq!(
+            app.artifact_panel.sync_note.as_deref(),
+            Some("too many artifacts here to sync · list may be stale")
+        );
+        app.presentation.close_overlay();
+
+        // The closing of an app's records subscription is its pane's to
+        // show: nothing reaches the status line.
+        app.status_error = None;
+        let changed = app
+            .handle_network(crate::realtime::supervisor::SupervisorEvent::Session(
+                crate::realtime::session::SessionEvent::Closed {
+                    subscription: format!(
+                        "{}0123456789abcdef01234567",
+                        crate::protocol::artifact::APP_RECORDS_SUBSCRIPTION_PREFIX
+                    ),
+                    message: crate::realtime::admission::CLOSED_RESYNC.into(),
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(!changed && app.status_error.is_none());
 
         // The panel shows the set; artifacts never become messages or unread.
         // A new cut holding only `live` replaces the set: `first` left it.

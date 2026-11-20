@@ -38,6 +38,15 @@ the turn).
 Copyright belongs to the Buzz contributors. See `LICENSE-APACHE` for the
 Apache License 2.0 text.
 
+## Lua
+
+With the `apps` feature (on by default) the bzz binary contains the Lua 5.4.9
+interpreter, compiled from the C source that the `lua-src` crate carries and
+bound through `mlua` (both MIT). Lua is Copyright © 1994–2026 Lua.org,
+PUC-Rio, and is distributed under the MIT license
+(<https://www.lua.org/license.html>). `lua-src` also carries the sources of
+other Lua versions, and `luajit-src` those of LuaJIT; bzz compiles neither.
+
 ## Agent host (Node)
 
 The Pi Durable agent host in `agent-host/` is not part of the bzz binary's

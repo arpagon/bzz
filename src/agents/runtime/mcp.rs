@@ -1,6 +1,7 @@
 //! `bzz agent-tools`: an MCP server over standard input and output with the
-//! tools `send`, `read` and `react` (`docs/agent-host-protocol.md`, section
-//! 6). A harness starts it because bzz listed it in `session/new`.
+//! tools `send`, `read` and `react`, and the tools of apps' records
+//! (`docs/agent-host-protocol.md`, section 6). A harness starts it because
+//! bzz listed it in `session/new`.
 //!
 //! It holds no key and decides nothing. Each call goes to bzz on the
 //! loopback address with the session's credential, both read from the
@@ -176,7 +177,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn it_lists_the_three_tools_and_passes_calls_on() {
+    async fn it_lists_every_tool_and_passes_calls_on() {
         let input = [
             json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "t"}}}),
             json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
@@ -226,7 +227,7 @@ mod tests {
                 .iter()
                 .map(|tool| tool["name"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            ["send", "read", "react"]
+            tools::names()
         );
         assert_eq!(
             answers[2]["result"],

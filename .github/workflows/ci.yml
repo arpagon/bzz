@@ -20,11 +20,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
+      # v0.16: `apps` is a feature on by default; a build without it has no
+      # interpreter and no C of Lua, and must still build, lint and pass.
+      - run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
       # `--all-targets` builds the examples as tests and leaves no
       # target/debug/examples/scripted_harness, which the tests of the agent
       # runtime start as a program.
       - run: cargo build --locked --example scripted_harness
       - run: cargo test --locked --all-targets
+      - run: cargo test --locked --no-default-features --lib
       - run: cargo install cargo-deny --version 0.20.2 --locked
       - run: cargo deny check
       - run: cargo install cargo-audit --version 0.22.2 --locked
@@ -58,8 +62,16 @@ jobs:
       - name: Smoke-test release binary
         shell: bash
         run: ${{ matrix.binary }} --version
-      - name: Test identity, backup, config, Inbox, DMs, search, and keymap on target OS
-        run: cargo test --locked --target ${{ matrix.target }} --lib --test auth_test --test config_test --test inbox_dm_search_test --test store_migration_test --test terminal_restore_test
+      # `--lib` holds the app runtime, the six apps' cases, the session, the
+      # store of apps and the pane (v0.16); the three `app_*` tests are the
+      # command line and the records on a scripted relay, with real sockets.
+      # The hosted macOS and Windows runners stop a script later than a
+      # developer's machine does (a debug build, a shared core): the stop
+      # tests get three seconds of margin here. The `test` job keeps theirs.
+      - name: Test identity, backup, config, Inbox, DMs, search, keymap and apps on target OS
+        env:
+          BZZ_APPS_STOP_MARGIN_MS: 3000
+        run: cargo test --locked --target ${{ matrix.target }} --lib --test auth_test --test config_test --test inbox_dm_search_test --test store_migration_test --test terminal_restore_test --test app_cli_test --test app_session_test --test app_records_test
       - name: Prepare temporary macOS keychain
         if: runner.os == 'macOS'
         shell: bash
@@ -84,11 +96,16 @@ jobs:
           ${{ matrix.binary }} identity verify "$identity_id"
           ${{ matrix.binary }} identity remove "$identity_id" --yes
   upgrade:
-    # Release acceptance: a real profile of the last release (v0.14.0) opened by this build.
+    # Release acceptance: a real profile of the last release (v0.15.0) opened
+    # by this build on three systems; the one before it (v0.14.0) on Linux.
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-15, windows-latest]
+        from: ['0150']
+        include:
+          - os: ubuntu-latest
+            from: '0140'
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.os == 'ubuntu-latest' && 'ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d' || null }}
     steps:
@@ -97,11 +114,26 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
-      - name: Open a v0.14.0 profile with this build
+      - name: Open a profile of v${{ matrix.from }} with this build
         shell: bash
+        env:
+          BZZ_UPGRADE_FROM_VERSION: ${{ matrix.from }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           ./scripts/upgrade-test.sh
+  apps-bench:
+    # v0.16: the app runtime judged with the six apps in a real terminal
+    # (scripts/test-apps-bench.sh): their cases at 80x24 and 40x16, reload,
+    # pushes and the hostile script. Linux only: it drives a pseudo-terminal
+    # and reads /proc. The same cases run on every system as `--lib` tests.
+    runs-on: ubuntu-latest
+    container: ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/test-apps-bench.sh --release
   audio:
     # T7: huddle audio through a virtual device (tests/huddle_device_loopback_test.rs).
     strategy:

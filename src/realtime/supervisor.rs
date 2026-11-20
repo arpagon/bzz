@@ -157,6 +157,15 @@ impl SupervisorHandle {
             .await
     }
 
+    /// A write an app asked for: sent after everything bzz sends for the
+    /// person, from a queue of its own. While the relay's quota gate is
+    /// closed, or that queue is full, it is not held: the answer is a
+    /// `rate-limited: retry in <n>s` network error (`admission::app_write_deferred`).
+    pub async fn publish_app(&self, event: Event) -> Result<Ack> {
+        self.publish_with_priority(event, PublishPriority::App)
+            .await
+    }
+
     async fn publish_with_priority(&self, event: Event, priority: PublishPriority) -> Result<Ack> {
         let (tx, rx) = oneshot::channel();
         self.commands
@@ -203,6 +212,8 @@ struct PublicationQueues {
     interactive: VecDeque<PendingPublication>,
     recovery: VecDeque<PendingPublication>,
     maintenance: VecDeque<PendingPublication>,
+    /// App writes. Not counted by `len`, so they cannot fill the person's queue.
+    app: VecDeque<PendingPublication>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -210,14 +221,21 @@ enum AdmissionLane {
     InteractivePublication,
     Subscription,
     DeferredPublication,
+    AppPublication,
     Idle,
 }
 
+/// What the next frame is. `publication_inflight` is a publication of the
+/// person awaiting its acknowledgement, `app_inflight` an app's write
+/// awaiting its own. An app's write waits for both; the person's waits only
+/// for the person's, so an app whose write the relay is slow to acknowledge
+/// holds nothing of the person's back.
 fn admission_lane(
     publication_inflight: bool,
     has_interactive: bool,
     next_subscription: Option<SubscriptionPriority>,
     has_deferred: bool,
+    app_ready: bool,
 ) -> AdmissionLane {
     if !publication_inflight && has_interactive {
         AdmissionLane::InteractivePublication
@@ -228,6 +246,8 @@ fn admission_lane(
         AdmissionLane::Subscription
     } else if !publication_inflight && has_deferred {
         AdmissionLane::DeferredPublication
+    } else if !publication_inflight && app_ready {
+        AdmissionLane::AppPublication
     } else if next_subscription.is_some() {
         AdmissionLane::Subscription
     } else {
@@ -253,6 +273,14 @@ impl PublicationQueues {
             PublishPriority::Interactive => self.interactive.push_back(publication),
             PublishPriority::Recovery => self.recovery.push_back(publication),
             PublishPriority::Maintenance => self.maintenance.push_back(publication),
+            PublishPriority::App => self.app.push_back(publication),
+        }
+    }
+
+    /// Answers every waiting app write with the wait, without sending it.
+    fn defer_app(&mut self, wait: Duration) {
+        while let Some(item) = self.app.pop_front() {
+            let _ = item.response.send(Err(admission::app_write_deferred(wait)));
         }
     }
 
@@ -267,7 +295,9 @@ impl PublicationQueues {
     }
 
     fn pop(&mut self) -> Option<PendingPublication> {
-        self.pop_interactive().or_else(|| self.pop_deferred())
+        self.pop_interactive()
+            .or_else(|| self.pop_deferred())
+            .or_else(|| self.app.pop_front())
     }
 
     fn reject_expired(&mut self, now: Instant) {
@@ -284,6 +314,17 @@ impl PublicationQueues {
                         "queue wait expired before wire send",
                     )));
                 }
+            }
+        }
+        // An app's write that bzz could not send in time is a wait for the
+        // app, as a closed quota gate is: its script decides what to do.
+        while self.app.front().is_some_and(|item| {
+            now.duration_since(item.queued_at) >= admission::PUBLICATION_QUEUE_TIMEOUT
+        }) {
+            if let Some(item) = self.app.pop_front() {
+                let _ = item
+                    .response
+                    .send(Err(admission::app_write_deferred(Duration::from_secs(1))));
             }
         }
     }
@@ -415,6 +456,7 @@ async fn run(
     let mut desired: BTreeMap<String, DesiredSubscription> = BTreeMap::new();
     let mut publications = PublicationQueues::default();
     let publish_inflight = Arc::new(AtomicBool::new(false));
+    let app_inflight = Arc::new(AtomicBool::new(false));
     let (publish_done_tx, mut publish_done_rx) = mpsc::channel::<PublishCompletion>(8);
     let mut rate_limit_deadline: Option<Instant> = None;
     let mut rate_limit_visible = false;
@@ -600,7 +642,14 @@ async fn run(
                                     entry.retry_at=Some(Instant::now()+wait);
                                 }
                             }
-                            terminal @ (ClosureDisposition::TerminalAccess | ClosureDisposition::TerminalProtocol) => {
+                            // A resync and an overflow are final for this
+                            // subscription too: its owner must know that the set
+                            // it holds stopped being kept current, and decides
+                            // when to ask again.
+                            terminal @ (ClosureDisposition::TerminalAccess
+                                | ClosureDisposition::TerminalProtocol
+                                | ClosureDisposition::Resync
+                                | ClosureDisposition::SyncOverflow) => {
                                 desired.remove(&subscription);
                                 let _=events.send(SupervisorEvent::Session(SessionEvent::Closed {
                                     subscription,
@@ -673,6 +722,23 @@ async fn run(
                             if handle.close(id).await.is_err(){break;}
                         }
                     }
+                    Some(Command::Publish{event,priority:PublishPriority::App,response})=>{
+                        let now=Instant::now();
+                        if let Some(wait)=rate_limit_deadline
+                            .map(|deadline|deadline.saturating_duration_since(now))
+                            .filter(|wait|!wait.is_zero())
+                        {
+                            let _=response.send(Err(admission::app_write_deferred(wait)));
+                        } else if publications.app.len()>=admission::MAX_PENDING_APP_PUBLICATIONS {
+                            let _=response.send(Err(admission::app_write_deferred(Duration::from_secs(1))));
+                        } else {
+                            publications.push(PublishPriority::App,PendingPublication {
+                                event,
+                                queued_at:now,
+                                response,
+                            });
+                        }
+                    }
                     Some(Command::Publish{event,priority,response})=>{
                         if publications.len()>=admission::MAX_PENDING_PUBLICATIONS {
                             let _=response.send(Err(admission::local_admission_error("queue is full before wire send")));
@@ -712,7 +778,8 @@ async fn run(
                             rate_limit_visible=false;
                         }
                     }
-                    if rate_limit_deadline.is_some() {
+                    if let Some(deadline)=rate_limit_deadline {
+                        publications.defer_app(deadline.saturating_duration_since(now));
                         continue;
                     }
                     let next_subscription=next_subscription(&desired,now);
@@ -725,16 +792,22 @@ async fn run(
                         publications.has_interactive(),
                         next_priority,
                         publications.has_deferred(),
+                        !publications.app.is_empty() && !app_inflight.load(Ordering::SeqCst),
                     );
                     let publication=match lane {
                         AdmissionLane::InteractivePublication=>publications.pop_interactive(),
                         AdmissionLane::DeferredPublication=>publications.pop_deferred(),
+                        AdmissionLane::AppPublication=>publications.app.pop_front(),
                         AdmissionLane::Subscription|AdmissionLane::Idle=>None,
                     };
                     if let Some(publication)=publication {
-                        publish_inflight.store(true,Ordering::SeqCst);
+                        let inflight=if lane==AdmissionLane::AppPublication {
+                            app_inflight.clone()
+                        } else {
+                            publish_inflight.clone()
+                        };
+                        inflight.store(true,Ordering::SeqCst);
                         let current=handle.clone();
-                        let inflight=publish_inflight.clone();
                         let done=publish_done_tx.clone();
                         tokio::spawn(async move {
                             let (result,rate_limit)=normalized_publish_result(
@@ -960,21 +1033,152 @@ mod tests {
     #[test]
     fn lane_priority_keeps_selected_and_baseline_ahead_of_maintenance() {
         assert_eq!(
-            admission_lane(false, true, Some(SubscriptionPriority::Foreground), true,),
+            admission_lane(
+                false,
+                true,
+                Some(SubscriptionPriority::Foreground),
+                true,
+                true
+            ),
             AdmissionLane::InteractivePublication
         );
         assert_eq!(
-            admission_lane(false, false, Some(SubscriptionPriority::Foreground), true,),
+            admission_lane(
+                false,
+                false,
+                Some(SubscriptionPriority::Foreground),
+                true,
+                true
+            ),
             AdmissionLane::Subscription
         );
         assert_eq!(
-            admission_lane(false, false, Some(SubscriptionPriority::Baseline), true,),
+            admission_lane(
+                false,
+                false,
+                Some(SubscriptionPriority::Baseline),
+                true,
+                true
+            ),
             AdmissionLane::Subscription
         );
         assert_eq!(
-            admission_lane(false, false, Some(SubscriptionPriority::Background), true,),
+            admission_lane(
+                false,
+                false,
+                Some(SubscriptionPriority::Background),
+                true,
+                true
+            ),
             AdmissionLane::DeferredPublication
         );
+    }
+
+    #[test]
+    fn an_app_write_goes_after_everything_of_the_person_and_holds_none_of_it_back() {
+        // With a message waiting, the message goes, whatever the app has.
+        assert_eq!(
+            admission_lane(false, true, None, false, true),
+            AdmissionLane::InteractivePublication
+        );
+        // Recovery and maintenance go before an app's write.
+        assert_eq!(
+            admission_lane(false, false, None, true, true),
+            AdmissionLane::DeferredPublication
+        );
+        // The selected channel's subscription goes before it; a background
+        // one after it.
+        assert_eq!(
+            admission_lane(
+                false,
+                false,
+                Some(SubscriptionPriority::Foreground),
+                false,
+                true
+            ),
+            AdmissionLane::Subscription
+        );
+        assert_eq!(
+            admission_lane(
+                false,
+                false,
+                Some(SubscriptionPriority::Background),
+                false,
+                true
+            ),
+            AdmissionLane::AppPublication
+        );
+        // An app's write waits for the person's unacknowledged publication.
+        assert_eq!(
+            admission_lane(true, false, None, false, true),
+            AdmissionLane::Idle
+        );
+        // `app_ready` is false while an app's write awaits its acknowledgement:
+        // the next app write waits, the person's message does not.
+        assert_eq!(
+            admission_lane(false, false, None, false, false),
+            AdmissionLane::Idle
+        );
+        assert_eq!(
+            admission_lane(false, true, None, false, false),
+            AdmissionLane::InteractivePublication
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn app_writes_have_their_own_queue_and_become_a_wait_instead_of_expiring() {
+        fn item() -> (PendingPublication, oneshot::Receiver<Result<Ack>>) {
+            let (response, result) = oneshot::channel();
+            (
+                PendingPublication {
+                    event: nostr::EventBuilder::text_note("generated")
+                        .sign_with_keys(&nostr::Keys::generate())
+                        .unwrap(),
+                    queued_at: Instant::now(),
+                    response,
+                },
+                result,
+            )
+        }
+        let wait_of = |result: &mut oneshot::Receiver<Result<Ack>>| match result.try_recv() {
+            Ok(Err(Error::Network(message))) => {
+                assert!(!admission::is_local_admission_error(&Error::Network(
+                    message.clone()
+                )));
+                admission::rate_limit_retry_after(&message).map(|wait| wait.as_secs())
+            }
+            other => panic!("{other:?}"),
+        };
+        let mut queues = PublicationQueues::default();
+        let mut results = Vec::new();
+        for _ in 0..admission::MAX_PENDING_APP_PUBLICATIONS {
+            let (publication, result) = item();
+            queues.push(PublishPriority::App, publication);
+            results.push(result);
+        }
+        // The person's queue is as empty as before.
+        assert_eq!(queues.len(), 0);
+        assert!(!queues.has_interactive() && !queues.has_deferred());
+        // A message queued behind them is the next one out.
+        let (message, _kept) = item();
+        queues.push(PublishPriority::Interactive, message);
+        assert_eq!(queues.len(), 1);
+        assert!(queues.pop_interactive().is_some());
+        // The quota gate closes for 40 s: every waiting app write is answered
+        // with that wait and none stays queued.
+        queues.defer_app(Duration::from_millis(39_500));
+        assert!(queues.app.is_empty());
+        for result in &mut results {
+            assert_eq!(wait_of(result), Some(40));
+        }
+        // A write that waited the whole queue timeout is a wait too, not a
+        // local error.
+        let (publication, mut result) = item();
+        queues.push(PublishPriority::App, publication);
+        tokio::time::advance(admission::PUBLICATION_QUEUE_TIMEOUT).await;
+        queues.reject_expired(Instant::now());
+        assert!(queues.app.is_empty());
+        assert_eq!(wait_of(&mut result), Some(1));
     }
 
     #[test]

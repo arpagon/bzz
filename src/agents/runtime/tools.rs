@@ -1,5 +1,6 @@
-//! The three tools bzz serves to a harness: `send`, `read` and `react`
-//! (`docs/agent-host-protocol.md`, section 5).
+//! The tools bzz serves to a harness: `send`, `read` and `react`
+//! (`docs/agent-host-protocol.md`, section 5), and with the feature `apps`
+//! the tools of [`super::app_tools`]: an app's records, and its script.
 //!
 //! Arguments are checked before anything else happens, and a wrong call is
 //! answered with what is wrong and what is right, because a model may guess
@@ -32,6 +33,48 @@ pub enum ToolCall {
         /// The event reacted to; the request when absent.
         event: Option<String>,
     },
+    /// A tool of the apps open in the conversation's channel (v0.16).
+    #[cfg(feature = "apps")]
+    App(super::app_tools::AppCall),
+}
+
+impl ToolCall {
+    /// Whether the call publishes something as the agent.
+    pub const fn publishes(&self) -> bool {
+        match self {
+            Self::Send { .. } | Self::React { .. } => true,
+            Self::Read { .. } => false,
+            #[cfg(feature = "apps")]
+            Self::App(call) => call.writes(),
+        }
+    }
+
+    /// Whether it is one of the messages and reactions a turn may post at
+    /// most `effects_per_turn` of. An app's record writes have a budget of
+    /// their own.
+    pub const fn is_chat_effect(&self) -> bool {
+        matches!(
+            self,
+            Self::Send {
+                is_final: false,
+                ..
+            } | Self::React { .. }
+        )
+    }
+}
+
+/// Every tool's name on the wire, in the order they are listed.
+pub fn names() -> Vec<&'static str> {
+    #[allow(unused_mut)]
+    let mut names = vec!["send", "read", "react"];
+    #[cfg(feature = "apps")]
+    names.extend(super::app_tools::NAMES);
+    names
+}
+
+/// Whether `name` is one of bzz's tools.
+pub fn is_name(name: &str) -> bool {
+    names().contains(&name)
 }
 
 /// What a tool call answers (`{"text": …, "final": true}` or
@@ -298,14 +341,36 @@ pub fn parse(name: &str, arguments: &Value) -> Result<ToolCall, String> {
         "send" => parse_send(arguments),
         "read" => parse_read(arguments),
         "react" => parse_react(arguments),
-        other => Err(format!(
-            "There is no tool `{other}`. The tools are `send`, `read` and `react`."
-        )),
+        other => {
+            #[cfg(feature = "apps")]
+            if let Some(parsed) = super::app_tools::parse(other, arguments) {
+                return parsed.map(ToolCall::App);
+            }
+            let names = names()
+                .iter()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>();
+            let (last, rest) = names.split_last().unwrap_or((&names[0], &[]));
+            Err(format!(
+                "There is no tool `{other}`. The tools are {} and {last}.",
+                rest.join(", ")
+            ))
+        }
     }
 }
 
 /// The tools as an MCP server lists them (`tools/list`).
 pub fn definitions() -> Value {
+    #[allow(unused_mut)]
+    let mut all = chat_definitions();
+    #[cfg(feature = "apps")]
+    if let Value::Array(tools) = &mut all {
+        tools.extend(super::app_tools::definitions());
+    }
+    all
+}
+
+fn chat_definitions() -> Value {
     json!([
         {
             "name": "send",
@@ -496,7 +561,17 @@ mod tests {
         );
         let unknown = parse("post", &json!({"text": "hi"})).unwrap_err();
         assert!(
-            unknown.contains("no tool `post`") && unknown.contains("`send`, `read` and `react`")
+            unknown.contains("no tool `post`") && unknown.contains("`send`, `read`"),
+            "{unknown}"
+        );
+        #[cfg(not(feature = "apps"))]
+        assert!(unknown.contains("`send`, `read` and `react`."), "{unknown}");
+        #[cfg(feature = "apps")]
+        assert!(
+            unknown.contains(
+                "`react`, `apps`, `records`, `create_record`, `update_record`, `delete_record`, `app_guide`, `try_app` and `propose_app`."
+            ),
+            "{unknown}"
         );
     }
 
@@ -521,6 +596,7 @@ mod tests {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(names, ["send", "read", "react"]);
+        assert_eq!(names, super::names());
+        assert_eq!(&names[..3], ["send", "read", "react"]);
     }
 }

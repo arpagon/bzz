@@ -388,3 +388,20 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   acknowledged is never removed.
 - **Cargo feature `huddles-audio`** (default on): microphone capture, playback
   and Opus. Builds with `--no-default-features` show huddles view-only.
+
+## v0.16.0: apps
+
+Apps have no setting in `config.toml`. What is installed, which version
+runs and where each app is open are in bzz's database; the files of each
+version are under `<data>/apps/<community id>/<name>/versions/`
+(`bzz paths` prints `<data>`), private to you. `bzz community remove <id>
+--purge` removes a community's apps with it. `5` (focus the app) and
+`Space 5` (zoom it) are in the keymap like any other key; `Ctrl-c`, which
+leaves an app, is not: no keymap can give it to a script.
+[`apps.md`](apps.md) is the guide.
+
+- **Cargo feature `apps`** (default on): the Lua interpreter and
+  everything of apps. A build with `--no-default-features` (or without
+  `apps`) has no interpreter and none of Lua's C, and no command or pane
+  of apps. Its database has the same schema: the migrations of apps are
+  not behind the feature.

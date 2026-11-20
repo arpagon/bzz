@@ -23,6 +23,26 @@ const ENVELOPE: [&str; 8] = ["ar", "d", "h", "type", "title", "op", "root", "pre
 const MAX_TITLE_BYTES: usize = 512;
 /// Conflict reconciliation attempts before the user is told.
 pub const MAX_RECONCILE: usize = 3;
+/// The prefix of every record type of an app, `bzz.app.<app>.<record>`
+/// (v0.16). The type `bzz.app` itself, a shared script, does not have it.
+pub const APP_RECORD_TYPE_PREFIX: &str = "bzz.app.";
+/// The type of an app offered in a channel: its script, manifest and brief
+/// (v0.16 M6). The artifact panel lists it, and says what it is.
+pub const APP_OFFER_TYPE: &str = "bzz.app";
+/// The prefix of the subscription of an app's records. bzz's own handling of
+/// relay messages leaves these to the records service.
+pub const APP_RECORDS_SUBSCRIPTION_PREFIX: &str = "apprec-";
+/// The prefix of the subscription of the apps offered in a channel (type
+/// `bzz.app`, v0.16 M6). bzz's own handling of relay messages leaves these
+/// to the offers service.
+pub const APP_OFFERS_SUBSCRIPTION_PREFIX: &str = "appoffer-";
+
+/// Whether a subscription is one the services of apps hold: an app's
+/// records, or the offers of apps in a channel.
+pub fn is_apps_subscription(subscription: &str) -> bool {
+    subscription.starts_with(APP_RECORDS_SUBSCRIPTION_PREFIX)
+        || subscription.starts_with(APP_OFFERS_SUBSCRIPTION_PREFIX)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Op {

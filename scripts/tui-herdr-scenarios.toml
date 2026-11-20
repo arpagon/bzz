@@ -437,9 +437,9 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t15-cli-version"
 kind = "harness"
-description = "v0.15 M0: the release binary says which version it is."
+description = "v0.15 M0: the release binary says which version it is (t16-cli-version checks the number of this release)."
 args = ["--version"]
-ready = "bzz 0.15.0"
+ready = "bzz 0."
 exit = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario.step]]
@@ -783,7 +783,7 @@ visible = "doing now:    bash: sleep 120; echo slept"
 
 [[scenario.step]]
 keys = []
-visible = "capability record: pi-durable (everything in v0.15.0)"
+visible = "capability record: pi-durable (everything in v"
 
 [[scenario.step]]
 keys = ["x"]
@@ -1068,7 +1068,7 @@ timeout = 90000
 
 [[scenario.step]]
 keys = []
-visible = "capability record: pi-durable (everything in v0.15.0)"
+visible = "capability record: pi-durable (everything in v"
 
 # Enter leaves the form for the agents panel: the new agent is running.
 [[scenario.step]]
@@ -1258,6 +1258,1139 @@ visible = "I am not available right now"
 keys = ["q"]
 visible = "NORMAL"
 absent = "q close"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.16 M3: the app pane. The Board is written from its template, added and
+# approved at the shell (`bzz app add`, `bzz app approve`), opened beside the
+# conversation in #t9-general, typed into with the composer beside it,
+# narrowed through 144, 100, 72 and 60 columns and back, shown beside a
+# thread, and left with the terminal restored. A second profile changes a
+# card and the first sees it; a script that keeps its thread busy sits in
+# the pane while the composer types.
+#
+# Fields only these scenarios use (scripts/test-tui-tmux.py and
+# scripts/test-tui-herdr.sh read them): `size = "WxH"` on a scenario or a
+# step sets the window's size; `paste = "text"` on a step is a bracketed
+# paste before its keys; `beside = "second"` runs the second profile's TUI
+# in a second pane, which steps with `pane = "second"` drive; `restored =
+# true` checks after the exit that the terminal was given back.
+
+[[scenario]]
+id = "t16-cli-version"
+kind = "harness"
+description = "v0.16 M0 and M8: the release binary says it is 0.16.0."
+args = ["--version"]
+ready = "bzz 0.16.0"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-cli-app-new"
+kind = "harness"
+description = "v0.16 M3: the Board is written from its template into the fixture's folder."
+args = ["app", "new", "board", "--to", "{fixture}/board-app"]
+ready = "from the template board"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-cli-app-add"
+kind = "harness"
+description = "v0.16 M3: bzz app add proposes the folder and shows it; answered no, it waits and nothing runs."
+args = ["app", "add", "{fixture}/board-app"]
+ready = "Approve these exact bytes as version 1 of board"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["n", "enter"]
+visible = "board: version 1 waits for your answer"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-cli-app-approve"
+kind = "harness"
+description = "v0.16 M3: bzz app approve shows the waiting version and approves its exact bytes."
+args = ["app", "approve", "board"]
+ready = "Approve these exact bytes as version 1 of board"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["y", "enter"]
+visible = "board: version 1 is approved and is the version that runs now"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-cli-app-add-second"
+kind = "harness"
+description = "v0.16 M3: the second profile installs and approves the same Board."
+args = ["app", "add", "{fixture}/board-app"]
+profile = "second"
+ready = "Approve these exact bytes as version 1 of board"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["y", "enter"]
+visible = "board: version 1 is approved and is the version that runs now"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-cli-app-add-looper"
+kind = "harness"
+description = "v0.16 M3: the looper, an app that keeps its thread busy, is added and approved."
+args = ["app", "add", "{fixture}/looper"]
+ready = "Approve these exact bytes as version 1 of looper"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["y", "enter"]
+visible = "looper: version 1 is approved and is the version that runs now"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-app-pane"
+kind = "harness"
+description = "v0.16 M3 exit gate: open the Board beside #t9-general; type in it and in the composer without one reaching the other (letters, digits, q, :, Esc, Tab, Enter, a paste of two lines); narrow the window through 144, 100, 72 and 60 columns and back; open a thread beside it; quit with the terminal restored."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x30"
+restored = true
+
+[[scenario.step]]
+keys = [":", "type:apps", "enter"]
+visible = "board (Board) · version 1 · open nowhere"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "NORMAL"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = [":", "type:app open board", "enter"]
+visible = "Board · Ctrl-c leave"
+
+[[scenario.step]]
+keys = []
+visible = "Loaded 0 cards."
+
+[[scenario.step]]
+keys = []
+visible = "Ctrl-c leaves the app"
+
+# Keys bzz uses itself are the app's: n opens the Board's form, and q, :,
+# digits, Tab and Space are text in it. Nothing of bzz opens.
+[[scenario.step]]
+keys = ["n"]
+visible = "New card"
+
+[[scenario.step]]
+keys = ["type:q:1 ?5 gg", "tab", "enter"]
+visible = "q:1 ?5 gg"
+absent = "quit bzz?"
+
+[[scenario.step]]
+keys = []
+visible = "To do (1)"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = " APP "
+absent = "INSERT"
+
+# A paste of two lines is one piece of text, into the app's open field.
+[[scenario.step]]
+keys = ["n"]
+visible = "New card"
+
+[[scenario.step]]
+paste = "pasted one\npasted two"
+keys = []
+visible = "Title: pasted one pasted two"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "To do (1)"
+absent = "New card"
+
+# Ctrl+C gives the keyboard back; the app sees none of what follows.
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "Board · 5 focus"
+
+[[scenario.step]]
+keys = []
+visible = " NORMAL "
+
+[[scenario.step]]
+keys = ["i"]
+visible = "message #t9-general · Enter send"
+
+[[scenario.step]]
+keys = ["type:typed in the composer q:1 n"]
+visible = "typed in the composer q:1 n"
+
+# Before v0.16 a pasted line break sent the first line and ran the rest as
+# bzz's keys. Now the composer keeps both lines and stays open.
+[[scenario.step]]
+paste = "first pasted line\nsecond pasted line"
+keys = []
+visible = "second pasted line"
+
+[[scenario.step]]
+keys = []
+visible = "INSERT"
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "clear draft?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "To do (1)"
+absent = "New card"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = " NORMAL "
+
+# Narrow the window through 144, 100, 72 and 60 columns, and back.
+[[scenario.step]]
+size = "144x30"
+keys = []
+visible = "communities"
+
+[[scenario.step]]
+keys = []
+visible = "Board · 5 focus"
+
+[[scenario.step]]
+size = "100x30"
+keys = []
+visible = "Board · 5 focus"
+absent = "communities"
+
+[[scenario.step]]
+size = "72x30"
+keys = []
+visible = "Board · 5 focus"
+
+[[scenario.step]]
+size = "60x30"
+keys = []
+visible = "app hidden · 5"
+
+[[scenario.step]]
+keys = ["5"]
+visible = "Board · zoomed · Ctrl-c leave"
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "app hidden · 5"
+
+[[scenario.step]]
+size = "120x30"
+keys = []
+visible = "Board · 5 focus"
+
+# A thread asked for last takes the right side under 144 columns, and the
+# composer replies into it; 5 brings the app back and the thread waits.
+[[scenario.step]]
+keys = ["3", "k", "enter"]
+visible = "context ·"
+
+[[scenario.step]]
+keys = []
+visible = "app behind thread · 5"
+
+[[scenario.step]]
+keys = ["5"]
+visible = "Board · Ctrl-c leave"
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "message #t9-general"
+
+[[scenario.step]]
+size = "160x40"
+keys = []
+visible = "context ·"
+
+[[scenario.step]]
+keys = []
+visible = "Board · 5 focus"
+
+[[scenario.step]]
+keys = []
+visible = "reply in #t9-general"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "message #t9-general"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-app-live-second-profile"
+kind = "harness"
+description = "v0.16 M3: the Board is open in #t9-general in two profiles at once; a card the second adds shows in the first one's pane."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x30"
+beside = "second"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Board · 5 focus"
+
+[[scenario.step]]
+keys = []
+visible = "q:1 ?5 gg"
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "online"
+timeout = 30000
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "#t9-general"
+timeout = 30000
+
+[[scenario.step]]
+pane = "second"
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+pane = "second"
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+pane = "second"
+keys = [":", "type:app open board", "enter"]
+visible = "q:1 ?5 gg"
+
+[[scenario.step]]
+pane = "second"
+keys = ["n", "type:from the second profile", "enter"]
+visible = "To do (2)"
+
+[[scenario.step]]
+keys = []
+visible = "from the second profile"
+
+[[scenario.step]]
+keys = []
+visible = "To do (2)"
+
+[[scenario.step]]
+pane = "second"
+keys = ["ctrl+c", "q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+pane = "second"
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-app-looper-composer"
+kind = "harness"
+description = "v0.16 M3: a script that keeps its thread busy is open in the pane; the composer still types a long line at once, and a key that loops forever is stopped with the error in the pane and the status line."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x30"
+restored = true
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Board · 5 focus"
+
+# Beside the Board, idle: a baseline.
+[[scenario.step]]
+keys = ["i", "type:baseline the quick brown fox jumps over the lazy dog 0123456789 again the quick brown fox jumps over"]
+visible = "baseline the quick brown fox jumps over the lazy dog 0123456789 again the quick brown fox jumps over"
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "clear draft?"
+
+[[scenario.step]]
+keys = ["y", "esc"]
+visible = " NORMAL "
+
+[[scenario.step]]
+keys = [":", "type:app open looper", "enter"]
+visible = "Looper · Ctrl-c leave"
+
+[[scenario.step]]
+keys = []
+visible = "spins [1-9]"
+regex = true
+
+[[scenario.step]]
+keys = ["ctrl+c", "i", "type:beside the looper the quick brown fox jumps over the lazy dog 0123456789 again the quick brown"]
+visible = "beside the looper the quick brown fox jumps over the lazy dog 0123456789 again the quick brown"
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "clear draft?"
+
+[[scenario.step]]
+keys = ["y", "esc"]
+visible = " NORMAL "
+
+[[scenario.step]]
+keys = ["5", "x"]
+visible = "250 ms and was stopped"
+
+[[scenario.step]]
+keys = []
+visible = "app looper: looper.lua:13"
+
+[[scenario.step]]
+keys = ["ctrl+c", ":", "type:app close", "enter"]
+visible = "looper is closed here"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.16 M4: approving and managing apps inside bzz, on the release binary.
+# They follow the t16 scenarios above, which leave the Board installed,
+# approved and open in #t9-general in both profiles, with a card each.
+#
+# One more field (both runners read it): `run = "command"` on a step is run
+# by this machine's shell before the step's keys, with `{fixture}` the
+# fixture's folder and `$BZZ_BIN` the binary under test: what the owner
+# does outside bzz, such as saving the script of a folder.
+
+[[scenario]]
+id = "t16-m4-poll-approve-update-rollback"
+kind = "harness"
+description = "v0.16 M4 exit gate: the Poll, written from its template, is added in the TUI and runs only after its approval there; a version that does not load is never offered; one that loads and fails as it is put to run leaves the old one running; an approved change replaces it in place with its state, and a rollback brings the old one back, with the state."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x30"
+
+[[scenario.step]]
+run = "\"$BZZ_BIN\" app new poll --template poll --to {fixture}/poll-app"
+keys = ["space", "space"]
+visible = "channel finder"
+
+# The writing dock names the channel. Not its first message: after the
+# v0.15 scenarios have talked in #t15-agents it is no longer on screen.
+[[scenario.step]]
+keys = ["type:t15-ag", "enter"]
+visible = "message #t15-agents"
+
+# Added in the TUI: shown at once for an answer, and nothing of it runs.
+[[scenario.step]]
+keys = [":", "type:app add {fixture}/poll-app", "enter"]
+visible = "a version of an app waits for your answer"
+timeout = 30000
+
+[[scenario.step]]
+keys = []
+visible = "poll (Poll), version 1"
+
+[[scenario.step]]
+keys = []
+visible = "Record types: poll, vote"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "poll: version 1 from you waits for your approval · Ctrl-Y to see and answer it"
+
+[[scenario.step]]
+keys = [":", "type:app open poll", "enter"]
+visible = "poll has no approved version (one waits for your answer)"
+absent = "No poll yet"
+
+# Approved where it is shown, after all of it was on screen.
+[[scenario.step]]
+keys = ["ctrl+y"]
+visible = "poll (Poll), version 1"
+
+[[scenario.step]]
+keys = ["a"]
+visible = "scroll to the end first"
+
+[[scenario.step]]
+keys = ["G"]
+visible = "(: the end|that is the whole version)"
+regex = true
+
+[[scenario.step]]
+keys = ["a"]
+visible = "poll: version 1 approved, the script of hash"
+
+[[scenario.step]]
+keys = [":", "type:app open poll", "enter"]
+visible = "No poll yet. Press a to ask a question."
+
+[[scenario.step]]
+keys = ["a", "type:Lunch?", "enter"]
+visible = "Poll created."
+
+[[scenario.step]]
+keys = ["a", "type:Tacos", "enter"]
+visible = "Option added."
+
+[[scenario.step]]
+keys = ["a", "type:Sushi", "enter"]
+visible = "[ ] Sushi"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Voted for Tacos."
+
+[[scenario.step]]
+keys = []
+visible = "By: you"
+
+# The selection on Sushi is the app's own state: it must survive.
+[[scenario.step]]
+keys = ["j"]
+visible = "> [ ] Sushi"
+
+# A version that does not load: recorded as failed, never offered.
+[[scenario.step]]
+run = "printf '\\nreturn app(\\n' >> {fixture}/poll-app/app.lua"
+keys = ["ctrl+c", ":", "type:app add {fixture}/poll-app", "enter"]
+visible = "poll: version 2 does not load, nothing changed"
+timeout = 30000
+absent = "waits for your approval"
+
+# One that loads apart and fails in the open app: app.reload raises.
+[[scenario.step]]
+run = "\"$BZZ_BIN\" app new poll --template poll --to {fixture}/poll-3 && printf 'function app.reload(s, ctx) error(\"version 3 cannot take this state\") end\\n' > {fixture}/reload.lua && python3 -c 'import sys; p=sys.argv[1]; s=open(p).read(); s=s.replace(\"\\nreturn app\", \"\\n\" + open(sys.argv[2]).read() + \"return app\"); open(p, \"w\").write(s)' {fixture}/poll-3/app.lua {fixture}/reload.lua"
+keys = [":", "type:app add {fixture}/poll-3", "enter"]
+visible = "poll (Poll), version 3"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["G"]
+visible = "(: the end|that is the whole version)"
+regex = true
+
+[[scenario.step]]
+keys = ["a"]
+visible = "poll: version 3 failed to run; version 1 goes on"
+
+[[scenario.step]]
+keys = []
+visible = "> [ ] Sushi"
+
+[[scenario.step]]
+keys = []
+visible = "Total: 1 vote"
+
+# An approved change: in place, with the selection.
+[[scenario.step]]
+run = "\"$BZZ_BIN\" app new poll --template poll --to {fixture}/poll-4 && sed -i 's/\"Total: \"/\"In all: \"/' {fixture}/poll-4/app.lua"
+keys = [":", "type:app add {fixture}/poll-4", "enter"]
+visible = "poll (Poll), version 4"
+timeout = 30000
+
+[[scenario.step]]
+keys = []
+visible = "The same as the version that runs."
+
+[[scenario.step]]
+keys = ["G"]
+visible = "(: the end|that is the whole version)"
+regex = true
+
+[[scenario.step]]
+keys = ["a"]
+visible = "poll: version 4 runs in place of 1, its state kept"
+
+[[scenario.step]]
+keys = []
+visible = "In all: 1 vote"
+
+[[scenario.step]]
+keys = []
+visible = "> [ ] Sushi"
+
+# Rollback with the app open: version 1 again, the selection kept. The
+# command's own answer is replaced on the status line as soon as the pane
+# has taken the version, so either sentence shows that the rollback happened.
+[[scenario.step]]
+keys = [":", "type:app rollback poll", "enter"]
+visible = "(poll: back to version 1 from 4|poll: version 1 runs in place of 4, its state kept)"
+regex = true
+
+[[scenario.step]]
+keys = []
+visible = "Total: 1 vote"
+
+[[scenario.step]]
+keys = []
+visible = "> [ ] Sushi"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-m4-approvals-template"
+kind = "harness"
+description = "v0.16 M4: the Approvals template is written, added and approved in the TUI, and opened in #t14-names; a request it files stores the owner's id and shows his name."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x30"
+
+[[scenario.step]]
+run = "\"$BZZ_BIN\" app new approvals --template approvals --to {fixture}/approvals-app"
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t14-na", "enter"]
+visible = "t14-names"
+
+[[scenario.step]]
+keys = [":", "type:app add {fixture}/approvals-app", "enter"]
+visible = "approvals (Approvals), version 1"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["G"]
+visible = "(: the end|that is the whole version)"
+regex = true
+
+[[scenario.step]]
+keys = ["a"]
+visible = "approvals: version 1 approved"
+
+[[scenario.step]]
+keys = [":", "type:app open approvals", "enter"]
+visible = "Filter: all"
+
+[[scenario.step]]
+keys = ["n", "type:Gym pass", "enter"]
+visible = "Request filed."
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Author: "
+
+[[scenario.step]]
+keys = ["a"]
+visible = "You cannot decide your own request."
+
+[[scenario.step]]
+keys = ["ctrl+c", "q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-m4-dev-remove-reinstall"
+kind = "harness"
+description = "v0.16 M4 exit gate: :app dev runs the Board's folder in #t9-general on the channel's records, with the card the second profile made, reloads it on save and keeps the old version on a broken save; uninstalling the Board leaves the cards in the channel, and installed again it finds them; a version with another record type is shown as a change and refused with a reason."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x30"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Generated custom emoji"
+
+# The looper took #t9-general above; the Board is opened there again.
+[[scenario.step]]
+keys = [":", "type:app open board", "enter"]
+visible = "Board · Ctrl-c leave"
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "Board · 5 focus"
+
+# The owner's own folder, not approved, on the channel's real records.
+[[scenario.step]]
+keys = [":", "type:app dev {fixture}/board-app", "enter"]
+visible = "Board · not approved · dev"
+
+[[scenario.step]]
+keys = []
+visible = "from the second profile"
+
+[[scenario.step]]
+keys = []
+visible = "dev: "
+
+[[scenario.step]]
+run = "sed -i 's/\"To do\"/\"Backlog\"/' {fixture}/board-app/app.lua"
+keys = []
+visible = "Backlog (2)"
+
+[[scenario.step]]
+run = "printf '\\nreturn app(\\n' >> {fixture}/board-app/app.lua"
+keys = []
+visible = "app.lua:"
+
+[[scenario.step]]
+keys = []
+visible = "Backlog (2)"
+
+[[scenario.step]]
+keys = ["ctrl+c", ":", "type:app close", "enter"]
+visible = "Board · 5 focus"
+
+[[scenario.step]]
+keys = []
+visible = "To do (2)"
+
+# Uninstalled: the pane closes; the cards stay in the channel.
+[[scenario.step]]
+keys = [":", "type:app remove board", "enter"]
+visible = "board uninstalled; 2 records of bzz.app.board.* stay in the channel"
+absent = "Board · 5 focus"
+
+[[scenario.step]]
+run = "\"$BZZ_BIN\" app new board --to {fixture}/board-again"
+keys = [":", "type:app add {fixture}/board-again", "enter"]
+visible = "board (Board), version 1"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["G"]
+visible = "(: the end|that is the whole version)"
+regex = true
+
+[[scenario.step]]
+keys = ["a"]
+visible = "board: version 1 approved"
+
+[[scenario.step]]
+keys = [":", "type:app open board", "enter"]
+visible = "from the second profile"
+
+[[scenario.step]]
+keys = []
+visible = "q:1 ?5 gg"
+
+# A version that declares one record type more: shown as a change.
+[[scenario.step]]
+run = "sed -i 's/app.types = { \"card\" }/app.types = { \"card\", \"tag\" }/' {fixture}/board-again/app.lua && sed -i 's/types = \\[\"card\"\\]/types = [\"card\", \"tag\"]/' {fixture}/board-again/app.toml"
+keys = ["ctrl+c", ":", "type:app add {fixture}/board-again", "enter"]
+visible = "CHANGED from the version that runs:"
+timeout = 30000
+
+[[scenario.step]]
+keys = []
+visible = "+ tag   new: the app could not read or write these records before"
+
+[[scenario.step]]
+keys = ["r", "type:no tags on this board", "enter"]
+visible = "board: version 2 refused (\"no tags on this board\")"
+
+[[scenario.step]]
+keys = []
+visible = "To do (2)"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t16-m6-share-offer-approve"
+kind = "harness"
+description = "v0.16 M6 exit gate: the viewer shares the Board in #t9-general; another person's bzz shows the offer with the brief posted as a message and who signed it, nothing of it runs, the approval opens it there, and a card by each shows for the other; withdrawing leaves the installed copy. Needs t16-cli-app-new, -add and -approve first."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "160x40"
+beside = "other"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Generated custom emoji"
+
+# The channel may hold cards of earlier scenarios: any count shows the Board.
+[[scenario.step]]
+keys = [":", "type:app open board", "enter"]
+visible = "To do \\(\\d+\\)"
+regex = true
+
+[[scenario.step]]
+keys = ["ctrl+c", ":", "type:app share", "enter"]
+visible = "board, version 1, is shared in #t9-general; its brief was posted there"
+timeout = 20000
+
+# The brief, posted as an ordinary message: all Buzz desktop shows. Its
+# first line (`I shared the app Board …`) has scrolled up by then.
+[[scenario.step]]
+keys = []
+visible = "One record type, card. A card's content:"
+
+# Another person, in the same channel: the offer, from the viewer.
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "online"
+timeout = 30000
+
+[[scenario.step]]
+pane = "second"
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+pane = "second"
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "from the channel waits for your approval"
+timeout = 30000
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "One record type, card. A card's content:"
+
+# Nothing of it runs before the approval.
+[[scenario.step]]
+pane = "second"
+keys = [":", "type:app open board", "enter"]
+visible = "board has no approved version (one waits for your answer)"
+
+[[scenario.step]]
+pane = "second"
+keys = ["ctrl+y"]
+visible = "Offer:    shared in the channel; this exact revision"
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "a person of the channel ("
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "No version of this app runs yet: all of them are new."
+
+[[scenario.step]]
+pane = "second"
+keys = ["G"]
+visible = ": the end"
+
+[[scenario.step]]
+pane = "second"
+keys = ["a"]
+visible = "it is open in #t9-general, where it was offered"
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "To do \\(\\d+\\)"
+regex = true
+timeout = 20000
+
+# The same records: a card by the other person shows for the viewer, and
+# one by the viewer for the other person.
+[[scenario.step]]
+pane = "second"
+keys = [":", "type:app open board", "enter"]
+visible = "board is open in #t9-general"
+
+[[scenario.step]]
+pane = "second"
+keys = ["n", "type:from the other person", "enter"]
+visible = "from the other person"
+
+[[scenario.step]]
+keys = []
+visible = "from the other person"
+timeout = 20000
+
+[[scenario.step]]
+keys = [":", "type:app open board", "enter", "n", "type:from the viewer", "enter"]
+visible = "from the viewer"
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "from the viewer"
+timeout = 20000
+
+# Where it is shared, in the viewer's :apps.
+[[scenario.step]]
+keys = ["ctrl+c", ":", "type:apps", "enter"]
+visible = "shared in #t9-general"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+# Withdrawn: the installed copy stays where it was approved.
+[[scenario.step]]
+keys = [":", "type:app unshare", "enter"]
+visible = "the offer of board is withdrawn from #t9-general; copies people installed stay"
+timeout = 20000
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "from the viewer"
+
+[[scenario.step]]
+pane = "second"
+keys = ["ctrl+c", ":", "type:apps", "enter"]
+visible = "board (Board) · version 1"
+
+[[scenario.step]]
+pane = "second"
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+pane = "second"
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+pane = "second"
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "type:apps", "enter"]
+visible = "open in #t9-general"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.16 M5: an agent changes the open app, on the release binary. Scout's
+# stand-in model reads the script it proposes from a file (`with_files` of
+# agent-host/test/support/scripted-model.mjs): the Board with priority and
+# filter of tests/fixtures/apps/board-priority, proposed as a version of
+# the owner's Board, here named `tasks`.
+
+[[scenario]]
+id = "t16-m5-agent-changes-the-open-board"
+kind = "harness"
+description = "v0.16 M5 exit gate: the owner's Board is open in #t15-agents with a card selected; Scout, mentioned, proposes the Board with priority and filter through propose_app; the approval says it comes from the agent and who asked; approved in the overlay, the open Board changes in place with the card still selected and its new keys work; :app brief posts the brief; at its next turn Scout is told the version was applied."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "160x40"
+
+[[scenario.step]]
+run = "\"$BZZ_BIN\" app new tasks --template board --to {fixture}/m5-tasks && cp \"$(git rev-parse --show-toplevel)/tests/fixtures/apps/board-priority/app.lua\" {fixture}/m5-priority.lua && cp \"$(git rev-parse --show-toplevel)/tests/fixtures/apps/board-priority/brief.md\" {fixture}/m5-priority.md"
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t15-ag", "enter"]
+visible = "Generated agents channel"
+
+[[scenario.step]]
+keys = [":", "type:app add {fixture}/m5-tasks", "enter"]
+visible = "tasks (Tasks), version 1"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["G"]
+visible = "(: the end|that is the whole version)"
+regex = true
+
+[[scenario.step]]
+keys = ["a"]
+visible = "tasks: version 1 approved"
+
+[[scenario.step]]
+keys = [":", "type:app open tasks", "enter"]
+visible = "To do (0)"
+
+[[scenario.step]]
+keys = ["n", "type:Alpha", "enter"]
+visible = "To do (1)"
+
+[[scenario.step]]
+keys = ["n", "type:Bravo", "enter"]
+visible = "To do (2)"
+
+[[scenario.step]]
+keys = ["k", "j"]
+visible = "> Bravo"
+
+# Scout is asked; it proposes the Board with priority as a version of tasks.
+[[scenario.step]]
+keys = ["ctrl+c", "i", "type:@Sco"]
+visible = "@Scout"
+
+[[scenario.step]]
+keys = ["tab", "space", "type:please add a priority and a filter to the tasks board", "ctrl+j", 'type:do: [["with_files", "buzz_propose_app", {"app": "tasks"}, {"script": "{fixture}/m5-priority.lua", "brief": "{fixture}/m5-priority.md"}], ["report"]]', "enter"]
+visible = "tasks: version 2 from your agent Scout, asked by"
+timeout = 90000
+
+# Nothing of it runs while it waits.
+[[scenario.step]]
+keys = []
+visible = "> Bravo"
+absent = "Priority:"
+
+[[scenario.step]]
+keys = ["ctrl+y"]
+visible = "tasks (Tasks), version 2"
+
+[[scenario.step]]
+keys = []
+visible = "Asked by: "
+
+[[scenario.step]]
+keys = []
+visible = "Brief:    .*CHANGED from the version that runs"
+regex = true
+
+[[scenario.step]]
+keys = ["G"]
+visible = "(: the end|that is the whole version)"
+regex = true
+
+[[scenario.step]]
+keys = ["a"]
+visible = "tasks: version 2 runs in place of 1, its state kept"
+
+# In place: the card is still selected, and the new keys work on it.
+[[scenario.step]]
+keys = []
+visible = "Priority: all"
+
+[[scenario.step]]
+keys = []
+visible = "> Bravo"
+
+[[scenario.step]]
+keys = ["5", "2"]
+visible = "> Bravo P2"
+
+[[scenario.step]]
+keys = ["ctrl+c", ":", "type:app brief", "enter"]
+visible = "tasks: its brief is posted to #t15-agents as your message"
+
+[[scenario.step]]
+keys = []
+visible = "The brief of the app Tasks"
+timeout = 30000
+
+# At its next turn in the channel Scout is told; what it was told is in
+# `apps` with `app`, which it reports. A second later than the brief, so
+# that the mention is the newest message (the timeline orders by second).
+[[scenario.step]]
+pause = 1500
+keys = ["i", "type:@Sco"]
+visible = "@Scout"
+
+[[scenario.step]]
+keys = ["tab", "space", "type:did it go in?", "ctrl+j", 'type:do: [["buzz_apps", {"app": "tasks"}], ["report"]]', "enter"]
+visible = "did it go in?"
+
+# The newest message is the mention; its thread has Scout's answer.
+[[scenario.step]]
+keys = ["G"]
+visible = 'did it go in\?(.|\n)*↳ 1 reply'
+regex = true
+timeout = 90000
+
+# Its answer holds the app whole (the script is long): the end of it is
+# what the agent was told of its version.
+[[scenario.step]]
+keys = ["enter"]
+visible = "tasks: applied. The owner approved"
+timeout = 30000
+
+# q closes the thread first, then asks to quit.
+[[scenario.step]]
+keys = ["q"]
+visible = "online"
+absent = "context · 1 reply"
 
 [[scenario.step]]
 keys = ["q"]

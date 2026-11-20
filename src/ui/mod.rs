@@ -1,6 +1,9 @@
 pub mod action;
 pub mod actions;
 pub mod agents;
+#[cfg(feature = "apps")]
+pub mod app_approval;
+pub mod app_pane;
 pub mod approval;
 pub mod artifacts;
 pub mod broker;

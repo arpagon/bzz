@@ -13,6 +13,8 @@ pub enum HitTarget {
     TimelineMessage(String),
     Thread,
     ThreadMessage(String),
+    /// The app pane. An app gets no mouse: a click gives the pane the focus.
+    App,
     Composer,
     MentionCandidate(usize),
     FinderChannel(String),

@@ -487,6 +487,107 @@ unlocked. The owner's guide is [`agents.md`](agents.md#moving-an-agent).
   agent's owner. Whether the agent left is read from its presence on the
   relay, which the relay forgets three minutes after a crash.
 
+## v0.16.0 trust boundaries
+
+**Apps.** bzz runs a Lua script it did not ship, inside itself, with only
+what it lends the script ([`adr-v0.16-apps.md`](adr-v0.16-apps.md),
+[`app-api.md`](app-api.md)). The user's guide is [`apps.md`](apps.md).
+
+- **What a script reaches.** No file, network, process, environment variable
+  or native code; no key, credential or passphrase. It is told the local
+  participant's public key and name. `tests/secret_scan_test.rs` runs every
+  `bzz app` command on a profile with a real owner key, an agent key and a
+  broker credential, with a script that writes down every global it can
+  reach, and finds none of them in anything printed or written.
+- **Nothing runs unapproved.** A version runs only after the owner approved
+  its exact bytes, by their SHA-256, also one he added himself. One function
+  hands out a script to run (`Apps::runnable`); it reads the approved
+  version's file and compares it with the approved hash each time, so a file
+  edited in `<data>/apps/` behind bzz's back is not run, and bzz says why.
+  The database holds the decisions; the files hold only bytes.
+- **What the owner is shown** before he answers: who proposed the version,
+  the brief, the record types with any change in them marked, the sizes and
+  the line difference from the version that runs. What a proposer wrote is
+  shown with every control and bidirectional character written out
+  (`<U+001B>`), so that it cannot draw on the terminal. Inside bzz the same
+  review is an overlay that opens only when the owner asks (`Ctrl-y`,
+  `:approvals`, `:app pending`), keeps the hash and the types on screen,
+  and takes a yes only after its last row was drawn; no command approves
+  by itself.
+- **A new version of an open app** replaces the running one in its session
+  only if it loads, declares the approved types and runs its `app.reload`
+  and first `app.view`; otherwise the version before, whose approved bytes
+  bzz holds, is given back and the new one is recorded as failed. What the
+  pane runs is always bytes `Apps::runnable` handed out.
+- **The owner's own folder.** `bzz app dev <folder>` runs a folder without
+  approval (plan D5), on records kept in memory. `:app dev <folder>` runs
+  it in the selected channel's pane on that channel's real records, signed
+  by the owner as any app's: it is a folder only the owner can name, typed
+  in his own bzz, and the pane's border says `not approved`. It is never
+  remembered, so a restart does not run it again.
+- **Whose shell it is.** `bzz app approve`, `refuse` and `rollback` are the
+  owner's answers because they are typed at his shell. An agent that he lets
+  run commands without asking can type them too.
+- **Storage.** `<data>/apps/` and every file in it are private (`0700` and
+  `0600` on Unix), as bzz's other data. Uninstalling an app deletes its
+  versions and leaves the channel's records alone.
+
+- **An app offered in a channel** (M6) is another person's script. It
+  travels as one artifact of type `bzz.app`, and is taken in as a version
+  that waits, from that person: nothing of it runs before the owner
+  approves its exact bytes, through the same `Apps::runnable`. What is
+  checked on arrival, before anything is kept: the shape, an `api` this
+  bzz knows, the name, the tag against the manifest, **the script's
+  SHA-256 against the manifest**, 128 KiB of script and 16 KiB of brief.
+  Then the script is loaded apart, as any proposal, on an empty store in
+  memory; one that does not load is recorded as failed and never offered.
+  Nothing is fetched from anywhere else. The same sizes, and the frame
+  after escaping, are checked before an offer is sent.
+- **Who an offer is from** is whoever signed that revision: any writer of
+  the channel can publish a new revision of someone's offer, or delete it.
+  The approval shows the signer's name and key, the revision, and plainly
+  a source other than the one the installed version came from. A person
+  who cannot write to the channel (a guest, or someone outside a private
+  channel) cannot offer: the relay refuses the write and nobody receives
+  it. In an open channel every relay member can write, and so can offer.
+- **What approving another person's script means.** It runs in your bzz
+  with the reach of any app and no more: its pane, the keys you give it
+  while it has the focus, and the records of the types it declared, in
+  the channel it is open in, signed by you, within the budget of writes
+  your apps share (30 a minute). It cannot reach a file, the network, a
+  process, your keys, your messages, another channel or another app's
+  records. What it can do is what any member of the channel can do with
+  your identity to those records: create, change and delete them. Read
+  the record types it declares, and their change, before you approve.
+- **Not buried.** At most 3 offers of one person and 8 in one channel
+  wait; bytes the owner refused do not come back; a channel's sync of
+  offers reads at most 256 heads.
+- **What is sent.** An offer holds the script, its manifest (name, title,
+  api, types, the script's hash) and the brief: no key, no credential, no
+  path. The relay test of M6 scans every revision of every offer in its
+  channel for the keys of all five identities.
+- **An agent and an app's records** (M7). An agent woken in a channel
+  reaches the records of the apps its owner installed, enabled and opened
+  in that channel, of the approved types only; bzz checks this where it
+  serves the tool, whatever the harness sends. bzz signs each record with
+  the agent's own key on the agent's own connection, so the relay counts
+  the write against the agent, and holds an agent to 60 record writes a
+  minute. The owner is not asked, as for a message: the channel already
+  lets the agent write there. Each write is a line of the agent's
+  activity, without its content.
+- **An agent that writes an app** (M5) proposes; it never writes a file,
+  approves, opens or installs. Its try runs the script apart, on records
+  in memory, with nothing sent to the relay, for at most 30 seconds. Its
+  proposal is a version that waits for the owner like any other, shown
+  with the agent and the person whose message asked for it; at most 3 of
+  an agent's versions wait at once. Anyone who may wake the agent may ask
+  it for an app: what reaches the owner is a version to read, never a
+  script that runs. Nothing about apps is put in an agent's prompt before
+  it asks. The secret scan runs each of the four harnesses through the
+  guide, a try of a script that looks for a key everywhere a script can
+  reach, and a proposal, and finds no key or credential in anything the
+  harness saw.
+
 ## Media
 
 Message media is fetched only from a complete `imeta` descriptor bound to the

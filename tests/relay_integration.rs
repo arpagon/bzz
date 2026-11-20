@@ -8473,3 +8473,2450 @@ async fn real_relay_agent_keeps_to_its_access_and_a_delete_or_a_pause_reaches_th
         faults.join("\n- ")
     );
 }
+
+/// One bzz profile for the records of apps: a generated identity with its
+/// own store, connection and records service.
+#[cfg(feature = "apps")]
+struct RecordsProfile {
+    keys: Keys,
+    signer: SignerHandle,
+    supervisor: SupervisorHandle,
+    service: bzz::service::records::RecordsService,
+    /// The store and the HTTP client the service was made with, for the
+    /// offers of apps (M6).
+    handle: StoreHandle,
+    http: HttpClient,
+    config: Config,
+    community: uuid::Uuid,
+    store: std::path::PathBuf,
+}
+
+#[cfg(feature = "apps")]
+impl RecordsProfile {
+    fn config(keys: &Keys) -> (Config, uuid::Uuid) {
+        let identity = IdentityConfig {
+            id: uuid::Uuid::new_v4(),
+            label: "records".into(),
+            pubkey: keys.public_key().to_hex(),
+            backend: KeyBackend::EncryptedFile,
+            key_ref: "records".into(),
+        };
+        let mut config = Config::default();
+        config.identities.push(identity.clone());
+        let community = config
+            .add_community(
+                "records".into(),
+                "ws://localhost:3030".into(),
+                identity.id,
+                true,
+            )
+            .unwrap();
+        (config, community)
+    }
+
+    /// `store` is a file, so that the profile can be closed and opened again.
+    async fn start(
+        keys: Keys,
+        signer: SignerHandle,
+        (config, community): (Config, uuid::Uuid),
+        store: std::path::PathBuf,
+    ) -> Self {
+        let http = HttpClient::new(
+            url::Url::parse("http://localhost:3030/").unwrap(),
+            signer.clone(),
+        )
+        .unwrap();
+        let relay = bzz::protocol::http::relay_signing_pubkey(&http.nip11().await.unwrap())
+            .unwrap()
+            .to_owned();
+        let mut database = Store::open(&store).unwrap();
+        database.sync_config(&config).unwrap();
+        database.pin_relay_pubkey(community, &relay).unwrap();
+        let supervisor = SupervisorHandle::spawn(
+            url::Url::parse("ws://localhost:3030/").unwrap(),
+            signer.clone(),
+        );
+        let handle = StoreHandle::spawn(database).unwrap();
+        let service = bzz::service::records::RecordsService::new(
+            community,
+            http.clone(),
+            handle.clone(),
+            bzz::service::records::Writer::new(signer.clone(), supervisor.clone()),
+        );
+        Self {
+            keys,
+            signer,
+            supervisor,
+            service,
+            handle,
+            http,
+            config,
+            community,
+            store,
+        }
+    }
+
+    /// A person with a profile of their own, a member of the relay with
+    /// `relay_role`. `seed_member` makes everyone an owner of the relay,
+    /// which is not who a guest of a channel or a stranger to it is.
+    async fn person(source: &str, folder: &std::path::Path, name: &str, relay_role: &str) -> Self {
+        let keys = Keys::generate();
+        let pubkey = keys.public_key().to_hex();
+        let sql = format!(
+            "INSERT INTO relay_members (community_id,pubkey,role,added_by) SELECT id,'{pubkey}','{relay_role}',NULL FROM communities WHERE lower(host)='localhost:3030' ON CONFLICT (community_id,pubkey) DO UPDATE SET role='{relay_role}',updated_at=now();"
+        );
+        let status = Command::new("docker")
+            .args(["compose", "-p", "buzz-harness", "-f"])
+            .arg(format!("{source}/docker-compose.harness.yml"))
+            .args([
+                "exec",
+                "-T",
+                "postgres",
+                "psql",
+                "-U",
+                "buzz",
+                "-d",
+                "buzz",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-c",
+                &sql,
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let signer = SignerHandle::spawn(keys.clone());
+        let config = Self::config(&keys);
+        Self::start(keys, signer, config, folder.join(format!("{name}.sqlite3"))).await
+    }
+
+    /// The same identity and store with no relay to reach: bzz opened
+    /// offline. The store was opened before, so the relay's key is pinned.
+    fn offline(
+        keys: Keys,
+        (config, community): (Config, uuid::Uuid),
+        store: std::path::PathBuf,
+    ) -> Self {
+        let signer = SignerHandle::spawn(keys.clone());
+        // Nothing listens on the discard port: every connection is refused.
+        let http = HttpClient::new(
+            url::Url::parse("http://127.0.0.1:9/").unwrap(),
+            signer.clone(),
+        )
+        .unwrap();
+        let mut database = Store::open(&store).unwrap();
+        database.sync_config(&config).unwrap();
+        let supervisor = SupervisorHandle::spawn(
+            url::Url::parse("ws://127.0.0.1:9/").unwrap(),
+            signer.clone(),
+        );
+        let handle = StoreHandle::spawn(database).unwrap();
+        let service = bzz::service::records::RecordsService::new(
+            community,
+            http.clone(),
+            handle.clone(),
+            bzz::service::records::Writer::new(signer.clone(), supervisor.clone()),
+        );
+        Self {
+            keys,
+            signer,
+            supervisor,
+            service,
+            handle,
+            http,
+            config,
+            community,
+            store,
+        }
+    }
+
+    fn pubkey(&self) -> String {
+        self.keys.public_key().to_hex()
+    }
+
+    async fn send(&self, builder: EventBuilder) -> nostr::Event {
+        let event = self.signer.sign(builder).await.unwrap();
+        let ack = self.supervisor.publish(event.clone()).await.unwrap();
+        assert!(ack.accepted, "{}", ack.message);
+        event
+    }
+
+    /// Closes bzz and opens it again on the same store and identity.
+    async fn restart(self) -> Self {
+        let (keys, config, store) = (
+            self.keys.clone(),
+            (self.config.clone(), self.community),
+            self.store.clone(),
+        );
+        self.supervisor.shutdown().await;
+        self.signer.lock().await;
+        drop(self);
+        let signer = SignerHandle::spawn(keys.clone());
+        Self::start(keys, signer, config, store).await
+    }
+
+    async fn stop(self) {
+        self.supervisor.shutdown().await;
+        self.signer.lock().await;
+    }
+}
+
+/// v0.16 M2 (service half) on the pinned relay: two people share the records
+/// of one app in a channel.
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_app_records_are_shared_by_two_profiles() {
+    use bzz::protocol::record::{Change, Record, RecordError, Refusal};
+    use bzz::service::records::{Cause, RecordEvent, SyncState, Writer};
+    use serde_json::{Map, Value, json};
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    async fn next(events: &mut UnboundedReceiver<RecordEvent>) -> RecordEvent {
+        tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("an event of the records in time")
+            .expect("the records are open")
+    }
+    async fn changes(events: &mut UnboundedReceiver<RecordEvent>) -> (Vec<Change>, Cause) {
+        loop {
+            if let RecordEvent::Changes { changes, cause } = next(events).await {
+                return (changes, cause);
+            }
+        }
+    }
+    /// Waits for `wanted`; any change told on the way is a failure.
+    async fn until_state(events: &mut UnboundedReceiver<RecordEvent>, wanted: &SyncState) {
+        loop {
+            match next(events).await {
+                RecordEvent::State(state) if &state == wanted => return,
+                RecordEvent::State(_) => {}
+                other @ RecordEvent::Changes { .. } => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+    async fn silence(events: &mut UnboundedReceiver<RecordEvent>, quiet: Duration) {
+        if let Ok(event) = tokio::time::timeout(quiet, events.recv()).await {
+            panic!("unexpected {event:?}");
+        }
+    }
+    fn object(value: Value) -> Map<String, Value> {
+        value.as_object().unwrap().clone()
+    }
+    fn sorted(mut records: Vec<Record>) -> Vec<Record> {
+        records.sort_by_key(|record| record.id);
+        records
+    }
+    const TYPES: [&str; 2] = ["card", "column"];
+
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let folder = tempfile::tempdir().unwrap();
+    let ana = RecordsProfile::person(&source, folder.path(), "ana", "member").await;
+    let ben = RecordsProfile::person(&source, folder.path(), "ben", "member").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // A private channel of the two, so that nothing else is in it.
+    let channel = uuid::Uuid::new_v4();
+    ana.send(
+        buzz_sdk::build_create_channel(
+            channel,
+            &format!("records-{}", &channel.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Private),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    ana.send(buzz_sdk::build_add_member(channel, &ben.pubkey(), None).unwrap())
+        .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Both open the same app. Nothing is there yet.
+    let (ana_app, mut ana_events) = ana.service.open(channel, "board", &TYPES).await.unwrap();
+    let (ben_app, mut ben_events) = ben.service.open(channel, "board", &TYPES).await.unwrap();
+    until_state(&mut ana_events, &SyncState::Live).await;
+    until_state(&mut ben_events, &SyncState::Live).await;
+    assert!(ana_app.records().is_empty() && ben_app.records().is_empty());
+
+    // 1. A change by one arrives live at the other, with who signed it. The
+    // writer is answered by its call and told nothing more.
+    let started = std::time::Instant::now();
+    let card = ana_app
+        .create(
+            "card",
+            object(json!({"title": "Write the brief", "column": "todo", "order": 1024.0})),
+        )
+        .await
+        .unwrap();
+    let (told, cause) = changes(&mut ben_events).await;
+    eprintln!(
+        "a record created by one profile reached the other {} ms after the create was sent",
+        started.elapsed().as_millis()
+    );
+    assert_eq!(
+        (told, cause),
+        (vec![Change::Upsert(card.clone())], Cause::Live)
+    );
+    assert_eq!(card.author, ana.pubkey());
+    assert_eq!(ben_app.records(), std::slice::from_ref(&card));
+    silence(&mut ana_events, Duration::from_millis(500)).await;
+    let column = ben_app
+        .create("column", object(json!({"title": "Doing", "order": 2})))
+        .await
+        .unwrap();
+    assert_eq!(
+        changes(&mut ana_events).await.0,
+        [Change::Upsert(column.clone())]
+    );
+    assert_eq!(column.author, ben.pubkey());
+
+    // 2. Both revise the same record at once, five times over. Each time one
+    // is stored and the other gets a conflict with the record as it is now;
+    // its retry on that record is stored, and nothing either wrote is lost.
+    let mut base = card.clone();
+    for round in 0..5 {
+        let with = |record: &Record, field: &str| {
+            let mut content = record.content.clone();
+            content.insert(field.into(), json!(round));
+            content
+        };
+        let (from_ana, from_ben) = tokio::join!(
+            ana_app.update(base.id, &base.revision, with(&base, "ana")),
+            ben_app.update(base.id, &base.revision, with(&base, "ben")),
+        );
+        let (winner, loser, loser_app, field) = match (from_ana, from_ben) {
+            (Ok(stored), Err(error)) => (stored, error, &ben_app, "ben"),
+            (Err(error), Ok(stored)) => (stored, error, &ana_app, "ana"),
+            other => panic!("round {round}: exactly one must be stored: {other:?}"),
+        };
+        let RecordError::Conflict { current } = loser else {
+            panic!("round {round}: {loser:?}")
+        };
+        assert_eq!(
+            *current, winner,
+            "round {round}: the current record is the winner's"
+        );
+        let merged = loser_app
+            .update(current.id, &current.revision, with(&current, field))
+            .await
+            .unwrap();
+        assert_eq!(merged.content["ana"], json!(round));
+        assert_eq!(merged.content["ben"], json!(round));
+        assert_eq!(merged.content["title"], "Write the brief");
+        // Both profiles end on the same record.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while ana_app.record(base.id) != Some(merged.clone())
+                || ben_app.record(base.id) != Some(merged.clone())
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("both profiles hold the merged record");
+        base = merged;
+    }
+    while tokio::time::timeout(Duration::from_millis(300), ana_events.recv())
+        .await
+        .is_ok()
+    {}
+    while tokio::time::timeout(Duration::from_millis(300), ben_events.recv())
+        .await
+        .is_ok()
+    {}
+
+    // 3. Ordinary chat ends every sync of the channel: a deleted message
+    // (`resync: redaction`). Both profiles ask again, are told of no change,
+    // and their records were never emptied.
+    let message = ana
+        .send(
+            buzz_sdk::build_message(channel, "to be deleted", None, &[], false, &[], &[]).unwrap(),
+        )
+        .await;
+    silence(&mut ben_events, Duration::from_millis(500)).await;
+    ana.send(buzz_sdk::build_delete_message(channel, message.id).unwrap())
+        .await;
+    for (app, events) in [(&ana_app, &mut ana_events), (&ben_app, &mut ben_events)] {
+        until_state(events, &SyncState::Resyncing).await;
+        assert_eq!(app.records().len(), 2);
+        until_state(events, &SyncState::Live).await;
+        assert_eq!(app.records().len(), 2);
+    }
+    assert_eq!(sorted(ana_app.records()), sorted(ben_app.records()));
+
+    // 4. A type that was not declared is refused, and the relay never sees it.
+    let total = ana.service.channel_total(channel).await.unwrap();
+    assert_eq!(total, 2);
+    for outside in ["vote", "bzz.app.board.card", "buzz.task"] {
+        let error = ana_app
+            .create(outside, object(json!({"title": "outside"})))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "fenced", "{outside}: {error:?}");
+    }
+    assert_eq!(ana.service.channel_total(channel).await.unwrap(), total);
+
+    // 5. After bzz is closed and opened again the same records are there,
+    // before the relay answers anything.
+    let before = sorted(ana_app.records());
+    drop((ana_app, ana_events));
+    let ana = ana.restart().await;
+    let (ana_app, mut ana_events) = ana.service.open(channel, "board", &TYPES).await.unwrap();
+    assert_eq!(
+        sorted(ana_app.records()),
+        before,
+        "read from the store as `open` returns"
+    );
+    assert_eq!(before, sorted(ben_app.records()));
+    // And the relay's set is the same: no change is told.
+    until_state(&mut ana_events, &SyncState::Live).await;
+    assert_eq!(sorted(ana_app.records()), before);
+
+    // A deletion arrives live too, with who deleted.
+    let gone = ben_app.delete(column.id, &column.revision).await.unwrap();
+    assert_eq!(gone, column);
+    assert_eq!(
+        changes(&mut ana_events).await.0,
+        [Change::Removed {
+            record: column.clone(),
+            by: Some(ben.pubkey())
+        }]
+    );
+    assert_eq!(ana_app.records().len(), 1);
+
+    // 6. A guest reads and cannot write; someone outside the channel cannot
+    // read. Each is told in the relay's own terms.
+    let guest = RecordsProfile::person(&source, folder.path(), "guest", "member").await;
+    let outsider = RecordsProfile::person(&source, folder.path(), "outsider", "member").await;
+    ana.send(
+        buzz_sdk::build_add_member(channel, &guest.pubkey(), Some(buzz_sdk::MemberRole::Guest))
+            .unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (guest_app, mut guest_events) = guest.service.open(channel, "board", &TYPES).await.unwrap();
+    assert_eq!(changes(&mut guest_events).await.0.len(), 1);
+    until_state(&mut guest_events, &SyncState::Live).await;
+    let error = guest_app
+        .create("card", object(json!({"title": "a guest's"})))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            RecordError::Refused {
+                refusal: Refusal::Guest,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    let (outsider_app, mut outsider_events) = outsider
+        .service
+        .open(channel, "board", &TYPES)
+        .await
+        .unwrap();
+    until_state(&mut outsider_events, &SyncState::Restricted).await;
+    assert!(outsider_app.records().is_empty());
+    assert!(matches!(
+        outsider_app
+            .create("card", object(json!({"title": "x"})))
+            .await,
+        Err(RecordError::Refused {
+            refusal: Refusal::Unreadable,
+            ..
+        })
+    ));
+    silence(&mut ana_events, Duration::from_millis(500)).await;
+    assert_eq!(ana.service.channel_total(channel).await.unwrap(), 1);
+
+    // 7. The relay's own quota. The harness raises a person's quota for the
+    // other tests of this suite and leaves an agent's at the relay's default
+    // (120 writes a minute at the pin). An agent of Ana's writes through her
+    // open app, with its own key on its own connection: what M7 will do.
+    let agent_keys = Keys::generate();
+    let auth = buzz_sdk::nip_oa::compute_auth_tag(&ana.keys, &agent_keys.public_key(), "").unwrap();
+    let agent_signer = SignerHandle::spawn_with_auth_tag(
+        agent_keys.clone(),
+        Some(buzz_sdk::nip_oa::parse_auth_tag(&auth).unwrap()),
+    );
+    let agent_supervisor = SupervisorHandle::spawn(
+        url::Url::parse("ws://localhost:3030/").unwrap(),
+        agent_signer.clone(),
+    );
+    let agent = Writer::new(agent_signer.clone(), agent_supervisor.clone());
+    ana.send(
+        buzz_sdk::build_add_member(channel, &agent.pubkey(), Some(buzz_sdk::MemberRole::Bot))
+            .unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Adding a member does not end a sync; adding the guest did not either.
+    let first = ana_app
+        .create_as(
+            &agent,
+            "card",
+            object(json!({"title": "The agent's first"})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.author, agent.pubkey());
+    // Ana's app is told of it once, as of any participant's change; so is Ben's.
+    assert_eq!(
+        changes(&mut ana_events).await.0,
+        [Change::Upsert(first.clone())]
+    );
+    assert_eq!(
+        changes(&mut ben_events).await.0,
+        [Change::Upsert(first.clone())]
+    );
+    silence(&mut ana_events, Duration::from_millis(500)).await;
+
+    let started = std::time::Instant::now();
+    let mut accepted = 1;
+    let wait = loop {
+        match ana_app
+            .create_as(
+                &agent,
+                "card",
+                object(json!({"title": format!("card {accepted}")})),
+            )
+            .await
+        {
+            Ok(_) => accepted += 1,
+            Err(RecordError::RateLimited { seconds }) => break seconds,
+            Err(other) => panic!("after {accepted} writes: {other:?}"),
+        }
+        assert!(accepted <= 200, "the relay's quota was never met");
+    };
+    eprintln!(
+        "the relay accepted {accepted} writes of the agent in {} s, then asked for a wait of {wait} s",
+        started.elapsed().as_secs()
+    );
+    assert_eq!(
+        accepted, 120,
+        "the relay's own quota for an agent at the pin"
+    );
+    assert!((1..=60).contains(&wait), "{wait}");
+    // While the gate is closed the next write is answered at once, with what
+    // is left of the wait.
+    let again = std::time::Instant::now();
+    let Err(RecordError::RateLimited { seconds }) = ana_app
+        .create_as(&agent, "card", object(json!({"title": "too soon"})))
+        .await
+    else {
+        panic!("expected the wait again")
+    };
+    assert!(seconds <= wait && seconds >= 1, "{seconds} after {wait}");
+    assert!(again.elapsed() < Duration::from_secs(2));
+    // The agent's quota is not Ana's: her own write is stored at that moment.
+    let hers = ana_app
+        .create("card", object(json!({"title": "Ana's, meanwhile"})))
+        .await
+        .unwrap();
+    assert_eq!(hers.author, ana.pubkey());
+    // Every write the relay accepted is in both profiles' sets.
+    let expected = 1 + accepted + 1;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while ana_app.records().len() != expected || ben_app.records().len() != expected {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("both profiles hold every accepted record");
+    assert_eq!(sorted(ana_app.records()), sorted(ben_app.records()));
+
+    // 8. An archived channel refuses writes and still answers the sync.
+    // Archiving ends the syncs too (`resync: channel access changed`).
+    while tokio::time::timeout(Duration::from_millis(300), ana_events.recv())
+        .await
+        .is_ok()
+    {}
+    ana.send(buzz_sdk::build_archive(channel).unwrap()).await;
+    until_state(&mut ana_events, &SyncState::Resyncing).await;
+    until_state(&mut ana_events, &SyncState::Live).await;
+    assert_eq!(ana_app.records().len(), expected);
+    let error = ana_app
+        .create("card", object(json!({"title": "into the archive"})))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            RecordError::Refused {
+                refusal: Refusal::Archived,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    ana.send(buzz_sdk::build_unarchive(channel).unwrap()).await;
+    until_state(&mut ana_events, &SyncState::Resyncing).await;
+    until_state(&mut ana_events, &SyncState::Live).await;
+    ana_app
+        .create("card", object(json!({"title": "out of the archive"})))
+        .await
+        .unwrap();
+
+    drop((ana_app, ben_app, guest_app, outsider_app));
+    agent_supervisor.shutdown().await;
+    agent_signer.lock().await;
+    for profile in [ana, ben, guest, outsider] {
+        profile.stop().await;
+    }
+}
+
+/// A script that writes as many records at once as it is pasted a number,
+/// and counts what it is answered.
+#[cfg(feature = "apps")]
+const BURST_APP: &str = r#"
+local app = { api = 1, types = { "card" } }
+function app.init(ctx) return { ok = 0, waits = 0, other = 0, wait = "" } end
+function app.view(s, ctx)
+  return ui.text { "stored " .. s.ok, "told to wait " .. s.waits .. s.wait, "other " .. s.other .. (s.why or "") }
+end
+function app.paste(s, text, ctx)
+  for i = 1, tonumber(text) do data.create { type = "card", content = { title = "burst " .. i } } end
+end
+function app.reply(s, r, ctx)
+  if r.ok then s.ok = s.ok + 1
+  elseif r.error.code == "rate_limited" then
+    s.waits = s.waits + 1
+    s.wait = " (" .. (r.error.retry_after > 0 and r.error.retry_after <= 60 and "1 to 60 s" or "?") .. ")"
+  else s.other = s.other + 1; s.why = " " .. r.error.code .. ": " .. r.error.message end
+end
+return app
+"#;
+
+/// v0.16 M2, the exit gate, to the letter: two bzz profiles on the pinned
+/// relay share a board. Each profile is a generated identity with its own
+/// store on disk, connection, records service and app session; the app is
+/// the Board fixture, driven by keys through the session and read as
+/// screens of 40 by 16, the size of a docked app.
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_app_session_two_profiles_share_a_board() {
+    use bzz::apps::runtime::{RecordOp, RecordRequest};
+    use bzz::apps::session::SessionOptions;
+    use bzz::service::records::SyncState;
+    use serde_json::json;
+    use support::app_pane::{Pane, board_cards, board_column, last_row};
+
+    const BOARD: &str = include_str!("fixtures/apps/board/app.lua");
+    const SAVED: &str = "Saved.";
+    const MERGED: &str = "Conflict: merged with a newer change.";
+
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let folder = tempfile::tempdir().unwrap();
+    let ana = RecordsProfile::person(&source, folder.path(), "ana", "member").await;
+    let ben = RecordsProfile::person(&source, folder.path(), "ben", "member").await;
+    let dan = RecordsProfile::person(&source, folder.path(), "dan", "member").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let channel = uuid::Uuid::new_v4();
+    ana.send(
+        buzz_sdk::build_create_channel(
+            channel,
+            &format!("board-{}", &channel.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Private),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    for member in [&ben, &dan] {
+        ana.send(buzz_sdk::build_add_member(channel, &member.pubkey(), None).unwrap())
+            .await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let names: std::collections::HashMap<String, String> = [
+        (ana.pubkey(), "ana".to_owned()),
+        (ben.pubkey(), "ben".to_owned()),
+    ]
+    .into();
+    let open = |profile: &RecordsProfile| {
+        Pane::open_with(
+            &profile.service,
+            channel,
+            BOARD,
+            SessionOptions::new("board").names(names.clone()),
+        )
+    };
+    let mut ana_pane = open(&ana);
+    let mut ben_pane = open(&ben);
+    // The first time: nothing is kept, the list waits for the relay's set.
+    ana_pane.settled("Loaded 0 cards.").await;
+    ben_pane.settled("Loaded 0 cards.").await;
+
+    // 1. A change by one arrives live on the other's screen.
+    let started = std::time::Instant::now();
+    ana_pane.key("n");
+    ana_pane.type_text("Write the brief");
+    ana_pane.key("enter");
+    let hers = ana_pane.settled(SAVED).await;
+    assert!(
+        hers.contains("To do (1)") && hers.contains("> Write the brief"),
+        "{hers}"
+    );
+    let his = ben_pane
+        .until("ana's card on ben's screen", |screen, _| {
+            screen.contains("Write the brief")
+        })
+        .await;
+    eprintln!(
+        "a card made on one profile was on the other's screen {} ms after the keys",
+        started.elapsed().as_millis()
+    );
+    assert_eq!(board_cards(&his), board_cards(&hers));
+    assert_eq!(board_cards(&his)["todo"], ["Write the brief"]);
+    // And the other way: ben makes a card and moves it.
+    ben_pane.key("n");
+    ben_pane.type_text("Review it");
+    ben_pane.key("enter");
+    ben_pane.settled(SAVED).await;
+    ben_pane.key("]");
+    ben_pane
+        .until("ben's own move", |screen, _| {
+            board_column(screen, "Review it") == Some("doing") && last_row(screen) == SAVED
+        })
+        .await;
+    let hers = ana_pane
+        .until("ben's card, moved, on ana's screen", |screen, _| {
+            board_column(screen, "Review it") == Some("doing")
+        })
+        .await;
+    assert_eq!(board_cards(&hers), board_cards(&ben_pane.screen()));
+    assert_eq!(ana.service.channel_total(channel).await.unwrap(), 2);
+
+    // 2. A simultaneous change loses nothing. Both move the same card from
+    // the same revision, in opposite directions, five times over: three
+    // times at once, twice with ben's a moment sooner. One move is stored;
+    // the other is told of the conflict, puts its move on top of the
+    // current card and stores that; both screens then show the same card.
+    ben_pane.key("h");
+    for pane in [&mut ana_pane, &mut ben_pane] {
+        pane.until("the brief selected", |screen, _| {
+            screen.contains("> Write the brief")
+        })
+        .await;
+    }
+    let mut merged_by = Vec::new();
+    for round in 0..5 {
+        // The card goes to the middle column, by ana alone.
+        let now = board_column(&ana_pane.screen(), "Write the brief").unwrap();
+        if now != "doing" {
+            ana_pane.key(if now == "todo" { "]" } else { "[" });
+        }
+        for pane in [&mut ana_pane, &mut ben_pane] {
+            pane.until("the brief in the middle", |screen, _| {
+                board_column(screen, "Write the brief") == Some("doing")
+                    && last_row(screen) != "Saving..."
+            })
+            .await;
+            // A fresh status line, so that the round's own is told apart.
+            pane.key("r");
+            pane.settled("Loaded 2 cards.").await;
+        }
+        // Both from the same revision: ana to the right, ben to the left.
+        // Each script has asked before either request is carried.
+        ana_pane.key("]");
+        ben_pane.key("[");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        if round % 2 == 0 {
+            // At once: both writes are on their way before bzz hears of
+            // either, and the relay stores the one it takes first.
+            ana_pane.screen();
+            ben_pane.screen();
+        } else {
+            // Ben's a moment sooner: Ana's bzz may know the new head by
+            // the time her write would be sent. To her script the answer
+            // is the same conflict.
+            ben_pane.screen();
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            ana_pane.screen();
+        }
+        let mut ends = Vec::new();
+        for pane in [&mut ana_pane, &mut ben_pane] {
+            let screen = pane
+                .until("the answer to the move", |screen, _| {
+                    [SAVED, MERGED].contains(&last_row(screen))
+                })
+                .await;
+            ends.push(last_row(&screen).to_owned());
+        }
+        let (merger, wanted) = match (ends[0].as_str(), ends[1].as_str()) {
+            (SAVED, MERGED) => ("ben", "todo"),
+            (MERGED, SAVED) => ("ana", "done"),
+            other => panic!("round {round}: exactly one is stored and one is told: {other:?}"),
+        };
+        merged_by.push(merger);
+        // Both screens end on the current card: the one the loser stored
+        // on top of the winner's.
+        for pane in [&mut ana_pane, &mut ben_pane] {
+            pane.until("both on the current card", |screen, _| {
+                board_column(screen, "Write the brief") == Some(wanted)
+            })
+            .await;
+        }
+        let card = |pane: &Pane| {
+            pane.session
+                .records()
+                .find(|record| record.content["title"] == "Write the brief")
+                .cloned()
+                .unwrap()
+        };
+        let (hers, his) = (card(&ana_pane), card(&ben_pane));
+        assert_eq!(hers, his, "round {round}: one record, one revision");
+        assert_eq!(
+            hers.author,
+            if merger == "ana" {
+                ana.pubkey()
+            } else {
+                ben.pubkey()
+            },
+            "round {round}: the last revision is the merged one"
+        );
+        assert_eq!(hers.content["column"], wanted);
+        assert_eq!(
+            board_cards(&ana_pane.screen()),
+            board_cards(&ben_pane.screen())
+        );
+    }
+    eprintln!("the five simultaneous moves were merged by {merged_by:?}");
+    assert!(
+        merged_by.contains(&"ana"),
+        "ana was told of a conflict at least in the rounds ben was sooner: {merged_by:?}"
+    );
+    assert_eq!(
+        ana.service.channel_total(channel).await.unwrap(),
+        2,
+        "no card was lost and none was made twice"
+    );
+
+    // 3. A script that asks for an undeclared type is refused: at the
+    // session, when the runtime is passed by, and at the service, when the
+    // session is. The relay never sees it.
+    let brief = ana_pane
+        .session
+        .records()
+        .find(|record| record.content["title"] == "Write the brief")
+        .cloned()
+        .unwrap();
+    for (n, op) in [
+        RecordOp::Create {
+            record_type: "vote".into(),
+            content: json!({"title": "outside"}).as_object().unwrap().clone(),
+        },
+        RecordOp::Create {
+            record_type: "bzz.app.board.card".into(),
+            content: json!({"title": "outside"}).as_object().unwrap().clone(),
+        },
+        RecordOp::Delete {
+            record_id: brief.id.to_string(),
+            record_type: "vote".into(),
+            rev: brief.revision.clone(),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        ana_pane.session.serve(RecordRequest {
+            id: 9_000_000 + n as u64,
+            op,
+        });
+    }
+    let records = ana_pane.session.relay().expect("the records are open");
+    for outside in ["vote", "bzz.app.board.card", "buzz.task"] {
+        let error = records
+            .create(
+                outside,
+                json!({"title": "outside"}).as_object().unwrap().clone(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "fenced", "{outside}: {error:?}");
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    ana_pane.screen();
+    assert_eq!(ana.service.channel_total(channel).await.unwrap(), 2);
+    assert_eq!(ana_pane.session.records().count(), 2);
+    drop(records);
+
+    // 4. A restart shows the same records. Ana's session and store are
+    // closed and opened again, first with no relay to reach: the screen
+    // has the cards from the store, and nothing else can have put them
+    // there.
+    ana_pane.key("r");
+    let before = board_cards(&ana_pane.settled("Loaded 2 cards.").await);
+    assert_eq!(before.values().map(Vec::len).sum::<usize>(), 2);
+    drop(ana_pane);
+    let (keys, config, store) = (
+        ana.keys.clone(),
+        (ana.config.clone(), ana.community),
+        ana.store.clone(),
+    );
+    ana.stop().await;
+    let offline = RecordsProfile::offline(keys.clone(), config.clone(), store.clone());
+    let mut pane = open(&offline);
+    let screen = pane.settled("Loaded 2 cards.").await;
+    assert_eq!(board_cards(&screen), before, "from the store alone");
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(pane.status().sync, SyncState::Loading, "no relay answered");
+    }
+    drop(pane);
+    offline.stop().await;
+    // Then with the relay: the screen has the cards before the relay's set
+    // is complete, and the same after.
+    let ana = RecordsProfile::start(keys.clone(), SignerHandle::spawn(keys), config, store).await;
+    let mut ana_pane = open(&ana);
+    let mut seen = Vec::new();
+    ana_pane
+        .until("the relay's set", |screen, status| {
+            if last_row(screen) == "Loaded 2 cards." {
+                assert_eq!(board_cards(screen), before, "while {}", status.sync_words);
+                if seen.last() != Some(&status.sync_words) {
+                    seen.push(status.sync_words.clone());
+                }
+            }
+            status.sync == SyncState::Live && last_row(screen) == "Loaded 2 cards."
+        })
+        .await;
+    eprintln!("after the restart the cards were on the screen while the records were: {seen:?}");
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(board_cards(&ana_pane.screen()), before);
+    }
+    assert_eq!(board_cards(&ben_pane.screen()), before);
+
+    // 5. At the quota the pane shows the wait: the app's own budget, half
+    // of a person's. Dan has written nothing yet. His app asks for forty
+    // records at once: thirty are stored, ten are told to wait, and the
+    // relay never saw them. (This suite raises a person's quota at the
+    // relay, so the relay itself refuses none here.)
+    let mut dan_pane = Pane::open(&dan.service, channel, "burst", BURST_APP);
+    dan_pane
+        .until("dan's app", |screen, status| {
+            screen.starts_with("stored 0") && status.sync == SyncState::Live
+        })
+        .await;
+    assert!(dan_pane.session.paste("40"));
+    let screen = dan_pane
+        .until("forty answers", |screen, _| {
+            screen.starts_with("stored 30\ntold to wait 10 (1 to 60 s)")
+        })
+        .await;
+    assert!(screen.contains("other 0"), "{screen}");
+    let status = dan_pane.status();
+    let notice = status.notice.clone().expect("the pane says the wait");
+    assert!(
+        notice.starts_with("Too many changes: this app can write again in ")
+            && status
+                .wait
+                .is_some_and(|seconds| (1..=60).contains(&seconds)),
+        "{status:?}"
+    );
+    eprintln!("at the app's own budget the pane says: {notice}");
+    assert_eq!(dan.service.channel_total(channel).await.unwrap(), 32);
+    // His chat is not held up by it: the relay takes his message at once.
+    let said = dan
+        .send(buzz_sdk::build_message(channel, "still here", None, &[], false, &[], &[]).unwrap())
+        .await;
+    assert_eq!(said.pubkey, dan.keys.public_key());
+
+    // 6. At the relay's own quota, which this suite does not raise for an
+    // agent (120 writes a minute at the pin): a profile whose identity is
+    // an agent of ana's. Its chat spends the whole budget; the next write
+    // of its app is refused by the relay with the wait, and the pane shows
+    // it.
+    let agent_keys = Keys::generate();
+    let auth = buzz_sdk::nip_oa::compute_auth_tag(&ana.keys, &agent_keys.public_key(), "").unwrap();
+    let agent_signer = SignerHandle::spawn_with_auth_tag(
+        agent_keys.clone(),
+        Some(buzz_sdk::nip_oa::parse_auth_tag(&auth).unwrap()),
+    );
+    ana.send(
+        buzz_sdk::build_add_member(
+            channel,
+            &agent_keys.public_key().to_hex(),
+            Some(buzz_sdk::MemberRole::Bot),
+        )
+        .unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let cy = RecordsProfile::start(
+        agent_keys.clone(),
+        agent_signer,
+        RecordsProfile::config(&agent_keys),
+        folder.path().join("cy.sqlite3"),
+    )
+    .await;
+    let mut cy_pane = Pane::open(&cy.service, channel, "ledger", BURST_APP);
+    cy_pane
+        .until("the agent's app", |screen, status| {
+            screen.starts_with("stored 0") && status.sync == SyncState::Live
+        })
+        .await;
+    let started = std::time::Instant::now();
+    for n in 0..120 {
+        cy.send(
+            buzz_sdk::build_message(channel, &format!("chat {n}"), None, &[], false, &[], &[])
+                .unwrap(),
+        )
+        .await;
+    }
+    eprintln!(
+        "the relay took the agent's 120 messages in {} ms",
+        started.elapsed().as_millis()
+    );
+    let total = cy.service.channel_total(channel).await.unwrap();
+    assert!(cy_pane.session.paste("1"));
+    let screen = cy_pane
+        .until("the relay's refusal", |screen, _| {
+            !screen.starts_with("stored 0\ntold to wait 0\n") || !screen.contains("other 0")
+        })
+        .await;
+    assert!(
+        screen.starts_with("stored 0\ntold to wait 1 (1 to 60 s)\nother 0"),
+        "{screen}"
+    );
+    let status = cy_pane.status();
+    let notice = status.notice.clone().expect("the pane says the wait");
+    assert!(
+        notice.starts_with("Too many changes: this app can write again in "),
+        "{notice}"
+    );
+    let wait = status.wait.expect("a wait");
+    assert!((1..=60).contains(&wait), "{wait}");
+    eprintln!("at the relay's own quota the pane says: {notice}");
+    // While the wait lasts the next write is answered by bzz, at once.
+    let again = std::time::Instant::now();
+    assert!(cy_pane.session.paste("1"));
+    cy_pane
+        .until("the second wait", |screen, _| {
+            screen.contains("told to wait 2")
+        })
+        .await;
+    assert!(again.elapsed() < Duration::from_secs(2));
+    assert_eq!(cy.service.channel_total(channel).await.unwrap(), total);
+    // The pane counts the wait down.
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    cy_pane.session.tick();
+    let later = cy_pane.status().wait.unwrap_or(0);
+    assert!(later < wait, "{later} after {wait}");
+
+    drop((ana_pane, ben_pane, dan_pane, cy_pane));
+    for profile in [ana, ben, dan, cy] {
+        profile.stop().await;
+    }
+}
+
+/// v0.16 M2: a person's own quota at the relay, sixty writes a minute
+/// shared between chat and apps. The suite raises that quota for its other
+/// tests, so this one runs only when the relay was started with its own:
+/// `BZZ_RELAY_OWN_QUOTA=1 ./scripts/test-relay.sh`.
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[ignore = "requires BZZ_RELAY_OWN_QUOTA=1 scripts/test-relay.sh"]
+async fn real_relay_app_session_meets_a_persons_own_quota() {
+    use bzz::service::records::SyncState;
+    use support::app_pane::{Pane, last_row};
+
+    const BOARD: &str = include_str!("fixtures/apps/board/app.lua");
+    if std::env::var("BZZ_RELAY_OWN_QUOTA").is_err() {
+        eprintln!("skipped: the relay of this run has a raised quota for people");
+        return;
+    }
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let folder = tempfile::tempdir().unwrap();
+    let eva = RecordsProfile::person(&source, folder.path(), "eva", "member").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let channel = uuid::Uuid::new_v4();
+    eva.send(
+        buzz_sdk::build_create_channel(
+            channel,
+            &format!("quota-{}", &channel.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Private),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut pane = Pane::open(&eva.service, channel, "board", BOARD);
+    pane.settled("Loaded 0 cards.").await;
+    pane.key("n");
+    pane.type_text("One card");
+    pane.key("enter");
+    pane.settled("Saved.").await;
+
+    // Her chat spends the rest of her minute: the channel's creation and
+    // the card were two of the sixty. The relay also takes no more than
+    // fifty frames in five seconds, so she types at eight a second.
+    let started = std::time::Instant::now();
+    let mut sent = 2;
+    let wait = loop {
+        let event = eva
+            .signer
+            .sign(
+                buzz_sdk::build_message(
+                    channel,
+                    &format!("chat {sent}"),
+                    None,
+                    &[],
+                    false,
+                    &[],
+                    &[],
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let ack = eva.supervisor.publish(event).await.unwrap();
+        if !ack.accepted {
+            break ack.message;
+        }
+        sent += 1;
+        assert!(sent <= 200, "the relay's quota was never met");
+        tokio::time::sleep(Duration::from_millis(125)).await;
+    };
+    eprintln!(
+        "the relay took {sent} writes of the person in {} s, then said: {wait}",
+        started.elapsed().as_secs()
+    );
+    assert_eq!(sent, 60, "a person's own quota at the pin");
+    assert!(wait.starts_with("rate-limited:"), "{wait}");
+
+    // Her app's next write is answered with the wait, and the pane shows
+    // it: in the app's own words and in bzz's.
+    pane.key("]");
+    let screen = pane
+        .until("the wait on the screen", |screen, _| {
+            last_row(screen).starts_with("Too many changes. Retry in ")
+        })
+        .await;
+    assert!(screen.contains("To do (1)"), "the card is back:\n{screen}");
+    let status = pane.status();
+    let notice = status.notice.clone().expect("the pane says the wait");
+    assert!(
+        notice.starts_with("Too many changes: this app can write again in ")
+            && status
+                .wait
+                .is_some_and(|seconds| (1..=60).contains(&seconds)),
+        "{status:?}"
+    );
+    assert_eq!(status.sync, SyncState::Live);
+    eprintln!(
+        "at a person's own quota the app says \"{}\" and the pane: {notice}",
+        last_row(&screen)
+    );
+    assert_eq!(eva.service.channel_total(channel).await.unwrap(), 1);
+    drop(pane);
+    eva.stop().await;
+}
+
+/// v0.16 M7, the exit gate on the pinned relay: an agent with the `bot`
+/// role in a private channel where its owner opened the Rota takes a day
+/// when it is mentioned, through its tools, signed by bzz with the agent's
+/// key; another profile's Rota shows it. The relay runs with
+/// `BUZZ_REQUIRE_RELAY_MEMBERSHIP` as the wrapper was started: off by
+/// default; with it `true`, the agent is first shown to be refused at the
+/// relay's door, then made a relay member.
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_agent_takes_a_day_in_the_rota_with_its_bot_role() {
+    use bzz::{
+        agents::runtime::{Limits, service},
+        apps::store::{Apps, Proposer, Recorded, Submission},
+        auth::IdentityManager,
+        broker::custody,
+        config::{Harness, LocalAgentConfig},
+        diagnostics::DiagnosticHandle,
+        paths::Paths,
+        service::records::SyncState,
+    };
+    use serde_json::json;
+    use support::{agent_harness::Script, app_pane::Pane};
+
+    const ROTA: &str = include_str!("fixtures/apps/rota/app.lua");
+    const BRIEF: &str = include_str!("fixtures/apps/rota/brief.md");
+    const WAIT: Duration = Duration::from_secs(30);
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let closed = std::env::var("BUZZ_REQUIRE_RELAY_MEMBERSHIP").is_ok_and(|value| value == "true");
+    eprintln!(
+        "the relay requires membership: {closed} (BUZZ_REQUIRE_RELAY_MEMBERSHIP={:?})",
+        std::env::var("BUZZ_REQUIRE_RELAY_MEMBERSHIP").ok()
+    );
+    let temporary = tempfile::TempDir::new().unwrap();
+    let dirs = temporary.path();
+    let passphrase = "m7 disposable passphrase";
+    std::fs::write(dirs.join("pass"), format!("{passphrase}\n")).unwrap();
+    let cli = |args: &[&str]| {
+        let output = bzz_on_profile(dirs, args, None).output().unwrap();
+        assert!(
+            output.status.success(),
+            "bzz {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    // The owner's profile, made by bzz, with an agent whose key bzz holds.
+    cli(&[
+        "identity",
+        "new",
+        "--label",
+        "owner",
+        "--backend",
+        "encrypted-file",
+    ]);
+    let paths = Paths {
+        config_dir: dirs.join("c"),
+        data_dir: dirs.join("d"),
+        cache_dir: dirs.join("k"),
+    };
+    let mut config = Config::load(&paths).unwrap();
+    let identity = config.identities[0].clone();
+    let community = config
+        .add_community("m7".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    config.save(&paths).unwrap();
+    cli(&["broker", "create", "Scout", "--yes"]);
+    let config = Config::load(&paths).unwrap();
+    let mut agent = config.hosted_agents[0].clone();
+    let agent_hex = agent.pubkey.clone();
+    let _ = seed_member(&source, &identity.pubkey);
+    let bo = RecordsProfile::person(&source, dirs, "bo", "member").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let secret = secrecy::SecretString::from(passphrase.to_owned());
+    let owner = IdentityManager::new(&paths)
+        .signer(&identity, Some(&secret))
+        .unwrap();
+    let ws = url::Url::parse("ws://localhost:3030/").unwrap();
+    let http_base = url::Url::parse("http://localhost:3030/").unwrap();
+    let owner_supervisor = SupervisorHandle::spawn(ws.clone(), owner.clone());
+    let owner_http = HttpClient::new(http_base.clone(), owner.clone()).unwrap();
+    let publish = |builder: EventBuilder| {
+        let (owner, supervisor) = (owner.clone(), owner_supervisor.clone());
+        async move {
+            let event = owner.sign(builder).await.unwrap();
+            let ack = supervisor.publish(event.clone()).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+            event
+        }
+    };
+    // A private channel: the agent writes there because it was added, with
+    // the role `bot`; bo is a plain member.
+    let channel = uuid::Uuid::new_v4();
+    publish(
+        buzz_sdk::build_create_channel(
+            channel,
+            &format!("m7-{}", &channel.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Private),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    publish(buzz_sdk::build_add_member(channel, &bo.pubkey(), None).unwrap()).await;
+    publish(
+        buzz_sdk::build_add_member(channel, &agent_hex, Some(buzz_sdk::MemberRole::Bot)).unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // The owner's bzz: the Rota installed, approved, open in the channel.
+    let mut store = Store::open(paths.database_file()).unwrap();
+    store.sync_config(&config).unwrap();
+    {
+        let mut apps = Apps::new(&mut store, &paths);
+        let Recorded::Waiting { version, hash, .. } = apps
+            .propose(
+                community,
+                Submission::new("rota", ROTA, BRIEF, Proposer::owner()),
+            )
+            .unwrap()
+        else {
+            panic!("the Rota loads");
+        };
+        apps.approve(community, "rota", version, &hash).unwrap();
+        apps.open_in(community, "rota", channel).unwrap();
+    }
+    let relay_key = bzz::protocol::http::relay_signing_pubkey(&owner_http.nip11().await.unwrap())
+        .unwrap()
+        .to_owned();
+    store.pin_relay_pubkey(community, &relay_key).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    // The week, written by the owner.
+    let owners = bzz::service::records::RecordsService::new(
+        community,
+        owner_http.clone(),
+        store.clone(),
+        bzz::service::records::Writer::new(owner.clone(), owner_supervisor.clone()),
+    );
+    let (week, mut week_events) = owners.open(channel, "rota", &["day"]).await.unwrap();
+    while week.state() != SyncState::Live {
+        let _ = tokio::time::timeout(WAIT, week_events.recv())
+            .await
+            .unwrap();
+    }
+    for (order, day) in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        .iter()
+        .enumerate()
+    {
+        let content = json!({"day": day, "holder": null, "order": order + 1});
+        week.create("day", content.as_object().unwrap().clone())
+            .await
+            .unwrap();
+    }
+    // Another profile's Rota.
+    let mut theirs = Pane::open(&bo.service, channel, "rota", ROTA);
+    let screen = theirs
+        .until("the week on bo's screen", |screen, _| {
+            screen.contains("Loaded 7 days.")
+        })
+        .await;
+    assert!(screen.contains("Tue  free"), "{screen}");
+
+    if closed {
+        // Not a relay member: the agent's own connection is refused at the
+        // door, and so is any write of its.
+        let agent_signer = custody::unlock(&paths.keys_dir(), &owner, &agent)
+            .await
+            .unwrap();
+        let agent_supervisor = SupervisorHandle::spawn(ws.clone(), agent_signer.clone());
+        let message = agent_signer
+            .sign(buzz_sdk::build_message(channel, "hello", None, &[], false, &[], &[]).unwrap())
+            .await
+            .unwrap();
+        let ack =
+            tokio::time::timeout(Duration::from_secs(15), agent_supervisor.publish(message)).await;
+        eprintln!("an agent that is no relay member, writing: {ack:?}");
+        assert!(
+            !matches!(&ack, Ok(Ok(ack)) if ack.accepted),
+            "the relay took a write of an agent that is no member: {ack:?}"
+        );
+        agent_supervisor.shutdown().await;
+        agent_signer.lock().await;
+        let _ = seed_member(&source, &agent_hex);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    // The agent, run as the TUI runs it, on the scripted harness.
+    let script = Script::new(&dirs.join("harness"));
+    script.write(
+        json!({"own_host": true}),
+        json!([{"match": "take Tuesday", "steps": [
+            {"tool": "apps", "keep": "apps"},
+            {"tool": "records", "arguments": {"app": "rota", "type": "day"},
+             "keep": {"as": "tue", "find": "/records", "where": {"/content/day": "Tue"}}},
+            {"tool": "update_record", "arguments": {
+                "app": "rota", "id": "$tue/id", "rev": "$tue/rev",
+                "content": {"day": "Tue", "holder": "Scout", "order": "$tue/content/order"}}},
+            {"tool": "send", "arguments": {"text": "Tuesday is mine.", "final": true}},
+        ]}]),
+    );
+    let mut local = LocalAgentConfig::new(Harness::PiDurable);
+    local.command = script.command();
+    agent.local = Some(local);
+    let running = service::serve(service::ServeOptions {
+        paths: &paths,
+        store: store.clone(),
+        diagnostics: DiagnosticHandle::disabled(),
+        community: &config.communities[0],
+        agents: &[agent],
+        owner: &owner,
+        owner_identity: identity.id,
+        federated: None,
+        limits: Limits {
+            stop_grace: Duration::from_millis(500),
+            ..Limits::default()
+        },
+        owner_present: false,
+        environment: None,
+    })
+    .await
+    .unwrap()
+    .expect("one local agent");
+    assert!(running.problems.is_empty(), "{:?}", running.problems);
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !running.listening() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the agent's intake never subscribed"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let started = std::time::Instant::now();
+    let request = publish(
+        buzz_sdk::build_message(
+            channel,
+            "take Tuesday",
+            None,
+            &[agent_hex.as_str()],
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
+    )
+    .await;
+    // Bo's Rota shows the agent's day.
+    let screen = theirs
+        .until("the agent's day on bo's screen", |screen, _| {
+            screen.contains("Tue  Scout")
+        })
+        .await;
+    eprintln!(
+        "the agent's day was on bo's screen {} ms after the mention",
+        started.elapsed().as_millis()
+    );
+    assert!(screen.contains("Days: Scout 1"), "{screen}");
+    let tuesday = theirs
+        .session
+        .records()
+        .find(|record| record.content["day"] == "Tue")
+        .cloned()
+        .unwrap();
+    assert_eq!(tuesday.author, agent_hex, "signed with the agent's key");
+    // And so does the relay's own head, read by the owner.
+    let heads = owner_http
+        .query_raw(&[bzz::protocol::artifact::head_filter(tuesday.id)])
+        .await
+        .unwrap();
+    assert!(
+        heads
+            .iter()
+            .any(|head| head.pubkey.to_hex() == agent_hex && head.content.contains("\"Scout\"")),
+        "{heads:?}"
+    );
+    // The mention has its one reply.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let replies = loop {
+        let replies = owner_http
+            .query_raw(&[json!({"kinds": [9], "#h": [channel.to_string()], "authors": [agent_hex], "limit": 50})])
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                bzz::protocol::events::event_references(event).contains(&request.id.to_hex())
+            })
+            .collect::<Vec<_>>();
+        if !replies.is_empty() || tokio::time::Instant::now() > deadline {
+            break replies;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert_eq!(replies[0].content, "Tuesday is mine.");
+    let answered = script.tool_results("update_record");
+    assert_eq!(answered.len(), 1);
+    assert_ne!(answered[0]["isError"], true, "{answered:?}");
+
+    drop(theirs);
+    drop(week);
+    running.stop().await;
+    for supervisor in [&owner_supervisor, &bo.supervisor] {
+        supervisor.shutdown().await;
+    }
+    owner.lock().await;
+}
+
+/// v0.16 M6 on the pinned relay: one profile shares the Board in a channel;
+/// another sees the offer with its brief and who signed it, runs nothing of
+/// it before approving it, approves it, and both use the same records. A
+/// later version with another type list, a revision by a third member, a
+/// tampered and an oversized artifact, offers from a guest and from
+/// someone outside the channel, the withdrawal, the brief posted once per
+/// version, and no key in any artifact.
+///
+/// Relay mode: the harness's default, `BUZZ_REQUIRE_RELAY_MEMBERSHIP` off;
+/// the channel is private. Everyone is a relay member; "outside" is a relay
+/// member who is not in the channel.
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_an_app_shared_in_a_channel_runs_elsewhere_only_after_approval() {
+    use bzz::apps::share;
+    use bzz::apps::store::{
+        AppError, Apps, Bundle, Proposer, Recorded, Submission, manifest::Manifest, offers::Told,
+        review::TypesChange,
+    };
+    use bzz::protocol::record::Change;
+    use bzz::service::messages::MessageService;
+    use bzz::service::offers::{OfferNews, OffersService};
+    use bzz::service::records::{RecordEvent, SyncState};
+    use nostr::nips::nip19::ToBech32 as _;
+    use serde_json::{Value, json};
+    use tokio::sync::mpsc::{self, UnboundedReceiver};
+
+    fn offers_of(
+        profile: &RecordsProfile,
+        root: std::path::PathBuf,
+    ) -> (OffersService, UnboundedReceiver<OfferNews>) {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let service = OffersService::new(
+            profile.community,
+            profile.http.clone(),
+            profile.handle.clone(),
+            profile.signer.clone(),
+            profile.supervisor.clone(),
+            MessageService::new(
+                profile.community,
+                profile.signer.clone(),
+                profile.handle.clone(),
+                profile.supervisor.clone(),
+            ),
+            root,
+            std::sync::Arc::new(move |news| {
+                let _ = sender.send(news);
+            }),
+        );
+        (service, receiver)
+    }
+    async fn news(receiver: &mut UnboundedReceiver<OfferNews>) -> OfferNews {
+        tokio::time::timeout(Duration::from_secs(30), receiver.recv())
+            .await
+            .expect("news of offers in time")
+            .expect("the offers are watched")
+    }
+    async fn told_next(receiver: &mut UnboundedReceiver<OfferNews>) -> Vec<Told> {
+        loop {
+            if let OfferNews::Told { told, .. } = news(receiver).await {
+                return told;
+            }
+        }
+    }
+    async fn synced(receiver: &mut UnboundedReceiver<OfferNews>) {
+        while !matches!(news(receiver).await, OfferNews::Synced { .. }) {}
+    }
+    async fn quiet(receiver: &mut UnboundedReceiver<OfferNews>, wait: Duration) -> Vec<OfferNews> {
+        let mut seen = Vec::new();
+        let until = tokio::time::Instant::now() + wait;
+        while let Ok(Some(news)) = tokio::time::timeout_at(until, receiver.recv()).await {
+            seen.push(news);
+        }
+        seen
+    }
+    async fn install(profile: &RecordsProfile, root: std::path::PathBuf, script: String) -> u32 {
+        let community = profile.community;
+        let brief = bzz::apps::store::templates::find("board").unwrap().brief;
+        profile
+            .handle
+            .call(move |store| {
+                let mut apps = Apps::at(store, root);
+                let recorded = apps
+                    .propose(
+                        community,
+                        Submission::new("board", script, brief, Proposer::owner()).titled("Board"),
+                    )
+                    .map_err(bzz::Error::from)?;
+                let Recorded::Waiting { version, hash, .. } = recorded else {
+                    panic!("{recorded:?}")
+                };
+                apps.approve(community, "board", version, &hash)
+                    .map_err(bzz::Error::from)?;
+                Ok(version)
+            })
+            .await
+            .unwrap()
+    }
+    async fn on_apps<T: Send + 'static>(
+        profile: &RecordsProfile,
+        root: std::path::PathBuf,
+        call: impl FnOnce(&mut Apps<'_>, uuid::Uuid) -> T + Send + 'static,
+    ) -> T {
+        let community = profile.community;
+        profile
+            .handle
+            .call(move |store| Ok(call(&mut Apps::at(store, root), community)))
+            .await
+            .unwrap()
+    }
+    async fn briefs(profile: &RecordsProfile, channel: uuid::Uuid) -> usize {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        profile
+            .http
+            .query_raw(&[json!({"kinds": [9], "#h": [channel.to_string()], "limit": 100})])
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| event.content.starts_with("I shared the app Board (board"))
+            .count()
+    }
+    fn bundle(script: String, brief: &str, types: &[&str]) -> Bundle {
+        let manifest = Manifest {
+            name: "board".into(),
+            title: "Board".into(),
+            api: 1,
+            types: types.iter().map(|name| (*name).to_owned()).collect(),
+        };
+        Bundle {
+            script: script.into_bytes(),
+            manifest_text: manifest.to_text(),
+            manifest,
+            brief: brief.into(),
+        }
+    }
+    fn raw_offer(channel: uuid::Uuid, content: String) -> EventBuilder {
+        let tags = [
+            ["ar", "1"],
+            ["d", &uuid::Uuid::new_v4().to_string()],
+            ["h", &channel.to_string()],
+            ["type", share::OFFER_TYPE],
+            ["title", "Board"],
+            ["op", "create"],
+            [share::APP_TAG, "board"],
+        ]
+        .map(|parts| nostr::Tag::parse(parts).unwrap());
+        EventBuilder::new(Kind::Custom(45_010), content).tags(tags)
+    }
+
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let folder = tempfile::tempdir().unwrap();
+    let ana = RecordsProfile::person(&source, folder.path(), "ana", "member").await;
+    let ben = RecordsProfile::person(&source, folder.path(), "ben", "member").await;
+    let cara = RecordsProfile::person(&source, folder.path(), "cara", "member").await;
+    let guest = RecordsProfile::person(&source, folder.path(), "guest", "member").await;
+    let outsider = RecordsProfile::person(&source, folder.path(), "outsider", "member").await;
+    let (ana_root, ben_root) = (
+        folder.path().join("ana-apps"),
+        folder.path().join("ben-apps"),
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let channel = uuid::Uuid::new_v4();
+    ana.send(
+        buzz_sdk::build_create_channel(
+            channel,
+            &format!("share-{}", &channel.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Private),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    for (member, role) in [
+        (&ben, None),
+        (&cara, None),
+        (&guest, Some(buzz_sdk::MemberRole::Guest)),
+    ] {
+        ana.send(buzz_sdk::build_add_member(channel, &member.pubkey(), role).unwrap())
+            .await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Ana has the Board, approved; Ben has nothing.
+    let template = bzz::apps::store::templates::find("board").unwrap();
+    let first = install(&ana, ana_root.clone(), template.script.to_owned()).await;
+    let (ana_offers, mut ana_news) = offers_of(&ana, ana_root.clone());
+    let (ben_offers, mut ben_news) = offers_of(&ben, ben_root.clone());
+    ana_offers.watch(Some((channel, false)));
+    ben_offers.watch(Some((channel, false)));
+    synced(&mut ana_news).await;
+    synced(&mut ben_news).await;
+
+    // 1. Ana shares it; Ben sees the offer, from her, by key, with its brief.
+    let shared = ana_offers.share(channel, "board").await.unwrap();
+    assert!(
+        shared.brief_posted && !shared.revised && !shared.unchanged,
+        "{shared:?}"
+    );
+    assert_eq!(shared.version, first);
+    let told = told_next(&mut ben_news).await;
+    let [
+        Told::Offered {
+            name,
+            version,
+            from,
+            replaces: None,
+            installed_from: None,
+            types_changed: false,
+        },
+    ] = told.as_slice()
+    else {
+        panic!("{told:?}")
+    };
+    assert_eq!(name, "board");
+    assert_eq!(from.id.as_deref(), Some(ana.pubkey().as_str()));
+    assert_eq!(from.channel, Some(channel));
+    let offered = *version;
+    // Ana's own offer is offered to nobody on her side.
+    assert!(
+        quiet(&mut ana_news, Duration::from_millis(500))
+            .await
+            .iter()
+            .all(|news| !matches!(news, OfferNews::Told { .. })),
+        "Ana's own offer was offered to her"
+    );
+
+    // 2. Before the approval nothing of it runs, at the one function that
+    // hands out a script to run.
+    let refused = on_apps(&ben, ben_root.clone(), |apps, community| {
+        apps.runnable(community, "board").map(|_| ())
+    })
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(refused, AppError::NothingApproved { waiting: 1, .. }),
+        "{refused}"
+    );
+    let review = on_apps(&ben, ben_root.clone(), move |apps, community| {
+        apps.review(community, "board", offered).unwrap()
+    })
+    .await;
+    let text = review.render(|_| "then".into());
+    assert!(
+        text.contains(&format!("a person of the channel ({})", ana.pubkey())),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "this exact revision ({}…)",
+            &shared.revision[..16]
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains(template.brief.lines().next().unwrap()),
+        "{text}"
+    );
+    assert_eq!(review.types_change, TypesChange::First);
+    let hash = review.hash.clone();
+    let approved = on_apps(&ben, ben_root.clone(), move |apps, community| {
+        apps.approve(community, "board", offered, &hash).unwrap()
+    })
+    .await;
+    assert_eq!(
+        approved.opened_in,
+        Some(channel),
+        "opened where it was offered"
+    );
+    let runnable = on_apps(&ben, ben_root.clone(), |apps, community| {
+        apps.runnable(community, "board").unwrap()
+    })
+    .await;
+    assert_eq!(runnable.script(), template.script.as_bytes());
+
+    // Both use the same records: a card by one shows for the other.
+    let (ana_board, mut ana_events) = ana.service.open(channel, "board", &["card"]).await.unwrap();
+    let (_ben_board, mut ben_events) = ben
+        .service
+        .open(channel, "board", runnable.types())
+        .await
+        .unwrap();
+    for events in [&mut ana_events, &mut ben_events] {
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if event == RecordEvent::State(SyncState::Live) {
+                break;
+            }
+        }
+    }
+    let card = ana_board
+        .create(
+            "card",
+            json!({"title": "shared board", "column": "todo", "order": 1.0})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .await
+        .unwrap();
+    let arrived = loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), ben_events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if let RecordEvent::Changes { changes, .. } = event {
+            break changes;
+        }
+    };
+    assert!(
+        matches!(arrived.as_slice(), [Change::Upsert(record)] if record.id == card.id && record.author == ana.pubkey()),
+        "{arrived:?}"
+    );
+
+    // 8. The brief was posted once; sharing the same version again posts
+    // nothing and publishes nothing.
+    assert_eq!(briefs(&ana, channel).await, 1);
+    let again = ana_offers.share(channel, "board").await.unwrap();
+    assert!(again.unchanged && !again.brief_posted, "{again:?}");
+    assert_eq!(briefs(&ana, channel).await, 1);
+
+    // 3. A later version, with a changed type list, is a new revision and a
+    // new offer, marked as such; it is never applied by itself.
+    let tagged = template.script.replace(
+        "app.types = { \"card\" }",
+        "app.types = { \"card\", \"tag\" }",
+    );
+    assert_ne!(tagged, template.script);
+    let second = install(&ana, ana_root.clone(), tagged.clone()).await;
+    let shared_again = ana_offers.share(channel, "board").await.unwrap();
+    assert!(
+        shared_again.revised && shared_again.brief_posted && shared_again.version == second,
+        "{shared_again:?}"
+    );
+    assert_eq!(shared_again.artifact, shared.artifact, "the same artifact");
+    assert_eq!(briefs(&ana, channel).await, 2, "once for each version");
+    let told = told_next(&mut ben_news).await;
+    let [
+        Told::Offered {
+            version: later,
+            types_changed: true,
+            installed_from: Some(installed_from),
+            ..
+        },
+    ] = told.as_slice()
+    else {
+        panic!("{told:?}")
+    };
+    assert_eq!(installed_from.id.as_deref(), Some(ana.pubkey().as_str()));
+    let later = *later;
+    let review = on_apps(&ben, ben_root.clone(), move |apps, community| {
+        apps.review(community, "board", later).unwrap()
+    })
+    .await;
+    assert_eq!(
+        review.types_change,
+        TypesChange::Changed {
+            added: vec!["tag".into()],
+            removed: vec![]
+        }
+    );
+    assert!(
+        review
+            .render(|_| String::new())
+            .contains("CHANGED from the version that runs:")
+    );
+    let running = on_apps(&ben, ben_root.clone(), |apps, community| {
+        apps.runnable(community, "board").unwrap().version()
+    })
+    .await;
+    assert_eq!(
+        running, offered,
+        "the installed version runs until Ben answers"
+    );
+
+    // 6. Cara publishes a new revision of Ana's offer: Ben is shown Cara.
+    let head = cara
+        .http
+        .query_raw(&[bzz::protocol::artifact::head_filter(shared.artifact)])
+        .await
+        .unwrap()
+        .iter()
+        .find_map(|event| bzz::protocol::artifact::parse(event).ok())
+        .unwrap();
+    assert_eq!(head.author, ana.pubkey());
+    let caras = bundle(
+        format!("{tagged}-- Cara's\n"),
+        "Cara's board.\n",
+        &["card", "tag"],
+    );
+    cara.send(share::revise(&head, &caras).unwrap()).await;
+    let told = told_next(&mut ben_news).await;
+    let [
+        Told::Offered {
+            version: caras_version,
+            from,
+            replaces: Some(replaces),
+            ..
+        },
+    ] = told.as_slice()
+    else {
+        panic!("{told:?}")
+    };
+    assert_eq!(from.id.as_deref(), Some(cara.pubkey().as_str()));
+    assert_eq!(replaces.id.as_deref(), Some(ana.pubkey().as_str()));
+    let caras_version = *caras_version;
+    let review = on_apps(&ben, ben_root.clone(), move |apps, community| {
+        apps.review(community, "board", caras_version).unwrap()
+    })
+    .await;
+    let text = review.render(|_| String::new());
+    assert!(
+        text.contains(&format!("a person of the channel ({})", cara.pubkey()))
+            && text.contains("Source:   CHANGED: the version installed here came from"),
+        "{text}"
+    );
+    let waiting = on_apps(&ben, ben_root.clone(), |apps, community| {
+        apps.waiting(community).unwrap()
+    })
+    .await;
+    assert_eq!(
+        waiting.len(),
+        1,
+        "Ana's later version no longer waits: {waiting:?}"
+    );
+
+    // 4. Tampered and oversized: refused on the sender's side before
+    // anything is sent, and on the receiver's when another client sends it.
+    let oversized = format!("--{}\n", "x".repeat(130 * 1024));
+    let error = share::create(
+        channel,
+        uuid::Uuid::new_v4(),
+        &bundle(oversized.clone(), "Big.", &["card"]),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("too large"), "{error}");
+    let wire = |script: &str, hash: &str| {
+        json!({"v":1,"manifest":{"name":"board","title":"Board","api":1,"types":["card"],
+               "script_sha256":hash},"brief":"A board.","script":script})
+        .to_string()
+    };
+    let good_hash = bzz::apps::store::manifest::sha256(template.script.as_bytes());
+    cara.send(raw_offer(channel, wire("os.exit()\n", &good_hash)))
+        .await;
+    let told = told_next(&mut ben_news).await;
+    assert!(
+        matches!(told.as_slice(), [Told::Refused { why, .. }] if why.contains("changed on the way")),
+        "{told:?}"
+    );
+    let big_hash = bzz::apps::store::manifest::sha256(oversized.as_bytes());
+    cara.send(raw_offer(channel, wire(&oversized, &big_hash)))
+        .await;
+    let told = told_next(&mut ben_news).await;
+    assert!(
+        matches!(told.as_slice(), [Told::Refused { why, .. }] if why.contains("too large")),
+        "{told:?}"
+    );
+
+    // 5. Someone who cannot write to the channel: the relay refuses, and
+    // nothing arrives.
+    for stranger in [&guest, &outsider] {
+        let event = stranger
+            .signer
+            .sign(
+                share::create(
+                    channel,
+                    uuid::Uuid::new_v4(),
+                    &bundle(template.script.to_owned(), "Mine.", &["card"]),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let ack = stranger.supervisor.publish(event).await.unwrap();
+        assert!(
+            !ack.accepted && ack.message.starts_with("restricted:"),
+            "{}",
+            ack.message
+        );
+    }
+    let heard = quiet(&mut ben_news, Duration::from_secs(2)).await;
+    assert!(
+        heard
+            .iter()
+            .all(|news| !matches!(news, OfferNews::Told { .. })),
+        "an offer from someone who cannot write arrived: {heard:?}"
+    );
+
+    // 7. Ana withdraws: the offer that waits goes (its head was Cara's, so
+    // the deletion is told as Ana's of Cara's offer); the installed copy
+    // stays.
+    let unshared = ana_offers.unshare(channel, "board").await.unwrap();
+    assert_eq!(unshared.already_by, None);
+    let told = told_next(&mut ben_news).await;
+    let [
+        Told::Withdrawn {
+            signer,
+            by: Some(by),
+            ..
+        },
+    ] = told.as_slice()
+    else {
+        panic!("{told:?}")
+    };
+    assert_eq!(signer.id.as_deref(), Some(cara.pubkey().as_str()));
+    assert_eq!(by.id.as_deref(), Some(ana.pubkey().as_str()));
+    let (waiting, running) = on_apps(&ben, ben_root.clone(), |apps, community| {
+        (
+            apps.waiting(community).unwrap(),
+            apps.runnable(community, "board").unwrap().version(),
+        )
+    })
+    .await;
+    assert!(waiting.is_empty(), "{waiting:?}");
+    assert_eq!(running, offered, "the installed copy stays");
+
+    // 9. No key or credential in any revision of any offer.
+    // Every artifact of the channel's offers, then every revision of each.
+    let heads = ben
+        .http
+        .query_raw(&[json!({"artifact": "current", "#h": [channel.to_string()], "#type": [share::OFFER_TYPE], "limit": 200})])
+        .await
+        .unwrap();
+    let mut ids: Vec<uuid::Uuid> = heads
+        .iter()
+        .filter_map(|event| bzz::protocol::artifact::parse(event).ok())
+        .map(|head| head.id)
+        .collect();
+    ids.push(shared.artifact);
+    ids.sort();
+    ids.dedup();
+    let mut offers: Vec<nostr::Event> = Vec::new();
+    for id in ids {
+        offers.extend(
+            ben.http
+                .query_raw(&[json!({"artifact": "history", "#d": [id.to_string()]})])
+                .await
+                .unwrap(),
+        );
+    }
+    // Ana's create and update, Cara's update, Ana's deletion, the tampered
+    // and the oversized offer.
+    assert!(offers.len() >= 6, "{} revisions of offers", offers.len());
+    for profile in [&ana, &ben, &cara, &guest, &outsider] {
+        let secrets = [
+            profile.keys.secret_key().to_secret_hex(),
+            profile.keys.secret_key().to_bech32().unwrap(),
+        ];
+        for event in &offers {
+            let text = serde_json::to_string(event).unwrap();
+            for secret in &secrets {
+                assert!(!text.contains(secret.as_str()), "a key in an offer");
+            }
+            let content: Value = serde_json::from_str(&event.content).unwrap_or(Value::Null);
+            assert!(content.get("key").is_none() && content.get("nsec").is_none());
+        }
+    }
+
+    ana_offers.watch(None);
+    ben_offers.watch(None);
+    drop((ana_board, ana_events, ben_events));
+    for profile in [ana, ben, cara, guest, outsider] {
+        profile.stop().await;
+    }
+}
+
+/// v0.16 M5 on the pinned relay: an agent with the `bot` role in a private
+/// channel where its owner opened the Board is asked, by the owner's
+/// mention, for the priority and the filter of `board-priority.md`; it
+/// proposes a version through its tools; bzz approves it here as the
+/// owner's overlay does; the agent is told "applied" at its next turn;
+/// each mention has one reply, and nothing of the agent's reached the
+/// channel's records. The approved script is written to
+/// `$BZZ_AUTHOR_OUT/approved/` for the bench (`scripts/
+/// test-agent-authors-app.sh` runs it there).
+///
+/// `BZZ_AUTHOR_HARNESS`: `scripted` (the default; the scripted harness
+/// stands in for the model and proposes `tests/fixtures/apps/
+/// board-priority`) or `pi-durable`, `grok`, `codex`, `claude-code`: the
+/// owner's real program and sign-in, only when he allowed that run (plan
+/// D13).
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied() {
+    use bzz::{
+        agents::runtime::{Limits, service},
+        apps::store::{Apps, Proposer, ProposerKind, Recorded, Submission},
+        auth::IdentityManager,
+        config::{Harness, LocalAgentConfig},
+        diagnostics::DiagnosticHandle,
+        paths::Paths,
+        service::records::SyncState,
+    };
+    use serde_json::json;
+    use support::agent_harness::Script;
+
+    const BOARD: &str = include_str!("fixtures/apps/board/app.lua");
+    const BOARD_BRIEF: &str = include_str!("fixtures/apps/board/brief.md");
+    const BOARD_PRIORITY: &str = include_str!("fixtures/apps/board-priority/app.lua");
+    const BOARD_PRIORITY_BRIEF: &str = include_str!("fixtures/apps/board-priority/brief.md");
+    const SPEC: &str = include_str!("apps-bench/spec/board-priority.md");
+    let harness = std::env::var("BZZ_AUTHOR_HARNESS").unwrap_or_else(|_| "scripted".into());
+    let real = match harness.as_str() {
+        "scripted" => None,
+        "pi-durable" => Some(Harness::PiDurable),
+        "grok" => Some(Harness::Grok),
+        "codex" => Some(Harness::Codex),
+        "claude-code" => Some(Harness::ClaudeCode),
+        other => {
+            panic!("BZZ_AUTHOR_HARNESS={other}: scripted, pi-durable, grok, codex or claude-code")
+        }
+    };
+    // A real model takes its time; a turn has bzz's own limit.
+    let wait = if real.is_some() {
+        Duration::from_secs(660)
+    } else {
+        Duration::from_secs(30)
+    };
+    eprintln!("the agent's harness: {harness}");
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let temporary = tempfile::TempDir::new().unwrap();
+    let dirs = temporary.path();
+    let passphrase = "m5 disposable passphrase";
+    std::fs::write(dirs.join("pass"), format!("{passphrase}\n")).unwrap();
+    let cli = |args: &[&str]| {
+        let output = bzz_on_profile(dirs, args, None).output().unwrap();
+        assert!(
+            output.status.success(),
+            "bzz {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    cli(&[
+        "identity",
+        "new",
+        "--label",
+        "owner",
+        "--backend",
+        "encrypted-file",
+    ]);
+    let paths = Paths {
+        config_dir: dirs.join("c"),
+        data_dir: dirs.join("d"),
+        cache_dir: dirs.join("k"),
+    };
+    let mut config = Config::load(&paths).unwrap();
+    let identity = config.identities[0].clone();
+    let community = config
+        .add_community("m5".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    config.save(&paths).unwrap();
+    cli(&["broker", "create", "Scout", "--yes"]);
+    let config = Config::load(&paths).unwrap();
+    let mut agent = config.hosted_agents[0].clone();
+    let agent_hex = agent.pubkey.clone();
+    let _ = seed_member(&source, &identity.pubkey);
+    let _ = seed_member(&source, &agent_hex);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let secret = secrecy::SecretString::from(passphrase.to_owned());
+    let owner = IdentityManager::new(&paths)
+        .signer(&identity, Some(&secret))
+        .unwrap();
+    let ws = url::Url::parse("ws://localhost:3030/").unwrap();
+    let http_base = url::Url::parse("http://localhost:3030/").unwrap();
+    let owner_supervisor = SupervisorHandle::spawn(ws.clone(), owner.clone());
+    let owner_http = HttpClient::new(http_base.clone(), owner.clone()).unwrap();
+    let publish = |builder: EventBuilder| {
+        let (owner, supervisor) = (owner.clone(), owner_supervisor.clone());
+        async move {
+            let event = owner.sign(builder).await.unwrap();
+            let ack = supervisor.publish(event.clone()).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+            event
+        }
+    };
+    let channel = uuid::Uuid::new_v4();
+    publish(
+        buzz_sdk::build_create_channel(
+            channel,
+            &format!("m5-{}", &channel.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Private),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    publish(
+        buzz_sdk::build_add_member(channel, &agent_hex, Some(buzz_sdk::MemberRole::Bot)).unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // The owner's bzz: the Board installed, approved, open in the channel,
+    // with three cards.
+    let mut store = Store::open(paths.database_file()).unwrap();
+    store.sync_config(&config).unwrap();
+    {
+        let mut apps = Apps::new(&mut store, &paths);
+        let Recorded::Waiting { version, hash, .. } = apps
+            .propose(
+                community,
+                Submission::new("board", BOARD, BOARD_BRIEF, Proposer::owner()),
+            )
+            .unwrap()
+        else {
+            panic!("the Board loads");
+        };
+        apps.approve(community, "board", version, &hash).unwrap();
+        apps.open_in(community, "board", channel).unwrap();
+    }
+    let relay_key = bzz::protocol::http::relay_signing_pubkey(&owner_http.nip11().await.unwrap())
+        .unwrap()
+        .to_owned();
+    store.pin_relay_pubkey(community, &relay_key).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let owners = bzz::service::records::RecordsService::new(
+        community,
+        owner_http.clone(),
+        store.clone(),
+        bzz::service::records::Writer::new(owner.clone(), owner_supervisor.clone()),
+    );
+    let (cards, mut card_events) = owners.open(channel, "board", &["card"]).await.unwrap();
+    while cards.state() != SyncState::Live {
+        let _ = tokio::time::timeout(wait, card_events.recv())
+            .await
+            .unwrap();
+    }
+    for (order, title) in ["Alpha", "Bravo", "Charlie"].iter().enumerate() {
+        let content = json!({"title": title, "column": "todo", "order": order + 1});
+        cards
+            .create("card", content.as_object().unwrap().clone())
+            .await
+            .unwrap();
+    }
+    let heads_before = owner_http
+        .query_raw(&[json!({"kinds": [45_010], "#h": [channel.to_string()], "limit": 100})])
+        .await
+        .unwrap()
+        .len();
+
+    // The agent, run as the TUI runs it.
+    let script = Script::new(&dirs.join("harness"));
+    let mut local = match real {
+        None => {
+            script.write(
+                json!({"own_host": true}),
+                json!([
+                    {"match": "priority", "steps": [
+                        {"tool": "apps", "keep": "apps"},
+                        {"tool": "app_guide"},
+                        {"tool": "apps", "arguments": {"app": "board"}},
+                        {"tool": "try_app", "arguments": {"script": BOARD_PRIORITY, "from_app": "board", "keys": ["j", "2"]}},
+                        {"tool": "propose_app", "arguments": {"app": "board", "script": BOARD_PRIORITY, "brief": BOARD_PRIORITY_BRIEF}},
+                        {"tool": "send", "arguments": {"text": "Proposed: the Board with priority and filter.", "final": true}},
+                    ]},
+                    {"match": "is it in", "steps": [{"tool": "send", "arguments": {"text": "It is in.", "final": true}}]},
+                ]),
+            );
+            let mut local = LocalAgentConfig::new(Harness::PiDurable);
+            local.command = script.command();
+            local
+        }
+        Some(harness) => LocalAgentConfig::new(harness),
+    };
+    local.instructions =
+        "You are an agent of the owner of this channel. Do what you are asked with your tools."
+            .into();
+    agent.local = Some(local);
+    let running = service::serve(service::ServeOptions {
+        paths: &paths,
+        store: store.clone(),
+        diagnostics: DiagnosticHandle::disabled(),
+        community: &config.communities[0],
+        agents: &[agent],
+        owner: &owner,
+        owner_identity: identity.id,
+        federated: None,
+        limits: Limits {
+            stop_grace: Duration::from_millis(500),
+            ..Limits::default()
+        },
+        owner_present: false,
+        environment: None,
+    })
+    .await
+    .unwrap()
+    .expect("one local agent");
+    assert!(running.problems.is_empty(), "{:?}", running.problems);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !running.listening() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the agent's intake never subscribed"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let replies_to = |request: nostr::Event| {
+        let (owner_http, agent_hex) = (owner_http.clone(), agent_hex.clone());
+        async move {
+            let deadline = tokio::time::Instant::now() + wait;
+            loop {
+                let replies = owner_http
+                    .query_raw(&[json!({"kinds": [9], "#h": [channel.to_string()], "authors": [agent_hex], "limit": 50})])
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|event| {
+                        bzz::protocol::events::event_references(event)
+                            .contains(&request.id.to_hex())
+                    })
+                    .collect::<Vec<_>>();
+                if !replies.is_empty() || tokio::time::Instant::now() > deadline {
+                    // A second reply would come at once after the first.
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    break owner_http
+                        .query_raw(&[json!({"kinds": [9], "#h": [channel.to_string()], "authors": [agent_hex], "limit": 50})])
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .filter(|event| {
+                            bzz::protocol::events::event_references(event)
+                                .contains(&request.id.to_hex())
+                        })
+                        .collect::<Vec<_>>();
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    };
+    // The owner's request: the change, as the bench's spec writes it.
+    let started = std::time::Instant::now();
+    let request = publish(
+        buzz_sdk::build_message(
+            channel,
+            &format!(
+                "Please add a priority and a filter by priority to the board open in this channel, as below, and propose it to me when it works.\n\n{SPEC}"
+            ),
+            None,
+            &[agent_hex.as_str()],
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
+    )
+    .await;
+    let replies = replies_to(request.clone()).await;
+    eprintln!(
+        "the agent answered the request after {} s: {:?}",
+        started.elapsed().as_secs(),
+        replies
+            .iter()
+            .map(|reply| reply.content.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(replies.len(), 1, "one reply to the mention: {replies:?}");
+
+    // What it proposed waits; the Board that runs is the owner's.
+    let apps_dir = paths.apps_dir();
+    let at = apps_dir.clone();
+    let (waiting, runs) = store
+        .call(move |store| {
+            let apps = Apps::at(store, at);
+            Ok((
+                apps.waiting(community).unwrap(),
+                apps.runnable(community, "board").unwrap().version(),
+            ))
+        })
+        .await
+        .unwrap();
+    assert_eq!(runs, 1, "nothing of the agent's runs before the approval");
+    let proposed = waiting
+        .iter()
+        .find(|version| version.name == "board")
+        .unwrap_or_else(|| panic!("the agent proposed no version of the board: {waiting:?}"))
+        .clone();
+    assert_eq!(proposed.proposer.kind, ProposerKind::Agent);
+    assert_eq!(proposed.proposer.id.as_deref(), Some(agent_hex.as_str()));
+    assert_eq!(proposed.proposer.channel, Some(channel));
+    assert_eq!(
+        proposed
+            .proposer
+            .asked_by
+            .as_ref()
+            .map(|asker| asker.id.clone()),
+        Some(identity.pubkey.clone()),
+        "the owner asked"
+    );
+    // The owner approves it, as the overlay does: the exact bytes shown.
+    let (version, hash) = (proposed.version, proposed.script_sha256.clone());
+    let at = apps_dir.clone();
+    let bundle = store
+        .call(move |store| {
+            let mut apps = Apps::at(store, at);
+            let review = apps.review(community, "board", version).unwrap();
+            eprintln!(
+                "{}",
+                review
+                    .render(|_| String::new())
+                    .lines()
+                    .take(12)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            apps.approve(community, "board", version, &hash).unwrap();
+            Ok(apps.bundle(community, "board", version).unwrap())
+        })
+        .await
+        .unwrap();
+    if let Ok(out) = std::env::var("BZZ_AUTHOR_OUT") {
+        let folder = std::path::Path::new(&out).join("approved");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("app.lua"), &bundle.script).unwrap();
+        std::fs::write(folder.join("brief.md"), &bundle.brief).unwrap();
+        std::fs::write(folder.join("app.toml"), &bundle.manifest_text).unwrap();
+        eprintln!("the approved version is in {}", folder.display());
+    }
+    if real.is_none() {
+        assert_eq!(bundle.script, BOARD_PRIORITY.as_bytes());
+    }
+    // The agent's next turn in the channel is told.
+    let next = publish(
+        buzz_sdk::build_message(
+            channel,
+            "is it in?",
+            None,
+            &[agent_hex.as_str()],
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
+    )
+    .await;
+    let replies = replies_to(next).await;
+    assert_eq!(
+        replies.len(),
+        1,
+        "one reply to the second mention: {replies:?}"
+    );
+    if real.is_none() {
+        let prompts = script
+            .received("session/prompt")
+            .into_iter()
+            .filter_map(|params| {
+                params
+                    .pointer("/prompt/0/text")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            prompts[1].contains(&format!(
+                "- your version {version} of the app board: applied."
+            )),
+            "{}",
+            prompts[1]
+        );
+        assert!(
+            !prompts[0].contains("Since your last turn"),
+            "{}",
+            prompts[0]
+        );
+    }
+    // No record of the agent's reached the channel: a try stays apart.
+    let heads = owner_http
+        .query_raw(&[json!({"kinds": [45_010], "#h": [channel.to_string()], "authors": [agent_hex], "limit": 100})])
+        .await
+        .unwrap();
+    assert!(heads.is_empty(), "{heads:?}");
+    assert!(heads_before >= 3, "{heads_before}");
+    running.stop().await;
+    drop(cards);
+    owner_supervisor.shutdown().await;
+    owner.lock().await;
+}

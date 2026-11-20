@@ -48,7 +48,10 @@ pub enum Wanted {
 
 /// A tool call is one of bzz's chat tools when its kind is none or `other`
 /// and its title, read as words, is `buzz` and then the tool: `buzz send`,
-/// `mcp__buzz__send`, `buzz/react`.
+/// `mcp__buzz__send`, `buzz/react`, `mcp__buzz__create_record`. The tools of
+/// an app's records (v0.16 M7) are allowed as `send` is: they write only
+/// where the channel already lets the agent write, inside the fence bzz
+/// checks where it serves them.
 pub fn is_chat_tool(tool: &Value) -> bool {
     // A tool that runs, edits, deletes or moves something is never ours.
     if !matches!(
@@ -66,7 +69,10 @@ pub fn is_chat_tool(tool: &Value) -> bool {
         .split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|word| !word.is_empty() && !matches!(*word, "mcp" | "tool"))
         .collect::<Vec<_>>();
-    matches!(words.as_slice(), ["buzz", "send" | "read" | "react"])
+    match words.as_slice() {
+        ["buzz", tool @ ..] if !tool.is_empty() => super::tools::is_name(&tool.join("_")),
+        _ => false,
+    }
 }
 
 /// The most tool calls of one turn that are kept, and the most bytes of
@@ -176,7 +182,7 @@ pub fn read(params: &Value, reported: Option<&Value>) -> Wanted {
     if asked.pointer("/rawInput/command").is_none()
         && let Some((server, name)) = codex_mcp_tool(reported)
     {
-        return if server == "buzz" && matches!(name, "send" | "read" | "react") {
+        return if server == "buzz" && super::tools::is_name(name) {
             Wanted::ChatTool
         } else {
             Wanted::Unclear(format!(
@@ -436,6 +442,28 @@ mod tests {
                 Wanted::ChatTool
             );
         }
+        // The tools of an app's records are bzz's, as `send` is (v0.16 M7).
+        #[cfg(feature = "apps")]
+        for title in [
+            "mcp__buzz__records",
+            "mcp__buzz__update_record",
+            "buzz/apps",
+        ] {
+            assert_eq!(ask(json!({"title": title})), Wanted::ChatTool, "{title}");
+        }
+        for title in [
+            "mcp__buzz__record",
+            "mcp__buzz__update",
+            "mcp__buzz__",
+            "buzz send send",
+        ] {
+            assert_ne!(ask(json!({"title": title})), Wanted::ChatTool, "{title}");
+        }
+        assert_ne!(
+            ask(json!({"title": "mcp__buzz__delete_record", "kind": "delete"})),
+            Wanted::ChatTool,
+            "a tool that deletes is never taken for ours by its title"
+        );
         // Claude Code's Write: the path three times over.
         assert_eq!(
             ask(json!({
@@ -534,6 +562,11 @@ mod tests {
         );
         assert_eq!(
             read(&request, Some(&reported("buzz", "react"))),
+            Wanted::ChatTool
+        );
+        #[cfg(feature = "apps")]
+        assert_eq!(
+            read(&request, Some(&reported("buzz", "create_record"))),
             Wanted::ChatTool
         );
         // A tool of the owner's own servers, and a tool bzz does not have.

@@ -47,7 +47,12 @@
 //! - A prompt takes the first unused turn whose `match` is in its text. A
 //!   request seen before and not finished takes a turn marked `resume`.
 //!
-//! Steps: `{"tool": "send", "arguments": {…}, "nowait": false}`,
+//! Steps: `{"tool": "send", "arguments": {…}, "nowait": false}`; with
+//! `"keep": "<name>"` the result's text (its last line, as JSON) is kept
+//! for the rest of the turn, or with `"keep": {"as": "<name>", "find":
+//! "/records", "where": {"/content/day": "Tue"}}` the first element of a
+//! list in it that matches; a later step's argument `"$<name>/id"` is the
+//! value at that pointer of what was kept,
 //! `{"text": "…"}` (the model's text), `{"notice": "…"}` (text with no
 //! message id, as Codex's adapter writes its own warnings),
 //! `{"update": {…}}`, `{"notify": {"method": …}}`,
@@ -78,6 +83,68 @@ use std::{
 };
 
 use serde_json::{Value, json};
+
+/// Puts what a turn kept into a tool's arguments: a string
+/// `"$<name><pointer>"` becomes the value at that JSON pointer of what was
+/// kept as `<name>` (`"$tue/id"`). Anything else is left as it is.
+fn fill(value: &mut Value, kept: &HashMap<String, Value>) {
+    match value {
+        Value::String(text) if text.starts_with('$') && text != "$session" => {
+            let (name, pointer) = text[1..].split_once('/').unwrap_or((&text[1..], ""));
+            let pointer = if pointer.is_empty() {
+                String::new()
+            } else {
+                format!("/{pointer}")
+            };
+            if let Some(found) = kept.get(name).and_then(|kept| kept.pointer(&pointer)) {
+                *value = found.clone();
+            }
+        }
+        Value::Array(values) => values.iter_mut().for_each(|value| fill(value, kept)),
+        Value::Object(map) => map.values_mut().for_each(|value| fill(value, kept)),
+        _ => {}
+    }
+}
+
+/// Keeps a tool result's text, read as JSON: `"keep": "<name>"` keeps all
+/// of it; `"keep": {"as": "<name>", "find": "<pointer to a list>",
+/// "where": {"<pointer>": <value>, …}}` keeps the first element of the list
+/// that has every value given.
+fn keep_result(keep: &Value, result: Option<&Value>, kept: &mut HashMap<String, Value>) {
+    let Some(parsed) = result
+        .and_then(|result| result.get("text"))
+        .and_then(Value::as_str)
+        .and_then(|text| serde_json::from_str::<Value>(text.lines().last().unwrap_or(text)).ok())
+    else {
+        return;
+    };
+    match keep {
+        Value::String(name) => {
+            kept.insert(name.clone(), parsed);
+        }
+        Value::Object(rule) => {
+            let Some(name) = rule.get("as").and_then(Value::as_str) else {
+                return;
+            };
+            let list = rule
+                .get("find")
+                .and_then(Value::as_str)
+                .and_then(|pointer| parsed.pointer(pointer))
+                .and_then(Value::as_array);
+            let wanted = rule.get("where").and_then(Value::as_object);
+            if let Some(found) = list.into_iter().flatten().find(|item| {
+                wanted.is_none_or(|wanted| {
+                    wanted
+                        .iter()
+                        .all(|(pointer, value)| item.pointer(pointer) == Some(value))
+                })
+            }) {
+                kept.insert(name.to_owned(), found.clone());
+            }
+        }
+        _ => {}
+    }
+}
 
 struct McpServer {
     _child: Child,
@@ -336,16 +403,19 @@ impl Harness {
             }
             false
         };
+        // What this turn's tool results said, by the names steps keep them
+        // under: a model reads a record's id and rev before it changes it.
+        let mut kept = HashMap::<String, Value>::new();
         for step in steps {
             let mut stop = false;
             if let Some(name) = step.get("tool").and_then(Value::as_str) {
                 let wait = !step.get("nowait").and_then(Value::as_bool).unwrap_or(false);
-                let result = self.tool(
-                    &session,
-                    name,
-                    step.get("arguments").cloned().unwrap_or(Value::Null),
-                    wait,
-                );
+                let mut arguments = step.get("arguments").cloned().unwrap_or(Value::Null);
+                fill(&mut arguments, &kept);
+                let result = self.tool(&session, name, arguments, wait);
+                if let Some(keep) = step.get("keep") {
+                    keep_result(keep, result.as_ref(), &mut kept);
+                }
                 self.log(json!({"tool": name, "session": session, "result": result}));
             } else if let Some(chunk) = step.get("text").and_then(Value::as_str) {
                 // The model's text, with the id of its message as the

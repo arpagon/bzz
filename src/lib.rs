@@ -2,6 +2,8 @@
 
 pub mod agents;
 pub mod app;
+#[cfg(feature = "apps")]
+pub mod apps;
 pub mod auth;
 pub mod broker;
 pub mod clock;

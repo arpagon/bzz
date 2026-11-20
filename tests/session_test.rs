@@ -431,3 +431,75 @@ async fn supervisor_replays_desired_subscription() {
     signer.lock().await;
     relay.stop();
 }
+
+/// v0.16 M2: the supervisor told its callers `invalid: relay closed the
+/// subscription` for a sync the relay ended with `resync:` and for one it
+/// ended with `error: sync set exceeds max_events`. They need opposite
+/// answers: ask again at once, and never ask again.
+#[tokio::test]
+async fn a_closed_sync_reaches_its_owner_with_its_reason_and_not_the_relays_words() {
+    use bzz::realtime::admission::{
+        CLOSED_RESYNC, CLOSED_SYNC_OVERFLOW, ClosedReason, closed_reason,
+    };
+    use support::scripted_relay::{Script, ScriptedRelay, WsAction, default_frame};
+    let relay = ScriptedRelay::start(Script::default().frames(|frame| {
+        let value = &frame.value;
+        if value[0] != "REQ" {
+            return default_frame(frame);
+        }
+        let reason = match value[1].as_str().unwrap_or_default() {
+            "redaction" => "resync: redaction nsec1notasecretbutlookslikeone",
+            "access" => "resync: channel access changed",
+            "overflow" => "error: sync set exceeds max_events",
+            "unreadable" => "restricted: channel not readable",
+            _ => "invalid: unsupported artifact predicate",
+        };
+        vec![WsAction::Send(json!(["CLOSED", value[1], reason]))]
+    }))
+    .await;
+    let signer = SignerHandle::spawn(Keys::generate());
+    let supervisor = SupervisorHandle::spawn(relay.ws_url.clone(), signer.clone());
+    let mut events = supervisor.subscribe_events();
+    let names = ["redaction", "access", "overflow", "unreadable", "other"];
+    for name in names {
+        supervisor
+            .subscribe(name, vec![json!({"artifact":"current","#h":["x"]})])
+            .await
+            .unwrap();
+    }
+    let mut closed = std::collections::BTreeMap::new();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while closed.len() < names.len() {
+            if let Ok(bzz::realtime::supervisor::SupervisorEvent::Session(SessionEvent::Closed {
+                subscription,
+                message,
+            })) = events.recv().await
+            {
+                closed.insert(subscription, message);
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(closed["redaction"], CLOSED_RESYNC);
+    assert_eq!(closed["access"], CLOSED_RESYNC);
+    assert_eq!(closed["overflow"], CLOSED_SYNC_OVERFLOW);
+    assert_eq!(closed_reason(&closed["redaction"]), ClosedReason::Resync);
+    assert_eq!(
+        closed_reason(&closed["overflow"]),
+        ClosedReason::SyncOverflow
+    );
+    assert_eq!(
+        closed_reason(&closed["unreadable"]),
+        ClosedReason::Restricted
+    );
+    assert_eq!(closed_reason(&closed["other"]), ClosedReason::Other);
+    assert!(closed.values().all(|message| !message.contains("nsec")));
+    // Each is final for the supervisor: none is asked again by itself.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    assert_eq!(relay.frames_of("REQ").len(), names.len());
+
+    supervisor.shutdown().await;
+    signer.lock().await;
+    relay.stop();
+}
