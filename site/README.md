@@ -49,6 +49,25 @@ colour. Their sources are in `public/assets/harness-logos-attribution.txt`.
 They are other people's trademarks, used only to name the programs: do not
 redraw them, and keep the footer's line that says so.
 
+## Apps
+
+The "apps" section (`#apps`) and the "new in v0.16.0" cards may say only
+what [`docs/apps.md`](../docs/apps.md) and
+[`docs/release-v0.16.0.md`](../docs/release-v0.16.0.md) say: what a script
+reaches and does not, approval of exact bytes, shared records, sharing in
+the channel, the three templates, and what people on Buzz desktop see. No
+number is on it yet: the measures of M8 are one run on one machine.
+
+**A capture is pending** (the v0.16 film is a later task), and its place is
+marked by a comment in `#apps`. It needs a sanitized capture of the real
+release TUI through `bzz-visual-capture`, on an isolated pinned relay with
+generated people: the Board open beside a channel; the line `tasks:
+version 2 from your agent Scout, asked by …` at the top; the approval
+overlay with the brief `CHANGED` and the difference; and the Board after
+`a`, with `Priority: all` and the same card still selected. The scenario
+`t16-m5-agent-changes-the-open-board` (`scripts/tui-herdr-scenarios.toml`)
+drives exactly this on the stand-in model.
+
 ## Demo media
 
 The hero video `public/assets/promo-v015.webm`, `promo-v015.mp4` and
