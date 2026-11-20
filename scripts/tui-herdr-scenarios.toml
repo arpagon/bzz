@@ -2072,9 +2072,11 @@ visible = "channel finder"
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
 visible = "Generated custom emoji"
 
+# The channel may hold cards of earlier scenarios: any count shows the Board.
 [[scenario.step]]
 keys = [":", "type:app open board", "enter"]
-visible = "To do (0)"
+visible = "To do \\(\\d+\\)"
+regex = true
 
 [[scenario.step]]
 keys = ["ctrl+c", ":", "type:app share", "enter"]
@@ -2144,7 +2146,8 @@ visible = "it is open in #t9-general, where it was offered"
 [[scenario.step]]
 pane = "second"
 keys = []
-visible = "To do (0)"
+visible = "To do \\(\\d+\\)"
+regex = true
 timeout = 20000
 
 # The same records: a card by the other person shows for the viewer, and
