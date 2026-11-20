@@ -399,6 +399,67 @@ fn a_script_hears_of_a_type_from_its_first_list_of_it() {
     assert_eq!(told(&mut app)[1], "push create third by bo");
 }
 
+/// A script that stores people by id in a field, as the templates do, and
+/// shows them with `host.name`.
+const NAMES: &str = r#"
+local app = { api = 1, types = { "vote" } }
+function app.init(ctx)
+  data.list { type = "vote", tag = "load" }
+  return { votes = {}, views = 0 }
+end
+function app.view(s, ctx)
+  s.views = s.views + 1
+  local lines = { "me: " .. host.name(ctx.user.id) }
+  for _, v in ipairs(s.votes) do lines[#lines + 1] = "voter: " .. host.name(v.content.voter) end
+  local ok, err = pcall(host.name, 7)
+  lines[#lines + 1] = "seven: " .. tostring(err)
+  lines[#lines + 1] = "odd: " .. host.name("éééééééééééééé")
+  lines[#lines + 1] = "pushes: " .. (s.pushes or 0)
+  return ui.text(lines)
+end
+function app.reply(s, r, ctx) if r.ok then s.votes = r.records end end
+function app.push(s, p, ctx) s.pushes = (s.pushes or 0) + 1 end
+return app
+"#;
+
+#[test]
+fn host_name_is_the_name_bzz_knows_and_a_name_learnt_later_draws_again() {
+    let mut app = start_on("names.lua", NAMES, |store| {
+        // bo signed the vote that names cy; bzz has no name for cy, and cy
+        // signed nothing the app holds.
+        store.seed("vote", content(json!({ "voter": bo().id })), &bo());
+        store.seed("vote", content(json!({ "voter": cy().id })), &bo());
+    });
+    let screen = app.screen();
+    let rows: Vec<&str> = screen.lines().map(str::trim_end).collect();
+    assert_eq!(rows[0], "me: ana");
+    let mut voters = vec![rows[1], rows[2]];
+    voters.sort_unstable();
+    let short = short_name(&cy().id);
+    assert_eq!(voters, ["voter: bo".to_string(), format!("voter: {short}")]);
+    assert!(
+        rows[3].starts_with("seven: names.lua:")
+            && rows[3].contains("host.name: the id must be a string, got integer"),
+        "{screen}"
+    );
+    // Whatever a script gives, the short form is cut on characters.
+    assert_eq!(rows[4], "odd: éééééééé…éééé");
+    // bzz is asked to look cy up, and the odd id too: whoever answers
+    // looks up only what can be a key.
+    let unnamed = app.session().unnamed();
+    assert!(unnamed.contains(&cy().id), "{unnamed:?}");
+    assert!(!unnamed.contains(&bo().id), "{unnamed:?}");
+
+    // bzz learns cy's name: the app is drawn again with it, and is told
+    // of no change, because no record changed.
+    app.session().set_names([(cy().id, "cy".to_string())]);
+    app.settle();
+    let screen = app.screen();
+    assert!(screen.contains("voter: cy"), "{screen}");
+    assert!(screen.contains("pushes: 0"), "{screen}");
+    assert!(!app.session().unnamed().contains(&cy().id));
+}
+
 #[test]
 fn who_is_an_id_and_the_name_bzz_knows() {
     let mut app = start_on("ledger.lua", LEDGER, |store| {

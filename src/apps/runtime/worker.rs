@@ -9,9 +9,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use mlua::{IntoLuaMulti, Table, Value};
@@ -47,6 +47,8 @@ pub struct Shared {
     pub stop: AtomicBool,
     /// Timers that wait to fire: an owner need not tick an app without.
     pub timers: AtomicUsize,
+    /// Ids `host.name` had no name for, for the owner to look up.
+    pub asked: Mutex<Vec<String>>,
 }
 
 impl Shared {
@@ -59,6 +61,7 @@ impl Shared {
             epoch: Instant::now(),
             stop: AtomicBool::new(false),
             timers: AtomicUsize::new(0),
+            asked: Mutex::new(Vec::new()),
         }
     }
 
@@ -91,6 +94,8 @@ pub struct Setup {
     pub clock: SharedClock,
     pub waker: Waker,
     pub source: Vec<u8>,
+    /// The names the owner knows, by id, for `host.name`.
+    pub names: HashMap<String, String>,
 }
 
 /// One version of the script, loaded and checked.
@@ -141,8 +146,10 @@ pub fn run(setup: Setup, events: Receiver<Event>, out: Sender<Report>, shared: A
             clock,
             waker,
             source,
+            names,
         } = setup;
         let gate = Rc::new(RefCell::new(Gate::new(limits.clone(), clock)));
+        gate.borrow_mut().names = names;
         let mut worker = Worker {
             name,
             user,
@@ -220,6 +227,13 @@ impl Worker {
                 self.user = who;
                 self.dirty = true;
             }
+            Event::Names(names) => {
+                // A name the app was given a short form for: its screen
+                // is asked for again, so that it shows the name.
+                if self.gate.borrow_mut().learn_names(names) {
+                    self.dirty = true;
+                }
+            }
             Event::Resize { width, height } => {
                 self.size = (width, height);
                 self.dirty = true;
@@ -265,16 +279,24 @@ impl Worker {
 
     /// Hands what the last call asked for to the owner.
     fn flush(&mut self) {
-        let (logs, requests, timers) = {
+        let (logs, requests, timers, asked) = {
             let mut gate = self.gate.borrow_mut();
             (
                 std::mem::take(&mut gate.logs),
                 std::mem::take(&mut gate.requests),
                 gate.timers.len(),
+                std::mem::take(&mut gate.asked),
             )
         };
         self.shared.timers.store(timers, Ordering::SeqCst);
-        let any = !logs.is_empty() || !requests.is_empty();
+        let any = !logs.is_empty() || !requests.is_empty() || !asked.is_empty();
+        if !asked.is_empty() {
+            self.shared
+                .asked
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .extend(asked);
+        }
         for line in logs {
             self.send(Output::Log(line));
         }

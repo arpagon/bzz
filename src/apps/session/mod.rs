@@ -213,6 +213,9 @@ pub struct AppSession {
     /// The local participant's id.
     user: String,
     names: HashMap<String, String>,
+    /// Ids the script asked `host.name` for, which had no name then: the
+    /// owner is to look them up ([`AppSession::unnamed`]).
+    asked: Vec<String>,
     /// The types the running version declared: the fence.
     types: Vec<String>,
     door: Door,
@@ -280,7 +283,8 @@ impl AppSession {
                 .size(options.width, options.height)
                 .limits(options.limits.clone())
                 .clock(options.clock.clone())
-                .waker(options.waker),
+                .waker(options.waker)
+                .names(options.names.clone()),
         )?;
         Ok(Self {
             runtime,
@@ -290,6 +294,7 @@ impl AppSession {
             limits: options.limits,
             user,
             names: options.names,
+            asked: Vec::new(),
             types: Vec::new(),
             door: Door::Shut,
             sync: SyncState::Loading,
@@ -406,6 +411,11 @@ impl AppSession {
     /// those.
     pub fn poll(&mut self) -> Vec<Output> {
         let mut outputs = Vec::new();
+        for id in self.runtime.asked_names() {
+            if !self.names.contains_key(&id) && !self.asked.contains(&id) {
+                self.asked.push(id);
+            }
+        }
         for output in self.runtime.poll() {
             match output {
                 Output::Request(request) => self.serve(request),
@@ -498,6 +508,13 @@ impl AppSession {
         if changed.is_empty() {
             return;
         }
+        self.asked.retain(|id| !changed.contains(id));
+        // What `host.name` answers from now on.
+        let learnt = changed
+            .iter()
+            .filter_map(|id| self.names.get(id).map(|name| (id.clone(), name.clone())))
+            .collect();
+        self.send(Event::Names(learnt));
         if changed.contains(&self.user) {
             let who = self.who(&self.user);
             self.send(Event::User(who));
@@ -514,11 +531,13 @@ impl AppSession {
         self.pump();
     }
 
-    /// Whose records the session holds without knowing their name: for the
-    /// owner to look up. The local participant is among them if unnamed.
+    /// Whose records the session holds without knowing their name, and the
+    /// ids the script asked `host.name` for that have none: for the owner
+    /// to look up. The local participant is among them if unnamed.
     pub fn unnamed(&self) -> Vec<String> {
         let mut ids: Vec<String> = std::iter::once(&self.user)
             .chain(self.set.values().map(|record| &record.author))
+            .chain(self.asked.iter())
             .filter(|id| !self.names.contains_key(*id))
             .cloned()
             .collect();
