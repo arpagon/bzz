@@ -553,6 +553,15 @@ pub enum ConnectionState {
 /// bytes, so an id that is not hex (a script's `host.name`, a malformed
 /// tag) is cut on a character instead of panicking.
 pub fn abbreviated_pubkey(pubkey: &str) -> String {
+    // A public key is ASCII: cut it by bytes, as fast as ever (the mention
+    // candidates ask this of every member without a name).
+    if pubkey.is_ascii() {
+        return if pubkey.len() <= 12 {
+            pubkey.to_owned()
+        } else {
+            format!("{}…{}", &pubkey[..8], &pubkey[pubkey.len() - 4..])
+        };
+    }
     let count = pubkey.chars().count();
     if count <= 12 {
         return pubkey.to_owned();
