@@ -1866,6 +1866,7 @@ visible = "> [ ] Sushi"
 [[scenario.step]]
 keys = [":", "type:app rollback poll", "enter"]
 visible = "(poll: back to version 1 from 4|poll: version 1 runs in place of 4, its state kept)"
+regex = true
 
 [[scenario.step]]
 keys = []
