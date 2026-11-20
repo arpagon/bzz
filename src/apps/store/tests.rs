@@ -1411,7 +1411,7 @@ fn an_agent_is_told_once_what_became_of_its_versions_in_that_channel() {
     assert_eq!(review.from, me());
     assert!(
         review.render(|_| String::new()).contains(&format!(
-            "From:     your agent Scout ({}), asked by Ana ({}), in channel {here}",
+            "From:     your agent Scout ({}), in channel {here}\nAsked by: Ana ({}), whose message asked the agent for it\n",
             "d".repeat(64),
             "a".repeat(64)
         )),

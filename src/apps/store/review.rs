@@ -187,7 +187,18 @@ impl Review {
             Some(channel) => format!(", in channel {channel}"),
             None => String::new(),
         };
-        out.push(format!("From:     {}{place}", from_whom(&self.from)));
+        // Who asked an agent for it has a line of its own, so that it is
+        // not cut off at the edge of the overlay (plan D7).
+        let mut from = self.from.clone();
+        let asker = from.asked_by.take();
+        out.push(format!("From:     {}{place}", from_whom(&from)));
+        if let Some(asker) = asker {
+            out.push(format!(
+                "Asked by: {} ({}), whose message asked the agent for it",
+                visible(&asker.name),
+                visible(&asker.id)
+            ));
+        }
         out.push(format!("Proposed: {}", when(self.proposed_at)));
         out.push(format!("Hash:     {}", self.hash));
         match &self.running {
