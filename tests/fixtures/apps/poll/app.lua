@@ -348,7 +348,10 @@ function app.paste(s, text, ctx)
   end
 end
 
--- What a failed write says on the status line.
+-- What a failed write says on the status line. `rate_limited` is bzz's own
+-- answer, before anything was sent: an app may write about 30 times a
+-- minute, and `retry_after` says in how many seconds it may again. Nothing
+-- was written; the person decides whether to try again.
 local function failure(e)
   if e.code == "rate_limited" then
     return "Too many changes. Retry in " .. e.retry_after .. " s."
@@ -429,6 +432,10 @@ function app.reply(s, r, ctx)
   fix_selection(s)
 end
 
+-- Someone else changed a record. A push is a real change only: when bzz
+-- fetches the channel's records again (a resync) the app hears of what
+-- differs, never of everything as deleted and made again. A push of
+-- `update` with the `rev` the app has means only that bzz learnt a name.
 function app.push(s, p, ctx)
   if p.change == "delete" then
     remove(s, p.record.type, p.record.id)
