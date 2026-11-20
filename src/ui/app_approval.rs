@@ -285,3 +285,158 @@ pub fn render(
         inner,
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{Terminal, backend::TestBackend};
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::apps::store::{
+        Proposer,
+        diff::difference,
+        review::{Running, TypesChange},
+    };
+
+    fn review(lines: usize) -> Review {
+        let old = "local app = { api = 1, types = { \"card\" } }\nreturn app\n";
+        let mut new = String::from("local app = { api = 1, types = { \"card\", \"vote\" } }\n");
+        for line in 0..lines {
+            new.push_str(&format!("-- line {line}\n"));
+        }
+        new.push_str("return app\n");
+        Review {
+            community: Uuid::nil(),
+            name: "tasks".into(),
+            title: "Tasks".into(),
+            version: 2,
+            hash: "58e1".repeat(16),
+            from: Proposer::agent("e5".repeat(32), "Scout"),
+            proposed_at: 1_700_000_000,
+            script_bytes: new.len() as u64,
+            brief_bytes: 20,
+            brief: "# Tasks\n\nCards and votes.\n".into(),
+            brief_changed: true,
+            types: vec!["card".into(), "vote".into()],
+            types_change: TypesChange::Changed {
+                added: vec!["vote".into()],
+                removed: vec![],
+            },
+            running: Some(Running {
+                version: 1,
+                hash: "9f0e".repeat(16),
+                title: "Tasks".into(),
+                script_bytes: old.len() as u64,
+                brief_bytes: 20,
+                types: vec!["card".into()],
+            }),
+            running_unreadable: None,
+            difference: difference(old, &new),
+            hidden_characters: 0,
+        }
+    }
+
+    fn screen(state: &mut AppApprovalState, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render(frame, frame.area(), state, 1, &Theme::default()))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|row| {
+                (0..width)
+                    .map(|column| buffer[(column, row)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The head (who, the hash, the types with their change) is always on
+    /// screen; the brief and the difference scroll below it, and the end
+    /// must have been seen before a yes is taken.
+    #[test]
+    fn the_head_stays_and_the_end_must_be_seen() {
+        let mut state = AppApprovalState::default();
+        state.show("tasks", 2, Ok(review(60)));
+        let shown = screen(&mut state, 100, 30);
+        for expected in [
+            "a version of an app waits for your answer · a approve · r refuse",
+            "tasks (Tasks), version 2",
+            "From:     your agent Scout (e5e5",
+            &format!("Hash:     {}", "58e1".repeat(16)),
+            "Brief:    20 bytes, CHANGED from the version that runs",
+            "Record types: card, vote",
+            "CHANGED from the version that runs:",
+            "+ vote   new: the app could not read or write these records before",
+            "1 more wait (Tab)",
+            "scroll to the end before you approve (j, PgDn)",
+        ] {
+            assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
+        }
+        assert!(!state.seen_end, "{shown}");
+        assert!(!shown.contains("+return app"), "{shown}");
+        state.scroll_by(isize::MAX);
+        let shown = screen(&mut state, 100, 30);
+        assert!(state.seen_end, "{shown}");
+        assert!(shown.contains("+-- line 59"), "{shown}");
+        assert!(shown.contains(": the end"), "{shown}");
+        // The head is still there at the end.
+        assert!(
+            shown.contains("CHANGED from the version that runs:"),
+            "{shown}"
+        );
+        assert!(shown.contains("Hash:"), "{shown}");
+        // Back up, it stays seen.
+        state.scroll_by(isize::MIN);
+        screen(&mut state, 100, 30);
+        assert!(state.seen_end);
+        // A short version is seen whole at once.
+        let mut short = AppApprovalState::default();
+        short.show("tasks", 2, Ok(review(1)));
+        let shown = screen(&mut short, 100, 40);
+        assert!(
+            short.seen_end && shown.contains("that is the whole version"),
+            "{shown}"
+        );
+        // One that no longer waits takes no answer and says so.
+        short.review = None;
+        let shown = screen(&mut short, 100, 20);
+        assert!(shown.contains("That version no longer waits"), "{shown}");
+    }
+
+    #[test]
+    fn the_banner_says_which_app_which_version_and_from_whom() {
+        let version = crate::store::apps::AppVersion {
+            community: Uuid::nil(),
+            name: "tasks".into(),
+            version: 2,
+            state: crate::store::apps::VersionState::Waiting,
+            detail: None,
+            title: Some("Tasks".into()),
+            api: Some(1),
+            types: vec!["card".into()],
+            script_sha256: "0".repeat(64),
+            manifest_sha256: None,
+            brief_sha256: "0".repeat(64),
+            script_bytes: 1,
+            brief_bytes: 1,
+            proposer: Proposer::agent("e5".repeat(32), "Sc\u{1b}[2Jout"),
+            proposed_at: 1,
+            decided_at: None,
+            kept: true,
+        };
+        let text = banner_text(&version, 3);
+        assert!(
+            text.starts_with(" tasks: version 2 from your agent Sc"),
+            "{text}"
+        );
+        assert!(
+            text.contains("waits for your approval · and 2 more · Ctrl-Y to see and answer it"),
+            "{text}"
+        );
+        assert!(!text.contains('\u{1b}'), "{text}");
+    }
+}
