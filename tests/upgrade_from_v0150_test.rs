@@ -117,7 +117,11 @@ async fn v0150_profile_upgrades_with_its_agents_ledger_and_artifacts_and_no_app(
         "the hosted agent, Scout and Rover are what v0.15.0 saved, field for field"
     );
     config.save(&paths).unwrap();
-    assert_eq!(Config::load(&paths).unwrap(), config, "saved by v0.16.0, the same");
+    assert_eq!(
+        Config::load(&paths).unwrap(),
+        config,
+        "saved by v0.16.0, the same"
+    );
     let agent = |key: &str| {
         let id = uuid(&expected[key]);
         config
@@ -302,7 +306,10 @@ async fn v0150_profile_upgrades_with_its_agents_ledger_and_artifacts_and_no_app(
             |row| row.get(0),
         )
         .unwrap();
-    assert!(asked_by, "migration 23 added who asked an agent for a version");
+    assert!(
+        asked_by,
+        "migration 23 added who asked an agent for a version"
+    );
     drop(upgraded);
     // The backup made before the migrations is the database as v0.15.0 left
     // it: the newest backup, at schema 20, without the tables of apps.
@@ -378,14 +385,20 @@ async fn v0150_profile_upgrades_with_its_agents_ledger_and_artifacts_and_no_app(
         local.contains("Scout") && local.contains("Rover") && !local.contains(&hosted.pubkey),
         "`bzz agent list` lists the two local agents: {local}"
     );
-    assert!(local.contains("moved"), "Rover is shown moved away: {local}");
+    assert!(
+        local.contains("moved"),
+        "Rover is shown moved away: {local}"
+    );
     let shown = bzz(&["agent", "show", "Scout"]);
     for line in [
         "command in /mnt/work · ls -la (and 1 more line(s)) · allowed by you",
         "command in /mnt/work · rm -rf build · refused by you: not today",
         "git credential for github.com · given",
     ] {
-        assert!(shown.contains(line), "`bzz agent show Scout` has `{line}`: {shown}");
+        assert!(
+            shown.contains(line),
+            "`bzz agent show Scout` has `{line}`: {shown}"
+        );
     }
     let brokered = bzz(&["broker", "list"]);
     assert!(
@@ -497,7 +510,10 @@ async fn replies_are_not_sent_twice(paths: &Paths, expected: &Value, config: &Co
     );
     let reply = store
         .call({
-            let request = expected["ledger"][1]["request"].as_str().unwrap().to_owned();
+            let request = expected["ledger"][1]["request"]
+                .as_str()
+                .unwrap()
+                .to_owned();
             move |store| store.agent_reply_get(scout_id, &request)
         })
         .await

@@ -46,7 +46,9 @@ fn board(width: u16, height: u16) -> Headless {
         let column = ["todo", "doing", "done"][order % 3];
         store.seed(
             "card",
-            content(json!({ "title": format!("Card {order:03}"), "column": column, "order": order })),
+            content(
+                json!({ "title": format!("Card {order:03}"), "column": column, "order": order }),
+            ),
             &bo,
         );
     }
@@ -59,7 +61,10 @@ fn board(width: u16, height: u16) -> Headless {
     let mut app = Headless::start_on(BOARD, options, store, clock).expect("the Board starts");
     assert!(app.settle(), "the Board comes to rest");
     let screen = app.screen();
-    assert!(screen.contains("Card"), "the Board shows its cards:\n{screen}");
+    assert!(
+        screen.contains("Card"),
+        "the Board shows its cards:\n{screen}"
+    );
     app
 }
 
@@ -92,9 +97,10 @@ fn report_memory() {
 
 fn bench_apps(c: &mut Criterion) {
     report_memory();
-    c.bench_function("app: open the Board on 200 cards, first screen at 40x16", |bench| {
-        bench.iter(|| black_box(board(40, 16)))
-    });
+    c.bench_function(
+        "app: open the Board on 200 cards, first screen at 40x16",
+        |bench| bench.iter(|| black_box(board(40, 16))),
+    );
     for (width, height) in [(40, 16), (120, 40)] {
         let mut app = board(width, height);
         c.bench_function(
