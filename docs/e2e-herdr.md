@@ -215,8 +215,9 @@ BZZ_TMUX_SCENARIOS=t16-cli-version,t16-cli-app-new,t16-cli-app-add,t16-cli-app-a
 
 `BZZ_TMUX_SCENARIOS=harness` (the default) runs every harness scenario,
 v0.13 to v0.16, in order, in one fixture: 35 for v0.16.0. The scenarios of
-v0.16 do not depend on what the earlier ones leave, but for the Board the
-M3 scenarios install. The runner prints how long each step took to
+v0.16 build on one another (the M3 scenarios install the Board the later
+ones use), and must not depend on what the scenarios of earlier releases
+leave in the fixture: those run first and talk in its channels. The runner prints how long each step took to
 show what it waits for.
 
 ### Manual disposable-fixture journey
