@@ -187,17 +187,36 @@ above, which leave the Board installed, approved and open in
   a new folder, it shows the same cards. A version that declares a second
   record type is shown as a change and refused with a reason.
 
+**Sharing, agents, and the version (M6, M5, M8).**
+
+- `t16-m6-share-offer-approve`: the viewer shares the Board in
+  `#t9-general` (`beside = "other"`, another person's profile of the
+  fixture); the other person sees the offer and its brief, `:app open`
+  refuses before the approval, `Ctrl+Y` shows who signed the revision,
+  `G a` approves it and it opens there; a card of each shows in the
+  other's pane; `:app unshare` leaves the installed copy.
+- `t16-m5-agent-changes-the-open-board`: the owner's Board is open in
+  `#t15-agents` with a card selected; Scout, on the real Pi host and its
+  stand-in model, is asked for the priority and the filter and proposes the
+  Board with priority; the approval says it comes from the agent and who
+  asked; approved, the Board changes in place with the same card selected;
+  `:app brief` posts the brief; at its next turn Scout reports the version
+  applied.
+- `t16-cli-version`: `bzz --version` says `bzz 0.16.0`.
+
 The same manifest runs through tmux on a private socket, for a machine
 where Herdr is not running, or to keep text captures of every step:
 
 ```bash
 export BZZ_BUZZ_SOURCE=/path/to/pinned/buzz
-BZZ_TMUX_SCENARIOS=t16-cli-app-new,t16-cli-app-add,t16-cli-app-approve,t16-cli-app-add-second,t16-cli-app-add-looper,t16-app-pane,t16-app-live-second-profile,t16-app-looper-composer,t16-m4-poll-approve-update-rollback,t16-m4-approvals-template,t16-m4-dev-remove-reinstall \
+BZZ_TMUX_SCENARIOS=t16-cli-version,t16-cli-app-new,t16-cli-app-add,t16-cli-app-approve,t16-cli-app-add-second,t16-cli-app-add-looper,t16-app-pane,t16-app-live-second-profile,t16-app-looper-composer,t16-m4-poll-approve-update-rollback,t16-m4-approvals-template,t16-m4-dev-remove-reinstall,t16-m6-share-offer-approve,t16-m5-agent-changes-the-open-board \
   BZZ_TMUX_SIZE=120x30 BZZ_TMUX_CAPTURES=/tmp/bzz-captures ./scripts/test-relay.sh --tmux
 ```
 
 `BZZ_TMUX_SCENARIOS=harness` (the default) runs every harness scenario,
-v0.13 to v0.16, in order. The runner prints how long each step took to
+v0.13 to v0.16, in order, in one fixture: 35 for v0.16.0. The scenarios of
+v0.16 do not depend on what the earlier ones leave, but for the Board the
+M3 scenarios install. The runner prints how long each step took to
 show what it waits for.
 
 ### Manual disposable-fixture journey

@@ -2622,15 +2622,21 @@ running and was not started):
 | `docs/configuration.md` | apps: no setting, where they are, the feature `apps` |
 | `docs/app-api.md`, `app-authoring.md`, `app-records.md` | one notation for keys (`Ctrl-c`, `Ctrl-y`) across the documents of apps |
 | `docs/e2e-manual.md` | section 14 |
+| `docs/e2e-herdr.md` | the scenarios of M5, M6 and the version, and the list of `t16-*` for the tmux runner |
 | `docs/release-v0.16.0.md` | new |
 | `docs/README.md` | the row of v0.16.0, v0.15.0 as released, the ADR, the documents of apps |
 | `docs/adr-v0.16-apps.md` | accepted and built; what the milestones decided |
 | `docs/planning/2026-11-17/v0.16.0.md` | its status; a draft of "How it closed", marked as such, for the principal |
 | `site/public/index.html`, `site/README.md` | "new in v0.16.0" and a section `#apps`; the place and the need of a capture. **Not deployed** |
 
-`docs/agents.md` and `docs/app-records.md` were read against the code for
-the tools and the record's form and left as they were, but for the key
-notation.
+`docs/agents.md`, `docs/app-api.md`, `docs/app-authoring.md` and
+`docs/app-records.md` were **not** read line by line against the code in
+this task: they were searched for what milestones built in parallel leave
+behind (a milestone's name as future work, "not built", "not yet", markers
+left for later) and nothing was found but the key notation, now one. The
+contract's own test (`apps::runtime::tests::contract`) and the guide's
+(`apps::authoring_test`) hold `app-api.md`, its twin and `app-authoring.md`
+to the runtime.
 
 ### The plan's testing table, cell by cell
 
