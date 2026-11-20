@@ -4,9 +4,10 @@
 M1 (the runtime and its contract; the example host, the bench and the six
 apps); M2 (the records service; the app session); M3 (the app pane); M4
 (the store and command line; approval and managing inside bzz, and the
-templates); M6 (sharing an app in the channel); and M7 (agents use an
-app's records). Each has its milestone's exit gate, on Linux. Not here
-yet: M5 and M8. Nothing was pushed: what only CI
+templates); M5 (agents write and change apps; its real-model gate
+prepared and not run); M6 (sharing an app in the channel); and M7 (agents
+use an app's records). Each has its milestone's exit gate, on Linux. Not
+here yet: M8. Nothing was pushed: what only CI
 can show on macOS and Windows is listed as not seen. Plan:
 [`docs/planning/2026-11-17/v0.16.0.md`](planning/2026-11-17/v0.16.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
@@ -2051,3 +2052,168 @@ release binary left in the worktree's target is the one the gates built.
   secret scan reads each artifact's `history`.
 - **The brief's message is long**: by the time the scenario looked, its
   first line had scrolled up; it checks a line of the brief instead.
+
+## M5 — Agents write and change apps
+
+Linux x86_64, Rust 1.98.1, Buzz pin `bf3bdd0eaefe`, 2026-11-19 and 20.
+Branch `t3/implement-m5-agent-apps`, cut from `v0.16.0` at `429bbd5`
+(after M4 inside bzz was merged), with `v0.16.0` merged in at `7729603`
+(M6) so that its migration follows M6's 22. A person asks an agent in a channel to
+make or change an app; the agent reads the guide and the app, tries its
+script apart, and proposes it; the owner approves it in the overlay; the
+open app changes in place; the agent is told what became of it. Four tools,
+served as M7's are, to all four harnesses; no real model was run.
+
+**Where it is.**
+
+| Path | What |
+|---|---|
+| `docs/app-authoring.md` | the guide an agent writes an app from: the experiment's `AUTHOR.md` brought to `api = 1` and bzz (215 lines, with the contract `app_guide` returns about 590) |
+| `src/apps/authoring_test.rs` | every Lua block of the guide loads apart and draws; its example app does what the guide says at 40×16, 20×8 and 100×30 |
+| `src/agents/runtime/app_tools.rs` | `app_guide`, `try_app`, `propose_app`, and `apps` with an optional `app`: names, checked arguments, MCP definitions (the descriptions are how a model learns of apps, D17) |
+| `src/agents/runtime/agent/apps/authoring.rs` | serving them: the guide and the contract (`include_str!`), one app whole, a try on a thread of its own on a store in memory (optionally a copy of the channel's records), a proposal loaded apart, checked for its brief, recorded with the agent and the person who asked; the budgets; `app_notices`, what the next turn is told |
+| `src/agents/runtime/agent.rs`, `prompt.rs` | the prompt's `Since your last turn in this channel, of what you proposed here:` section, only when there is something to tell |
+| `migrations/0023_app_agent_proposals.sql`, `src/store/apps.rs` | `app_versions.asked_by_id`, `asked_by_name`, `told_at`; `app_versions_untold`, `app_version_told`, `app_versions_waiting_from` |
+| `src/apps/store/mod.rs`, `review.rs`, `manifest.rs` | `Apps::untold`, `Apps::told`, `AGENT_WAITING_AT_ONCE` (3) in `Apps::record`, `AppError::TooManyFromAgent`; `Asked by:` on a line of its own in what the owner is shown; `check_brief_names_types` |
+| `src/ui/app_approval.rs` | the banner says `from your agent Scout, asked by Ana` |
+| `src/app/manage.rs` | `:app brief [name]` |
+| `src/agents/capability.rs` | `writes apps:` in every capability record |
+| `src/agents/activity.rs` | `What::Proposal`: `version 2 of the app board proposed, asked by Ana · waiting for the owner` |
+| `agent-host/src/host.mjs` | the Pi host offers `buzz_app_guide`, `buzz_try_app`, `buzz_propose_app` and `buzz_apps` with `app` when bzz says `apps` |
+| `tests/agent_authors_app_test.rs`, `src/app/pane/tests.rs` (`managed`), `tests/secret_scan_test.rs`, `tests/relay_integration.rs`, `tests/store_migration_test.rs`, `agent-host/test/acp.test.mjs` | the proofs below |
+| `scripts/test-agent-authors-app.sh` | the real-model gate, prepared: `<harness>` on the pinned relay, then the bench's `board-priority` cases on what was approved |
+| `docs/apps.md` ("Agents write and change apps"), `docs/agents.md`, `docs/agent-host-protocol.md` (sections 5 and 6) | the user's and the protocol's account |
+
+No dependency was added; `Cargo.toml` and `Cargo.lock` are unchanged.
+**Migration 23** is new; 21 is untouched. It is 23 because M6's sharing, merged into `v0.16.0` meanwhile, is 22 (`0022_app_sharing.sql`); this branch, cut before it, goes from 21 to 23, and on `v0.16.0` the schema goes from 22 to 23.
+
+**What was decided here** (the plan and the brief left these open):
+
+| Question | Decided |
+|---|---|
+| Names | `app_guide`, `try_app`, `propose_app`; reading one app is `apps` with `app` (the brief: extend M7's `apps`, do not double it). Pi sees `buzz_…` |
+| What `app_guide` returns | `docs/app-authoring.md`, then `docs/app-api.md`, as one text (about 32 KiB). `app-api.d.lua` is left out: it says the same as declarations |
+| How the outcome reaches the agent | **told at its next turn in the same channel, once**: the prompt holds a section after the message, one line per version answered since. Not woken: a turn started by bzz would be a reply to no mention. "The same channel", not the same thread: a top-level mention starts a new place, and the owner asks again where he likes. A refusal's reason is the stored one, word for word (`clean_reason` of M4 made it one bounded line). `apps` with `app` shows `your_versions` with the same sentence any time. A version the agent itself replaced is not told; rows from before migration 23 count as told |
+| Where it is kept | three columns of `app_versions` (migration 23), not a table of the agent runtime: the proposer's key and channel are already there, and the untold versions of an agent in a channel are one indexed query |
+| Who asked | the request's author, with the name the relay's profiles give (a short key otherwise), recorded as `Proposer::asked_by`; shown in the approval on its own line, `Asked by: Ana (<key>), whose message asked the agent for it`, because at 120 columns the `From:` line already reaches the edge |
+| Which apps an agent may propose a version of | a new name; an app open in the turn's channel; or one of which no version was approved yet (its own new app, before the owner answered). An installed app open elsewhere is refused with `:app open` |
+| A version that does not load | answered at once, **not recorded**: M4 records the owner's failed folder, but an agent's failures would create an app row per name it tries and bury the store. Same for a brief that does not name its types |
+| "The brief's declared types must be the script's" | each record type the script declared as it loaded is a word of the brief (`card`, or `` `card` ``), checked by the tool after loading; the store does not check it, so M4's own proposals are unchanged |
+| Bounds | at most **3 versions waiting per agent, of all apps** (`Apps::record`, so no path gets around it); a later version of an app replaces its own waiting one; 6 proposals and 20 tries a minute per agent; one try at a time; a try ends after 30 s of the machine's time, 200 steps, 10 minutes of `wait:` |
+| A try | `bzz app try`'s rules: a manual clock, the local participant `you` with a made-up id, the script named `app.lua` (or `<from_app>.lua`); `from_app` plants a copy of the records the agent may read (M7's fence), with their authors; the screen's lines are trimmed at the right; the last 20 log lines |
+| A proposal and the ledger | no effect counted: a crashed turn handed over again proposes the same bytes, which the store answers with the same waiting version |
+| Owner's yes for the tool itself | none: a proposal is only a proposal; the yes is the approval of the bytes |
+| `:app brief` | the brief of the version that runs (read through `Apps::bundle`, so of the approved bytes), with one sentence before it naming the app and version, as an ordinary message of the owner's (`MessageService::send`) |
+| Capability records | one line for all four, `writes apps: yes: through bzz's tools only …`, saying it was seen with the scripted harness and not a real model |
+
+**How to repeat.**
+
+```sh
+# the build environment of runs/v016/RULES.md, then:
+cargo build --locked --example scripted_harness
+cargo test --locked --lib -- agents::runtime apps:: app::pane::tests::managed store::apps
+cargo test --locked --test agent_authors_app_test
+cargo test --locked --test secret_scan_test no_key_reaches_a_harness
+cargo test --locked --test store_migration_test
+(cd agent-host && npm ci && node --test test/acp.test.mjs)
+ln -sfn "$CARGO_TARGET_DIR" target; unset CARGO_TARGET_DIR
+BZZ_BUZZ_SOURCE=<main checkout>/runs/buzz-pin ./scripts/test-agent-authors-app.sh scripted
+rm target
+# the reds: /media/arpagon/archive-data/experiment-artifacts/arpagon-01-med/bzz/m5/reds.py
+```
+
+### Claims
+
+`U:` a unit test (bzz's `App` on Ratatui's test backend for the window),
+`S:` the scripted rung (the scripted harness through the pipe and through
+`bzz agent-tools`, a recorded relay for chat, the scripted relay of
+records on real sockets), `R:` the pinned relay, `N:` the Pi host's own
+tests under Node. Each red is the named test run with the one change in
+its cell, seen failing with the quoted message, and the file restored
+(`reds.py`, logs beside it in `…/m5/reds/`).
+
+| Claim | Proof | Red without the change | Result |
+|---|---|---|---|
+| **Exit gate 1, the agent's side**: Ana (who may wake the agent) asks for the priority and the filter; the agent lists the apps (the Board, version 1), reads the guide and the contract, reads the Board whole (its script, brief and manifest as approved), tries the Board with priority on a copy of the channel's cards (`j`, `2`: `> Bravo P2`, `Priority: all`, nothing sent to the relay), and proposes it: `waiting`, version 2; the Board that runs is still version 1's bytes; the review names the agent, the channel and Ana; one reply to the mention. The owner approves; bzz hands out version 2's bytes; the agent's next turn in the channel holds `- your version 2 of the app board: applied.`, and the one after it holds nothing. The activity has the proposal. Through the pipe and through `bzz agent-tools` | `S: agent_authors_app_test::an_agent_proposes_the_board_with_priority_and_is_told_it_was_applied` | `app_notices` not called (`since` empty): the second prompt has no such line (`panicked at tests/agent_authors_app_test.rs:496`) | pass |
+| **Exit gate 1, the window**: the Board open with three cards and `Bravo` selected; the agent's version (as `propose_app` records it) is announced `board: version 2 from your agent Scout, asked by Ana waits`; Ctrl-Y shows `From: your agent Scout (<key>), in channel …`, `Asked by: Ana (<key>)…`, the types unchanged, the brief CHANGED and the difference; `G` then `a`; the pane shows `Priority: all` with `> Bravo` still selected and `To do (3)`; `2` on it gives `> Bravo P2`; the outcome is `Applied` | `U: app::pane::tests::managed::an_agents_board_with_priority_changes_the_open_board_in_place` | the `Asked by:` line not rendered: ``Asked by: Ana (cccc…), whose message asked the agent for it` in: …`` | pass |
+| **Exit gate 2, refuse and nothing changes**: refused with `Not now: "P1" means something else here; ask me first.`; the Board that runs is version 1's bytes; the versions are `2 refused (files not kept)`, `1 approved`; the relay's heads are as before and the agent wrote none; the next turn holds `- your version 2 of the app board: refused by the owner, who said: "Not now: "P1" means something else here; ask me first.". Nothing of it runs.`; `Apps::outcome` says the same. In the window: a third version refused with `keep the priority` in the overlay leaves `> Bravo P2` and `Priority: all` on the pane | `S: a_refused_version_changes_nothing_and_the_agent_gets_the_reason`; `U: an_agents_board_with_priority_changes_the_open_board_in_place` | `app_notices` not called: `panicked at tests/agent_authors_app_test.rs:567` | pass |
+| **Exit gate 3, an error comes back with file and line and the owner is never asked**: a syntax error at line 14 of the Board with priority is answered `failed: board.lua:14: unexpected symbol near '='` and `Nothing was proposed, and the owner was not asked.`, with the JSON `{"error": {"code": "failed", …}}`; `try_app` gives the same at `app.lua:14:`; a brief that does not name `card` is refused; none at all is `needs \`brief\``; an `approve` argument is no argument. Nothing waits, the Board has one version, it runs as it was. Both ways in | `S: a_script_with_an_error_comes_back_with_file_and_line_and_the_owner_is_never_asked` | the load error not checked before recording: `not JSON: failed: board.lua:14: …` (the store's own answer, without the JSON, and a version row); the brief not checked: the second proposal `waiting` | pass |
+| **Exit gate 4, a try draws what the pane draws**: the Board at 40×16 with three cards and `j`: the screen `try_app` answers is, line for line, what `bzz app try` draws; and what `bzz app try` draws is what the pane draws inside its border in bzz's window (120×22, docked, 40×16 inside) | `S: a_try_draws_the_boards_screen_and_a_hostile_script_reaches_nothing`; `U: an_agents_board_with_priority_changes_the_open_board_in_place` | the try's default width 42: `left: String("42x16")` | pass |
+| **Exit gate 4, a hostile try reaches nothing and costs nothing**: the bench's hostile app at 200×80 with every key that attacks (`x y p m s c l u d`): every line `blocked (…)`, none `REACHED`; the turn's next step and `apps` are answered; the whole turn of three tries ended in under a minute (1.4 s for the five tests); a try on a copy of the channel's cards that creates `Delta` shows it, and no frame of the agent's reached the relay | `S: a_try_draws_the_boards_screen_and_a_hostile_script_reaches_nothing` | — (the runtime's confinement, M1; the store in memory, M4) | pass |
+| **Exit gate 5, nothing of an agent's runs unapproved, by any path**: five proposals in one turn: the Board, `notes`, `poll` wait; `tally` is `3 versions proposed by this agent already wait …`; a fifth Board replaces its own version 2 (`replaces: [2]`); `apps` with `notes` (not open here) gives only `your_versions`, no script; `approve` and `open_app` are no tools; afterwards `Apps::runnable` gives the Board's version 1 and nothing of `notes`; the only app open anywhere is the Board | `S: an_agents_proposals_never_run_unapproved_and_are_bounded`; `U: apps::store::tests::an_agent_has_at_most_three_versions_waiting_of_all_apps` | the bound lifted (`+ 100`): the fourth `Waiting` (`the fourth app: Ok(Waiting { version: 1, … })`), and the scripted test's list of waiting versions differs | pass |
+| **Exit gate 5, the secret scan covers the new tools**: on each of the four harnesses the guide, the Rota read whole, a try of the Rota on a copy of its days, a try of a script that looks for a key everywhere a script can reach (`os.getenv`, `/proc/self/environ`, `require`, `debug`, every global, `ctx.user`), and a proposal: the snooping script draws only `blocked`; the harness logs with every answer, the database and every file hold no key, no broker credential and no key of bzz's environment | `S: secret_scan_test::no_key_reaches_a_harness_environment_arguments_or_logs` | — (no red taken for the new steps; M7's red of the same test, a sentinel in a tool's answer, stands) | pass |
+| **Exit gate 6, one reply per mention on the pinned relay; and the whole gate there**: a disposable profile; Scout with the `bot` role in a new private channel; the Board installed, approved, open, three cards; the owner's mention carries the change request of `board-priority.md`; the scripted harness, run by `agents::runtime::service::serve` as the TUI runs it, reads, tries and proposes; one reply (`Proposed: the Board with priority and filter.`), 3 s after the mention; the version waits `From: your agent Scout (<key>), in channel …` `Asked by: <owner's short key> (<key>)`; approved; the agent's next turn says `applied`; one reply to the second mention; no record of the agent's on the relay. Then the bench: the approved script passes **17 of 17** `board-priority` cases at 80×24 and **17 of 17** at 40×16 | `R: real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied`, through `scripts/test-agent-authors-app.sh scripted` | — (the same code as the scripted claims; no separate red on the relay) | pass (23.6 s for the test) |
+| **The exit gate on the release binary, through the tmux runner** (Herdr's session `t3code` was not used; `scripts/test-tui-tmux.py` drives tmux on a private socket): in `#t15-agents` of the fixture profile, the owner adds the Board as `tasks` (`:app add`, `G`, `a`), opens it, makes `Alpha` and `Bravo` and selects `Bravo`; mentions Scout, whose real Pi Durable host on its stand-in model calls `buzz_propose_app` with the Board with priority read from a file; the banner says `tasks: version 2 from your agent Scout, asked by …`; the pane still shows `> Bravo` and no `Priority:`; Ctrl-Y shows `tasks (Tasks), version 2`, `Asked by: `, the brief CHANGED; `G`, `a`: `tasks: version 2 runs in place of 1, its state kept`, the pane shows `Priority: all` with `> Bravo`, and `5`, `2` give `> Bravo P2`; `:app brief` says `tasks: its brief is posted to #t15-agents as your message` and the timeline shows `The brief of the app Tasks`; a second mention a second later has Scout report `apps` with `app`, whose answer in the thread holds `tasks: applied. The owner approved`; quit with code 0 | `scripts/test-relay.sh --tmux` with `BZZ_TMUX_SCENARIOS=t16-m5-agent-changes-the-open-board` (`scripts/tui-herdr-scenarios.toml`) | — (its first five runs failed on the scenario's own steps: a status line M4 words differently, a thread opened on the wrong message, `q` closing the thread first; fixed in the scenario, not in bzz) | pass (29 steps, 6.1 s once ready), on the merged head |
+| The outcome is told once, in the channel it was proposed in, only after an answer; a superseded version and the owner's own are not told; approved, refused with the reason word for word, failed with the error are said as such | `U: apps::store::tests::an_agent_is_told_once_what_became_of_its_versions_in_that_channel`; `U: agent::apps::authoring::tests::an_outcome_is_said_with_the_owners_reason_word_for_word` | `told` not recorded: `assertion failed: fixture.apps().told(…)` | pass |
+| The prompt has nothing about apps beforehand (D17): no section without an outcome; the Pi host's system prompt names no app or record with the new tools offered | `U: prompt::tests::the_prompt_says_who_where_what_and_what_came_before`; `S:` the first prompt of the exit-gate test; `N: acp.test.mjs` "the tools of apps' records are offered only when bzz serves them…" (now with the three new names) | — | pass |
+| Migration 23: a database at the schema before it (22, set as `user_version`, so that on `v0.16.0` M6's 22 is not run again) with an agent's answered version opens at 23, reads back as it was, nobody named as having asked, and counts as told; v0.15's schema 20 still migrates with every row kept | `U: store_migration_test::the_schema_before_twenty_three_gains_who_asked_and_counts_every_version_as_told`, `schema_twenty_of_v015_gains_the_apps_tables_and_keeps_every_row` and the others with the version 23 | the `UPDATE … told_at` taken out: `told as of when it was answered`, `left: None` | pass |
+| Every argument of the new tools is checked and a wrong one named; a try's keys are `bzz app try`'s; sizes, steps, waits, records and the script and brief sizes are bounded; `apps` takes only `app` | `U: app_tools::tests::the_tools_of_a_script_check_every_argument_and_say_what_was_not_done`, `every_argument_is_checked_and_a_wrong_one_is_named`, `the_definitions_name_every_tool_once`; `U: tools::tests::read_and_react_are_checked_the_same_way` | — | pass |
+| The guide's code loads on the runtime, and its example does what it says | `U: apps::authoring_test::every_lua_block_of_the_guide_loads_and_draws`, `the_guides_example_counts_and_fits_the_pane` | `return app(` in the guide: `block 1 of the guide: guide-1.lua:102: unexpected symbol near <eof>` | pass |
+| `:app brief` reads the brief of the approved version, says what is missing (no app here, nothing approved, no connection); the message names the app and version and ends with the brief | `U: app::pane::tests::managed::app_brief_posts_the_approved_brief_and_says_what_it_needs` | — | pass |
+| Each harness's capability record says whether it writes apps, and how | `U: capability::tests::each_record_says_whether_the_harness_writes_apps`, `every_harness_states_each_capability_and_who_enforces_each_rule` | the line not printed: `PiDurable: capability record: …` | pass |
+
+The pinned-relay run took the lock, built nothing of Buzz (the pin's own
+`target/` was used: `CARGO_TARGET_DIR` unset and `./target` linked to this
+worktree's directory, then removed), ran the one test, and tore the
+harness down: `docker ps -a` listed no `buzz-harness` container after it.
+Log: `/media/arpagon/archive-data/experiment-artifacts/arpagon-01-med/bzz/m5/author-scripted.log`,
+output `…/m5/author-scripted/`.
+
+### Gates
+
+On `b3cef85` (this branch with `v0.16.0` merged in), 2026-11-20 from
+01:37 to 01:44 (UTC−5), one after the other; then the pinned relay and the
+release binary, on the same commit. Only this document changed after.
+Before the merge the same gates ran on `2bb6d21` (1071 passed; clippy's two
+findings there fixed in `5c6997e`).
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets -- -D warnings`; the same with `--no-default-features` | clean, both |
+| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets` | exit 0: 1088 passed, 0 failed, 38 ignored, in 62 test programs; `agent_host_test` ran the real Pi host (Node 26.5). New here: 5 of `agent_authors_app_test`, 1 ignored of `relay_integration` (the pinned relay's), 1 of `store_migration_test`, 2 of `authoring_test`, 1 of `app_tools`, 2 of `agent::apps::authoring`, 2 of the store, 2 of the pane, 1 of the capability records |
+| Tests without the features | `cargo test --locked --no-default-features --lib` | 484 passed |
+| The Pi host | `node --test test/*.test.mjs` in `agent-host/`, with the main checkout's `node_modules` linked for the run and removed after (no `npm ci` here); before the merge | 100 passed |
+| Pinned relay | `scripts/test-agent-authors-app.sh scripted` (the relay test, then the bench) | 1 passed (23.7 s); bench 17/17 at 80×24 and 17/17 at 40×16; before the merge the same |
+| Release binary | `cargo build --locked --release`, `scripts/test-relay.sh --tmux` with the M5 scenario | 1 of 1 scenarios passed |
+| Supply chain | not run: `Cargo.toml` and `Cargo.lock` are unchanged | |
+
+Every relay run took the lock, built nothing of Buzz, and tore the
+harness down: `docker ps -a` listed no `buzz-harness` container after the
+last. Logs in `/media/arpagon/archive-data/experiment-artifacts/arpagon-01-med/bzz/m5/`:
+`author-scripted.log`, `author-merged.log`, `tmux.log` to `tmux6.log`
+(the first five failed, the sixth passed), `tmux-merged.log`, with the
+screens of each step in `tmux-captures*/`.
+
+### Not proven in M5
+
+| Item | State |
+|---|---|
+| **A real model on each harness** (the plan's last gate of M5, D13) | not run: no real model or account in this task. Prepared: `scripts/test-agent-authors-app.sh pi-durable|grok|codex|claude-code` with `BZZ_AUTHOR_ALLOWED=yes`, proven end to end with `scripted`. Whether a model, from the tools' descriptions alone, finds `app_guide`, writes a version that passes the bench's 17 cases, and keeps the brief true is what that run will say; the brief is printed for a person to judge |
+| `:app brief` reaching the relay | the message is built and sent with `MessageService::send`, the composer's own path; the unit test has no relay and checks the text and what is refused |
+| An app made new by an agent, approved and opened by the owner | the store and the tool allow it (`notes`, `poll` wait in the bounds test); not approved and opened in a test |
+| A version approved, then failing as it is put to run, told to the agent | `Outcome::Failed` is said (`outcome_words`, unit) and M4's test shows the pane records it; not run with an agent's version end to end |
+| The migration on `v0.16.0` order | on this branch with M6's 22 merged: 21, 22, 23 apply in turn (v0.15's and M6's tests count to 23); a database that already had 22 opens at 23. M6's test of 22 now drops 23's columns too, and compares `app_versions` rows as starting with what they were |
+| Waking the agent when the owner answers | not done, by decision (above): the agent is told at its next turn in the channel |
+| Two bzz processes, one answering in the TUI while the agent's turn reads the outcome | `app_version_told` marks only an untold row, in one statement; not tested with two processes |
+| Windows and macOS | not compiled or run here; the scripted tests are `cfg(unix)` as the harness tests are |
+| A coding harness's own sandbox and the store's files | an agent has no tool that writes them; a coding harness writes only where its guard lets it (v0.15), and a file changed on disk is found out by its hash (M4). Not tested with a coding harness trying to write `<data>/apps` |
+
+### Found on the way
+
+- **The `From:` line of the approval reaches the edge at 120 columns**
+  with an agent's key and the channel's id: the person who asked was cut
+  off. It has a line of its own now (`Asked by:`); the `From:` line itself
+  is as M4 left it, and still loses the end of the channel's id there.
+- **An agent's failed proposals are not recorded,** unlike the owner's
+  folder in M4: recording them would make an app row for every name an
+  agent tries.
+- **Ana must be allowed to wake the agent** for "a person who may wake it
+  asks": the default rule is the owner only, so the scripted test sets an
+  allow-list, as an owner would.
+- **The scripted harness's `fill` does not touch a script** whose text
+  holds `$`: only a whole string that starts with `$` is replaced, so a
+  Lua script passes through a step's arguments unchanged.
+- **`test-relay.sh` with `CARGO_TARGET_DIR` unset** and `./target` linked
+  to the worktree's directory builds nothing of Buzz and runs the pin's
+  own `target/` (M7 found the opposite with the variable set).

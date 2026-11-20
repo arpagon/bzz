@@ -110,8 +110,10 @@ const CHAT_TOOLS = [
 	},
 ];
 /**
- * The tools of the apps open in the conversation's channel (bzz v0.16, docs/agent-host-protocol.md section 5). bzz
- * serves them and checks every argument and the fence; a remote copy has no bzz to serve them and does not offer them.
+ * The tools of the apps open in the conversation's channel (bzz v0.16, docs/agent-host-protocol.md section 5): their
+ * records (M7), and their script (M5: the guide, one app read whole, a try, a proposal). bzz serves them and checks
+ * every argument, the fence and the owner's approval; a remote copy has no bzz to serve them and does not offer them.
+ * Nothing about apps is in the prompt: these descriptions are how a model learns that apps exist (plan D17).
  */
 const APP = { type: "string", description: "The app's name, as apps lists it." };
 const RECORD_TYPE = { type: "string", description: "One of the record types the app declared, as apps lists them." };
@@ -121,8 +123,8 @@ const CONTENT = { type: "object", description: "The record's whole content: ever
 const APP_TOOLS = [
 	{
 		name: "apps",
-		description: "List the apps open in the channel of this conversation, each with its brief, which says what its records mean, and its record types. People of the channel share an app's records; read and change them with the record tools.",
-		parameters: { type: "object", properties: {} },
+		description: "List the apps open in the channel of this conversation, each with its brief, which says what its records mean, its record types and the version that runs. People of the channel share an app's records; read and change them with the record tools. With app, one app whole: its script, manifest and brief, and what became of the versions you proposed. An app is a small Lua script bzz draws beside the conversation; app_guide says how one is written, propose_app asks the owner to install a new one or a change.",
+		parameters: { type: "object", properties: { app: { type: "string", description: "An app open in this channel, to read its script, manifest and brief." } } },
 	},
 	{
 		name: "records",
@@ -147,6 +149,41 @@ const APP_TOOLS = [
 		name: "delete_record",
 		description: "Delete a record of an app open in this channel, under the same rule as update_record. Answers the record's last state.",
 		parameters: { type: "object", properties: { app: APP, id: RECORD_ID, rev: REV }, required: ["app", "id", "rev"] },
+	},
+	{
+		name: "app_guide",
+		description: "The guide to writing an app for bzz, and the contract (api = 1): how a script is shaped, its handlers, its records, the pane's size, what it cannot do, and what its brief must say. Read it before you write or change an app's script.",
+		parameters: { type: "object", properties: {} },
+	},
+	{
+		name: "try_app",
+		description: "Load a Lua script apart, give it keys and pastes, and get back the screen it draws as text, with any error as file:line. It runs on records kept in memory: give some with records, or start from a copy of the records of an app open in this channel with from_app. Nothing is stored, nothing reaches the relay. Default size 40 by 16, bzz's app pane.",
+		parameters: {
+			type: "object",
+			properties: {
+				script: { type: "string", description: "The whole script." },
+				keys: { type: "array", items: { type: "string" }, description: "In order: a key (j, enter, esc, ctrl+u, shift+tab, f1), type:some text, paste:some text, resize:60x20, wait:500 (milliseconds pass, timers fire)." },
+				width: { type: "integer", minimum: 20, maximum: 200, description: "Columns. Default 40." },
+				height: { type: "integer", minimum: 5, maximum: 80, description: "Rows. Default 16." },
+				records: { type: "array", items: { type: "object" }, description: 'Records to start with: {"type": "card", "content": {...}, "by": "bo"}, by optional.' },
+				from_app: { type: "string", description: "An app open in this channel: start with a copy of its current records. What the script writes changes only the copy." },
+			},
+			required: ["script"],
+		},
+	},
+	{
+		name: "propose_app",
+		description: 'Propose a version of an app, with its brief: a new app, or a change to an app installed here. bzz loads it apart first; a script that does not load, or a brief that does not name its record types, comes back at once with the error and is not offered. Otherwise the owner is asked to approve these exact bytes and the answer is "waiting for the owner": you are told what became of it (applied, refused with the reason, or failed with the error) at your next turn in this channel, and apps with app shows it any time. You cannot approve, open or install it yourself.',
+		parameters: {
+			type: "object",
+			properties: {
+				app: { type: "string", description: "The app's name: an installed app's, to change it, or a new one." },
+				script: { type: "string", description: "The whole Lua script." },
+				brief: { type: "string", description: "What the app does, its keys, and each record type with its fields and rules. Keep it true to the script." },
+				title: { type: "string", description: "Its title, if it should change." },
+			},
+			required: ["app", "script", "brief"],
+		},
 	},
 ];
 const TOOL_KIND = { read: "read", write: "edit", edit: "edit", bash: "execute", run: "execute" };

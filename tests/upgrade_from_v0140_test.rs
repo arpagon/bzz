@@ -248,7 +248,7 @@ async fn v0140_profile_upgrades_with_its_hosted_agent_served_and_nothing_lost() 
     let after: u32 = upgraded
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(after, 22, "migrations 18 to 22 ran ({before} -> {after})");
+    assert_eq!(after, 23, "migrations 18 to 23 ran ({before} -> {after})");
     let integrity: String = upgraded
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .unwrap();

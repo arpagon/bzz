@@ -412,11 +412,14 @@ arguments never say which mention is answered.
 | `send` | `text` (string, required), `final` (boolean), `mentions` (array of pubkeys) | posts `text` in the turn's place, as a reply to the request. With `final`, ends the turn: one per request, under the rule of the ADR |
 | `read` | `limit` (1–100), `before` (event id) | returns recent messages of the place, newest last |
 | `react` | `emoji` (string, required), `event` (event id; default: the request) | adds a reaction |
-| `apps` | none | the apps open in the turn's channel: `{"apps": [{name, title, types, brief}], "unusable": [{name, why}]}` |
+| `apps` | `app` (string) | without `app`, the apps open in the turn's channel: `{"apps": [{name, title, version, types, brief}], "unusable": [{name, why}]}`. With `app`, that app whole (M5): `{"app", "title", "open_here", "enabled", "version", "types", "manifest", "brief", "script", "versions_waiting", "your_versions": [{version, state, detail, said}]}`; of an app not open there, only `your_versions` |
 | `records` | `app`, `type` (required), `match` (string, at most 256 bytes), `limit` (1–200, default 50) | the records of one declared type: `{"app", "type", "count", "records": [{id, type, rev, content, by: {id, name}}]}`, with `more` and `note` when not all fit (at most 64 KiB) |
 | `create_record` | `app`, `type`, `content` (object), all required | creates a record, signed by bzz with the agent's key: `{"record": {…}}` |
 | `update_record` | `app`, `id`, `rev`, `content`, all required | replaces the record's whole content if `rev` is its head: `{"record": {…}}` |
 | `delete_record` | `app`, `id`, `rev`, all required | deletes it under the same rule: `{"record": <its last state>, "deleted": true}` |
+| `app_guide` | none | the author guide (`docs/app-authoring.md`) and the contract (`docs/app-api.md`), as one text |
+| `try_app` | `script` (required), `keys` (array of steps), `width` (20–200, default 40), `height` (5–80, default 16), `records` (array of `{type, content, by?}`), `from_app` (an app open here) | loads the script apart on records in memory, does the steps, and answers `{"size", "screen", "error", "types", "responding", "steps", "log", "closed"?, "notice"?, "notes"?}` |
+| `propose_app` | `app`, `script`, `brief` (required), `title` | loads the version apart; if it loads and its brief names its types, records it for the owner's approval: `{"status": "waiting", "app", "version", "hash", "message", "replaces"?}` |
 
 - These are the names on the wire. **The model sees them as `buzz_send`,
   `buzz_read`, `buzz_react`, `buzz_apps`, and so on**, because Pi's file
@@ -462,11 +465,47 @@ through it; an agent reads and writes them without the app's script.
   app that is not open here, or an agent that may no longer write there is
   a plain sentence.
 
+**The tools of an app's script** (v0.16 M5, feature `apps`;
+`docs/apps.md`, "Agents write and change apps"). Nothing about apps is in a
+prompt beforehand (plan D17): these four are how a model learns of them.
+
+- **Nothing runs unapproved.** `try_app` runs the script on a thread of
+  its own, on a record store in memory: what it writes changes only that
+  store, nothing reaches the relay, and nothing is kept. A step is a key
+  (`j`, `enter`, `ctrl+u`, `shift+tab`), `type:<text>`, `paste:<text>`,
+  `resize:<w>x<h>` or `wait:<ms>`, as `bzz app try` reads them; at most 200
+  steps, ten minutes of waits, 30 seconds of the machine's time.
+  `from_app` starts from a copy of the records the agent may read of an
+  app open in the turn's channel, under the fence of the record tools.
+- **`propose_app` is loaded apart first.** A script that does not load, or
+  a brief that does not name each record type the script declares, is
+  answered at once, `"isError": true`, with a first line `failed: <file>:<line>: <message>`
+  and a last line `{"error": {"code": "failed", "message"}}`; nothing is
+  recorded and the owner is not asked. A version that loads is recorded as
+  the store records any proposal (`Apps::record`), from the agent, in the
+  turn's channel, with the request's author as the person who asked. It is
+  only ever a proposal: no tool approves, opens, enables or removes.
+- **Which app**: a new name; an app open in the turn's channel; or one of
+  which no version was approved yet. An agent has at most three versions
+  waiting of all apps; a later version of an app replaces its own waiting
+  one (`replaces`). Six proposals and twenty tries a minute, one try at a
+  time.
+- **The outcome**: the answer is "waiting for the owner". At the agent's
+  next turn whose request is in the same channel, the prompt holds, after
+  the message, a section `Since your last turn in this channel, of what you
+  proposed here:` with one line for each version answered since: applied;
+  refused, with the owner's reason word for word; or failed as it was put
+  to run, with the error. Each is said once. No turn is started for it, so
+  one final reply per mention holds. `apps` with `app` gives the same in
+  `your_versions` whenever it is called.
+- Each proposal is a line of the agent's activity: `version N of the app
+  <name> proposed, asked by <name> · <answer>`.
+
 ## 6. Tools for other harnesses: `bzz agent-tools`
 
 `bzz agent-tools` is a hidden command: an MCP server over stdio with the same
 tools: the three of the chat and, from a bzz built with apps, the five of
-apps' records. A harness starts it because bzz listed it in `mcpServers`:
+apps' records and the three of an app's script. A harness starts it because bzz listed it in `mcpServers`:
 
 ```json
 {"name": "buzz", "command": "<path to bzz>", "args": ["agent-tools"],

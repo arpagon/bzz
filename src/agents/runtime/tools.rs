@@ -1,6 +1,6 @@
 //! The tools bzz serves to a harness: `send`, `read` and `react`
 //! (`docs/agent-host-protocol.md`, section 5), and with the feature `apps`
-//! the record tools of [`super::app_tools`].
+//! the tools of [`super::app_tools`]: an app's records, and its script.
 //!
 //! Arguments are checked before anything else happens, and a wrong call is
 //! answered with what is wrong and what is right, because a model may guess
@@ -569,7 +569,7 @@ mod tests {
         #[cfg(feature = "apps")]
         assert!(
             unknown.contains(
-                "`react`, `apps`, `records`, `create_record`, `update_record` and `delete_record`."
+                "`react`, `apps`, `records`, `create_record`, `update_record`, `delete_record`, `app_guide`, `try_app` and `propose_app`."
             ),
             "{unknown}"
         );

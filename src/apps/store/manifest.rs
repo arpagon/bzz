@@ -161,6 +161,31 @@ pub fn check_brief(bytes: &[u8]) -> Result<&str, String> {
 
 /// A title as it is kept: one line of text, trimmed, with something in it,
 /// at most [`TITLE_CHARS`] characters.
+/// The brief stays true (plan D16): each record type the script declares
+/// is named in its brief, as a word (`card`, or `` `card` ``), so that a
+/// person who reads it before approving, and an agent of another client
+/// who writes the app again from it, know what the records are. Checked
+/// for a version an agent proposes; the error names the types missing.
+pub fn check_brief_names_types(brief: &str, types: &[String]) -> Result<(), String> {
+    let words: std::collections::HashSet<&str> = brief
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .filter(|word| !word.is_empty())
+        .collect();
+    let missing: Vec<&str> = types
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !words.contains(name))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "the brief does not name the record type{} {} that the script declares: a brief says what each record type holds, field by field, so that the owner and another client know what the app's records are",
+        if missing.len() == 1 { "" } else { "s" },
+        missing.join(", ")
+    ))
+}
+
 pub fn check_title(title: &str) -> Result<String, String> {
     let title = title.trim();
     if title.is_empty() {

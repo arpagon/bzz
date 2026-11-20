@@ -2232,3 +2232,156 @@ visible = "quit bzz?"
 [[scenario.step]]
 keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.16 M5: an agent changes the open app, on the release binary. Scout's
+# stand-in model reads the script it proposes from a file (`with_files` of
+# agent-host/test/support/scripted-model.mjs): the Board with priority and
+# filter of tests/fixtures/apps/board-priority, proposed as a version of
+# the owner's Board, here named `tasks`.
+
+[[scenario]]
+id = "t16-m5-agent-changes-the-open-board"
+kind = "harness"
+description = "v0.16 M5 exit gate: the owner's Board is open in #t15-agents with a card selected; Scout, mentioned, proposes the Board with priority and filter through propose_app; the approval says it comes from the agent and who asked; approved in the overlay, the open Board changes in place with the card still selected and its new keys work; :app brief posts the brief; at its next turn Scout is told the version was applied."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "160x40"
+
+[[scenario.step]]
+run = "\"$BZZ_BIN\" app new tasks --template board --to {fixture}/m5-tasks && cp \"$(git rev-parse --show-toplevel)/tests/fixtures/apps/board-priority/app.lua\" {fixture}/m5-priority.lua && cp \"$(git rev-parse --show-toplevel)/tests/fixtures/apps/board-priority/brief.md\" {fixture}/m5-priority.md"
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t15-ag", "enter"]
+visible = "Generated agents channel"
+
+[[scenario.step]]
+keys = [":", "type:app add {fixture}/m5-tasks", "enter"]
+visible = "tasks (Tasks), version 1"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["G"]
+visible = "(: the end|that is the whole version)"
+regex = true
+
+[[scenario.step]]
+keys = ["a"]
+visible = "tasks: version 1 approved"
+
+[[scenario.step]]
+keys = [":", "type:app open tasks", "enter"]
+visible = "To do (0)"
+
+[[scenario.step]]
+keys = ["n", "type:Alpha", "enter"]
+visible = "To do (1)"
+
+[[scenario.step]]
+keys = ["n", "type:Bravo", "enter"]
+visible = "To do (2)"
+
+[[scenario.step]]
+keys = ["k", "j"]
+visible = "> Bravo"
+
+# Scout is asked; it proposes the Board with priority as a version of tasks.
+[[scenario.step]]
+keys = ["ctrl+c", "i", "type:@Sco"]
+visible = "@Scout"
+
+[[scenario.step]]
+keys = ["tab", "space", "type:please add a priority and a filter to the tasks board", "ctrl+j", 'type:do: [["with_files", "buzz_propose_app", {"app": "tasks"}, {"script": "{fixture}/m5-priority.lua", "brief": "{fixture}/m5-priority.md"}], ["report"]]', "enter"]
+visible = "tasks: version 2 from your agent Scout, asked by"
+timeout = 90000
+
+# Nothing of it runs while it waits.
+[[scenario.step]]
+keys = []
+visible = "> Bravo"
+absent = "Priority:"
+
+[[scenario.step]]
+keys = ["ctrl+y"]
+visible = "tasks (Tasks), version 2"
+
+[[scenario.step]]
+keys = []
+visible = "Asked by: "
+
+[[scenario.step]]
+keys = []
+visible = "Brief:    .*CHANGED from the version that runs"
+regex = true
+
+[[scenario.step]]
+keys = ["G"]
+visible = "(: the end|that is the whole version)"
+regex = true
+
+[[scenario.step]]
+keys = ["a"]
+visible = "tasks: version 2 runs in place of 1, its state kept"
+
+# In place: the card is still selected, and the new keys work on it.
+[[scenario.step]]
+keys = []
+visible = "Priority: all"
+
+[[scenario.step]]
+keys = []
+visible = "> Bravo"
+
+[[scenario.step]]
+keys = ["5", "2"]
+visible = "> Bravo P2"
+
+[[scenario.step]]
+keys = ["ctrl+c", ":", "type:app brief", "enter"]
+visible = "tasks: its brief is posted to #t15-agents as your message"
+
+[[scenario.step]]
+keys = []
+visible = "The brief of the app Tasks"
+timeout = 30000
+
+# At its next turn in the channel Scout is told; what it was told is in
+# `apps` with `app`, which it reports. A second later than the brief, so
+# that the mention is the newest message (the timeline orders by second).
+[[scenario.step]]
+pause = 1500
+keys = ["i", "type:@Sco"]
+visible = "@Scout"
+
+[[scenario.step]]
+keys = ["tab", "space", "type:did it go in?", "ctrl+j", 'type:do: [["buzz_apps", {"app": "tasks"}], ["report"]]', "enter"]
+visible = "did it go in?"
+
+# The newest message is the mention; its thread has Scout's answer.
+[[scenario.step]]
+keys = ["G"]
+visible = 'did it go in\?(.|\n)*↳ 1 reply'
+regex = true
+timeout = 90000
+
+# Its answer holds the app whole (the script is long): the end of it is
+# what the agent was told of its version.
+[[scenario.step]]
+keys = ["enter"]
+visible = "tasks: applied. The owner approved"
+timeout = 30000
+
+# q closes the thread first, then asks to quit.
+[[scenario.step]]
+keys = ["q"]
+visible = "online"
+absent = "context · 1 reply"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"

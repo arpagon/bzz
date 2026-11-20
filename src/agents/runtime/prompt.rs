@@ -29,6 +29,10 @@ pub struct PromptContext<'a> {
     /// For a harness that is not bzz's own host: it never received the
     /// agent's instructions and does not know how to answer.
     pub instructions: Option<&'a str>,
+    /// What became, since the agent's last turn in this channel, of what it
+    /// asked the owner for there: the outcome of a version of an app it
+    /// proposed (v0.16 M5). Empty for an agent that proposed nothing.
+    pub since: &'a [String],
 }
 
 fn clip(text: &str, limit: usize) -> String {
@@ -94,6 +98,12 @@ pub fn build(context: &PromptContext<'_>) -> String {
         request.id.to_hex(),
         request.content,
     ));
+    if !context.since.is_empty() {
+        text.push_str("\nSince your last turn in this channel, of what you proposed here:\n");
+        for said in context.since {
+            text.push_str(&format!("- {said}\n"));
+        }
+    }
     if !context.recent.is_empty() {
         text.push_str("\nEarlier messages of this conversation, oldest first:\n");
         let skipped = context.recent.len().saturating_sub(RECENT_MESSAGES);
@@ -164,6 +174,7 @@ mod tests {
             names: &names,
             resumed: false,
             instructions: None,
+            since: &[],
         };
         let text = build(&context);
         assert!(
@@ -181,6 +192,15 @@ mod tests {
             "long messages are clipped"
         );
         assert!(!text.contains("Buzz team chat") && !text.contains("cut short"));
+        assert!(!text.contains("Since your last turn"), "nothing beforehand");
+        let since = ["your version 2 of the app board: applied.".to_owned()];
+        context.since = &since;
+        let told = build(&context);
+        assert!(
+            told.contains("what is 17 times 23?\n\nSince your last turn in this channel, of what you proposed here:\n- your version 2 of the app board: applied.\n\nEarlier messages"),
+            "{told}"
+        );
+        context.since = &[];
         // A foreign harness gets the instructions and how to answer; a
         // resumed turn gets the caution first.
         context.instructions = Some("Be brief.");

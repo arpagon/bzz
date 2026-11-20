@@ -27,4 +27,6 @@ pub mod share;
 pub mod store;
 
 #[cfg(test)]
+mod authoring_test;
+#[cfg(test)]
 mod widgets_test;

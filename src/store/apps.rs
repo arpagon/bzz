@@ -98,6 +98,15 @@ impl ProposerKind {
     }
 }
 
+/// The person whose message asked an agent for a version (plan D7).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Asker {
+    /// Their public key (hex).
+    pub id: String,
+    /// Their name when they asked, for showing.
+    pub name: String,
+}
+
 /// Who proposed a version. Public facts only: no key is ever part of it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Proposer {
@@ -108,6 +117,8 @@ pub struct Proposer {
     pub name: Option<String>,
     /// The channel it was proposed or offered in.
     pub channel: Option<Uuid>,
+    /// For an agent's version: the person who asked for it.
+    pub asked_by: Option<Asker>,
 }
 
 impl Proposer {
@@ -117,6 +128,7 @@ impl Proposer {
             id: None,
             name: None,
             channel: None,
+            asked_by: None,
         }
     }
 
@@ -127,6 +139,7 @@ impl Proposer {
             id: Some(pubkey.into()),
             name: Some(name.into()),
             channel: None,
+            asked_by: None,
         }
     }
 
@@ -137,11 +150,21 @@ impl Proposer {
             id: Some(pubkey.into()),
             name: Some(name.into()),
             channel: None,
+            asked_by: None,
         }
     }
 
     pub fn in_channel(mut self, channel: Uuid) -> Self {
         self.channel = Some(channel);
+        self
+    }
+
+    /// The person whose message asked the agent for this version.
+    pub fn asked_by(mut self, pubkey: impl Into<String>, name: impl Into<String>) -> Self {
+        self.asked_by = Some(Asker {
+            id: pubkey.into(),
+            name: name.into(),
+        });
         self
     }
 
@@ -189,6 +212,9 @@ pub struct AppVersion {
     pub decided_at: Option<u64>,
     /// Its files are still on disk.
     pub kept: bool,
+    /// When the agent that proposed it was told what became of it. Always
+    /// set for a version no agent proposed.
+    pub told_at: Option<u64>,
 }
 
 /// A version to record. Its number is given when it is recorded.
@@ -218,7 +244,7 @@ pub struct RecordedVersion {
     pub superseded: Vec<u32>,
 }
 
-const VERSION_COLUMNS: &str = "community_id,name,version,state,detail,title,api,types_json,script_sha256,manifest_sha256,brief_sha256,script_bytes,brief_bytes,proposer_kind,proposer_id,proposer_name,proposer_channel,proposed_at,decided_at,kept";
+const VERSION_COLUMNS: &str = "community_id,name,version,state,detail,title,api,types_json,script_sha256,manifest_sha256,brief_sha256,script_bytes,brief_bytes,proposer_kind,proposer_id,proposer_name,proposer_channel,proposed_at,decided_at,kept,asked_by_id,asked_by_name,told_at";
 
 fn bad() -> rusqlite::Error {
     rusqlite::Error::InvalidQuery
@@ -263,10 +289,21 @@ fn version_of(row: &Row<'_>) -> rusqlite::Result<AppVersion> {
                 .get::<_, Option<String>>(16)?
                 .map(|text| uuid_of(&text))
                 .transpose()?,
+            asked_by: match (
+                row.get::<_, Option<String>>(20)?,
+                row.get::<_, Option<String>>(21)?,
+            ) {
+                (Some(id), name) => Some(Asker {
+                    name: name.unwrap_or_default(),
+                    id,
+                }),
+                (None, _) => None,
+            },
         },
         proposed_at: unsigned(row.get(17)?)?,
         decided_at: row.get::<_, Option<i64>>(18)?.map(unsigned).transpose()?,
         kept: row.get::<_, i64>(19)? != 0,
+        told_at: row.get::<_, Option<i64>>(22)?.map(unsigned).transpose()?,
     })
 }
 
@@ -402,9 +439,10 @@ impl Store {
                 )?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
             drop(statement);
+            // Its proposer replaced it: there is nothing to tell it of.
             for earlier in &superseded {
                 transaction.execute(
-                    "UPDATE app_versions SET state='superseded',detail=?4,decided_at=?5,kept=0 WHERE community_id=?1 AND name=?2 AND version=?3",
+                    "UPDATE app_versions SET state='superseded',detail=?4,decided_at=?5,kept=0,told_at=?5 WHERE community_id=?1 AND name=?2 AND version=?3",
                     params![
                         community,
                         new.name,
@@ -431,7 +469,7 @@ impl Store {
             .map_err(|error| Error::Serialization(error.to_string()))?;
         transaction.execute(
             &format!(
-                "INSERT INTO app_versions({VERSION_COLUMNS}) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)"
+                "INSERT INTO app_versions({VERSION_COLUMNS}) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)"
             ),
             params![
                 community,
@@ -455,6 +493,11 @@ impl Store {
                 // A version that never loaded is decided as it is recorded.
                 (!waiting).then_some(now),
                 i64::from(waiting),
+                new.proposer.asked_by.as_ref().map(|asker| asker.id.as_str()),
+                new.proposer.asked_by.as_ref().map(|asker| asker.name.as_str()),
+                // Only an agent's waiting version has an outcome still to
+                // be told: the proposer of a failed one was answered at once.
+                (!(waiting && new.proposer.kind == ProposerKind::Agent)).then_some(now),
             ],
         )?;
         transaction.execute(
@@ -506,6 +549,66 @@ impl Store {
         )?;
         transaction.commit()?;
         Ok(true)
+    }
+
+    /// The versions an agent proposed in a channel that are answered and
+    /// of which it was not told yet, oldest first.
+    pub fn app_versions_untold(
+        &self,
+        community: Uuid,
+        agent: &str,
+        channel: Uuid,
+    ) -> Result<Vec<AppVersion>> {
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT {VERSION_COLUMNS} FROM app_versions
+             WHERE community_id=?1 AND proposer_kind='agent' AND proposer_id=?2 AND proposer_channel=?3
+               AND told_at IS NULL AND state<>'waiting'
+             ORDER BY decided_at,name,version"
+        ))?;
+        let rows = statement
+            .query_map(
+                params![community.to_string(), agent, channel.to_string()],
+                version_of,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Records that the proposer of a version was told its outcome. False
+    /// when it had been told already.
+    pub fn app_version_told(
+        &mut self,
+        community: Uuid,
+        name: &str,
+        version: u32,
+        now: u64,
+    ) -> Result<bool> {
+        let told = self.connection.execute(
+            "UPDATE app_versions SET told_at=?4 WHERE community_id=?1 AND name=?2 AND version=?3 AND told_at IS NULL",
+            params![community.to_string(), name, version, u64_to_i64(now)?],
+        )?;
+        Ok(told > 0)
+    }
+
+    /// The versions of a community that wait for an answer and come from
+    /// one proposer, of every app.
+    pub fn app_versions_waiting_from(
+        &self,
+        community: Uuid,
+        proposer: &Proposer,
+    ) -> Result<Vec<AppVersion>> {
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT {VERSION_COLUMNS} FROM app_versions
+             WHERE community_id=?1 AND state='waiting' AND proposer_kind=?2 AND proposer_id IS ?3
+             ORDER BY proposed_at,name,version"
+        ))?;
+        let rows = statement
+            .query_map(
+                params![community.to_string(), proposer.kind.as_str(), proposer.id],
+                version_of,
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Refuses a waiting version. False when it was not waiting.

@@ -969,4 +969,279 @@ return app
         let said = app.status_error.clone().unwrap_or_default();
         assert!(said.contains("usage: :app unshare <name>"), "{said}");
     }
+
+    const BOARD: &str = include_str!("../../../tests/fixtures/apps/board/app.lua");
+    const BOARD_BRIEF: &str = include_str!("../../../tests/fixtures/apps/board/brief.md");
+    const BOARD_PRIORITY: &str =
+        include_str!("../../../tests/fixtures/apps/board-priority/app.lua");
+    const BOARD_PRIORITY_BRIEF: &str =
+        include_str!("../../../tests/fixtures/apps/board-priority/brief.md");
+
+    /// Proposes a version of `name`, as `bzz app add` or `propose_app` does.
+    async fn propose_named(
+        app: &App,
+        name: &'static str,
+        script: &'static str,
+        brief: &'static str,
+        from: Proposer,
+    ) -> Recorded {
+        let community = app.active_community_id().unwrap();
+        let root = app.paths.apps_dir();
+        let submission = Submission::new(name, script, brief, from);
+        let examined =
+            tokio::task::spawn_blocking(move || examine_with(submission, &Limits::patient()))
+                .await
+                .unwrap()
+                .unwrap();
+        app.store
+            .call(move |store| Ok(Apps::at(store, root).record(community, examined).unwrap()))
+            .await
+            .unwrap()
+    }
+
+    /// The owner's example, M5's exit gate in bzz's window: the Board is
+    /// open with a card selected; one of his agents, asked by a person of
+    /// the channel, proposes the Board with priority and filter; he sees
+    /// who proposed it and who asked, and approves it in the overlay; the
+    /// open Board changes in place, the card still selected, and its new
+    /// keys work. A refusal of the next version changes nothing.
+    #[tokio::test]
+    async fn an_agents_board_with_priority_changes_the_open_board_in_place() {
+        let temporary = TempDir::new().unwrap();
+        let (mut app, channel) = managed(&temporary).await;
+        {
+            let memory = app.apps.memory.clone().unwrap();
+            let mut store = memory.lock();
+            for (order, title) in ["Alpha", "Bravo", "Charlie"].iter().enumerate() {
+                store.seed(
+                    "card",
+                    crate::apps::session::memory::content(
+                        serde_json::json!({"title": title, "column": "todo", "order": order + 1}),
+                    ),
+                    &Who::new("b".repeat(64), "bo"),
+                );
+            }
+        }
+        let Recorded::Waiting {
+            version: 1, hash, ..
+        } = propose_named(&app, "board", BOARD, BOARD_BRIEF, Proposer::owner()).await
+        else {
+            panic!("the Board waits");
+        };
+        let community = app.active_community_id().unwrap();
+        let root = app.paths.apps_dir();
+        app.store
+            .call(move |store| {
+                Apps::at(store, root)
+                    .approve(community, "board", 1, &hash)
+                    .unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+        command(&mut app, "open board").await;
+        turn(&mut app, "To do (3)").await;
+        app.focus_app();
+        app.app_key(key(KeyCode::Char('j')));
+        let shown = until(&mut app, 120, 30, "> Bravo").await;
+        assert!(!shown.contains("Priority:"), "{shown}");
+        // What `try_app` gives an agent for the Board at 40×16, on the same
+        // cards and the same key, is what the pane draws inside its border.
+        let window = until(&mut app, 120, 22, "> Bravo").await;
+        let lines: Vec<&str> = window.lines().collect();
+        let (top, left) = lines
+            .iter()
+            .enumerate()
+            .find_map(|(row, line)| {
+                line.find("┌ Board · ")
+                    .map(|byte| (row, line[..byte].chars().count()))
+            })
+            .unwrap_or_else(|| panic!("the pane's border:\n{window}"));
+        let pane = lines[top + 1..top + 17]
+            .iter()
+            .map(|line| {
+                line.chars()
+                    .skip(left + 1)
+                    .take(40)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tried = crate::apps::dev::try_script(crate::apps::dev::Trial {
+            script: BOARD.as_bytes().to_vec(),
+            script_name: "board.lua".into(),
+            width: 40,
+            height: 16,
+            steps: vec![crate::apps::session::headless::Step::parse("j").unwrap()],
+            seeds: crate::apps::dev::parse_seed(
+                r#"[{"type":"card","content":{"title":"Alpha","column":"todo","order":1},"by":"bo"},
+                    {"type":"card","content":{"title":"Bravo","column":"todo","order":2},"by":"bo"},
+                    {"type":"card","content":{"title":"Charlie","column":"todo","order":3},"by":"bo"}]"#,
+            )
+            .unwrap(),
+        })
+        .unwrap()
+        .tried;
+        let tried = tried
+            .screen
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            pane.contains("> Bravo") && pane.contains("To do (3)") && pane.lines().count() == 16,
+            "{pane}"
+        );
+        assert_eq!(pane, tried, "the pane:\n{window}");
+
+        // The agent's version, as `propose_app` records it.
+        let asked = Proposer::agent("e".repeat(64), "Scout")
+            .in_channel(channel)
+            .asked_by("c".repeat(64), "Ana");
+        let Recorded::Waiting { version: 2, .. } = propose_named(
+            &app,
+            "board",
+            BOARD_PRIORITY,
+            BOARD_PRIORITY_BRIEF,
+            asked.clone(),
+        )
+        .await
+        else {
+            panic!("version 2 waits");
+        };
+        let shown = turn(&mut app, "waits for your approval").await;
+        assert!(
+            shown.contains("board: version 2 from your agent Scout, asked by Ana waits"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("> Bravo"),
+            "the approved Board runs: {shown}"
+        );
+        assert!(app.app_review_key(ctrl_y()).await.unwrap());
+        let shown = screen(&mut app, 120, 40);
+        for expected in [
+            "board (Board), version 2",
+            &format!(
+                "From:     your agent Scout ({}), in channel",
+                "e".repeat(64)
+            ),
+            &format!(
+                "Asked by: Ana ({}), whose message asked the agent for it",
+                "c".repeat(64)
+            ),
+            "Record types: card",
+            "The same as the version that runs.",
+            "Brief:    ",
+            "CHANGED from the version that runs",
+            "Difference from version 1, which runs:",
+        ] {
+            assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
+        }
+        // All of it is seen before the yes.
+        answer(&mut app, KeyCode::Char('G')).await;
+        screen(&mut app, 120, 40);
+        answer(&mut app, KeyCode::Char('a')).await;
+        assert_eq!(
+            app.presentation.overlay, None,
+            "{:?}",
+            app.apps.review.notice
+        );
+        // In place: the card is still selected, the filter is there, and
+        // the new keys work on the selected card.
+        let shown = turn(&mut app, "Priority: all").await;
+        assert!(shown.contains("> Bravo"), "{shown}");
+        assert!(shown.contains("To do (3)"), "{shown}");
+        app.focus_app();
+        app.app_key(key(KeyCode::Char('2')));
+        until(&mut app, 120, 30, "> Bravo P2").await;
+        assert_eq!(state_of_named(&app, "board", 2).await, Outcome::Applied);
+
+        // A third version, refused with a reason: nothing changes.
+        let Recorded::Waiting { version: 3, .. } =
+            propose_named(&app, "board", BOARD, BOARD_BRIEF, asked).await
+        else {
+            panic!("version 3 waits");
+        };
+        turn(&mut app, "waits for your approval").await;
+        assert!(app.app_review_key(ctrl_y()).await.unwrap());
+        answer(&mut app, KeyCode::Char('r')).await;
+        for character in "keep the priority".chars() {
+            answer(&mut app, KeyCode::Char(character)).await;
+        }
+        answer(&mut app, KeyCode::Enter).await;
+        let shown = turn(&mut app, "> Bravo P2").await;
+        assert!(shown.contains("Priority: all"), "{shown}");
+        assert_eq!(
+            state_of_named(&app, "board", 3).await,
+            Outcome::Refused {
+                reason: Some("keep the priority".into())
+            }
+        );
+    }
+
+    async fn state_of_named(app: &App, name: &'static str, version: u32) -> Outcome {
+        let community = app.active_community_id().unwrap();
+        let root = app.paths.apps_dir();
+        app.store
+            .call(move |store| {
+                Ok(Apps::at(store, root)
+                    .outcome(community, name, version)
+                    .unwrap())
+            })
+            .await
+            .unwrap()
+    }
+
+    /// `:app brief` (plan D16): the brief of the version that runs, as the
+    /// owner approved it, made into a message for the channel; without a
+    /// connection nothing is sent and the status line says why.
+    #[tokio::test]
+    async fn app_brief_posts_the_approved_brief_and_says_what_it_needs() {
+        let temporary = TempDir::new().unwrap();
+        let (mut app, _channel) = managed(&temporary).await;
+        command(&mut app, "brief").await;
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("no app is open in this channel: :app brief <name> posts an app's brief")
+        );
+        let Recorded::Waiting { hash, .. } =
+            propose_named(&app, "board", BOARD, BOARD_BRIEF, Proposer::owner()).await
+        else {
+            panic!("waits");
+        };
+        command(&mut app, "brief board").await;
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(said.contains("board has no approved version"), "{said}");
+        let community = app.active_community_id().unwrap();
+        let root = app.paths.apps_dir();
+        app.store
+            .call(move |store| {
+                Apps::at(store, root)
+                    .approve(community, "board", 1, &hash)
+                    .unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+        command(&mut app, "open board").await;
+        turn(&mut app, "To do (0)").await;
+        // This fixture has no relay: the brief is read, and not sent.
+        command(&mut app, "brief").await;
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("a brief is posted to the relay: unlock the identity and connect first")
+        );
+        let message = crate::app::manage::brief_message("board", "Board", 1, BOARD_BRIEF);
+        assert!(
+            message.starts_with(
+                "The brief of the app Board (`board`, version 1), which is open here."
+            ),
+            "{message}"
+        );
+        assert!(message.ends_with(BOARD_BRIEF.trim_end()), "{message}");
+        assert!(message.len() < crate::agents::runtime::tools::MAX_TEXT_BYTES);
+    }
 }

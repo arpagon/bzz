@@ -10505,3 +10505,418 @@ async fn real_relay_an_app_shared_in_a_channel_runs_elsewhere_only_after_approva
         profile.stop().await;
     }
 }
+
+/// v0.16 M5 on the pinned relay: an agent with the `bot` role in a private
+/// channel where its owner opened the Board is asked, by the owner's
+/// mention, for the priority and the filter of `board-priority.md`; it
+/// proposes a version through its tools; bzz approves it here as the
+/// owner's overlay does; the agent is told "applied" at its next turn;
+/// each mention has one reply, and nothing of the agent's reached the
+/// channel's records. The approved script is written to
+/// `$BZZ_AUTHOR_OUT/approved/` for the bench (`scripts/
+/// test-agent-authors-app.sh` runs it there).
+///
+/// `BZZ_AUTHOR_HARNESS`: `scripted` (the default; the scripted harness
+/// stands in for the model and proposes `tests/fixtures/apps/
+/// board-priority`) or `pi-durable`, `grok`, `codex`, `claude-code`: the
+/// owner's real program and sign-in, only when he allowed that run (plan
+/// D13).
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied() {
+    use bzz::{
+        agents::runtime::{Limits, service},
+        apps::store::{Apps, Proposer, ProposerKind, Recorded, Submission},
+        auth::IdentityManager,
+        config::{Harness, LocalAgentConfig},
+        diagnostics::DiagnosticHandle,
+        paths::Paths,
+        service::records::SyncState,
+    };
+    use serde_json::json;
+    use support::agent_harness::Script;
+
+    const BOARD: &str = include_str!("fixtures/apps/board/app.lua");
+    const BOARD_BRIEF: &str = include_str!("fixtures/apps/board/brief.md");
+    const BOARD_PRIORITY: &str = include_str!("fixtures/apps/board-priority/app.lua");
+    const BOARD_PRIORITY_BRIEF: &str = include_str!("fixtures/apps/board-priority/brief.md");
+    const SPEC: &str = include_str!("apps-bench/spec/board-priority.md");
+    let harness = std::env::var("BZZ_AUTHOR_HARNESS").unwrap_or_else(|_| "scripted".into());
+    let real = match harness.as_str() {
+        "scripted" => None,
+        "pi-durable" => Some(Harness::PiDurable),
+        "grok" => Some(Harness::Grok),
+        "codex" => Some(Harness::Codex),
+        "claude-code" => Some(Harness::ClaudeCode),
+        other => {
+            panic!("BZZ_AUTHOR_HARNESS={other}: scripted, pi-durable, grok, codex or claude-code")
+        }
+    };
+    // A real model takes its time; a turn has bzz's own limit.
+    let wait = if real.is_some() {
+        Duration::from_secs(660)
+    } else {
+        Duration::from_secs(30)
+    };
+    eprintln!("the agent's harness: {harness}");
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let temporary = tempfile::TempDir::new().unwrap();
+    let dirs = temporary.path();
+    let passphrase = "m5 disposable passphrase";
+    std::fs::write(dirs.join("pass"), format!("{passphrase}\n")).unwrap();
+    let cli = |args: &[&str]| {
+        let output = bzz_on_profile(dirs, args, None).output().unwrap();
+        assert!(
+            output.status.success(),
+            "bzz {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    cli(&[
+        "identity",
+        "new",
+        "--label",
+        "owner",
+        "--backend",
+        "encrypted-file",
+    ]);
+    let paths = Paths {
+        config_dir: dirs.join("c"),
+        data_dir: dirs.join("d"),
+        cache_dir: dirs.join("k"),
+    };
+    let mut config = Config::load(&paths).unwrap();
+    let identity = config.identities[0].clone();
+    let community = config
+        .add_community("m5".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    config.save(&paths).unwrap();
+    cli(&["broker", "create", "Scout", "--yes"]);
+    let config = Config::load(&paths).unwrap();
+    let mut agent = config.hosted_agents[0].clone();
+    let agent_hex = agent.pubkey.clone();
+    let _ = seed_member(&source, &identity.pubkey);
+    let _ = seed_member(&source, &agent_hex);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let secret = secrecy::SecretString::from(passphrase.to_owned());
+    let owner = IdentityManager::new(&paths)
+        .signer(&identity, Some(&secret))
+        .unwrap();
+    let ws = url::Url::parse("ws://localhost:3030/").unwrap();
+    let http_base = url::Url::parse("http://localhost:3030/").unwrap();
+    let owner_supervisor = SupervisorHandle::spawn(ws.clone(), owner.clone());
+    let owner_http = HttpClient::new(http_base.clone(), owner.clone()).unwrap();
+    let publish = |builder: EventBuilder| {
+        let (owner, supervisor) = (owner.clone(), owner_supervisor.clone());
+        async move {
+            let event = owner.sign(builder).await.unwrap();
+            let ack = supervisor.publish(event.clone()).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+            event
+        }
+    };
+    let channel = uuid::Uuid::new_v4();
+    publish(
+        buzz_sdk::build_create_channel(
+            channel,
+            &format!("m5-{}", &channel.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Private),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    publish(
+        buzz_sdk::build_add_member(channel, &agent_hex, Some(buzz_sdk::MemberRole::Bot)).unwrap(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // The owner's bzz: the Board installed, approved, open in the channel,
+    // with three cards.
+    let mut store = Store::open(paths.database_file()).unwrap();
+    store.sync_config(&config).unwrap();
+    {
+        let mut apps = Apps::new(&mut store, &paths);
+        let Recorded::Waiting { version, hash, .. } = apps
+            .propose(
+                community,
+                Submission::new("board", BOARD, BOARD_BRIEF, Proposer::owner()),
+            )
+            .unwrap()
+        else {
+            panic!("the Board loads");
+        };
+        apps.approve(community, "board", version, &hash).unwrap();
+        apps.open_in(community, "board", channel).unwrap();
+    }
+    let relay_key = bzz::protocol::http::relay_signing_pubkey(&owner_http.nip11().await.unwrap())
+        .unwrap()
+        .to_owned();
+    store.pin_relay_pubkey(community, &relay_key).unwrap();
+    let store = StoreHandle::spawn(store).unwrap();
+    let owners = bzz::service::records::RecordsService::new(
+        community,
+        owner_http.clone(),
+        store.clone(),
+        bzz::service::records::Writer::new(owner.clone(), owner_supervisor.clone()),
+    );
+    let (cards, mut card_events) = owners.open(channel, "board", &["card"]).await.unwrap();
+    while cards.state() != SyncState::Live {
+        let _ = tokio::time::timeout(wait, card_events.recv())
+            .await
+            .unwrap();
+    }
+    for (order, title) in ["Alpha", "Bravo", "Charlie"].iter().enumerate() {
+        let content = json!({"title": title, "column": "todo", "order": order + 1});
+        cards
+            .create("card", content.as_object().unwrap().clone())
+            .await
+            .unwrap();
+    }
+    let heads_before = owner_http
+        .query_raw(&[json!({"kinds": [45_010], "#h": [channel.to_string()], "limit": 100})])
+        .await
+        .unwrap()
+        .len();
+
+    // The agent, run as the TUI runs it.
+    let script = Script::new(&dirs.join("harness"));
+    let mut local = match real {
+        None => {
+            script.write(
+                json!({"own_host": true}),
+                json!([
+                    {"match": "priority", "steps": [
+                        {"tool": "apps", "keep": "apps"},
+                        {"tool": "app_guide"},
+                        {"tool": "apps", "arguments": {"app": "board"}},
+                        {"tool": "try_app", "arguments": {"script": BOARD_PRIORITY, "from_app": "board", "keys": ["j", "2"]}},
+                        {"tool": "propose_app", "arguments": {"app": "board", "script": BOARD_PRIORITY, "brief": BOARD_PRIORITY_BRIEF}},
+                        {"tool": "send", "arguments": {"text": "Proposed: the Board with priority and filter.", "final": true}},
+                    ]},
+                    {"match": "is it in", "steps": [{"tool": "send", "arguments": {"text": "It is in.", "final": true}}]},
+                ]),
+            );
+            let mut local = LocalAgentConfig::new(Harness::PiDurable);
+            local.command = script.command();
+            local
+        }
+        Some(harness) => LocalAgentConfig::new(harness),
+    };
+    local.instructions =
+        "You are an agent of the owner of this channel. Do what you are asked with your tools."
+            .into();
+    agent.local = Some(local);
+    let running = service::serve(service::ServeOptions {
+        paths: &paths,
+        store: store.clone(),
+        diagnostics: DiagnosticHandle::disabled(),
+        community: &config.communities[0],
+        agents: &[agent],
+        owner: &owner,
+        owner_identity: identity.id,
+        federated: None,
+        limits: Limits {
+            stop_grace: Duration::from_millis(500),
+            ..Limits::default()
+        },
+        owner_present: false,
+        environment: None,
+    })
+    .await
+    .unwrap()
+    .expect("one local agent");
+    assert!(running.problems.is_empty(), "{:?}", running.problems);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !running.listening() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the agent's intake never subscribed"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let replies_to = |request: nostr::Event| {
+        let (owner_http, agent_hex) = (owner_http.clone(), agent_hex.clone());
+        async move {
+            let deadline = tokio::time::Instant::now() + wait;
+            loop {
+                let replies = owner_http
+                    .query_raw(&[json!({"kinds": [9], "#h": [channel.to_string()], "authors": [agent_hex], "limit": 50})])
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter(|event| {
+                        bzz::protocol::events::event_references(event)
+                            .contains(&request.id.to_hex())
+                    })
+                    .collect::<Vec<_>>();
+                if !replies.is_empty() || tokio::time::Instant::now() > deadline {
+                    // A second reply would come at once after the first.
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    break owner_http
+                        .query_raw(&[json!({"kinds": [9], "#h": [channel.to_string()], "authors": [agent_hex], "limit": 50})])
+                        .await
+                        .unwrap()
+                        .into_iter()
+                        .filter(|event| {
+                            bzz::protocol::events::event_references(event)
+                                .contains(&request.id.to_hex())
+                        })
+                        .collect::<Vec<_>>();
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    };
+    // The owner's request: the change, as the bench's spec writes it.
+    let started = std::time::Instant::now();
+    let request = publish(
+        buzz_sdk::build_message(
+            channel,
+            &format!(
+                "Please add a priority and a filter by priority to the board open in this channel, as below, and propose it to me when it works.\n\n{SPEC}"
+            ),
+            None,
+            &[agent_hex.as_str()],
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
+    )
+    .await;
+    let replies = replies_to(request.clone()).await;
+    eprintln!(
+        "the agent answered the request after {} s: {:?}",
+        started.elapsed().as_secs(),
+        replies
+            .iter()
+            .map(|reply| reply.content.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(replies.len(), 1, "one reply to the mention: {replies:?}");
+
+    // What it proposed waits; the Board that runs is the owner's.
+    let apps_dir = paths.apps_dir();
+    let at = apps_dir.clone();
+    let (waiting, runs) = store
+        .call(move |store| {
+            let apps = Apps::at(store, at);
+            Ok((
+                apps.waiting(community).unwrap(),
+                apps.runnable(community, "board").unwrap().version(),
+            ))
+        })
+        .await
+        .unwrap();
+    assert_eq!(runs, 1, "nothing of the agent's runs before the approval");
+    let proposed = waiting
+        .iter()
+        .find(|version| version.name == "board")
+        .unwrap_or_else(|| panic!("the agent proposed no version of the board: {waiting:?}"))
+        .clone();
+    assert_eq!(proposed.proposer.kind, ProposerKind::Agent);
+    assert_eq!(proposed.proposer.id.as_deref(), Some(agent_hex.as_str()));
+    assert_eq!(proposed.proposer.channel, Some(channel));
+    assert_eq!(
+        proposed
+            .proposer
+            .asked_by
+            .as_ref()
+            .map(|asker| asker.id.clone()),
+        Some(identity.pubkey.clone()),
+        "the owner asked"
+    );
+    // The owner approves it, as the overlay does: the exact bytes shown.
+    let (version, hash) = (proposed.version, proposed.script_sha256.clone());
+    let at = apps_dir.clone();
+    let bundle = store
+        .call(move |store| {
+            let mut apps = Apps::at(store, at);
+            let review = apps.review(community, "board", version).unwrap();
+            eprintln!(
+                "{}",
+                review
+                    .render(|_| String::new())
+                    .lines()
+                    .take(12)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            apps.approve(community, "board", version, &hash).unwrap();
+            Ok(apps.bundle(community, "board", version).unwrap())
+        })
+        .await
+        .unwrap();
+    if let Ok(out) = std::env::var("BZZ_AUTHOR_OUT") {
+        let folder = std::path::Path::new(&out).join("approved");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("app.lua"), &bundle.script).unwrap();
+        std::fs::write(folder.join("brief.md"), &bundle.brief).unwrap();
+        std::fs::write(folder.join("app.toml"), &bundle.manifest_text).unwrap();
+        eprintln!("the approved version is in {}", folder.display());
+    }
+    if real.is_none() {
+        assert_eq!(bundle.script, BOARD_PRIORITY.as_bytes());
+    }
+    // The agent's next turn in the channel is told.
+    let next = publish(
+        buzz_sdk::build_message(
+            channel,
+            "is it in?",
+            None,
+            &[agent_hex.as_str()],
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
+    )
+    .await;
+    let replies = replies_to(next).await;
+    assert_eq!(
+        replies.len(),
+        1,
+        "one reply to the second mention: {replies:?}"
+    );
+    if real.is_none() {
+        let prompts = script
+            .received("session/prompt")
+            .into_iter()
+            .filter_map(|params| {
+                params
+                    .pointer("/prompt/0/text")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            prompts[1].contains(&format!(
+                "- your version {version} of the app board: applied."
+            )),
+            "{}",
+            prompts[1]
+        );
+        assert!(
+            !prompts[0].contains("Since your last turn"),
+            "{}",
+            prompts[0]
+        );
+    }
+    // No record of the agent's reached the channel: a try stays apart.
+    let heads = owner_http
+        .query_raw(&[json!({"kinds": [45_010], "#h": [channel.to_string()], "authors": [agent_hex], "limit": 100})])
+        .await
+        .unwrap();
+    assert!(heads.is_empty(), "{heads:?}");
+    assert!(heads_before >= 3, "{heads_before}");
+    running.stop().await;
+    drop(cards);
+    owner_supervisor.shutdown().await;
+    owner.lock().await;
+}

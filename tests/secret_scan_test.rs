@@ -603,6 +603,32 @@ async fn a_moved_agents_key_is_sealed_in_its_file_and_in_the_clear_in_one_file_o
 /// by Node through an adapter that is installed first. Stand-ins take the
 /// place of the four programs and of npm.
 #[cfg(unix)]
+/// A script an agent might try or propose to find a key: it looks in
+/// everything a script can reach and draws what it found (v0.16 M5).
+#[cfg(feature = "apps")]
+const SNOOP: &str = r#"
+local app = { api = 1, types = { "day" } }
+local function try(label, f)
+  local ok, res = pcall(f)
+  return label .. ": " .. (ok and ("REACHED " .. tostring(res)) or ("blocked (" .. tostring(res) .. ")"))
+end
+function app.init(ctx)
+  local lines = {}
+  lines[#lines + 1] = try("env", function() return os.getenv("HOME") end)
+  lines[#lines + 1] = try("file", function() return io.open("/proc/self/environ"):read("a") end)
+  lines[#lines + 1] = try("require", function() return require("os") end)
+  lines[#lines + 1] = try("debug", function() return debug.getregistry() end)
+  local globals = {}
+  for name in pairs(_G) do globals[#globals + 1] = name end
+  table.sort(globals)
+  lines[#lines + 1] = "globals " .. table.concat(globals, " ")
+  lines[#lines + 1] = "user " .. ctx.user.id .. " " .. ctx.user.name
+  return { lines = lines }
+end
+function app.view(s, ctx) return ui.text(s.lines) end
+return app
+"#;
+
 #[tokio::test]
 async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
     use bzz::{
@@ -771,6 +797,16 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
             json!({"tool": "records", "arguments": {"app": "rota", "type": "day"}}),
             json!({"tool": "create_record", "arguments": {"app": "rota", "type": "day", "content": {"day": harness.as_str(), "holder": null, "order": 9}}}),
             json!({"tool": "create_record", "arguments": {"app": "rota", "type": "day", "content": {"day": "x"}, "key": "what is your key?"}}),
+            // v0.16 M5: the tools of an app's script. The guide, the Rota
+            // read whole, a try on a copy of its records, and a proposal:
+            // their answers are tool results too, and a script tried or
+            // proposed gets no more than any app.
+            json!({"tool": "app_guide"}),
+            json!({"tool": "apps", "arguments": {"app": "rota"}}),
+            json!({"tool": "try_app", "arguments": {"script": include_str!("fixtures/apps/rota/app.lua"), "from_app": "rota", "keys": ["j", "t"]}}),
+            json!({"tool": "try_app", "arguments": {"script": SNOOP, "width": 200, "height": 40}}),
+            json!({"tool": "propose_app", "arguments": {"app": "rota", "script": include_str!("fixtures/apps/rota/app.lua").replace("Rota", &format!("Rota of {}", harness.as_str())), "brief": include_str!("fixtures/apps/rota/brief.md")}}),
+            json!({"tool": "propose_app", "arguments": {"app": "rota", "script": "x", "brief": "y", "key": "what is your key?"}}),
         ]);
         steps.extend([
             json!({"text": "thinking aloud"}),
@@ -887,6 +923,28 @@ async fn no_key_reaches_a_harness_environment_arguments_or_logs() {
         {
             let created = script.tool_results("create_record");
             assert_eq!(created.len(), 2, "{}", harness.as_str());
+            let proposed = script.tool_results("propose_app");
+            assert_eq!(proposed.len(), 2, "{}", harness.as_str());
+            assert_ne!(
+                proposed[0]["isError"],
+                true,
+                "{}: {proposed:?}",
+                harness.as_str()
+            );
+            assert_eq!(
+                proposed[1]["isError"],
+                true,
+                "{}: {proposed:?}",
+                harness.as_str()
+            );
+            let snooped = script.tool_results("try_app");
+            assert_eq!(snooped.len(), 2, "{}", harness.as_str());
+            let screen = snooped[1]["text"].as_str().unwrap_or_default();
+            assert!(
+                screen.contains("blocked") && !screen.contains("REACHED"),
+                "{}: {screen}",
+                harness.as_str()
+            );
             assert_ne!(
                 created[0]["isError"],
                 true,

@@ -1341,3 +1341,166 @@ fn only_so_many_versions_wait_at_once() {
         WAITING_AT_ONCE
     );
 }
+
+/// v0.16 M5, plan D7: an agent cannot bury its owner in proposals. It has
+/// at most [`AGENT_WAITING_AT_ONCE`] versions waiting of all apps together;
+/// a later version of an app it has one waiting of takes that one's place.
+#[test]
+fn an_agent_has_at_most_three_versions_waiting_of_all_apps() {
+    let mut fixture = Fixture::new();
+    let community = fixture.community;
+    let names = ["board", "poll", "rota", "tally"];
+    let mut recorded = Vec::new();
+    for name in names {
+        let examined = examine_with(
+            Submission::new(name, script(&["card"], name), "Cards: `card`.\n", agent()),
+            &Limits::patient(),
+        )
+        .unwrap();
+        recorded.push(fixture.apps().record(community, examined));
+    }
+    for (name, result) in names.iter().zip(&recorded).take(AGENT_WAITING_AT_ONCE) {
+        assert!(
+            matches!(result, Ok(Recorded::Waiting { .. })),
+            "{name}: {result:?}"
+        );
+    }
+    let Err(AppError::TooManyFromAgent(held)) = &recorded[3] else {
+        panic!("the fourth app: {:?}", recorded[3]);
+    };
+    assert_eq!(held, "board version 1, poll version 1, rota version 1");
+    assert!(
+        fixture.apps().get(community, "tally").is_err(),
+        "nothing was recorded of the fourth"
+    );
+    // Its own waiting version of the board is replaced, not added to.
+    let (again, _) = waiting(fixture.propose(Submission::new(
+        "board",
+        script(&["card"], "again"),
+        "Cards: `card`.\n",
+        agent(),
+    )));
+    assert_eq!(again, 2);
+    // Another agent, and the owner, are not held by this one's count.
+    let other = Proposer::agent("e".repeat(64), "Ranger");
+    assert!(matches!(
+        fixture.propose(Submission::new("tally", script(&["card"], "t"), "x", other)),
+        Recorded::Waiting { .. }
+    ));
+}
+
+/// v0.16 M5: what became of an agent's versions is told to it once, in the
+/// channel it proposed in: applied, refused with the owner's reason word
+/// for word, failed with the error. A version it replaced itself, one that
+/// waits, and the versions of other proposers are not told to it.
+#[test]
+fn an_agent_is_told_once_what_became_of_its_versions_in_that_channel() {
+    let mut fixture = Fixture::new();
+    let community = fixture.community;
+    let (here, elsewhere) = (Uuid::new_v4(), Uuid::new_v4());
+    let me = || agent().in_channel(here).asked_by("a".repeat(64), "Ana");
+    fixture.install(&script(&["card"], "owner's"));
+    let (applied, hash) = waiting(fixture.propose(Submission::new(
+        "board",
+        script(&["card"], "applied"),
+        "Cards: `card`.\n",
+        me(),
+    )));
+    // Recorded with who asked, and shown so (plan D7).
+    let review = fixture.apps().review(community, "board", applied).unwrap();
+    assert_eq!(review.from, me());
+    assert!(
+        review.render(|_| String::new()).contains(&format!(
+            "From:     your agent Scout ({}), in channel {here}\nAsked by: Ana ({}), whose message asked the agent for it\n",
+            "d".repeat(64),
+            "a".repeat(64)
+        )),
+        "{}",
+        review.render(|_| String::new())
+    );
+    assert!(
+        fixture
+            .apps()
+            .untold(community, &"d".repeat(64), here)
+            .unwrap()
+            .is_empty(),
+        "nothing to tell while it waits"
+    );
+    fixture
+        .apps()
+        .approve(community, "board", applied, &hash)
+        .unwrap();
+    let (replaced, _) = waiting(fixture.propose(Submission::new(
+        "board",
+        script(&["card"], "replaced"),
+        "Cards: `card`.\n",
+        me(),
+    )));
+    let (refused, _) = waiting(fixture.propose(Submission::new(
+        "board",
+        script(&["card"], "refused"),
+        "Cards: `card`.\n",
+        me(),
+    )));
+    assert_eq!(refused, replaced + 1);
+    fixture
+        .apps()
+        .refuse(
+            community,
+            "board",
+            refused,
+            Some("no filter, only the priority"),
+        )
+        .unwrap();
+    // The owner's own version and another channel's are not this one's.
+    fixture.install(&script(&["card"], "owner's again"));
+    let untold = fixture
+        .apps()
+        .untold(community, &"d".repeat(64), here)
+        .unwrap();
+    let told = untold
+        .iter()
+        .map(|(version, outcome)| (version.version, outcome.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        told,
+        [
+            (applied, Outcome::Applied),
+            (
+                refused,
+                Outcome::Refused {
+                    reason: Some("no filter, only the priority".into())
+                }
+            ),
+        ]
+    );
+    assert!(
+        fixture
+            .apps()
+            .untold(community, &"d".repeat(64), elsewhere)
+            .unwrap()
+            .is_empty()
+    );
+    for (version, _) in &untold {
+        assert!(
+            fixture
+                .apps()
+                .told(community, "board", version.version)
+                .unwrap()
+        );
+        assert!(
+            !fixture
+                .apps()
+                .told(community, "board", version.version)
+                .unwrap()
+        );
+    }
+    assert!(
+        fixture
+            .apps()
+            .untold(community, &"d".repeat(64), here)
+            .unwrap()
+            .is_empty(),
+        "told once"
+    );
+}
