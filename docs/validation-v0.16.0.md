@@ -2738,3 +2738,27 @@ Everything else in those lists is still as written there.
   `agent-host/` elsewhere needs those fixtures beside it.
 - **`bzz app dev` writes `Ctrl+C`** in its own lines, where the TUI writes
   `Ctrl-c`. Left as it is.
+
+### The principal's pass over the candidate
+
+On `91024f1`, 2026-11-20, in the principal's own build directory, one after
+the other, every one green:
+
+| What | Result |
+|---|---|
+| Format, lint, the scripted harness, `cargo test --locked --all-targets` | clean; 1090 passed, 0 failed, 39 ignored |
+| `cargo test --locked --no-default-features --lib`; `cargo deny check`; `cargo audit` | passed; ok; ok, the same five allowed warnings |
+| `scripts/test-apps-bench.sh --release` | everything passed |
+| `scripts/upgrade-test.sh` (from v0.15.0) | passed |
+| The whole pinned-relay suite, `./scripts/test-relay.sh` | passed |
+| Every harness scenario v0.13 to v0.16 on the release binary, through tmux at 200×50 | 35 of 35 |
+| A person's own quota, `BZZ_RELAY_OWN_QUOTA=1` | passed |
+| `target/release/bzz --version` | `bzz 0.16.0`, 31,572,064 bytes |
+
+After each relay run no `buzz-harness` container was left. Not run by the
+principal: `--nip-fi`, the upgrade from v0.14.0, the benchmarks against
+v0.15.0 and the agent host's own tests, which the candidate's task ran.
+The principal's earlier passes, one per milestone, are named in each
+milestone's merge; in three of them he corrected a scenario's check that
+depended on timing or on what an earlier scenario left behind, and in none
+the product.
