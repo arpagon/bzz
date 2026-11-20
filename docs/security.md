@@ -566,6 +566,27 @@ what it lends the script ([`adr-v0.16-apps.md`](adr-v0.16-apps.md),
   api, types, the script's hash) and the brief: no key, no credential, no
   path. The relay test of M6 scans every revision of every offer in its
   channel for the keys of all five identities.
+- **An agent and an app's records** (M7). An agent woken in a channel
+  reaches the records of the apps its owner installed, enabled and opened
+  in that channel, of the approved types only; bzz checks this where it
+  serves the tool, whatever the harness sends. bzz signs each record with
+  the agent's own key on the agent's own connection, so the relay counts
+  the write against the agent, and holds an agent to 60 record writes a
+  minute. The owner is not asked, as for a message: the channel already
+  lets the agent write there. Each write is a line of the agent's
+  activity, without its content.
+- **An agent that writes an app** (M5) proposes; it never writes a file,
+  approves, opens or installs. Its try runs the script apart, on records
+  in memory, with nothing sent to the relay, for at most 30 seconds. Its
+  proposal is a version that waits for the owner like any other, shown
+  with the agent and the person whose message asked for it; at most 3 of
+  an agent's versions wait at once. Anyone who may wake the agent may ask
+  it for an app: what reaches the owner is a version to read, never a
+  script that runs. Nothing about apps is put in an agent's prompt before
+  it asks. The secret scan runs each of the four harnesses through the
+  guide, a try of a script that looks for a key everywhere a script can
+  reach, and a proposal, and finds no key or credential in anything the
+  harness saw.
 
 ## Media
 

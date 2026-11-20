@@ -7,15 +7,16 @@ bytes. This guide is for whoever installs, writes or approves one. The
 reasons behind it are in [`adr-v0.16-apps.md`](adr-v0.16-apps.md); what a
 script is written against is [`app-api.md`](app-api.md).
 
-> **What this version has.** The store of installed apps, approval at the
-> shell and inside bzz, the command line `bzz app`, the pane, and three
-> templates: an app can be written, checked, tried, run from your own
-> folder (in a terminal, or in a channel's pane on its records),
+> **New in v0.16.0.** An app can be written, checked, tried, run from your
+> own folder (in a terminal, or in a channel's pane on its records),
 > installed, approved, rolled back, removed, and opened beside a
 > conversation, where a new version replaces the running one in place.
-> Your agents write and change apps through their tools, and you approve
-> each version ("Agents", below). Sharing in the channel is not built, and
-> has a marked section below.
+> Your agents use an app's records, and write and change apps through
+> their tools; you approve each version ("Agents", below). You can offer
+> an app to a channel, and another person there runs it after approving
+> its bytes ("Sharing an app"). Three templates ship: Board, Poll and
+> Approvals. If you share a channel with people on Buzz desktop, read
+> ["Buzz desktop"](#buzz-desktop): they see none of it.
 
 An app is four things, kept apart:
 
@@ -337,11 +338,9 @@ status line says so:
 tasks: version 3 failed to run; version 2 goes on: app.lua:41: in app.reload: …
 ```
 
-**For whoever proposes a version** (your agents, M6's channel):
-`Apps::record` after `examine`, then `Apps::outcome` says what became of
-it: waiting, applied, refused with your reason, or failed with the
-error. An agent is told it at its next turn in the channel
-(`Apps::untold`, "Agents" below).
+**Whoever proposed a version learns what became of it**: an agent at its
+next turn in the channel ("Agents", below); a person of the channel who
+offered it, nothing (bzz tells nobody else what you answered).
 
 ## Managing apps
 
@@ -591,6 +590,14 @@ What `:app share` does:
 `:app unshare` publishes a delete revision. Offers nobody answered yet
 disappear; copies people installed stay, and so do the records.
 
+The offer is an artifact of the channel like a task, so `:artifacts` lists
+it, as `bzz.app · an app offered here`, and says what it is. Buzz lets any
+member rename or delete an artifact, and so does bzz: a rename there
+publishes a new revision signed by whoever renamed it, which every bzz of
+the channel then offers as that person's ([below](#an-offer-arrives)), and
+a delete there withdraws the offer for everyone. Neither touches an
+installed copy or the records.
+
 `:apps` shows where each app is shared (`shared in #general`), which
 versions wait and who offers them (`1 waiting (offered by Ana in
 #general)`), and what came of offers lately.
@@ -649,12 +656,48 @@ for the same records.
 
 ## Buzz desktop
 
-Buzz desktop shows nothing of an app or of its records, and is not harmed
-by them: a person there cannot tell that a channel has an app.
+If you share a channel with people who use Buzz desktop, know what M0
+found with Buzz desktop 1.0.1 ([`adr-v0.16-apps.md`](adr-v0.16-apps.md),
+"What Buzz desktop does with these records"):
 
-<!-- D11, M8: the record contract a Buzz plugin needs to read and write the
-     same records (`docs/app-records.md`), and that an app's brief posted
-     as a message is all Buzz desktop shows. -->
+- **They see nothing of an app.** No list, tab, search result, unread
+  mark, activity entry or notification for its records or for an offer, in
+  a channel with up to 4,101 records. They cannot tell that the channel
+  has an app, or that a card moved.
+- **They are not harmed by it.** Buzz desktop stored none of it, wrote none
+  of it, and was no slower.
+- **The brief is all they get.** `:app share` posts it as an ordinary
+  message, once for each version, and `:app brief` posts it whenever you
+  like. Post it where people on Buzz desktop should know: it says what the
+  app does and what its records hold.
+- **Their agents can take part.** An agent that someone runs in Buzz
+  desktop, or in any client, can read and write the same records if it
+  follows the brief and the record form below. bzz ships no Buzz desktop
+  plugin (plan D11), and code does not cross: a Buzz plugin is React, a bzz
+  app is Lua. What crosses is the records and the brief.
+- **What archives a channel archives its app.** While a channel is
+  archived the relay refuses every record write, from bzz and from Buzz.
+
+A newer Buzz desktop than 1.0.1, and an agent run by Buzz desktop in a
+channel with an app, were not tried.
+
+**The record form, for a client that is not bzz.** A record is a NIP-AR
+artifact (kind 45010) of the channel, which any member may write:
+
+| | |
+|---|---|
+| Tags | `["ar","1"]`, `["d","<uuid of the record>"]`, `["h","<channel id>"]`, `["type","bzz.app.<app>.<record>"]`, `["title","…"]`, `["op","create" \| "update" \| "delete"]`, and on an update or a delete `["prev","<event id of the head>"]` |
+| Content | a JSON object, the app's own fields as its brief lists them. bzz writes at most 16,384 bytes, and hands an app what another client wrote as it is. A deletion has no content |
+| Revision | the event id of the head. Every update is the whole content over the head it names; a stale `prev` is refused by the relay |
+| Title | the record's `title` field if it has one, else `<app> <record>` |
+| Order | none: ids and times do not sort. An app keeps an `order` field if it needs one |
+| Who | whoever signed the last revision. A person is named in a field by public key (hex) |
+
+bzz takes a record only of the app's declared types and of its channel.
+The tags another client put on a record are carried by a revision bzz
+makes; its content is the whole object the script writes.
+[`app-records.md`](app-records.md) is bzz's own side of it, and
+[`app-api.md`](app-api.md#records) what a script sees.
 
 ## Whose shell it is
 
