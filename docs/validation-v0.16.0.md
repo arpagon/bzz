@@ -1,14 +1,17 @@
 # bzz v0.16.0 validation
 
-**Status:** in progress. Recorded below, each under its own heading: M0;
-M1 (the runtime and its contract; the example host, the bench and the six
-apps); M2 (the records service; the app session); M3 (the app pane); M4
-(the store and command line; approval and managing inside bzz, and the
-templates); M5 (agents write and change apps; its real-model gate
-prepared and not run); M6 (sharing an app in the channel); and M7 (agents
-use an app's records). Each has its milestone's exit gate, on Linux. Not
-here yet: M8. Nothing was pushed: what only CI
-can show on macOS and Windows is listed as not seen. Plan:
+**Status:** release candidate, not published (2026-11-20). Recorded
+below, each under its own heading: M0; M1 (the runtime and its contract;
+the example host, the bench and the six apps); M2 (the records service;
+the app session); M3 (the app pane); M4 (the store and command line;
+approval and managing inside bzz, and the templates); M5 (agents write and
+change apps; its real-model gate prepared and not run); M6 (sharing an app
+in the channel); M7 (agents use an app's records); and **M8, the release
+candidate**, without its film: the upgrade from v0.15.0, the benchmarks,
+the whole suites on the final tree, the plan's testing table cell by cell,
+the release acceptance and the definition of done. Each milestone has its
+exit gate, on Linux. Nothing was pushed: what only CI can show on macOS and
+Windows is listed as not seen, and so is the owner's acceptance. Plan:
 [`docs/planning/2026-11-17/v0.16.0.md`](planning/2026-11-17/v0.16.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
 
@@ -2220,6 +2223,47 @@ screens of each step in `tmux-captures*/`.
 
 ## M8 — Release candidate
 
+Linux x86_64, Rust 1.98.1, Buzz pin `bf3bdd0eaefe`, Node 26.5.0,
+2026-11-20. Branch `t3/implement-release-candidate`, cut from `v0.16.0` at
+`acff67d` (after M5 was merged), without M8's film. Nothing was pushed,
+tagged, released or deployed; no real model and no real account were used.
+The machine was shared with other agents' builds and relay runs (load 1 to
+5); the load is given where it matters. Scratch, logs and the old
+release's builds are under
+`/media/arpagon/archive-data/experiment-artifacts/arpagon-01-med/bzz/m8a/`
+(`$M8` below), not in the repository.
+
+**Where it is.**
+
+| Path | What |
+|---|---|
+| `Cargo.toml`, `Cargo.lock`, `agent-host/package*.json` | version 0.16.0 |
+| `src/agents/capability.rs`, `scripts/tui-herdr-scenarios.toml` | the capability record of `pi-durable` names the release it is built from; `t16-cli-version`; `t15-cli-version` checks `bzz 0.` |
+| `tests/upgrade/seed_v0150.rs`, `tests/upgrade_from_v0150_test.rs`, `scripts/upgrade-test.sh` | the upgrade from a profile v0.15.0 wrote, now the script's default |
+| `benches/apps.rs` | one app open: open, redraw, key to screen, memory |
+| `src/domain.rs`, `src/apps/runtime/api.rs` | `abbreviated_pubkey` cuts on characters, and by bytes for ASCII |
+| `src/ui/artifacts.rs`, `src/protocol/artifact.rs`, `src/apps/share.rs` | the artifact panel says what an offered app is |
+| `src/ui/terminal.rs` | the alternate screen is left even where bracketed paste cannot be switched off |
+| `.gitattributes` | the files of apps keep LF on every checkout |
+| `.github/workflows/ci.yml`, `integration.yml` | the gates v0.16 added, in CI |
+| `README.md`, `docs/{apps,security,configuration,e2e-manual,README,release-v0.16.0,adr-v0.16-apps}.md`, `docs/app-*.md`, the plan | the documents |
+| `site/public/index.html`, `site/README.md` | the site's section for apps; not deployed |
+
+**What was decided here** (the plan and the brief left these open):
+
+| Question | Decided |
+|---|---|
+| The adapters' versions (`agent-adapters/*/package.json` say 0.15.0) | left: they did not change in v0.16, and their version is part of what their install folder is named by, so a bump would make every owner of a Codex or Claude Code agent install them again for nothing. The agent host, which changed, says 0.16.0 |
+| `everything in v0.15.0` in the capability record of `pi-durable` | `everything in v` and the crate's version, so that it names the release it is built from without a hand edit; the v0.15 scenarios check `everything in v` |
+| `t15-cli-version` checked `bzz 0.15.0` | it checks `bzz 0.`; `t16-cli-version` checks `bzz 0.16.0` |
+| What the v0.15.0 seed holds | made by v0.15.0's own code: two local agents by `agents::manage::create` (the code of `bzz agent new`) against a relay that accepts everything, a hosted agent of v0.13, the ledger by the store's own calls, the activity by `activity::record`, artifacts by the store's replace |
+| How "not sent twice" is shown | v0.16.0's own agent runtime is started on the upgraded database with a recorded relay: it must publish the one reply v0.15.0 stored and never saw accepted, byte for byte, and nothing else; started again, nothing. Unix only, as the agent runtime's tests are |
+| CI's upgrade job | from v0.15.0 on Linux, macOS and Windows; from v0.14.0 on Linux too |
+| The artifact panel and `bzz.app` (the brief left it to this task) | **listed, and said for what it is**: `bzz.app · an app offered here`, and in its detail what a rename or a delete there does. Hiding it would leave the one place where any member can see, and as Buzz allows, delete an offer, without saying what it is; the relay lets any member do both whatever bzz shows |
+| `abbreviated_pubkey` | cut on characters for any id; ASCII by bytes, as before (the benchmarks found the first version slower, below) |
+| Line endings | a root `.gitattributes` for the files of apps only (below, "CI") |
+| The site | a section for apps after "new in v0.16.0", in the manner of the harnesses'; the v0.15 section stays, as "since v0.15.0". No number, no media; the place of a capture is marked |
+
 ### What counts as a regression
 
 Written before anything was measured (2026-11-20, 03:30 UTC−5).
@@ -2244,3 +2288,447 @@ the time of a redraw and of a key are recorded, against two marks fixed
 here. A redraw of the docked app must take less than 1 ms (bzz draws at
 most 60 frames a second, and the app is one pane of the frame), and one
 open app must add less than the 64 MiB its interpreter may use.
+
+### The version
+
+| Claim | Proof | Result |
+|---|---|---|
+| The release binary says 0.16.0 | `t16-cli-version` on the release binary through tmux (below) | `bzz 0.16.0` |
+| `Cargo.lock` changes only bzz's version for it | `git diff acff67d -- Cargo.lock`: one line; `cargo metadata --locked` accepts it | pass |
+| The capability record of `pi-durable` says `everything in v0.16.0` | `U: ui::local_agents` (its test asserts the text); `t15-agents-panel-turn-stop-pause`, `t15-agent-new-form` on the binary | pass |
+| The agent host says 0.16.0 | `agent-host/package.json` and its lock file; the host reads its own version from the first | read; the host's 100 tests pass with it (below) |
+
+### Upgrade from v0.15.0
+
+`scripts/upgrade-test.sh` (default `0150`) builds the tag `v0.15.0`
+(`f9fc97b`) in a temporary worktree and runs
+`tests/upgrade/seed_v0150.rs` inside it. That writes a whole profile with
+v0.15.0's own code and records what v0.15.0 reads back
+(`expected.json`). The old release's target is
+`BZZ_UPGRADE_TARGET_DIR=$OLD/target` on the archive disk;
+`tests/upgrade_from_v0150_test.rs` then opens a copy with this build.
+
+What the profile holds: an identity in an encrypted file; a hosted agent of
+v0.13 with its sealed key; **two local agents made by `bzz agent new`'s
+code**, `Scout` (`pi-durable`, a folder granted with `:exec` that asks, a
+host, an allow-list) and `Rover`, marked moved away; **Scout's inbox and
+reply ledger**: four mentions, one answered and published, one answered and
+stored but never published, one whose reply the relay refused, one ended
+without a reply, a session for each and a cursor; **Scout's activity**: a
+command allowed, a command refused with a reason, a git credential given;
+**two artifacts** of the channel, a task assigned to the owner and a note
+of another client's type; messages, an edit, a draft.
+
+| Claim | Seen | Result |
+|---|---|---|
+| Migrations 21, 22 and 23 run: schema 20 to 23, `integrity_check` ok, the five tables of apps there and empty, `app_versions.asked_by_id` there | the test | pass |
+| The backup made before them is the database as v0.15.0 left it: schema 20, integrity ok, the events and the three stored replies, no table of apps | the test | pass |
+| The settings: the three agents load and save field for field as v0.15.0 saved them; Scout active, Rover moved away, the hosted agent no local agent | the test | pass |
+| The Inbox, search (also by an edit's text), the history with the agent's published reply, the draft | compared with what v0.15.0 read | pass |
+| The ledger, request by request: state, attempts, effects, failure, session, the stored reply with its event, origin, published, refused; the one unpublished reply; the cursor | compared with what v0.15.0 read | pass |
+| The approvals and the credential in the activity, as v0.15.0 wrote them | compared, entry by entry | pass |
+| The artifact panel's list and "My tasks" | compared | pass |
+| The keys of the three agents, sealed by v0.15.0, open with the owner | the test | pass |
+| **No reply is sent twice.** v0.16.0's agent runtime, started on the upgraded database with a recorded relay, publishes the reply v0.15.0 stored and never saw accepted, once, equal to the stored event; not the published one, not the refused one; the ledger then says published; started again, it publishes nothing; no harness is started (nothing waits for an answer); Rover and the hosted agent are not run | the test (Unix) | pass |
+| bzz works with no app: `bzz app list` (`no apps are installed`), `bzz agent list` (Scout, Rover moved away), `bzz agent show Scout` (the three lines of activity), `bzz broker list` (the hosted agent), `bzz check` | the test runs the binary | pass |
+
+**Reds**, each the test against the change in its cell, then restored
+(`$M8/reds/`):
+
+| Taken away | Failed with |
+|---|---|
+| migration 23 out of `migrate.rs` | `migrations 21 to 23 ran (20 -> 22)`, `left: 22 right: 23` |
+| the runtime's republish (`republish` returns at once) | `timed out waiting for the stored reply to be published again` |
+| a published reply taken for one not yet published (the `published_at IS NULL` of `agent_replies_unpublished` removed) | the list of unpublished replies holds both, `left: Array [String("287b…4f11"), String("7e9f…d40a")] right: Array [String("7e9f…d40a")]` |
+
+A first red, the republish taken out of the runtime's recovery alone,
+passed: the runtime's periodic round publishes the reply too. The red above
+takes both away.
+
+| Run | Result |
+|---|---|
+| `BZZ_UPGRADE_TARGET_DIR=$OLD/target ./scripts/upgrade-test.sh`, on `6cde20a` | 1 passed (5.5 s) |
+| `BZZ_UPGRADE_FROM_VERSION=0140 … ./scripts/upgrade-test.sh`, on `6cde20a` | 1 passed (3.3 s): v0.14.0's profile at 23 too |
+| both again on the final tree | below, "The whole suites" |
+
+CI's `upgrade` job now runs `0150` on Linux, macOS and Windows and `0140`
+on Linux. **It has not run**: nothing was pushed. On macOS and Windows the
+seed (v0.15.0's own code there) and the test are unproven.
+
+### Benchmarks
+
+**Both sides built before measuring**: the bench binaries of the tag
+`v0.15.0` (a `git archive` under `$OLD/src`) and of this branch, in one
+target folder on the archive disk, `cargo bench --no-run`; then each
+side's executables run directly, in turn: v0.15.0, v0.16.0, v0.15.0,
+v0.16.0. Each cell is a median of one run.
+
+**First round**, 03:38 to 04:00, load 1.7 to 4.3:
+
+| Benchmark | v0.15.0, two runs | v0.16.0, two runs | Lowest of each | Change | Spread of v0.15.0 |
+|---|---|---|---|---|---|
+| Inbox cursor page | 179 µs · 161 µs | 161 µs · 164 µs | 161 µs → 161 µs | +0.4 % | 11.4 % |
+| Inbox first page | 174 µs · 151 µs | 156 µs · 160 µs | 151 µs → 156 µs | +3.1 % | 14.8 % |
+| agent directory, 50 bots: list agents among 5k members | 1.07 ms · 939 µs | 965 µs · 981 µs | 939 µs → 965 µs | +2.7 % | 14.3 % |
+| agent directory, 50 bots: reconcile over 5k members | 34.7 ms · 30.2 ms | 30.8 ms · 30.3 ms | 30.2 ms → 30.3 ms | +0.4 % | 14.9 % |
+| agent directory, 50 bots: validate one agent mention | 93.1 µs · 81 µs | 82.4 µs · 84.8 µs | 81 µs → 82.4 µs | +1.8 % | 14.9 % |
+| agent directory: candidates among 5k members | 1.92 ms · 1.92 ms | 1.92 ms · 1.9 ms | 1.92 ms → 1.9 ms | -1.0 % | 0.3 % |
+| agent directory: list agents among 5k members | 959 µs · 944 µs | 969 µs · 936 µs | 944 µs → 936 µs | -0.9 % | 1.6 % |
+| agent directory: members a refresh asks profiles for (5k members) | 3.18 ms · 2.93 ms | 2.93 ms · 2.98 ms | 2.93 ms → 2.93 ms | -0.2 % | 8.4 % |
+| agent directory: mention candidates, 100-member channel | 191 µs · 186 µs | 211 µs · 201 µs | 186 µs → 201 µs | +8.2 % | 2.8 % |
+| agent directory: reconcile over 5k members | 32 ms · 34.3 ms | 32.2 ms · 31.7 ms | 32 ms → 31.7 ms | -1.2 % | 7.1 % |
+| agent directory: validate one agent mention | 86.5 µs · 81.5 µs | 82.1 µs · 80.8 µs | 81.5 µs → 80.8 µs | -0.9 % | 6.1 % |
+| agent runtime: start with 0 paused agents | 226 µs · 222 µs | 223 µs · 227 µs | 222 µs → 223 µs | +0.5 % | 1.8 % |
+| agent runtime: start with 20 paused agents | 376 µs · 358 µs | 362 µs · 375 µs | 358 µs → 362 µs | +1.2 % | 5.0 % |
+| composer unicode insert and cursor move | 518 ns · 444 ns | 442 ns · 461 ns | 444 ns → 442 ns | -0.3 % | 16.7 % |
+| decode bounded 1024x768 png | 427 µs · 387 µs | 388 µs · 399 µs | 387 µs → 388 µs | +0.2 % | 10.3 % |
+| mention candidates over 1k cached members | 1.19 ms · 1.06 ms | 1.29 ms · 1.24 ms | 1.06 ms → 1.24 ms | +16.7 % | 12.3 % |
+| parse bounded imeta | 2.25 µs · 1.97 µs | 1.88 µs · 1.96 µs | 1.97 µs → 1.88 µs | -4.6 % | 14.2 % |
+| query latest 500 of 100k | 1.49 ms · 1.31 ms | 1.32 ms · 1.37 ms | 1.31 ms → 1.32 ms | +0.9 % | 13.7 % |
+| rebuild Inbox projection over 100k | 123 ms · 110 ms | 110 ms · 114 ms | 110 ms → 110 ms | +0.1 % | 11.8 % |
+| redraw gate 1k idle ticks | 344 ns · 288 ns | 289 ns · 301 ns | 288 ns → 289 ns | +0.5 % | 19.5 % |
+| sanitize 64KiB | 206 µs · 169 µs | 198 µs · 206 µs | 169 µs → 198 µs | +17.6 % | 21.9 % |
+| search FTS5 over 100k | 787 µs · 693 µs | 722 µs · 752 µs | 693 µs → 722 µs | +4.1 % | 13.5 % |
+| semantic hit map build and resolve 10k | 3.82 ms · 3.42 ms | 3.51 ms · 3.59 ms | 3.42 ms → 3.51 ms | +2.5 % | 11.5 % |
+| timeline cursor move in 10k messages | 27.3 µs · 25 µs | 24.5 µs · 25.2 µs | 25 µs → 24.5 µs | -2.0 % | 9.2 % |
+| timeline render 500 messages at 110-cell measure | 2.44 ms · 2.2 ms | 2.27 ms · 2.34 ms | 2.2 ms → 2.27 ms | +3.4 % | 11.0 % |
+
+Two rows were regressions by the rule: `mention candidates over 1k cached
+members` (+16.7 %, both v0.16 runs slower than both v0.15 runs) and `agent
+directory: mention candidates, 100-member channel` (+8.2 % against a spread
+of 2.8 %). The one source on their path that had changed was this task's
+own: `abbreviated_pubkey`, cut by characters, which the candidates call for
+every member without a name. It now cuts an ASCII key by bytes as before
+(`9421e51`), and both sides were measured again.
+
+**Second round, on the final code of `src/domain.rs`**, 04:15 to 04:38,
+load 0.8 to 2.6:
+
+| Benchmark | v0.15.0, two runs | v0.16.0, two runs | Lowest of each | Change | Spread of v0.15.0 |
+|---|---|---|---|---|---|
+| Inbox cursor page | 156 µs · 158 µs | 157 µs · 157 µs | 156 µs → 157 µs | +0.7 % | 1.5 % |
+| Inbox first page | 154 µs · 155 µs | 153 µs · 153 µs | 154 µs → 153 µs | -0.7 % | 0.9 % |
+| agent directory, 50 bots: list agents among 5k members | 944 µs · 944 µs | 969 µs · 977 µs | 944 µs → 969 µs | +2.7 % | 0.0 % |
+| agent directory, 50 bots: reconcile over 5k members | 30.5 ms · 31.2 ms | 30.8 ms · 30.1 ms | 30.5 ms → 30.1 ms | -1.2 % | 2.5 % |
+| agent directory, 50 bots: validate one agent mention | 81.8 µs · 82 µs | 81.4 µs · 82.8 µs | 81.8 µs → 81.4 µs | -0.4 % | 0.2 % |
+| agent directory: candidates among 5k members | 1.9 ms · 1.88 ms | 1.9 ms · 1.91 ms | 1.88 ms → 1.9 ms | +0.8 % | 1.0 % |
+| agent directory: list agents among 5k members | 944 µs · 959 µs | 957 µs · 966 µs | 944 µs → 957 µs | +1.4 % | 1.6 % |
+| agent directory: members a refresh asks profiles for (5k members) | 2.96 ms · 2.96 ms | 2.94 ms · 2.94 ms | 2.96 ms → 2.94 ms | -0.7 % | 0.1 % |
+| agent directory: mention candidates, 100-member channel | 187 µs · 187 µs | 192 µs · 193 µs | 187 µs → 192 µs | +3.0 % | 0.1 % |
+| agent directory: reconcile over 5k members | 31.3 ms · 31.5 ms | 31 ms · 31.4 ms | 31.3 ms → 31 ms | -0.8 % | 0.6 % |
+| agent directory: validate one agent mention | 80.4 µs · 82.2 µs | 80.9 µs · 83.4 µs | 80.4 µs → 80.9 µs | +0.5 % | 2.2 % |
+| agent runtime: start with 0 paused agents | 222 µs · 218 µs | 227 µs · 225 µs | 218 µs → 225 µs | +3.0 % | 1.8 % |
+| agent runtime: start with 20 paused agents | 359 µs · 362 µs | 367 µs · 364 µs | 359 µs → 364 µs | +1.2 % | 0.8 % |
+| composer unicode insert and cursor move | 440 ns · 436 ns | 426 ns · 433 ns | 436 ns → 426 ns | -2.4 % | 1.0 % |
+| decode bounded 1024x768 png | 387 µs · 386 µs | 388 µs · 385 µs | 386 µs → 385 µs | -0.2 % | 0.4 % |
+| mention candidates over 1k cached members | 1.04 ms · 1.03 ms | 1.04 ms · 1.02 ms | 1.03 ms → 1.02 ms | -0.8 % | 0.8 % |
+| parse bounded imeta | 1.97 µs · 1.97 µs | 1.88 µs · 1.87 µs | 1.97 µs → 1.87 µs | -5.0 % | 0.2 % |
+| query latest 500 of 100k | 1.3 ms · 1.32 ms | 1.32 ms · 1.31 ms | 1.3 ms → 1.31 ms | +1.0 % | 1.2 % |
+| rebuild Inbox projection over 100k | 109 ms · 109 ms | 109 ms · 110 ms | 109 ms → 109 ms | -0.4 % | 0.2 % |
+| redraw gate 1k idle ticks | 290 ns · 290 ns | 289 ns · 290 ns | 290 ns → 289 ns | -0.4 % | 0.1 % |
+| sanitize 64KiB | 169 µs · 167 µs | 199 µs · 197 µs | 167 µs → 197 µs | +18.1 % | 1.4 % |
+| search FTS5 over 100k | 696 µs · 700 µs | 701 µs · 701 µs | 696 µs → 701 µs | +0.6 % | 0.6 % |
+| semantic hit map build and resolve 10k | 3.4 ms · 3.44 ms | 3.42 ms · 3.43 ms | 3.4 ms → 3.42 ms | +0.7 % | 1.3 % |
+| timeline cursor move in 10k messages | 24.2 µs · 24.4 µs | 24.4 µs · 24.3 µs | 24.2 µs → 24.3 µs | +0.5 % | 0.8 % |
+| timeline render 500 messages at 110-cell measure | 2.17 ms · 2.17 ms | 2.21 ms · 2.23 ms | 2.17 ms → 2.21 ms | +1.9 % | 0.2 % |
+
+By the rule: every row is within 5 % but `sanitize 64KiB`, **+18.1 %**,
+in both runs (167 µs against 197 µs). It was looked into:
+
+- `sanitize::text` is unchanged since before v0.15.0
+  (`git diff refs/tags/v0.15.0 -- src/render/` is empty), and nothing of
+  v0.16 calls it differently.
+- A v0.16.0 bench built **without apps** (`--no-default-features
+  --features huddles-audio`) measures the same: three runs each, in turn,
+  167.7, 168.7, 167.6 µs (v0.15.0), 197.7, 199.1, 198.6 µs (v0.16.0),
+  200.2, 200.0, 198.0 µs (v0.16.0 without apps) (`$M8/sanitize.log`).
+- v0.15.0's own release candidate measured this benchmark at 197 µs for
+  v0.15.0 itself, against v0.14.0's 169 µs, with the same source
+  (`validation-v0.15.0.md`, "Benchmarks against v0.14.0"). The tag built
+  here measures 167 µs.
+
+So the number moves with how the crate is compiled (thin LTO, one codegen
+unit), not with code: **accepted**, as in v0.15.0. It is 0.5 µs a KiB of
+text shown.
+
+`agent directory, 50 bots: list agents among 5k members` is +2.7 % with no
+spread in v0.15.0's two runs, and `agent runtime: start with 0 paused
+agents` +3.0 %: inside the 5 %, recorded.
+
+**Startup**, the release binaries of both on the same v0.15.0 profile
+(v0.15.0 on a copy at schema 20, v0.16.0 on a copy it migrated to 23
+first), in turn, 30 runs each (`$M8/startup.py`): see "Startup" below,
+with the final release binary.
+
+### One app open
+
+`benches/apps.rs` (`cargo bench --bench apps`): the Board template on 200
+cards in a store in memory, through the `AppSession` the pane uses. Three
+runs (04:00, 04:01, 04:37; load 1.6 to 4.3), each median:
+
+| | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| Resident memory of one open Board | +2.1 MiB | +2.2 MiB | +2.2 MiB |
+| Ten open Boards | +10.6 MiB | +10.7 MiB | +10.7 MiB |
+| Open: interpreter, load, first list, first screen, 40×16 | 3.68 ms | 3.46 ms | 3.44 ms |
+| **Redraw**, 40×16 (the docked pane) | **55.7 µs** | 54.3 µs | 53.9 µs |
+| Redraw, 120×40 (zoomed) | 299 µs | 294 µs | 296 µs |
+| **Key to screen**, 40×16 | **383 µs** | 357 µs | 356 µs |
+| Key to screen, 120×40 | 607 µs | 609 µs | 606 µs |
+
+Against the marks fixed before measuring: a redraw of the docked app is
+54 to 56 µs (mark: under 1 ms), and one open app adds about 2.2 MiB of
+resident memory (mark: under its 64 MiB). The memory is the process's
+resident set before and after, read from `/proc/self/statm`; it counts
+what the allocator kept, not the interpreter's own count. The whole
+window with an app beside the conversation was not timed: bzz draws the
+other panes as it did, and the timeline's own render is in the table
+above.
+
+### Faults found and fixed
+
+| Fault | Fix | Proof, and its red |
+|---|---|---|
+| `crate::domain::abbreviated_pubkey` sliced bytes: an id that is not ASCII panicked it or was cut wrong. Its 31 callers take keys from events, profiles, the store and the agents' records; most are hex by construction, but not all are checked (an owner key from a profile's tag, a requester's id in the ledger, an offer's signer) | `c93f267`, `9421e51`: cut on characters; an ASCII key by bytes as before; `host.name`'s short form is the same function | `U: domain::tests::an_abbreviated_key_is_cut_on_characters_whatever_the_id`. Red with the byte slice: `left: "éééé…éé" right: "éééééééé…éééé"` |
+| The artifact panel listed an offered app (`bzz.app`) as an artifact of unknown schema, where any member can rename or delete it | `b92cced`: listed as `bzz.app · an app offered here`; its detail says what it is, what a rename and a delete there do, and that installed copies and records stay | `U: ui::artifacts::tests::an_app_offered_in_the_channel_is_listed_and_said_for_what_it_is`. Red with the branch taken out: the test fails on the first line it looks for |
+| On a Windows console without escape sequences crossterm refuses `DisableBracketedPaste`, and `execute!` stops at the first refusal: bzz would have left the alternate screen on, at quit, on a failed start and in the panic hook | `c613c8b`: that command is sent apart | **read, not run**: crossterm 0.29's `EnableBracketedPaste::execute_winapi` returns `Unsupported`, and its `queue!` chains the commands with `and_then`. Nothing here runs the legacy Windows API |
+| The files of apps would be checked out with CRLF on GitHub's Windows runners (`core.autocrlf` is true there): the contract test (`TWIN.contains("…(100 at\n---least)")` and others) and the guide's test would fail, and a template's bytes, hash and approval would differ by platform | `c1b4c07`: a root `.gitattributes` keeps LF for `docs/app-api.md`, `app-api.d.lua`, `app-authoring.md`, `src/apps/**`, `tests/fixtures/apps/**`, `tests/apps-bench/**` and migrations 21 to 23 | **read, not run** on Windows. `git add --renormalize .` changed nothing: the files are LF in the repository |
+| `t16-m4-poll-approve-update-rollback` waited for the first message of `#t15-agents`, which the v0.15 scenarios scroll away when the whole set runs in one fixture | `5e05b84`: it waits for the writing dock's `message #t15-agents` | the whole set: failed at that step in the first run, passed in the second |
+
+### CI
+
+What v0.16 added, and where CI runs it now. **None of it has run in CI**:
+the branch was never pushed.
+
+| Gate | Before this task | Now |
+|---|---|---|
+| The library's tests of apps (runtime, the six apps' cases, session, store, pane) on four platforms | the `build` job runs `--lib` on Linux, macOS Intel, macOS Apple Silicon and Windows: covered | the same, and `app_cli_test`, `app_session_test` and `app_records_test` added to that job's list (the command line and the records on a scripted relay, with real sockets). M2 (session) had said these run on every platform; they did not |
+| `--no-default-features` | never in CI | `test` job: Clippy and `cargo test --lib` without default features |
+| The relay tests of v0.16 (records, session, sharing, agents' records, an agent changing the Board) | in `relay_integration.rs`, so the relay job runs them; but the job's path filter did not include `src/apps/**` or `src/app/**` | the filter has `src/apps/**`, `src/app/**`, `tests/fixtures/apps/**` |
+| A person's own quota (`BZZ_RELAY_OWN_QUOTA=1`, a second start of the relay) | never | a third profile of the relay job, `own-quota` |
+| The upgrade from v0.15.0 | the job opened a v0.14.0 profile | `0150` on Linux, macOS and Windows; `0140` on Linux |
+| The apps bench | never | a job `apps-bench` on Linux in the build image (Python 3.10 is in it), `--release` |
+| `cargo deny`, `cargo audit`, the agent host's tests | as before | unchanged |
+
+**Read for macOS, Windows and Linux arm64**, which have never compiled this
+code. What could break, from reading only:
+
+| Where | What | State |
+|---|---|---|
+| Windows checkout | CRLF in the files of apps (above) | fixed for the files of apps |
+| Windows checkout, every release | `migrate.rs` checksums each migration's text as compiled in. If a Windows checkout converts migrations 1 to 20 to CRLF (as `core.autocrlf=true` does; whether the release workflow's did was not looked up), its build checksums them differently from a Linux build: a database moved between the two would be refused (`migration N checksum changed`). Older than v0.16, and not changed: a fix that changed their line endings would make a Windows build refuse the database an earlier Windows build wrote. Migrations 21 to 23 are LF everywhere now | **not changed; for the principal** |
+| Windows console | bracketed paste refused by the legacy API (above) | fixed |
+| Windows, MSVC | Lua's C compiled by MSVC; the stop by time and the memory error rest on Lua's `longjmp` across `mlua`'s frames (M0) | unknown until CI |
+| Windows | a paste arrives as keys (crossterm gives no paste event) | said in `apps.md` and the notes |
+| macOS and Windows | the agent tests (`agent_records_test`, `agent_authors_app_test`, the agent runtime's) are `cfg(unix)`, as in v0.15; the upgrade test's runtime part is too | agents and apps together run on Linux only |
+| macOS, Windows | `apps::store::tests::an_apps_folder_and_files_are_private` is `cfg(unix)`; elsewhere the folders get bzz's usual permissions | as v0.15's other data |
+| Every platform | timing: the hostile suite gives a call 200 ms and an 800 ms margin, tried again twice; `a_stuck_script_does_not_delay_its_owner` asserts a start under 200 ms and a worst round under 100 ms while a script loops; the scripted relay tests wait up to 2 s for answers. A slow shared runner could miss them | unknown until CI |
+| Every platform | `app_session_test` reads `/proc/self/status` for memory and prints nothing where it is absent | read: it does not fail there |
+| Linux arm64 | Lua's C by GCC on arm64; the release workflow only builds it, for a tag or a release pull request | unknown |
+| Windows | app names that are device names (`con`, `nul`, `com1`…) are refused everywhere | read: `manifest.rs` |
+
+### Startup
+
+`$M8/startup.py`, 06:07, load 0.4 to 0.7: the release binary of v0.15.0
+(the tag, built here) and of this branch (`5e05b84`'s sources), on copies
+of the same v0.15.0 profile (v0.16.0's migrated to 23 by a first run that
+is not counted), in turn, 30 runs each. `bzz check` reads the settings,
+the keymap and the theme and opens and syncs the database: what starting
+bzz costs before the first frame. The TUI's own first frame was not timed.
+
+| | v0.15.0 | v0.16.0 | Change of the medians |
+|---|---|---|---|
+| `bzz check`, median (min to max) | 145.3 ms (128.2 to 186.7) | 145.6 ms (136.6 to 156.1) | +0.2 % |
+| `bzz agent list`, median (min to max) | 4.8 ms (4.7 to 5.2) | 5.0 ms (4.9 to 5.5) | +4 % |
+
+No regression by the rule.
+
+**The size of the release binary** (Linux x86_64, `cargo build --release
+--locked`, stripped as published):
+
+| Build | Bytes |
+|---|---|
+| v0.15.0 (the tag) | 28,383,712 |
+| v0.16.0 without apps (`--no-default-features --features huddles-audio`) | 28,445,792 |
+| v0.16.0 | 31,572,064 |
+
+**Apps add 3.0 MiB** (3,126,272 bytes) to the binary once everything of
+them is in it. The plan's D12 said "about 0.5 MiB", and M0 measured
+0.40 MiB for the interpreter alone; the rest is the runtime, the bounded
+library, the session, the store, the pane and the tools, which M0 could not
+measure because nothing called them yet.
+
+### The whole suites on the final tree
+
+On `5e05b84` unless said, 2026-11-20. The relay runs each took the harness
+lock (`scripts/test-relay.sh`), built Buzz at the pin into its own folder
+(`CARGO_TARGET_DIR` unset, `./target` linked to this worktree's folder on
+the archive disk, and the link removed after), and tore the harness down:
+`docker ps` listed no `buzz-harness` container after each
+(`$M8/relay/status`). No owner's program, sign-in or model was used.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets -- -D warnings`; the same with `--no-default-features` | clean, both |
+| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets` | **1090 passed, 0 failed, 39 ignored, in 63 test programs** (06:01). The first run of this gate failed in `agent_move_test` alone: its binary had been built by the relay run with `./target` as its path to `scripted_harness`, and the link was gone (`… target/debug/examples/scripted_harness is missing`). After touching the test sources it was built again and passed |
+| Without the features | `cargo test --locked --no-default-features --lib` | 486 passed |
+| Supply chain (`Cargo.toml` changed: the bench) | `cargo deny check`; `cargo audit` | `advisories ok, bans ok, licenses ok, sources ok`; no vulnerability, the 5 allowed warnings of M0 |
+| Release | `cargo build --locked --release` | builds; `bzz 0.16.0`, 31,572,064 bytes |
+| Pinned relay, the whole suite | `BZZ_TEST_REQUIRE_NODE=1 BZZ_BUZZ_SOURCE=<main>/runs/buzz-pin ./scripts/test-relay.sh` | **28 passed in 958 s** (05:07 to 05:25): 26 ran; the one with the owner's own programs skipped itself and said so, and the one of a person's own quota returns at once without `BZZ_RELAY_OWN_QUOTA`. Then `agent_host_test` 7 passed (the real Pi host, Node 26.5) and `agent_move_test` 8 passed |
+| Pinned relay, federated identity | the same with `--nip-fi` | 4 passed in 24 s |
+| A person's own quota | `BZZ_RELAY_OWN_QUOTA=1 BZZ_RELAY_NOCAPTURE=1 ./scripts/test-relay.sh` | 1 passed in 18 s: `the relay took 60 writes of the person in 14 s, then said: rate-limited: retry in 45s` |
+| Every harness scenario, v0.13 to v0.16, on the release binary | `BZZ_TMUX_SIZE=200x50 BZZ_TMUX_SCENARIOS=harness ./scripts/test-relay.sh --tmux` | first run (on `c613c8b`): **33 of 35**; `t14-search-older` (`'older result' did not show within 15000 ms`) and `t16-m4-poll-approve-update-rollback` (above, fixed in `5e05b84`). Second run (on `5e05b84`): **35 of 35**, `t14-search-older` among them. Captures: `$M8/relay/tmux-captures{,-2}/` |
+| M5's real-model gate, with the scripted harness | `./scripts/test-agent-authors-app.sh scripted` | the relay test passed (23 s); the approved script passed **17 of 17** `board-priority` cases at 80×24 and **17 of 17** at 40×16 |
+| The apps bench | `scripts/test-apps-bench.sh --release` | everything passed: Board 12/12, Poll 12/12, Rota 14/14, Approvals 15/15, Panel 15/15, Board with priority 17/17 at each size; reload 20/20 at each size (150 saves, save to screen p50 24.3 ms and 23.3 ms, p95 48.1 and 48.7 ms); pushes 8/8; hostile 29/29 |
+| The upgrade tests | `./scripts/upgrade-test.sh` (from v0.15.0) and `BZZ_UPGRADE_FROM_VERSION=0140` | 1 passed each (5.6 s and 3.3 s) |
+| The agent host | `npm ci --ignore-scripts --omit=optional && npm test` in a copy of `agent-host/` on the archive disk, with `tests/fixtures/agents` beside it; `npm audit --omit=dev` | 176 packages; **100 of 100**, Node 26.5.0; 0 vulnerabilities. Node 22.19, the oldest supported, is not on this machine: not run |
+| The adapters | `npm audit --omit=dev --omit=optional` in a copy of each of `agent-adapters/codex` and `claude-code` | 0 vulnerabilities each |
+| The secret scan | `tests/secret_scan_test.rs`, in the test gate | 5 passed: among them every `bzz app` command and a script that looks for a key everywhere it can reach (M4), and the four harnesses through the tools of apps (M5, M7) |
+
+The relay suite, `--nip-fi` and the own quota ran with `src/` as of
+`c1b4c07` or `c613c8b`: the suite's build began while `c613c8b`'s change to
+`src/ui/terminal.rs` was being made, and no relay test reaches that file. The first harness run and the scripted author gate ran on
+`c613c8b`; the second harness run on `5e05b84`, which changed only the
+scenario. The tree after `5e05b84` changed documents only.
+
+**One flake, of an earlier release's scenario:** `t14-search-older`
+pressed `Ctrl-o` 384 ms after the search opened, and `older result` did
+not show in 15 s, once in two runs. It passed in M3's run and in the
+second run here. Not looked into further.
+
+### Manual E2E
+
+`docs/e2e-manual.md` has a section 14 for v0.16.0. What ran it, with a
+disposable identity, through tmux (Herdr's session `t3code` was not
+running and was not started):
+
+| Part of section 14 | Covered by | Left to a person |
+|---|---|---|
+| Write, check, try and install, at the shell (1 to 7) | **by hand**, on a release binary of this branch built at 05:07 from the sources of `c1b4c07`, in tmux on a private socket, with a disposable identity in an encrypted file and a community written into its settings (no relay: these commands need none): every step, with the words it names (`no apps are installed in e2e`, the three templates, `exists already; nothing was written`, `ok: tasks (Tasks) loads. api 1, record types: card`, `app.lua:408: <eof> expected near 'return'`, the Board as text with `> Buy milk`, the review of version 1, `n`, `1 version waits for your answer`, `y`, `version 1 runs`, and `bzz app dev`: a card, a save that renames the column with the card kept, a broken save with the error and the old version running, `Ctrl+C` with the terminal given back). The step that adds the community on a relay was not run by hand | none |
+| The pane (1 to 7) | `t16-app-pane`, `t16-app-live-second-profile`, `t16-app-looper-composer` | none |
+| A new version, in place (1 to 4) | `t16-m4-poll-approve-update-rollback`, `t16-m4-dev-remove-reinstall` (on the Poll and the Board, not on a folder named `tasks`) | none |
+| An agent changes the app (1 to 5) | `t16-m5-agent-changes-the-open-board`; step 5 (`bzz agent show`) by `S: agent_authors_app_test` | none |
+| Share it with the second identity (1 to 4) | `t16-m6-share-offer-approve`. The panel's line for the offer: `U: ui::artifacts`, not on the binary | step 5, Buzz desktop: not run (M0's run stands) |
+| Without an app, and after an upgrade | `t16-m4-dev-remove-reinstall` (`:app remove`), every harness scenario of v0.13 to v0.15, `scripts/upgrade-test.sh` | a person's own v0.15.0 profile |
+
+### Documents
+
+| Document | What changed |
+|---|---|
+| `README.md` | apps as v0.15's agents got them: what's new, a line of "Why bzz", a section to start, the keys, the commands, `bzz app`, security, compatibility (Windows paste), the docs, the apps bench |
+| `docs/apps.md` | what v0.16.0 has (it said sharing was not built); "Buzz desktop": what M0 found, the brief as the one thing people there see, and the record form for a client that is not bzz (D11); the offer in the artifact panel; the developer's paragraph on `Apps::record` replaced by what a proposer learns |
+| `docs/security.md` | agents and the records of apps (M7), an agent that writes an app (M5) |
+| `docs/configuration.md` | apps: no setting, where they are, the feature `apps` |
+| `docs/app-api.md`, `app-authoring.md`, `app-records.md` | one notation for keys (`Ctrl-c`, `Ctrl-y`) across the documents of apps |
+| `docs/e2e-manual.md` | section 14 |
+| `docs/release-v0.16.0.md` | new |
+| `docs/README.md` | the row of v0.16.0, v0.15.0 as released, the ADR, the documents of apps |
+| `docs/adr-v0.16-apps.md` | accepted and built; what the milestones decided |
+| `docs/planning/2026-11-17/v0.16.0.md` | its status; a draft of "How it closed", marked as such, for the principal |
+| `site/public/index.html`, `site/README.md` | "new in v0.16.0" and a section `#apps`; the place and the need of a capture. **Not deployed** |
+
+`docs/agents.md` and `docs/app-records.md` were read against the code for
+the tools and the record's form and left as they were, but for the key
+notation.
+
+### The plan's testing table, cell by cell
+
+"Herdr" in the plan's last column is the tmux runner here: the same
+manifest, on the release binary (the session `t3code` was never running in
+v0.16). Everything is Linux x86_64.
+
+| Milestone | Unit | Scripted (example host, fake relay, scripted harness) | Pinned relay | Release binary |
+|---|---|---|---|---|
+| **M0** | none asked | **Proven:** the six answers (M0) | **Proven:** every v0.15 suite, in M0 and again here (the whole suite, `--nip-fi`) | **Partly:** `bzz 0.16.0` on Linux x86_64 (`t16-cli-version`). **Pending: macOS Intel, macOS Apple Silicon, Windows**, which CI builds when the branch is pushed |
+| **M1** | **Proven:** limits, API, widget tree, reload (M1-A) | **Proven:** the six apps and the hostile script on the bench (M1 bench and apps; again here, release) | none asked | none asked |
+| **M2** | **Proven:** record mapping, order, fence (M2 service, M2 session) | **Proven:** conflict and quota against the scripted relay (`app_records_test`, `app_session_test`) | **Proven:** two profiles share a board (`real_relay_app_session_two_profiles_share_a_board`; again in the suite here) | none asked |
+| **M3** | **Proven:** layout, focus, key routing (M3) | none asked | none asked | **Proven** through tmux: the pane scenarios (M3; again here) |
+| **M4** | **Proven:** manifest, hash, revisions (M4 store) | **Proven:** a failing update, a refused approval (M4, both halves) | none asked | **Proven** through tmux: install, approve, roll back (`t16-m4-*`; again here) |
+| **M5** | **Proven:** tool schemas, outcomes (M5) | **Proven:** propose, refuse, error back to the agent (`agent_authors_app_test`) | **Proven:** one reply per mention still holds (`real_relay_an_agent_changes_the_open_board…`; again here). **Pending: the same with real models** (D13) | **Proven** through tmux with the stand-in model: an agent changes the open Board (`t16-m5-…`; again here) |
+| **M6** | **Proven:** the artifact, its hash and limits (M6) | **Proven:** a tampered offer, a refused offer (M6) | **Proven:** one profile shares, another approves and uses it (M6; again in the suite) | **Proven** through tmux: share and accept in the TUI (`t16-m6-…`; again here) |
+| **M7** | **Proven:** fence for agents (M7) | **Proven:** an agent writes a record (`agent_records_test`) | **Proven:** an agent's record seen by another profile (`real_relay_agent_takes_a_day_in_the_rota_with_its_bot_role`; again in the suite) | none asked |
+| **M8** | none asked | none asked | **Proven, without a relay:** the upgrade from v0.15.0 (`scripts/upgrade-test.sh`); it needs none | **Partly:** every harness scenario of v0.13 to v0.16 through tmux, and the shell part of the e2e by hand; the rest of section 14 as the table above says. Not Herdr |
+
+**The secret scan on every row:** `secret_scan_test` (5 tests) in the test
+gate: every `bzz app` command and a snooping script (M4), every launch and
+the four harnesses with the tools of records (M7) and of authoring (M5);
+M6's relay test scans every revision of every offer. No scenario of the
+runner searches the screen for keys.
+
+### What the milestones left as "not proven", and where it stands
+
+Each milestone's list above is left as written. What M8 changed in them:
+
+| Left open by | Item | Now |
+|---|---|---|
+| M0, M1, M2, M4 | the upgrade from a profile v0.15.0 wrote | **proven**, above |
+| M0 | the benchmarks; the agent host's own tests | **measured**, above; **100 of 100** |
+| M0, M3, M4, M6 | the release TUI through Herdr | through tmux again, every harness scenario; **Herdr: not run** (its session was not running) |
+| M2 (service), M2 (session) | a person's own quota of 60 through an app | **proven** under `BZZ_RELAY_OWN_QUOTA=1` (M2 session; again here); CI has a profile for it now |
+| M2 (session) | "the scripted tests run on every platform in CI's build job" | they did not: the build job's list now has them |
+| M4 (inside bzz) | the whole harness suite, v0.13 to v0.16 | **35 of 35**, above |
+| M4 (inside bzz) | `crate::domain::abbreviated_pubkey` on an id that is not ASCII | **fixed**, above |
+| M1 | the size of the runtime in the binary | **measured**: apps add 3.0 MiB |
+| every milestone | macOS, Windows, Linux arm64 | **still not compiled or run**; CI now runs the tests of apps there, and what reading found is in "CI" above |
+| M5 | a real model on each harness | **still pending** (D13) |
+
+Everything else in those lists is still as written there.
+
+### The release acceptance
+
+| # | Item | State |
+|---|---|---|
+| 1 | All CI gates on Linux, macOS Intel, macOS Apple Silicon and Windows; both relay jobs; benchmarks as in M8 | **On this machine (Linux x86_64): every gate passes** (above); the benchmarks show no regression for a profile with no app but `sanitize 64KiB`, explained and accepted; one app open is measured. **CI: pending.** The branch was never pushed: no CI run has seen any of v0.16 |
+| 2 | Upgrade test from a v0.15.0 data directory | **Proven on Linux** (above). Pending in CI on macOS and Windows |
+| 3 | `docs/e2e-manual.md` updated and run with a disposable identity | **Updated:** section 14. **Run in part:** the shell by hand, the TUI by the scenarios on the release binary through tmux, all with disposable identities; see "Manual E2E" for what no run covered |
+| 4 | Production acceptance by the owner: in one of his channels, an agent changes an app at his request and he approves it | **Pending: the owner's.** Nothing here touched a real community, a real model or a real account |
+
+### The definition of done
+
+| # | Item | State |
+|---|---|---|
+| 1 | Every milestone's exit gate passes on the fixed baselines | **On Linux x86_64, yes**, each in its section and the relay ones again here; M5's real-model part pending (D13); the other platforms pending CI |
+| 2 | The owner opens an app beside a conversation, and two people in the channel see each other's changes | **Shown with generated identities** on the pinned relay and the release binary (`t16-app-live-second-profile`, `t16-m6-…`, M2's relay gate). **Not by the owner** |
+| 3 | An agent, asked in the channel, changes that app; the owner approves; the change appears without a restart | **Shown with the scripted harness** on the relay and the release binary (M5). **Not with a real model, not by the owner** |
+| 4 | A script reaches no file, network, process or environment, and cannot stop bzz | **Proven on Linux** (M0, M1: 80 hostile scripts, the sweep, the bench's hostile app, the secret scans). Not run on the other platforms |
+| 5 | No script version runs without the owner's approval of its exact bytes | **Proven** for the owner's folder, an agent's version and an offer, at `Apps::runnable`, at the shell, in the pane and on the binary (M4, M5, M6) |
+| 6 | The contract `api = 1` is one document, the templates and fixtures are written against it, and every app has a brief | **Proven** (M1's contract tests, the templates' and fixtures' cases, M4) |
+| 7 | If M6 ships: an app offered in a channel runs on another person's bzz after that person's approval, and not before | **M6 ships; proven** (M6, on the relay and the binary; again here) |
+| 8 | Every row of "Testing v0.16.0" is proven or marked pending with the reason | **Done**: the table above |
+
+### Not proven in M8
+
+| Item | State |
+|---|---|
+| CI on any platform | the branch was never pushed. Every CI change above is read and checked as YAML, not run |
+| macOS, Windows, Linux arm64 | not compiled or run. The `.gitattributes` and the terminal fix for Windows are from reading |
+| Herdr | its session `t3code` was not running; nothing was started in it. Every scenario ran through the tmux runner |
+| Real models | M5's gate `scripts/test-agent-authors-app.sh <harness>` with a real model: not run (no real model or account in this task) |
+| The owner's production acceptance | his |
+| The film (D14) and the site's capture | a later task; the site is not deployed |
+| Node 22.19 | the agent host's tests ran on Node 26.5 only |
+| The TUI's first frame | not timed; `bzz check` stands for startup |
+| The whole window with an app open, timed | not timed; the app's own draw is |
+| Buzz desktop with a shared app, and newer than 1.0.1 | not run again (M0's run stands) |
+| The panel's line for an offer, on the binary | unit-tested only |
+
+### Found on the way
+
+- **A relay run in a worktree leaves test binaries that point at
+  `./target`.** `scripts/test-relay.sh` builds with `CARGO_TARGET_DIR`
+  unset and `./target` linked to the worktree's folder; the binaries keep
+  that path for `scripted_harness`, and once the link is removed the next
+  `cargo test` with the variable set reuses them and fails. Touching the
+  test sources makes cargo build them again. The rules' recipe for a relay
+  run in a worktree should say so.
+- **The bench of mention candidates caught this task's own change** within
+  a round: the cut by characters cost 8 to 17 %, and the fast path for
+  ASCII took it back to v0.15.0's time.
+- **`sanitize 64KiB` moves with the build, not with the code.** The tag
+  `v0.15.0` built here measures 167 µs where v0.15.0's own release
+  candidate measured 197 µs for the same source.
+- **The agent host's tests read `../tests/fixtures`**: a copy of
+  `agent-host/` elsewhere needs those fixtures beside it.
+- **`bzz app dev` writes `Ctrl+C`** in its own lines, where the TUI writes
+  `Ctrl-c`. Left as it is.

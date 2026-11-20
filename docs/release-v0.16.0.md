@@ -155,17 +155,23 @@ it knows.
   `mlua-sys`, `lua-src` (Lua 5.4.9, MIT) and `bstr`; `luajit-src` and
   `which` are used by `mlua-sys`'s build only. `memchr`, locked before,
   is now a direct dependency. `cargo deny check` and `cargo audit` pass.
-  The interpreter adds about 0.4 MiB to the binary.
+- **The binary is 3.0 MiB larger**: 31.6 MB on Linux x86_64, against
+  28.4 MB for v0.15.0 and for this release built without apps. The plan
+  expected 0.5 MiB; the interpreter is 0.4 of it, the rest is the runtime,
+  the session, the store, the pane and the tools.
 - **An app's records cost relay quota.** The relay gives a person 60
   writes a minute, chat included. bzz gives the apps of one person 30 of
   them, all apps together, and answers the rest itself with the seconds to
   wait, so that an app cannot keep you from sending a message. An agent's
   record writes count against the agent, up to 60 a minute.
-- **Benchmarks** against v0.15.0 for a profile with no app:
-  [`validation-v0.16.0.md`](validation-v0.16.0.md), M8, "Benchmarks". One
-  open Board on 200 cards is drawn in about 56 µs a frame at the pane's
-  size, a key reaches its screen in about 0.4 ms, and it adds about 2 MiB
-  of memory (one run, Linux x86_64).
+- **Benchmarks** against v0.15.0 for a profile with no app: within 5 %
+  on 24 of 25, and startup (`bzz check`) the same. Cleaning 64 KiB of text
+  for display measured 0.20 ms against 0.17 ms with the same source, a
+  number that moves with how the crate is compiled
+  ([`validation-v0.16.0.md`](validation-v0.16.0.md), M8, "Benchmarks").
+  One open Board on 200 cards is drawn in about 54 µs a frame at the
+  pane's size, a key reaches its screen in about 0.36 ms, and it adds
+  about 2.2 MiB of memory (three runs, Linux x86_64).
 
 ## Security notes
 
