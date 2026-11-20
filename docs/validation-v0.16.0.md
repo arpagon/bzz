@@ -1556,3 +1556,151 @@ this document changed afterwards.
 - **The Board saves a pasted line break as a space** (`ui.paste` into a
   single-line input).
 
+
+## M7 — Agents use an app's records
+
+Linux x86_64, Rust 1.98.1, Buzz pin `bf3bdd0eaefe`, 2026-11-19. Branch
+`t3/implement-m7-agent-records`, cut from `v0.16.0` at `2c05263` (after
+M3 was merged). An agent takes part in an app without a screen and without
+the app's script: five tools, served as `send`, `read` and `react` are, to
+all four harnesses; the fence of rule 17 for agents where the tool is
+served; signed by bzz with the agent's key; the agent's own quota; its
+writes in its activity.
+
+**Where it is.**
+
+| Path | What |
+|---|---|
+| `src/agents/runtime/app_tools.rs` | `apps`, `records`, `create_record`, `update_record`, `delete_record`: names, checked arguments, the MCP definitions. M5's tools go beside these |
+| `src/agents/runtime/tools.rs` | `ToolCall::App`, `publishes` and `is_chat_effect`, `names()`; the unknown-tool sentence lists every tool |
+| `src/agents/runtime/agent/apps.rs` | the fence for agents (installed, enabled, approved, open in the turn's channel, the approved types), the agent's open records, its budget, the answers, the activity line |
+| `src/agents/runtime/agent.rs` | the dispatch; a record write is refused after the final reply, is no chat effect, counts as an effect of the request in the ledger (so a crashed coding turn is not handed over again); `initialize` says `apps: true`; a stopped agent closes its apps' records |
+| `src/agents/runtime/relay.rs` | `AgentRelay::records`; `RelayPort` makes the agent's own `RecordsService` (its key, connection, HTTP client, the owner's store) |
+| `src/agents/runtime/permission.rs` | a coding harness's request for `mcp__buzz__<record tool>` is bzz's own tool, allowed as `send` |
+| `src/agents/activity.rs` | `What::Record`: app, change, type, id; never content |
+| `agent-host/src/host.mjs` | the Pi host offers `buzz_apps` … `buzz_delete_record` when bzz says `apps`; a remote copy does not |
+| `examples/scripted_harness.rs` | `keep` and `"$name/pointer"`: a step uses what an earlier tool answered, as a model reads a record's id and rev |
+| `tests/support/artifact_relay.rs`, `tests/support/scripted_relay.rs` | a scripted relay that keeps heads for several identities, checks `prev`, words its refusals as the pin, and sends each stored revision to every connection (`WsAction::Broadcast`) |
+| `tests/agent_records_test.rs`, `tests/secret_scan_test.rs`, `tests/relay_integration.rs`, `agent-host/test/acp.test.mjs` | the proofs below |
+| `scripts/test-relay.sh` | passes `BUZZ_REQUIRE_RELAY_MEMBERSHIP` and `RELAY_OWNER_PUBKEY` through to the relay when the caller sets them |
+| `docs/agent-host-protocol.md` (sections 3, 5, 6), `docs/agents.md`, `docs/apps.md` ("Agents"), `docs/app-records.md` ("Who signs") | the tools and their definitions |
+
+No dependency was added; `Cargo.toml` and `Cargo.lock` are unchanged. No
+migration; the schema is unchanged.
+
+**What was decided here** (the plan and the brief left these open):
+
+| Question | Decided |
+|---|---|
+| Names | `apps`, `records`, `create_record`, `update_record`, `delete_record`; Pi sees `buzz_…`. `record_id` and `revision` are taken for `id` and `rev` (a script's names); `content` may come as JSON text |
+| Who signs, and how | not `create_as` on the owner's open app: the agent has a `RecordsService` of its own on its own connection (see `docs/app-records.md`, "Who signs"). It needs no pane of the owner's open (`bzz agent run` has none), reads as the relay lets the agent read, and never takes the one instance of an app in a channel that the owner's pane needs. `create_as`, `update_as`, `delete_as` stay unused |
+| "Open in the channel" | the store's `open_in` of M4 (the channel D4 opens an app in), not whether a pane is drawn now |
+| What an agent sees of a record | a script's view: `{id, type, rev, content, by: {id, name}}`; names from the relay's profiles, the agent's own name for itself, a short key otherwise |
+| `records` | `match` over the title rule, as `data.list`; `limit` 1 to 200, default 50; at most 64 KiB of answer, with `count`, `more` and a note; waits up to 10 s for the relay's first set, then answers from what bzz holds |
+| Failures | first line `<code>: <reason>. <what to do>`, last line the JSON a script gets (`error.code`, `message`, `retry_after`, `current`) |
+| The local cap | **60 record writes a minute per agent**, all apps and turns together: half of the 120 the pin gives an agent, as an owner's apps get half of his 60, so that a turn filling a board cannot leave the agent unable to post its answer. Past it `rate_limited` with the wait, no frame |
+| The relay's own wait | not a gate of bzz's: the agent's connection already holds every frame while it lasts (`realtime::admission`), and the service answers `rate_limited` with what is left. A gate here was written, found to change nothing in the test of the quota (green with and without it), and removed |
+| Owner's permission | **none, as for `send`**: the channel already lets the agent write there and the fence is narrow. Before each write bzz asks the relay's records whether the agent may still write in the channel, as before a message |
+| The owner sees it | the tool's title in the agents panel as for any tool call, and one line per write in the agent's activity (`bzz agent show`): `update a day of the app rota (1a2b3c4d) · updated` |
+| Turn rules | a record write is refused after the turn's final reply; it is no chat message (it does not count against `effects_per_turn`, and a turn's plain text can still be its reply); it is counted as an effect of the request in the ledger, before it is sent, so a coding harness whose turn crashed after a write is not handed the request again |
+| Records kept open | an agent keeps at most 8 apps' syncs open, closes one unused for 10 minutes, reopens one whose approved types changed, and closes all when it stops |
+| D17 | nothing about apps is added to a prompt; the tools' own descriptions say what they do |
+
+**How to repeat.**
+
+```sh
+# the build environment of runs/v016/RULES.md, then:
+cargo build --locked --example scripted_harness
+cargo test --locked --lib agents::runtime
+cargo test --locked --test agent_records_test
+cargo test --locked --test secret_scan_test no_key_reaches_a_harness
+cargo test --locked --test agent_runtime_test
+(cd agent-host && npm ci && npm test)
+ln -sfn "$CARGO_TARGET_DIR" target
+BZZ_BUZZ_SOURCE=<main checkout>/runs/buzz-pin BZZ_RELAY_TEST_FILTER=real_relay_agent_takes_a_day \
+  BZZ_RELAY_NOCAPTURE=1 ./scripts/test-relay.sh
+RELAY_OWNER_PUBKEY=79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798 \
+  BUZZ_REQUIRE_RELAY_MEMBERSHIP=true BZZ_BUZZ_SOURCE=… BZZ_RELAY_TEST_FILTER=real_relay_agent_takes_a_day \
+  BZZ_RELAY_NOCAPTURE=1 ./scripts/test-relay.sh
+rm target
+```
+
+### Claims
+
+`U:` a unit test, `S:` the scripted rung (the scripted harness, a recorded
+relay for chat, the scripted relay of records on real sockets), `R:` the
+pinned relay, `N:` the Pi host's own tests under Node. Each red is the
+named test run with the one change in its cell, seen failing with the
+quoted message, and the file restored.
+
+| Claim | Proof | Red without the change | Result |
+|---|---|---|---|
+| **Exit gate, scripted**: an agent mentioned in a channel where the Rota is open lists the apps (the Rota, its brief, `day`), lists the seven days, finds Tuesday and updates it with its rev; the relay holds one revision, signed by the agent and none by the owner; another profile's Rota and the owner's own open Rota show `Tue  Scout` and `Days: Scout 1`; the mention has one reply; the activity has `update a day of the app rota (…) · updated`. Through the pipe (bzz's host) and through `bzz agent-tools` (a coding harness) | `S: agent_records_test::an_agent_takes_a_day_in_the_rota_and_another_profile_sees_it` | the record tools not served (`app_tools::parse` skipped in `tools::parse`): `not JSON: There is no tool \`apps\`. …` | pass |
+| **Exit gate, pinned relay**: the same with the agent added to a private channel with the role `bot`, run by `agents::runtime::service::serve` as the TUI runs it (its own key unsealed from the profile `bzz broker create` made); another profile's Rota shows `Tue  Scout` 502 ms after the mention; the relay's head of Tuesday is signed by the agent; one reply, `Tuesday is mine.` | `R: real_relay_agent_takes_a_day_in_the_rota_with_its_bot_role`, relay with `BUZZ_REQUIRE_RELAY_MEMBERSHIP` unset (its default, off) | the same red: `timed out waiting for the agent's day on bo's screen` with `Tue  free` on it | pass (20.1 s) |
+| **The other membership mode**: with `BUZZ_REQUIRE_RELAY_MEMBERSHIP=true` an agent that is no relay member is refused at authentication (`Access("session is not authenticated")` for its first write); made a relay member, the same gate passes (534 ms) | the same test, relay with `BUZZ_REQUIRE_RELAY_MEMBERSHIP=true` and `RELAY_OWNER_PUBKEY` set | — (the refusal is the relay's own, as M0 saw it; no red taken) | pass (22.2 s) |
+| **Fence: a type the app did not declare** (`card` in the Rota) is `fenced: the app rota did not declare the record type card … The app's record types are day.`; the long form `bzz.app.rota.day` is no name an agent can give | `S: the_fence_holds_whatever_the_harness_sends` | — (the service's fence, M2; this shows it holds through the tool) | pass |
+| **Fence: an app open in another channel** (the Board, installed and approved) is `The app board is not open in this channel. The apps open here: rota.`, for a write and for a list | `S: the_fence_holds_whatever_the_harness_sends` | the store's apps listed whatever the channel: the Board card was created (`(false, "{\"record\":…\"type\":\"card\"}")`) | pass |
+| **Fence: another channel**: woken where the Rota is also open, the agent names a record of the first channel by id and rev: `not_found`; a `channel` argument is `no argument \`channel\`` | `S: the_fence_holds_whatever_the_harness_sends` | — | pass |
+| **Fence: a disabled app**: `apps` lists it under `unusable` (`its owner disabled it`), a write is `The app rota is open in this channel but cannot be used now: its owner disabled it.` | `S: the_fence_holds_whatever_the_harness_sends` | — (`Apps::runnable`, M4) | pass |
+| None of the refused calls above sent a frame; the week is unchanged | `S: the_fence_holds_whatever_the_harness_sends` (`writes_by(agent) == []`) | — | pass |
+| **A conflict gives the agent the current record**: another profile takes Tuesday after the agent listed it; the agent's update is `conflict: …` with `current.content.holder == "bo"`, `current.by.id` bo's key and a new rev | `S: a_conflict_gives_the_current_record_and_the_quota_gives_the_wait` | — (the service's conflict, M2) | pass |
+| **At the relay's quota the agent gets the wait**: the relay answers `rate-limited: quota exceeded; retry in 19s`; the agent is told `rate_limited`, `retry_after` 1 to 19, `Try again in N s`; its second write is answered the same at once and sends no frame | `S: a_conflict_gives_the_current_record_and_the_quota_gives_the_wait` | — (see "The relay's own wait" above: green with and without a gate of the agent's) | pass |
+| **The agent's own budget**: 61 creates in one turn: 60 stored, the 61st `rate_limited` with a wait of 1 to 60 s; the relay received 60; the turn still had its one reply | `S: an_agents_record_writes_stop_at_its_own_budget`; `U: agent::apps::tests::an_agent_writes_at_most_its_budget_in_a_minute` | the budget not spent: the 61st was stored (`{"record":{…"day":"Extra 60"…}}`) | pass |
+| Every argument is checked and a wrong one named; no argument names a channel, place, session or community; the definitions list each tool once | `U: app_tools::tests::every_argument_is_checked_and_a_wrong_one_is_named`, `the_definitions_name_every_tool_once`; `U: tools::tests::*` | — | pass |
+| A failure says its code, what to do, and the same as JSON; an unknown author is a short key; an app not open here is named with those that are | `U: agent::apps::tests::*` (3 more) | — | pass |
+| `bzz agent-tools` lists all eight tools; a coding harness's request for a record tool is allowed as `send`, and not one whose kind deletes, nor a name bzz has not | `U: mcp::tests::it_lists_every_tool_and_passes_calls_on`; `U: permission::tests::each_kind_of_request_is_read_as_the_three_programs_send_it`, `a_request_that_names_only_its_call_is_read_from_what_was_reported` | — | pass |
+| The Pi host offers the five tools only when bzz says `apps`, sends them to bzz as `_bzz/tool` under the name on the wire with the model's arguments, and adds nothing about apps to the prompt | `N: acp.test.mjs` "the tools of apps' records are offered only when bzz serves them, and go to bzz over the pipe" | `host.mjs` of `2c05263`: `actual: ['buzz_send', 'buzz_read', 'buzz_react']` | pass |
+| **No key in the harness's environment, arguments, files or tool results**: each of the four harnesses (Pi Durable over the pipe; Grok, Codex and Claude Code through `bzz agent-tools`, as their own launch) lists the Rota and its days and writes a day; the harness logs with every answer, the four records on the relay, the database, the activity and every file bzz wrote hold neither key, nor the broker credential, nor a key of bzz's environment | `S: secret_scan_test::no_key_reaches_a_harness_environment_arguments_or_logs` | the sentinel of bzz's environment put into the answer of `apps`: `a key of bzz's environment leaked into pi-durable harness log` | pass |
+| **One reply per mention still holds**: v0.15's ledger tests, unchanged but for the two that read what `initialize` and `tools/list` say | `S: agent_runtime_test` (54 tests), `agent_host_test`, `agent_coding_test` in the full suite | — | pass |
+| A second host for the same agent can open the Rota again | `S: secret_scan_test` (four hosts in turn) | before `Agent::stop` closed the agent's records: `bad_request: the app rota is already open in this channel` for the second harness | pass |
+
+The pinned-relay runs took the lock (`scripts/test-relay.sh`), each built
+the relay at the pin, ran the one test, and tore the harness down:
+`docker ps -a` listed no `buzz-harness` container after each of the three
+runs (open, required membership, red). Logs:
+`/media/arpagon/archive-data/experiment-artifacts/arpagon-01-med/bzz/m7/relay-{open,closed,red}.log`
+(the first `closed` run stopped before the test: a relay that requires
+membership needs `RELAY_OWNER_PUBKEY`, hence the second variable in the
+script).
+
+### Gates
+
+On `9648403`, 2026-11-19 from 20:44 to 20:50 (UTC−5), one after the other.
+Only this document changed afterwards.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets -- -D warnings`; the same with `--no-default-features` | clean, both |
+| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets` | exit 0: 1047 passed, 0 failed, 36 ignored, in 61 test programs; `agent_host_test` ran the real Pi host (Node 26.5), not its skip. New here: 4 of `agent_records_test`, 1 ignored of `relay_integration` (the pinned relay's), 2 of `app_tools`, 4 of `agent::apps` |
+| Tests without the features | `cargo test --locked --no-default-features --lib` | 481 passed |
+| The Pi host | `cd agent-host && npm ci && npm test` | 100 passed |
+| Pinned relay | `scripts/test-relay.sh` with `BZZ_RELAY_TEST_FILTER=real_relay_agent_takes_a_day`, both membership modes | 1 passed each, with the source of `9648403` (`src/` has not changed since `693386f`); the open run had the test before its closed-membership block got a time limit, a block that runs only when membership is required |
+| Supply chain | not run: `Cargo.toml` and `Cargo.lock` are unchanged | |
+
+### Not proven in M7
+
+| Item | State |
+|---|---|
+| A real model using the tools | not run (no real model in this task). The scripted harness calls them as a model would; whether a model reads a brief and picks the right record is M5's acceptance with real models, or later |
+| The TUI's pane showing an agent's change | shown with an `AppSession` on the owner's own records service and store beside the agent, drawn to a buffer (scripted); not on the release binary through Herdr or tmux |
+| A guest agent | the relay's refusal (`restricted: only members can post in this channel`) is mapped by the service (M2) and passed through as `refused`; not run with an agent whose role is `guest` |
+| The relay's 120 a minute for an agent through the tools | M0 measured it on the pin; bzz stops at 60 before it. The scripted relay stands in for the relay's wait |
+| An approved version whose types change while the agent holds the app open | written (the agent reopens the records for the new types); not tested |
+| `bzz agent run`, without the TUI | the same `serve` as the pinned test; not run as the command |
+| Windows and macOS | not compiled or run here. The scripted test is `cfg(unix)` because the harness tests are |
+| The capability records (`bzz agent show`) | they still say "it acts on the chat only through bzz's tools", which is true of records too; no rule of the record tools was added to them |
+
+### Found on the way
+
+- **A relay that requires membership needs `RELAY_OWNER_PUBKEY`.** Without
+  it the pinned relay does not start (`BUZZ_REQUIRE_RELAY_MEMBERSHIP=true
+  but RELAY_OWNER_PUBKEY is not set or invalid`).
+- **The Rota's days have no `title`**, so `match` (over the title rule)
+  finds nothing in them: every day's title is `rota day`. An agent finds a
+  day by its content. That is the contract (`docs/app-api.md`); a brief
+  could say so.
+- **`test-relay.sh` builds Buzz into `CARGO_TARGET_DIR`** when it is set,
+  for `buzz-cli` and `buzz-acp`, while it runs them from the pin's own
+  `target/`: a first run in a worktree spends minutes building what it then
+  does not use.
