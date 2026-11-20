@@ -10457,20 +10457,31 @@ async fn real_relay_an_app_shared_in_a_channel_runs_elsewhere_only_after_approva
     assert_eq!(running, offered, "the installed copy stays");
 
     // 9. No key or credential in any revision of any offer.
-    let revisions = ben
+    // Every artifact of the channel's offers, then every revision of each.
+    let heads = ben
         .http
-        .query_raw(&[json!({"kinds": [45010], "#h": [channel.to_string()], "limit": 200})])
+        .query_raw(&[json!({"artifact": "current", "#h": [channel.to_string()], "#type": [share::OFFER_TYPE], "limit": 200})])
         .await
         .unwrap();
-    let offers: Vec<&nostr::Event> = revisions
+    let mut ids: Vec<uuid::Uuid> = heads
         .iter()
-        .filter(|event| {
-            event
-                .tags
-                .iter()
-                .any(|tag| tag.as_slice() == ["type", share::OFFER_TYPE])
-        })
+        .filter_map(|event| bzz::protocol::artifact::parse(event).ok())
+        .map(|head| head.id)
         .collect();
+    ids.push(shared.artifact);
+    ids.sort();
+    ids.dedup();
+    let mut offers: Vec<nostr::Event> = Vec::new();
+    for id in ids {
+        offers.extend(
+            ben.http
+                .query_raw(&[json!({"artifact": "history", "#d": [id.to_string()]})])
+                .await
+                .unwrap(),
+        );
+    }
+    // Ana's create and update, Cara's update, Ana's deletion, the tampered
+    // and the oversized offer.
     assert!(offers.len() >= 6, "{} revisions of offers", offers.len());
     for profile in [&ana, &ben, &cara, &guest, &outsider] {
         let secrets = [
