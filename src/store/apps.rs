@@ -24,7 +24,11 @@ use uuid::Uuid;
 use crate::{
     error::{Error, Result},
     protocol::artifact::APP_RECORD_TYPE_PREFIX,
-    store::{Store, events::u64_to_i64},
+    store::{
+        Store,
+        app_offers::{OfferState, follow_version},
+        events::u64_to_i64,
+    },
 };
 
 /// What became of a proposed version.
@@ -409,6 +413,14 @@ impl Store {
                         now
                     ],
                 )?;
+                follow_version(
+                    &transaction,
+                    &community,
+                    &new.name,
+                    *earlier,
+                    OfferState::Replaced,
+                    OfferState::Waiting,
+                )?;
             }
         }
         let types = new
@@ -484,6 +496,14 @@ impl Store {
             "UPDATE apps SET previous_version=current_version,current_version=?3,updated_at=?4 WHERE community_id=?1 AND name=?2",
             params![community, name, version, now],
         )?;
+        follow_version(
+            &transaction,
+            &community,
+            name,
+            version,
+            OfferState::Installed,
+            OfferState::Waiting,
+        )?;
         transaction.commit()?;
         Ok(true)
     }
@@ -497,11 +517,46 @@ impl Store {
         reason: Option<&str>,
         now: u64,
     ) -> Result<bool> {
-        let refused = self.connection.execute(
+        let community = community.to_string();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let refused = transaction.execute(
             "UPDATE app_versions SET state='refused',detail=?4,decided_at=?5,kept=0 WHERE community_id=?1 AND name=?2 AND version=?3 AND state='waiting'",
-            params![community.to_string(), name, version, reason, u64_to_i64(now)?],
+            params![community, name, version, reason, u64_to_i64(now)?],
         )?;
+        if refused > 0 {
+            // The same bytes, offered again in the channel, do not come back.
+            follow_version(
+                &transaction,
+                &community,
+                name,
+                version,
+                OfferState::Declined,
+                OfferState::Waiting,
+            )?;
+        }
+        transaction.commit()?;
         Ok(refused > 0)
+    }
+
+    /// A waiting version that was offered in a channel and is no longer:
+    /// withdrawn there, or replaced by a revision of another signer. It is
+    /// superseded, with `detail` saying by what, and its files are let go.
+    /// False when it was not waiting.
+    pub fn app_withdraw_version(
+        &mut self,
+        community: Uuid,
+        name: &str,
+        version: u32,
+        detail: &str,
+        now: u64,
+    ) -> Result<bool> {
+        let withdrawn = self.connection.execute(
+            "UPDATE app_versions SET state='superseded',detail=?4,decided_at=?5,kept=0 WHERE community_id=?1 AND name=?2 AND version=?3 AND state='waiting'",
+            params![community.to_string(), name, version, detail, u64_to_i64(now)?],
+        )?;
+        Ok(withdrawn > 0)
     }
 
     /// Marks a version as failed, with the error. If it was the one that
@@ -523,6 +578,14 @@ impl Store {
         transaction.execute(
             "UPDATE app_versions SET state='failed',detail=?4,decided_at=?5,kept=0 WHERE community_id=?1 AND name=?2 AND version=?3 AND state IN ('waiting','approved')",
             params![community, name, version, error, now],
+        )?;
+        follow_version(
+            &transaction,
+            &community,
+            name,
+            version,
+            OfferState::Failed,
+            OfferState::Waiting,
         )?;
         transaction.execute(
             "UPDATE apps SET
@@ -673,10 +736,25 @@ impl Store {
     /// Forgets an app: its row, its versions and where it was open. The
     /// channel's records are rows of `artifacts` and are not touched.
     pub fn app_remove(&mut self, community: Uuid, name: &str) -> Result<bool> {
-        let removed = self.connection.execute(
+        let community = community.to_string();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let removed = transaction.execute(
             "DELETE FROM apps WHERE community_id=?1 AND name=?2",
-            params![community.to_string(), name],
+            params![community, name],
         )?;
+        // The numbers of its versions start again at 1 if it is installed
+        // again: no offer may point at them. What was declined stays
+        // declined, by its bytes.
+        transaction.execute(
+            "UPDATE app_offers SET version=NULL,
+               state=CASE WHEN state='waiting' THEN 'withdrawn' ELSE state END,
+               detail=CASE WHEN state='waiting' THEN 'the app was removed here' ELSE detail END
+             WHERE community_id=?1 AND name=?2",
+            params![community, name],
+        )?;
+        transaction.commit()?;
         Ok(removed > 0)
     }
 
