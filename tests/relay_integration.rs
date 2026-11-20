@@ -10706,7 +10706,24 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
             local.command = script.command();
             local
         }
-        Some(harness) => LocalAgentConfig::new(harness),
+        Some(harness) => {
+            let mut local = LocalAgentConfig::new(harness);
+            // Pi's own default model may come from a provider this host
+            // cannot load (a custom one in Pi's settings): the owner names
+            // the model for the run, as `provider/model`.
+            if let Ok(wanted) = std::env::var("BZZ_AUTHOR_MODEL") {
+                let (provider, model_id) = wanted
+                    .split_once('/')
+                    .expect("BZZ_AUTHOR_MODEL is provider/model");
+                local.model = Some(bzz::config::AgentModelConfig {
+                    provider: provider.into(),
+                    model_id: model_id.into(),
+                    thinking_level: std::env::var("BZZ_AUTHOR_THINKING").ok(),
+                });
+                eprintln!("the agent's model: {wanted}");
+            }
+            local
+        }
     };
     local.instructions =
         "You are an agent of the owner of this channel. Do what you are asked with your tools."

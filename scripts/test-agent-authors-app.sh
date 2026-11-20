@@ -11,6 +11,10 @@
 #                           the owner's own program and sign-in, with a real
 #                           model. Only when the owner allowed that exact run
 #                           (plan D13): set BZZ_AUTHOR_ALLOWED=yes to say so.
+#                           BZZ_AUTHOR_MODEL=provider/model names the model
+#                           (and BZZ_AUTHOR_THINKING its level); without it the
+#                           harness uses its own default, which for Pi must be
+#                           a provider this host can load.
 #
 # What it does, on the pinned relay (scripts/test-relay.sh, which takes its
 # lock and tears the relay down after):
