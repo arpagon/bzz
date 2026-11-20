@@ -150,7 +150,7 @@ a rule such as "not your own request" is a convention, not a lock.
 Lay out from `ctx.width` and `ctx.height`. At 40 columns stack with
 `ui.column`, shorten labels and drop table columns; from about 60 put
 things side by side. Nothing is drawn outside the region; cut text with
-`ui.truncate`. A form is `ui.popup` last in `ui.layers`. Ctrl+C is bzz's;
+`ui.truncate`. A form is `ui.popup` last in `ui.layers`. Ctrl-c is bzz's;
 every other key is yours while the app has the focus.
 
 ## Reload, and a state from an older version

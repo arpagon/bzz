@@ -81,7 +81,7 @@ guide is [`apps.md`](apps.md), the contract a script is written against is
   and line, `bzz app try` prints the screen it draws, and `bzz app dev`
   runs your own folder in the terminal and reloads it on every save
   (`:app dev` does the same in a channel's pane, on its real records).
-- **Paste works in the composer.** bzz now enables bracketed paste. Before,
+- **Paste works in the writing dock.** bzz now enables bracketed paste. Before,
   a pasted line break sent the message and the rest of the paste ran as
   bzz's keys.
 
@@ -112,13 +112,13 @@ it knows.
 
 ## Fixes and changes beyond apps
 
-- **Bracketed paste** (above): a paste into the composer is one piece of
+- **Bracketed paste** (above): a paste into the writing dock is one piece of
   text, line breaks included, in every terminal that supports it. Windows
   has no paste event in the terminal library: there a paste still arrives
   as keys.
 - **A thread asked for is drawn from 74 columns**, and the channel list
   gives way; before, between 74 and 101 columns an open thread could be
-  left undrawn. The composer replies into a thread only while it is drawn.
+  left undrawn. The writing dock replies into a thread only while it is drawn.
 - **The artifact panel** keeps the last complete list and says `too many
   artifacts here to sync · list may be stale` when the relay ends a
   channel's sync over its 4096 bound. Before, it asked again every minute
@@ -205,7 +205,7 @@ What v0.16.0 does not do, and what was not seen. Every item is in
   pushed. The confinement is the interpreter's and does not depend on the
   system, but the time a call is given and Lua's C library were measured
   here only.
-- **On Windows a paste arrives as keys**, in an app as in the composer: the
+- **On Windows a paste arrives as keys**, in an app as in the writing dock: the
   terminal library (crossterm 0.29) gives no paste event there.
 - **An agent's tests run on Unix only**, as in v0.15.0. On macOS and
   Windows no agent has written an app or used a record.

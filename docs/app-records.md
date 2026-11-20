@@ -439,7 +439,7 @@ of 128 made in `App::new_with_diagnostics` and read in the `select!` of
 - `Output::Redraw`, or `tick()` answering true, asks for a frame; `draw`
   goes in `render`, with the pane's inner area;
 - keys and pastes go to `session.key` and `session.paste` while the pane
-  has the focus, except `Ctrl+C`; the runtime gives that key to no script
+  has the focus, except `Ctrl-c`; the runtime gives that key to no script
   even if it is sent;
 - names: `session.set_names` with the community's profiles when they
   change (`App::profiles`), and `session.unnamed()` for whom to look up;

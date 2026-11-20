@@ -168,7 +168,7 @@ bzz app dev tasks                 # run it here, reload it on every save
   every time you save it. The app keeps its state across a save; a save
   that does not load leaves the old version running and shows the error.
   It asks for no approval, because it is your own folder that you are
-  looking at. `Ctrl+C` leaves; every other key is the app's. Its records
+  looking at. `Ctrl-c` leaves; every other key is the app's. Its records
   are kept in memory (`--seed` as for `try`) and are gone when you leave.
 
   To run your folder **on a channel's real records**, do it inside bzz:
@@ -305,7 +305,7 @@ are, as an agent's command is:
  tasks: version 2 from your agent Scout, asked by Ana waits for your approval · Ctrl-Y to see and answer it
 ```
 
-`Ctrl+Y` (even while an app has the keyboard), `:approvals` or `:app
+`Ctrl-y` (even while an app has the keyboard), `:approvals` or `:app
 pending [name]` shows it, after any command of an agent's, which has a
 time limit. You see what the shell shows: who it comes from, the hash,
 the sizes, the record types **with any change marked `CHANGED`** in the
@@ -419,7 +419,7 @@ nothing.
 
 **Only an approved app opens.** The pane starts a script only from the
 version you approved (`Apps::runnable`); one that waits says so and how to
-answer it (`Ctrl+Y`, `:app pending <name>`). If the approved version
+answer it (`Ctrl-y`, `:app pending <name>`). If the approved version
 fails as it is started, or declares other record types than you approved,
 bzz records the failure and runs the version you approved before it,
 when there is one.
@@ -441,10 +441,10 @@ write goes to the channel, not into that thread.
 
 **Keys.** `5` gives the app the keyboard (`1` to `4` are the other panes;
 `Tab` reaches it too, and so does a click on it). **While it has the
-keyboard every key is the app's except `Ctrl+C`, which gives it back** to
+keyboard every key is the app's except `Ctrl-c`, which gives it back** to
 the conversation. The pane's border and the status line say so. Help,
-`:` and `q` are two keys away: `Ctrl+C`, then the key. `Space 5` zooms the
-app to the whole window, or back; `Ctrl+C` also leaves the zoom. `Ctrl+Y`
+`:` and `q` are two keys away: `Ctrl-c`, then the key. `Space 5` zooms the
+app to the whole window, or back; `Ctrl-c` also leaves the zoom. `Ctrl-y`
 still opens a command one of your agents waits to run. An overlay or the
 writing dock, when open, takes the keys before the app.
 

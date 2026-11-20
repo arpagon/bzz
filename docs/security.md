@@ -510,7 +510,7 @@ what it lends the script ([`adr-v0.16-apps.md`](adr-v0.16-apps.md),
   the line difference from the version that runs. What a proposer wrote is
   shown with every control and bidirectional character written out
   (`<U+001B>`), so that it cannot draw on the terminal. Inside bzz the same
-  review is an overlay that opens only when the owner asks (`Ctrl+Y`,
+  review is an overlay that opens only when the owner asks (`Ctrl-y`,
   `:approvals`, `:app pending`), keeps the hash and the types on screen,
   and takes a yes only after its last row was drawn; no command approves
   by itself.

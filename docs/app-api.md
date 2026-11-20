@@ -62,7 +62,7 @@ control key and with Ctrl or Alt. Shift+Tab is `"tab"` with `shift = true`.
 
 **Key names:** `space`, `enter`, `esc`, `backspace`, `tab`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `delete`, `insert`
 
-**bzz keeps one key: Ctrl+C.** It leaves the app and never reaches a
+**bzz keeps one key: Ctrl-c.** It leaves the app and never reaches a
 script. Every other key is the app's while the app has the focus. (A
 terminal or a multiplexer may keep keys of its own before bzz sees them.)
 
@@ -125,7 +125,7 @@ want more than there is, the last ones give way first.
 with `ui.input`, and give it keys and pastes:
 
 - `ui.edit(field, key)` applies a key: typing, Backspace, Delete, arrows,
-  Home, End, Ctrl+U. It returns false for a key it does not use (Enter, Esc).
+  Home, End, Ctrl-u. It returns false for a key it does not use (Enter, Esc).
 - `ui.paste(field, text)` inserts text at the cursor, each line break as one
   space.
 - `ui.width(text)` is the width in cells (a wide character counts 2).
