@@ -138,6 +138,12 @@ harness = false
 name = "agents"
 harness = false
 
+[[bench]]
+name = "apps"
+harness = false
+# One app open: memory, redraw and key to screen (v0.16 M8).
+required-features = ["apps"]
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
