@@ -15,6 +15,9 @@ Windows is listed as not seen, and so is the owner's acceptance. Plan:
 [`docs/planning/2026-11-17/v0.16.0.md`](planning/2026-11-17/v0.16.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
 
+`<scratch>` below is a folder on the machine the work was done on, outside
+the repository; the logs named there are local and were not published.
+
 Buzz pin `bf3bdd0eaefe39289bf9620594f254c7f68897f5`, Rust 1.98.1. The
 experiment named below is
 `runs/experiments/bzz/v016-m0/q2-unstoppable/` (local and untracked); its
@@ -455,7 +458,7 @@ own thread, so this is what a script can make that thread do.
   bzz's panic hook (`src/ui/terminal.rs:110`) restores the terminal for a
   panic on any thread. M3 has to decide what it does for this one.
 - **`df -h /home` reads another file system.** The shared `target/` is on
-  `/home/arpagon`, which had 8.5 GB free when `/` had 26. `cargo test
+  the home filesystem, which had 8.5 GB free when `/` had 26. `cargo test
   --locked --all-targets` failed twice with "No space left on device"; it
   passed the next morning with 15 GB free.
 
@@ -1340,7 +1343,7 @@ changed, the hosted agent served and never started) is as in v0.15.0.
 
 | Run | Result |
 |---|---|
-| `31fda03`, 16:14 to 16:17, the old release's target under `/media/arpagon/archive-data/…/m4a-upgrade/` | `v0140_profile_upgrades_with_its_hosted_agent_served_and_nothing_lost ... ok` |
+| `31fda03`, 16:14 to 16:17, the old release's target under `<scratch>/m4a-upgrade/` | `v0140_profile_upgrades_with_its_hosted_agent_served_and_nothing_lost ... ok` |
 | red: migration 21 taken out of `src/store/migrate.rs` | `migrations 18 to 21 ran (17 -> 20)`, `left: 20 right: 21` |
 
 No profile written by v0.15.0 itself was opened: the script has no seed
@@ -1662,7 +1665,7 @@ The pinned-relay runs took the lock (`scripts/test-relay.sh`), each built
 the relay at the pin, ran the one test, and tore the harness down:
 `docker ps -a` listed no `buzz-harness` container after each of the three
 runs (open, required membership, red). Logs:
-`/media/arpagon/archive-data/experiment-artifacts/arpagon-01-med/bzz/m7/relay-{open,closed,red}.log`
+`<scratch>/m7/relay-{open,closed,red}.log`
 (the first `closed` run stopped before the test: a relay that requires
 membership needs `RELAY_OWNER_PUBKEY`, hence the second variable in the
 script).
@@ -2122,7 +2125,7 @@ cargo test --locked --test store_migration_test
 ln -sfn "$CARGO_TARGET_DIR" target; unset CARGO_TARGET_DIR
 BZZ_BUZZ_SOURCE=<main checkout>/runs/buzz-pin ./scripts/test-agent-authors-app.sh scripted
 rm target
-# the reds: /media/arpagon/archive-data/experiment-artifacts/arpagon-01-med/bzz/m5/reds.py
+# the reds: <scratch>/m5/reds.py
 ```
 
 ### Claims
@@ -2159,7 +2162,7 @@ The pinned-relay run took the lock, built nothing of Buzz (the pin's own
 `target/` was used: `CARGO_TARGET_DIR` unset and `./target` linked to this
 worktree's directory, then removed), ran the one test, and tore the
 harness down: `docker ps -a` listed no `buzz-harness` container after it.
-Log: `/media/arpagon/archive-data/experiment-artifacts/arpagon-01-med/bzz/m5/author-scripted.log`,
+Log: `<scratch>/m5/author-scripted.log`,
 output `…/m5/author-scripted/`.
 
 ### Gates
@@ -2183,7 +2186,7 @@ findings there fixed in `5c6997e`).
 
 Every relay run took the lock, built nothing of Buzz, and tore the
 harness down: `docker ps -a` listed no `buzz-harness` container after the
-last. Logs in `/media/arpagon/archive-data/experiment-artifacts/arpagon-01-med/bzz/m5/`:
+last. Logs in `<scratch>/m5/`:
 `author-scripted.log`, `author-merged.log`, `tmux.log` to `tmux6.log`
 (the first five failed, the sixth passed), `tmux-merged.log`, with the
 screens of each step in `tmux-captures*/`.
@@ -2230,7 +2233,7 @@ tagged, released or deployed; no real model and no real account were used.
 The machine was shared with other agents' builds and relay runs (load 1 to
 5); the load is given where it matters. Scratch, logs and the old
 release's builds are under
-`/media/arpagon/archive-data/experiment-artifacts/arpagon-01-med/bzz/m8a/`
+`<scratch>/m8a/`
 (`$M8` below), not in the repository.
 
 **Where it is.**
