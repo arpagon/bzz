@@ -20,10 +20,11 @@ use crate::apps::runtime::clock::SystemClock;
 use crate::apps::runtime::limits::Limits;
 use crate::apps::runtime::vm::Vm;
 
+// The margin is the hostile suite's: room for a loaded machine and a debug build.
+use super::hostile::margin;
+
 const BUDGET: Duration = Duration::from_millis(100);
 const MEMORY: usize = 64 << 20;
-/// As in the hostile suite: room for a loaded machine and a debug build.
-const MARGIN: Duration = Duration::from_millis(800);
 /// A worker that reports nothing for this long is inside a call that will
 /// not end.
 const SILENCE: Duration = Duration::from_secs(10);
@@ -228,7 +229,7 @@ fn sweep_function(
         vm.lua().load(setup).exec().expect("setup");
     }
     let mk: Function = vm.lua().globals().raw_get("mk").expect("mk");
-    let limit = BUDGET + MARGIN;
+    let limit = BUDGET + margin();
     let mut worst = Duration::ZERO;
     let total = lists.total();
     for index in 0..total {
@@ -365,8 +366,9 @@ fn sweep(make: fn() -> Vm, functions: usize) {
     assert_eq!(swept, names.len(), "a worker ended early: it panicked");
     assert!(
         slow.is_empty(),
-        "{} calls ran past the budget of {BUDGET:?} and {MARGIN:?}:\n{}",
+        "{} calls ran past the budget of {BUDGET:?} and {:?}:\n{}",
         slow.len(),
+        margin(),
         slow.join("\n")
     );
 }

@@ -2765,3 +2765,21 @@ The principal's earlier passes, one per milestone, are named in each
 milestone's merge; in three of them he corrected a scenario's check that
 depended on timing or on what an earlier scenario left behind, and in none
 the product.
+
+### The first run of CI on the other platforms (pull request 11)
+
+The branch was pushed on 2026-11-20 and this code compiled for the first
+time on macOS Intel, macOS Apple Silicon and Windows. Lua's C built on all
+three with no change to a workflow.
+
+| Run | What failed | Why | What changed |
+|---|---|---|---|
+| First | `apps::dev::tests::the_app_is_drawn_in_its_border_with_what_runs_under_it`, on macOS and Windows | The line under a dev app begins with the script's whole path. A temporary path there is longer than the test's window, so the end of the line the test looked for was cut off | The test reads the line where it is made and checks that the window shows its beginning. No change to bzz |
+| First | Four tests of `apps::runtime::tests::reach`, on Windows | The test wrote a temporary path into Lua source inside a string; a Windows path's backslashes are escapes there | The test writes the path with forward slashes. No change to bzz |
+| Second | `apps::runtime::tests::hostile::every_hostile_script_is_stopped_in_budget`, on macOS Intel: `memory-table-growth` was stopped after 1.06 s, three times, against a limit of 1 s (the budget of 200 ms and the margin of 800) | The hook looks at the clock every thousand instructions, and each turn of that script's loop builds a megabyte string. On a hosted runner, in a debug build beside 770 other tests, a thousand such instructions take a second. The same test had passed on the same kind of runner in the first run | The stop tests read their margin from `BZZ_APPS_STOP_MARGIN_MS`; CI's build job gives them 3 s, and the `test` job and a developer's machine keep 800 ms. The contract now says that such a call is stopped late. No change to how a script is stopped |
+
+Everything else passed in those runs: the `test` job, the apps bench, the
+three relay jobs, the upgrades from v0.15.0 on Linux, macOS and Windows and
+from v0.14.0 on Linux, the agent host on three platforms. `audio
+(windows-latest)` fails as it did before v0.16; it is marked experimental.
+

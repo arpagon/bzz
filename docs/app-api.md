@@ -316,6 +316,10 @@ such as `board card`. `match` looks at the same text.
 | Live records of one app | 1000 |
 | Writes in a minute | 30 for the apps of one person: half of the 60 the relay gives that person, chat included |
 
+The time is looked at every thousand instructions of the script. A call
+whose instructions each move megabytes of text is stopped later than 250 ms:
+up to about a second on a slow machine. It is still stopped.
+
 Every element, line, span, table cell, bar and sparkline point counts as an
 element of a screen. Past a limit the call that passed it gets an error that
 names the limit; a write past the limit of records or of writes is answered

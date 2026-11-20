@@ -27,6 +27,21 @@ pub const MEMORY: usize = 64 << 20;
 /// end at all: the shortest of those ran 1.4 s over, and the rest for ever.
 pub const MARGIN: Duration = Duration::from_millis(800);
 
+/// The margin of this run. How late a stop can come depends on the machine:
+/// the hook looks at the clock every thousand instructions, and one
+/// instruction of a script can move megabytes (`memory-table-growth` builds
+/// a megabyte string in each turn of its loop). On a hosted macOS runner, in
+/// a debug build beside seven hundred other tests, that script was stopped
+/// after 1.06 s, three times in a row. `BZZ_APPS_STOP_MARGIN_MS` gives such
+/// a machine more room; a script that does not end at all is still caught,
+/// by `GIVE_UP`.
+pub fn margin() -> Duration {
+    std::env::var("BZZ_APPS_STOP_MARGIN_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map_or(MARGIN, Duration::from_millis)
+}
+
 /// A script still running after this is not going to end.
 const GIVE_UP: Duration = Duration::from_secs(8);
 
@@ -146,7 +161,7 @@ fn bounded() -> Vm {
 
 /// Why a script did not pass, or nothing.
 pub fn verdict(ended: &Option<Ended>, budget: Duration) -> Option<String> {
-    let limit = budget + MARGIN;
+    let limit = budget + margin();
     match ended {
         None => Some(format!("NOT STOPPED: still running after {GIVE_UP:?}")),
         Some(e) if e.call > limit => Some(format!(
