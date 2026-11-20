@@ -96,6 +96,11 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl AgentApps {
     /// Takes one write out of the budget, or answers the wait in seconds.
+    /// Closes every app's records the agent holds open.
+    pub(super) async fn close(&self) {
+        self.open.lock().await.clear();
+    }
+
     fn spend(&self) -> std::result::Result<(), u64> {
         lock(&self.budget)
             .spend(self.clock.elapsed())

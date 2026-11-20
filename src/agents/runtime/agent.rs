@@ -1366,6 +1366,9 @@ impl Agent {
         self.stopping.store(true, Ordering::Release);
         self.presence_changed.notify_one();
         self.halt(Phase::Stopped).await;
+        // The syncs of the apps it used end with their last handle.
+        #[cfg(feature = "apps")]
+        self.apps.close().await;
     }
 
     async fn halt(&self, phase: Phase) {
