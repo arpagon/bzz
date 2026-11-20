@@ -279,7 +279,7 @@ fn schema_eight_repairs_historical_bot_roles_and_duplicate_projection_drift() {
     connection
         .execute_batch(
             "DELETE FROM schema_migrations WHERE version IN (8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23);
-             DROP TABLE app_channels;
+             DROP TABLE app_offers; DROP TABLE app_shares; DROP TABLE app_channels;
              DROP TABLE app_versions;
              DROP TABLE apps;
              DROP INDEX memberships_by_member;
@@ -462,7 +462,7 @@ fn schema_nine_projects_guest_roles_and_repairs_channel_facts_on_reingest() {
         .execute_batch(&format!(
             "UPDATE memberships SET role='member' WHERE channel_id='{channel_id}';
              ALTER TABLE channels DROP COLUMN facts_json;
-             DROP TABLE app_channels;
+             DROP TABLE app_offers; DROP TABLE app_shares; DROP TABLE app_channels;
              DROP TABLE app_versions;
              DROP TABLE apps;
              DROP TABLE agent_replies;
@@ -601,7 +601,7 @@ fn schema_nineteen_keeps_the_stored_replies_of_schema_eighteen() {
              ALTER TABLE agent_replies DROP COLUMN refused_at;
              ALTER TABLE agent_replies DROP COLUMN refusal;
              CREATE INDEX agent_replies_unpublished ON agent_replies (agent_id) WHERE published_at IS NULL;
-             DROP TABLE app_channels;
+             DROP TABLE app_offers; DROP TABLE app_shares; DROP TABLE app_channels;
              DROP TABLE app_versions;
              DROP TABLE apps;
              DELETE FROM schema_migrations WHERE version IN (20,21,22,23);",
@@ -748,7 +748,7 @@ fn schema_twenty_of_v015_gains_the_apps_tables_and_keeps_every_row() {
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection
         .execute_batch(
-            "DROP TABLE app_channels; DROP TABLE app_versions; DROP TABLE apps;
+            "DROP TABLE app_offers; DROP TABLE app_shares; DROP TABLE app_channels; DROP TABLE app_versions; DROP TABLE apps;
              DELETE FROM schema_migrations WHERE version IN (21,22,23);",
         )
         .unwrap();
@@ -836,7 +836,7 @@ fn schema_twenty_of_v015_gains_the_apps_tables_and_keeps_every_row() {
     let after = dump(&path);
     for (table, rows) in &before {
         if table == "schema_migrations" {
-            assert_eq!(after[table].len(), 22);
+            assert_eq!(after[table].len(), 23);
             assert!(rows.iter().all(|row| after[table].contains(row)));
         } else {
             assert_eq!(&after[table], rows, "table {table}");
@@ -846,7 +846,16 @@ fn schema_twenty_of_v015_gains_the_apps_tables_and_keeps_every_row() {
         .keys()
         .filter(|table| !before.contains_key(*table))
         .collect();
-    assert_eq!(new, ["app_channels", "app_versions", "apps"]);
+    assert_eq!(
+        new,
+        [
+            "app_channels",
+            "app_offers",
+            "app_shares",
+            "app_versions",
+            "apps"
+        ]
+    );
     let connection = rusqlite::Connection::open(&path).unwrap();
     let version: u32 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -862,6 +871,115 @@ fn schema_twenty_of_v015_gains_the_apps_tables_and_keeps_every_row() {
         })
         .unwrap();
     assert_eq!(violations, 0);
+}
+
+/// Migration 22 (v0.16 M6, sharing): a database at schema 21 with an app
+/// installed opens at schema 22, and on to 23 (M5), with every row as it was, and the two
+/// tables of sharing empty.
+#[test]
+fn schema_twenty_one_gains_the_sharing_tables_and_keeps_every_row() {
+    use bzz::store::apps::{NewAppVersion, Proposer, VersionState};
+    let temporary = TempDir::new().unwrap();
+    let path = temporary.path().join("bzz.db");
+    let identity = IdentityConfig {
+        id: Uuid::new_v4(),
+        label: "owner".into(),
+        pubkey: Keys::generate().public_key().to_hex(),
+        backend: KeyBackend::EncryptedFile,
+        key_ref: "owner".into(),
+    };
+    let mut config = Config {
+        identities: vec![identity.clone()],
+        ..Config::default()
+    };
+    let community = config
+        .add_community("c".into(), "ws://localhost:3030".into(), identity.id, true)
+        .unwrap();
+    let mut store = Store::open(&path).unwrap();
+    store.sync_config(&config).unwrap();
+    let recorded = store
+        .app_record_version(
+            &NewAppVersion {
+                community,
+                name: "board".into(),
+                state: VersionState::Waiting,
+                detail: None,
+                title: Some("Board".into()),
+                api: Some(1),
+                types: Some(vec!["card".into()]),
+                script_sha256: "1".repeat(64),
+                manifest_sha256: Some("2".repeat(64)),
+                brief_sha256: "3".repeat(64),
+                script_bytes: 1,
+                brief_bytes: 1,
+                proposer: Proposer::owner(),
+            },
+            1,
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert!(
+        store
+            .app_approve(community, "board", recorded.version, &"1".repeat(64), 2)
+            .unwrap()
+    );
+    drop(store);
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "DROP TABLE app_offers; DROP TABLE app_shares;
+             DROP INDEX app_versions_untold;
+             ALTER TABLE app_versions DROP COLUMN told_at;
+             ALTER TABLE app_versions DROP COLUMN asked_by_name;
+             ALTER TABLE app_versions DROP COLUMN asked_by_id;
+             DELETE FROM schema_migrations WHERE version IN (22,23);",
+        )
+        .unwrap();
+    connection.pragma_update(None, "user_version", 21).unwrap();
+    drop(connection);
+    let before = dump(&path);
+    assert!(!before.contains_key("app_offers"));
+
+    let store = Store::open(&path).unwrap();
+    assert_eq!(
+        store.app(community, "board").unwrap().unwrap().current,
+        Some(1)
+    );
+    assert!(store.app_shares(community).unwrap().is_empty());
+    assert!(
+        store
+            .app_offers_waiting(community, None)
+            .unwrap()
+            .is_empty()
+    );
+    drop(store);
+    let after = dump(&path);
+    for (table, rows) in &before {
+        if table == "schema_migrations" {
+            assert_eq!(after[table].len(), 23);
+            assert!(rows.iter().all(|row| after[table].contains(row)));
+        } else {
+            // Migration 23 (M5) adds who asked, and when the agent was told.
+            if table == "app_versions" {
+                assert_eq!(after[table].len(), rows.len());
+                for (after, before) in after[table].iter().zip(rows) {
+                    assert!(after.starts_with(&format!("{before}|")), "{after}");
+                }
+                continue;
+            }
+            assert_eq!(&after[table], rows, "table {table}");
+        }
+    }
+    let new: Vec<&String> = after
+        .keys()
+        .filter(|table| !before.contains_key(*table))
+        .collect();
+    assert_eq!(new, ["app_offers", "app_shares"]);
+    let version: u32 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 23);
 }
 
 /// Migration 23 (v0.16 M5, agents write apps): a database at the schema

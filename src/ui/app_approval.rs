@@ -310,6 +310,8 @@ mod tests {
         }
         new.push_str("return app\n");
         Review {
+            installed_from: Some(Proposer::owner()),
+            offer: None,
             community: Uuid::nil(),
             name: "tasks".into(),
             title: "Tasks".into(),
@@ -409,6 +411,48 @@ mod tests {
         short.review = None;
         let shown = screen(&mut short, 100, 20);
         assert!(shown.contains("That version no longer waits"), "{shown}");
+    }
+
+    /// An offer from the channel (M6): who signed this exact revision, by
+    /// name and key, and a source other than the one the installed
+    /// version came from, marked as a change in the head.
+    #[test]
+    fn an_offer_says_who_signed_this_revision_and_a_new_source_plainly() {
+        let mut offered = review(1);
+        let channel = Uuid::from_u128(5);
+        offered.from = Proposer::member("b0".repeat(32), "Bob").in_channel(channel);
+        offered.installed_from = Some(Proposer::member("a0".repeat(32), "Ana").in_channel(channel));
+        offered.offer = Some(crate::apps::store::review::OfferFacts {
+            artifact: Uuid::from_u128(9),
+            revision: "7e".repeat(32),
+        });
+        let mut state = AppApprovalState::default();
+        state.show("tasks", 2, Ok(offered.clone()));
+        let shown = screen(&mut state, 200, 40);
+        for expected in [
+            &format!(
+                "From:     Bob, a person of the channel ({})",
+                "b0".repeat(32)
+            ),
+            &format!(
+                "Offer:    shared in the channel; this exact revision ({}…) is signed by Bob",
+                "7e".repeat(8)
+            ),
+            &format!(
+                "Source:   CHANGED: the version installed here came from Ana, a person of the channel ({})",
+                "a0".repeat(32)
+            ),
+        ] {
+            assert!(
+                shown.contains(expected.as_str()),
+                "`{expected}` in:\n{shown}"
+            );
+        }
+        // The same person as the installed version: no change of source.
+        offered.installed_from = Some(offered.from.clone());
+        state.show("tasks", 2, Ok(offered));
+        let shown = screen(&mut state, 200, 40);
+        assert!(!shown.contains("Source:"), "{shown}");
     }
 
     #[test]

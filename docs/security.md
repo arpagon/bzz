@@ -532,9 +532,40 @@ what it lends the script ([`adr-v0.16-apps.md`](adr-v0.16-apps.md),
   `0600` on Unix), as bzz's other data. Uninstalling an app deletes its
   versions and leaves the channel's records alone.
 
-<!-- M5, M6: an agent's proposal and an app offered in the channel reach
-     the same approval; say here what each may propose and what is checked
-     of an offer (size, hash, signer). -->
+- **An app offered in a channel** (M6) is another person's script. It
+  travels as one artifact of type `bzz.app`, and is taken in as a version
+  that waits, from that person: nothing of it runs before the owner
+  approves its exact bytes, through the same `Apps::runnable`. What is
+  checked on arrival, before anything is kept: the shape, an `api` this
+  bzz knows, the name, the tag against the manifest, **the script's
+  SHA-256 against the manifest**, 128 KiB of script and 16 KiB of brief.
+  Then the script is loaded apart, as any proposal, on an empty store in
+  memory; one that does not load is recorded as failed and never offered.
+  Nothing is fetched from anywhere else. The same sizes, and the frame
+  after escaping, are checked before an offer is sent.
+- **Who an offer is from** is whoever signed that revision: any writer of
+  the channel can publish a new revision of someone's offer, or delete it.
+  The approval shows the signer's name and key, the revision, and plainly
+  a source other than the one the installed version came from. A person
+  who cannot write to the channel (a guest, or someone outside a private
+  channel) cannot offer: the relay refuses the write and nobody receives
+  it. In an open channel every relay member can write, and so can offer.
+- **What approving another person's script means.** It runs in your bzz
+  with the reach of any app and no more: its pane, the keys you give it
+  while it has the focus, and the records of the types it declared, in
+  the channel it is open in, signed by you, within the budget of writes
+  your apps share (30 a minute). It cannot reach a file, the network, a
+  process, your keys, your messages, another channel or another app's
+  records. What it can do is what any member of the channel can do with
+  your identity to those records: create, change and delete them. Read
+  the record types it declares, and their change, before you approve.
+- **Not buried.** At most 3 offers of one person and 8 in one channel
+  wait; bytes the owner refused do not come back; a channel's sync of
+  offers reads at most 256 heads.
+- **What is sent.** An offer holds the script, its manifest (name, title,
+  api, types, the script's hash) and the brief: no key, no credential, no
+  path. The relay test of M6 scans every revision of every offer in its
+  channel for the keys of all five identities.
 
 ## Media
 

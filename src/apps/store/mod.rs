@@ -43,6 +43,7 @@
 pub mod diff;
 pub mod folder;
 pub mod manifest;
+pub mod offers;
 pub mod review;
 pub mod templates;
 
@@ -508,6 +509,9 @@ pub struct Approved {
     pub version: u32,
     /// The version that ran until now.
     pub replaced: Option<u32>,
+    /// The channel it was opened in: a version offered in a channel opens
+    /// there when no app is open there yet.
+    pub opened_in: Option<Uuid>,
 }
 
 /// What uninstalling an app left behind.
@@ -980,7 +984,17 @@ impl<'a> Apps<'a> {
             _ => None,
         };
         let new_script = String::from_utf8_lossy(&bundle.script);
+        let installed_from = match app.current.filter(|current| *current != version) {
+            Some(current) => Some(self.version_row(community, name, current)?.proposer),
+            None => None,
+        };
+        let offer = self.store.app_offer_of_version(community, name, version)?;
         Ok(Review {
+            installed_from,
+            offer: offer.map(|offer| review::OfferFacts {
+                artifact: offer.artifact,
+                revision: offer.revision,
+            }),
             community,
             name: name.to_owned(),
             title: bundle.manifest.title.clone(),
@@ -1053,9 +1067,20 @@ impl<'a> Apps<'a> {
             });
         }
         self.tidy(community, name)?;
+        let opened_in = match row.proposer.channel {
+            Some(channel)
+                if row.proposer.kind == ProposerKind::Member
+                    && self.store.apps_open_in(community, channel)?.is_empty() =>
+            {
+                self.store.app_open_in(community, name, channel, now())?;
+                Some(channel)
+            }
+            _ => None,
+        };
         Ok(Approved {
             version,
             replaced: app.current,
+            opened_in,
         })
     }
 

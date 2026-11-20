@@ -829,6 +829,147 @@ return app
         assert!(app.apps.live.is_empty());
     }
 
+    /// M6 in bzz's window: an offer from a person of the channel is told on
+    /// the status line, announced by the banner as from the channel, runs
+    /// nowhere before it is approved, is reviewed with who signed this
+    /// exact revision, and once approved opens in the channel it was
+    /// offered in. `:apps` says who offers it while it waits.
+    #[tokio::test]
+    async fn an_offer_from_the_channel_runs_only_after_approval_and_opens_where_it_was_offered() {
+        use crate::apps::share;
+        use crate::apps::store::manifest::Manifest;
+        use crate::apps::store::offers::{Arrival, Step};
+        use crate::service::offers::OfferNews;
+        let temporary = TempDir::new().unwrap();
+        let (mut app, channel) = managed(&temporary).await;
+        let community = app.active_community_id().unwrap();
+        let ana = nostr::Keys::generate();
+        let manifest = Manifest {
+            name: "counter".into(),
+            title: "Counter".into(),
+            api: 1,
+            types: vec!["note".into()],
+        };
+        let bundle = crate::apps::store::Bundle {
+            script: counter("v1", "\"note\"", "").into_bytes(),
+            manifest_text: manifest.to_text(),
+            manifest,
+            brief: BRIEF.into(),
+        };
+        let head = crate::protocol::artifact::parse(
+            &share::create(channel, Uuid::new_v4(), &bundle)
+                .unwrap()
+                .sign_with_keys(&ana)
+                .unwrap(),
+        )
+        .unwrap();
+        let revision = head.head.clone();
+        // What the offers' sync does with the head.
+        let (root, me) = (app.paths.apps_dir(), "a".repeat(64));
+        let step = app
+            .store
+            .call({
+                let root = root.clone();
+                move |store| {
+                    Ok(Apps::at(store, root)
+                        .offer_arrived(community, &me, Arrival::of(&head, channel, false))
+                        .unwrap())
+                }
+            })
+            .await
+            .unwrap();
+        let Step::Examine(examine) = step else {
+            panic!("{step:?}")
+        };
+        let submission = examine.submission.clone();
+        let examined =
+            tokio::task::spawn_blocking(move || examine_with(submission, &Limits::patient()))
+                .await
+                .unwrap()
+                .unwrap();
+        let told = app
+            .store
+            .call(move |store| {
+                Ok(Apps::at(store, root)
+                    .offer_examined(*examine, examined)
+                    .unwrap())
+            })
+            .await
+            .unwrap();
+        app.offer_news(OfferNews::Told { channel, told });
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(
+            said.contains("offers counter (version 1) in this channel · Ctrl-Y to read it; nothing of it runs before you approve it"),
+            "{said}"
+        );
+
+        // Announced as from the channel, and nothing of it runs.
+        let shown = turn(&mut app, "waits for your approval").await;
+        assert!(
+            shown.contains("counter: version 1 from") && shown.contains("from the channel waits"),
+            "{shown}"
+        );
+        command(&mut app, "open counter").await;
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(said.contains("counter has no approved version"), "{said}");
+        assert!(app.apps.live.is_empty() && app.apps.open.is_empty());
+        app.open_apps_panel().await.unwrap();
+        let lines = app
+            .apps_panel_lines()
+            .into_iter()
+            .map(|(line, _)| line)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(lines.contains("1 waiting (offered by"), "{lines}");
+        assert!(lines.contains("Offers lately:"), "{lines}");
+        app.apps_panel_key(key(KeyCode::Esc)).await.unwrap();
+
+        // Reviewed: who signed this exact revision, by key.
+        assert!(app.app_review_key(ctrl_y()).await.unwrap());
+        let shown = screen(&mut app, 200, 40);
+        for expected in [
+            "counter (Counter), version 1",
+            &format!("a person of the channel ({})", ana.public_key().to_hex()),
+            &format!("this exact revision ({}…) is signed by", &revision[..16]),
+            "| # Counter",
+        ] {
+            assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
+        }
+        answer(&mut app, KeyCode::Char('a')).await;
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(
+            said.contains("counter: version 1 approved") && said.contains("where it was offered"),
+            "{said}"
+        );
+        // It opens in that channel, and runs those bytes.
+        let shown = turn(&mut app, "v1 count 0").await;
+        assert_eq!(
+            app.apps.open.get(&channel).map(String::as_str),
+            Some("counter")
+        );
+        assert!(shown.contains("Counter"), "{shown}");
+    }
+
+    /// `:app share` needs the relay and a channel; a folder in development
+    /// is not shared, and in a direct message nothing is.
+    #[tokio::test]
+    async fn sharing_says_what_it_needs() {
+        let temporary = TempDir::new().unwrap();
+        let (mut app, _channel) = managed(&temporary).await;
+        command(&mut app, "share").await;
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(
+            said.contains("no approved app is open in this channel"),
+            "{said}"
+        );
+        command(&mut app, "share counter").await;
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(said.contains("sharing an app needs the relay"), "{said}");
+        command(&mut app, "unshare").await;
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(said.contains("usage: :app unshare <name>"), "{said}");
+    }
+
     const BOARD: &str = include_str!("../../../tests/fixtures/apps/board/app.lua");
     const BOARD_BRIEF: &str = include_str!("../../../tests/fixtures/apps/board/brief.md");
     const BOARD_PRIORITY: &str =

@@ -4,9 +4,10 @@
 M1 (the runtime and its contract; the example host, the bench and the six
 apps); M2 (the records service; the app session); M3 (the app pane); M4
 (the store and command line; approval and managing inside bzz, and the
-templates); M7 (agents use an app's records); and M5 (agents write and
-change apps; its real-model gate prepared and not run). Each has its
-milestone's exit gate, on Linux. Not here yet: M6 and M8. Nothing was pushed: what only CI
+templates); M5 (agents write and change apps; its real-model gate
+prepared and not run); M6 (sharing an app in the channel); and M7 (agents
+use an app's records). Each has its milestone's exit gate, on Linux. Not
+here yet: M8. Nothing was pushed: what only CI
 can show on macOS and Windows is listed as not seen. Plan:
 [`docs/planning/2026-11-17/v0.16.0.md`](planning/2026-11-17/v0.16.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
@@ -1874,6 +1875,183 @@ sources (the run that ended at 21:07; the commits after it changed documents onl
   an id a script gives that is not ASCII; `host.name` cuts on characters
   (`runtime::api::short_id`). Record authors are always hex, so the
   session's own use is safe.
+
+## M6 — Sharing an app in the channel
+
+Linux x86_64, Rust 1.98.1, Buzz pin `bf3bdd0eaefe`, 2026-11-19 and 20.
+Branch `t3/m6-sharing`, cut from `v0.16.0` at `429bbd5` (after M4 inside
+bzz). The owner offers the app open in a channel as one artifact of type
+`bzz.app`; another bzz there takes it in as a version that waits, from
+whoever signed that revision, and runs it only after its owner approves
+the exact bytes. [`apps.md`](apps.md#sharing-an-app) is the user's guide.
+
+**Where it is.**
+
+| Path | What |
+|---|---|
+| `migrations/0022_app_sharing.sql`, `src/store/app_offers.rs` | migration 22: `app_shares` (what this bzz shared, one artifact per app and channel, the version whose brief was posted) and `app_offers` (every revision taken in, by event id, its signer and what became of it) |
+| `src/store/apps.rs` | an offer's row follows its version in the same transaction: approved (`installed`), refused (`declined`), superseded (`replaced`), failed; removing an app lets its offers go; `app_withdraw_version` |
+| `src/apps/share.rs` | the artifact on the wire: content `{"v":1,"manifest":{…,"script_sha256"},"brief","script"}`, tag `["app",name]`; `read` (every check on arrival), `content`/`create`/`revise`/`withdraw`/`check` (every check before sending), the sync filter, the brief's message |
+| `src/apps/store/offers.rs` | taking a head in: `offer_arrived` (seen, earlier revisions let go, withdrawn, refused, DM, own, declined bytes, bytes that run, bounds), `offer_examined` (loaded apart, recorded from `Proposer::member`), `offers_in_set` |
+| `src/apps/store/{mod,review}.rs` | `Approved::opened_in`; the review's `Offer:` line (the exact revision and its signer) and `Source:   CHANGED: …` when the installed version came from someone else |
+| `src/service/offers.rs` | `OffersService`: `share`, `unshare`, `watch` (the offers' own sync of the channel shown) |
+| `src/app/share.rs`, `src/app/{manage,pane}.rs`, `src/app.rs` | `:app share|unshare [name]`, the sync following the channel shown, what arrives on the status line and in `:apps`, `shared in`/`offered by` in `:apps`, opening where it was offered; the offers' subscription left to the service (`protocol::artifact::is_apps_subscription`) |
+| `src/ui/app_approval.rs` | the head of the overlay with the offer's lines |
+| `tests/relay_integration.rs` | `real_relay_an_app_shared_in_a_channel_runs_elsewhere_only_after_approval` |
+| `examples/harness_fixture.rs`, `scripts/test-tui-{tmux.py,herdr.sh}`, `scripts/tui-herdr-scenarios.toml` | `other/`, another person's profile in `#t9-general`; `beside = "other"`; the scenario `t16-m6-share-offer-approve` |
+| `docs/apps.md`, `docs/security.md`, `docs/app-records.md` | sharing, an offer arriving, what is refused, what Buzz desktop people see; what approving another person's script means; the offers' sync and migration 22 |
+
+No dependency was added; `Cargo.toml` and `Cargo.lock` are unchanged.
+**Migration 22 is new**; the schema goes from 21 to 22. The migration
+tests and `upgrade_from_v0140_test` expect 22.
+
+**What was decided here** (the plan and the brief left these open):
+
+| Question | Decided |
+|---|---|
+| What is shared | the version that runs here (`Apps::runnable`, then `Apps::bundle`, each file compared with its hash): one the owner approved or added himself. A dev folder is not shared; an agent's proposal only once approved |
+| The content | `{"v":1,"manifest":{"name","title","api","types","script_sha256"},"brief","script"}`, unknown fields refused; the script as text (a script that is not UTF-8 is not shared); title of the artifact = the app's |
+| A later version | an `update` revision of the same artifact while it is live; a new artifact after a withdrawal (no `restore`) |
+| What an offer is | the head revision and its signer: a new revision of an artifact lets every earlier one of it that waits go (`replaced`, or `withdrawn` for a deletion); a different signer is told (`replaces`) and the review says `Source:   CHANGED` against the installed version's proposer |
+| The brief's message | `I shared the app <Title> (<name>, version N) in this channel.` + how to read it in bzz + the record types + the brief, whole; once for each version (`app_shares.brief_posted_version`), also after a withdrawal and a new share |
+| Bounds | 3 waiting offers of one person in a community, 8 in one channel, 8 versions of one app (M4's), 256 heads in one channel's sync of offers; bytes refused (script and brief hashes, from `app_offers` or `app_versions`) are not offered again |
+| Own offers | a revision signed by this bzz's identity is not offered to it (written down as `installed`, "shared from this bzz") |
+| A direct message | no app is shared there (`:app share` says so), and an offer that arrives in one is refused and said; the sync runs there only to say so |
+| Approving | installs, and opens it in the channel it was offered in if no app is open there (`Apps::approve`, so at the shell too) |
+| An offered app never approved | when its last waiting version goes (withdrawn, replaced by nothing), the app row and folder go too: it was installed nowhere |
+| `bzz app share` | not made: the command line does not connect to the relay (as `bzz app dev --channel` says to use `:app dev`) |
+| The artifact panel | unchanged: it lists `bzz.app` (M2's decision), where anyone can rename or delete it, as Buzz allows |
+
+**How to repeat.**
+
+```sh
+# the build environment of runs/v016/RULES.md, then:
+cargo test --locked --lib apps::share apps::store::offers store::app_offers ui::app_approval service::offers app::pane::tests::managed
+cargo test --locked --test store_migration_test
+# pinned relay, Docker; CARGO_TARGET_DIR unset and ./target linked to it, so
+# that the pin builds into its own target:
+BZZ_BUZZ_SOURCE=<main checkout>/runs/buzz-pin BZZ_RELAY_TEST_FILTER=real_relay_an_app_shared_in_a_channel \
+  ./scripts/test-relay.sh
+cargo build --locked --release
+BZZ_TMUX_SIZE=160x40 BZZ_TMUX_CAPTURES=/tmp/captures BZZ_BUZZ_SOURCE=<main checkout>/runs/buzz-pin \
+BZZ_TMUX_SCENARIOS=t16-cli-app-new,t16-cli-app-add,t16-cli-app-approve,t16-m6-share-offer-approve \
+  ./scripts/test-relay.sh --tmux
+```
+
+### Unit and scripted
+
+`U:` a unit test; `P:` `app::pane::tests::managed::…`, bzz's own `App` on
+Ratatui's test backend with a store of apps on disk. Each red is the named
+test run with the one change in its cell and the file restored, by
+`reds.py` (in the worktree's scratch on the archive disk, not kept); every
+one failed as quoted.
+
+| Claim | Proof | Red without the change | Result |
+|---|---|---|---|
+| **Gate 2: nothing of an offer runs before its approval**, at the one function that hands out a script: `Apps::runnable` answers `NothingApproved { waiting: 1 }`; after the approval it gives exactly the offered bytes, and the app is open in the channel it was offered in | `U: apps::store::offers::tests::an_offer_waits_and_nothing_of_it_runs_before_its_approval` | the offer approved as it is recorded: `called Result::unwrap_err() on an Ok value: Runnable { … }` | pass |
+| The review shows **who signed this exact revision**, by name and key, and the revision | the same; `U: ui::app_approval::tests::an_offer_says_who_signed_this_revision_and_a_new_source_plainly` | the `Offer:` line not written: the review text without `this exact revision` | pass |
+| **Gate 3: a later version is a new offer, and a changed type list is shown as such**: `types_changed`, `CHANGED from the version that runs:`, `+ tag`, the difference; the installed version runs until the owner answers | `U: …offers::tests::a_later_version_is_a_new_offer_and_a_changed_type_list_or_source_is_marked` | `types_changed` always false: `assertion failed: types_changed && replaces.is_none()` | pass |
+| **Gate 6 at the store: a revision by another member is that member's offer**, the earlier one goes, and the review says `Source:   CHANGED: the version installed here came from …` | the same; the overlay test | earlier revisions kept: `left: None` where Ana was expected as `replaces`; the `Source:` line not drawn: the overlay test fails at `Source:   CHANGED…` | pass |
+| **Gate 4: tampered and oversized, refused on arrival**: the script against its hash, the tag against the manifest, the shape, `v`, an unknown `api` (`this bzz knows api = 1`), a name no app may have, 128 KiB of script, 16 KiB of brief | `U: apps::share::tests::{a_tampered_artifact_is_refused_for_what_is_wrong, size_is_checked_before_sending_and_on_arrival}`; `U: …offers::tests::what_is_refused_is_said_and_never_offered` | the hash check off: `unwrap_err() on an Ok value: Offer(…)`; the size check off on arrival: the same | pass |
+| **Gate 4 before sending**: a script or a brief one byte over, a script of 128 KiB of newlines (256 KiB once escaped), a script that is not text; a signed revision whose escaped frame passes 524,288 bytes | `U: size_is_checked_before_sending_and_on_arrival` | the escaped content unchecked: `unwrap_err() on an Ok value: "{\"v\":1,…`; the frame unchecked: `unwrap_err() on an Ok value: ()` | pass |
+| A script that does not load is recorded as failed and never offered; an offer in a direct message is refused; this bzz's own offer is offered to nobody here | `U: what_is_refused_is_said_and_never_offered` | the DM let through: `[Offered { name: "poll", … }]`; own offers taken: `assertion failed: fixture.arrive(…).is_empty()` | pass |
+| **Gate 7: withdrawing removes the waiting offer and leaves the installed copy**; a deletion by someone else is told as theirs; an app that was only offered is not kept; a set that no longer holds an offer lets it go | `U: …offers::tests::withdrawing_removes_the_waiting_offer_and_leaves_an_installed_copy` | the deletion ignored: `[]` where `Withdrawn` was expected; the set not reconciled: `[]` | pass |
+| **Not buried**: a fourth offer of one person and a ninth in a channel are refused and said; bytes the owner refused do not come back; other bytes of the same app do | `U: …offers::tests::offers_are_bounded_and_refused_bytes_do_not_come_back` | no bound per person: `[Offered { name: "d", … }]`; the declined check off: `[Offered { name: "a", version: 2, … }]` | pass |
+| **In bzz's window**: what arrives is told (`… offers counter (version 1) in this channel · Ctrl-Y to read it; nothing of it runs before you approve it`); the banner says `from the channel`; `:app open` refuses before the approval; `:apps` says `1 waiting (offered by …)` and `Offers lately:`; `Ctrl+Y` shows the signer's key and the revision; `a` says `it is open in #…, where it was offered`, and it runs | `P: an_offer_from_the_channel_runs_only_after_approval_and_opens_where_it_was_offered` | not opened where offered: the status line `…; :app open counter opens it here`; the news not said: an empty status line | pass |
+| `:app share` says what it needs | `P: sharing_says_what_it_needs` | — | pass |
+| A refusal of the relay is said in the owner's terms (guest, not a member, archived, the wait) | `U: service::offers::tests::a_refused_offer_is_said_in_the_owners_terms` | — | pass |
+| The store: a revision written once, declined bytes found, a share's posted brief kept across a withdrawal | `U: store::app_offers::tests::*` | — | pass |
+| **Migration 22** on a database at 21 with an app installed: every row as it was, the two tables empty; the earlier migration tests and the upgrade from v0.14.0 at 22 | `T: store_migration_test::schema_twenty_one_gains_the_sharing_tables_and_keeps_every_row` and the rest of the file | — | pass, 10 of 10 |
+
+### The exit gate, on the pinned relay
+
+`real_relay_an_app_shared_in_a_channel_runs_elsewhere_only_after_approval`,
+`scripts/test-relay.sh` with `BZZ_RELAY_TEST_FILTER`, the lock taken, five
+generated identities, all relay members, in a **private** channel of Ana's.
+**Relay mode: the harness's default, `BUZZ_REQUIRE_RELAY_MEMBERSHIP` off.**
+9.8 s; `docker ps` showed no `buzz-harness` container after the run.
+
+| Gate | Seen |
+|---|---|
+| 1. One shares the Board; the other sees the offer, with the brief and who signed it; approves; both use the same records | Ana `share`: a new artifact, brief posted. Ben is told `Offered { from: Ana's key, in the channel, installed_from: None, types_changed: false }`; his review has `a person of the channel (<Ana's key>)`, `this exact revision (<16 hex of Ana's revision>…)` and the brief's first line. Approved: `opened_in = the channel`; `runnable` is the template's bytes. Both open the records; Ana's card reaches Ben as `Upsert` with Ana as author. Ana's own offer was offered to nobody on her side |
+| 2. Before the approval nothing runs | Ben's `Apps::runnable`: `NothingApproved { waiting: 1 }` |
+| 3. A version with a changed type list is shown as such | Ana installs `types = { "card", "tag" }` and shares: `revised`, the same artifact, brief posted again. Ben: `Offered { types_changed: true, installed_from: Ana }`, `TypesChange::Changed { added: ["tag"] }`, `CHANGED from the version that runs:`; his `runnable` is still version 1 |
+| 4. A tampered or oversized artifact is refused, on both sides | sender: `share::create` of a 130 KiB script answers `too large` and sends nothing. Receiver: Cara publishes a revision whose script is not its hash, and one of 130 KiB with the right hash (the relay takes both): Ben is told `Refused … changed on the way` and `Refused … too large` |
+| 5. An offer from someone who cannot write never arrives | a guest of the channel and a relay member outside it each publish a valid offer: the relay answers `restricted: …`; in 2 s Ben is told nothing |
+| 6. A third member publishes a new revision of the first's offer | Cara revises Ana's head: Ben is told `Offered { from: Cara, replaces: Ana }`; the review has Cara's key and `Source:   CHANGED: the version installed here came from …`; one version waits, Cara's |
+| 7. Withdrawing removes the waiting offer and leaves an installed copy | Ana `unshare`s (the head was Cara's): Ben is told `Withdrawn { signer: Cara, by: Ana }`; nothing waits; his `runnable` is version 1 |
+| 8. Sharing posts the brief as a message, once | `kind 9` messages of the channel that start `I shared the app Board (board`: 1 after the first share, still 1 after sharing the same version again (`unchanged`, nothing published), 2 after the second version |
+| 9. No key or credential in the artifact | every revision of every offer of the channel (the relay's `history` view of each artifact, 6 or more): none holds the secret key of any of the five identities, in hex or `nsec` |
+| Red | the brief posted at every share (`if false && posted == Some(version)`): `panicked at tests/relay_integration.rs:10261` with `Shared { …, brief_posted: true, unchanged: true }` |
+
+### The exit gate, on the release binary
+
+**Through tmux, not Herdr**: `herdr --session t3code pane list` answered
+`server_not_running`; the session was not started. `scripts/test-relay.sh
+--tmux` on the release binary of this branch, a disposable fixture from
+`examples/harness_fixture.rs` with **another person's profile** (`other/`,
+a different generated identity, a member of `#t9-general`; the fixture's
+`second/` is the viewer again, whose offers bzz does not offer to itself).
+Scenarios `t16-cli-app-new`, `-add`, `-approve` (the Board, approved in
+the viewer's profile), then `t16-m6-share-offer-approve`: 4 of 4, the last
+in 3.4 s; `docker ps` showed no `buzz-harness` container after. Captures:
+the run's scratch on the archive disk (not kept in the repository).
+
+| Step | Seen |
+|---|---|
+| The viewer `:app open board`, `:app share` in `#t9-general` | `board, version 1, is shared in #t9-general; its brief was posted there · :app unshare withdraws it`; the brief in the timeline (`One record type, card. A card's content:`) |
+| The other person opens `#t9-general` | the banner ` board: version 1 from 47081b69…6ae3, a person of the channel (47081b6… from the channel waits for your approval · Ctrl-Y to see and answer it`, and the brief's message |
+| Before the approval | `:app open board`: `board has no approved version (one waits for your answer)` |
+| `Ctrl+Y` | `From:     47081b69…6ae3, a person of the channel (<64 hex>)`, `Offer:    shared in the channel; this exact revision (81ec9672c740a4d9…) is signed by 47081b69…6ae3`, `No version of this app runs yet: all of them are new.` |
+| `G`, `a` | `board: version 1 approved, the script of hash 04639b6391e8…; it is open in #t9-general, where it was offered`; the Board `To do (0)` |
+| The same records | a card `from the other person` shows in the viewer's pane, and one `from the viewer` in the other's |
+| `:apps` of the viewer | `shared in #t9-general` |
+| `:app unshare` | `the offer of board is withdrawn from #t9-general; copies people installed stay`; the other person's Board still shows `from the viewer`; their `:apps`: `board (Board) · version 1 · open in #t9-general` |
+| Red: an offer approved as it is recorded (the hunk of the unit red above), on a release binary built with it | the other person's status line says `… offers board (version 1) in this channel · Ctrl-Y …`, and no banner ever waits: `'from the channel waits for your approval' did not show within 30000 ms`. What came from the channel would have run without an answer. 3 of 4; the binary was then built again from the branch |
+
+### Gates
+
+On `d8e8ee2`, 2026-11-20 from 00:24 (UTC−5), one after the other (the
+worktree's `gates.sh`, not kept). Only this document changed afterwards.
+The pinned-relay test above ran again on `d8e8ee2` (9.8 s, pass), and
+the release scenario ran on a binary built from the same sources; the
+release binary left in the worktree's target is the one the gates built.
+
+| Gate | Command | Result |
+|---|---|---|
+| Format | `cargo fmt --check` | clean |
+| Lint | `cargo clippy --locked --all-targets -- -D warnings`; the same with `--no-default-features` | clean, both |
+| Tests | `cargo build --locked --example scripted_harness`, then `cargo test --locked --all-targets` | exit 0: 1072 passed, 0 failed, 37 ignored, in 61 test programs. New here: 5 of `apps::share`, 5 of `apps::store::offers`, 2 of `store::app_offers`, 1 of `service::offers`, 1 of `ui::app_approval`, 2 of `app::pane::tests::managed`, 1 of `store_migration_test`, and the ignored relay test |
+| Tests without the features | `cargo test --locked --no-default-features --lib` | 483 passed |
+| Pinned relay | `BZZ_RELAY_TEST_FILTER=real_relay_an_app_shared_in_a_channel ./scripts/test-relay.sh` | 1 passed; the rest of the relay suite was not run |
+| Supply chain | not run: `Cargo.toml` and `Cargo.lock` are unchanged | |
+| Release binary | `cargo build --locked --release`, the scenarios above | 4 of 4 |
+
+### Not proven in M6
+
+| Item | State |
+|---|---|
+| Herdr | the session `t3code` was not running; the scenario ran through tmux. The Herdr runner takes `beside = "other"` (read, and `bash -n`), and did not run it |
+| macOS, Windows | not compiled or run here |
+| A relay that requires membership (`BUZZ_REQUIRE_RELAY_MEMBERSHIP=true`) | not run for M6: gate 5 ran in the default mode, with a guest and a non-member of a private channel. In an open channel every relay member can write, and so can offer: the relay's rule, not bzz's |
+| Gate 5's red | none: that nothing arrives from someone who cannot write is the relay's refusal (M0 question 3); bzz has nothing to take out that would make it arrive |
+| Buzz desktop with a shared app | not run again: M0 question 4 measured a 36 KB `bzz.app` artifact; the brief's message is an ordinary kind 9 |
+| A `restore` revision of a withdrawn offer by another client | read as an offer from its signer (a live head); not tested on the relay |
+| Two bzz processes of one owner sharing at once | the share builds on the head read over HTTP and retries three times on `conflict:`; not tested |
+| The status line under a burst of offers | each line replaces the last; `:apps` keeps the last six; not tested past the unit |
+
+### Found on the way
+
+- **The fixture's `second/` profile is the viewer again**, so it can never
+  receive the viewer's offer: bzz does not offer one's own app to oneself.
+  The scenario needed another person: `other/`.
+- **`test-relay.sh` with `CARGO_TARGET_DIR` set builds the pin's relay into
+  that directory**, and then starts the pin's own stale `./target` binary:
+  the M6 runs unset it and link `./target` instead.
+- **The relay's HTTP `kinds` query returns heads, not every revision.** The
+  secret scan reads each artifact's `history`.
+- **The brief's message is long**: by the time the scenario looked, its
+  first line had scrolled up; it checks a line of the brief instead.
 
 ## M5 — Agents write and change apps
 

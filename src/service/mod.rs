@@ -4,6 +4,8 @@ pub mod community;
 pub mod dms;
 pub mod inbox;
 pub mod messages;
+#[cfg(feature = "apps")]
+pub mod offers;
 pub mod profiles;
 pub mod read_state;
 #[cfg(feature = "apps")]

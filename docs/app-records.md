@@ -320,6 +320,56 @@ Records are rows of `artifacts` (migration 15); the schema stays at 20.
   `bzz.app.<app>.<record>`. The type `bzz.app` itself (a shared script, M6)
   is still listed.
 
+## Offers of apps (M6)
+
+An app offered in a channel is one artifact of type `bzz.app`, homed in the
+channel, with the client tag `["app", "<name>"]` and this content
+(`apps::share`):
+
+```json
+{"v":1,
+ "manifest":{"name":"board","title":"Board","api":1,"types":["card"],
+             "script_sha256":"<hex>"},
+ "brief":"<text>",
+ "script":"<Lua source>"}
+```
+
+Its title is the app's. Unknown fields are refused: `v` names the format.
+A later version is an `update` revision of the same artifact; withdrawing
+is a `delete`. A client that writes its own app for these records reads
+the brief; it does not need the script.
+
+`service::offers::OffersService` is the relay's side:
+
+- **Its own sync**, `{"artifact":"current","#h":[channel],"#type":["bzz.app"]}`,
+  subscription `appoffer-<24 hex>`, for the channel shown. A resync of an
+  app's records then fetches no script, and a resync of offers no record.
+  Heads are collected to `EOSE`; an offer that waited and is not in the set
+  is no longer offered. `resync:` is asked again after 250 ms, doubling to
+  30 s; `restricted:`, an overflow or anything else stops it and says why.
+  More than 256 heads of offers in one channel stop it too.
+- **Taking a head in** (`apps::store::offers`): a revision seen before is
+  nothing; earlier revisions of the artifact that wait are let go; a
+  deletion, or a head moved to another channel, withdraws; the checks of
+  [`apps.md`](apps.md#an-offer-arrives); then the script is loaded apart
+  off the store's thread and recorded as a version from
+  `Proposer::member(signer, name).in_channel(channel)`.
+- **Sharing**: the bundle of the version that runs (`Apps::runnable`, then
+  `Apps::bundle`, each file compared with its hash), checked by
+  `share::content`; the head read over HTTP when the app was shared there
+  before, to build the next revision on it (three tries on `conflict:`);
+  the event signed, checked again by `share::check` (envelope, content,
+  frame) and published as an ordinary write of the owner; then the brief
+  posted as a message once for each version.
+
+The store (migration 22): `app_shares`, one row per app and channel this
+bzz shared, with the version, its last revision, the version whose brief
+was posted and when it was withdrawn; `app_offers`, one row per revision
+taken in, by its event id, with its signer and what became of it
+(`waiting`, `installed`, `declined`, `failed`, `refused`, `withdrawn`,
+`replaced`). An offer's row follows its version: approving, refusing,
+superseding or failing a version moves it in the same transaction.
+
 ## The session
 
 `apps::session::AppSession` is one open app in one channel: it owns the

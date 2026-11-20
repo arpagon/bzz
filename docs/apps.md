@@ -560,13 +560,92 @@ hold.
 
 ## Sharing an app
 
-> **Not in this version.** An app reaches other people only as its folder,
-> or as its brief, from which their own agent can write it again.
+An app's script lives on the machine of whoever installed it. You can offer
+it to a channel: its script, its manifest and its brief travel as **one
+artifact of the channel**, signed by you, and another bzz there runs it only
+after that person approves the exact bytes.
 
-<!-- M6: `:app share` offers the open app to its channel as one artifact
-     (script, manifest and brief: `Apps::bundle`); another bzz shows the
-     offer (`Proposer::member(pubkey, name).in_channel(channel)`) and runs
-     nothing until that person approves the exact bytes. -->
+```text
+:app share [name]       offers the app open in this channel (or name): the
+                        version that runs here, so one you approved or wrote
+:app unshare [name]     withdraws the offer
+```
+
+What `:app share` does:
+
+- It publishes the version that runs here as one artifact of type
+  `bzz.app`, with the tag `["app", "<name>"]`. What you have not approved
+  is not shared: an agent's proposal reaches the channel only once you
+  approved it and share it.
+- Every size is checked before anything is sent: a script of at most 128
+  KiB of text, a brief of at most 16 KiB, content the relay takes (262,144
+  bytes) and a frame under its limit once escaped. Past the frame the
+  relay would drop the connection without an answer, so bzz never sends
+  one.
+- It posts the brief to the channel as an ordinary message, **once for each
+  version shared**: sharing the same version again publishes nothing and
+  posts nothing.
+- A later version shared in the same channel is a new revision of the same
+  artifact: another offer, never applied by itself on anyone's machine.
+
+`:app unshare` publishes a delete revision. Offers nobody answered yet
+disappear; copies people installed stay, and so do the records.
+
+`:apps` shows where each app is shared (`shared in #general`), which
+versions wait and who offers them (`1 waiting (offered by Ana in
+#general)`), and what came of offers lately.
+
+### An offer arrives
+
+bzz keeps one sync of the offers of the channel you are looking at, apart
+from the records of any app. An offer becomes a version that waits, **from
+the person who signed that exact revision**, announced and answered as any
+other ([Inside bzz](#inside-bzz)):
+
+```text
+Ana offers board (version 1) in this channel · Ctrl-Y to read it; nothing of it runs before you approve it
+ board: version 1 from Ana, a person of the channel (a0a0a0a0…a0a0) from the channel waits for your approval · Ctrl-Y to see and answer it
+```
+
+The approval shows who signed the revision (name and key), the revision
+itself, the brief, the record types with any change marked, the sizes and
+the difference from the version installed here. Approving installs it and
+opens it in that channel if no app is open there. Nothing is fetched from
+anywhere else, and nothing of the offer runs before you approve it.
+
+**An offer is a revision and its signer.** Anyone who may write to the
+channel can publish a new revision of someone's offer, delete it or restore
+it; the relay keeps only who signed the last revision. So:
+
+- A revision signed by another person than the one the installed version
+  came from is shown as coming from that person, and the approval says
+  `Source:   CHANGED: the version installed here came from …`.
+- A new revision takes the place of the one that waited: one offer for each
+  artifact waits, the head's.
+- A deletion by someone other than the offer's signer removes the waiting
+  offer too, and is told as theirs: `Bob deleted Ana's offer of board`.
+
+What is refused, and said on the status line and in `:apps`:
+
+| | |
+|---|---|
+| A tampered artifact | the script's SHA-256 is not the manifest's, the tag names another app, or the content is not of this shape |
+| An oversized one | a script over 128 KiB, a brief over 16 KiB |
+| Another contract | an `api` this bzz does not know |
+| A name no app may have | not `[a-z][a-z0-9_-]{0,31}`, or a Windows device name |
+| A script that does not load | recorded as failed, with its error, and never offered |
+| An offer in a direct message | apps live in channels only |
+| Too many | at most 3 offers of one person and 8 in one channel wait at once |
+| Bytes you refused | the same script and brief do not come back |
+
+Your own offers are never offered to you.
+
+### What people on Buzz desktop see
+
+Only the message with the brief. Buzz desktop shows nothing of an offer or
+of an app's records (M0 question 4), so the brief is how its people learn
+that the channel has an app, and what an agent of theirs needs to write one
+for the same records.
 
 ## Buzz desktop
 

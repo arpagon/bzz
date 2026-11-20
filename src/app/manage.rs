@@ -21,6 +21,7 @@
 //!   :app add <folder>       proposes the folder as yours, then shows it
 //!   :app new <name> [template]   writes ./<name> from a template
 //!   :app dev <folder>       the folder in this channel's pane, unapproved
+//!   :app share|unshare [name]   offers the app in this channel (`app/share.rs`)
 //!   :app brief [name]       posts the brief of the version that runs to
 //!                           this channel, as a message of the owner's (D16)
 //! ```
@@ -35,7 +36,7 @@ use crate::error::Result;
 use crate::ui::state::Overlay;
 
 /// How the commands are written, for a mistake.
-pub const USAGE: &str = "usage: :app open <name> | close | zoom | pending [name] | approve <name> | refuse <name> [reason] | rollback <name> [version] | enable <name> | disable <name> | remove <name> | add <folder> | new <name> [template] | dev <folder> | brief [name]";
+pub const USAGE: &str = "usage: :app open <name> | close | zoom | share [name] | unshare [name] | pending [name] | approve <name> | refuse <name> [reason] | rollback <name> [version] | enable <name> | disable <name> | remove <name> | add <folder> | new <name> [template] | dev <folder> | brief [name]";
 
 /// The message `:app brief` posts: what the app is, which version, and its
 /// brief as it was approved, so that the people of the channel, and their
@@ -248,7 +249,20 @@ impl App {
         match approved {
             Ok(approved) => {
                 let open = self.apps.open.values().any(|open| *open == review.name);
-                let then = if open {
+                let opened_here = approved.opened_in.map(|channel| {
+                    self.channels
+                        .iter()
+                        .find(|known| known.id == channel)
+                        .map_or_else(
+                            || "the channel it was offered in".to_owned(),
+                            |known| {
+                                format!("#{}", crate::render::sanitize::single_line(&known.name))
+                            },
+                        )
+                });
+                let then = if let Some(place) = opened_here {
+                    format!("it is open in {place}, where it was offered")
+                } else if open {
                     "where it is open it runs now in place of the version before".to_owned()
                 } else {
                     format!(":app open {} opens it here", review.name)
@@ -320,6 +334,8 @@ impl App {
         let second = words.next();
         match (verb, first) {
             ("pending", name) if second.is_none() => self.open_app_review(name).await?,
+            ("share", name) if second.is_none() => self.share_command(true, name).await?,
+            ("unshare", name) if second.is_none() => self.share_command(false, name).await?,
             ("approve", Some(name)) if second.is_none() => {
                 self.open_app_review(Some(name)).await?;
             }
