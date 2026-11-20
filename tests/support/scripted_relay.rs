@@ -102,6 +102,9 @@ pub struct WsFrame {
 #[derive(Clone, Debug)]
 pub enum WsAction {
     Send(Value),
+    /// Sent on every open WebSocket, this one included: what the relay
+    /// fans out to every subscriber, such as an event it stored.
+    Broadcast(Value),
     /// Close with a WebSocket close code and reason (e.g. 1008 policy).
     Close(u16, String),
 }
@@ -384,6 +387,7 @@ async fn run_socket(
     pushes: tokio::sync::broadcast::Sender<Value>,
 ) {
     // Only a WebSocket listens: an HTTP connection is no socket to push on.
+    let pushes_out = pushes.clone();
     let mut pushes = pushes.subscribe();
     if script.auth_challenge
         && socket
@@ -432,6 +436,9 @@ async fn run_socket(
                             {
                                 return;
                             }
+                        }
+                        WsAction::Broadcast(value) => {
+                            let _ = pushes_out.send(value);
                         }
                         WsAction::Close(code, reason) => {
                             let _ = socket
