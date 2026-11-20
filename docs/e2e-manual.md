@@ -787,6 +787,141 @@ usage: a few short prompts on each program's cheapest model.
 2. `bzz broker delete <a local agent>` is refused and says to use
    `bzz agent`.
 
+## 14. v0.16.0 surfaces: apps
+
+Use the isolated pinned harness from section 11, one disposable identity in
+a channel it can write to, and for the last parts a **second disposable
+identity** in the same channel and the agent of section 13 on its stand-in
+model (`scripted/scripted`). Apps need nothing installed. Work in a
+window of at least 120 by 30. `./scripts/test-relay.sh --tmux` (or
+`--herdr`) runs most of this on the release binary by itself (the `t16-*`
+scenarios, [`e2e-herdr.md`](e2e-herdr.md)); what it leaves to you is named
+in [`validation-v0.16.0.md`](validation-v0.16.0.md), M8, "Manual E2E".
+`$APPS` below is a folder of yours for the app's files, outside
+`BZZ_E2E_ROOT` or inside it, as you like.
+
+Never point any of this at a real community, and never approve a script
+you have not read.
+
+### Write, check, try and install, at the shell
+
+1. `bzz --version` prints `bzz 0.16.0`. `bzz app list` says no app is
+   installed.
+2. `bzz app new --templates` lists `board`, `poll` and `approvals`.
+   `bzz app new tasks --to "$APPS/tasks"` writes `app.lua`, `app.toml`
+   and `brief.md`, `from the template board`. Running it again writes
+   nothing: the folder exists already.
+3. `bzz app check "$APPS/tasks"` says it loads and names its record type,
+   `card`. Append a line `return app(` to `app.lua`: `check` now names the
+   file and the line (`app.lua:<n>: …`). Take the line out again.
+4. `bzz app try "$APPS/tasks" n "type:Buy milk" enter` prints the Board as
+   text, 40 by 16, with `To do (1)` and `Buy milk`, and sends nothing
+   anywhere.
+5. `bzz app add "$APPS/tasks"` shows the version as every version is shown
+   before an answer: `tasks (Tasks), version 1`, `From: you`, its hash,
+   `Record types: card` (all new), the brief and the script. Answer `n`:
+   `version 1 waits for your answer`, and `bzz app list` says so.
+6. `bzz app approve tasks` shows it again and asks; answer `y`. `bzz app
+   show tasks` lists version 1, approved, and its hash.
+7. Optional: `bzz app dev "$APPS/tasks"` runs the folder in this terminal
+   without approval, on records in memory. Make a card, change `"To do"`
+   to `"Backlog"` in `app.lua` and save: the column is renamed and the
+   card is still there. Save a broken script: the error and its line show,
+   and the old version goes on. `Ctrl-c` leaves, says its records are gone,
+   and the terminal is the shell's again.
+
+### The pane
+
+1. Open bzz and select the channel. `:apps` lists `tasks (Tasks) · version
+   1 · open nowhere`. `:app open tasks`: the Board is drawn at the right of
+   the conversation, `Tasks · Ctrl-c leave`, and the status line says `APP`
+   and `Ctrl-c leaves the app`.
+2. `5` gives the app the keyboard. `n`, a title with `q`, `:` and `?` in
+   it, `Enter`: the card is saved under `To do (1)`, and none of those keys
+   reached bzz (no quit question, no command line, no help). `Esc` stays in
+   the app.
+3. Paste two lines while the card's form is open: they arrive as one
+   title, not as keys. `Ctrl-c`: the keyboard is the conversation's again,
+   and `i`, a paste of two lines, leaves both lines in the draft unsent.
+4. Narrow the window: at 100 columns the communities go, at 72 the Board is
+   still beside the conversation, at 60 the status line says `app hidden ·
+   5`, and `5` zooms the app over the window; `Ctrl-c` hides it again.
+   Widen it back.
+5. Open a thread (`Enter` on a message) at 120 columns: the thread takes
+   the right side and the status line says `app behind thread · 5`. At 160
+   both are drawn.
+6. Select another channel: no app is drawn there. Come back: the Board is
+   as you left it.
+7. `q` (from the conversation) quits; the terminal is as it was before bzz.
+
+### A new version, in place
+
+1. With the Board open and a card selected, change `"To do"` to
+   `"Backlog"` in `$APPS/tasks/app.lua`, and in bzz `:app add
+   $APPS/tasks`. The overlay shows version 2 with its difference, one
+   line. `a` before the end: `scroll to the end first`. `G`, then `a`:
+   `tasks: version 2 runs in place of 1, its state kept`. The column is
+   `Backlog`, and the same card is selected.
+2. `:app rollback tasks`: `back to version 1 from 2`, `To do` again.
+3. Add `"tag"` to `app.types` in the script and `:app add` it: the overlay
+   marks `CHANGED from the version that runs: + tag`. `r`, a reason,
+   `Enter`: refused, nothing of it runs, and `bzz app show tasks` keeps the
+   reason.
+4. `:app dev $APPS/tasks` runs the folder in the pane, on the channel's
+   real cards, marked `not approved · dev`. A save reloads it in place.
+   `:app close` ends it and the installed Board shows again.
+
+### An agent changes the app
+
+The agent of section 13, on `scripted/scripted`, in the channel where the
+Board is open. Copy `tests/fixtures/apps/board-priority/app.lua` and
+`brief.md` of the repository to `$APPS/priority.lua` and
+`$APPS/priority.md`.
+
+1. Mention it: `@<name>`, `Ctrl-j`, then
+   `do: [["with_files", "buzz_propose_app", {"app": "tasks"}, {"script": "$APPS/priority.lua", "brief": "$APPS/priority.md"}], ["report"]]`
+   (with the folder written out). One reply in the thread. A line at the
+   top: `tasks: version <n> from your agent <name>, asked by <you> waits
+   for your approval`. The Board does not change.
+2. `Ctrl-y`: `From: your agent <name>`, `Asked by:`, the brief `CHANGED`,
+   the difference. `G`, `a`: the Board shows `Priority: all` with the same
+   card selected; `2` on it gives it priority 2.
+3. Mention the agent again in the thread with `do: [["buzz_apps", {"app":
+   "tasks"}], ["report"]]`: its reply says the version was applied.
+4. `:app brief`: the brief of the version that runs is posted to the
+   channel as your message.
+5. `bzz agent show <name>` lists the proposal and who asked for it.
+
+### Share it with the second identity
+
+Start the second identity's bzz in another terminal, in the same channel.
+
+1. In the first: `:app share`: `tasks, version <n>, is shared in
+   #<channel>; its brief was posted there`. The brief shows in the
+   timeline of both.
+2. In the second: a line at the top, `tasks: version 1 from <the first
+   identity>, a person of the channel … waits for your approval`.
+   `:app open tasks` refuses: nothing of it runs yet. `Ctrl-y` shows who
+   signed this exact revision, and the brief. `G`, `a`: it is approved and
+   opens in that channel.
+3. A card made in either pane shows in the other within a second or two.
+4. In the first: `:app unshare`. The second keeps its installed copy and
+   the cards. `:artifacts` in the channel listed the offer, before the
+   unshare, as `bzz.app · an app offered here`, with what a rename and a
+   delete there do.
+5. Optional, in a disposable sandbox of Buzz desktop in the same
+   community: the channel shows the brief's message, and nothing of the
+   app or its records.
+
+### Without an app, and after an upgrade
+
+1. `:app remove tasks`: `tasks uninstalled; <n> records of bzz.app.tasks.*
+   stay in the channel`. Everything of sections 11 to 13 works as before.
+2. `./scripts/upgrade-test.sh` opens a v0.15.0 profile with agents: the
+   agents, their ledger and the artifacts are as v0.15.0 left them, and
+   `bzz app list` says no app is installed. With a v0.15.0 profile of your
+   own: copy it first, open the copy, and check the same by hand.
+
 ## Results log
 
 | Section | Result | Evidence/notes |
@@ -806,6 +941,7 @@ usage: a few short prompts on each program's cheapest model.
 | 11. v0.13.0 surfaces | ☐ | |
 | 12. v0.14.0 surfaces | ☐ | |
 | 13. v0.15.0 surfaces: local agents | ☐ | |
+| 14. v0.16.0 surfaces: apps | ☐ | |
 
 ## Cleanup
 

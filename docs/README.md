@@ -10,7 +10,7 @@ Start with the [README](../README.md). Everything here is plain Markdown.
 | [themes.md](themes.md) | The 60 built-in themes and `theme.toml` |
 | [media.md](media.md) | Images, avatars, attachments, terminal graphics and the media cache |
 | [inbox-dms-search.md](inbox-dms-search.md) | Inbox, direct messages and search |
-| [apps.md](apps.md) | Apps: write one, try it, install it, approve a version, roll back, and where it is kept. The script contract is [app-api.md](app-api.md) |
+| [apps.md](apps.md) | Apps: write one, try it, install it, approve a version, roll back, the pane, your agents writing and changing apps, sharing one in a channel, and what people on Buzz desktop see. The script contract is [app-api.md](app-api.md); the guide an agent writes from is [app-authoring.md](app-authoring.md); bzz's side of the records is [app-records.md](app-records.md) |
 | [agents.md](agents.md) | Local agents: create one, add it to a channel, what it can touch, real commands, private repositories, moving it, and Grok, Codex and Claude Code |
 | [troubleshooting.md](troubleshooting.md) | Symptoms and fixes |
 | [security.md](security.md) | Keys, trust boundaries, diagnostics and telemetry |
@@ -20,7 +20,8 @@ Start with the [README](../README.md). Everything here is plain Markdown.
 
 | Version | Notes | Validation | Plan |
 |---|---|---|---|
-| v0.15.0 (release candidate) | [notes](release-v0.15.0.md) | [validation](validation-v0.15.0.md) | [plan](planning/2026-11-13/v0.15.0.md) |
+| v0.16.0 (release candidate) | [notes](release-v0.16.0.md) | [validation](validation-v0.16.0.md) | [plan](planning/2026-11-17/v0.16.0.md) |
+| v0.15.0 | [notes](release-v0.15.0.md) | [validation](validation-v0.15.0.md) | [plan](planning/2026-11-13/v0.15.0.md) |
 | v0.14.0 | [notes](release-v0.14.0.md) | [validation](validation-v0.14.0.md) | [plan](planning/2026-11-12/v0.14.0.md) |
 | v0.13.0 | [notes](release-v0.13.0.md) | [validation](validation-v0.13.0.md) | [plan](planning/2026-11-07/v0.13.0.md) |
 | v0.12.1 | [notes](release-v0.12.1.md) | [validation](validation-v0.12.1.md) | [plan](planning/2026-08-28/v0.12.1.md) |
@@ -44,6 +45,7 @@ Releasing: [releasing.md](releasing.md). End-to-end checks: [e2e-manual.md](e2e-
 
 ## Design records
 
+- [ADR: v0.16 apps](adr-v0.16-apps.md): bzz runs a Lua script it did not ship
 - [ADR: v0.15 local agents](adr-v0.15-local-agents.md), with the [agent host protocol](agent-host-protocol.md)
 - [ADR: compositor and TUI source for promotional films](adr-promo-video-compositor.md)
 - [ADR: v0.4 interaction design clean-room boundary](adr-v0.4-clean-room-interaction.md)
