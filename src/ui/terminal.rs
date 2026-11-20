@@ -79,12 +79,8 @@ impl TerminalGuard {
         let terminal = match Terminal::new(backend) {
             Ok(terminal) => terminal,
             Err(error) => {
-                let _ = execute!(
-                    io::stdout(),
-                    DisableBracketedPaste,
-                    DisableMouseCapture,
-                    LeaveAlternateScreen
-                );
+                let _ = execute!(io::stdout(), DisableBracketedPaste);
+                let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
                 let _ = disable_raw_mode();
                 return Err(Error::io("terminal", error));
             }
@@ -103,7 +99,10 @@ impl TerminalGuard {
             if self.mouse_capture {
                 let _ = execute!(io::stdout(), DisableMouseCapture);
             }
-            let _ = execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen);
+            // Apart: on a Windows console without escape sequences crossterm
+            // refuses this one, and `execute!` stops at the first refusal.
+            let _ = execute!(io::stdout(), DisableBracketedPaste);
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
             let _ = disable_raw_mode();
             self.active = false;
         }
@@ -134,12 +133,8 @@ fn install_panic_hook() {
             if is_app_thread(std::thread::current().name()) {
                 return;
             }
-            let _ = execute!(
-                io::stdout(),
-                DisableBracketedPaste,
-                DisableMouseCapture,
-                LeaveAlternateScreen
-            );
+            let _ = execute!(io::stdout(), DisableBracketedPaste);
+            let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
             let _ = disable_raw_mode();
             previous(info);
         }));
