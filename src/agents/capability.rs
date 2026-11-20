@@ -83,6 +83,8 @@ pub struct CapabilityRecord {
     pub git_without_a_process: (bool, &'static str),
     pub real_folders: &'static str,
     pub move_with_memory: (bool, &'static str),
+    /// Whether it can write and change apps (v0.16 M5), and how.
+    pub writes_apps: (bool, &'static str),
     /// What runs on the machine for this agent, and as whom.
     pub runs: Cow<'static, str>,
     /// Its own sandbox on this platform, or `None`.
@@ -107,6 +109,17 @@ pub const NO_SANDBOX_WARNING: &str = "Warning: this harness has no sandbox of it
 
 /// D18, where the harness has no sandbox and never asks either.
 pub const NO_BOUNDARY_WARNING: &str = "Warning: this harness has no sandbox of its own here and never asks before it acts. It runs as your user, and nothing keeps it in its folders.";
+
+/// How every harness writes an app, when this bzz has apps (v0.16 M5): the
+/// same tools, served by bzz, on all four.
+pub const WRITES_APPS: (bool, &str) = if cfg!(feature = "apps") {
+    (
+        true,
+        "through bzz's tools only: it reads the guide and an app, tries a script apart and proposes a version with its brief; you approve each version's exact bytes in bzz, and it writes no file of an app. Seen with the scripted harness; not yet with a real model",
+    )
+} else {
+    (false, "this bzz was built without apps")
+};
 
 /// What runs for a Pi Durable agent that has no folder granted for
 /// commands.
@@ -266,6 +279,7 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
             false,
             "its memory belongs to its own program and stays on this machine",
         ),
+        writes_apps: WRITES_APPS,
         runs: CODING_HARNESS_RUNS.into(),
         sandbox,
         rules: vec![
@@ -315,6 +329,7 @@ pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
                 true,
                 "`bzz agent move` seals its key, its memory and its disk in one file for another bzz, and `bzz agent launch-kit` writes a folder for a machine with Buzz's buzz-acp; granted folders and git credentials stay on this machine",
             ),
+            writes_apps: WRITES_APPS,
             runs: PI_DURABLE_RUNS.into(),
             sandbox: Some("its own disk, shell and git, with a list of hosts it may reach"),
             rules: vec![
@@ -471,6 +486,7 @@ impl CapabilityRecord {
             ),
             format!("  real folders:        {}", self.real_folders),
             format!("  a move with memory:  {}", yes_no(self.move_with_memory)),
+            format!("  writes apps:         {}", yes_no(self.writes_apps)),
             format!("  what runs:           {}", self.runs),
             format!(
                 "  its own sandbox:     {}",
@@ -530,6 +546,7 @@ mod tests {
                     "git with no process",
                     "real folders",
                     "a move with memory",
+                    "writes apps",
                     "what runs",
                     "its own sandbox",
                     "one final reply per mention: bzz",
@@ -551,6 +568,25 @@ mod tests {
                 // D18: the warning is there exactly where no sandbox is.
                 assert_eq!(record.warning.is_some(), record.sandbox.is_none());
                 assert_eq!(text.contains("Warning:"), record.sandbox.is_none());
+            }
+        }
+    }
+
+    /// v0.16 M5: each harness says whether it can author apps, and how.
+    #[test]
+    fn each_record_says_whether_the_harness_writes_apps() {
+        for harness in ALL {
+            let record = record(harness);
+            assert_eq!(record.writes_apps.0, cfg!(feature = "apps"), "{harness:?}");
+            let text = record.lines().join("\n");
+            if cfg!(feature = "apps") {
+                assert!(
+                    text.contains("writes apps:         yes: through bzz's tools only")
+                        && text.contains("you approve each version's exact bytes"),
+                    "{harness:?}: {text}"
+                );
+            } else {
+                assert!(text.contains("writes apps:         no: this bzz was built without apps"));
             }
         }
     }
