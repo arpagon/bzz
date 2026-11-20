@@ -468,9 +468,7 @@ async fn an_agent_proposes_the_board_with_priority_and_is_told_it_was_applied() 
         );
         assert!(from_whom(&review.from).starts_with("your agent Scout ("));
         assert!(
-            review
-                .render(|_| String::new())
-                .contains(&format!("Asked by: ")),
+            review.render(|_| String::new()).contains("Asked by: "),
             "{}",
             review.render(|_| String::new())
         );

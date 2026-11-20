@@ -41,6 +41,7 @@ pub const USAGE: &str = "usage: :app open <name> | close | zoom | pending [name]
 /// brief as it was approved, so that the people of the channel, and their
 /// agents in any client, know what the app does and what its records hold
 /// (plan D16).
+#[cfg(feature = "apps")]
 pub fn brief_message(name: &str, title: &str, version: u32, brief: &str) -> String {
     format!(
         "The brief of the app {title} (`{name}`, version {version}), which is open here. Its records are shared by the channel; an app of any client that keeps to this brief can use them.\n\n{}",
