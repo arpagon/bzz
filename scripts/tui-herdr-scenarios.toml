@@ -2141,7 +2141,7 @@ regex = true
 
 [[scenario.step]]
 keys = ["a"]
-visible = "tasks: version 2 approved"
+visible = "tasks: version 2 runs in place of 1, its state kept"
 
 # In place: the card is still selected, and the new keys work on it.
 [[scenario.step]]
@@ -2166,24 +2166,36 @@ visible = "The brief of the app Tasks"
 timeout = 30000
 
 # At its next turn in the channel Scout is told; what it was told is in
-# `apps` with `app`, which it reports.
+# `apps` with `app`, which it reports. A second later than the brief, so
+# that the mention is the newest message (the timeline orders by second).
 [[scenario.step]]
+pause = 1500
 keys = ["i", "type:@Sco"]
 visible = "@Scout"
 
 [[scenario.step]]
 keys = ["tab", "space", "type:did it go in?", "ctrl+j", 'type:do: [["buzz_apps", {"app": "tasks"}], ["report"]]', "enter"]
-visible = "↳ 1 reply"
+visible = "did it go in?"
+
+# The newest message is the mention; its thread has Scout's answer.
+[[scenario.step]]
+keys = ["G"]
+visible = 'did it go in\?(.|\n)*↳ 1 reply'
+regex = true
 timeout = 90000
 
+# Its answer holds the app whole (the script is long): the end of it is
+# what the agent was told of its version.
 [[scenario.step]]
 keys = ["enter"]
-visible = "Scout · managed by you"
-
-[[scenario.step]]
-keys = []
-visible = "applied."
+visible = "tasks: applied. The owner approved"
 timeout = 30000
+
+# q closes the thread first, then asks to quit.
+[[scenario.step]]
+keys = ["q"]
+visible = "online"
+absent = "context · 1 reply"
 
 [[scenario.step]]
 keys = ["q"]
