@@ -437,9 +437,9 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t15-cli-version"
 kind = "harness"
-description = "v0.15 M0: the release binary says which version it is."
+description = "v0.15 M0: the release binary says which version it is (t16-cli-version checks the number of this release)."
 args = ["--version"]
-ready = "bzz 0.15.0"
+ready = "bzz 0."
 exit = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario.step]]
@@ -783,7 +783,7 @@ visible = "doing now:    bash: sleep 120; echo slept"
 
 [[scenario.step]]
 keys = []
-visible = "capability record: pi-durable (everything in v0.15.0)"
+visible = "capability record: pi-durable (everything in v"
 
 [[scenario.step]]
 keys = ["x"]
@@ -1068,7 +1068,7 @@ timeout = 90000
 
 [[scenario.step]]
 keys = []
-visible = "capability record: pi-durable (everything in v0.15.0)"
+visible = "capability record: pi-durable (everything in v"
 
 # Enter leaves the form for the agents panel: the new agent is running.
 [[scenario.step]]
@@ -1281,6 +1281,18 @@ visible = "__BZZ_HERDR_EXIT__:0"
 # paste before its keys; `beside = "second"` runs the second profile's TUI
 # in a second pane, which steps with `pane = "second"` drive; `restored =
 # true` checks after the exit that the terminal was given back.
+
+[[scenario]]
+id = "t16-cli-version"
+kind = "harness"
+description = "v0.16 M0 and M8: the release binary says it is 0.16.0."
+args = ["--version"]
+ready = "bzz 0.16.0"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = []
+visible = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario]]
 id = "t16-cli-app-new"

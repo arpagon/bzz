@@ -17,7 +17,7 @@ use std::borrow::Cow;
 
 use crate::config::{ExecGrant, Harness, LocalAgentConfig};
 
-/// What v0.15.0 promises for a harness (D16).
+/// What this release promises for a harness (plan v0.15.0, D16).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Promise {
     /// Everything in the plan.
@@ -30,7 +30,7 @@ pub enum Promise {
 impl Promise {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Full => "everything in v0.15.0",
+            Self::Full => concat!("everything in v", env!("CARGO_PKG_VERSION")),
             Self::Supported => "supported",
             Self::Experimental => "experimental",
         }
