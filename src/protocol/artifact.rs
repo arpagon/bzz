@@ -29,6 +29,17 @@ pub const APP_RECORD_TYPE_PREFIX: &str = "bzz.app.";
 /// The prefix of the subscription of an app's records. bzz's own handling of
 /// relay messages leaves these to the records service.
 pub const APP_RECORDS_SUBSCRIPTION_PREFIX: &str = "apprec-";
+/// The prefix of the subscription of the apps offered in a channel (type
+/// `bzz.app`, v0.16 M6). bzz's own handling of relay messages leaves these
+/// to the offers service.
+pub const APP_OFFERS_SUBSCRIPTION_PREFIX: &str = "appoffer-";
+
+/// Whether a subscription is one the services of apps hold: an app's
+/// records, or the offers of apps in a channel.
+pub fn is_apps_subscription(subscription: &str) -> bool {
+    subscription.starts_with(APP_RECORDS_SUBSCRIPTION_PREFIX)
+        || subscription.starts_with(APP_OFFERS_SUBSCRIPTION_PREFIX)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Op {
