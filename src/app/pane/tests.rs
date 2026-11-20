@@ -904,6 +904,56 @@ return app
         app.app_key(key(KeyCode::Char('j')));
         let shown = until(&mut app, 120, 30, "> Bravo").await;
         assert!(!shown.contains("Priority:"), "{shown}");
+        // What `try_app` gives an agent for the Board at 40×16, on the same
+        // cards and the same key, is what the pane draws inside its border.
+        let window = until(&mut app, 120, 22, "> Bravo").await;
+        let lines: Vec<&str> = window.lines().collect();
+        let (top, left) = lines
+            .iter()
+            .enumerate()
+            .find_map(|(row, line)| {
+                line.find("┌ Board · ")
+                    .map(|byte| (row, line[..byte].chars().count()))
+            })
+            .unwrap_or_else(|| panic!("the pane's border:\n{window}"));
+        let pane = lines[top + 1..top + 17]
+            .iter()
+            .map(|line| {
+                line.chars()
+                    .skip(left + 1)
+                    .take(40)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tried = crate::apps::dev::try_script(crate::apps::dev::Trial {
+            script: BOARD.as_bytes().to_vec(),
+            script_name: "board.lua".into(),
+            width: 40,
+            height: 16,
+            steps: vec![crate::apps::session::headless::Step::parse("j").unwrap()],
+            seeds: crate::apps::dev::parse_seed(
+                r#"[{"type":"card","content":{"title":"Alpha","column":"todo","order":1},"by":"bo"},
+                    {"type":"card","content":{"title":"Bravo","column":"todo","order":2},"by":"bo"},
+                    {"type":"card","content":{"title":"Charlie","column":"todo","order":3},"by":"bo"}]"#,
+            )
+            .unwrap(),
+        })
+        .unwrap()
+        .tried;
+        let tried = tried
+            .screen
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            pane.contains("> Bravo") && pane.contains("To do (3)") && pane.lines().count() == 16,
+            "{pane}"
+        );
+        assert_eq!(pane, tried, "the pane:\n{window}");
 
         // The agent's version, as `propose_app` records it.
         let asked = Proposer::agent("e".repeat(64), "Scout")

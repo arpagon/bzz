@@ -9967,7 +9967,9 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
         "grok" => Some(Harness::Grok),
         "codex" => Some(Harness::Codex),
         "claude-code" => Some(Harness::ClaudeCode),
-        other => panic!("BZZ_AUTHOR_HARNESS={other}: scripted, pi-durable, grok, codex or claude-code"),
+        other => {
+            panic!("BZZ_AUTHOR_HARNESS={other}: scripted, pi-durable, grok, codex or claude-code")
+        }
     };
     // A real model takes its time; a turn has bzz's own limit.
     let wait = if real.is_some() {
@@ -10083,7 +10085,9 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
     );
     let (cards, mut card_events) = owners.open(channel, "board", &["card"]).await.unwrap();
     while cards.state() != SyncState::Live {
-        let _ = tokio::time::timeout(wait, card_events.recv()).await.unwrap();
+        let _ = tokio::time::timeout(wait, card_events.recv())
+            .await
+            .unwrap();
     }
     for (order, title) in ["Alpha", "Bravo", "Charlie"].iter().enumerate() {
         let content = json!({"title": title, "column": "todo", "order": order + 1});
@@ -10208,7 +10212,10 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
     eprintln!(
         "the agent answered the request after {} s: {:?}",
         started.elapsed().as_secs(),
-        replies.iter().map(|reply| reply.content.clone()).collect::<Vec<_>>()
+        replies
+            .iter()
+            .map(|reply| reply.content.clone())
+            .collect::<Vec<_>>()
     );
     assert_eq!(replies.len(), 1, "one reply to the mention: {replies:?}");
 
@@ -10235,7 +10242,11 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
     assert_eq!(proposed.proposer.id.as_deref(), Some(agent_hex.as_str()));
     assert_eq!(proposed.proposer.channel, Some(channel));
     assert_eq!(
-        proposed.proposer.asked_by.as_ref().map(|asker| asker.id.clone()),
+        proposed
+            .proposer
+            .asked_by
+            .as_ref()
+            .map(|asker| asker.id.clone()),
         Some(identity.pubkey.clone()),
         "the owner asked"
     );
@@ -10246,7 +10257,15 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
         .call(move |store| {
             let mut apps = Apps::at(store, at);
             let review = apps.review(community, "board", version).unwrap();
-            eprintln!("{}", review.render(|_| String::new()).lines().take(12).collect::<Vec<_>>().join("\n"));
+            eprintln!(
+                "{}",
+                review
+                    .render(|_| String::new())
+                    .lines()
+                    .take(12)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
             apps.approve(community, "board", version, &hash).unwrap();
             Ok(apps.bundle(community, "board", version).unwrap())
         })
@@ -10265,24 +10284,47 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
     }
     // The agent's next turn in the channel is told.
     let next = publish(
-        buzz_sdk::build_message(channel, "is it in?", None, &[agent_hex.as_str()], false, &[], &[])
-            .unwrap(),
+        buzz_sdk::build_message(
+            channel,
+            "is it in?",
+            None,
+            &[agent_hex.as_str()],
+            false,
+            &[],
+            &[],
+        )
+        .unwrap(),
     )
     .await;
     let replies = replies_to(next).await;
-    assert_eq!(replies.len(), 1, "one reply to the second mention: {replies:?}");
+    assert_eq!(
+        replies.len(),
+        1,
+        "one reply to the second mention: {replies:?}"
+    );
     if real.is_none() {
         let prompts = script
             .received("session/prompt")
             .into_iter()
-            .filter_map(|params| params.pointer("/prompt/0/text").and_then(serde_json::Value::as_str).map(str::to_owned))
+            .filter_map(|params| {
+                params
+                    .pointer("/prompt/0/text")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
             .collect::<Vec<_>>();
         assert!(
-            prompts[1].contains(&format!("- your version {version} of the app board: applied.")),
+            prompts[1].contains(&format!(
+                "- your version {version} of the app board: applied."
+            )),
             "{}",
             prompts[1]
         );
-        assert!(!prompts[0].contains("Since your last turn"), "{}", prompts[0]);
+        assert!(
+            !prompts[0].contains("Since your last turn"),
+            "{}",
+            prompts[0]
+        );
     }
     // No record of the agent's reached the channel: a try stays apart.
     let heads = owner_http
