@@ -21,6 +21,8 @@ use uuid::Uuid;
 
 mod manage;
 mod pane;
+#[cfg(feature = "apps")]
+mod share;
 
 use crate::clock::WallClock as _;
 use crate::{
@@ -323,6 +325,9 @@ enum Background {
     /// the session's waker sends no other until this one is taken.
     #[cfg_attr(not(feature = "apps"), allow(dead_code))]
     AppWake,
+    /// What came of the offers of apps in the channel shown (v0.16 M6).
+    #[cfg(feature = "apps")]
+    AppOffers(crate::service::offers::OfferNews),
     /// A federated sign-in finished; evidence is installed, reconnect now.
     FederatedReady,
     /// A fixed status notice (federated identity, reports, send to channel).
@@ -1165,6 +1170,8 @@ impl App {
                         redraw.request_if(self.poll_apps());
                         continue;
                     },
+                    #[cfg(feature = "apps")]
+                    Background::AppOffers(news)=>self.offer_news(news),
                     Background::Changed | Background::DraftAcknowledged=>{
                         self.cache_dirty=true;
                         if matches!(event, Background::DraftAcknowledged) {
@@ -2508,8 +2515,7 @@ impl App {
                 // What arrives on an app's records subscription is the
                 // records service's, whatever its kind.
                 if subscription == ARTIFACT_SYNC_SUBSCRIPTION
-                    || subscription
-                        .starts_with(crate::protocol::artifact::APP_RECORDS_SUBSCRIPTION_PREFIX)
+                    || crate::protocol::artifact::is_apps_subscription(&subscription)
                     || matches!(event.kind.as_u16(), 45_010 | 45_011)
                 {
                     return self.apply_artifact_sync_event(&subscription, &event).await;
@@ -2690,11 +2696,10 @@ impl App {
                     self.refresh_artifact_panel().await?;
                     return Ok(true);
                 }
-                // The state of an app's records is its pane's to show, not
-                // the status line's.
-                if subscription
-                    .starts_with(crate::protocol::artifact::APP_RECORDS_SUBSCRIPTION_PREFIX)
-                {
+                // The state of an app's records is its pane's to show, and
+                // that of the offers of apps the offers service's: not the
+                // status line's.
+                if crate::protocol::artifact::is_apps_subscription(&subscription) {
                     return Ok(false);
                 }
                 if subscription == AGENT_TYPING_SUBSCRIPTION {

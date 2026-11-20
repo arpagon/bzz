@@ -106,6 +106,12 @@ pub struct AppPanes {
     /// A test's records in memory, in place of the relay's.
     #[cfg(all(test, feature = "apps"))]
     pub memory: Option<crate::apps::session::SharedStore>,
+    /// The offers of apps in the channel shown, for the community it was
+    /// made for (M6).
+    #[cfg(feature = "apps")]
+    pub offers: Option<(Uuid, crate::service::offers::OffersService)>,
+    /// What came of offers lately, for `:apps`.
+    pub offer_notes: Vec<String>,
 }
 
 /// How often the store is asked again: an answer given at the shell, or by
@@ -384,6 +390,7 @@ impl App {
     pub(super) async fn tick_apps(&mut self) -> Result<bool> {
         #[cfg(feature = "apps")]
         {
+            self.watch_offers();
             let mut changed = self.reconcile_apps().await?;
             if self
                 .apps
@@ -458,6 +465,9 @@ impl App {
     pub(super) fn close_all_apps(&mut self) {
         #[cfg(feature = "apps")]
         self.apps.live.clear();
+        #[cfg(feature = "apps")]
+        self.stop_offers();
+        self.apps.offer_notes.clear();
         self.apps.open.clear();
         self.apps.open_of = None;
         self.apps.zoom = false;
@@ -580,7 +590,7 @@ impl App {
             if !lines.is_empty() {
                 lines.push((String::new(), false));
             }
-            lines.push((note.clone(), false));
+            lines.extend(note.lines().map(|line| (line.to_owned(), false)));
         }
         lines
     }
@@ -588,6 +598,15 @@ impl App {
 
 #[cfg(feature = "apps")]
 impl App {
+    /// A folder in development runs in `channel`: nothing approved is open
+    /// there.
+    pub(super) fn dev_open_in(&self, channel: Uuid) -> bool {
+        self.apps
+            .live
+            .iter()
+            .any(|live| live.channel == channel && live.is_dev())
+    }
+
     /// A waker for a session: one message on the background channel, sent
     /// without waiting, and none while one is still to be taken.
     fn app_waker(&self) -> crate::apps::runtime::Waker {
@@ -1156,12 +1175,16 @@ impl App {
             return Ok(());
         };
         let root = self.paths.apps_dir();
-        let listed = self
+        let (listed, shares) = self
             .store
             .call(move |store| {
-                Ok(crate::apps::store::Apps::at(store, root)
-                    .list(community)
-                    .map_err(|error| error.to_string()))
+                let shares = store.app_shares(community)?;
+                Ok((
+                    crate::apps::store::Apps::at(store, root)
+                        .list(community)
+                        .map_err(|error| error.to_string()),
+                    shares,
+                ))
             })
             .await?;
         let listed = match listed {
@@ -1188,9 +1211,40 @@ impl App {
                     (Some(version), true) => format!("version {}", version.version),
                     (None, true) => "not approved".to_owned(),
                 };
-                let waiting = match app.waiting.len() {
-                    0 => String::new(),
-                    n => format!(" · {n} waiting"),
+                let offered: Vec<String> = app
+                    .waiting
+                    .iter()
+                    .filter(|version| {
+                        version.proposer.kind == crate::store::apps::ProposerKind::Member
+                    })
+                    .map(|version| {
+                        format!(
+                            "offered by {}{}",
+                            crate::render::sanitize::single_line(
+                                version.proposer.name.as_deref().unwrap_or("someone")
+                            ),
+                            version
+                                .proposer
+                                .channel
+                                .map(|channel| format!(" in {}", channel_name(&channel)))
+                                .unwrap_or_default()
+                        )
+                    })
+                    .collect();
+                let waiting = match (app.waiting.len(), offered.is_empty()) {
+                    (0, _) => String::new(),
+                    (n, true) => format!(" · {n} waiting"),
+                    (n, false) => format!(" · {n} waiting ({})", offered.join(", ")),
+                };
+                let shared: Vec<String> = shares
+                    .iter()
+                    .filter(|share| share.name == app.app.name && share.is_shared())
+                    .map(|share| channel_name(&share.channel))
+                    .collect();
+                let shared = if shared.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · shared in {}", shared.join(", "))
                 };
                 let open = if app.channels.is_empty() {
                     "open nowhere".to_owned()
@@ -1207,7 +1261,7 @@ impl App {
                 AppRow {
                     name: app.app.name.clone(),
                     line: format!(
-                        "{} ({}) · {state}{waiting} · {open}",
+                        "{} ({}) · {state}{waiting} · {open}{shared}",
                         app.app.name,
                         crate::render::sanitize::single_line(&app.title())
                     ),
@@ -1217,12 +1271,20 @@ impl App {
         let note = if rows.is_empty() {
             "No app is installed in this community. At the shell: bzz app new <name>, then bzz app add <folder>."
         } else {
-            "Enter opens the selected app in this channel · a shows its waiting version for your answer · :app close closes it · Esc closes this list. Only an approved app runs."
+            "Enter opens the selected app in this channel · a shows its waiting version for your answer · :app share offers the open one here · :app close closes it · Esc closes this list. Only an approved app runs."
         };
+        let mut note = note.to_owned();
+        if !self.apps.offer_notes.is_empty() {
+            note.push_str("\n\nOffers lately:");
+            for line in &self.apps.offer_notes {
+                note.push_str("\n  ");
+                note.push_str(line);
+            }
+        }
         self.apps.list = Some(AppList {
             rows,
             selected: 0,
-            note: Some(note.to_owned()),
+            note: Some(note),
         });
         self.presentation.open_overlay(Overlay::Apps);
         Ok(())
