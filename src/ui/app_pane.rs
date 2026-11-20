@@ -120,7 +120,7 @@ pub enum PasteTarget {
 pub fn paste_target(context: PasteContext) -> PasteTarget {
     match context.overlay {
         Some(Overlay::AgentNew) => PasteTarget::AgentForm,
-        Some(Overlay::Approval) => PasteTarget::ApprovalReason,
+        Some(Overlay::Approval | Overlay::AppApproval) => PasteTarget::ApprovalReason,
         Some(_) => PasteTarget::Dropped,
         None if context.composer_open => PasteTarget::Composer,
         None if context.app_focused => PasteTarget::App,

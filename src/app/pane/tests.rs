@@ -361,3 +361,472 @@ async fn a_looping_script_costs_the_window_nothing() {
         typing.elapsed()
     );
 }
+
+// ------------------------------------------------ approval and management
+
+mod managed {
+    use super::*;
+    use crate::apps::runtime::{Limits, SystemClock, Who};
+    use crate::apps::session::{MemoryStore, SharedStore};
+    use crate::apps::store::{
+        Apps, Outcome, Proposer, Recorded, Submission, VersionState, examine_with,
+    };
+
+    /// A counter whose state is its count; each version says which it is.
+    fn counter(version: &str, types: &str, extra: &str) -> String {
+        format!(
+            r#"
+local app = {{ api = 1, types = {{ {types} }} }}
+function app.init(ctx) return {{ n = 0 }} end
+function app.view(s, ctx) return ui.text {{ "{version} count " .. s.n }} end
+function app.key(s, key, ctx) if key.name == "j" then s.n = s.n + 1 end end
+{extra}
+return app
+"#
+        )
+    }
+
+    const BRIEF: &str = "# Counter\n\nCounts. Records: `note`, `tag`, none written.\n";
+
+    /// bzz's App with a store of apps on disk and records in memory.
+    async fn managed(temporary: &TempDir) -> (App, Uuid) {
+        let (mut app, channel) = fixture(temporary).await;
+        app.apps.memory = Some(SharedStore::new(MemoryStore::new(
+            Who::new("a".repeat(64), "you"),
+            SystemClock::shared(),
+        )));
+        app.tick_apps().await.unwrap();
+        (app, channel)
+    }
+
+    /// Proposes a version, as `bzz app add` or an agent's tool does.
+    async fn propose(app: &App, script: String, from: Proposer) -> Recorded {
+        let community = app.active_community_id().unwrap();
+        let root = app.paths.apps_dir();
+        let submission = Submission::new("counter", script, BRIEF, from);
+        let examined =
+            tokio::task::spawn_blocking(move || examine_with(submission, &Limits::patient()))
+                .await
+                .unwrap()
+                .unwrap();
+        app.store
+            .call(move |store| Ok(Apps::at(store, root).record(community, examined).unwrap()))
+            .await
+            .unwrap()
+    }
+
+    async fn state_of(app: &App, version: u32) -> (VersionState, Outcome, Option<u32>) {
+        let community = app.active_community_id().unwrap();
+        let root = app.paths.apps_dir();
+        app.store
+            .call(move |store| {
+                let apps = Apps::at(store, root);
+                let row = apps
+                    .versions(community, "counter")
+                    .unwrap()
+                    .into_iter()
+                    .find(|row| row.version == version)
+                    .unwrap();
+                let outcome = apps.outcome(community, "counter", version).unwrap();
+                let current = apps.get(community, "counter").unwrap().app.current;
+                Ok((row.state, outcome, current))
+            })
+            .await
+            .unwrap()
+    }
+
+    /// One turn of bzz's loop: a tick (which asks the store at once), then
+    /// polls until `wanted` is drawn, then a tick that records what the
+    /// polls found.
+    async fn turn(app: &mut App, wanted: &str) -> String {
+        app.apps.checked = None;
+        app.tick_apps().await.unwrap();
+        let shown = until(app, 120, 30, wanted).await;
+        app.tick_apps().await.unwrap();
+        shown
+    }
+
+    fn ctrl_y() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)
+    }
+
+    async fn command(app: &mut App, arguments: &str) {
+        app.app_command(arguments).await.unwrap();
+    }
+
+    async fn answer(app: &mut App, code: KeyCode) {
+        app.app_review_answer_key(key(code)).await.unwrap();
+    }
+
+    /// Rule 16 end to end in bzz's window: a version runs in the pane only
+    /// after the owner approved it in the overlay; an approval of a version
+    /// of an open app changes it in place, with its state; a change of the
+    /// declared types is shown as a change.
+    #[tokio::test]
+    async fn a_version_runs_only_after_its_approval_and_an_approval_changes_the_open_app_in_place()
+    {
+        let temporary = TempDir::new().unwrap();
+        let (mut app, _channel) = managed(&temporary).await;
+        let Recorded::Waiting {
+            version: 1, hash, ..
+        } = propose(&app, counter("v1", "\"note\"", ""), Proposer::owner()).await
+        else {
+            panic!("version 1 waits");
+        };
+        // Before the approval nothing of it runs: `:app open` refuses.
+        command(&mut app, "open counter").await;
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(
+            said.contains("counter has no approved version (one waits for your answer)"),
+            "{said}"
+        );
+        assert!(app.apps.live.is_empty());
+        assert!(app.apps.open.is_empty());
+        // It is announced, as an agent's command is.
+        let shown = turn(&mut app, "waits for your approval").await;
+        assert!(
+            shown.contains(
+                "counter: version 1 from you waits for your approval · Ctrl-Y to see and answer it"
+            ),
+            "{shown}"
+        );
+        // Ctrl+Y opens it: who, the hash, the types (all new), the script.
+        assert!(app.app_review_key(ctrl_y()).await.unwrap());
+        assert_eq!(app.presentation.overlay, Some(Overlay::AppApproval));
+        let shown = screen(&mut app, 120, 40);
+        for expected in [
+            "a version of an app waits for your answer · a approve · r refuse",
+            "counter (Counter), version 1",
+            "From:     you",
+            &format!("Hash:     {hash}"),
+            "Record types: note",
+            "No version of this app runs yet: all of them are new.",
+            "| # Counter",
+            "+local app = { api = 1, types = { \"note\" } }",
+            "that is the whole version",
+        ] {
+            assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
+        }
+        assert!(
+            !shown.contains("waits for your approval · Ctrl-Y"),
+            "the banner gives way"
+        );
+        // A paste only types a reason, and only while one is written.
+        answer(&mut app, KeyCode::Char('a')).await;
+        assert_eq!(app.presentation.overlay, None);
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(said.contains("counter: version 1 approved"), "{said}");
+        assert_eq!(state_of(&app, 1).await.0, VersionState::Approved);
+
+        // Approved: it opens, and runs exactly those bytes.
+        command(&mut app, "open counter").await;
+        let shown = turn(&mut app, "v1 count 0").await;
+        assert!(shown.contains("Counter · Ctrl-c leave"), "{shown}");
+        for _ in 0..3 {
+            assert!(app.app_key(key(KeyCode::Char('j'))));
+        }
+        until(&mut app, 120, 30, "v1 count 3").await;
+
+        // One of the owner's agents proposes a version that declares one
+        // type more. While it waits, the open app is the approved one.
+        let Recorded::Waiting { version: 2, .. } = propose(
+            &app,
+            counter("v2", "\"note\", \"tag\"", ""),
+            Proposer::agent("e".repeat(64), "Scout"),
+        )
+        .await
+        else {
+            panic!("version 2 waits");
+        };
+        let shown = turn(&mut app, "waits for your approval").await;
+        assert!(shown.contains("v1 count 3"), "{shown}");
+        assert!(
+            shown.contains("counter: version 2 from your agent Scout"),
+            "{shown}"
+        );
+        // Ctrl+Y reaches bzz while the app has the keyboard.
+        assert_eq!(
+            app.key_owner(ctrl_y()),
+            crate::ui::app_pane::KeyOwner::Approval
+        );
+        assert!(app.app_review_key(ctrl_y()).await.unwrap());
+        let shown = screen(&mut app, 120, 40);
+        for expected in [
+            "counter (Counter), version 2",
+            "your agent Scout (eeeeeeee",
+            "Record types: note, tag",
+            "CHANGED from the version that runs:",
+            "+ tag   new: the app could not read or write these records before",
+            "Difference from version 1, which runs: 2 lines added, 2 removed:",
+        ] {
+            assert!(shown.contains(expected), "`{expected}` in:\n{shown}");
+        }
+        answer(&mut app, KeyCode::Char('a')).await;
+        // In place: the count is the one version 1 had.
+        let shown = turn(&mut app, "v2 count 3").await;
+        assert!(!shown.contains("waits for your approval"), "{shown}");
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(
+            said.contains(
+                "counter: version 2 runs now in place of version 1; the app kept its state"
+            ),
+            "{said}"
+        );
+        assert_eq!(state_of(&app, 2).await.1, Outcome::Applied);
+    }
+
+    /// M3 left this: approved bytes that fail as the pane puts them to run.
+    /// A version that loads apart and then fails in the open app (its
+    /// `app.reload` raises) leaves the one before running with its state,
+    /// and is recorded as failed; the proposer is told the error.
+    #[tokio::test]
+    async fn a_version_that_fails_as_it_is_put_to_run_leaves_the_one_before_running() {
+        let temporary = TempDir::new().unwrap();
+        let (mut app, _channel) = managed(&temporary).await;
+        let Recorded::Waiting { hash, .. } =
+            propose(&app, counter("v1", "\"note\"", ""), Proposer::owner()).await
+        else {
+            panic!("waits");
+        };
+        let community = app.active_community_id().unwrap();
+        let root = app.paths.apps_dir();
+        app.store
+            .call(move |store| {
+                Apps::at(store, root)
+                    .approve(community, "counter", 1, &hash)
+                    .unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+        command(&mut app, "open counter").await;
+        turn(&mut app, "v1 count 0").await;
+        for _ in 0..2 {
+            app.app_key(key(KeyCode::Char('j')));
+        }
+        until(&mut app, 120, 30, "v1 count 2").await;
+        let broken = counter(
+            "v2",
+            "\"note\"",
+            "function app.reload(s, ctx) error(\"v2 cannot take this state\") end",
+        );
+        propose(&app, broken, Proposer::agent("e".repeat(64), "Scout")).await;
+        turn(&mut app, "waits for your approval").await;
+        app.open_app_review(Some("counter")).await.unwrap();
+        // A yes is taken only once all of it has been on screen.
+        answer(&mut app, KeyCode::Char('a')).await;
+        assert!(
+            app.apps
+                .review
+                .notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("scroll to the end first")),
+            "{:?}",
+            app.apps.review.notice
+        );
+        assert_eq!(state_of(&app, 2).await.0, VersionState::Waiting);
+        screen(&mut app, 120, 40);
+        answer(&mut app, KeyCode::Char('a')).await;
+        // The pane tried it, and gave the approved bytes of version 1 back.
+        app.apps.checked = None;
+        app.tick_apps().await.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            app.poll_apps();
+            app.tick_apps().await.unwrap();
+            if state_of(&app, 2).await.0 == VersionState::Failed {
+                break;
+            }
+            assert!(Instant::now() < deadline, "version 2 is recorded as failed");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let shown = until(&mut app, 120, 30, "v1 count 2").await;
+        assert!(!shown.contains("v2 count"), "{shown}");
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(
+            said.contains(
+                "counter: version 2 failed as it was put to run, and version 1 goes on running"
+            ) && said.contains("v2 cannot take this state"),
+            "{said}"
+        );
+        let (_, outcome, current) = state_of(&app, 2).await;
+        assert_eq!(current, Some(1));
+        let Outcome::Failed { error } = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert!(
+            error.contains("in app.reload") && error.contains("counter.lua:"),
+            "{error}"
+        );
+        // Still the same session: the count goes on from 2.
+        app.app_key(key(KeyCode::Char('j')));
+        until(&mut app, 120, 30, "v1 count 3").await;
+    }
+
+    /// Rollback, refuse, disable, enable and remove from the TUI, with the
+    /// app open: the same store calls as the command line.
+    #[tokio::test]
+    async fn rollback_refuse_disable_enable_and_remove_from_the_tui() {
+        let temporary = TempDir::new().unwrap();
+        let (mut app, channel) = managed(&temporary).await;
+        for (number, version) in [(1, "v1"), (2, "v2")] {
+            let Recorded::Waiting { hash, .. } =
+                propose(&app, counter(version, "\"note\"", ""), Proposer::owner()).await
+            else {
+                panic!("waits");
+            };
+            let community = app.active_community_id().unwrap();
+            let root = app.paths.apps_dir();
+            app.store
+                .call(move |store| {
+                    Apps::at(store, root)
+                        .approve(community, "counter", number, &hash)
+                        .unwrap();
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
+        command(&mut app, "open counter").await;
+        turn(&mut app, "v2 count 0").await;
+        app.app_key(key(KeyCode::Char('j')));
+        until(&mut app, 120, 30, "v2 count 1").await;
+        // Back to version 1, in place, with the state.
+        command(&mut app, "rollback counter").await;
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(said.contains("counter: back to version 1 from 2"), "{said}");
+        turn(&mut app, "v1 count 1").await;
+        // A version refused with a reason: nothing of it runs.
+        propose(
+            &app,
+            counter("v3", "\"note\"", ""),
+            Proposer::agent("e".repeat(64), "Scout"),
+        )
+        .await;
+        app.apps.checked = None;
+        app.tick_apps().await.unwrap();
+        command(&mut app, "refuse counter not on this board").await;
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(
+            said.contains("counter: version 3 refused (\"not on this board\")"),
+            "{said}"
+        );
+        assert_eq!(
+            state_of(&app, 3).await.1,
+            Outcome::Refused {
+                reason: Some("not on this board".into())
+            }
+        );
+        let shown = turn(&mut app, "v1 count 1").await;
+        assert!(!shown.contains("waits for your approval"), "{shown}");
+        // Disabled: it closes; enabled: it is open there again.
+        command(&mut app, "disable counter").await;
+        app.apps.checked = None;
+        app.tick_apps().await.unwrap();
+        assert!(app.shown_app().is_none());
+        assert!(!screen(&mut app, 120, 30).contains("v1 count"));
+        command(&mut app, "enable counter").await;
+        turn(&mut app, "v1 count 0").await;
+        assert_eq!(app.shown_app().map(|(at, _)| at), Some(channel));
+        // Removed: it closes, and nothing of it is left to open.
+        command(&mut app, "remove counter").await;
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(
+            said.contains("counter is uninstalled") && said.contains("stay in the channel"),
+            "{said}"
+        );
+        app.apps.checked = None;
+        app.tick_apps().await.unwrap();
+        assert!(app.shown_app().is_none());
+        assert!(app.apps.live.is_empty());
+        command(&mut app, "open counter").await;
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(said.contains("no app named counter is installed"), "{said}");
+    }
+
+    /// `:app dev <folder>`: the owner's folder in this channel's pane, not
+    /// approved and marked so, reloaded on save with its state; a broken
+    /// save leaves the old version running; `:app close` ends it and the
+    /// store is not told of it.
+    #[tokio::test]
+    async fn app_dev_runs_the_owners_folder_here_and_reloads_it_on_save() {
+        let temporary = TempDir::new().unwrap();
+        let (mut app, _channel) = managed(&temporary).await;
+        let folder = temporary.path().join("tasks");
+        crate::apps::store::templates::find("board")
+            .unwrap()
+            .write("tasks", None, &folder)
+            .unwrap();
+        command(&mut app, &format!("dev {}", folder.display())).await;
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(
+            said.starts_with("dev: ") && said.contains("bzz.app.tasks.*"),
+            "{said}"
+        );
+        let shown = until(&mut app, 120, 30, "To do (0)").await;
+        assert!(shown.contains("not approved"), "{shown}");
+        assert!(shown.contains("Tasks · not approved · dev"), "{shown}");
+        app.app_key(key(KeyCode::Char('n')));
+        for character in "Buy milk".chars() {
+            app.app_key(key(KeyCode::Char(character)));
+        }
+        app.app_key(key(KeyCode::Enter));
+        until(&mut app, 120, 30, "To do (1)").await;
+        // A save: the new version, with the card and the selection.
+        let script = folder.join("app.lua");
+        let text = std::fs::read_to_string(&script).unwrap();
+        std::fs::write(&script, text.replace("\"To do\"", "\"Backlog\"")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            for live in &mut app.apps.live {
+                if let crate::app::pane::live::Run::Dev { folder, .. } = &mut live.run {
+                    folder.look_now();
+                }
+            }
+            app.tick_apps().await.unwrap();
+            app.poll_apps();
+            if screen(&mut app, 120, 30).contains("Backlog (1)") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{}", screen(&mut app, 120, 30));
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        // A broken save: the old version goes on, and says why.
+        std::fs::write(
+            &script,
+            format!("{}\nreturn app(", text.replace("\"To do\"", "\"Backlog\"")),
+        )
+        .unwrap();
+        for live in &mut app.apps.live {
+            if let crate::app::pane::live::Run::Dev { folder, .. } = &mut live.run {
+                folder.look_now();
+            }
+        }
+        app.tick_apps().await.unwrap();
+        let shown = until(&mut app, 120, 30, "app.lua:").await;
+        assert!(shown.contains("Backlog (1)"), "{shown}");
+        assert!(
+            app.apps
+                .live
+                .iter()
+                .find_map(|live| live.error())
+                .is_some_and(
+                    |error| error.contains("reload failed: the previous version keeps running")
+                ),
+            "the error says the old version goes on"
+        );
+        // Never remembered: the store has it open nowhere, and :app close
+        // ends it.
+        let community = app.active_community_id().unwrap();
+        let root = app.paths.apps_dir();
+        let installed = app
+            .store
+            .call(move |store| Ok(Apps::at(store, root).list(community).unwrap().len()))
+            .await
+            .unwrap();
+        assert_eq!(installed, 0);
+        command(&mut app, "close").await;
+        assert!(app.shown_app().is_none());
+        assert!(app.apps.live.is_empty());
+    }
+}
