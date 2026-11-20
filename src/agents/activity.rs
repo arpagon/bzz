@@ -59,6 +59,16 @@ pub enum What {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
+    /// A version of an app's script the agent proposed, or tried to (v0.16
+    /// M5): which app, the version's number when it was recorded, and who
+    /// asked for it. Never the script.
+    Proposal {
+        app: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u32>,
+        /// The name of the person whose message asked for it.
+        asked_by: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -145,6 +155,24 @@ impl Entry {
         )
     }
 
+    /// An entry for a version of an app the agent proposed, or tried to.
+    pub fn proposal(
+        app: &str,
+        version: Option<u32>,
+        asked_by: &str,
+        answer: impl Into<String>,
+    ) -> Self {
+        let short = |text: &str| sanitize::visible(text).chars().take(64).collect();
+        Self::now(
+            What::Proposal {
+                app: short(app),
+                version,
+                asked_by: short(asked_by),
+            },
+            answer,
+        )
+    }
+
     /// An entry for a credential asked for. Only the host is kept.
     pub fn credential(host: &str, answer: impl Into<String>) -> Self {
         Self::now(
@@ -189,6 +217,18 @@ impl Entry {
                 id.as_deref()
                     .map(|id| format!(" ({})", id.chars().take(8).collect::<String>()))
                     .unwrap_or_default(),
+                self.answer
+            ),
+            What::Proposal {
+                app,
+                version,
+                asked_by,
+            } => format!(
+                "{when} · {} of the app {app} proposed, asked by {asked_by} · {}",
+                version.map_or_else(
+                    || "a version".to_owned(),
+                    |version| format!("version {version}")
+                ),
                 self.answer
             ),
         }

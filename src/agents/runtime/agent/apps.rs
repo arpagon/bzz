@@ -25,8 +25,9 @@
 //! - **The owner sees it** in the agent's activity (`bzz agent show`), one
 //!   line per write with the app, the change, the type and the record.
 //!
-//! The tools of M5 (an app's script) belong beside these, in their own
-//! file.
+//! The tools of M5, an app's script, are in [`authoring`].
+
+mod authoring;
 
 use std::time::Instant;
 
@@ -71,11 +72,13 @@ struct Opened {
     used: Instant,
 }
 
-/// What one agent holds of apps: the records it has open, and its budget.
+/// What one agent holds of apps: the records it has open, its budget, and
+/// what it spends of tries and proposals.
 pub(super) struct AgentApps {
     open: tokio::sync::Mutex<Vec<Opened>>,
     budget: Mutex<WriteBudget>,
     clock: Instant,
+    authoring: authoring::Authoring,
 }
 
 impl Default for AgentApps {
@@ -84,6 +87,7 @@ impl Default for AgentApps {
             open: tokio::sync::Mutex::new(Vec::new()),
             budget: Mutex::new(WriteBudget::new(AGENT_RECORD_WRITES_PER_MINUTE)),
             clock: Instant::now(),
+            authoring: authoring::Authoring::default(),
         }
     }
 }
@@ -115,6 +119,7 @@ struct Usable {
     title: String,
     types: Vec<String>,
     brief: String,
+    version: u32,
 }
 
 /// The apps open in a channel: those an agent may use, and those it may
@@ -249,6 +254,7 @@ impl Agent {
                             title: runnable.title().to_owned(),
                             types: runnable.types().to_vec(),
                             brief: bundle.brief,
+                            version: runnable.version(),
                         })
                     });
                     match found {
@@ -319,6 +325,10 @@ impl Agent {
     /// Serves one call of an app tool for the turn whose request is `row`.
     pub(super) async fn app_tool(&self, row: &InboxRow, call: AppCall) -> ToolReply {
         const NOTHING: &str = "Nothing was changed. ";
+        // An app's script: the store of apps, not its records.
+        if call.authors() {
+            return self.author_tool(row, call).await;
+        }
         let nothing = if call.writes() { NOTHING } else { "" };
         let Some(service) = self.relay.records() else {
             return ToolReply::refused(format!(
@@ -340,7 +350,7 @@ impl Agent {
                     .usable
                     .iter()
                     .map(|app| {
-                        json!({"name": app.name, "title": app.title, "types": app.types, "brief": app.brief})
+                        json!({"name": app.name, "title": app.title, "version": app.version, "types": app.types, "brief": app.brief})
                     })
                     .collect::<Vec<_>>();
                 let mut listed = json!({"apps": apps});
@@ -515,7 +525,7 @@ impl Agent {
                     .map_or_else(|| "record".to_owned(), |held| held.record_type),
                 Some(id.to_string()),
             ),
-            AppCall::Apps | AppCall::Records { .. } => unreachable!("not a write"),
+            _ => unreachable!("not a write"),
         };
         let note = |answer: &str, id: Option<String>| {
             self.record(&activity::Entry::record(
@@ -562,7 +572,7 @@ impl Agent {
                 id, rev, content, ..
             } => records.update(id, &rev, content).await,
             AppCall::Delete { id, rev, .. } => records.delete(id, &rev).await,
-            AppCall::Apps | AppCall::Records { .. } => unreachable!("not a write"),
+            _ => unreachable!("not a write"),
         };
         match result {
             Ok(stored) => {
@@ -691,6 +701,7 @@ mod tests {
                 title: "Rota".into(),
                 types: vec!["day".into()],
                 brief: String::new(),
+                version: 1,
             }],
             unusable: vec![("board".into(), "its owner disabled it".into())],
         };

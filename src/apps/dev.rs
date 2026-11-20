@@ -60,7 +60,7 @@ fn named(name: &str) -> Who {
 }
 
 /// One record to start with.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Seed {
     pub record_type: String,
     pub content: Map<String, Value>,

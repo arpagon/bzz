@@ -1923,6 +1923,12 @@ impl Agent {
         let names = tokio::time::timeout(limit, relay::names(relay, &authors))
             .await
             .unwrap_or_default();
+        // What became of the versions of apps the agent proposed in this
+        // channel, told once (v0.16 M5). Nothing when it proposed none.
+        #[cfg(feature = "apps")]
+        let since = self.app_notices(row.channel_id).await;
+        #[cfg(not(feature = "apps"))]
+        let since = Vec::new();
         prompt::build(&PromptContext {
             agent_name: &self.spec.name,
             agent_pubkey: &self.spec.pubkey,
@@ -1934,6 +1940,7 @@ impl Agent {
             names: &names,
             resumed: row.attempts > 0,
             instructions,
+            since: &since,
         })
     }
 
@@ -2805,6 +2812,7 @@ impl Agent {
             names: &names,
             resumed: false,
             instructions: None,
+            since: &[],
         }))
     }
 

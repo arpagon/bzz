@@ -80,7 +80,7 @@ test("the tools of apps' records are offered only when bzz serves them, and go t
 	const { tools: without } = await described({});
 	assert.deepEqual(without.filter((name) => name.startsWith("buzz_")), ["buzz_send", "buzz_read", "buzz_react"]);
 	const { host, tools } = await described({ apps: true });
-	assert.deepEqual(tools.filter((name) => name.startsWith("buzz_")), ["buzz_send", "buzz_read", "buzz_react", "buzz_apps", "buzz_records", "buzz_create_record", "buzz_update_record", "buzz_delete_record"]);
+	assert.deepEqual(tools.filter((name) => name.startsWith("buzz_")), ["buzz_send", "buzz_read", "buzz_react", "buzz_apps", "buzz_records", "buzz_create_record", "buzz_update_record", "buzz_delete_record", "buzz_app_guide", "buzz_try_app", "buzz_propose_app"]);
 	// What bzz answers is what the model reads; the arguments go as the model gave them, under the name on the wire.
 	host.onTool = (call) => (call.name === "records" ? { text: '{"records":[]}' } : { text: "sent", final: true });
 	const session = await host.session(DM);
