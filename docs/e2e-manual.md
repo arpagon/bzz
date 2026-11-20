@@ -805,8 +805,8 @@ you have not read.
 
 ### Write, check, try and install, at the shell
 
-1. `bzz --version` prints `bzz 0.16.0`. `bzz app list` says no app is
-   installed.
+1. `bzz --version` prints `bzz 0.16.0`. `bzz app list` says `no apps are
+   installed in <community>`.
 2. `bzz app new --templates` lists `board`, `poll` and `approvals`.
    `bzz app new tasks --to "$APPS/tasks"` writes `app.lua`, `app.toml`
    and `brief.md`, `from the template board`. Running it again writes
@@ -821,8 +821,9 @@ you have not read.
    before an answer: `tasks (Tasks), version 1`, `From: you`, its hash,
    `Record types: card` (all new), the brief and the script. Answer `n`:
    `version 1 waits for your answer`, and `bzz app list` says so.
-6. `bzz app approve tasks` shows it again and asks; answer `y`. `bzz app
-   show tasks` lists version 1, approved, and its hash.
+6. `bzz app approve tasks` shows it again and asks; answer `y`: `version 1
+   is approved and is the version that runs now`. `bzz app show tasks` says
+   `version 1 runs`, with its hash, and `open in: no channel`.
 7. Optional: `bzz app dev "$APPS/tasks"` runs the folder in this terminal
    without approval, on records in memory. Make a card, change `"To do"`
    to `"Backlog"` in `app.lua` and save: the column is renamed and the
