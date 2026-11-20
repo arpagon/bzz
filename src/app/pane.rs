@@ -544,6 +544,14 @@ impl App {
                 list.selected = (list.selected + 1).min(list.rows.len().saturating_sub(1));
             }
             KeyCode::Char('k') | KeyCode::Up => list.selected = list.selected.saturating_sub(1),
+            KeyCode::Char('a') => {
+                let name = list.rows.get(list.selected).map(|row| row.name.clone());
+                self.apps.list = None;
+                self.presentation.close_overlay();
+                if let Some(name) = name {
+                    return self.open_app_review(Some(&name)).await;
+                }
+            }
             KeyCode::Enter => {
                 let name = list.rows.get(list.selected).map(|row| row.name.clone());
                 self.apps.list = None;
@@ -1209,7 +1217,7 @@ impl App {
         let note = if rows.is_empty() {
             "No app is installed in this community. At the shell: bzz app new <name>, then bzz app add <folder>."
         } else {
-            "Enter opens the selected app in this channel · :app close closes it · Esc closes this list. Only an approved app runs: bzz app approve <name>."
+            "Enter opens the selected app in this channel · a shows its waiting version for your answer · :app close closes it · Esc closes this list. Only an approved app runs."
         };
         self.apps.list = Some(AppList {
             rows,
@@ -1454,8 +1462,11 @@ mod live {
     /// out at the shell.
     pub fn why_not(name: &str, error: &AppError) -> String {
         match error {
+            AppError::NothingApproved { waiting, .. } if *waiting > 0 => format!(
+                "{error}. Ctrl-Y or :app pending {name} shows it for your answer (at the shell: bzz app approve {name})"
+            ),
             AppError::NothingApproved { .. } => format!(
-                "{error}. Approve it at the shell: bzz app pending {name}, then bzz app approve {name}"
+                "{error}. Propose a version: :app add <folder> (at the shell: bzz app add <folder>)"
             ),
             _ => error.to_string(),
         }

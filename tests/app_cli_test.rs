@@ -488,7 +488,10 @@ fn the_command_line_from_a_new_folder_to_an_uninstalled_app() {
     );
     has(
         &profile.refused(&["app", "dev", folder_arg, "--channel", "general"]),
-        &["needs the app pane of bzz's window, which this version does not have yet"],
+        &[
+            "in the pane of bzz's window, not from here",
+            "type :app dev ",
+        ],
     );
 
     // ---- remove: the channel's records are left alone -------------------
