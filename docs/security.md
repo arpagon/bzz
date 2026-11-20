@@ -509,10 +509,22 @@ what it lends the script ([`adr-v0.16-apps.md`](adr-v0.16-apps.md),
   the brief, the record types with any change in them marked, the sizes and
   the line difference from the version that runs. What a proposer wrote is
   shown with every control and bidirectional character written out
-  (`<U+001B>`), so that it cannot draw on the terminal.
+  (`<U+001B>`), so that it cannot draw on the terminal. Inside bzz the same
+  review is an overlay that opens only when the owner asks (`Ctrl+Y`,
+  `:approvals`, `:app pending`), keeps the hash and the types on screen,
+  and takes a yes only after its last row was drawn; no command approves
+  by itself.
+- **A new version of an open app** replaces the running one in its session
+  only if it loads, declares the approved types and runs its `app.reload`
+  and first `app.view`; otherwise the version before, whose approved bytes
+  bzz holds, is given back and the new one is recorded as failed. What the
+  pane runs is always bytes `Apps::runnable` handed out.
 - **The owner's own folder.** `bzz app dev <folder>` runs a folder without
-  approval (plan D5). It is a folder only the owner can name at his own
-  shell, and in this version it runs on records kept in memory only.
+  approval (plan D5), on records kept in memory. `:app dev <folder>` runs
+  it in the selected channel's pane on that channel's real records, signed
+  by the owner as any app's: it is a folder only the owner can name, typed
+  in his own bzz, and the pane's border says `not approved`. It is never
+  remembered, so a restart does not run it again.
 - **Whose shell it is.** `bzz app approve`, `refuse` and `rollback` are the
   owner's answers because they are typed at his shell. An agent that he lets
   run commands without asking can type them too.
