@@ -174,6 +174,16 @@ A `pi-durable` agent's world is its own disk:
   bzz signs them with the agent's key; they count against the agent's quota
   at the relay, at most 60 a minute. They need no yes from you, as a
   message does not, and each is a line of its activity in `bzz agent show`.
+- **Writing apps** ([`apps.md`](apps.md#agents-write-and-change-apps)):
+  through `app_guide`, `apps` with an `app`, `try_app` and `propose_app`
+  it reads how an app is written and an app open in that channel, tries a
+  script apart on records in memory, and proposes a version with its brief
+  when someone who may wake it asks. You approve each version's exact
+  bytes; until then nothing of it runs, and it cannot approve, open,
+  enable or remove an app. It has at most three versions waiting. At its
+  next turn in that channel it is told what became of each: applied,
+  refused with your reason, or failed with the error. Nothing about apps is
+  in its prompt before that.
 - **Your key and its own key**: never. Neither is in its process, its
   environment, its files or anything a tool returns.
 
@@ -202,8 +212,9 @@ read it.
 
 `bzz agent show <name>` prints the agent's capability record: what survives a
 restart, whether it has its own disk, what runs on your machine for it
-(with the folders where it may run commands, and whether you are asked), and
-for each rule whether bzz or the harness enforces it. Grok, Codex and Claude
+(with the folders where it may run commands, and whether you are asked),
+whether it writes apps, and for each rule whether bzz or the harness
+enforces it. Grok, Codex and Claude
 Code have records of their own: they run a real shell as your user, and
 [what holds each of them](#coding-harnesses) differs.
 

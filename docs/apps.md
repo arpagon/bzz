@@ -13,8 +13,9 @@ script is written against is [`app-api.md`](app-api.md).
 > folder (in a terminal, or in a channel's pane on its records),
 > installed, approved, rolled back, removed, and opened beside a
 > conversation, where a new version replaces the running one in place.
-> The agents' tools and sharing in the channel are not built, and each has
-> a marked section below.
+> Your agents write and change apps through their tools, and you approve
+> each version ("Agents", below). Sharing in the channel is not built, and
+> has a marked section below.
 
 An app is four things, kept apart:
 
@@ -264,7 +265,8 @@ Difference from version 1, which runs: 1 line added, 1 removed:
 ```
 
 - **Who it comes from**: you, one of your agents, or a person of the
-  channel, with their public key.
+  channel, with their public key. For an agent's version, also the person
+  whose message asked for it, on a line of its own (`Asked by:`).
 - **The brief**, and whether it changed.
 - **The record types it declares, and any change in them, marked as such.**
   A new type is what the app could not touch before.
@@ -297,7 +299,7 @@ A version that waits is announced at the top of the screen, wherever you
 are, as an agent's command is:
 
 ```text
- tasks: version 2 from your agent Scout (e5e5e5e5…e5e5) waits for your approval · Ctrl-Y to see and answer it
+ tasks: version 2 from your agent Scout, asked by Ana waits for your approval · Ctrl-Y to see and answer it
 ```
 
 `Ctrl+Y` (even while an app has the keyboard), `:approvals` or `:app
@@ -333,10 +335,11 @@ status line says so:
 tasks: version 3 failed to run; version 2 goes on: app.lua:41: in app.reload: …
 ```
 
-**For whoever proposes a version** (M5's agents, M6's channel):
+**For whoever proposes a version** (your agents, M6's channel):
 `Apps::record` after `examine`, then `Apps::outcome` says what became of
 it: waiting, applied, refused with your reason, or failed with the
-error.
+error. An agent is told it at its next turn in the channel
+(`Apps::untold`, "Agents" below).
 
 ## Managing apps
 
@@ -498,15 +501,58 @@ them, as a person does through the pane. Every harness has the tools
 - A guest of the channel can read and not write: the agent is told the
   relay's refusal.
 
-> **Not in this version yet.** Your agents cannot read, try or propose an
-> app's script.
+### Agents write and change apps
 
-<!-- M5: an agent asked in the channel proposes a version through a tool
-     (`apps::store::examine`, then `Apps::record` with
-     `Proposer::agent(pubkey, name).in_channel(channel)`); it opens your
-     approval and the agent is told the outcome: applied, refused with
-     your reason, or failed to load with the error. Say here which
-     harnesses can author apps, and `:app brief`. -->
+Ask an agent in a channel to make an app, or to change one that is open
+there ("add a priority and a filter to the board"), and it writes the
+script, tries it and proposes it. You approve it, and the open app changes
+in place. It never writes a file, and nothing it writes runs before you
+approve its exact bytes. Every harness has the same tools, which bzz serves
+(`docs/agent-host-protocol.md`, section 5):
+
+| Tool | Does |
+|---|---|
+| `app_guide` | the guide to writing an app ([`app-authoring.md`](app-authoring.md)) and the contract ([`app-api.md`](app-api.md)) |
+| `apps` with `app` | one app open in this channel: its script, manifest and brief, the version that runs, and what became of the versions this agent proposed |
+| `try_app` | loads a script apart, on records in memory (some it gives, or a copy of this channel's records of an app open here), does the keys it gives at 40×16 or the size it gives, and answers the screen as text and any error as `file:line` |
+| `propose_app` | a version of a new app, or of one open here, with its brief: put to you |
+
+- **Nothing about apps is in an agent's prompt** until it asks: the tools'
+  descriptions say that apps exist, and `app_guide` says the rest, as Buzz
+  desktop's `plugin_authoring_guide` does (plan D17).
+- **A try stays apart.** Nothing is stored and nothing reaches the relay:
+  what the script writes changes only the copy in memory. A script that
+  loops is stopped by its time budget, and a try ends after 30 seconds
+  whatever it does. One try at a time per agent, 20 in a minute.
+- **A proposal is loaded apart first.** One that does not load, or whose
+  brief does not name every record type the script declares, comes back to
+  the agent at once with the error, and you are not asked. One that loads
+  waits for you, as a folder you add does, and the approval says
+  **from your agent Scout, asked by Ana**: the agent, and the person whose
+  message asked for it.
+- **Who may ask** (plan D7): anyone who may wake the agent
+  ([`agents.md`](agents.md#add-it-to-a-channel)). The agent proposes only a
+  new app, an app open in the channel it was asked in, or one of which no
+  version was approved yet.
+- **It cannot bury you.** An agent has at most three versions waiting, of
+  all apps together; a later version of an app it has one waiting of takes
+  that one's place. It sends at most six proposals a minute.
+- **It cannot do the rest**: approve, refuse, open, close, enable, disable,
+  roll back or remove an app. There are no tools for them.
+- **The agent is told what became of it** at its next turn in the channel,
+  once: applied; refused, with your reason word for word; or failed as it
+  was put to run, with the error. No message is posted for it by itself:
+  one reply per mention still holds. `apps` with `app` shows it whenever
+  the agent asks.
+- Each proposal is a line of the agent's activity (`bzz agent show`), with
+  who asked and what became of it.
+
+**The brief.** An agent that changes an app keeps its brief true: the
+proposal carries the whole brief, and you see whether it changed.
+`:app brief [name]` posts the brief of the version that runs to the
+channel as your own message, so that the people of the channel, and their
+agents in another client, know what the app does and what its records
+hold.
 
 ## Sharing an app
 
@@ -550,3 +596,4 @@ as it can do anything else that you can. Grant that with this in mind.
 | `<name>: version N failed to run; version M goes on: …` | The approved version loaded apart and failed in the open app: in `app.reload`, in its first `app.view`, or with other record types. It is recorded as failed (`bzz app show <name>`). |
 | `scroll to the end first (j, PgDn): an approval is of all of it` | The approval takes a yes only after its last row was on screen. |
 | `the seed has records of type …, which the script does not declare` | The script will never see those records: check the seed's `type`. |
+| `<name>: version N from your agent …, asked by … waits for your approval` | One of your agents proposed it when that person asked. Ctrl-Y shows it; refuse with a reason and the agent is told the reason. |
