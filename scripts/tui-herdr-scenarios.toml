@@ -1424,7 +1424,7 @@ visible = "New card"
 [[scenario.step]]
 paste = "pasted one\npasted two"
 keys = []
-visible = "pasted two"
+visible = "Title: pasted one pasted two"
 
 [[scenario.step]]
 keys = ["esc"]
