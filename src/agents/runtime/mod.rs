@@ -5,7 +5,8 @@
 //! - [`process`]: one process group per agent, ownership records, the sweep.
 //! - [`acp`]: the protocol's framing and one connection.
 //! - [`admission`]: who may wake an agent, and the place of a request.
-//! - [`tools`]: `send`, `read` and `react`, their checked arguments.
+//! - [`tools`]: `send`, `read` and `react`, their checked arguments;
+//!   `app_tools` (feature `apps`): the tools of an app's records.
 //! - [`approval`]: a real command put to the owner before it starts.
 //! - [`credentials`], [`endpoint`], [`mcp`]: `bzz agent-tools`.
 //! - [`coding`]: Grok, Codex and Claude Code: where each is, the versions
@@ -24,6 +25,8 @@
 pub mod acp;
 pub mod admission;
 pub mod agent;
+#[cfg(feature = "apps")]
+pub mod app_tools;
 pub mod approval;
 pub mod coding;
 pub mod credentials;
