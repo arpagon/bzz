@@ -10729,6 +10729,7 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
         "You are an agent of the owner of this channel. Do what you are asked with your tools."
             .into();
     agent.local = Some(local);
+    let agent_id = agent.id;
     let running = service::serve(service::ServeOptions {
         paths: &paths,
         store: store.clone(),
@@ -10807,6 +10808,39 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
         .unwrap(),
     )
     .await;
+    // A real model may say what it is about to do, with a `send` that is
+    // not final, and go on working: its turn has ended when bzz's inbox
+    // says so, not when the first message shows.
+    let turn_ended = |request: nostr::Event| {
+        let store = store.clone();
+        async move {
+            let deadline = tokio::time::Instant::now() + wait;
+            loop {
+                let id = request.id.to_hex();
+                let state = store
+                    .call(move |store| store.agent_inbox_get(agent_id, &id))
+                    .await
+                    .unwrap()
+                    .map(|row| row.state);
+                let ended = matches!(
+                    state,
+                    Some(
+                        bzz::store::agent_runtime::RequestState::Replied
+                            | bzz::store::agent_runtime::RequestState::Ended
+                            | bzz::store::agent_runtime::RequestState::Failed
+                    )
+                );
+                if ended || tokio::time::Instant::now() > deadline {
+                    eprintln!("the turn's state: {state:?}");
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    };
+    if real.is_some() {
+        turn_ended(request.clone()).await;
+    }
     let replies = replies_to(request.clone()).await;
     eprintln!(
         "the agent answered the request after {} s: {:?}",
@@ -10816,7 +10850,11 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
             .map(|reply| reply.content.clone())
             .collect::<Vec<_>>()
     );
-    assert_eq!(replies.len(), 1, "one reply to the mention: {replies:?}");
+    if real.is_some() {
+        assert!(!replies.is_empty(), "the agent said nothing");
+    } else {
+        assert_eq!(replies.len(), 1, "one reply to the mention: {replies:?}");
+    }
 
     // What it proposed waits; the Board that runs is the owner's.
     let apps_dir = paths.apps_dir();
@@ -10895,12 +10933,29 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
         .unwrap(),
     )
     .await;
+    if real.is_some() {
+        turn_ended(next.clone()).await;
+    }
     let replies = replies_to(next).await;
-    assert_eq!(
-        replies.len(),
-        1,
-        "one reply to the second mention: {replies:?}"
+    eprintln!(
+        "the agent answered the second mention: {:?}",
+        replies
+            .iter()
+            .map(|reply| reply.content.clone())
+            .collect::<Vec<_>>()
     );
+    if real.is_some() {
+        assert!(
+            !replies.is_empty(),
+            "the agent said nothing the second time"
+        );
+    } else {
+        assert_eq!(
+            replies.len(),
+            1,
+            "one reply to the second mention: {replies:?}"
+        );
+    }
     if real.is_none() {
         let prompts = script
             .received("session/prompt")
