@@ -1003,4 +1003,54 @@ return app
             .await
             .unwrap()
     }
+
+    /// `:app brief` (plan D16): the brief of the version that runs, as the
+    /// owner approved it, made into a message for the channel; without a
+    /// connection nothing is sent and the status line says why.
+    #[tokio::test]
+    async fn app_brief_posts_the_approved_brief_and_says_what_it_needs() {
+        let temporary = TempDir::new().unwrap();
+        let (mut app, _channel) = managed(&temporary).await;
+        command(&mut app, "brief").await;
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("no app is open in this channel: :app brief <name> posts an app's brief")
+        );
+        let Recorded::Waiting { hash, .. } =
+            propose_named(&app, "board", BOARD, BOARD_BRIEF, Proposer::owner()).await
+        else {
+            panic!("waits");
+        };
+        command(&mut app, "brief board").await;
+        let said = app.status_error.clone().unwrap_or_default();
+        assert!(said.contains("board has no approved version"), "{said}");
+        let community = app.active_community_id().unwrap();
+        let root = app.paths.apps_dir();
+        app.store
+            .call(move |store| {
+                Apps::at(store, root)
+                    .approve(community, "board", 1, &hash)
+                    .unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+        command(&mut app, "open board").await;
+        turn(&mut app, "To do (0)").await;
+        // This fixture has no relay: the brief is read, and not sent.
+        command(&mut app, "brief").await;
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("a brief is posted to the relay: unlock the identity and connect first")
+        );
+        let message = crate::app::manage::brief_message("board", "Board", 1, BOARD_BRIEF);
+        assert!(
+            message.starts_with(
+                "The brief of the app Board (`board`, version 1), which is open here."
+            ),
+            "{message}"
+        );
+        assert!(message.ends_with(BOARD_BRIEF.trim_end()), "{message}");
+        assert!(message.len() < crate::agents::runtime::tools::MAX_TEXT_BYTES);
+    }
 }

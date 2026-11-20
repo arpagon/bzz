@@ -21,6 +21,8 @@
 //!   :app add <folder>       proposes the folder as yours, then shows it
 //!   :app new <name> [template]   writes ./<name> from a template
 //!   :app dev <folder>       the folder in this channel's pane, unapproved
+//!   :app brief [name]       posts the brief of the version that runs to
+//!                           this channel, as a message of the owner's (D16)
 //! ```
 
 use crossterm::event::KeyEvent;
@@ -33,7 +35,18 @@ use crate::error::Result;
 use crate::ui::state::Overlay;
 
 /// How the commands are written, for a mistake.
-pub const USAGE: &str = "usage: :app open <name> | close | zoom | pending [name] | approve <name> | refuse <name> [reason] | rollback <name> [version] | enable <name> | disable <name> | remove <name> | add <folder> | new <name> [template] | dev <folder>";
+pub const USAGE: &str = "usage: :app open <name> | close | zoom | pending [name] | approve <name> | refuse <name> [reason] | rollback <name> [version] | enable <name> | disable <name> | remove <name> | add <folder> | new <name> [template] | dev <folder> | brief [name]";
+
+/// The message `:app brief` posts: what the app is, which version, and its
+/// brief as it was approved, so that the people of the channel, and their
+/// agents in any client, know what the app does and what its records hold
+/// (plan D16).
+pub fn brief_message(name: &str, title: &str, version: u32, brief: &str) -> String {
+    format!(
+        "The brief of the app {title} (`{name}`, version {version}), which is open here. Its records are shared by the channel; an app of any client that keeps to this brief can use them.\n\n{}",
+        brief.trim_end()
+    )
+}
 
 #[cfg(not(feature = "apps"))]
 impl App {
@@ -421,9 +434,88 @@ impl App {
                 let path = expand(rest.trim());
                 self.open_dev_here(&path).await?;
             }
+            ("brief", name) if second.is_none() => self.post_brief(name).await?,
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    /// `:app brief [name]`: posts the brief of the version of `name` that
+    /// runs (by default the app open in this channel) to this channel, as
+    /// an ordinary message of the owner's. It is the brief the owner
+    /// approved, read from the store and found to be those bytes.
+    async fn post_brief(&mut self, name: Option<&str>) -> Result<()> {
+        let Some(community) = self.active_community_id() else {
+            self.status_error = Some("select a community first".into());
+            return Ok(());
+        };
+        let Some(channel) = self.current_channel().cloned() else {
+            self.status_error = Some("select a channel first".into());
+            return Ok(());
+        };
+        let Some(name) = name
+            .map(str::to_owned)
+            .or_else(|| self.shown_app().map(|(_, name)| name.to_owned()))
+        else {
+            self.status_error = Some(
+                "no app is open in this channel: :app brief <name> posts an app's brief".into(),
+            );
+            return Ok(());
+        };
+        if let Some(reason) = channel.read_only_reason() {
+            self.status_error = Some(reason.notice().into());
+            return Ok(());
+        }
+        let root = self.paths.apps_dir();
+        let wanted = name.clone();
+        let read = self
+            .store
+            .call(move |store| {
+                let apps = crate::apps::store::Apps::at(store, root);
+                let found = apps.get(community, &wanted).and_then(|listed| {
+                    let title = listed.title();
+                    let version = listed.app.current.ok_or_else(|| {
+                        crate::apps::store::AppError::NothingApproved {
+                            name: wanted.clone(),
+                            waiting: listed.waiting.len(),
+                        }
+                    })?;
+                    let bundle = apps.bundle(community, &wanted, version)?;
+                    Ok(brief_message(&wanted, &title, version, &bundle.brief))
+                });
+                Ok(found.map_err(|error| error.to_string()))
+            })
+            .await?;
+        let text = match read {
+            Ok(text) => text,
+            Err(error) => {
+                self.status_error = Some(error);
+                return Ok(());
+            }
+        };
+        let Some(runtime) = &self.runtime else {
+            self.status_error = Some(
+                "a brief is posted to the relay: unlock the identity and connect first".into(),
+            );
+            return Ok(());
+        };
+        let service = runtime.messages.clone();
+        let tx = self.background_tx.clone();
+        let channel_id = channel.id;
+        tokio::spawn(async move {
+            let result = service.send(channel_id, &text).await;
+            let _ = tx
+                .send(match result {
+                    Ok(_) => super::Background::Changed,
+                    Err(error) => super::Background::Failed(error.to_string()),
+                })
+                .await;
+        });
+        self.status_error = Some(format!(
+            "{name}: its brief is posted to #{} as your message",
+            crate::render::sanitize::single_line(&channel.name)
+        ));
+        Ok(())
     }
 
     /// One call of the store for the app `name` of the community, whose
