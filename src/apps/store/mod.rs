@@ -63,7 +63,9 @@ use crate::protocol::artifact::APP_RECORD_TYPE_PREFIX;
 use crate::store::Store;
 use crate::store::apps::NewAppVersion;
 
-pub use crate::store::apps::{AppVersion, InstalledApp, Proposer, ProposerKind, VersionState};
+pub use crate::store::apps::{
+    AppVersion, Asker, InstalledApp, Proposer, ProposerKind, VersionState,
+};
 
 use manifest::{
     BRIEF_FILE, MANIFEST_FILE, Manifest, SCRIPT_BYTES, SCRIPT_FILE, check_brief, check_name,
@@ -86,6 +88,12 @@ pub const KEPT_LINES: usize = 50;
 /// at most one waiting (a later one takes its place), so this bounds how
 /// many proposers can queue up before the owner answers.
 pub const WAITING_AT_ONCE: usize = 8;
+
+/// Versions one agent may have waiting for an answer at once, of all apps
+/// together (plan D7): an agent cannot bury its owner in proposals. A
+/// later version of an app the agent has one waiting of takes that one's
+/// place and does not count twice.
+pub const AGENT_WAITING_AT_ONCE: usize = 3;
 
 /// The longest error bzz keeps of a version that failed.
 const ERROR_BYTES: usize = 2000;
@@ -149,6 +157,10 @@ pub enum AppError {
         "{WAITING_AT_ONCE} versions of {0} already wait for an answer; answer one before another is proposed"
     )]
     TooManyWaiting(String),
+    #[error(
+        "{AGENT_WAITING_AT_ONCE} versions proposed by this agent already wait for the owner's answer ({0}); one must be answered before it proposes a version of another app"
+    )]
+    TooManyFromAgent(String),
     #[error(transparent)]
     Store(#[from] Error),
 }
@@ -651,6 +663,33 @@ impl<'a> Apps<'a> {
         Ok(Outcome::of(&self.version_row(community, name, version)?))
     }
 
+    /// What became of the versions an agent proposed in a channel, of
+    /// which it was not told yet: each with its outcome, oldest first.
+    /// [`Apps::told`] records that it was told.
+    pub fn untold(
+        &self,
+        community: Uuid,
+        agent: &str,
+        channel: Uuid,
+    ) -> AppResult<Vec<(AppVersion, Outcome)>> {
+        Ok(self
+            .store
+            .app_versions_untold(community, agent, channel)?
+            .into_iter()
+            .map(|version| {
+                let outcome = Outcome::of(&version);
+                (version, outcome)
+            })
+            .collect())
+    }
+
+    /// Records that the proposer of a version was told what became of it.
+    pub fn told(&mut self, community: Uuid, name: &str, version: u32) -> AppResult<bool> {
+        Ok(self
+            .store
+            .app_version_told(community, name, version, now())?)
+    }
+
     /// The versions that wait for the owner's answer in a community, the
     /// one that has waited longest first.
     pub fn waiting(&self, community: Uuid) -> AppResult<Vec<AppVersion>> {
@@ -760,6 +799,22 @@ impl<'a> Apps<'a> {
             .count();
         if others_waiting >= WAITING_AT_ONCE {
             return Err(AppError::TooManyWaiting(name));
+        }
+        if submission.from.kind == ProposerKind::Agent {
+            let from_agent = self
+                .store
+                .app_versions_waiting_from(community, &submission.from)?;
+            // A version of an app this agent already has one waiting of
+            // takes that one's place.
+            if !from_agent.iter().any(|version| version.name == name)
+                && from_agent.len() >= AGENT_WAITING_AT_ONCE
+            {
+                let names = from_agent
+                    .iter()
+                    .map(|version| format!("{} version {}", version.name, version.version))
+                    .collect::<Vec<_>>();
+                return Err(AppError::TooManyFromAgent(names.join(", ")));
+            }
         }
         new.state = VersionState::Waiting;
         new.title = Some(title);

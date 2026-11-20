@@ -111,8 +111,29 @@ pub fn from_whom(proposer: &Proposer) -> String {
     let key = proposer.id.as_deref().map(visible).unwrap_or_default();
     match proposer.kind {
         ProposerKind::Owner => "you".to_owned(),
-        ProposerKind::Agent => format!("your agent {name} ({key})"),
+        ProposerKind::Agent => match &proposer.asked_by {
+            Some(asker) => format!(
+                "your agent {name} ({key}), asked by {} ({})",
+                visible(&asker.name),
+                visible(&asker.id)
+            ),
+            None => format!("your agent {name} ({key})"),
+        },
         ProposerKind::Member => format!("{name}, a person of the channel ({key})"),
+    }
+}
+
+/// Who a version comes from, in a few words: for a line that says a
+/// version waits.
+pub fn from_whom_short(proposer: &Proposer) -> String {
+    let name = proposer.name.as_deref().map(visible).unwrap_or_default();
+    match proposer.kind {
+        ProposerKind::Owner => "you".to_owned(),
+        ProposerKind::Agent => match &proposer.asked_by {
+            Some(asker) => format!("your agent {name}, asked by {}", visible(&asker.name)),
+            None => format!("your agent {name}"),
+        },
+        ProposerKind::Member => format!("{name}, a person of the channel"),
     }
 }
 
@@ -311,6 +332,17 @@ mod tests {
         assert_eq!(
             from_whom(&Proposer::member(key.clone(), "Ana\x1b[2J")),
             format!("Ana<U+001B>[2J, a person of the channel ({key})")
+        );
+        // An agent's version says who asked for it (plan D7).
+        let asker = "e".repeat(64);
+        let asked = Proposer::agent(key.clone(), "Scout").asked_by(asker.clone(), "Ana\u{202e}");
+        assert_eq!(
+            from_whom(&asked),
+            format!("your agent Scout ({key}), asked by Ana<U+202E> ({asker})")
+        );
+        assert_eq!(
+            from_whom_short(&asked),
+            "your agent Scout, asked by Ana<U+202E>"
         );
     }
 }

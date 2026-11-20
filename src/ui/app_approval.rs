@@ -27,7 +27,7 @@ use crate::{
     agents::runtime::approval::MAX_REASON_CHARS,
     apps::store::{
         AppVersion,
-        review::{Review, from_whom},
+        review::{Review, from_whom_short},
     },
     render::sanitize,
     ui::{
@@ -115,7 +115,11 @@ pub fn split(review: &Review) -> (Vec<String>, Vec<String>) {
 
 /// The line that says a version waits, for the top of the screen.
 pub fn banner_text(first: &AppVersion, waiting: usize) -> String {
-    let changed = if first.proposer.channel.is_some() {
+    // An agent proposes in a channel too; only a person's offer comes from
+    // the channel itself.
+    let changed = if first.proposer.channel.is_some()
+        && first.proposer.kind == crate::apps::store::ProposerKind::Member
+    {
         " from the channel"
     } else {
         ""
@@ -125,7 +129,7 @@ pub fn banner_text(first: &AppVersion, waiting: usize) -> String {
         sanitize::single_line(&first.name),
         first.version,
         sanitize::single_line(&crate::protocol::artifact::display(
-            &from_whom(&first.proposer),
+            &from_whom_short(&first.proposer),
             48
         )),
         match waiting.saturating_sub(1) {
@@ -427,6 +431,7 @@ mod tests {
             proposed_at: 1,
             decided_at: None,
             kept: true,
+            told_at: None,
         };
         let text = banner_text(&version, 3);
         assert!(
