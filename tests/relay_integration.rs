@@ -10730,22 +10730,27 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
             .into();
     agent.local = Some(local);
     let agent_id = agent.id;
-    let running = service::serve(service::ServeOptions {
-        paths: &paths,
-        store: store.clone(),
-        diagnostics: DiagnosticHandle::disabled(),
-        community: &config.communities[0],
-        agents: &[agent],
-        owner: &owner,
-        owner_identity: identity.id,
-        federated: None,
-        limits: Limits {
-            stop_grace: Duration::from_millis(500),
-            ..Limits::default()
+    let running = service::serve_with_tools(
+        service::ServeOptions {
+            paths: &paths,
+            store: store.clone(),
+            diagnostics: DiagnosticHandle::disabled(),
+            community: &config.communities[0],
+            agents: &[agent],
+            owner: &owner,
+            owner_identity: identity.id,
+            federated: None,
+            limits: Limits {
+                stop_grace: Duration::from_millis(500),
+                ..Limits::default()
+            },
+            owner_present: false,
+            environment: None,
         },
-        owner_present: false,
-        environment: None,
-    })
+        // A coding harness starts `bzz agent-tools`: bzz, not this test's
+        // own program.
+        Some(env!("CARGO_BIN_EXE_bzz").into()),
+    )
     .await
     .unwrap()
     .expect("one local agent");
