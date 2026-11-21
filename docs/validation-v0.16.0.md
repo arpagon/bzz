@@ -2783,3 +2783,76 @@ three relay jobs, the upgrades from v0.15.0 on Linux, macOS and Windows and
 from v0.14.0 on Linux, the agent host on three platforms. `audio
 (windows-latest)` fails as it did before v0.16; it is marked experimental.
 
+### M5 with a real model: Pi Durable (2026-11-20)
+
+The plan's last gate of M5, which the owner allowed for this harness and
+this model (D13): `BZZ_AUTHOR_ALLOWED=yes BZZ_AUTHOR_MODEL=openai-codex/gpt-6.1-sol
+scripts/test-agent-authors-app.sh pi-durable`, on the pinned relay with a
+generated identity, through the owner's own Pi sign-in. Run by the
+principal.
+
+| Step | What was seen |
+|---|---|
+| The owner's mention, with the change of `board-priority.md` | The agent said what it was about to do (a `send` that is not final), read the guide and the Board, tried its script, and proposed version 2. Its final reply came 182 s after the mention |
+| What waits for the owner | `board (Board), version 2`, from the agent Scout, `Asked by:` the owner; script 9.6 KiB against the 11.9 KiB that ran; brief `CHANGED`; record types the same |
+| Approved, and the next mention | The agent's next turn was told, and it answered that version 2 is approved and running |
+| The approved script on the bench | `board-priority` 17 of 17 at 80×24 and 17 of 17 at 40×16 |
+| Its brief | Names the record type and each field, the new keys (`1`/`2`/`3`, `0`, `p`), how the filter and the search combine, and that state is migrated on reload: it says what the script now does |
+| Records of the agent's in the channel | none: its tries stayed apart |
+
+The script is the model's own: 215 lines, not the fixture's.
+
+Two runs before it failed, and neither reached a verdict on bzz:
+
+- **Without a model named**, the agent answered "the model my owner chose
+  for me is not available" after 8 s. Pi's default model on this machine is
+  not one this host can load. The gate now takes `BZZ_AUTHOR_MODEL`.
+- **With the model named**, the test took the agent's first message for its
+  answer, 35 s in, and looked for a proposal that the agent was still
+  writing. With a real model the gate now waits for the turn to end in
+  bzz's inbox. The scripted run is unchanged.
+
+
+### M5 with real models: Codex, Claude Code and Grok (2026-11-20)
+
+The same gate for the three coding harnesses, each allowed by the owner,
+each with its own program, sign-in and default model:
+`BZZ_AUTHOR_ALLOWED=yes scripts/test-agent-authors-app.sh <harness>`. Run by
+the principal.
+
+| Harness | Result | What was seen |
+|---|---|---|
+| Codex | **passed** | Proposed version 2 after 225 s; approved; told at its next turn. Its script, 459 lines, passes `board-priority` 17 of 17 at 80×24 and at 40×16 |
+| Claude Code | **passed** | Proposed version 2 after 309 s; approved; told. Its script, 477 lines, passes 17 of 17 at both sizes |
+| Grok | **did not pass** | With the answer hidden it proposed nothing: bzz stopped its turn at the limit of ten minutes ("I could not answer in time, and stopped"). One run |
+
+**The first run of Grok passed and does not count.** It proposed
+`tests/fixtures/apps/board-priority/app.lua` byte for byte, after 524 s: it
+found the file on the disk. A Grok or a Codex agent reads whatever its
+owner can read (`docs/agents.md`, "Reads"); that is how bzz is documented,
+and here it was seen. The script now makes the fixture, the bench and
+every path in `BZZ_AUTHOR_HIDE` unreadable while a real harness runs, and
+fails a run whose proposal is the fixture. The results in the table are
+from runs with that in place: 74 to 76 files and folders hidden, among
+them the other checkouts of this repository on the machine and the outputs
+of earlier runs. Not hidden: git's objects, and what a program keeps of
+its own earlier sessions.
+
+Whether Codex and Claude Code wrote their scripts was also read from the
+scripts. Of the 51 lines the fixture adds to the Board, Codex's has 2 and
+Claude Code's 12, in the hidden run as in the run before it; the 12 are
+names and comments that follow from the Board's own (`prio`, `set_priority`,
+a comment with "the priority" added), and the fixture was written by a
+model of the same family. Claude Code cannot read outside its folders at
+all.
+
+Before these, one more fault of the gate, not of bzz: the test started the
+coding harnesses through `service::serve`, which gives them the test's own
+program as `bzz agent-tools`, and Grok and Codex answered that the `send`
+tool was missing. It now names bzz itself, as the v0.15 test of real
+harnesses does.
+
+So the plan's gate "each supported harness adds the priority and the filter
+to the Board" is met by Pi Durable, Codex and Claude Code, and **not by
+Grok**, on one try with its default model.
+

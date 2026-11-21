@@ -11,6 +11,21 @@
 #                           the owner's own program and sign-in, with a real
 #                           model. Only when the owner allowed that exact run
 #                           (plan D13): set BZZ_AUTHOR_ALLOWED=yes to say so.
+#                           BZZ_AUTHOR_MODEL=provider/model names the model
+#                           (and BZZ_AUTHOR_THINKING its level); without it the
+#                           harness uses its own default, which for Pi must be
+#                           a provider this host can load.
+#
+# A real harness must not find the answer on the disk. Grok and Codex read
+# whatever their owner can read (docs/agents.md, "Reads"), and this
+# repository holds a Board with priority that passes the bench: the first
+# run of grok proposed that file, byte for byte. So while a real harness
+# runs, the files of tests/fixtures/apps/board-priority and of
+# tests/apps-bench are made unreadable (mode 000), and so is every file or
+# folder named in BZZ_AUTHOR_HIDE (colon separated): other checkouts of this
+# repository, earlier outputs of this script. They get their modes back
+# before the bench runs, and when the script ends for any reason but a kill.
+# Not hidden: git's objects, and what the harness's own program remembers.
 #
 # What it does, on the pinned relay (scripts/test-relay.sh, which takes its
 # lock and tears the relay down after):
@@ -69,6 +84,33 @@ export BZZ_AUTHOR_HARNESS="$harness" BZZ_AUTHOR_OUT="$out"
 echo "== harness: $harness"
 echo "== output: $out"
 
+# Out of a real harness's sight: the answer and the bench (see the top).
+hidden_list="$out/hidden.txt"
+: >"$hidden_list"
+show_again() {
+  [[ -s "$hidden_list" ]] || return 0
+  while read -r mode path; do chmod "$mode" "$path" 2>/dev/null || true; done <"$hidden_list"
+  : >"$hidden_list"
+}
+trap show_again EXIT
+if [[ "$harness" != scripted ]]; then
+  # Built first: once the files cannot be read, nothing may need compiling.
+  (cd "$repo" && cargo build --locked --example scripted_harness \
+    && cargo test --locked --test relay_integration --no-run) >"$out/build.txt" 2>&1 \
+    || { echo "FAIL: the build failed (see $out/build.txt)"; exit 1; }
+  hide() {
+    printf '%s %s\n' "$(stat -c %a "$1")" "$1" >>"$hidden_list"
+    chmod 000 "$1"
+  }
+  while IFS= read -r -d '' file; do hide "$file"; done < <(find \
+    "$repo/tests/fixtures/apps/board-priority" "$repo/tests/apps-bench" -type f -print0)
+  IFS=: read -r -a more <<<"${BZZ_AUTHOR_HIDE:-}"
+  for path in "${more[@]}"; do
+    [[ -e "$path" && "$(stat -c %a "$path")" != 0 ]] && hide "$path"
+  done
+  echo "== hidden from $harness while it runs: $(wc -l <"$hidden_list") files and folders"
+fi
+
 echo "== the agent changes the open Board, on the pinned relay"
 set +e
 (cd "$repo" && BZZ_RELAY_TEST_FILTER=real_relay_an_agent_changes_the_open_board \
@@ -78,6 +120,14 @@ set -e
 if [[ $status -ne 0 || ! -f "$out/approved/app.lua" ]]; then
   echo "FAIL: the relay test failed, or no version was approved (see $out/relay.txt)"
   exit 1
+fi
+
+show_again
+if [[ "$harness" != scripted ]]; then
+  if cmp -s "$out/approved/app.lua" "$repo/tests/fixtures/apps/board-priority/app.lua"; then
+    echo "FAIL: $harness proposed this repository's own fixture, byte for byte: it found it, it did not write it"
+    exit 1
+  fi
 fi
 
 echo "== the approved brief"

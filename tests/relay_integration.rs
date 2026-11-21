@@ -10706,28 +10706,51 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
             local.command = script.command();
             local
         }
-        Some(harness) => LocalAgentConfig::new(harness),
+        Some(harness) => {
+            let mut local = LocalAgentConfig::new(harness);
+            // Pi's own default model may come from a provider this host
+            // cannot load (a custom one in Pi's settings): the owner names
+            // the model for the run, as `provider/model`.
+            if let Ok(wanted) = std::env::var("BZZ_AUTHOR_MODEL") {
+                let (provider, model_id) = wanted
+                    .split_once('/')
+                    .expect("BZZ_AUTHOR_MODEL is provider/model");
+                local.model = Some(bzz::config::AgentModelConfig {
+                    provider: provider.into(),
+                    model_id: model_id.into(),
+                    thinking_level: std::env::var("BZZ_AUTHOR_THINKING").ok(),
+                });
+                eprintln!("the agent's model: {wanted}");
+            }
+            local
+        }
     };
     local.instructions =
         "You are an agent of the owner of this channel. Do what you are asked with your tools."
             .into();
     agent.local = Some(local);
-    let running = service::serve(service::ServeOptions {
-        paths: &paths,
-        store: store.clone(),
-        diagnostics: DiagnosticHandle::disabled(),
-        community: &config.communities[0],
-        agents: &[agent],
-        owner: &owner,
-        owner_identity: identity.id,
-        federated: None,
-        limits: Limits {
-            stop_grace: Duration::from_millis(500),
-            ..Limits::default()
+    let agent_id = agent.id;
+    let running = service::serve_with_tools(
+        service::ServeOptions {
+            paths: &paths,
+            store: store.clone(),
+            diagnostics: DiagnosticHandle::disabled(),
+            community: &config.communities[0],
+            agents: &[agent],
+            owner: &owner,
+            owner_identity: identity.id,
+            federated: None,
+            limits: Limits {
+                stop_grace: Duration::from_millis(500),
+                ..Limits::default()
+            },
+            owner_present: false,
+            environment: None,
         },
-        owner_present: false,
-        environment: None,
-    })
+        // A coding harness starts `bzz agent-tools`: bzz, not this test's
+        // own program.
+        Some(env!("CARGO_BIN_EXE_bzz").into()),
+    )
     .await
     .unwrap()
     .expect("one local agent");
@@ -10790,6 +10813,39 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
         .unwrap(),
     )
     .await;
+    // A real model may say what it is about to do, with a `send` that is
+    // not final, and go on working: its turn has ended when bzz's inbox
+    // says so, not when the first message shows.
+    let turn_ended = |request: nostr::Event| {
+        let store = store.clone();
+        async move {
+            let deadline = tokio::time::Instant::now() + wait;
+            loop {
+                let id = request.id.to_hex();
+                let state = store
+                    .call(move |store| store.agent_inbox_get(agent_id, &id))
+                    .await
+                    .unwrap()
+                    .map(|row| row.state);
+                let ended = matches!(
+                    state,
+                    Some(
+                        bzz::store::agent_runtime::RequestState::Replied
+                            | bzz::store::agent_runtime::RequestState::Ended
+                            | bzz::store::agent_runtime::RequestState::Failed
+                    )
+                );
+                if ended || tokio::time::Instant::now() > deadline {
+                    eprintln!("the turn's state: {state:?}");
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    };
+    if real.is_some() {
+        turn_ended(request.clone()).await;
+    }
     let replies = replies_to(request.clone()).await;
     eprintln!(
         "the agent answered the request after {} s: {:?}",
@@ -10799,7 +10855,11 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
             .map(|reply| reply.content.clone())
             .collect::<Vec<_>>()
     );
-    assert_eq!(replies.len(), 1, "one reply to the mention: {replies:?}");
+    if real.is_some() {
+        assert!(!replies.is_empty(), "the agent said nothing");
+    } else {
+        assert_eq!(replies.len(), 1, "one reply to the mention: {replies:?}");
+    }
 
     // What it proposed waits; the Board that runs is the owner's.
     let apps_dir = paths.apps_dir();
@@ -10878,12 +10938,29 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
         .unwrap(),
     )
     .await;
+    if real.is_some() {
+        turn_ended(next.clone()).await;
+    }
     let replies = replies_to(next).await;
-    assert_eq!(
-        replies.len(),
-        1,
-        "one reply to the second mention: {replies:?}"
+    eprintln!(
+        "the agent answered the second mention: {:?}",
+        replies
+            .iter()
+            .map(|reply| reply.content.clone())
+            .collect::<Vec<_>>()
     );
+    if real.is_some() {
+        assert!(
+            !replies.is_empty(),
+            "the agent said nothing the second time"
+        );
+    } else {
+        assert_eq!(
+            replies.len(),
+            1,
+            "one reply to the second mention: {replies:?}"
+        );
+    }
     if real.is_none() {
         let prompts = script
             .received("session/prompt")
