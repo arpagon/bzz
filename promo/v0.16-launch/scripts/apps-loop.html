@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta charset="UTF-8">
+<!-- The #apps loop for getbzz.dev, cut from the v0.16 film's final take (assets/app.jsonl:
+     bzz 0.16.0 release binary, pinned relay, generated people, a real model:
+     openai-codex/gpt-6.1-sol on Pi Durable). One take; the cuts are inside it. -->
+<link rel="stylesheet" href="lib/xterm.css"><script src="lib/gsap.min.js"></script>
+<script src="lib/xterm.js"></script><script src="lib/addon-image.js"></script><script src="lib/addon-unicode11.js"></script><script src="lib/tape-replay.js"></script>
+<style>@font-face{font-family:"JetBrains Mono";src:url("assets/fonts/jetbrains-mono-latin-400-normal.woff2")}
+@font-face{font-family:"JetBrains Mono";font-weight:700;src:url("assets/fonts/jetbrains-mono-latin-700-normal.woff2")}
+html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#14110d}
+#term .xterm-viewport{overflow:hidden!important}</style></head><body>
+<div id="root" data-composition-id="main" data-start="0" data-duration="12" data-width="1920" data-height="1080">
+<div id="term" class="clip" data-start="0" data-duration="12" data-track-index="0" data-layout-ignore style="position:absolute;left:0;top:0"></div></div>
+<script>
+// film second -> tape second; a pair at one film second is a jump cut inside the one take.
+mountTape({id:"t",el:"#term",url:"assets/app.jsonl",width:1920,height:1080,
+  map:[[0,14.6],[1.0,15.6],            // the mention is sent
+       [1.0,150.54],[3.6,153.14],      // cut: the 135 s the model took; the line at the top, the reply count
+       [3.6,155.26],[6.1,157.76],      // Ctrl-Y: from your agent Scout, asked by You, brief CHANGED
+       [6.1,162.38],[7.3,163.58],      // cut: the reading; the end of the difference, then a
+       [7.3,163.58],[12,168.28]]});    // runs in place, its state kept: the Board with the filter, the same card selected
+const tl=gsap.timeline({paused:true});tl.to({}, {duration:12});window.__timelines["main"]=tl;</script></body></html>

@@ -90,14 +90,14 @@
 <div class="wrap shot">
   <div class="term">
     <video controls autoplay muted loop playsinline preload="metadata"
-      poster="/assets/poster-promo-v015.png?v=1"
-      aria-label="bzz launch film: channels, threads and reactions from the keyboard, offline search, creating an agent that bzz runs on your machine, its reply in a thread, approving a command it asks to run, moving it with its memory, a huddle with audio, inline images, custom emoji, themes, and keys in the OS keychain">
-      <source src="/assets/promo-v015.webm?v=1" type="video/webm">
-      <source src="/assets/promo-v015.mp4?v=1" type="video/mp4">
-      <img src="/assets/poster-promo-v015.png?v=1" alt="bzz showing an agent's reply in a thread, marked as managed by you">
+      poster="/assets/poster-promo-v016.png?v=1"
+      aria-label="bzz launch film: channels, threads and reactions from the keyboard, offline search, an agent's reply in a thread, approving a command it asks to run, asking the agent to change the Board app open beside the chat and approving its version, which runs in place with the same card selected, a huddle with audio, inline images, custom emoji, themes, and keys in the OS keychain">
+      <source src="/assets/promo-v016.webm?v=1" type="video/webm">
+      <source src="/assets/promo-v016.mp4?v=1" type="video/mp4">
+      <img src="/assets/poster-promo-v016.png?v=1" alt="bzz with the Board app beside the chat, changed in place by the agent's approved version, the same card still selected">
     </video>
   </div>
-  <p class="cap">Unmute for narration. The real bzz 0.15.0 binary on a test relay with generated people and avatars; the agent's replies come from a real model. Voice: Fish Audio Drama 3 · music: ACE-Step.</p>
+  <p class="cap">Unmute for narration. The real bzz 0.16.0 binary on a test relay with generated people and avatars; the agent's replies and its version of the Board come from a real model. Voice: Fish Audio Drama 3 · music: ACE-Step.</p>
 
   <div class="stats">
     <div><b>1</b><span>Rust binary</span></div>
@@ -151,14 +151,18 @@
   in the channel it is open in. bzz signs the records; the script never sees
   a key.</p>
 
-  <!-- Capture pending (the v0.16 film is a later task): a sanitized capture
-       of the real TUI through `bzz-visual-capture`, on an isolated pinned
-       relay with generated people. It needs, in one shot or a short loop,
-       the Board open beside #general, the line "tasks: version 2 from your
-       agent Scout, asked by …", the approval overlay with the brief CHANGED
-       and the difference, and the Board after `a` with "Priority: all" and
-       the same card selected. Place it here as a .shot block, as the hero
-       video is placed. See site/README.md, "Apps". -->
+  <div class="shot">
+    <div class="term">
+      <video autoplay muted loop playsinline preload="metadata"
+        poster="/assets/poster-apps-v016.png?v=1"
+        aria-label="The Board app open beside the channel team. You ask your agent Scout for a priority and a filter; the line at the top says version 2 from your agent Scout, asked by You, waits for your approval; Ctrl-y shows who it comes from, who asked, and the brief marked CHANGED; after a, version 2 runs in place with a priority filter, and the same card is still selected">
+        <source src="/assets/apps-v016.webm?v=1" type="video/webm">
+        <source src="/assets/apps-v016.mp4?v=1" type="video/mp4">
+        <img src="/assets/poster-apps-v016.png?v=1" alt="The Board after the agent's version was approved: a priority filter, a badge on each card, and the card macOS smoke test still selected; the status line says version 2 runs in place of 1, its state kept">
+      </video>
+    </div>
+    <p class="cap">The real bzz 0.16.0 binary on a test relay with generated people. The agent's version of the Board was written by a real model; the minutes it took are cut out of the take.</p>
+  </div>
 
   <div class="card feature">
     <div class="feature-head">
