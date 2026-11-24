@@ -1,17 +1,17 @@
 # bzz v0.16.0 validation
 
-**Status:** release candidate, not published (2026-11-20). Recorded
-below, each under its own heading: M0; M1 (the runtime and its contract;
-the example host, the bench and the six apps); M2 (the records service;
-the app session); M3 (the app pane); M4 (the store and command line;
-approval and managing inside bzz, and the templates); M5 (agents write and
-change apps; its real-model gate prepared and not run); M6 (sharing an app
-in the channel); M7 (agents use an app's records); and **M8, the release
-candidate**, without its film: the upgrade from v0.15.0, the benchmarks,
-the whole suites on the final tree, the plan's testing table cell by cell,
-the release acceptance and the definition of done. Each milestone has its
-exit gate, on Linux. Nothing was pushed: what only CI can show on macOS and
-Windows is listed as not seen, and so is the owner's acceptance. Plan:
+**Status:** released 2026-11-24, by the owner's approval. Recorded
+below, each under its own heading, in the order the work was done: M0 to
+M8 as the release candidate of 2026-11-20 had them, each milestone with
+its exit gate on Linux; then what came after the candidate: the
+principal's pass over it, the first runs of CI on macOS and Windows, M5's
+gate with real models for each of the four harnesses, and why Grok does
+not pass it. A section written before a later one says what was true
+then: where the candidate's sections say that nothing was pushed or that
+no real model ran, the later sections are the record. Still pending at
+the release: the owner's production acceptance, the launch film, an app
+opened in a terminal on macOS or Windows, and Herdr (the release binary
+was driven through tmux). Plan:
 [`docs/planning/2026-11-17/v0.16.0.md`](planning/2026-11-17/v0.16.0.md).
 Method: [`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
 
