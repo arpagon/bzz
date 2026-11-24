@@ -58,34 +58,45 @@ reaches and does not, approval of exact bytes, shared records, sharing in
 the channel, the three templates, and what people on Buzz desktop see. No
 number is on it yet: the measures of M8 are one run on one machine.
 
-**A capture is pending** (the v0.16 film is a later task), and its place is
-marked by a comment in `#apps`. It needs a sanitized capture of the real
-release TUI through `bzz-visual-capture`, on an isolated pinned relay with
-generated people: the Board open beside a channel; the line `tasks:
-version 2 from your agent Scout, asked by …` at the top; the approval
-overlay with the brief `CHANGED` and the difference; and the Board after
-`a`, with `Priority: all` and the same card still selected. The scenario
-`t16-m5-agent-changes-the-open-board` (`scripts/tui-herdr-scenarios.toml`)
-drives exactly this on the stand-in model.
+The capture in `#apps` (`public/assets/apps-v016.webm`, `apps-v016.mp4`,
+`poster-apps-v016.png`: 12 s, 1920×1080, 30 fps, silent, a loop) is cut
+from the take of the v0.16 launch film: the `bzz 0.16.0` Linux release
+build on an isolated pinned relay with generated people, the Board open
+beside `#team`, the owner's agent Scout on Pi Durable with a real model
+(`openai-codex/gpt-6.1-sol` through Pi's own sign-in) asked for a priority
+and a filter; the line `tasks: version 2 from your agent Scout, asked by
+You …`; the approval overlay with the brief `CHANGED`; and the Board after
+`a`, running the model's own version in place (`Priority filter: all`, a
+badge on each card) with the same card still selected. Two cuts inside the
+one take: the 135 s the model took, and the reading of the overlay. Its
+project is `runs/experiments/promo-video/film-v016/heavy/loop-final`.
+Encodes: H.264 CRF 28; VP9 CRF 36; no audio.
 
 ## Demo media
 
-The hero video `public/assets/promo-v015.webm`, `promo-v015.mp4` and
-`poster-promo-v015.png` is the v0.15 launch film: 55.0 s, 1920×1080, 30 fps,
-narrated, −14 LUFS, captions burned in so it works muted. It is the v0.13
-film with the same voice, music and cut. Its two agent lines now show an
-agent that bzz itself runs, and two lines are new: creating an agent, and
-moving it with its memory. Every product shot is the `bzz 0.15.0` Linux
-release build on an isolated pinned relay with generated people and
-generated illustrated avatars, recorded as terminal tapes and composed in
-HyperFrames. In the agent shots a real model answers
-(`openai-codex/gpt-6-luna` through Pi's own sign-in). Make or remake it with
+The hero video `public/assets/promo-v016.webm`, `promo-v016.mp4` and
+`poster-promo-v016.png` is the v0.16 launch film: 55.0 s, 1920×1080, 30 fps,
+narrated, −14 LUFS, captions burned in so it works muted. It is the v0.15
+film with the same voice, music and cut. The two lines v0.15 added (creating
+an agent; moving it with its memory) gave way to two v0.16 lines: asking
+your agent to change the app open beside the chat, and approving it so that
+it changes in place. Every product shot is the `bzz 0.16.0` Linux release
+build on an isolated pinned relay with generated people and generated
+illustrated avatars, recorded as terminal tapes and composed in HyperFrames.
+In the agent shots a real model answers (`openai-codex/gpt-6.1-sol` on Pi
+Durable, through Pi's own sign-in), and the Board's new version on screen is
+the model's own script. Make or remake it with
 the [`bzz-promo-video`](../.agents/skills/bzz-promo-video/SKILL.md) skill;
-the composition is in [`promo/v0.15-launch`](../promo/v0.15-launch/README.md).
+the composition is in [`promo/v0.16-launch`](../promo/v0.16-launch/README.md).
 Credits: voice Fish Audio Drama 3 (Fish Audio Community License; credit
 required), music generated with ACE-Step 1.5 (MIT model), avatars generated
 with gpt-image-2. Encodes: H.264 CRF 26 + AAC 128 kb/s; VP9 CRF 32 + Opus
 96 kb/s.
+
+The v0.15 film (`promo-v015.*`, `poster-promo-v015.png`,
+[`promo/v0.15-launch`](../promo/v0.15-launch/README.md): creating an agent
+that bzz runs, moving it with its memory) stays published so links to it
+keep working.
 
 The v0.14 film (`promo-v014.*`, `poster-promo-v014.png`,
 [`promo/v0.14-launch`](../promo/v0.14-launch/README.md): editing a message,

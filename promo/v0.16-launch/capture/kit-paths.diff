@@ -1,0 +1,51 @@
+6c6
+< S=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$S/../../../.." && pwd); W=${PROMO_WORK:-$PWD}
+---
+> S=$(cd "$(dirname "$0")" && pwd); REPO=${REPO_SRC:?}; W=${PROMO_WORK:-$PWD}
+9c9
+< FIX=$REPO/target/release/examples/promo_fixture
+---
+> FIX=${FIX:?}
+17c17
+< "$FIX" seed "$F" "$C/buzz-pin" "${AVATARS:-$S/../assets/avatars}"
+---
+> "$FIX" seed "$F" "$C/buzz-pin" "${AVATARS:-$KITA/avatars}"
+29c29
+< "$S/shoot.sh" warmup agent-profile 8 "${AVATARS:-$S/../assets/avatars}/scout.png"
+---
+> "$S/shoot.sh" warmup agent-profile 8 "${AVATARS:-$KITA/avatars}/scout.png"
+36c36
+< S=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$S/../../../.." && pwd); W=${PROMO_WORK:-$PWD}
+---
+> S=$(cd "$(dirname "$0")" && pwd); REPO=${REPO_SRC:?}; W=${PROMO_WORK:-$PWD}
+38c38
+< SK=$S/../scripts
+---
+> SK=$KITS
+79c79
+< S=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$S/../../../.." && pwd); W=${PROMO_WORK:-$PWD}
+---
+> S=$(cd "$(dirname "$0")" && pwd); REPO=${REPO_SRC:?}; W=${PROMO_WORK:-$PWD}
+81c81,82
+< [ -f "$REPO/runs/env.sh" ] && . "$REPO/runs/env.sh"
+---
+> # film-v016: the main checkout's toolchain settings, so the pinned relay is not rebuilt
+> . "$BZZ_CHECKOUT/runs/env.sh"
+98c99
+< S=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$S/../../../.." && pwd); W=${PROMO_WORK:-$PWD}
+---
+> S=$(cd "$(dirname "$0")" && pwd); REPO=${REPO_SRC:?}; W=${PROMO_WORK:-$PWD}
+102,103c103,104
+< FIX=$REPO/target/release/examples/promo_fixture
+< REC=$S/../scripts/record-tape.py
+---
+> FIX=${FIX:?}
+> REC=$KITS/record-tape.py
+118c119
+< S=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$S/../../../.." && pwd); W=${PROMO_WORK:-$PWD}
+---
+> S=$(cd "$(dirname "$0")" && pwd); REPO=${REPO_SRC:?}; W=${PROMO_WORK:-$PWD}
+132c133
+< S=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$S/../../../.." && pwd); W=${PROMO_WORK:-$PWD}
+---
+> S=$(cd "$(dirname "$0")" && pwd); REPO=${REPO_SRC:?}; W=${PROMO_WORK:-$PWD}

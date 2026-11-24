@@ -1,0 +1,10 @@
+{
+  "name": "bzz-launch-v013",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npx --yes hyperframes@0.9.13 preview",
+    "check": "npx --yes hyperframes@0.9.13 check",
+    "render": "npx --yes hyperframes@0.9.13 render"
+  }
+}
