@@ -1,0 +1,45 @@
+tapes/agent/ada.jsonl: 344025 bytes; hits: none
+  64-hex strings: 1: 386da95b7aeb…
+  /tmp paths: none
+tapes/agent/you.jsonl: 966748 bytes; hits: none
+  64-hex strings: 3: 3312d21f8853…, 386da95b7aeb…, 84c35c6ab7dc…
+  /tmp paths: none
+tapes/approvals/ada.jsonl: 98077 bytes; hits: none
+  64-hex strings: 0: 
+  /tmp paths: none
+tapes/approvals/you.jsonl: 109149 bytes; hits: none
+  64-hex strings: 0: 
+  /tmp paths: none
+tapes/poll/ada.jsonl: 84245 bytes; hits: none
+  64-hex strings: 0: 
+  /tmp paths: none
+tapes/poll/lin.jsonl: 54962 bytes; hits: none
+  64-hex strings: 0: 
+  /tmp paths: none
+tapes/poll/you.jsonl: 84124 bytes; hits: none
+  64-hex strings: 0: 
+  /tmp paths: none
+tapes/records/ada.jsonl: 26884 bytes; hits: none
+  64-hex strings: 0: 
+  /tmp paths: none
+tapes/records/lin.jsonl: 38520 bytes; hits: none
+  64-hex strings: 0: 
+  /tmp paths: none
+tapes/records/you.jsonl: 37441 bytes; hits: none
+  64-hex strings: 0: 
+  /tmp paths: none
+tapes/replies/you.jsonl: 101370 bytes; hits: none
+  64-hex strings: 0: 
+  /tmp paths: none
+tapes/together/ada.jsonl: 170552 bytes; hits: none
+  64-hex strings: 0: 
+  /tmp paths: none
+tapes/together/lin.jsonl: 138947 bytes; hits: none
+  64-hex strings: 0: 
+  /tmp paths: none
+tapes/together/you.jsonl: 153059 bytes; hits: none
+  64-hex strings: 0: 
+  /tmp paths: none
+tapes/warmup/you.jsonl: 547355 bytes; hits: none
+  64-hex strings: 0: 
+  /tmp paths: none

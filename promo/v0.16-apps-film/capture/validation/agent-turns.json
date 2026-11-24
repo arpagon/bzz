@@ -1,0 +1,200 @@
+[
+ {
+  "conversation": 2,
+  "entry": 10,
+  "role": "user",
+  "text": "From: You (your owner) (3312d21f8853c563008e3d659e0971588de880dcf45d01dcee1063d5bf9d3592)\nWhere: a thread in the channel #team\nMessage (68a5ff5785d4b7dacfa092cbbe4a153540c979d83e36d508b4ec65971430b7ae):\n@Scout add a priority and a filter to the board\n"
+ },
+ {
+  "conversation": 2,
+  "entry": 14,
+  "role": "call",
+  "tool": "buzz_apps",
+  "arguments": {}
+ },
+ {
+  "conversation": 2,
+  "entry": 16,
+  "role": "result",
+  "tool": "buzz_apps",
+  "text": "{\"apps\":[{\"brief\":\"# Board\\n\\nA task board that a channel shares: cards in three columns, To do, Doing\\nand Done. Anyone in the channel adds a card and moves it between columns,\\nand everyone who has the board open sees the change at once.\\n\\n## Records\\n\\nOne record type, `card`. A card's content:\\n\\n| Field | Type | Meaning |\\n|---|---|---|\\n| `title` | string | What the card says. Required; a card without one is shown as \\\"(no title)\\\". |\\n| `column` | string | `\\\"todo\\\"`, `\\\"doing\\\"` or `\\\"done\\\"`. A card with another value is kept and not shown. |\\n| `order` | number | Where the card stands in its column, smallest first. A new card gets the time it was made, in seconds since 1970. Two cards with the same `order` are ordered by their id. |\\n\\nRules another client must keep to share these records:\\n\\n- A new card starts in `\\\"todo\\\"`.\\n- Moving a card changes only `column`. Every other field is written back as\\n  it was read, also fields this version does not know.\\n- When two people move the same card at once, the later one takes the card\\n  as the first left it and sets its own `column` on top.\\n- Cards are never deleted by this app. A card that another client deletes\\n  disappears from the board.\\n\\n## Keys\\n\\n`j`/`k` or the arrows move the selection, `h`/`l` change column, `]` and `[`\\nmove the selected card to the next or the previous column, `n` opens a form\\nfor a new card (Enter saves, Esc cancels), `/` searches the titles (Esc\\nclears the search), `r` loads the cards again, `q` closes the board.\\n\\n## Screen\\n\\nFrom 60 columns the three columns stand side by side; below that they are\\nstacked, so that it fits the 40 columns by 16 rows of bzz's app pane.\\n\",\"name\":\"tasks\",\"title\":\"Tasks\",\"types\":[\"card\"],\"version\":1}]}"
+ },
+ {
+  "conversation": 2,
+  "entry": 18,
+  "role": "call",
+  "tool": "buzz_app_guide",
+  "arguments": {}
+ },
+ {
+  "conversation": 2,
+  "entry": 20,
+  "role": "result",
+  "tool": "buzz_app_guide",
+  "text": "# Writing an app for bzz\n\nAn app is one Lua 5.4 script that bzz runs inside itself, beside a\nchannel's conversation, in a pane of **40 columns by 16 rows**. The script\nreturns elements and reacts to events; bzz draws them, owns the terminal,\nand signs the records the people of the channel share through the app. The\nwhole API is the contract, `docs/app-api.md` (`api = 1`), which `app_guide`\nreturns after this page. Read both before you write a line.\n\n## The shape\n\n```lua\n-- tally: a shared list of named counters. n new, j/k move, + and - count.\nlocal app = { api = 1, types = { \"counter\" } }   -- api and the fence: required\n\n-- A list arrives in no order: the order is a field of the record.\nlocal function by_order(a, b)\n  local x, y = tonumber(a.content.order) or 0, tonumber(b.content.order) or 0\n  if x ~= y then return x < y end\n  return a.id < b.id\nend\n\nlocal function copy(t) local c = {} for k, v in pairs(t) do c[k] = v end return c end\n\nfunction app.init(ctx)\n  data.list { type = \"counter\", tag = \"load\" }    -- the first list: pushes begin\n  return { items = {}, sel = 1, form = nil, status = \"Loading...\" }\nend\n\nlocal function bump(s, by)\n  local item = s.items[s.sel]\n  if not item then return end\n  local content = copy(item.content)              -- keep fields you do not know\n  content.count = (tonumber(content.count) or 0) + by\n  data.update { record_id = item.id, rev = item.rev, content = content, tag = { bump = by } }\nend\n\nfunction app.key(s, key, ctx)\n  if s.form then\n    if key.name == \"esc\" then s.form = nil\n    elseif key.name == \"enter\" and s.form.value ~= \"\" then\n      data.create { type = \"counter\", tag = \"create\",\n        content = { title = s.form.value, count = 0, order = host.time(), by = ctx.user.id } }\n      s.form = nil\n    else ui.edit(s.form, key) end\n    return                                       -- q types a q while a field is open\n  end\n  if key.name == \"q\" then host.quit()\n  elseif key.name == \"n\" then s.form = { value = \"\" }\n  elseif key.name == \"j\" then s.sel = math.min(s.sel + 1, #s.items)\n  elseif key.name == \"k\" then s.sel = math.max(s.sel - 1, 1)\n  elseif key.name == \"+\" then bump(s, 1)\n  elseif key.name == \"-\" then bump(s, -1) end\nend\n\nfunction app.paste(s, text, ctx) if s.form then ui.paste(s.form, text) end end\n\nlocal function put(s, record)\n  for i, item in ipairs(s.items) do\n    if item.id == record.id then s.items[i] = record return end\n  end\n  s.items[#s.items + 1] = record\nend\n\nfunction app.reply(s, r, ctx)\n  if not r.ok then\n    local code = r.error.code\n    if code == \"conflict\" then                  -- someone counted first: count on top\n      local content = copy(r.current.content)\n      content.count = (tonumber(content.count) or 0) + r.tag.bump\n      data.update { record_id = r.current.id, rev = r.current.rev, content = content, tag = r.tag }\n    elseif code == \"rate_limited\" then\n      s.status = \"Too many changes: wait \" .. r.error.retry_after .. \" s\"\n    else\n      s.status = code .. \": \" .. r.err"
+ },
+ {
+  "conversation": 2,
+  "entry": 22,
+  "role": "call",
+  "tool": "buzz_apps",
+  "arguments": {
+   "app": "tasks"
+  }
+ },
+ {
+  "conversation": 2,
+  "entry": 24,
+  "role": "result",
+  "tool": "buzz_apps",
+  "text": "{\"app\":\"tasks\",\"brief\":\"# Board\\n\\nA task board that a channel shares: cards in three columns, To do, Doing\\nand Done. Anyone in the channel adds a card and moves it between columns,\\nand everyone who has the board open sees the change at once.\\n\\n## Records\\n\\nOne record type, `card`. A card's content:\\n\\n| Field | Type | Meaning |\\n|---|---|---|\\n| `title` | string | What the card says. Required; a card without one is shown as \\\"(no title)\\\". |\\n| `column` | string | `\\\"todo\\\"`, `\\\"doing\\\"` or `\\\"done\\\"`. A card with another value is kept and not shown. |\\n| `order` | number | Where the card stands in its column, smallest first. A new card gets the time it was made, in seconds since 1970. Two cards with the same `order` are ordered by their id. |\\n\\nRules another client must keep to share these records:\\n\\n- A new card starts in `\\\"todo\\\"`.\\n- Moving a card changes only `column`. Every other field is written back as\\n  it was read, also fields this version does not know.\\n- When two people move the same card at once, the later one takes the card\\n  as the first left it and sets its own `column` on top.\\n- Cards are never deleted by this app. A card that another client deletes\\n  disappears from the board.\\n\\n## Keys\\n\\n`j`/`k` or the arrows move the selection, `h`/`l` change column, `]` and `[`\\nmove the selected card to the next or the previous column, `n` opens a form\\nfor a new card (Enter saves, Esc cancels), `/` searches the titles (Esc\\nclears the search), `r` loads the cards again, `q` closes the board.\\n\\n## Screen\\n\\nFrom 60 columns the three columns stand side by side; below that they are\\nstacked, so that it fits the 40 columns by 16 rows of bzz's app pane.\\n\",\"enabled\":true,\"manifest\":\"name = \\\"tasks\\\"\\ntitle = \\\"Tasks\\\"\\napi = 1\\ntypes = [\\\"card\\\"]\\n\",\"open_here\":true,\"script\":\"-- Board: shared cards in three columns.\\n-- A card is a record of type \\\"card\\\" with content\\n--   { title = string, column = \\\"todo\\\" | \\\"doing\\\" | \\\"done\\\", order = number }.\\n-- Keys: j/k and arrows move the selection, h/l change column, ] and [ move\\n-- the card, n new card, / search, r reload, q close.\\n\\nlocal app = {}\\napp.api = 1\\napp.types = { \\\"card\\\" }\\n\\nlocal COLS = { \\\"todo\\\", \\\"doing\\\", \\\"done\\\" }\\nlocal NAMES = { todo = \\\"To do\\\", doing = \\\"Doing\\\", done = \\\"Done\\\" }\\nlocal MIN_W, MIN_H = 40, 16\\n-- From this width the three columns stand side by side; below it they are\\n-- stacked, so that a title of 16 characters always fits.\\nlocal WIDE = 60\\n\\nlocal function trim(s) return (s:gsub(\\\"^%s+\\\", \\\"\\\"):gsub(\\\"%s+$\\\", \\\"\\\")) end\\n\\n-- Any member of the channel can write any field: read them with care.\\nlocal function title(card)\\n  local t = card.content.title\\n  return type(t) == \\\"string\\\" and t or \\\"(no title)\\\"\\nend\\n\\nlocal function matches(s, card)\\n  return s.query == \\\"\\\" or title(card):lower():find(s.query:lower(), 1, true) ~= nil\\nend\\n\\n-- A list arrives in no order, and ids do not sort by creation: the order\\n-- is a field of the ca"
+ },
+ {
+  "conversation": 2,
+  "entry": 26,
+  "role": "call",
+  "tool": "buzz_try_app",
+  "arguments": {
+   "script": "local app={api=1,types={'card'}}\nlocal cols={'todo','doing','done'}\nlocal names={todo='To do',doing='Doing',done='Done'}\nlocal priorities={'normal','high','low'}\nlocal function priority(c) local p=c.priority; if p=='high' or p=='low' then return p end return 'normal' end\nlocal function copy(c) local t={} for k,v in pairs(c) do t[k]=v end return t end\nlocal function title(r) return type(r.content.title)=='string' and r.content.title or '(no title)' end\nlocal function groups(s)\n local g={todo={},doing={},done={}}\n for _,r in ipairs(s.cards) do local c=r.content; if g[c.column] and (s.filter=='all' or priority(c)==s.filter) and title(r):lower():find(s.query:lower(),1,true) then table.insert(g[c.column],r) end end\n for _,v in pairs(g) do table.sort(v,function(a,b) local x,y=tonumber(a.content.order) or 0,tonumber(b.content.order) or 0; if x~=y then return x<y end return a.id<b.id end) end\n return g\nend\nlocal function locate(s) local g=groups(s); for ci,n in ipairs(cols) do for i,r in ipairs(g[n]) do if r.id==s.sel then return ci,i,g,r end end end return nil,nil,g end\nlocal function keep(s) local ci,_,g=locate(s); if ci then return end s.sel=nil; for _,n in ipairs(cols) do if g[n][1] then s.sel=g[n][1].id; return end end end\nlocal function put(s,r) for i,c in ipairs(s.cards) do if c.id==r.id then s.cards[i]=r; return end end table.insert(s.cards,r) end\nlocal function remove(s,id) for i,r in ipairs(s.cards) do if r.id==id then table.remove(s.cards,i); return end end end\nlocal function load(s) s.list_id=data.list{type='card',tag='load'}; s.touched={}; s.status='Loading...' end\nfunction app.init(ctx) local s={cards={},query='',filter='all',status=''}; load(s); return s end\nfunction app.reload(s,ctx) s.filter=s.filter or 'all'; s.query=s.query or ''; s.search_open=s.search_open or false; s.status=s.status or ''; keep(s) end\nlocal function update(r,field,value) local c=copy(r.content); c[field]=value; data.update{record_id=r.id,rev=r.rev,content=c,tag={field=field,value=value}} end\nfunction app.key(s,k,ctx)\n local n=k.name\n if s.form then\n  if n=='esc' then s.form=nil elseif n=='enter' then local t=s.form.value:gsub('^%s+',''):gsub('%s+$',''); if t~='' and not s.form.saving then s.form.saving=true; data.create{type='card',content={title=t,column='todo',order=host.time(),priority='normal'},tag='create'} end else ui.edit(s.form,k) end return\n end\n if s.search_open then\n  if n=='esc' then s.query=''; s.search_open=false elseif n=='enter' then s.search_open=false else local f={value=s.query,cursor=s.search_cursor}; ui.edit(f,k); s.query=f.value; s.search_cursor=f.cursor end keep(s); return\n end\n local ci,i,g,r=locate(s)\n if n=='q' then host.quit()\n elseif n=='n' then s.form={value=''}\n elseif n=='/' then s.search_open=true; s.search_cursor=nil\n elseif n=='esc' then s.query=''; s.filter='all'; keep(s)\n elseif n=='r' then load(s)\n elseif n=='f' then local nextf={all='high',high='normal',normal='low',low='all'}; s.filter=nextf[s.filter] or 'all'; keep(s)\n elseif n=='p' and r then local nextp={normal='high',high='low',low='normal'}; update(r,'priority',nextp[priority(r.content)])\n elseif ci then\n  if n=='j' or n=='down' or n=='k' or n=='up' then local d=(n=='j' or n=='down') and 1 or -1; local list=g[cols[ci]]; s.sel=list[math.max(1,math.min(#list,i+d))].id\n  elseif n=='h' or n=='left' or n=='l' or n=='right' then local d=(n=='l' or n=='right') and 1 or -1; local c=ci+d; while cols[c] do local list=g[cols[c]]; if #list>0 then s.sel=list[math.min(i,#list)].id; break end c=c+d end\n  elseif n==']' or n=='[' then local c=cols[ci+(n==']' and 1 or -1)]; if c then update(r,'column',c) end end\n end\nend\nfunction app.paste(s,text,ctx) if s.form then ui.paste(s.form,text) elseif s.search_open then local f={value=s.query,cursor=s.search_cursor}; ui.paste(f,text); s.query=f.value; s.search_cursor=f.cursor; keep(s) end end\nfunction app.reply(s,r,ctx)\n if r.tag=='load' then\n  if r.id~=s.list_id then return end\n  if r.ok then local out={}; for _,c in ipairs(r.records) do if not (s.touched or {})[c.id] then table.insert(out,c) end end for _,c in ipairs(s.cards) do if (s.touched or {})[c.id] then table.insert(out,c) end end s.cards=out; s.touched={}; s.status='Loaded.' else s.status='Load failed; r retry.' end\n elseif not r.ok then\n  if r.error.code=='conflict' and r.current then local field,value; if type(r.tag)=='table' then field,value=r.tag.field,r.tag.value elseif r.tag=='move' or r.tag=='merge' then field,value='column',r.request.content.column end; if field then put(s,r.current); if s.touched then s.touched[r.current.id]=true end update(r.current,field,value); keep(s); return end end\n  if s.form then s.form.saving=false end\n  if r.error.code=='rate_limited' then s.status='Retry in '..r.error.retry_after..' s.' else s.status='Failed: '..r.error.code end\n else\n  if r.record then put(s,r.record); if s.touched then s.touched[r.record.id]=true end end\n  if r.tag=='create' then s.form=nil; s.sel=r.record.id end s.status='Saved.'\n end keep(s)\nend\nfunction app.push(s,p,ctx) if s.touched then s.touched[p.record.id]=true end if p.change=='delete' then remove(s,p.record.id) else put(s,p.record) end keep(s) end\nfunction app.view(s,ctx)\n local g=groups(s); local wide=ctx.width>=60; local sections={}; local counts={#g.todo,#g.doing,#g.done}; local given={0,0,0}; local room=math.max(0,ctx.height-7)\n while room>0 do local changed=false; for i=1,3 do if room>0 and given[i]<counts[i] then given[i]=given[i]+1; room=room-1; changed=true end end if not changed then break end end\n for ci,n in ipairs(cols) do local items,sel={},nil; for i,r in ipairs(g[n]) do items[i]='['..priority(r.content):sub(1,1):upper()..'] '..title(r); if r.id==s.sel then sel=i end end sections[ci]=ui.column{size=not wide and given[ci]+1 or nil,ui.text{names[n]..' ('..#items..')',bold=true,fg='accent'},ui.list{items=items,selected=sel,id='col'..ci}} end\n local parts={ui.text{'Priority: '..s.filter..'  f filter / search',fg='accent'}}\n if wide then parts[#parts+1]=ui.row(sections) else for _,v in ipairs(sections) do parts[#parts+1]=v end parts[#parts+1]=ui.spacer{} end\n if s.search_open or s.query~='' then parts[#parts+1]=ui.input{value=s.query,cursor=s.search_cursor,focused=s.search_open,placeholder='Search titles'} end\n parts[#parts+1]=ui.text{'n new  p priority  [ ] move  Esc reset',fg='muted'}; parts[#parts+1]=ui.text{s.status,fg='muted'}\n local board=ui.column(parts); if not s.form then return board end return ui.layers{board,ui.popup{title='New card (normal priority)',width=math.min(38,ctx.width),height=4,ui.input{value=s.form.value,cursor=s.form.cursor,focused=true},ui.text{'Enter save  Esc cancel',fg='muted'}}}\nend\nreturn app",
+   "from_app": "tasks",
+   "keys": [
+    "n",
+    "type:Priority test",
+    "enter",
+    "p",
+    "f",
+    "f",
+    "f",
+    "f",
+    "/",
+    "type:test",
+    "enter",
+    "esc",
+    "]",
+    "resize:80x20"
+   ],
+   "width": 40,
+   "height": 16
+  }
+ },
+ {
+  "conversation": 2,
+  "entry": 28,
+  "role": "result",
+  "tool": "buzz_try_app",
+  "text": "{\"error\":null,\"log\":[],\"responding\":true,\"screen\":\"Priority: all  f filter / search\\nTo do (3)                  Doing (1)                 Done (1)\\n  [N] Publish the launch po> [H] Priority test         [N] Check the status page\\n  [N] macOS smoke test\\n  [N] Write the release not\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\nn new  p priority  [ ] move  Esc reset\\nSaved.\",\"size\":\"40x16\",\"steps\":14,\"types\":[\"card\"]}"
+ },
+ {
+  "conversation": 2,
+  "entry": 30,
+  "role": "call",
+  "tool": "buzz_propose_app",
+  "arguments": {
+   "app": "tasks",
+   "script": "local app={api=1,types={'card'}}\nlocal cols={'todo','doing','done'}\nlocal names={todo='To do',doing='Doing',done='Done'}\nlocal function priority(c) local p=c.priority; if p=='high' or p=='low' then return p end return 'normal' end\nlocal function copy(c) local t={} for k,v in pairs(c) do t[k]=v end return t end\nlocal function title(r) return type(r.content.title)=='string' and r.content.title or '(no title)' end\nlocal function groups(s)\n local g={todo={},doing={},done={}}\n for _,r in ipairs(s.cards) do local c=r.content; if g[c.column] and (s.filter=='all' or priority(c)==s.filter) and title(r):lower():find(s.query:lower(),1,true) then table.insert(g[c.column],r) end end\n for _,v in pairs(g) do table.sort(v,function(a,b) local x,y=tonumber(a.content.order) or 0,tonumber(b.content.order) or 0; if x~=y then return x<y end return a.id<b.id end) end\n return g\nend\nlocal function locate(s) local g=groups(s); for ci,n in ipairs(cols) do for i,r in ipairs(g[n]) do if r.id==s.sel then return ci,i,g,r end end end return nil,nil,g end\nlocal function keep(s) local ci,_,g=locate(s); if ci then return end s.sel=nil; for _,n in ipairs(cols) do if g[n][1] then s.sel=g[n][1].id; return end end end\nlocal function put(s,r) for i,c in ipairs(s.cards) do if c.id==r.id then s.cards[i]=r; return end end table.insert(s.cards,r) end\nlocal function remove(s,id) for i,r in ipairs(s.cards) do if r.id==id then table.remove(s.cards,i); return end end end\nlocal function load(s) s.list_id=data.list{type='card',tag='load'}; s.touched={}; s.status='Loading...' end\nfunction app.init(ctx) local s={cards={},query='',filter='all',status=''}; load(s); return s end\nfunction app.reload(s,ctx) s.filter=s.filter or 'all'; s.query=s.query or ''; s.search_open=s.search_open or false; s.status=s.status or ''; keep(s); load(s) end\nlocal function update(r,field,value) local c=copy(r.content); c[field]=value; data.update{record_id=r.id,rev=r.rev,content=c,tag={field=field,value=value}} end\nfunction app.key(s,k,ctx)\n local n=k.name\n if s.form then\n  if n=='esc' then s.form=nil elseif n=='enter' then local t=s.form.value:gsub('^%s+',''):gsub('%s+$',''); if t~='' and not s.form.saving then s.form.saving=true; data.create{type='card',content={title=t,column='todo',order=host.time(),priority='normal'},tag='create'} end else ui.edit(s.form,k) end return\n end\n if s.search_open then\n  if n=='esc' then s.query=''; s.search_open=false elseif n=='enter' then s.search_open=false else local f={value=s.query,cursor=s.search_cursor}; ui.edit(f,k); s.query=f.value; s.search_cursor=f.cursor end keep(s); return\n end\n local ci,i,g,r=locate(s)\n if n=='q' then host.quit()\n elseif n=='n' then s.form={value=''}\n elseif n=='/' then s.search_open=true; s.search_cursor=nil\n elseif n=='esc' then s.query=''; s.filter='all'; keep(s)\n elseif n=='r' then load(s)\n elseif n=='f' then local nextf={all='high',high='normal',normal='low',low='all'}; s.filter=nextf[s.filter] or 'all'; keep(s)\n elseif n=='p' and r then local nextp={normal='high',high='low',low='normal'}; update(r,'priority',nextp[priority(r.content)])\n elseif ci then\n  if n=='j' or n=='down' or n=='k' or n=='up' then local d=(n=='j' or n=='down') and 1 or -1; local list=g[cols[ci]]; s.sel=list[math.max(1,math.min(#list,i+d))].id\n  elseif n=='h' or n=='left' or n=='l' or n=='right' then local d=(n=='l' or n=='right') and 1 or -1; local c=ci+d; while cols[c] do local list=g[cols[c]]; if #list>0 then s.sel=list[math.min(i,#list)].id; break end c=c+d end\n  elseif n==']' or n=='[' then local c=cols[ci+(n==']' and 1 or -1)]; if c then update(r,'column',c) end end\n end\nend\nfunction app.paste(s,text,ctx) if s.form then ui.paste(s.form,text) elseif s.search_open then local f={value=s.query,cursor=s.search_cursor}; ui.paste(f,text); s.query=f.value; s.search_cursor=f.cursor; keep(s) end end\nfunction app.reply(s,r,ctx)\n if r.tag=='load' then\n  if r.id~=s.list_id then return end\n  if r.ok then local out={}; for _,c in ipairs(r.records) do if not (s.touched or {})[c.id] then table.insert(out,c) end end for _,c in ipairs(s.cards) do if (s.touched or {})[c.id] then table.insert(out,c) end end s.cards=out; s.touched={}; s.status='Loaded.' else s.status='Load failed; r retry.' end\n elseif not r.ok then\n  if r.error.code=='conflict' and r.current then local field,value; if type(r.tag)=='table' then field,value=r.tag.field,r.tag.value elseif r.tag=='move' or r.tag=='merge' then field,value='column',r.request.content.column end; if field then put(s,r.current); if s.touched then s.touched[r.current.id]=true end update(r.current,field,value); keep(s); return end end\n  if s.form then s.form.saving=false end\n  if r.error.code=='rate_limited' then s.status='Retry in '..r.error.retry_after..' s.' else s.status='Failed: '..r.error.code end\n else\n  if r.record then put(s,r.record); if s.touched then s.touched[r.record.id]=true end end\n  if r.tag=='create' then s.form=nil; s.sel=r.record.id end s.status='Saved.'\n end keep(s)\nend\nfunction app.push(s,p,ctx) if s.touched then s.touched[p.record.id]=true end if p.change=='delete' then remove(s,p.record.id) else put(s,p.record) end keep(s) end\nfunction app.view(s,ctx)\n local g=groups(s); local wide=ctx.width>=60; local sections={}; local counts={#g.todo,#g.doing,#g.done}; local given={0,0,0}; local room=math.max(0,ctx.height-7)\n while room>0 do local changed=false; for i=1,3 do if room>0 and given[i]<counts[i] then given[i]=given[i]+1; room=room-1; changed=true end end if not changed then break end end\n for ci,n in ipairs(cols) do local items,sel={},nil; for i,r in ipairs(g[n]) do items[i]='['..priority(r.content):sub(1,1):upper()..'] '..title(r); if r.id==s.sel then sel=i end end sections[ci]=ui.column{size=not wide and given[ci]+1 or nil,ui.text{names[n]..' ('..#items..')',bold=true,fg='accent'},ui.list{items=items,selected=sel,id='col'..ci}} end\n local parts={ui.text{'Priority: '..s.filter..'  f filter / search',fg='accent'}}\n if wide then parts[#parts+1]=ui.row(sections) else for _,v in ipairs(sections) do parts[#parts+1]=v end parts[#parts+1]=ui.spacer{} end\n if s.search_open or s.query~='' then parts[#parts+1]=ui.input{value=s.query,cursor=s.search_cursor,focused=s.search_open,placeholder='Search titles'} end\n parts[#parts+1]=ui.text{'n new  p priority  [ ] move  Esc reset',fg='muted'}; parts[#parts+1]=ui.text{s.status,fg='muted'}\n local board=ui.column(parts); if not s.form then return board end return ui.layers{board,ui.popup{title='New card (normal priority)',width=math.min(38,ctx.width),height=4,ui.input{value=s.form.value,cursor=s.form.cursor,focused=true},ui.text{'Enter save  Esc cancel',fg='muted'}}}\nend\nreturn app",
+   "brief": "# Board with priorities\nShared cards in To do, Doing and Done. Adds priority badges and a local priority filter; existing cards need no migration.\n\n## Records\nOne record type: `card`.\n\n| Field | Type | Meaning |\n|---|---|---|\n| title | string | Required title; missing/invalid displays (no title). |\n| column | string | Required: todo, doing, done. Other values retained but hidden. |\n| order | number | Creation time in seconds; ascending within column, ties by id. Invalid/missing treated as 0. |\n| priority | string | Optional: normal, high, low. Missing/invalid displays and filters as normal. New cards use normal. |\n\nNew cards start in todo. Updates copy all fields and change only column or priority. Conflicts retry the intended field/value on the latest content, retaining other fields including unknown ones. No cards are deleted by this app; external deletions disappear. Priority filters and case-insensitive literal title search combine locally and never change records. Sorting remains by order, not priority. Failed writes report an error; rate limiting displays retry seconds.\n\n## Keys\nj/k or up/down select; h/l or left/right change column; ]/[ move a card. n opens new card (Enter saves, Esc cancels). p cycles selected priority normal → high → low → normal. f cycles filter all → high → normal → low → all. / edits title search; Enter finishes, Esc clears search while editing. Outside editing, Esc resets both search and filter. r reloads; q closes. Badges [N], [H], [L] show priority.\n\n## Changes\nAdds priority and filter, with combined local search. No records rewritten on upgrade. Reload initializes filter defaults and loads all records while keeping search. Layout remains stacked below 60 columns and side by side at 60+. Writes appear after confirmation rather than optimistically."
+  }
+ },
+ {
+  "conversation": 2,
+  "entry": 32,
+  "role": "result",
+  "tool": "buzz_propose_app",
+  "text": "{\"app\":\"tasks\",\"hash\":\"386da95b7aeb85c9b5c086bc99e6b5db0f7d1045a912a9a8dd602b3ff5b2636c\",\"message\":\"Waiting for the owner. Version 2 of tasks is put to the owner, who approves or refuses these exact bytes; nothing of it runs before. You are told what became of it at your next turn in this channel, and `apps` with `app` shows it any time.\",\"status\":\"waiting\",\"version\":2}"
+ },
+ {
+  "conversation": 2,
+  "entry": 34,
+  "role": "call",
+  "tool": "buzz_send",
+  "arguments": {
+   "text": "Proposed for approval: `p` cycles card priority; `f` filters by priority. Existing cards default to normal.",
+   "final": true
+  }
+ },
+ {
+  "conversation": 2,
+  "entry": 36,
+  "role": "result",
+  "tool": "buzz_send",
+  "text": "sent as c7f102ccf69675d3b6aa0a20dd5cc019e597f163a5a86272c0f1f06d7f0e96d9"
+ },
+ {
+  "conversation": 37,
+  "entry": 43,
+  "role": "user",
+  "text": "From: You (your owner) (3312d21f8853c563008e3d659e0971588de880dcf45d01dcee1063d5bf9d3592)\nWhere: a thread in the channel #team\nMessage (2c30869abcb55ba678014b70850d830e6fa5f343c59e3f3663956b60fa3df022):\n@Scout move the release notes card to done\n\nSince your last turn in this channel, of what you proposed here:\n- your version 2 of the app tasks: applied. The owner approved it, and it runs where the app is open.\n"
+ },
+ {
+  "conversation": 37,
+  "entry": 47,
+  "role": "call",
+  "tool": "buzz_apps",
+  "arguments": {}
+ },
+ {
+  "conversation": 37,
+  "entry": 49,
+  "role": "result",
+  "tool": "buzz_apps",
+  "text": "{\"apps\":[{\"brief\":\"# Board with priorities\\nShared cards in To do, Doing and Done. Adds priority badges and a local priority filter; existing cards need no migration.\\n\\n## Records\\nOne record type: `card`.\\n\\n| Field | Type | Meaning |\\n|---|---|---|\\n| title | string | Required title; missing/invalid displays (no title). |\\n| column | string | Required: todo, doing, done. Other values retained but hidden. |\\n| order | number | Creation time in seconds; ascending within column, ties by id. Invalid/missing treated as 0. |\\n| priority | string | Optional: normal, high, low. Missing/invalid displays and filters as normal. New cards use normal. |\\n\\nNew cards start in todo. Updates copy all fields and change only column or priority. Conflicts retry the intended field/value on the latest content, retaining other fields including unknown ones. No cards are deleted by this app; external deletions disappear. Priority filters and case-insensitive literal title search combine locally and never change records. Sorting remains by order, not priority. Failed writes report an error; rate limiting displays retry seconds.\\n\\n## Keys\\nj/k or up/down select; h/l or left/right change column; ]/[ move a card. n opens new card (Enter saves, Esc cancels). p cycles selected priority normal → high → low → normal. f cycles filter all → high → normal → low → all. / edits title search; Enter finishes, Esc clears search while editing. Outside editing, Esc resets both search and filter. r reloads; q closes. Badges [N], [H], [L] show priority.\\n\\n## Changes\\nAdds priority and filter, with combined local search. No records rewritten on upgrade. Reload initializes filter defaults and loads all records while keeping search. Layout remains stacked below 60 columns and side by side at 60+. Writes appear after confirmation rather than optimistically.\",\"name\":\"tasks\",\"title\":\"Tasks\",\"types\":[\"card\"],\"version\":2}]}"
+ },
+ {
+  "conversation": 37,
+  "entry": 51,
+  "role": "call",
+  "tool": "buzz_records",
+  "arguments": {
+   "app": "tasks",
+   "type": "card",
+   "match": "release notes"
+  }
+ },
+ {
+  "conversation": 37,
+  "entry": 53,
+  "role": "result",
+  "tool": "buzz_records",
+  "text": "{\"app\":\"tasks\",\"count\":1,\"records\":[{\"by\":{\"id\":\"15913fe244d78ea37a7c3b63c6546f34ace614510f9b95c530f7ca93350e4b79\",\"name\":\"Ada\"},\"content\":{\"column\":\"todo\",\"order\":1795537221.199124,\"title\":\"Write the release notes\"},\"id\":\"cf8f386c-979f-4c12-bfa3-d570a5f6564b\",\"rev\":\"11e7a32934c06142ef048ca0b1a34290c92ddf208676940060a7a66228fc9451\",\"type\":\"card\"}],\"type\":\"card\"}"
+ },
+ {
+  "conversation": 37,
+  "entry": 55,
+  "role": "call",
+  "tool": "buzz_update_record",
+  "arguments": {
+   "app": "tasks",
+   "id": "cf8f386c-979f-4c12-bfa3-d570a5f6564b",
+   "rev": "11e7a32934c06142ef048ca0b1a34290c92ddf208676940060a7a66228fc9451",
+   "content": {
+    "column": "done",
+    "order": 1795537221.199124,
+    "title": "Write the release notes"
+   }
+  }
+ },
+ {
+  "conversation": 37,
+  "entry": 57,
+  "role": "result",
+  "tool": "buzz_update_record",
+  "text": "{\"record\":{\"by\":{\"id\":\"84c35c6ab7dc9a079e08aab7bf2a98190d6b5cbb0e742beb98b41d5f669eae87\",\"name\":\"Scout\"},\"content\":{\"column\":\"done\",\"order\":1795537221.199124,\"title\":\"Write the release notes\"},\"id\":\"cf8f386c-979f-4c12-bfa3-d570a5f6564b\",\"rev\":\"de43551d1ca94812f00be0e58db72dc8079fc101fa59bab1115403a51e12a7a5\",\"type\":\"card\"}}"
+ },
+ {
+  "conversation": 37,
+  "entry": 59,
+  "role": "call",
+  "tool": "buzz_send",
+  "arguments": {
+   "text": "Moved “Write the release notes” to Done.",
+   "final": true
+  }
+ },
+ {
+  "conversation": 37,
+  "entry": 61,
+  "role": "result",
+  "tool": "buzz_send",
+  "text": "sent as 226972d81b27f9eb0afd5cf19e1af960dd5f48b79652497dd5ba0501b33ad16f"
+ }
+]

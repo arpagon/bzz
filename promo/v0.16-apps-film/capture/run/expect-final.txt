@@ -1,0 +1,49 @@
+ok   together/you.jsonl you-board:seen+0.3 +Tasks · Ctrl-c leave +#team +To do (2) +Doing (1) -error
+ok   together/ada.jsonl lin-board:seen+0.5 +Tasks · Ctrl-c leave +To do (2) -error
+ok   together/lin.jsonl lin-board:seen+0.5 +Tasks · Ctrl-c leave +To do (2) -error
+ok   together/ada.jsonl ada-save-0.1 +Write the release notes
+ok   together/lin.jsonl ada-save-0.05 -Write the release notes
+ok   together/you.jsonl ada-save-0.05 -Write the release notes
+ok   together/lin.jsonl lin-sees:seen +Write the release notes +To do (3)
+ok   together/you.jsonl you-sees:seen +Write the release notes +To do (3)
+ok   together/ada.jsonl same-moment-0.05 +> Check the status page +Doing (1)
+ok   together/lin.jsonl same-moment-0.05 +> Check the status page +Doing (1)
+ok   together/you.jsonl same-moment+0.05 +Doing (1)
+ok   together/ada.jsonl settled -Doing (1)
+ok   same board: tapes/together settled Check the status page ada lin you --conflict
+     ada  @25.29: (('To do', '3'), ('Doing', '0'), ('Done', '1'))  'Check the status page' x1  status: conflict
+     lin  @25.29: (('To do', '3'), ('Doing', '0'), ('Done', '1'))  'Check the status page' x1  status: saved
+     you  @25.29: (('To do', '3'), ('Doing', '0'), ('Done', '1'))  'Check the status page' x1  status: -
+     ok   same board
+ok   poll/lin.jsonl asked +Launch day lunch? +Tacos +Sushi +Pizza
+ok   poll/you.jsonl voted +Total: 3 votes -error
+ok   poll/ada.jsonl voted +Total: 3 votes -error
+ok   poll/lin.jsonl voted +Total: 3 votes -error
+ok   approvals/you.jsonl you-sees:seen +Order a test Mac mini +Ada
+ok   approvals/ada.jsonl own-refused:seen +You cannot decide your own request.
+ok   approvals/ada.jsonl decided +approved +Decided by: You -error
+ok   agent/you.jsonl send-0.1 +@Scout add a priority and a filter to the board
+ok   agent/you.jsonl banner:seen+0.2 +tasks: version 2 from your agent Scout, asked by You waits for your approval +> macOS smoke test -error
+ok   agent/you.jsonl overlay-shown +tasks (Tasks), version 2 +From:     your agent Scout +Asked by: You +CHANGED from the version that runs +Hash:
+ok   agent/you.jsonl approve +: the end
+ok   agent/you.jsonl in-place +tasks: version 2 runs in place of 1, its state kept +macOS smoke test -error
+ok   agent/ada.jsonl ada-still-v1 +Tasks · Ctrl-c leave +To do -version 2 -error
+ok   agent/you.jsonl shared:seen +is shared in #team
+ok   agent/ada.jsonl ada-banner-shown +tasks: version 2 from You, a person of the channel
+ok   agent/ada.jsonl ada-overlay-shown +From:     You, a person of the channel +Offer:    shared in the channel; this exact revision +Hash:
+ok   agent/ada.jsonl ada-in-place +tasks: version 2 runs in place of 1 -error
+ok   records/you.jsonl send-0.1 +@Scout move the release notes card to done
+ok   records/lin.jsonl send-0.1 +Write the release notes
+ok   records/lin.jsonl lin-moved:wait+0.05 +To do (3) +Done (1)
+ok   same board: tapes/records lin-moved:seen Write the release notes you ada lin
+     you  @27.46: (('To do', '2'), ('Doing', '0'), ('Done', '2'))  'Write the release notes' x1  status: -
+     ada  @27.46: (('To do', '2'), ('Doing', '0'), ('Done', '2'))  'Write the release notes' x1  status: -
+     lin  @27.46: (('To do', '2'), ('Doing', '0'), ('Done', '2'))  'Write the release notes' x1  status: -
+     ok   same board
+ok   same board: tapes/records moved Write the release notes you ada lin
+     you  @180.46: (('To do', '2'), ('Doing', '0'), ('Done', '2'))  'Write the release notes' x1  status: -
+     ada  @180.46: (('To do', '2'), ('Doing', '0'), ('Done', '2'))  'Write the release notes' x1  status: -
+     lin  @180.46: (('To do', '2'), ('Doing', '0'), ('Done', '2'))  'Write the release notes' x1  status: -
+     ok   same board
+ok   records/you.jsonl lin-moved:seen+2.5 +↳ 1 reply · last reply just -error
+ok   records/lin.jsonl moved +Done (2) -error

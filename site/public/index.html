@@ -7,7 +7,7 @@
 <meta name="description" content="bzz is a human-first terminal client for Buzz: fast keyboard navigation, local offline history, native Nostr authentication, and host-isolated communities. One Rust binary, 60 themes.">
 <link rel="canonical" href="https://getbzz.dev/">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/styles.css?v=6">
+<link rel="stylesheet" href="/styles.css?v=7">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://getbzz.dev/">
 <meta property="og:title" content="bzz — a human-first terminal client for Buzz">
@@ -87,7 +87,7 @@
 </div>
 </header>
 
-<div class="wrap shot">
+<div class="wrap shot" id="top-film">
   <div class="term">
     <video controls autoplay muted loop playsinline preload="metadata"
       poster="/assets/poster-promo-v016.png?v=1"
@@ -98,6 +98,11 @@
     </video>
   </div>
   <p class="cap">Unmute for narration. The real bzz 0.16.0 binary on a test relay with generated people and avatars; the agent's replies and its version of the Board come from a real model. Voice: Fish Audio Drama 3 · music: ACE-Step.</p>
+  <p class="films">
+    <span>films</span>
+    <a href="#top-film">launch film <small>0:55</small></a>
+    <a href="#apps-film">apps, start to finish <small>2:42</small></a>
+  </p>
 
   <div class="stats">
     <div><b>1</b><span>Rust binary</span></div>
@@ -151,18 +156,40 @@
   in the channel it is open in. bzz signs the records; the script never sees
   a key.</p>
 
-  <div class="shot">
+  <figure class="shot film" id="apps-film">
+    <div class="film-head">
+      <span class="k">/// the film</span>
+      <span class="badge">2:42 · narrated · captions</span>
+    </div>
     <div class="term">
-      <video autoplay muted loop playsinline preload="metadata"
-        poster="/assets/poster-apps-v016.png?v=1"
-        aria-label="The Board app open beside the channel team. You ask your agent Scout for a priority and a filter; the line at the top says version 2 from your agent Scout, asked by You, waits for your approval; Ctrl-y shows who it comes from, who asked, and the brief marked CHANGED; after a, version 2 runs in place with a priority filter, and the same card is still selected">
-        <source src="/assets/apps-v016.webm?v=1" type="video/webm">
-        <source src="/assets/apps-v016.mp4?v=1" type="video/mp4">
-        <img src="/assets/poster-apps-v016.png?v=1" alt="The Board after the agent's version was approved: a priority filter, a badge on each card, and the card macOS smoke test still selected; the status line says version 2 runs in place of 1, its state kept">
+      <video controls preload="none" playsinline
+        poster="/assets/poster-film-apps.png?v=1"
+        aria-label="Apps in bzz, a 2 minute 42 second film: three people with the Board open beside #team see each other's cards live; two of them move one card at the same instant and nothing is lost; the Poll and the Approvals; the owner asks his agent for a priority and a filter, reads the exact bytes it proposes and approves them, and the open Board changes in place; he offers it to the channel and Ada approves it on her own screen; the agent moves a card through the app's records, without a screen; and Buzz desktop, with a plugin written for the film, shows the same Board">
+        <source src="/assets/film-apps-720.mp4?v=1" type="video/mp4" media="(max-width: 640px)">
+        <source src="/assets/film-apps.webm?v=1" type="video/webm">
+        <source src="/assets/film-apps.mp4?v=1" type="video/mp4">
+        <track kind="captions" src="/assets/film-apps.en.vtt?v=1" srclang="en" label="English">
+        <track kind="chapters" src="/assets/film-apps.chapters.vtt?v=1" srclang="en" label="Chapters">
+        <img src="/assets/poster-film-apps.png?v=1" alt="Three bzz windows side by side, Ada's, Lin's and yours, each with the Board open beside #team, at the instant two of them move the same card">
       </video>
     </div>
-    <p class="cap">The real bzz 0.16.0 binary on a test relay with generated people. The agent's version of the Board was written by a real model; the minutes it took are cut out of the take.</p>
-  </div>
+    <ol class="chapters" aria-label="Chapters of the apps film">
+      <li><a href="#apps-film" data-t="6">beside the chat</a></li>
+      <li><a href="#apps-film" data-t="18">shared, live</a></li>
+      <li><a href="#apps-film" data-t="32">at the same moment</a></li>
+      <li><a href="#apps-film" data-t="48">three apps ship</a></li>
+      <li><a href="#apps-film" data-t="67.38">ask your agent</a></li>
+      <li><a href="#apps-film" data-t="81.38">read the exact bytes</a></li>
+      <li><a href="#apps-film" data-t="97.38">it changes in place</a></li>
+      <li><a href="#apps-film" data-t="107.38">offer it to the channel</a></li>
+      <li><a href="#apps-film" data-t="125.38">agents use the records</a></li>
+      <li><a href="#apps-film" data-t="139.38">and on Buzz desktop</a></li>
+    </ol>
+    <figcaption class="cap">The real bzz 0.16.0 binary on a test relay with generated people: three
+    people's screens from one take, on one clock; every key from a script. A real model writes the
+    agent's version and moves the card; the time it took is cut and shown as cut. 14 MB; nothing
+    loads until you press play. Voice: Fish Audio Drama 3 · music: ACE-Step.</figcaption>
+  </figure>
 
   <div class="card feature">
     <div class="feature-head">
@@ -692,6 +719,6 @@ bzz</code></pre>
 </div>
 </footer>
 
-<script src="/app.js?v=3" defer></script>
+<script src="/app.js?v=4" defer></script>
 </body>
 </html>

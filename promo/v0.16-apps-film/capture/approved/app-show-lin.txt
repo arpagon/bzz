@@ -1,0 +1,48 @@
+tasks (Tasks)
+state:    version 1 runs (04639b6391e8)
+hash:     04639b6391e885e3c888154f7b7c7ae8e6c35f943eaf0aca3d8793b58e164356
+types:    card   (on the relay: bzz.app.tasks.card)
+sizes:    script 11.9 KiB, brief 1.6 KiB
+from:     you, proposed 2026-11-24T16:19:33Z, approved 2026-11-24T16:19:33Z
+files:    /tmp/bzz-fa-c2/lin/data/apps/b20b405d-8321-4c95-9d08-d43c7df0d354/tasks/versions/0001
+open in:  #team (7a0b2a34-4a8b-4079-8e86-8621d5c9f716)
+brief:
+  | # Board
+  | 
+  | A task board that a channel shares: cards in three columns, To do, Doing
+  | and Done. Anyone in the channel adds a card and moves it between columns,
+  | and everyone who has the board open sees the change at once.
+  | 
+  | ## Records
+  | 
+  | One record type, `card`. A card's content:
+  | 
+  | | Field | Type | Meaning |
+  | |---|---|---|
+  | | `title` | string | What the card says. Required; a card without one is shown as "(no title)". |
+  | | `column` | string | `"todo"`, `"doing"` or `"done"`. A card with another value is kept and not shown. |
+  | | `order` | number | Where the card stands in its column, smallest first. A new card gets the time it was made, in seconds since 1970. Two cards with the same `order` are ordered by their id. |
+  | 
+  | Rules another client must keep to share these records:
+  | 
+  | - A new card starts in `"todo"`.
+  | - Moving a card changes only `column`. Every other field is written back as
+  |   it was read, also fields this version does not know.
+  | - When two people move the same card at once, the later one takes the card
+  |   as the first left it and sets its own `column` on top.
+  | - Cards are never deleted by this app. A card that another client deletes
+  |   disappears from the board.
+  | 
+  | ## Keys
+  | 
+  | `j`/`k` or the arrows move the selection, `h`/`l` change column, `]` and `[`
+  | move the selected card to the next or the previous column, `n` opens a form
+  | for a new card (Enter saves, Esc cancels), `/` searches the titles (Esc
+  | clears the search), `r` loads the cards again, `q` closes the board.
+  | 
+  | ## Screen
+  | 
+  | From 60 columns the three columns stand side by side; below that they are
+  | stacked, so that it fits the 40 columns by 16 rows of bzz's app pane.
+versions:
+  1	approved; it runs	you	2026-11-24T16:19:33Z	04639b6391e8

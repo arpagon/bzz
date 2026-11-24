@@ -814,3 +814,26 @@ footer .disclaimer {
     animation: none;
   }
 }
+
+/* Feature films: the films strip under the hero film, the film block in a feature's section */
+.films {
+  display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; justify-content: center; align-items: baseline;
+  margin: 0.9rem auto 0; font-size: 0.8rem;
+}
+.films span { color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; font-size: 0.7rem; }
+.films a { color: var(--text); text-decoration: none; border-bottom: 1px solid var(--border); }
+.films a:hover { color: var(--accent); border-color: var(--accent); }
+.films small { color: var(--muted); margin-left: 0.25rem; }
+.shot.film { margin-top: 1.6rem; }
+.film-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem; }
+.chapters {
+  list-style: none; display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: center;
+  margin: 0.9rem 0 0; padding: 0; counter-reset: ch;
+}
+.chapters li { counter-increment: ch; }
+.chapters a {
+  display: inline-block; padding: 0.25rem 0.6rem; border: 1px solid var(--border); border-radius: 999px;
+  font-size: 0.75rem; color: var(--muted); text-decoration: none;
+}
+.chapters a::before { content: counter(ch) " · "; color: var(--accent); }
+.chapters a:hover { color: var(--text); border-color: var(--accent); }

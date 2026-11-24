@@ -1,6 +1,6 @@
 ---
 name: bzz-promo-video
-description: Make a bzz promotional or launch film from the real TUI, with narration, music and kinetic captions. Use when asked for a promo, launch or social video of bzz, or to replace the getbzz.dev hero video.
+description: Make a bzz promotional, launch or feature film from the real TUI, with narration, music and kinetic captions. Use when asked for a promo, launch or social video of bzz, a longer film about one feature (several clients side by side), or to replace the getbzz.dev hero video.
 ---
 
 # bzz promotional film
@@ -16,10 +16,14 @@ Work in an ignored experiment (`experiment-mode` skill):
 `runs/experiments/promo-video/{voice-casting,capture,film}`. Only reviewed
 deliverables leave it.
 
+A **feature film** (one feature, 2–3 minutes, several people's screens from
+one take) follows these steps with the changes in
+[references/feature-film.md](references/feature-film.md).
+
 ## Steps
 
 1. **Brief and script.** One story: hook → turn ("This is bzz") → proof beats
-   → install end card. 45–55 s, ~90 words, English. Every claim is a shipped,
+   → install end card. 45–55 s, ~90–110 words, English. Every claim is a shipped,
    validated feature (`docs/validation-v*.md`); no partial-platform claims.
    The real TUI and the name are on screen by 3 s; the film works muted.
    "bzz" sounds like "buzz", so the picture carries the name.
@@ -64,7 +68,10 @@ deliverables leave it.
 | Path | Use |
 |---|---|
 | `scripts/record-tape.py` | headless PTY recorder: fixed cell/pixel size, key timeline, marks |
-| `scripts/record-live.py` | the same tape, for a take whose timing is not yours (a real model answers): a step waits until a text is on screen, and every wait is marked |
+| `scripts/record-live.py` | the same tape, for a take whose timing is not yours (a real model answers): a step waits until a text is on screen, and every wait is marked; `"soft": true` marks a timeout and goes on |
+| `scripts/record-multi.py` | several panes (each its own bzz) from one timeline on one clock: one tape per pane and `sync.json` (wall-clock origin, keys, marks); also the bzz side of a take a screen recording joins |
+| `scripts/same-board.py`, `scripts/first-seen.py` | at a mark, every pane shows the same Board; the first tape second a pane shows a text |
+| `scripts/calibrate-multi.py`, `scripts/calibrate-window.py` | the precision of `record-multi.py` among tapes, and of an x11grab window against a tape |
 | `scripts/tape-peek.py` | screen text at chosen seconds (drops Sixel) |
 | `scripts/tape-expect.py` | assert `+text`/`-text` at a second or mark; exit 1 on failure |
 | `scripts/preview-tape.sh` | pixel stills of a tape through HyperFrames |

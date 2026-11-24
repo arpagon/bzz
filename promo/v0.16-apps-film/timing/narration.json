@@ -1,0 +1,231 @@
+{
+ "takes": {
+  "L00": "L00-b1-001",
+  "L01": "L01-b1-003",
+  "L02": "L02-b1-006",
+  "L03": "L03-b1-007",
+  "L04": "L04-b2-001",
+  "L05": "L05-b2-004",
+  "L06": "L06-b2-006",
+  "L07": "L07-b2-007",
+  "L08": "L08-b3-002",
+  "L09": "L09-b3-004",
+  "L10": "L10-b3-005",
+  "L11": "L11-b3-007"
+ },
+ "lines": {
+  "L00": {
+   "take": "L00-b1-001",
+   "text": "One channel. Three people. One app, beside the chat.",
+   "slot": 1.0,
+   "speech_film": [
+    1.0,
+    5.355
+   ],
+   "captions": [
+    [
+     1.0,
+     5.355
+    ]
+   ]
+  },
+  "L01": {
+   "take": "L01-b1-003",
+   "text": "An app is a small script that buzz runs for a channel, and draws right beside the conversation.",
+   "slot": 6.6,
+   "speech_film": [
+    6.6,
+    12.757
+   ],
+   "captions": [
+    [
+     6.6,
+     12.757
+    ]
+   ]
+  },
+  "L02": {
+   "take": "L02-b1-006",
+   "text": "Its records belong to the channel. Ada adds a card, and it lands on Lin's screen and on yours.",
+   "slot": 18.6,
+   "speech_film": [
+    18.6,
+    25.733
+   ],
+   "captions": [
+    [
+     18.6,
+     25.733
+    ]
+   ]
+  },
+  "L03": {
+   "take": "L03-b1-007",
+   "text": "Two people move the same card at the same instant. One move is saved. The other is told, and the Board merges it. Nothing is lost.",
+   "slot": 32.6,
+   "speech_film": [
+    32.6,
+    42.573
+   ],
+   "captions": [
+    [
+     32.6,
+     35.68
+    ],
+    [
+     36.27,
+     42.573
+    ]
+   ]
+  },
+  "L04": {
+   "take": "L04-b2-001",
+   "text": "Three apps ship with buzz: a Board, a Poll, and Approvals, where nobody signs off their own request.",
+   "slot": 48.6,
+   "speech_film": [
+    48.6,
+    56.747
+   ],
+   "captions": [
+    [
+     48.6,
+     53.76
+    ],
+    [
+     54.16,
+     56.747
+    ]
+   ]
+  },
+  "L05": {
+   "take": "L05-b2-004",
+   "text": "Want something else? Ask your agent, right in the channel: add a priority and a filter to the board.",
+   "slot": 67.98,
+   "speech_film": [
+    67.98,
+    74.613
+   ],
+   "captions": [
+    [
+     67.98,
+     71.59
+    ],
+    [
+     72.1,
+     74.613
+    ]
+   ]
+  },
+  "L06": {
+   "take": "L06-b2-006",
+   "text": "Nothing it wrote runs until you have read it: who it comes from, who asked, its hash, what changed. Down to the last line.",
+   "slot": 81.98,
+   "speech_film": [
+    81.98,
+    92.236
+   ],
+   "captions": [
+    [
+     81.98,
+     86.24
+    ],
+    [
+     86.58,
+     92.236
+    ]
+   ]
+  },
+  "L07": {
+   "take": "L07-b2-007",
+   "text": "Approve it, and the open app changes in place. The same card is still selected.",
+   "slot": 97.98,
+   "speech_film": [
+    97.98,
+    103.707
+   ],
+   "captions": [
+    [
+     97.98,
+     101.04
+    ],
+    [
+     101.53,
+     103.707
+    ]
+   ]
+  },
+  "L08": {
+   "take": "L08-b3-002",
+   "text": "To give it to the others, offer it in the channel. Ada sees who signed it, reads the same bytes, and decides for herself.",
+   "slot": 107.98,
+   "speech_film": [
+    107.98,
+    116.187
+   ],
+   "captions": [
+    [
+     107.98,
+     110.71
+    ],
+    [
+     111.37,
+     116.187
+    ]
+   ]
+  },
+  "L09": {
+   "take": "L09-b3-004",
+   "text": "Agents work with an app's records too, without a screen: they read its brief. Move the release notes card to Done.",
+   "slot": 125.98,
+   "speech_film": [
+    125.98,
+    134.607
+   ],
+   "captions": [
+    [
+     125.98,
+     131.3
+    ],
+    [
+     132.0,
+     134.607
+    ]
+   ]
+  },
+  "L10": {
+   "take": "L10-b3-005",
+   "text": "The records travel, and each client draws its own board. Here, Buzz desktop, with a plugin written from the brief.",
+   "slot": 139.98,
+   "speech_film": [
+    139.98,
+    148.375
+   ],
+   "captions": [
+    [
+     139.98,
+     143.71
+    ],
+    [
+     144.35,
+     148.375
+    ]
+   ]
+  },
+  "L11": {
+   "take": "L11-b3-007",
+   "text": "Buzz. Apps in the channel.",
+   "slot": 150.58,
+   "speech_film": [
+    150.58,
+    152.812
+   ],
+   "captions": [
+    [
+     150.58,
+     152.812
+    ]
+   ]
+  }
+ },
+ "lufs_per_line": -20.6
+}

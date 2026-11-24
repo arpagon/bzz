@@ -1,0 +1,7 @@
+removed /tmp/bzz-fa-c2
+--- docker ps -a | grep buzz-harness (empty is down)
+(none)
+--- port 3030
+(free)
+--- lock
+(free)

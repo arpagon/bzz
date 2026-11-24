@@ -1,0 +1,879 @@
+{
+ "session": "765d5667-92f3-48f3-aa35-faa776a25b89",
+ "originWall": 1795537313.1491308,
+ "originMonotonic": 612034.361716952,
+ "stop": 164.449,
+ "panes": {
+  "you": {
+   "version": 1,
+   "cols": 120,
+   "rows": 32,
+   "cellWidth": 12,
+   "cellHeight": 26,
+   "term": "xterm-256color",
+   "clock": {
+    "session": "765d5667-92f3-48f3-aa35-faa776a25b89",
+    "pane": "you",
+    "origin": 1795537313.149131
+   }
+  },
+  "ada": {
+   "version": 1,
+   "cols": 80,
+   "rows": 24,
+   "cellWidth": 12,
+   "cellHeight": 26,
+   "term": "xterm-256color",
+   "clock": {
+    "session": "765d5667-92f3-48f3-aa35-faa776a25b89",
+    "pane": "ada",
+    "origin": 1795537313.149131
+   }
+  }
+ },
+ "keys": [
+  {
+   "pane": "you",
+   "t": 3.001964,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 3.15242,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 3.702781,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 3.78294,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 3.864355,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 3.946372,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 4.330396,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 5.865863,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 6.016105,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 6.566508,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 6.646689,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 6.726864,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 6.807014,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 7.1873,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.222556,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.27268,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.322835,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.372992,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.423131,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.47327,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.523411,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.573569,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.623711,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.673845,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.725151,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.775347,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.829806,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.879944,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.93007,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.980224,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.031336,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.081428,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.13159,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.181737,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.231874,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.282017,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.332172,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.382317,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.432449,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.482603,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.532746,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.582906,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.633055,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.683253,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.733425,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 9.783573,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 10.835131,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 11.987017,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 12.52237,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 12.90759,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 13.017735,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 13.127841,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 13.23798,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.148251,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.4835,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.511632,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.539736,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.56786,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.595994,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.624131,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.652259,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.680359,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.708478,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.736575,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.764696,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.792841,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.820986,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.849152,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.877304,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.905445,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.933547,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.961662,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 14.98979,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.017944,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.046108,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.074245,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.102357,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.130503,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.158639,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.186778,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.214918,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.243047,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.271198,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.299335,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.327463,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.355598,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.383743,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.411878,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.440008,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.468162,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.49627,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.524351,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.552489,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 15.580636,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 16.10895,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 128.303423,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 131.843161,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 131.943348,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 132.043527,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 132.143691,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 132.2439,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 132.34404,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 132.445328,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 132.545527,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 132.64572,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 132.745947,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 132.846089,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 132.949388,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 135.068384,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 136.607655,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 143.685524,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 144.227235,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 144.2791,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 144.336367,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 144.388352,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 144.438504,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 144.490672,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 144.542404,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 144.596471,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 144.64661,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 144.696775,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 144.746951,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 148.194322,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 148.630494,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 152.195659,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 153.749007,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 158.829036,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 159.364304,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 160.099563,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 161.136077,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 161.678425,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 162.413705,
+   "bytes": 1
+  }
+ ],
+ "marks": [
+  {
+   "t": 2.0002,
+   "mark": "you-online:wait"
+  },
+  {
+   "t": 2.0013,
+   "mark": "you-online:seen"
+  },
+  {
+   "t": 2.0014,
+   "mark": "ada-online:wait"
+  },
+  {
+   "t": 2.0017,
+   "mark": "ada-online:seen"
+  },
+  {
+   "t": 8.2225,
+   "mark": "open"
+  },
+  {
+   "t": 9.0304,
+   "mark": "you-board:wait"
+  },
+  {
+   "t": 9.0313,
+   "mark": "you-board:seen"
+  },
+  {
+   "t": 9.8337,
+   "mark": "ada-board:wait"
+  },
+  {
+   "t": 9.8341,
+   "mark": "ada-board:seen"
+  },
+  {
+   "t": 10.8343,
+   "mark": "select"
+  },
+  {
+   "t": 10.8343,
+   "mark": "sel1:wait"
+  },
+  {
+   "t": 11.1868,
+   "mark": "sel1:seen"
+  },
+  {
+   "t": 12.5223,
+   "mark": "compose"
+  },
+  {
+   "t": 16.1089,
+   "mark": "send"
+  },
+  {
+   "t": 16.1441,
+   "mark": "banner:wait"
+  },
+  {
+   "t": 123.1893,
+   "mark": "banner:seen"
+  },
+  {
+   "t": 123.5896,
+   "mark": "reply:wait"
+  },
+  {
+   "t": 125.8026,
+   "mark": "reply:seen"
+  },
+  {
+   "t": 128.3033,
+   "mark": "banner-shown"
+  },
+  {
+   "t": 128.3422,
+   "mark": "overlay:wait"
+  },
+  {
+   "t": 128.343,
+   "mark": "overlay:seen"
+  },
+  {
+   "t": 131.8431,
+   "mark": "overlay-shown"
+  },
+  {
+   "t": 135.0664,
+   "mark": "scrolled"
+  },
+  {
+   "t": 135.1035,
+   "mark": "end:wait"
+  },
+  {
+   "t": 135.1044,
+   "mark": "end:seen"
+  },
+  {
+   "t": 136.6076,
+   "mark": "approve"
+  },
+  {
+   "t": 136.6427,
+   "mark": "applied:wait"
+  },
+  {
+   "t": 136.6851,
+   "mark": "applied:seen"
+  },
+  {
+   "t": 140.6853,
+   "mark": "in-place"
+  },
+  {
+   "t": 143.6854,
+   "mark": "ada-still-v1"
+  },
+  {
+   "t": 144.2271,
+   "mark": "share"
+  },
+  {
+   "t": 144.7971,
+   "mark": "shared:wait"
+  },
+  {
+   "t": 145.1934,
+   "mark": "shared:seen"
+  },
+  {
+   "t": 146.1936,
+   "mark": "ada-banner:wait"
+  },
+  {
+   "t": 146.194,
+   "mark": "ada-banner:seen"
+  },
+  {
+   "t": 148.1942,
+   "mark": "ada-banner-shown"
+  },
+  {
+   "t": 148.6656,
+   "mark": "ada-overlay:wait"
+  },
+  {
+   "t": 148.6881,
+   "mark": "ada-overlay:seen"
+  },
+  {
+   "t": 152.1955,
+   "mark": "ada-overlay-shown"
+  },
+  {
+   "t": 152.2484,
+   "mark": "ada-end:wait"
+  },
+  {
+   "t": 152.2488,
+   "mark": "ada-end:seen"
+  },
+  {
+   "t": 153.7489,
+   "mark": "ada-approve"
+  },
+  {
+   "t": 153.7842,
+   "mark": "ada-applied:wait"
+  },
+  {
+   "t": 153.8274,
+   "mark": "ada-applied:seen"
+  },
+  {
+   "t": 157.8288,
+   "mark": "ada-in-place"
+  }
+ ],
+ "status": 0
+}

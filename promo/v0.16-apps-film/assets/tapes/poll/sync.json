@@ -1,0 +1,798 @@
+{
+ "session": "7299a48c-a988-457c-bb26-76140512502c",
+ "originWall": 1795537239.056958,
+ "originMonotonic": 611960.269544422,
+ "stop": 38.7491,
+ "panes": {
+  "lin": {
+   "version": 1,
+   "cols": 80,
+   "rows": 24,
+   "cellWidth": 12,
+   "cellHeight": 26,
+   "term": "xterm-256color",
+   "clock": {
+    "session": "7299a48c-a988-457c-bb26-76140512502c",
+    "pane": "lin",
+    "origin": 1795537239.056958
+   }
+  },
+  "ada": {
+   "version": 1,
+   "cols": 80,
+   "rows": 24,
+   "cellWidth": 12,
+   "cellHeight": 26,
+   "term": "xterm-256color",
+   "clock": {
+    "session": "7299a48c-a988-457c-bb26-76140512502c",
+    "pane": "ada",
+    "origin": 1795537239.056958
+   }
+  },
+  "you": {
+   "version": 1,
+   "cols": 80,
+   "rows": 24,
+   "cellWidth": 12,
+   "cellHeight": 26,
+   "term": "xterm-256color",
+   "clock": {
+    "session": "7299a48c-a988-457c-bb26-76140512502c",
+    "pane": "you",
+    "origin": 1795537239.056958
+   }
+  }
+ },
+ "keys": [
+  {
+   "pane": "lin",
+   "t": 3.002191,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 3.153705,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 3.704275,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 3.784498,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 3.864737,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 3.944828,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 4.024991,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 4.105183,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 4.485554,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 5.520885,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 5.671871,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 6.222144,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 6.302405,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 6.382532,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 6.462678,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 6.544257,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 6.624478,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 7.004791,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.040063,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.190207,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.740512,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.820676,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.900834,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 8.980985,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 9.06115,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 9.141304,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 9.521537,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 10.556894,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 10.607044,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 10.657259,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 10.70774,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 10.758563,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 10.808736,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 10.858921,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 10.90909,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 10.962134,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 11.012323,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 11.062489,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 11.11268,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 11.162815,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 11.212973,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 11.263133,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 12.436991,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.07224,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.132382,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.192537,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.252645,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.312804,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.372938,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.433081,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.493236,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.553364,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.613531,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.673686,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.733827,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.793974,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.854114,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.914255,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 13.974411,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 14.034541,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 14.394793,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 15.230056,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 15.765314,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 15.835476,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 15.905786,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 15.975935,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 16.046077,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 16.416379,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 17.05206,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 17.587311,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 17.657464,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 17.727601,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 17.797744,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 17.86788,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 18.238137,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 18.874007,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 19.409255,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 19.479391,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 19.549522,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 19.619636,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 19.689762,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 20.060044,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 20.695887,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 20.746016,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 20.796166,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 20.846321,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 20.896476,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 20.946626,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 20.996766,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 21.046906,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 21.097053,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 21.147194,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 21.197331,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 21.247483,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 21.297616,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 21.347755,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 21.398105,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 21.448631,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 21.498759,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 21.548935,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 21.599074,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 21.649239,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 21.699377,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 21.749522,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 21.799661,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 21.849798,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 21.89995,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 21.950084,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 22.000236,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 22.050372,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 22.10051,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 22.150659,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 23.201562,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 23.536811,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 24.937232,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 25.272502,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 26.651794,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 30.831677,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 31.366954,
+   "bytes": 1
+  },
+  {
+   "pane": "lin",
+   "t": 32.102211,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 33.137478,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 33.672739,
+   "bytes": 1
+  },
+  {
+   "pane": "ada",
+   "t": 34.40801,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 35.443298,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 35.978539,
+   "bytes": 1
+  },
+  {
+   "pane": "you",
+   "t": 36.713811,
+   "bytes": 1
+  }
+ ],
+ "marks": [
+  {
+   "t": 2.0002,
+   "mark": "lin-online:wait"
+  },
+  {
+   "t": 2.0009,
+   "mark": "lin-online:seen"
+  },
+  {
+   "t": 2.0009,
+   "mark": "ada-online:wait"
+  },
+  {
+   "t": 2.0014,
+   "mark": "ada-online:seen"
+  },
+  {
+   "t": 2.0014,
+   "mark": "you-online:wait"
+  },
+  {
+   "t": 2.0019,
+   "mark": "you-online:seen"
+  },
+  {
+   "t": 10.5568,
+   "mark": "open"
+  },
+  {
+   "t": 11.3133,
+   "mark": "lin-poll:wait"
+  },
+  {
+   "t": 11.4368,
+   "mark": "lin-poll:seen"
+  },
+  {
+   "t": 12.4369,
+   "mark": "ask"
+  },
+  {
+   "t": 16.4515,
+   "mark": "38:wait"
+  },
+  {
+   "t": 16.4519,
+   "mark": "38:seen"
+  },
+  {
+   "t": 18.2733,
+   "mark": "45:wait"
+  },
+  {
+   "t": 18.2739,
+   "mark": "45:seen"
+  },
+  {
+   "t": 20.0952,
+   "mark": "52:wait"
+  },
+  {
+   "t": 20.0957,
+   "mark": "52:seen"
+  },
+  {
+   "t": 20.6958,
+   "mark": "asked"
+  },
+  {
+   "t": 21.4482,
+   "mark": "ada-poll:wait"
+  },
+  {
+   "t": 21.4486,
+   "mark": "ada-poll:seen"
+  },
+  {
+   "t": 22.2008,
+   "mark": "you-poll:wait"
+  },
+  {
+   "t": 22.2013,
+   "mark": "you-poll:seen"
+  },
+  {
+   "t": 23.2015,
+   "mark": "votes"
+  },
+  {
+   "t": 23.5719,
+   "mark": "v1:wait"
+  },
+  {
+   "t": 23.737,
+   "mark": "v1:seen"
+  },
+  {
+   "t": 25.3076,
+   "mark": "v2:wait"
+  },
+  {
+   "t": 25.4516,
+   "mark": "v2:seen"
+  },
+  {
+   "t": 26.6869,
+   "mark": "v3:wait"
+  },
+  {
+   "t": 26.8313,
+   "mark": "v3:seen"
+  },
+  {
+   "t": 29.8315,
+   "mark": "voted"
+  }
+ ],
+ "status": 0
+}

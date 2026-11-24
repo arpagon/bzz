@@ -15,6 +15,9 @@ because a real model answers when it answers. Steps:
   {"until": "text on screen", "timeout": 120}        # also {"gone": "text"}
   {"until": [...any of...], ...}
   {"until": "text", "count": 2}                      # on screen at least twice
+  {"until": ..., "soft": true}                       # on timeout, mark
+                                                     # "<n>:timeout" and go on, so a late
+                                                     # reply cannot kill a real model's turn
 
 Every `until`/`gone` writes two marks, "<n>:wait" and "<n>:seen", with n the
 step's own "name" or its index: the edit shortens exactly those spans and says
@@ -162,6 +165,10 @@ def main() -> int:
                     hit = any(shown.count(w) >= need for w in wanted) if present else not any(w in shown for w in wanted)
                     if hit:
                         break
+                    if now() >= deadline and step.get("soft") and not state["exited"]:
+                        print(f"step {index} ({name}): soft timeout, never saw {wanted!r}", file=sys.stderr)
+                        mark(f"{name}:timeout")
+                        break
                     if now() >= deadline or state["exited"]:
                         print(f"step {index} ({name}): {'never saw' if present else 'still shows'} {wanted!r}\n{shown}",
                               file=sys.stderr)
@@ -170,7 +177,8 @@ def main() -> int:
                     pump(now() + 0.1)
                 if status:
                     break
-                mark(f"{name}:seen")
+                if hit:
+                    mark(f"{name}:seen")
             else:
                 raise SystemExit(f"bad step {index}: {step}")
         if not status:
