@@ -8,8 +8,10 @@ All commands run from a work directory (`PROMO_WORK`, default `$PWD`), usually
   checksum-verified against the release's `sha256.sum`;
 - `fixture/`, `run/`, `tapes/`: created by the kit, owner-only.
 
-Build `examples/promo_fixture.rs` first:
-`cargo build --locked --release --example promo_fixture`.
+Build `examples/promo_fixture.rs` from the release tag, into a target of
+your own (never the checkout's `target/`), and name it `PROMO_FIXTURE`:
+`git archive refs/tags/<tag> | tar -x -C <src>`, then in `<src>`
+`CARGO_TARGET_DIR=<yours> cargo build --locked --release --example promo_fixture`.
 
 ## Fixture
 

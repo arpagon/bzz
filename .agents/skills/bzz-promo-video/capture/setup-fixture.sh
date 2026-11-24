@@ -6,7 +6,7 @@ set -euo pipefail
 S=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$S/../../../.." && pwd); W=${PROMO_WORK:-$PWD}
 C=$W
 F=$C/fixture; B=$C/bin/bzz-x86_64-unknown-linux-gnu/bzz
-FIX=$REPO/target/release/examples/promo_fixture
+FIX=${PROMO_FIXTURE:?build examples/promo_fixture from the release tag into a target of your own (references/capture.md)}
 IMAGE=$REPO/site/public/assets/og.png
 tmux kill-session -t dawn-relay 2>/dev/null || true
 (cd "$C/buzz-pin" && docker compose -p buzz-harness -f docker-compose.harness.yml down -v >/dev/null 2>&1) || true

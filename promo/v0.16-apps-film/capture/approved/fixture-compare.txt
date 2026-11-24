@@ -1,0 +1,4 @@
+the model's script:  6649 bytes, 67 lines, sha256 386da95b7aeb85c9
+board-priority:      14086 bytes, 462 lines, sha256 03a9879360e11472
+not the same bytes
+lines the fixture adds to the template Board: 53 (template found); of them in the model's script: 0

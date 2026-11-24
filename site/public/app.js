@@ -95,6 +95,17 @@
     }),
   );
 
+  // ---- feature films: a chapter link seeks its film and plays it ----
+  document.querySelectorAll(".chapters a[data-t]").forEach((a) =>
+    a.addEventListener("click", (e) => {
+      const v = a.closest(".film")?.querySelector("video");
+      if (!v) return;
+      e.preventDefault();
+      v.currentTime = Number(a.dataset.t);
+      v.play();
+    }),
+  );
+
   // ---- copy button ----
   document.querySelectorAll("[data-copy]").forEach((btn) => {
     btn.addEventListener("click", async () => {

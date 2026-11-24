@@ -1,0 +1,57 @@
+{
+ "which": "final",
+ "source": "final: C1's take with the film's people (heavy/interop-final)",
+ "tape_to_video_s": 1.7147,
+ "tape_start_s": 14.0,
+ "video_start_s": 15.7147,
+ "film_length_s": 10.6,
+ "video_box": [
+  1920,
+  1080
+ ],
+ "tape_cols": 120,
+ "tape_rows": 32,
+ "desk_person": "ada",
+ "desk_label": "Buzz desktop 1.0.1 \u00b7 Ada",
+ "bzz_person": "you",
+ "desk_xy": [
+  30,
+  300
+ ],
+ "desk_scale": 0.5599,
+ "bzz_xy": [
+  1140,
+  300
+ ],
+ "bzz_scale": 0.5201,
+ "keys": [
+  [
+   "you",
+   "n",
+   15.0064
+  ],
+  [
+   "you",
+   "\u23ce",
+   17.3461
+  ],
+  [
+   "ada",
+   "click \u2192",
+   19.89
+  ],
+  [
+   "you",
+   "]",
+   22.1182
+  ],
+  [
+   "ada",
+   "click \u2190",
+   22.1183
+  ]
+ ],
+ "tape_rows_shown": 26,
+ "note": "Buzz desktop 1.0.1 with a plugin written for this demo from the board's brief. Not shipped by bzz or by Buzz.",
+ "fine": "Buzz desktop: a plugin written for this film, not shipped by bzz or by Buzz; re-enacted by scripts."
+}

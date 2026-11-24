@@ -1689,7 +1689,7 @@ Only this document changed afterwards.
 
 | Item | State |
 |---|---|
-| A real model using the tools | not run (no real model in this task). The scripted harness calls them as a model would; whether a model reads a brief and picks the right record is M5's acceptance with real models, or later |
+| A real model using the tools | not run in this task; **run later and passed**: "M7 with a real model: Pi Durable (2026-11-24)", at the end of this document |
 | The TUI's pane showing an agent's change | shown with an `AppSession` on the owner's own records service and store beside the agent, drawn to a buffer (scripted); not on the release binary through Herdr or tmux |
 | A guest agent | the relay's refusal (`restricted: only members can post in this channel`) is mapped by the service (M2) and passed through as `refused`; not run with an agent whose role is `guest` |
 | The relay's 120 a minute for an agent through the tools | M0 measured it on the pin; bzz stops at 60 before it. The scripted relay stands in for the relay's wait |
@@ -2884,3 +2884,72 @@ repository. With the fixture readable it copied it (the first run); with it
 unreadable it kept looking until the limit. What it does on a machine that
 holds no copy of bzz's source was not tried.
 
+### M7 with a real model: Pi Durable (2026-11-24)
+
+The item "A real model using the tools" of "Not proven in M7", run once as
+the take of chapter 9 of the apps feature film, which the owner allowed for
+this harness and this model (brief C2, 5): Scout, a local agent on bzz's Pi
+Durable host with `openai-codex/gpt-6.1-sol` (thinking medium) through the
+owner's own Pi sign-in, on the **published `bzz 0.16.0` Linux archive**
+(checked against the release's `sha256.sum`), on the pinned relay
+(`bf3bdd0e`, `BUZZ_REQUIRE_RELAY_MEMBERSHIP` unset) with generated people.
+Scout had the role `bot` in `#team` (`bzz agent add`), **no folder of the
+machine and no host it may reach**, and its packages off. Three people's bzz
+ran at once, each its own profile on its own pseudo-terminal, recorded by
+the film's `record-multi.py` on one clock: You (Scout's owner), Ada and Lin,
+each with the Board `tasks` open beside `#team`. The Board's version 2 was
+the one the same model had written in the take before (chapters 5 to 8);
+You and Ada had approved it, Lin had not and ran version 1. One try; no
+retry.
+
+**Asked.** You wrote in `#team`: `@Scout move the release notes card to
+done`. Nothing else: no `do:` line, no app name, no column name. bzz added
+what it adds to every turn ("Since your last turn in this channel, of what
+you proposed here: your version 2 of the app tasks: applied").
+
+| Step | What was seen | From |
+|---|---|---|
+| The tools it called, in order | `buzz_apps {}` → the Board, its brief and `card`; `buzz_records {"app": "tasks", "type": "card", "match": "release notes"}` → one record, `Write the release notes`, column `todo`, rev `11e7a329…`, by Ada; `buzz_update_record {"app": "tasks", "id": "cf8f386c…", "rev": "11e7a329…", "content": {"column": "done", "order": 1795537221.199124, "title": "Write the release notes"}}` → the record, rev `de43551d…`, `by` Scout; `buzz_send {"text": "Moved “Write the release notes” to Done.", "final": true}` | the agent host's own memory (its conversation, in bzz's profile), `validation/agent-turns.json` |
+| What it did not do | no guide, no other app, no create or delete; it sent the record whole (title and order as it read them) with only `column` changed, and the `rev` it had read | the same |
+| bzz's record of it | activity: `update a card of the app tasks (cf8f386c) · updated`; last turns: `answered · attempt 1`; host log: started 16:26:46.5Z, `turn done` 16:26:57.8Z | `bzz agent show Scout`, `validation/agent-show.txt`, `activity.jsonl`, `harness.log` |
+| The other screens | the card left `To do` and appeared in `Done` on You's Board (version 2) at tape 27.42 s, Ada's (version 2) at 27.46, Lin's (version 1) at 27.44: 9.9 s after the mention was sent, the three within 40 ms of each other; the three Boards then the same (`To do (2)`, `Doing (0)`, `Done (2)`, the card once); `↳ 1 reply` under the mention on You's screen at 29.67 | the tapes' bytes (`kit/first-seen.py`, `kit/same-board.py`), `tapes/records/` |
+| The reply | in the thread: `Moved “Write the release notes” to Done.`, from `Scout · managed by you` | `tapes/replies/` |
+| Who signed it, on the relay | the card's revision of 16:26:55 (kind 45010, event `de43551d…`) is signed by **Scout's key** (`84c35c6a…`); the revision before it, by Ada (`15913fe2…`); **no revision signed by You** (`3312d21f…`) in the turn; the reply (kind 9, 16:26:57) is signed by Scout | `psql` on the harness's `events`, `validation/relay-records.txt`, `relay-messages.txt`; keys from `bzz identity list` and `bzz agent show` |
+
+**Result: pass, on one try.** A real model, given only a person's sentence,
+found the app open in the channel, read its brief, picked the right record
+by its title, wrote it back whole with the revision it had read, and said so
+in one final reply; the write was signed by the agent's own key and every
+person's open Board showed it, at the product's speed, on the release binary.
+
+**Found, not explained: one field changed by one unit in its last place.**
+Ada's revision holds `"order":1795537221.1991239`; Scout's holds
+`1795537221.199124`. They are two different doubles, one ULP apart
+(2.38e-7). The model did not change it: the `records` tool had already
+answered `1795537221.199124` (`validation/agent-turns.json`). So a value
+read from the relay reached the agent one ULP off, and the agent's whole-
+record write put that value back. On a Board it changes nothing visible
+(the order of a card created a tenth of a microsecond apart); an app that
+compares such a number exactly could see a change nobody made. Not
+located: it may be how bzz parses a record's numbers (`serde_json` without
+`float_roundtrip` parses some 17-digit numbers one ULP off) or how its host
+passes them on. Worth a test: a record whose content holds
+`1795537221.1991239`, read through `records`, must answer the same number.
+
+Not shown by this run: a conflict met by a real model (nobody wrote the card
+during the turn), an app open in another channel or a type the app did not
+declare, a guest agent, `bzz agent run` without the TUI, Codex, Claude Code
+or Grok, macOS or Windows.
+
+This also covers "The TUI's pane showing an agent's change", which M7 showed
+only drawn to a buffer: here three release binaries' panes showed it.
+
+The same session's chapters 5 to 8, also on the release binary with the
+same model, repeated M5's gate with three things M5's real-model run did not
+have: **no folder granted** and nothing on the profile's disk with a Board
+with priority (the version proposed after 107 s is 6,649 bytes, and of the
+53 lines `tests/fixtures/apps/board-priority/app.lua` adds to the Board it
+has none); a second person's screen beside the owner's (Ada's Board stayed
+version 1 after You approved); and Ada then approving the version **You
+offered** with `:app share`, on her own screen, after reading `From: You, a
+person of the channel` and the same hash.

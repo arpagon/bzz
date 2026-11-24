@@ -93,6 +93,26 @@ required), music generated with ACE-Step 1.5 (MIT model), avatars generated
 with gpt-image-2. Encodes: H.264 CRF 26 + AAC 128 kb/s; VP9 CRF 32 + Opus
 96 kb/s.
 
+## Feature films
+
+A feature film is one feature, start to finish, with several people's
+screens from one take; it sits in its feature's section, poster first,
+`preload="none"`, click to play, with captions and chapters, and the films
+strip under the hero links to it. The apps film (`film-apps.mp4`,
+`film-apps.webm`, `film-apps-720.mp4` for phones, `poster-film-apps.png`,
+`film-apps.en.vtt`, `film-apps.chapters.vtt`) is 2:42, 1920×1080, 30 fps,
+narrated, −14 LUFS, captions burned in: You, Ada and Lin, three generated
+people each in their own `bzz 0.16.0` (the Linux release build) on an
+isolated pinned relay, recorded on one clock; in chapters 5 to 9 a real
+model answers (`openai-codex/gpt-6.1-sol` on Pi Durable); chapter 10 shows
+Buzz desktop 1.0.1 with a plugin written for the film, not shipped by bzz or
+by Buzz, both clients driven by scripts. Its project is
+`promo/v0.16-apps-film` (from `runs/experiments/promo-video/feature-apps/film`).
+Credits: voice Fish Audio Drama 3, music ACE-Step 1.5. Encodes: H.264 CRF
+26 + AAC 128 kb/s (1080p and 720p); VP9 + Opus 96 kb/s. Every file stays
+under Pages' 25 MiB. The `#apps` loop (`apps-v016.*`) stays published so
+links to it keep working.
+
 The v0.15 film (`promo-v015.*`, `poster-promo-v015.png`,
 [`promo/v0.15-launch`](../promo/v0.15-launch/README.md): creating an agent
 that bzz runs, moving it with its memory) stays published so links to it

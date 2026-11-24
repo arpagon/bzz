@@ -1,0 +1,23 @@
+at | signer | kind | left
+16:18:42 | 3ae5e9a104cc745f10b0d2e0fc8d400d49f3c664ec77440dac6a8907b095a876 | 9 | Relay metrics are calm after the upgrade.
+16:18:43 | 15913fe244d78ea37a7c3b63c6546f34ace614510f9b95c530f7ca93350e4b79 | 9 | Nice. Backups ran on schedule too.
+16:18:44 | d9fe4a3d036e85227f864a38d110d62c1db15b9c841ad5e04ee88fa8ec9550eb | 9 | New onboarding copy is ready for review.
+16:18:45 | 3ae5e9a104cc745f10b0d2e0fc8d400d49f3c664ec77440dac6a8907b095a876 | 9 | Reads well. Ship it.
+16:18:46 | 15913fe244d78ea37a7c3b63c6546f34ace614510f9b95c530f7ca93350e4b79 | 9 | Launch is Thursday. Checklist lives in #team.
+16:18:47 | 15913fe244d78ea37a7c3b63c6546f34ace614510f9b95c530f7ca93350e4b79 | 9 | Morning! Staging is green.
+16:18:48 | d9fe4a3d036e85227f864a38d110d62c1db15b9c841ad5e04ee88fa8ec9550eb | 9 | I'm polishing the launch post today.
+16:18:49 | 3ae5e9a104cc745f10b0d2e0fc8d400d49f3c664ec77440dac6a8907b095a876 | 9 | Infra is ready. Autoscaling tested twice.
+16:18:50 | 15913fe244d78ea37a7c3b63c6546f34ace614510f9b95c530f7ca93350e4b79 | 9 | Launch checklist: anything still blocking?
+16:18:51 | d9fe4a3d036e85227f864a38d110d62c1db15b9c841ad5e04ee88fa8ec9550eb | 9 | Copy is final.
+16:18:52 | 3ae5e9a104cc745f10b0d2e0fc8d400d49f3c664ec77440dac6a8907b095a876 | 9 | Load test passed.
+16:18:56 | d9fe4a3d036e85227f864a38d110d62c1db15b9c841ad5e04ee88fa8ec9550eb | 9 | Draft social card for launch day
+![image](http://localhost:3030/media/40b65c505418bbe2cc64ff683c496c971ac43aa0d83416f3faf8caa7c07e5ef1.png)
+16:18:58 | 3ae5e9a104cc745f10b0d2e0fc8d400d49f3c664ec77440dac6a8907b095a876 | 9 | Looks great :bzzwave:
+16:18:59 | d9fe4a3d036e85227f864a38d110d62c1db15b9c841ad5e04ee88fa8ec9550eb | 9 | Got a minute after standup?
+16:22:09 | 3312d21f8853c563008e3d659e0971588de880dcf45d01dcee1063d5bf9d3592 | 9 | @Scout add a priority and a filter to the board
+16:23:58 | 84c35c6ab7dc9a079e08aab7bf2a98190d6b5cbb0e742beb98b41d5f669eae87 | 9 | Proposed for approval: `p` cycles card priority; `f` filters by priority. Existing cards default to normal.
+16:24:18 | 3312d21f8853c563008e3d659e0971588de880dcf45d01dcee1063d5bf9d3592 | 9 | I shared the app Tasks (tasks, version 2) in this channel.
+In bzz, :apps shows the offer and Ctrl-Y lets you read and approve it; nothing of it runs on your mac
+16:26:45 | 3312d21f8853c563008e3d659e0971588de880dcf45d01dcee1063d5bf9d3592 | 9 | @Scout move the release notes card to done
+16:26:57 | 84c35c6ab7dc9a079e08aab7bf2a98190d6b5cbb0e742beb98b41d5f669eae87 | 9 | Moved “Write the release notes” to Done.
+(19 rows)

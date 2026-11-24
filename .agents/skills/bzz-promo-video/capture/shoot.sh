@@ -8,7 +8,7 @@ S=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$S/../../../.." && pwd); W=${PROMO_
 C=$W
 name=$1; scene=${2:-}; delay=${3:-0}; shift $(( $# < 3 ? $# : 3 ))
 F=$C/fixture; B=$C/bin/bzz-x86_64-unknown-linux-gnu/bzz
-FIX=$REPO/target/release/examples/promo_fixture
+FIX=${PROMO_FIXTURE:?build examples/promo_fixture from the release tag into a target of your own (references/capture.md)}
 REC=$S/../scripts/record-tape.py
 mkdir -p -m 700 "$C/run" "$C/tapes"; install -m 600 "$S/shots/$name.json" "$C/run/$name.timeline.json"
 rm -f "$C/tapes/$name.jsonl"

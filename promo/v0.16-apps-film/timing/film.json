@@ -1,0 +1,909 @@
+{
+ "total_s": 161.98,
+ "chapters": [
+  {
+   "n": 0,
+   "kicker": "apps in bzz",
+   "line": "L00",
+   "start": 0.0,
+   "end": 6.0,
+   "title": true
+  },
+  {
+   "n": 1,
+   "kicker": "1 · beside the chat",
+   "line": "L01",
+   "start": 6.0,
+   "end": 18.0
+  },
+  {
+   "n": 2,
+   "kicker": "2 · shared, live",
+   "line": "L02",
+   "start": 18.0,
+   "end": 32.0
+  },
+  {
+   "n": 3,
+   "kicker": "3 · at the same moment",
+   "line": "L03",
+   "start": 32.0,
+   "end": 48.0
+  },
+  {
+   "n": 4,
+   "kicker": "4 · three apps ship",
+   "line": "L04",
+   "start": 48.0,
+   "end": 67.38
+  },
+  {
+   "n": 5,
+   "kicker": "5 · ask your agent",
+   "line": "L05",
+   "start": 67.38,
+   "end": 81.38
+  },
+  {
+   "n": 6,
+   "kicker": "6 · read the exact bytes",
+   "line": "L06",
+   "start": 81.38,
+   "end": 97.38
+  },
+  {
+   "n": 7,
+   "kicker": "7 · it changes in place",
+   "line": "L07",
+   "start": 97.38,
+   "end": 107.38
+  },
+  {
+   "n": 8,
+   "kicker": "8 · offer it to the channel",
+   "line": "L08",
+   "start": 107.38,
+   "end": 125.38
+  },
+  {
+   "n": 9,
+   "kicker": "9 · agents use the records",
+   "line": "L09",
+   "start": 125.38,
+   "end": 139.38
+  },
+  {
+   "n": 10,
+   "kicker": "10 · and on Buzz desktop",
+   "line": "L10",
+   "start": 139.38,
+   "end": 149.98,
+   "interop": true
+  },
+  {
+   "n": 11,
+   "kicker": "bzz",
+   "line": "L11",
+   "start": 149.98,
+   "end": 161.98,
+   "endcard": true
+  }
+ ],
+ "narration_slots": {
+  "L00": 1.0,
+  "L01": 6.6,
+  "L02": 18.6,
+  "L03": 32.6,
+  "L04": 48.6,
+  "L05": 67.98,
+  "L06": 81.98,
+  "L07": 97.98,
+  "L08": 107.98,
+  "L09": 125.98,
+  "L10": 139.98,
+  "L11": 150.58
+ },
+ "captions": [
+  {
+   "id": "c0-0",
+   "html": "One channel. Three people. One app, beside the chat.",
+   "start": 0.85,
+   "end": 5.85
+  },
+  {
+   "id": "c1-0",
+   "html": "An app is a small script that bzz runs for a channel, and draws right beside the <b>conversation.</b>",
+   "start": 6.45,
+   "end": 17.85
+  },
+  {
+   "id": "c2-0",
+   "html": "Its records belong to the channel. Ada adds a card, and it lands on Lin's screen <b>and on yours.</b>",
+   "start": 18.45,
+   "end": 31.85
+  },
+  {
+   "id": "c3-0",
+   "html": "Two people move the same card at the same instant.",
+   "start": 32.45,
+   "end": 36.1
+  },
+  {
+   "id": "c3-1",
+   "html": "One move is saved. The other is told, and the Board merges it. <b>Nothing is lost.</b>",
+   "start": 36.12,
+   "end": 47.85
+  },
+  {
+   "id": "c4-0",
+   "html": "Three apps ship with bzz: a Board, a Poll, and Approvals,",
+   "start": 48.45,
+   "end": 53.99
+  },
+  {
+   "id": "c4-1",
+   "html": "where nobody <b>signs off their own request.</b>",
+   "start": 54.01,
+   "end": 67.23
+  },
+  {
+   "id": "c5-0",
+   "html": "Want something else? Ask your agent, right in the channel:",
+   "start": 67.83,
+   "end": 71.93
+  },
+  {
+   "id": "c5-1",
+   "html": "<b>add a priority and a filter to the board.</b>",
+   "start": 71.95,
+   "end": 81.23
+  },
+  {
+   "id": "c6-0",
+   "html": "Nothing it wrote runs <b>until you have read it:</b>",
+   "start": 81.83,
+   "end": 86.41
+  },
+  {
+   "id": "c6-1",
+   "html": "who it comes from, who asked, its hash, what changed. <b>Down to the last line.</b>",
+   "start": 86.43,
+   "end": 97.23
+  },
+  {
+   "id": "c7-0",
+   "html": "Approve it, and the open app <b>changes in place.</b>",
+   "start": 97.83,
+   "end": 101.36
+  },
+  {
+   "id": "c7-1",
+   "html": "The same card is still selected.",
+   "start": 101.38,
+   "end": 107.23
+  },
+  {
+   "id": "c8-0",
+   "html": "To give it to the others, <b>offer it in the channel.</b>",
+   "start": 107.83,
+   "end": 111.2
+  },
+  {
+   "id": "c8-1",
+   "html": "Ada sees who signed it, reads the same bytes, and <b>decides for herself.</b>",
+   "start": 111.22,
+   "end": 125.23
+  },
+  {
+   "id": "c9-0",
+   "html": "Agents work with an app's records too, without a screen: they read its brief.",
+   "start": 125.83,
+   "end": 131.83
+  },
+  {
+   "id": "c9-1",
+   "html": "<b>Move the release notes card to Done.</b>",
+   "start": 131.85,
+   "end": 139.23
+  },
+  {
+   "id": "c10-0",
+   "html": "The records travel, and <b>each client draws its own board.</b>",
+   "start": 139.83,
+   "end": 144.18
+  },
+  {
+   "id": "c10-1",
+   "html": "Here, Buzz desktop, with a plugin written from the brief.",
+   "start": 144.2,
+   "end": 149.83
+  }
+ ],
+ "chips": [
+  {
+   "take": "io",
+   "pane": "you",
+   "label": "n",
+   "at": 140.39,
+   "out": 141.49
+  },
+  {
+   "take": "io",
+   "pane": "you",
+   "label": "⏎",
+   "at": 142.73,
+   "out": 143.83
+  },
+  {
+   "take": "io",
+   "pane": "ada",
+   "label": "click →",
+   "at": 145.27,
+   "out": 146.37
+  },
+  {
+   "take": "io",
+   "pane": "you",
+   "label": "]",
+   "at": 147.5,
+   "out": 148.6
+  },
+  {
+   "take": "io",
+   "pane": "ada",
+   "label": "click ←",
+   "at": 147.5,
+   "out": 148.6
+  },
+  {
+   "take": "together",
+   "pane": "you",
+   "label": ":app open tasks",
+   "at": 6.55,
+   "out": 7.95
+  },
+  {
+   "take": "together",
+   "pane": "ada",
+   "label": "n",
+   "at": 18.61,
+   "out": 19.71
+  },
+  {
+   "take": "together",
+   "pane": "ada",
+   "label": "⏎",
+   "at": 20.73,
+   "out": 21.83
+  },
+  {
+   "take": "together",
+   "pane": "ada",
+   "label": "l",
+   "at": 32.21,
+   "out": 33.31
+  },
+  {
+   "take": "together",
+   "pane": "lin",
+   "label": "l",
+   "at": 32.56,
+   "out": 33.66
+  },
+  {
+   "take": "together",
+   "pane": "ada",
+   "label": "]",
+   "at": 34.55,
+   "out": 36.15
+  },
+  {
+   "take": "together",
+   "pane": "lin",
+   "label": "[",
+   "at": 34.55,
+   "out": 36.15
+  },
+  {
+   "take": "poll",
+   "pane": "lin",
+   "label": "a",
+   "at": 48.59,
+   "out": 49.39
+  },
+  {
+   "take": "poll",
+   "pane": "ada",
+   "label": "⏎",
+   "at": 53.38,
+   "out": 54.28
+  },
+  {
+   "take": "poll",
+   "pane": "lin",
+   "label": "⏎",
+   "at": 55.12,
+   "out": 56.02
+  },
+  {
+   "take": "poll",
+   "pane": "you",
+   "label": "⏎",
+   "at": 56.5,
+   "out": 57.4
+  },
+  {
+   "take": "approvals",
+   "pane": "ada",
+   "label": "n",
+   "at": 58.1,
+   "out": 58.9
+  },
+  {
+   "take": "approvals",
+   "pane": "ada",
+   "label": "a",
+   "at": 60.79,
+   "out": 61.89
+  },
+  {
+   "take": "approvals",
+   "pane": "you",
+   "label": "a",
+   "at": 62.83,
+   "out": 63.93
+  },
+  {
+   "take": "agent",
+   "pane": "you",
+   "label": "j",
+   "at": 67.79,
+   "out": 68.49
+  },
+  {
+   "take": "agent",
+   "pane": "you",
+   "label": "@Scout",
+   "at": 69.15,
+   "out": 70.55
+  },
+  {
+   "take": "agent",
+   "pane": "you",
+   "label": "⏎",
+   "at": 70.73,
+   "out": 71.53
+  },
+  {
+   "take": "agent",
+   "pane": "you",
+   "label": "Ctrl-Y",
+   "at": 81.44,
+   "out": 82.54
+  },
+  {
+   "take": "agent",
+   "pane": "you",
+   "label": "j ×12",
+   "at": 87.52,
+   "out": 88.82
+  },
+  {
+   "take": "agent",
+   "pane": "you",
+   "label": "G",
+   "at": 90.71,
+   "out": 91.81
+  },
+  {
+   "take": "agent",
+   "pane": "you",
+   "label": "a",
+   "at": 97.39,
+   "out": 98.49
+  },
+  {
+   "take": "agent",
+   "pane": "you",
+   "label": ":app share",
+   "at": 107.98,
+   "out": 109.38
+  },
+  {
+   "take": "agent",
+   "pane": "ada",
+   "label": "Ctrl-Y",
+   "at": 112.34,
+   "out": 113.44
+  },
+  {
+   "take": "agent",
+   "pane": "ada",
+   "label": "G",
+   "at": 117.9,
+   "out": 119.0
+  },
+  {
+   "take": "agent",
+   "pane": "ada",
+   "label": "a",
+   "at": 119.46,
+   "out": 120.56
+  },
+  {
+   "take": "records",
+   "pane": "you",
+   "label": "@Scout",
+   "at": 125.62,
+   "out": 126.22
+  },
+  {
+   "take": "records",
+   "pane": "you",
+   "label": "⏎",
+   "at": 126.83,
+   "out": 127.63
+  }
+ ],
+ "tags": [
+  {
+   "text": "same take · real speed",
+   "start": 20.42,
+   "end": 31.5
+  },
+  {
+   "text": "½ speed · the same instant",
+   "start": 33.85,
+   "end": 36.05
+  },
+  {
+   "text": "Ada: still version 1",
+   "start": 103.98,
+   "end": 107.38
+  },
+  {
+   "text": "another take · re-enacted by scripts",
+   "start": 139.68,
+   "end": 149.78
+  }
+ ],
+ "waits": [
+  {
+   "take": "agent",
+   "at": 71.05,
+   "label": "⏩ 1 min 47 s · the model's turn",
+   "left_out_s": 106.63
+  },
+  {
+   "take": "records",
+   "at": 127.15,
+   "label": "⏩ 9 s · the model's turn",
+   "left_out_s": 9.05
+  }
+ ],
+ "maps": {
+  "together": {
+   "keyframes": [
+    [
+     0.0,
+     13.98
+    ],
+    [
+     1.4,
+     15.38
+    ],
+    [
+     6.0,
+     15.38
+    ],
+    [
+     6.0,
+     9.572
+    ],
+    [
+     7.303,
+     10.875
+    ],
+    [
+     8.403,
+     11.975
+    ],
+    [
+     13.0,
+     11.975
+    ],
+    [
+     15.906,
+     14.881
+    ],
+    [
+     18.0,
+     14.881
+    ],
+    [
+     18.6,
+     15.481
+    ],
+    [
+     20.719,
+     17.6
+    ],
+    [
+     22.7,
+     19.581
+    ],
+    [
+     32.0,
+     19.581
+    ],
+    [
+     34.252,
+     21.833
+    ],
+    [
+     35.453,
+     22.433
+    ],
+    [
+     38.308,
+     25.288
+    ],
+    [
+     48.0,
+     25.288
+    ]
+   ],
+   "cuts": [
+    {
+     "film": 6.0,
+     "tape": [
+      15.38,
+      9.57
+     ],
+     "left_out_s": -5.81,
+     "what": "the opening showed the Boards already open; chapter 1 starts the take from its beginning, You alone",
+     "chip": false
+    }
+   ],
+   "speeds": [
+    {
+     "film": [
+      34.25,
+      35.45
+     ],
+     "tape": [
+      21.83,
+      22.43
+     ],
+     "speed": 0.5,
+     "what": "½ speed around the instant two people move one card, in every window, labelled"
+    }
+   ]
+  },
+  "poll": {
+   "keyframes": [
+    [
+     48.0,
+     10.457
+    ],
+    [
+     51.011,
+     20.696
+    ],
+    [
+     52.015,
+     22.201
+    ],
+    [
+     53.215,
+     23.401
+    ],
+    [
+     58.045,
+     28.231
+    ]
+   ],
+   "cuts": [],
+   "speeds": [
+    {
+     "film": [
+      48.0,
+      51.01
+     ],
+     "tape": [
+      10.46,
+      20.7
+     ],
+     "speed": 3.4,
+     "what": "Lin types the question and three options"
+    },
+    {
+     "film": [
+      51.01,
+      52.01
+     ],
+     "tape": [
+      20.7,
+      22.2
+     ],
+     "speed": 1.5,
+     "what": "Ada and You type :app open poll"
+    }
+   ]
+  },
+  "approvals": {
+   "keyframes": [
+    [
+     58.045,
+     10.942
+    ],
+    [
+     59.213,
+     13.279
+    ],
+    [
+     67.383,
+     21.449
+    ]
+   ],
+   "cuts": [],
+   "speeds": [
+    {
+     "film": [
+      58.05,
+      59.21
+     ],
+     "tape": [
+      10.94,
+      13.28
+     ],
+     "speed": 2.0,
+     "what": "Ada types her request"
+    }
+   ]
+  },
+  "agent": {
+   "keyframes": [
+    [
+     67.383,
+     10.434
+    ],
+    [
+     68.436,
+     11.487
+    ],
+    [
+     68.954,
+     12.522
+    ],
+    [
+     70.747,
+     16.109
+    ],
+    [
+     71.047,
+     16.409
+    ],
+    [
+     71.047,
+     123.039
+    ],
+    [
+     76.261,
+     128.253
+    ],
+    [
+     81.383,
+     128.253
+    ],
+    [
+     84.973,
+     131.843
+    ],
+    [
+     87.473,
+     131.843
+    ],
+    [
+     90.696,
+     135.066
+    ],
+    [
+     92.238,
+     136.608
+    ],
+    [
+     97.383,
+     136.608
+    ],
+    [
+     101.46,
+     140.685
+    ],
+    [
+     104.46,
+     143.685
+    ],
+    [
+     107.383,
+     143.685
+    ],
+    [
+     107.825,
+     144.127
+    ],
+    [
+     111.892,
+     148.194
+    ],
+    [
+     115.894,
+     152.196
+    ],
+    [
+     117.894,
+     152.196
+    ],
+    [
+     119.447,
+     153.749
+    ],
+    [
+     123.527,
+     157.829
+    ],
+    [
+     125.383,
+     157.829
+    ]
+   ],
+   "cuts": [
+    {
+     "film": 71.05,
+     "tape": [
+      16.41,
+      123.04
+     ],
+     "left_out_s": 106.63,
+     "what": "the model's turn: it read the app and the guide, tried its script apart and proposed it",
+     "chip": true
+    }
+   ],
+   "speeds": [
+    {
+     "film": [
+      68.44,
+      68.95
+     ],
+     "tape": [
+      11.49,
+      12.52
+     ],
+     "speed": 2.0,
+     "what": "Ctrl-c, the hold before the mention"
+    },
+    {
+     "film": [
+      68.95,
+      70.75
+     ],
+     "tape": [
+      12.52,
+      16.11
+     ],
+     "speed": 2.0,
+     "what": "the mention typed"
+    }
+   ]
+  },
+  "records": {
+   "keyframes": [
+    [
+     125.383,
+     13.83
+    ],
+    [
+     126.854,
+     17.508
+    ],
+    [
+     127.154,
+     17.808
+    ],
+    [
+     127.154,
+     26.856
+    ],
+    [
+     133.254,
+     32.956
+    ],
+    [
+     139.383,
+     32.956
+    ]
+   ],
+   "cuts": [
+    {
+     "film": 127.15,
+     "tape": [
+      17.81,
+      26.86
+     ],
+     "left_out_s": 9.05,
+     "what": "the model's turn: it listed the apps here, read the Board's cards and changed one",
+     "chip": true
+    }
+   ],
+   "speeds": [
+    {
+     "film": [
+      125.38,
+      126.85
+     ],
+     "tape": [
+      13.83,
+      17.51
+     ],
+     "speed": 2.5,
+     "what": "the mention typed"
+    }
+   ]
+  }
+ },
+ "interop": {
+  "which": "final",
+  "source": "final: C1's take with the film's people (heavy/interop-final)",
+  "tape_to_video_s": 1.7147,
+  "tape_start_s": 14.0,
+  "video_start_s": 15.7147,
+  "film_length_s": 10.6,
+  "video_box": [
+   1920,
+   1080
+  ],
+  "tape_cols": 120,
+  "tape_rows": 32,
+  "desk_person": "ada",
+  "desk_label": "Buzz desktop 1.0.1 · Ada",
+  "bzz_person": "you",
+  "desk_xy": [
+   30,
+   300
+  ],
+  "desk_scale": 0.5599,
+  "bzz_xy": [
+   1140,
+   300
+  ],
+  "bzz_scale": 0.5201,
+  "keys": [
+   [
+    "you",
+    "n",
+    15.0064
+   ],
+   [
+    "you",
+    "⏎",
+    17.3461
+   ],
+   [
+    "ada",
+    "click →",
+    19.89
+   ],
+   [
+    "you",
+    "]",
+    22.1182
+   ],
+   [
+    "ada",
+    "click ←",
+    22.1183
+   ]
+  ],
+  "tape_rows_shown": 26
+ }
+}

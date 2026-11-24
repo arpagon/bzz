@@ -1,0 +1,4 @@
+name = "tasks"
+title = "Tasks"
+api = 1
+types = ["card"]

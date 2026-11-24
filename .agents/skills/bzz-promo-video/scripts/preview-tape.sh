@@ -2,6 +2,8 @@
 # Pixel stills of a tape at chosen seconds, via HyperFrames (xterm.js + Sixel).
 # Usage: preview-tape.sh <tape.jsonl> <seconds,comma,separated> [out-dir]
 # Prints the contact-sheet path. Needs the vendored libs in $FILM/lib.
+# HyperFrames adds one frame at the end of the composition: pair frames with your
+# times by their name (frame-NN-at-<s>s.png), not by their order alone.
 set -euo pipefail
 skill=$(cd "$(dirname "$0")/.." && pwd)
 tape=$(readlink -f "$1"); times=$2
