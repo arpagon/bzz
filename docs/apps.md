@@ -520,6 +520,12 @@ approve its exact bytes. Every harness has the same tools, which bzz serves
 | `try_app` | loads a script apart, on records in memory (some it gives, or a copy of this channel's records of an app open here), does the keys it gives at 40×16 or the size it gives, and answers the screen as text and any error as `file:line` |
 | `propose_app` | a version of a new app, or of one open here, with its brief: put to you |
 
+**Which harnesses were seen to do it** with a real model: Pi Durable,
+Codex and Claude Code. Grok has the same tools and was not: in four tries
+it proposed nothing within a turn's ten minutes, and looked through the
+machine's files for an implementation instead. `bzz agent show <name>` says
+which of the two an agent's harness is.
+
 - **Nothing about apps is in an agent's prompt** until it asks: the tools'
   descriptions say that apps exist, and `app_guide` says the rest, as Buzz
   desktop's `plugin_authoring_guide` does (plan D17).
