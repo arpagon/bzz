@@ -222,12 +222,21 @@ What v0.16.0 does not do, and what was not seen. Every item is in
 
 **Models**
 
-- **No real model wrote an app.** The tools, the guide and the gate are
-  proven with the scripted harness, on the pinned relay and on the release
-  binary. Whether a real model, from the tools' descriptions alone, finds
-  the guide, writes a version that passes the bench's cases and keeps its
-  brief true is the gate `scripts/test-agent-authors-app.sh <harness>`,
-  which runs only with the owner's own sign-ins (plan D13). It has not run.
+- **Three of the four harnesses were seen to write an app with a real
+  model; Grok was not.** The gate `scripts/test-agent-authors-app.sh
+  <harness>` ran with the owner's own sign-ins: asked in a channel for a
+  priority and a filter on the Board, Pi Durable (with
+  `openai-codex/gpt-6.1-sol`), Codex and Claude Code each proposed a script
+  of their own that passes the bench's 17 cases at 80×24 and at 40×16, with
+  a brief that says what it does. One run each.
+- **Grok proposed nothing in four tries.** bzz stopped each turn at its ten
+  minutes. Grok did not ask for the guide or try a script: it looked
+  through the machine's files for an implementation, which its sandbox
+  lets it read. `bzz agent show` says so for a Grok agent. The tools are
+  served to it as to the others.
+- **A Pi Durable agent needs a model its host can load.** A model of a
+  provider that only your own Pi settings add is answered "the model my
+  owner chose for me is not available": name one with `--model`.
 
 **Buzz desktop** (seen with 1.0.1)
 

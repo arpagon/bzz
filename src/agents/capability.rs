@@ -121,6 +121,17 @@ pub const WRITES_APPS: (bool, &str) = if cfg!(feature = "apps") {
     (false, "this bzz was built without apps")
 };
 
+/// Grok has the same tools, and was not seen to write an app with them
+/// (`docs/validation-v0.16.0.md`, "Why Grok does not finish").
+pub const WRITES_APPS_GROK: (bool, &str) = if cfg!(feature = "apps") {
+    (
+        false,
+        "it has bzz's tools for it, as the other harnesses, but was not seen to write one: in four tries with its own model it proposed no version within a turn's ten minutes, and looked through this machine's files for one instead",
+    )
+} else {
+    WRITES_APPS
+};
+
 /// What runs for a Pi Durable agent that has no folder granted for
 /// commands.
 pub const PI_DURABLE_RUNS: &str = "no program of this machine, unless you grant a folder for commands: its shell and its git run inside its own host process";
@@ -260,6 +271,14 @@ pub fn record(harness: Harness) -> CapabilityRecord {
 /// The record of `harness`; `windows` says whether the platform is Windows,
 /// where Grok has no sandbox.
 pub fn record_on(harness: Harness, windows: bool) -> CapabilityRecord {
+    let mut record = record_of(harness, windows);
+    if harness == Harness::Grok {
+        record.writes_apps = WRITES_APPS_GROK;
+    }
+    record
+}
+
+fn record_of(harness: Harness, windows: bool) -> CapabilityRecord {
     let coding = |promise,
                   sandbox: Option<&'static str>,
                   real_folders: &'static str,
@@ -577,8 +596,18 @@ mod tests {
     fn each_record_says_whether_the_harness_writes_apps() {
         for harness in ALL {
             let record = record(harness);
-            assert_eq!(record.writes_apps.0, cfg!(feature = "apps"), "{harness:?}");
             let text = record.lines().join("\n");
+            // Grok has the tools and was not seen to write an app with them.
+            if harness == Harness::Grok && cfg!(feature = "apps") {
+                assert!(!record.writes_apps.0);
+                assert!(
+                    text.contains("writes apps:         no: it has bzz's tools for it")
+                        && text.contains("was not seen to write one"),
+                    "{text}"
+                );
+                continue;
+            }
+            assert_eq!(record.writes_apps.0, cfg!(feature = "apps"), "{harness:?}");
             if cfg!(feature = "apps") {
                 assert!(
                     text.contains("writes apps:         yes: through bzz's tools only")
