@@ -1,9 +1,8 @@
 # bzz v0.16.0 — Apps in the channel
 
-**Status:** Release candidate, not published. Nothing was pushed, tagged
-or released. See [`validation-v0.16.0.md`](validation-v0.16.0.md) for what
-was proven, how, and what is still pending; M8 there is the release
-candidate.
+**Status:** Released 2026-11-24, by the owner's approval. See
+[`validation-v0.16.0.md`](validation-v0.16.0.md) for what was proven, how,
+and the items still recorded as pending.
 
 Since v0.15 bzz runs agents, and they could only talk. v0.16.0 lets **an
 agent write a small app for a channel, which bzz draws beside the
@@ -205,12 +204,16 @@ What v0.16.0 does not do, and what was not seen. Every item is in
 
 **Where it ran**
 
-- **Apps were run on Linux x86_64 only.** The branch was not pushed before
-  this candidate, so macOS, Windows and Linux on arm64 have never compiled
-  this code; CI runs the unit and scripted tests of apps there when it is
-  pushed. The confinement is the interpreter's and does not depend on the
-  system, but the time a call is given and Lua's C library were measured
-  here only.
+- **Apps were run in a terminal on Linux x86_64 only.** On macOS Intel,
+  macOS Apple Silicon and Windows, CI compiles bzz with Lua's C and runs
+  the unit and scripted tests of apps, the hostile scripts among them; no
+  person or script has opened an app in a terminal there. Linux on arm64
+  is built for the release and runs no test.
+- **A call that moves much text is stopped late.** The time of a call is
+  looked at every thousand instructions; on a slow machine a script whose
+  every instruction builds a megabyte string ran a second before it was
+  stopped, where the limit is 250 ms. It is stopped, and bzz keeps working
+  meanwhile.
 - **On Windows a paste arrives as keys**, in an app as in the writing dock: the
   terminal library (crossterm 0.29) gives no paste event there.
 - **An agent's tests run on Unix only**, as in v0.15.0. On macOS and
