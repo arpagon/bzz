@@ -2856,3 +2856,31 @@ So the plan's gate "each supported harness adds the priority and the filter
 to the Board" is met by Pi Durable, Codex and Claude Code, and **not by
 Grok**, on one try with its default model.
 
+### Why Grok does not finish (2026-11-23)
+
+Grok was tried three more times with the answer hidden; each ended as the
+first: bzz stopped the turn at ten minutes and nothing was proposed. The
+last run told what the agent was doing as it changed (the title of its last
+tool call, as the `:agents` panel shows it), watched from a Herdr pane:
+
+| At | What Grok was doing |
+|---|---|
+| 8 s | listing its own working folder |
+| 12 s, 15 s | bzz's `read`, then bzz's `apps` |
+| 196 s | reading a file of its own session under its program's folder |
+| 375 s | searching the disk for `board-priority` and `Priority: all` |
+| 396 s to 465 s | listing `tests/apps-bench` of this repository; reading `spec/board.md` and the fixture's brief there (both unreadable for the run); then reading `src/apps/runtime/tests/board.rs`, which was not hidden, and searching it |
+| 601 s | stopped by bzz |
+
+It never asked for the guide (`app_guide`), tried a script (`try_app`) or
+proposed one (`propose_app`). During the run before it, Grok's process had
+two children and no shell command: `bzz agent-tools` and an MCP server of
+the owner's own Grok settings; it wrote no file in its working folder.
+
+So bzz's tools were not what took the time. Asked to change an app, Grok
+went looking for an implementation and for the bench on the owner's disk,
+which its sandbox lets it read (`docs/agents.md`, "Reads"), and found this
+repository. With the fixture readable it copied it (the first run); with it
+unreadable it kept looking until the limit. What it does on a machine that
+holds no copy of bzz's source was not tried.
+
