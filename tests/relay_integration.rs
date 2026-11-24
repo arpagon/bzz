@@ -10763,6 +10763,34 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // With a real harness, what it is doing is told as it changes: the
+    // title of its last tool call, as the `:agents` panel shows it. A run
+    // that does not finish then says where its time went.
+    let watching = real.is_some().then(|| {
+        let host = running.host.clone();
+        tokio::spawn(async move {
+            let started = tokio::time::Instant::now();
+            let mut last = String::new();
+            loop {
+                let now = host
+                    .status()
+                    .first()
+                    .map(|status| {
+                        format!(
+                            "{} · {}",
+                            status.state_text(),
+                            status.doing().unwrap_or_default()
+                        )
+                    })
+                    .unwrap_or_default();
+                if now != last {
+                    eprintln!("  [{:>4} s] {now}", started.elapsed().as_secs());
+                    last = now;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+    });
     let replies_to = |request: nostr::Event| {
         let (owner_http, agent_hex) = (owner_http.clone(), agent_hex.clone());
         async move {
@@ -10992,6 +11020,9 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
         .unwrap();
     assert!(heads.is_empty(), "{heads:?}");
     assert!(heads_before >= 3, "{heads_before}");
+    if let Some(watching) = watching {
+        watching.abort();
+    }
     running.stop().await;
     drop(cards);
     owner_supervisor.shutdown().await;
