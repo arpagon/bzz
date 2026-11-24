@@ -115,7 +115,7 @@ pub const NO_BOUNDARY_WARNING: &str = "Warning: this harness has no sandbox of i
 pub const WRITES_APPS: (bool, &str) = if cfg!(feature = "apps") {
     (
         true,
-        "through bzz's tools only: it reads the guide and an app, tries a script apart and proposes a version with its brief; you approve each version's exact bytes in bzz, and it writes no file of an app. Seen with the scripted harness; not yet with a real model",
+        "through bzz's tools only: it reads the guide and an app, tries a script apart and proposes a version with its brief; you approve each version's exact bytes in bzz, and it writes no file of an app. Seen with a real model on Linux",
     )
 } else {
     (false, "this bzz was built without apps")
