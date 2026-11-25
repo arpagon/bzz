@@ -2438,7 +2438,7 @@ timeout = 20000
 
 [[scenario.step]]
 keys = []
-visible = 'saved input device "hw:CARD=PCH,DEV=0" not found; using the default'
+visible = 'saved input "hw:CARD=PCH,DEV=0" not found; using the default'
 
 [[scenario.step]]
 keys = ["m"]

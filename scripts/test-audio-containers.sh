@@ -70,7 +70,7 @@ case ${1:-} in
     echo "### T7, no sound server (expected to fail with the one-line message)"
     out=$(run -v "$binary:/t7:ro" -e HOME=/tmp -e XDG_RUNTIME_DIR=/tmp debian:stable-slim \
       /t7 --ignored --nocapture 2>&1 || true)
-    printf '%s\n' "$out" | grep -E 'no sound server|test result' || true
+    printf '%s\n' "$out" | grep -E 'needs PipeWire or PulseAudio|test result' || true
     printf '%s\n' "$out" | grep -q 'huddle audio on Linux needs PipeWire or PulseAudio running in your session' \
       || { echo "the no-server message is missing" >&2; status=1; }
     exit $status

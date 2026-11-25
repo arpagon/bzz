@@ -394,11 +394,8 @@ fn pick(
         Choice::Default => (default.to_owned(), None),
         Choice::Missing => {
             let name = wanted.unwrap_or_default().trim();
-            let notice = first_time_missing(kind, name).then(|| {
-                format!(
-                    "saved {kind} device \"{name}\" not found; using the default (:huddle devices)"
-                )
-            });
+            let notice = first_time_missing(kind, name)
+                .then(|| format!("saved {kind} \"{name}\" not found; using the default"));
             (default.to_owned(), notice)
         }
     }
@@ -810,9 +807,7 @@ mod tests {
         assert_eq!(name.as_c_str(), protocol::DEFAULT_SOURCE);
         assert_eq!(
             notice.as_deref(),
-            Some(
-                "saved input device \"hw:CARD=NotHere-once,DEV=0\" not found; using the default (:huddle devices)"
-            )
+            Some("saved input \"hw:CARD=NotHere-once,DEV=0\" not found; using the default")
         );
         let (_, again) = pick("input", wanted, Some(desktop()), protocol::DEFAULT_SOURCE);
         assert_eq!(again, None);

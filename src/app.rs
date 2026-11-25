@@ -1245,11 +1245,15 @@ impl App {
                         self.huddle_joining=false;
                         match result {
                             Ok(call) => {
-                                let notice = call._devices.notice().map(|notice| format!(" · {notice}"));
+                                // A saved device not found takes the hint's place.
+                                let status = match call._devices.notice() {
+                                    Some(notice) => format!("joined the huddle · muted · {notice}"),
+                                    None => "joined the huddle · muted · m to unmute, space to talk".into(),
+                                };
                                 if let Some(previous) = self.huddle_call.replace(*call) {
                                     previous.stop().await;
                                 }
-                                self.status_error=Some(format!("joined the huddle · muted · m to unmute, space to talk{}", notice.unwrap_or_default()));
+                                self.status_error=Some(status);
                             }
                             Err(error) => self.status_error=Some(error),
                         }
@@ -4661,10 +4665,15 @@ impl App {
                         parent,
                     }))
                 };
+                // Device errors are whole sentences that say what to do:
+                // shown as they are, in one line.
                 let _ = tx
-                    .send(Background::HuddleJoined(
-                        joined.await.map_err(|error| error.to_string()),
-                    ))
+                    .send(Background::HuddleJoined(joined.await.map_err(
+                        |error| match error {
+                            Error::Unsupported(message) => message,
+                            error => error.to_string(),
+                        },
+                    )))
                     .await;
             });
         }

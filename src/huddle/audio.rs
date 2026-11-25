@@ -204,7 +204,7 @@ pub const SPEAKER_UNAVAILABLE: &str =
 /// Linux: no PipeWire or PulseAudio in the session to speak to (a server, a
 /// container, a machine with ALSA alone).
 pub const NO_SOUND_SERVER: &str =
-    "no sound server: huddle audio on Linux needs PipeWire or PulseAudio running in your session";
+    "huddle audio on Linux needs PipeWire or PulseAudio running in your session";
 
 // Linux devices speak the PulseAudio protocol in pure Rust (PipeWire answers
 // it too), so the binary names no sound library. macOS and Windows use cpal.
