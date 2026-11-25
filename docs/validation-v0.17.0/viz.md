@@ -76,8 +76,10 @@ index, the relay's `joined` message being the only way it could. Bob sent
 1 s of silence then 1.5 s of 1 kHz at −20 dBFS, unmuted; Alice's meter,
 read every 33 ms, had him speaking from 1.06 s to 2.91 s (tone 1.00 to
 2.50 s; the rest is the jitter buffer, the hang and the relay). When he
-left, Alice's call dropped him. The harness was torn down by the script;
-`docker ps` showed no `buzz-harness` container after.
+left, Alice's call dropped him. The script tore the harness down (its log
+shows the containers, volumes and network removed); the `buzz-harness`
+containers running a minute later were another run's, started after the
+lock was released.
 
 Red: the engine before this change ignored every text message
 (`Some(Ok(_)) => {}`), so `others()` stayed at the roster of the join and
