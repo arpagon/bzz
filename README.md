@@ -31,7 +31,7 @@
   <a href="#install">Install</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="#keys">Keys</a> ·
-  <a href="docs/release-v0.16.0.md">What's new in 0.16</a> ·
+  <a href="docs/release-v0.17.0.md">What's new in 0.17</a> ·
   <a href="docs/README.md">Docs</a>
 </p>
 
@@ -69,7 +69,15 @@ the keyboard. It speaks the Buzz protocol directly and is tested against
 the real Buzz relay, so your teammates on Buzz desktop and mobile see exactly
 what you send.
 
-> **New in 0.16 — apps in the channel.** A small app beside the
+> **New in 0.17 — the first minute.** `bzz demo` opens a generated team in
+> your terminal, offline. `Ctrl+K` finds and runs any action, channel,
+> person or theme, and shows its key. The huddle shows who is speaking, and
+> your own microphone, muted or not. Quiet frames with a visible focus,
+> `NO_COLOR`, unread counts. On Linux bzz needs no sound library, and on
+> Windows every key works. [Release notes](docs/release-v0.17.0.md), with
+> what changes if you already use bzz.
+>
+> **Since 0.16 — apps in the channel.** A small app beside the
 > conversation: a task board, a poll, a rota. Ask your agent for one, or
 > for a change to the one that is open ("add a priority and a filter to the
 > board"); you read and approve its exact bytes, and the board changes in
@@ -263,6 +271,7 @@ Press `?` in bzz for the complete, current list, and the commands after it
 | `Ctrl-y` | Read and answer a command an agent asks to run, or a version of an app |
 | `:` | Commands (below) |
 | `q` | Back, then quit |
+| `Ctrl-K` · `Space k` | Find and run any action, channel, person, app or theme |
 
 In `:agents`: `Space` pauses or resumes an agent, `x` stops the turn it is
 running, `i` adds it to the open channel, `l` shows its log, `n` creates
@@ -275,7 +284,7 @@ another, `Tab` shows the agents other people run.
 | `:solo <name>` | Start a Solo chat |
 | `:section new <name>` | Put the selected channel in a new sidebar section; also `rename`, `delete`, `move <name>`, `remove`, `up`, `down` |
 | `:sort alpha\|recent\|default` | Sort the selected channel's sidebar group |
-| `:dm` · `:dm add` · `:dm hide` | New direct message · add someone · hide it |
+| `:dm` · `:dm add` · `:dm hide` | New direct message · add someone · hide it; also `:dm <npub>…`, `:dm add <npub>` |
 | `:inbox` · `:search` | Inbox · search |
 | `:agents` · `:agents directory` | Your agents: state, turns, pause, stop · the agents other people run |
 | `:agent new [name]` | Create an agent, in a form that asks what `bzz agent new` asks |
@@ -284,7 +293,7 @@ another, `Tab` shows the agents other people run.
 | `:app add <folder>` · `:app new <name>` · `:app dev <folder>` | Propose your folder · write one from a template · run your folder on the channel's records |
 | `:app pending\|approve\|refuse\|rollback\|enable\|disable\|remove <name>` | Answer and manage apps |
 | `:app share\|unshare\|brief [name]` | Offer the open app to the channel · withdraw it · post its brief |
-| `:huddle start\|join\|leave\|end\|mute` | Huddles with audio |
+| `:huddle start\|join\|leave\|end\|mute` | Huddles with audio; `:huddle zoom`, `:huddle style` for the visualizer |
 | `:status` · `:status <text>` · `:status clear` | Show your status · set it · clear it |
 | `:presence on\|off` | Publish your presence (off by default) |
 | `:profile` | The selected author's profile and verified identity |

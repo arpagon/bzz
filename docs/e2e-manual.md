@@ -923,6 +923,93 @@ Start the second identity's bzz in another terminal, in the same channel.
    `bzz app list` says no app is installed. With a v0.15.0 profile of your
    own: copy it first, open the copy, and check the same by hand.
 
+## 15. v0.17.0: what only a person can check
+
+Most of v0.17.0 runs by itself: the `t17-*` scenarios through tmux
+([`e2e-herdr.md`](e2e-herdr.md)), the demo in a network namespace
+(`tests/demo_offline_test.rs`), the sound servers in containers
+(`scripts/test-audio-containers.sh`), the upgrade
+(`scripts/upgrade-test.sh`). What is left needs a person, a real terminal or
+real hardware. [`validation-v0.17.0.md`](validation-v0.17.0.md) says, for
+each, why it was not seen. Use the release binary, `bzz --version` printing
+`bzz 0.17.0`.
+
+### The first minute, on a clean machine
+
+1. On a machine that never had bzz (Debian 13, Ubuntu 22.04 or 24.04,
+   AlmaLinux 9, Fedora): `curl -fsSL https://getbzz.dev/install.sh | sh`.
+   It checks the machine, installs, and names `bzz demo`. Then `bzz demo`
+   in a new terminal: `#team` with Ada's welcome, `DEMO · generated,
+   offline` in the status line, in under a second.
+2. In the demo: a thread, the DM, `/rollback`, a reaction, a message of
+   yours answered, `@Scout` typing then answering in the thread, `#launch`
+   with the Board (`5`, `n`, a title, Enter, `]`), `#infra` with the huddle
+   moving. `q`, `y`: the terminal is as before, and no `bzz-demo-*` folder
+   is left in the temporary folder.
+3. `Ctrl+K`: three things you did not know the key for. Each row shows its
+   key at the right.
+
+### Windows, at the machine
+
+In Windows Terminal, as a person, the list at the end of
+[`e2e-windows.md`](e2e-windows.md): `?`, `:` and `Ctrl+K`; AltGr on a
+Spanish, German or French layout (`@`, `{`, `[`, `\`, `|`, `€` in the
+composer); Caps Lock on (`J` scrolls, `Ctrl+C` leaves an app); a paste of
+one and of three lines with `Ctrl+V` and with a right click, nothing sent
+before Enter; `¿`, `€`, `ñ` from the keyboard; the frame lines, the theme's
+colours, emoji width, and the screen given back after `q` then `y`; a click,
+a double click and the wheel in the timeline. Then `bzz demo` there.
+
+### macOS, in a terminal
+
+No one has opened v0.17.0 on macOS. In Terminal.app and in iTerm2 (or
+Ghostty): `bzz demo`, `Ctrl+K`, the help, a channel's huddle panel, `q`
+then `y`. With the owner's word, a huddle on the test relay with the Mac's
+microphone, as in section 11.
+
+### Huddle audio on Linux, with real devices
+
+On a desktop with a microphone and a speaker, once with PipeWire
+(`pactl info` says `PulseAudio (on PipeWire …)`) and once with PulseAudio,
+against the isolated pinned harness of section 11 with a second identity on
+another machine or headset:
+
+1. `:huddle devices` lists the server's descriptions, not ALSA's names.
+   `:huddle input <a description>` saves it.
+2. `:huddle join` (or `start`): the confirmation shows your lane moving
+   when you speak, before anything is sent, and says your microphone works.
+   Unplug or mute the microphone at the system: after 3 s it says `no sound
+   from …` and how to pick another.
+3. `y`: both people hear each other. In the panel each lane moves with its
+   voice, yours last; muted, yours still moves, says nobody hears you, and
+   turns amber with `muted!` when you speak. The status line, with the panel
+   closed, names who speaks.
+4. `z`, then `v`: the zoomed view and its picker; each style moves with the
+   call; Enter keeps one, Esc puts the saved one back.
+5. A `huddle_input_device` saved by v0.16.0 (`hw:CARD=…,DEV=0`): the
+   join opens that card's microphone, or the default and says once which
+   name was not found.
+6. With no sound server (stop PipeWire or PulseAudio for the user):
+   joining says in one line what is missing, at 80×24 too, and bzz goes on
+   working.
+
+### The look in a graphics terminal
+
+In kitty, Ghostty or WezTerm (true colour), then in the Linux console
+(`TERM=linux`, 16 colours) and in tmux without `COLORTERM` (256): the
+focused frame in the theme's colour with its title as a label, the others
+muted; the status line's labels; behind the palette every cell dim; the
+huddle's braille and block characters; with `NO_COLOR=1`, no colour at all
+and a heavy frame on the focused pane. Avatars and images still draw (an
+image protocol), and in `bzz demo` the five pictures load.
+
+### Keys a physical keyboard gives
+
+On Linux and macOS too: AltGr characters typed into the composer and the
+palette, Caps Lock with letters and with `Ctrl`, `Shift+Tab` moving the
+focus back. A key map of yours (`keymap.toml`) with `shift-` and without it
+binds the same key.
+
 ## Results log
 
 | Section | Result | Evidence/notes |
@@ -943,6 +1030,7 @@ Start the second identity's bzz in another terminal, in the same channel.
 | 12. v0.14.0 surfaces | ☐ | |
 | 13. v0.15.0 surfaces: local agents | ☐ | |
 | 14. v0.16.0 surfaces: apps | ☐ | |
+| 15. v0.17.0: what only a person can check | ☐ | |
 
 ## Cleanup
 

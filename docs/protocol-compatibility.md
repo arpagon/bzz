@@ -10,7 +10,7 @@ The compatibility baseline of v0.14.0 and v0.15.0 is `block/buzz` revision
 [v0.13.0 additions](#v0130-additions) below.
 
 v0.15.0 keeps that revision and adds what local agents need beside it; see
-[v0.15.0 additions](#v0150-additions).
+[v0.15.0 additions](#v0150-additions). v0.16.0 and v0.17.0 keep it too.
 
 Implemented MVP protocol surface:
 
@@ -64,7 +64,10 @@ bzz combines a small global stream (needed for reaction/removal events that
 carry `e` but no `h`) with a bounded set of channel subscriptions, then repairs
 reconnect gaps with HTTP composite cursors. Signed Nostr timestamps are not
 relay sequence numbers, so old-timestamp late publication requires overlap,
-periodic reconciliation, or manual full sync.
+periodic reconciliation, or manual full sync. Since v0.17.0 the global
+stream also carries kind `0`, so a profile changed while bzz runs replaces
+the stored one, and bzz asks once a run for the profile of each person it
+shows, stored or not.
 
 Outbound attachment messages retain Buzz Desktop's interoperable body lines
 (`![image](url)`, `![video](url)`, or `[filename](url)`) and ordered `imeta`
