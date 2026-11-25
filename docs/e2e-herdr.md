@@ -64,9 +64,13 @@ disposable viewer profile and content with `examples/harness_fixture.rs`
 `#t9-announcements` where the viewer is a guest; the viewer's own
 `#t9-agent-config` system channel), runs every `harness` scenario, then
 removes the profile and tears the relay down. The viewer's passphrase stays
-in an owner-only file passed through a descriptor (`BZZ_PASSPHRASE_FD`), and
-ALSA's default device is the null device, so the huddle scenario never opens
-a real microphone. The scenarios cover the System group, the read-only
+in an owner-only file passed through a descriptor (`BZZ_PASSPHRASE_FD`).
+On Linux bzz's huddles speak to the sound server `PULSE_SERVER` names (v0.17),
+so the runner always sets it: to a PulseAudio with a null sink in a
+disposable container (`scripts/test-audio-containers.sh serve`, needs Docker),
+or to `BZZ_TEST_PULSE_SERVER`, or else to nothing, and then the huddle
+scenario fails with "no sound server". The huddle scenario never opens a
+real microphone. The scenarios cover the System group, the read-only
 announce composer, the artifacts panel, custom emoji in the reaction picker,
 the report confirmation, `:presence`, the broker panel and a huddle (start,
 join muted, unmute, mute, leave). The runner refuses to start a scenario
