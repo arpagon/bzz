@@ -69,7 +69,7 @@ On Linux bzz's huddles speak to the sound server `PULSE_SERVER` names (v0.17),
 so the runner always sets it: to a PulseAudio with a null sink in a
 disposable container (`scripts/test-audio-containers.sh serve`, needs Docker),
 or to `BZZ_TEST_PULSE_SERVER`, or else to nothing, and then the huddle
-scenario fails with "huddle audio on Linux needs PipeWire or PulseAudio". The huddle scenario never opens a
+scenario fails with "huddle audio needs PipeWire or PulseAudio running". The huddle scenario never opens a
 real microphone. The scenarios cover the System group, the read-only
 announce composer, the artifacts panel, custom emoji in the reaction picker,
 the report confirmation, `:presence`, the broker panel and a huddle (start,

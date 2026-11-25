@@ -27,6 +27,12 @@ pub enum HitTarget {
     DmCandidate(String),
     RemoteAgent(String),
     ActionMenu(crate::ui::keymap::UiAction),
+    /// The border between two panes: a drag resizes the pane named
+    /// (the sidebar or the thread), within the layout's limits (v0.17 L11).
+    Splitter(crate::ui::shell::Pane),
+    /// The status line's `Ctrl-K actions · ? keys`: a click opens the
+    /// palette (v0.17 L11).
+    StatusHint,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

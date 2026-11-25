@@ -319,12 +319,7 @@ pub fn build(origin: &str) -> World {
         290,
         "The blog post draft is ready for review.",
     );
-    pen.say(
-        &cast.ada,
-        launch,
-        25,
-        "The launch plan is on our Board now: `5` opens it, `n` adds a card, `]` moves the selected one on.",
-    );
+    pen.say(&cast.ada, launch, 25, BOARD_LINE);
 
     // #team: the first screen.
     pen.say(
@@ -452,6 +447,10 @@ pub fn build(origin: &str) -> World {
         script,
     }
 }
+
+/// Ada's line about the Board in `#launch`, beside it: its keys, and
+/// that `Ctrl-c` steps out of it while its own `q` closes it.
+pub const BOARD_LINE: &str = "The launch plan is on our Board now: `5` opens it, `n` adds a card, `]` moves the selected one on; `Ctrl-c` steps out of it, `q` closes it.";
 
 /// Ada's welcome, the newest message of `#team`: what this is, and three
 /// things to try.

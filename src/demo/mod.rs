@@ -57,6 +57,11 @@ pub const NO_APPS_YET: &str = "Demo: apps not built in.";
 /// installed and approved already, and nothing else is.
 pub const APPS_NEED_A_COMMUNITY: &str = "Demo: only the Board.";
 
+/// The Board closed itself (its `q`, `host.quit()`): the way back. The
+/// Board is a script and `q` is its key, as in any community; `Ctrl-c`
+/// leaves it open, and Ada's line beside it says so.
+pub const BOARD_CLOSED: &str = "Demo: :app open board";
+
 const FOLDER_PREFIX: &str = "bzz-demo-";
 
 /// Set once this process has made a demo folder.

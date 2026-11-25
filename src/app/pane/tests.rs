@@ -276,7 +276,7 @@ async fn the_thread_and_the_app_share_the_right_side() {
     app.open_app_in_memory(channel, "recorder", RECORDER);
     app.thread_root = Some("e".repeat(64));
     app.apps.front = false;
-    // Asked for last, the thread has the right side under 144 columns, and
+    // Asked for last, the thread has the right side under 152 columns, and
     // a reply goes into it.
     let shown = screen(&mut app, 120, 30);
     assert_eq!(app.apps.placement, AppPlacement::HiddenBehindThread);
@@ -292,8 +292,9 @@ async fn the_thread_and_the_app_share_the_right_side() {
     assert!(!app.thread_drawn);
     assert_eq!(app.reply_root(), None);
     assert!(shown.contains("message #general"), "{shown}");
-    // From 144 both show.
-    screen(&mut app, 144, 30);
+    // From 152 both show (v0.16: 144; v0.17 L10 keeps 38 columns for the
+    // conversation instead of 30).
+    screen(&mut app, 152, 30);
     assert!(app.thread_drawn);
     assert_eq!(app.apps.placement, AppPlacement::Docked);
 }
@@ -1294,4 +1295,59 @@ return app
     names(&mut app, channel);
     let shown = until(&mut app, 120, 30, "me Cy").await;
     assert!(!shown.contains("Watcher"), "{shown}");
+}
+
+/// The demo's Board closes on its own `q`, as in any community (the key is
+/// the script's), and the demo then says how to bring it back. An app of
+/// that name outside the demo closes with no such word.
+#[tokio::test]
+async fn the_demo_says_how_to_bring_back_a_board_that_closed_itself() {
+    const QUITS: &str = r#"
+local app = { api = 1, types = { "card" } }
+function app.init(ctx) return {} end
+function app.view(s, ctx) return ui.text { "cards" } end
+function app.key(s, key, ctx) if key.name == "q" then host.quit() end end
+return app
+"#;
+    async fn closed_by_q(demo: bool) -> (App, TempDir) {
+        let temporary = TempDir::new().unwrap();
+        let (mut app, channel) = fixture(&temporary).await;
+        if demo {
+            let who = |name: &str| crate::apps::runtime::Who::new(name.repeat(64), name);
+            let people = crate::demo::board::People {
+                viewer: who("a"),
+                ada: who("b"),
+                lin: who("c"),
+                sam: who("d"),
+                scout: who("e"),
+            };
+            let store =
+                crate::apps::session::SharedStore::new(crate::apps::session::MemoryStore::new(
+                    people.viewer.clone(),
+                    crate::apps::runtime::SystemClock::shared(),
+                ));
+            app.set_demo_board(crate::demo::board::DemoBoard::new(store, people));
+        }
+        app.open_app_in_memory(channel, crate::demo::board::NAME, QUITS);
+        app.focus_app();
+        until(&mut app, 120, 30, "cards").await;
+        assert!(app.app_key(key(KeyCode::Char('q'))));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.apps.open.contains_key(&channel) {
+            assert!(Instant::now() < deadline, "the app never closed");
+            // What the session asked is read and settled, as the tick
+            // does; the store of apps is not consulted.
+            app.poll_apps();
+            app.settle_apps().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(app.presentation.focus, FocusSurface::Timeline);
+        (app, temporary)
+    }
+    let (mut app, _kept) = closed_by_q(true).await;
+    assert_eq!(app.status_error.as_deref(), Some(crate::demo::BOARD_CLOSED));
+    let shown = screen(&mut app, 80, 24);
+    assert!(shown.contains(crate::demo::BOARD_CLOSED), "{shown}");
+    let (app, _kept) = closed_by_q(false).await;
+    assert_ne!(app.status_error.as_deref(), Some(crate::demo::BOARD_CLOSED));
 }

@@ -38,6 +38,8 @@ mod find_tests;
 // v0.17 C8, C10, C11 (task `registry`).
 #[cfg(test)]
 mod registry_tests;
+// v0.17 L10 to L12: the layout by breakpoints, the mouse, Esc (task `layout`).
+mod shell;
 
 use crate::clock::WallClock as _;
 use crate::{
@@ -675,6 +677,8 @@ pub struct App {
     render_generation: u64,
     last_hit_map: Option<HitMap>,
     last_primary_click: Option<(HitTarget, Instant)>,
+    /// `z` and a border being dragged (v0.17 L10, L11).
+    shell: shell::ShellState,
     /// The apps open in the community's channels, and their pane (v0.16).
     apps: pane::AppPanes,
     /// The last layout drew the open thread. A reply goes into a thread
@@ -1076,8 +1080,8 @@ impl App {
         app.demo = true;
         let (voices, people) = crate::demo::huddle();
         app.set_generated_huddle(voices, people, true);
-        // One community: its rail only takes room from the conversation.
-        app.community_rail = false;
+        // One community: its rail waits for 100 columns, as for anyone with
+        // one community (`ui::layout::SINGLE_COMMUNITY_RAIL_FROM`).
         if let Some(index) = app
             .channels
             .iter()
@@ -1327,6 +1331,7 @@ impl App {
             render_generation: 0,
             last_hit_map: None,
             last_primary_click: None,
+            shell: shell::ShellState::default(),
             apps: pane::AppPanes::default(),
             thread_drawn: false,
             demo: false,
@@ -3292,24 +3297,26 @@ impl App {
             }
             return Ok(());
         }
-        let Some(target) = self
+        let target = self
             .last_hit_map
             .as_ref()
             .and_then(|map| map.hit(mouse.column, mouse.row))
-            .cloned()
-        else {
+            .cloned();
+        // A border pressed, dragged or let go (v0.17 L11).
+        if self.drag_border(mouse, target.as_ref())? {
+            return Ok(());
+        }
+        let Some(target) = target else {
             return Ok(());
         };
         match mouse.kind {
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                if self.presentation.composer_target.is_none() =>
-            {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let delta = if matches!(mouse.kind, MouseEventKind::ScrollUp) {
                     -3
                 } else {
                     3
                 };
-                self.wheel_over(target, delta);
+                self.wheel_without_focus(target, delta);
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.activate_mouse_target(target, mouse, guard, terminal)
@@ -3420,7 +3427,7 @@ impl App {
                 });
                 self.timeline.keep_selection_visible = true;
                 if double_click {
-                    self.toggle_thread().await?;
+                    self.open_thread_of_selected().await?;
                 }
             }
             HitTarget::Thread
@@ -3553,6 +3560,7 @@ impl App {
             {
                 self.dm_picker.selected_pubkey = Some(pubkey);
             }
+            HitTarget::StatusHint => self.click_status_hint().await,
             _ => {}
         }
         Ok(())
@@ -4210,6 +4218,7 @@ impl App {
                 self.status_error = Some(format!("{} is not available in Inbox", action.label()));
             }
             InboxEffect::OpenPalette => self.open_palette().await,
+            InboxEffect::NothingToClose => self.say_nothing_to_close(),
         }
         Ok(())
     }
@@ -4397,6 +4406,10 @@ impl App {
                 ));
             }
             WorkspaceEffect::OpenPalette => self.open_palette().await,
+            WorkspaceEffect::NothingToClose => self.say_nothing_to_close(),
+            WorkspaceEffect::ToggleConversationOnly => {
+                self.shell.conversation_only = !self.shell.conversation_only;
+            }
         }
         Ok(())
     }
@@ -5355,6 +5368,9 @@ impl App {
                 self.presentation.open_overlay(Overlay::Huddle);
                 self.presentation
                     .open_confirmation(ConfirmationKind::HuddleEnd);
+            }
+            "end" if active.is_none() => {
+                self.status_error = Some("no huddle is running here".into())
             }
             "end" => self.status_error = Some("only the huddle's creator can end it".into()),
             "react"
@@ -8076,18 +8092,46 @@ impl App {
             .collect::<Vec<_>>();
         let service = runtime.messages.clone();
         let tx = self.background_tx.clone();
-        // The thread draft stays until the user clears it; the channel copy
-        // goes through the same acknowledgement-aware outbox as any send.
+        let store = self.store.clone();
+        let community = self.active_community_id();
+        let name = self
+            .current_channel()
+            .map(|channel| {
+                format!(
+                    "{}{}",
+                    crate::ui::finder::marker(channel),
+                    sanitize::single_line(&channel.name)
+                )
+            })
+            .unwrap_or_else(|| "the channel".into());
+        // The draft is sent as a new message of the channel, through the
+        // same acknowledgement-aware outbox as any send, and the thread's
+        // draft is cleared (v0.17 F7): here at once, in the store once the
+        // relay took it. If it fails the stored draft is still there.
+        self.composer.clear();
+        self.status_error = Some(format!("sending the thread's draft to {name}…"));
         tokio::spawn(async move {
             let result = service
                 .send_to_channel(channel, &root, &root_message.content, &content, &mentions)
                 .await;
-            let _ = tx
-                .send(match result {
-                    Ok(_) => Background::Notice("sent to the channel".into()),
-                    Err(error) => Background::Failed(error.to_string()),
-                })
-                .await;
+            let notice = match result {
+                Ok(_) => {
+                    if let Some(community) = community {
+                        let _ = store
+                            .call(move |store| {
+                                store.save_draft(community, channel, Some(&root), "")
+                            })
+                            .await;
+                    }
+                    Background::Notice(format!(
+                        "sent to {name} as a new message · the thread's draft is cleared"
+                    ))
+                }
+                Err(error) => Background::Failed(format!(
+                    "not sent to {name}, the thread's draft is kept: {error}"
+                )),
+            };
+            let _ = tx.send(notice).await;
         });
     }
 
@@ -11283,16 +11327,8 @@ impl App {
         if self.presentation.focus == FocusSurface::App && self.shown_app().is_none() {
             self.leave_app();
         }
-        let panes = layout::panes_with_app(
-            area,
-            self.community_rail,
-            self.sidebar,
-            self.thread_root.is_some(),
-            self.config.ui.sidebar_width,
-            self.config.ui.thread_width,
-            self.composer_dock_height(),
-            self.app_request(),
-        );
+        let panes = self.workspace_panes(area);
+        self.shell.last_panes = Some(panes);
         self.apps.placement = panes.app_placement;
         self.thread_drawn = panes.thread.is_some();
         if (self.presentation.focus == FocusSurface::Communities && panes.community.is_none())
@@ -11309,6 +11345,7 @@ impl App {
                 self.render_app_pane(frame, app, true, &mut hit_map);
             }
             self.render_status(frame, panes.status);
+            self.push_shell_targets(frame, &panes, &mut hit_map);
             self.stage_toast(frame, area);
             self.render_overlay(frame, area, &mut hit_map);
             self.last_hit_map = Some(hit_map);
@@ -11507,10 +11544,12 @@ impl App {
         if let Some(app) = panes.app {
             self.render_app_pane(frame, app, false, &mut hit_map);
         }
+        self.draw_hidden_panes(frame, &panes, &title);
         if let Some(composer) = panes.composer {
             self.render_composer_dock(frame, composer, &mut hit_map);
         }
         self.render_status(frame, panes.status);
+        self.push_shell_targets(frame, &panes, &mut hit_map);
         self.stage_workspace(frame, &panes, &hit_map);
         self.render_overlay(frame, area, &mut hit_map);
         self.last_hit_map = Some(hit_map);
@@ -11660,10 +11699,14 @@ impl App {
             Some(target) => target.thread_root_id.is_some(),
             None => self.thread_root.is_some() && self.thread_drawn,
         };
+        // A DM names the person (v0.17 F7), as the sidebar does.
+        let marker = self
+            .current_channel()
+            .map_or("#", |channel| if channel.kind.is_dm() { "@" } else { "#" });
         let target = if into_thread {
-            format!("reply in #{channel}")
+            format!("reply in {marker}{channel}")
         } else {
-            format!("message #{channel}")
+            format!("message {marker}{channel}")
         };
         let (title, content, _border, content_group) = if active {
             let mut attachment_lines = self

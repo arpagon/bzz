@@ -1276,4 +1276,37 @@ foreground = "yellow"
             );
         }
     }
+
+    /// `docs/themes.md` names every highlight group a `theme.toml` can set,
+    /// and no group that does not exist: a group added to the code and not
+    /// to the document fails here.
+    #[test]
+    fn the_themes_document_names_every_group() {
+        let document = include_str!("../../../docs/themes.md");
+        let section = document
+            .split_once("### Semantic groups")
+            .and_then(|(_, rest)| rest.split_once("### Border shapes"))
+            .map(|(section, _)| section)
+            .expect("the document has its section of groups");
+        let named = section
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|word| {
+                word.chars().next().is_some_and(char::is_uppercase)
+                    && word.chars().all(char::is_alphanumeric)
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let missing = HighlightGroup::ALL
+            .iter()
+            .map(|group| group.name())
+            .filter(|name| !named.contains(name))
+            .collect::<Vec<_>>();
+        assert!(missing.is_empty(), "docs/themes.md lacks {missing:?}");
+        let unknown = named
+            .iter()
+            .filter(|name| HighlightGroup::from_name(name).is_none())
+            .collect::<Vec<_>>();
+        assert!(unknown.is_empty(), "docs/themes.md names {unknown:?}");
+    }
 }

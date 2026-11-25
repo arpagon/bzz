@@ -116,9 +116,10 @@ v0.17.0, D3, and the study `r6-audio-start` behind it).
   card when the server says which card it is. A saved name that matches
   nothing opens the default device, and the join says once in a run which
   name was not found (in the status line only; it is never logged).
-- With no sound server, joining answers in one line: "huddle audio on
-  Linux needs PipeWire or PulseAudio running in your session". bzz keeps
-  working.
+- With no sound server, joining answers in one line that fits an
+  80-column status line: "huddle audio needs PipeWire or PulseAudio
+  running"; `:huddle devices` says the same instead of two empty lists.
+  bzz keeps working.
 
 **What it loses.** A Linux machine with ALSA and no PipeWire or PulseAudio
 in the session had huddle audio with v0.16.0 and has none now; it is told

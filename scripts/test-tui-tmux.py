@@ -60,6 +60,11 @@ What the manifest may say besides what test-tui-herdr.sh documents:
                               A scenario with no `size` of its own, in a
                               run whose BZZ_TMUX_SIZE is smaller, is
                               reported skipped, not failed (v0.17)
+  step `mouse = ["click X Y", ...]`  mouse gestures before the keys, as the
+                              terminal reports them (SGR, 1006): `click`,
+                              `double`, `wheel-up`, `wheel-down` at a cell,
+                              `drag X1 Y1 X2 Y2` (pressed, moved, let go).
+                              X and Y count from 0, as bzz does (v0.17)
 """
 
 import os
@@ -391,6 +396,33 @@ def send(tmux, target, keys):
         tmux("send-keys", "-t", target, *names[start:start + 40])
 
 
+def mouse_events(gesture):
+    # SGR reports, 1-based: button;column;row, M pressed or moved, m let go.
+    words = gesture.split()
+    kind, numbers = words[0], [int(word) for word in words[1:]]
+    def report(button, x, y, final="M"):
+        return f"\x1b[<{button};{x + 1};{y + 1}{final}"
+    if kind in {"click", "double"} and len(numbers) == 2:
+        once = report(0, *numbers) + report(0, *numbers, "m")
+        return [once] if kind == "click" else [once, once]
+    if kind in {"wheel-up", "wheel-down"} and len(numbers) == 2:
+        return [report(64 if kind == "wheel-up" else 65, *numbers)]
+    if kind == "drag" and len(numbers) == 4:
+        x1, y1, x2, y2 = numbers
+        steps = max(abs(x2 - x1), abs(y2 - y1), 1)
+        moves = [report(32, x1 + (x2 - x1) * step // steps, y1 + (y2 - y1) * step // steps)
+                 for step in range(1, steps + 1)]
+        return [report(0, x1, y1), *moves, report(0, x2, y2, "m")]
+    raise SystemExit(f"a mouse gesture tmux cannot send: {gesture!r}")
+
+
+def send_mouse(tmux, target, gestures):
+    for gesture in gestures:
+        for event in mouse_events(gesture):
+            tmux("send-keys", "-t", target, "-H", *(f"{byte:02x}" for byte in event.encode()))
+            time.sleep(0.03)
+
+
 def launch(tmux, target, command):
     at_prompt(tmux, target)
     tmux("send-keys", "-t", target, "clear", "Enter")
@@ -435,8 +467,9 @@ def run(tmux, scenario, binary, fixture, work, captures, default_size):
         if "paste" in step:
             tmux("set-buffer", "-b", "scenario", step["paste"])
             tmux("paste-buffer", "-p", "-d", "-b", "scenario", "-t", target)
+        send_mouse(tmux, target, step.get("mouse", []))
         keys = []
-        for key in step["keys"]:
+        for key in step.get("keys", []):
             if key.startswith("type:"):
                 keys.extend("space" if c == " " else c for c in key[5:].replace("{fixture}", fixture))
             else:

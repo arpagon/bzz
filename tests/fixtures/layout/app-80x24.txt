@@ -1,0 +1,24 @@
+┌ general ────── hidden · channels 2 ┐┌ board ─────────────────────────────────┐
+│ ⚠ offline · showing what is saved  ││board for the release                   │
+│here                                ││room 40x18                              │
+│ [◆0] 00000000…0001  01:53          ││                                        │
+│      message number 52             ││                                        │
+│ [■0] 00000000…0002  02:03          ││                                        │
+│      message number 53             ││                                        │
+│ [●0] 00000000…0000  02:13          ││                                        │
+│      message number 54             ││                                        │
+│ [◆0] 00000000…0001  02:23          ││                                        │
+│      message number 55             ││                                        │
+│ [■0] 00000000…0002  02:33          ││                                        │
+│      message number 56             ││                                        │
+│ [●0] 00000000…0000  02:43          ││                                        │
+│      message number 57             ││                                        │
+│ [◆0] 00000000…0001  02:53          ││                                        │
+│      message number 58             ││                                        │
+│▌[■0] 00000000…0002  03:03          ││                                        │
+│▌     message number 59             ││                                        │
+└────────────────────────────────────┘└─────────────────────────────── 5 focus ┘
+┌ message #general ────────────────────────────────────────────────────────────┐
+│Read-only: restore or unlock the identity to write.                           │
+└──────────────────────────────────────────────────────────────────────────────┘
+ NORMAL  #general                      ● offline  Enter thread · Ctrl-K actions
