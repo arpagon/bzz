@@ -938,7 +938,7 @@ mod tests {
     /// Runs background events until one of the join's is handled.
     async fn next_join_step(app: &mut App) {
         loop {
-            let event = tokio::time::timeout(Duration::from_secs(30), app.background_rx.recv())
+            let event = tokio::time::timeout(Duration::from_secs(120), app.background_rx.recv())
                 .await
                 .expect("a join step in time")
                 .expect("the lane is open");

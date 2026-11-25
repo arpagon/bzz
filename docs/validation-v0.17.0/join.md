@@ -138,3 +138,16 @@ Text captures of every step from tmux, at 80×24 and 160×45, in
 `<scratch>/captures-members/t17-join-members/` and
 `<scratch>/captures-notthere/t17-join-not-there/` (one file per step; its
 first line says the keys and the size).
+
+## Gates
+
+On `525f5a1` and after, with the machine shared (load 13 to 16):
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --check` | pass |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass |
+| `cargo build --locked --example scripted_harness` | pass |
+| `cargo test --locked --all-targets --no-fail-fast` | 4 failures in one run under that load: `apps::runtime::tests::vm::an_endless_loop_is_stopped_by_time`, `apps::runtime::tests::hostile::every_hostile_script_is_stopped_in_budget` (time budgets), `agent_runtime_test::at_startup_leftovers_are_stopped_before_recovery_and_recovery_before_any_start`, and this task's `an_invite_link_is_claimed…`, whose wait of 30 s for a join step was too short for an Argon2 key file in a debug build under that load (now 120 s). Each passed alone; then `cargo test --locked --lib` (841 passed), `--test agent_runtime_test` (54) and `--test join_test` (5) passed whole. In an earlier run `app::tests::a_command_waits_for_the_owner_on_every_screen_and_runs_only_on_his_yes` failed once and passed three times alone. None of these touch the join's code but the one named |
+| `cargo test --locked --no-default-features --lib` | pass |
+| `cargo deny check`, `cargo audit` | not run: `Cargo.toml` and `Cargo.lock` unchanged |
