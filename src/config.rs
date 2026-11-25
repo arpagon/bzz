@@ -447,12 +447,21 @@ pub struct UiConfig {
     /// How much the interface moves: `full`, `calm` or `off` (plan v0.17.0
     /// D9). Read it through [`UiConfig::motion`], which honours
     /// `BZZ_NO_MOTION`.
-    #[serde(default)]
+    /// Written only when it is not the default, so that the settings of a
+    /// person who never chose stay readable by v0.16.0, which refuses a
+    /// setting it does not know.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub motion: Motion,
     /// The huddle's zoomed visualizer: `lanes`, `bars` or `orb` (plan
-    /// v0.17.0 B5, B6). Chosen in its picker, which saves it here.
-    #[serde(default)]
+    /// v0.17.0 B5, B6). Chosen in its picker, which saves it here; written
+    /// only when it is not the default, as `motion`.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub huddle_style: HuddleStyle,
+}
+
+/// For `skip_serializing_if`: a setting left at its default is not written.
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 /// A look of the huddle's zoomed visualizer.

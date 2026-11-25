@@ -659,7 +659,17 @@ fn motion_parses_strictly_and_bzz_no_motion_turns_it_off() {
     assert_eq!(Motion::Calm.resolve(Some("")), Motion::Calm);
     assert_eq!(Motion::Calm.resolve(Some("0")), Motion::Calm);
     assert_eq!(Motion::Full.resolve(None), Motion::Full);
-    // The default is not written out as anything surprising.
+    // The default is not written at all, so that settings nobody changed
+    // stay readable by v0.16.0, which refuses a setting it does not know
+    // (tests/upgrade_from_v0160_test.rs); a value chosen is written.
     let written = toml::to_string(&Config::default()).unwrap();
-    assert!(written.contains("motion = \"full\""), "{written}");
+    assert!(!written.contains("motion"), "{written}");
+    assert!(!written.contains("huddle_style"), "{written}");
+    let mut chosen = Config::default();
+    chosen.ui.motion = Motion::Calm;
+    chosen.ui.huddle_style = bzz::config::HuddleStyle::Orb;
+    let written = toml::to_string(&chosen).unwrap();
+    assert!(written.contains("motion = \"calm\""), "{written}");
+    assert!(written.contains("huddle_style = \"orb\""), "{written}");
+    assert_eq!(toml::from_str::<Config>(&written).unwrap(), chosen);
 }
