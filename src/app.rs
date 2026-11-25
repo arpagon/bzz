@@ -23,6 +23,10 @@ mod manage;
 mod pane;
 #[cfg(feature = "apps")]
 mod share;
+// v0.17 C3 to C7: the help, the `:` line, the finder, the leader panel
+// and two keys (task `find`).
+#[cfg(test)]
+mod find_tests;
 
 use crate::clock::WallClock as _;
 use crate::{
@@ -532,7 +536,7 @@ pub struct App {
     mention_choices: Option<(Uuid, Uuid, crate::domain::MentionChoices)>,
     /// Explicit mention selections per channel, most recent highest.
     mention_history: MentionHistory,
-    finder: String,
+    finder: crate::ui::finder::FinderState,
     reaction_index: usize,
     /// `Some(query)` while the reaction picker searches custom emoji.
     reaction_query: Option<String>,
@@ -1026,7 +1030,7 @@ impl App {
             mention_picker: None,
             mention_choices: None,
             mention_history: MentionHistory::default(),
-            finder: String::new(),
+            finder: crate::ui::finder::FinderState::default(),
             reaction_index: 0,
             reaction_query: None,
             reaction_candidates: Vec::new(),
@@ -9278,6 +9282,22 @@ impl App {
     }
 
     async fn text_overlay_key(&mut self, key: KeyEvent, finder: bool) -> Result<()> {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        // v0.17 C5: the finder's selection moves; Enter opens that row.
+        if finder {
+            let delta = match key.code {
+                KeyCode::Down | KeyCode::Tab => Some(1),
+                KeyCode::Up | KeyCode::BackTab => Some(-1),
+                KeyCode::Char('n') if control => Some(1),
+                KeyCode::Char('p') if control => Some(-1),
+                _ => None,
+            };
+            if let Some(delta) = delta {
+                let len = crate::ui::finder::rows(&self.finder.query, &self.channels).len();
+                self.finder.move_by(delta, len);
+                return Ok(());
+            }
+        }
         match key.code {
             KeyCode::Esc => self.presentation.close_overlay(),
             KeyCode::Backspace => {
@@ -9287,7 +9307,7 @@ impl App {
                     self.command.pop();
                 }
             }
-            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(character) if !control => {
                 if finder {
                     self.finder.push(character)
                 } else {
@@ -9296,21 +9316,45 @@ impl App {
             }
             KeyCode::Enter => {
                 if finder {
-                    if let Some(found) =
-                        crate::ui::finder::rank(&self.finder, &self.channels).first()
-                        && let Some(index) = self
-                            .channels
-                            .iter()
-                            .position(|channel| channel.id == found.id)
-                    {
-                        let found_is_member = found.is_member;
-                        self.select_channel_index(index);
-                        self.showing_open_channel = !found_is_member;
-                        self.load_selected_channel().await?;
-                        self.presentation
-                            .set_workspace_focus(FocusSurface::Timeline);
+                    let selected = crate::ui::finder::rows(&self.finder.query, &self.channels)
+                        .get(self.finder.selected)
+                        .map(|row| match row {
+                            crate::ui::finder::FinderRow::Channel(channel) => {
+                                Some((channel.id, channel.is_member))
+                            }
+                            crate::ui::finder::FinderRow::NewDm => None,
+                        });
+                    match selected {
+                        Some(Some((id, is_member))) => {
+                            if let Some(index) =
+                                self.channels.iter().position(|channel| channel.id == id)
+                            {
+                                self.select_channel_index(index);
+                                self.showing_open_channel = !is_member;
+                                self.load_selected_channel().await?;
+                                self.presentation
+                                    .set_workspace_focus(FocusSurface::Timeline);
+                            }
+                            self.presentation.close_overlay();
+                        }
+                        // The last row: a DM with someone, the query as
+                        // the search for the person.
+                        Some(None) => {
+                            let query = std::mem::take(&mut self.finder.query);
+                            self.presentation.close_overlay();
+                            self.open_dm_picker(None);
+                            if self.presentation.overlay == Some(Overlay::DmPicker)
+                                && !query.is_empty()
+                            {
+                                self.dm_picker.query = query;
+                                if let Some(pubkey) = self.self_pubkey().map(str::to_owned) {
+                                    self.dm_picker.reconcile(&self.profiles, &pubkey);
+                                }
+                                self.dm_dirty_since = Some(Instant::now());
+                            }
+                        }
+                        None => self.presentation.close_overlay(),
                     }
-                    self.presentation.close_overlay();
                 } else {
                     // Close only the command prompt before executing. Commands
                     // such as :search, :dm, and :agents may deliberately open
@@ -11281,30 +11325,48 @@ impl App {
     }
 
     fn render_finder(&self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
+        const SHOWN: usize = 8;
         let popup = centered(area, 70, 12);
         frame.render_widget(Clear, popup);
-        let ranked = crate::ui::finder::rank(&self.finder, &self.channels);
-        for (index, channel) in ranked.iter().take(8).enumerate() {
-            if let Some(row) = list_row(popup, index.saturating_add(1), 1) {
+        let rows = crate::ui::finder::rows(&self.finder.query, &self.channels);
+        let start = self.finder.window_start(SHOWN);
+        for (index, row) in rows.iter().skip(start).take(SHOWN).enumerate() {
+            if let crate::ui::finder::FinderRow::Channel(channel) = row
+                && let Some(row) = list_row(popup, index.saturating_add(1), 1)
+            {
                 hit_map.push(row, HitTarget::FinderChannel(channel.id.to_string()));
             }
         }
         let mut items = vec![ListItem::new(format!(
             "> {}",
-            sanitize::single_line(&self.finder)
+            sanitize::single_line(&self.finder.query)
         ))];
         items.extend(
-            ranked
-                .into_iter()
-                .take(8)
+            rows.into_iter()
                 .enumerate()
-                .map(|(index, channel)| {
-                    let membership = if channel.is_member { "#" } else { "+" };
-                    ListItem::new(format!(
-                        "{} {membership}{}",
-                        if index == 0 { "›" } else { " " },
-                        sanitize::single_line(&channel.name)
-                    ))
+                .skip(start)
+                .take(SHOWN)
+                .map(|(index, row)| {
+                    let mark = if index == self.finder.selected {
+                        "›"
+                    } else {
+                        " "
+                    };
+                    let text = match row {
+                        crate::ui::finder::FinderRow::Channel(channel) => format!(
+                            "{mark} {}{}",
+                            crate::ui::finder::marker(channel),
+                            sanitize::single_line(&channel.name)
+                        ),
+                        crate::ui::finder::FinderRow::NewDm if self.finder.query.is_empty() => {
+                            format!("{mark} → start a DM with someone")
+                        }
+                        crate::ui::finder::FinderRow::NewDm => format!(
+                            "{mark} → start a DM: find people named \"{}\"",
+                            sanitize::single_line(&self.finder.query)
+                        ),
+                    };
+                    ListItem::new(text)
                 }),
         );
         frame.render_widget(
@@ -11315,7 +11377,7 @@ impl App {
                         .border_type(self.theme.border_type(BorderSurface::Picker))
                         .border_style(self.theme.style(HighlightGroup::ModalBorder))
                         .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                        .title(" channel finder · Enter open "),
+                        .title(" channel finder · channels and DMs · ↑↓ Tab move · Enter open "),
                 ),
             popup,
         );
