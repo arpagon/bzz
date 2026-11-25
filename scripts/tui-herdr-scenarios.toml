@@ -3041,3 +3041,98 @@ visible = "quit bzz?"
 [[scenario.step]]
 keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
+
+
+# v0.17 L7, L8 (task motion): these run with motion on (`motion = true`);
+# every other scenario runs with BZZ_NO_MOTION=1 (scripts/test-tui-tmux.py,
+# scripts/test-tui-herdr.sh).
+
+[[scenario]]
+id = "t17-motion-toast"
+kind = "automated"
+description = "v0.17 L7: in bzz demo, y copies the selected message and a toast says so at the bottom right; it slides out by itself after about 3.4 s."
+size = "80x24"
+args = ["demo"]
+motion = true
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+keys = ["k", "y"]
+visible = "│ copied 1 message(s), "
+
+[[scenario.step]]
+pause = 4000
+keys = []
+visible = "DEMO · generated, offline"
+absent = "copied 1 message(s)"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-motion-overlay-and-focus"
+kind = "automated"
+description = "v0.17 L8: with motion, the palette unfolds and is whole within a moment, Esc folds it away; 2 moves the focus to the channels and the screen settles."
+size = "160x45"
+args = ["demo"]
+motion = true
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+keys = ["ctrl+k"]
+visible = "Type to search"
+
+[[scenario.step]]
+pause = 300
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "Type to search"
+
+[[scenario.step]]
+keys = ["2"]
+visible = "NORMAL"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-motion-off-toast"
+kind = "automated"
+description = "v0.17 L7 with motion off (as every scenario but these): the toast is there at once and gone after 3 s."
+size = "80x24"
+args = ["demo"]
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+keys = ["k", "y"]
+visible = "│ copied 1 message(s), "
+
+[[scenario.step]]
+pause = 3500
+keys = []
+visible = "DEMO · generated, offline"
+absent = "copied 1 message(s)"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
