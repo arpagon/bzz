@@ -101,8 +101,8 @@ jobs:
           ${{ matrix.binary }} identity verify "$identity_id"
           ${{ matrix.binary }} identity remove "$identity_id" --yes
   upgrade:
-    # Release acceptance: a real profile of the last release (v0.15.0) opened
-    # by this build on three systems; the one before it (v0.14.0) on Linux.
+    # Release acceptance: a real profile of the last release (v0.16.0) opened
+    # by this build on three systems; the one before it (v0.15.0) on Linux.
     # macOS on Intel: hosted Apple Silicon runners are scarce, and on
     # 2026-11-24 jobs waiting for `macos-15` were cancelled after 15 minutes
     # ("not acquired by Runner of type hosted"). The profile does not depend
@@ -111,10 +111,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-15-intel, windows-latest]
-        from: ['0150']
+        from: ['0160']
         include:
           - os: ubuntu-latest
-            from: '0140'
+            from: '0150'
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.os == 'ubuntu-latest' && 'ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d' || null }}
     steps:
