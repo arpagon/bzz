@@ -7,7 +7,7 @@
      quiet
   Y  You       ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁
      muted
- mic muted · nobody hears you · m unmutes
+ mic muted · nobody hears you
 
 
 --- styles ---
@@ -20,4 +20,4 @@
 6: 2-2 Rgb(20, 17, 13)/Rgb(122, 156, 93)/BOLD 5-9 Rgb(108, 108, 108)/Reset/NONE
 7: 2-2 Rgb(255, 255, 255)/Rgb(108, 108, 108)/BOLD 15-40 Rgb(108, 108, 108)/Reset/DIM
 8: 2-2 Rgb(255, 255, 255)/Rgb(108, 108, 108)/BOLD 5-9 Rgb(108, 108, 108)/Reset/NONE
-9: 1-40 Rgb(108, 108, 108)/Reset/NONE
+9: 1-28 Rgb(108, 108, 108)/Reset/NONE

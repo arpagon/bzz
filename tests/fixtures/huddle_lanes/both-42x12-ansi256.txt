@@ -7,7 +7,7 @@
      quiet
   Y  You       ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁
      muted
- mic muted · nobody hears you · m unmutes
+ mic muted · nobody hears you
 
 
 --- styles ---
@@ -20,4 +20,4 @@
 6: 2-2 Indexed(233)/Indexed(107)/BOLD 5-9 Indexed(242)/Reset/NONE
 7: 2-2 Indexed(231)/Indexed(242)/BOLD 15-40 Indexed(242)/Reset/DIM
 8: 2-2 Indexed(231)/Indexed(242)/BOLD 5-9 Indexed(242)/Reset/NONE
-9: 1-40 Indexed(242)/Reset/NONE
+9: 1-28 Indexed(242)/Reset/NONE

@@ -7,7 +7,7 @@
  ▐ ▌ ● live                        ▀▀▀▀▀▀
   Y  You       ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁▄▄▄▃▁▁ ▁
      muted                      ▀▀▀▔▔
- mic muted · nobody hears you · m unmutes
+ mic muted · nobody hears you
 
 
 --- styles ---

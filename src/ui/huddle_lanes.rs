@@ -392,6 +392,7 @@ fn draw_lane(
 
 /// A two-row badge: the initial on the person's colour, ringed while they
 /// speak (the ring reads without colour too).
+#[allow(clippy::too_many_arguments)]
 fn draw_badge(
     buf: &mut Buffer,
     area: Rect,
@@ -594,6 +595,9 @@ pub fn render(buf: &mut Buffer, area: Rect, lanes: &Lanes<'_>, theme: &Theme) {
                 "you're muted · nobody hears you · m unmutes",
                 paint.fg(paint.amber).add_modifier(Modifier::BOLD),
             ),
+            (true, false) if area.width < 46 => {
+                ("mic muted · nobody hears you", paint.fg(paint.grey))
+            }
             (true, false) => (
                 "mic muted · nobody hears you · m unmutes",
                 paint.fg(paint.grey),
@@ -621,7 +625,20 @@ const RIGHT_DOTS: [u32; 4] = [0x80, 0x20, 0x10, 0x08];
 /// name of who speaks now; your microphone, amber when you talk muted. With
 /// motion off, no moving cells: `🎧 Ada speaking · mic muted`.
 pub fn strip(lanes: &Lanes<'_>, theme: &Theme) -> Line<'static> {
-    const CELLS: usize = 12;
+    strip_cells(lanes, theme, 12)
+}
+
+/// The strip from longest to shortest, for a status line that has less
+/// room: the moving cells go before the name.
+pub fn strips(lanes: &Lanes<'_>, theme: &Theme) -> [Line<'static>; 3] {
+    [
+        strip_cells(lanes, theme, 12),
+        strip_cells(lanes, theme, 6),
+        strip_cells(lanes, theme, 0),
+    ]
+}
+
+fn strip_cells(lanes: &Lanes<'_>, theme: &Theme, cells: usize) -> Line<'static> {
     let paint = Paint::new(theme, lanes.look);
     let mut spans = vec![Span::styled("🎧 ", paint.text)];
     let tracks = lanes
@@ -636,10 +653,11 @@ pub fn strip(lanes: &Lanes<'_>, theme: &Theme) -> Line<'static> {
         })
         .chain((!lanes.muted).then(|| (paint.you, lanes.meter.mic())))
         .collect::<Vec<_>>();
-    if lanes.motion != Motion::Off {
-        // 3 s = 60 columns: 5 a cell, 2.5 a braille column.
-        for cell in 0..CELLS {
-            let age = CELLS - 1 - cell;
+    if lanes.motion != Motion::Off && cells > 0 {
+        // The last 3 s: with 12 cells, 5 columns a cell, 2.5 a braille
+        // column; with 6, the last 1.5 s.
+        for cell in 0..cells {
+            let age = cells - 1 - cell;
             let base = age * 5;
             let mut loudest = (0.0_f32, paint.grey);
             let (mut left, mut right) = (0.0_f32, 0.0_f32);
@@ -656,21 +674,19 @@ pub fn strip(lanes: &Lanes<'_>, theme: &Theme) -> Line<'static> {
             let (l, r) = (height(left), height(right));
             let symbol = match lanes.look.glyphs {
                 Glyphs::Unicode => {
-                    let mut bits = 0;
-                    for dot in 0..l.max(1) {
-                        bits |= LEFT_DOTS[dot];
-                    }
-                    for dot in 0..r.max(1) {
-                        bits |= RIGHT_DOTS[dot];
-                    }
+                    let bits = LEFT_DOTS
+                        .iter()
+                        .take(l.max(1))
+                        .chain(RIGHT_DOTS.iter().take(r.max(1)))
+                        .fold(0, |bits, dot| bits | dot);
                     char::from_u32(0x2800 + bits).unwrap_or(' ')
                 }
-                Glyphs::Blocks => UP[(l.max(r) * 2).max(1).min(8)],
+                Glyphs::Blocks => UP[(l.max(r) * 2).clamp(1, 8)],
             };
             let style = if l.max(r) == 0 {
                 paint.fg(paint.grey).add_modifier(Modifier::DIM)
             } else {
-                paint.fg(paint.aged(loudest.1, age as f32 / CELLS as f32))
+                paint.fg(paint.aged(loudest.1, age as f32 / cells as f32))
             };
             spans.push(Span::styled(symbol.to_string(), style));
         }
@@ -724,18 +740,18 @@ pub fn strip_text(line: &Line<'_>) -> String {
 /// SEAM (agent `look`, plan L3): the status line takes its activity as
 /// text. Until it offers a styled slot, the strip is passed as text and its
 /// styles are laid over the cells that show it, as far as they match (the
-/// line may have been cut short).
-pub fn paint_over(buf: &mut Buffer, area: Rect, line: &Line<'_>) {
+/// line may have been cut short). Returns whether the whole line was there.
+pub fn paint_over(buf: &mut Buffer, area: Rect, line: &Line<'_>) -> bool {
     let Some(first) = line
         .spans
         .first()
         .and_then(|span| span.content.split_whitespace().next())
     else {
-        return;
+        return false;
     };
     let y = area.y;
     let Some(start) = (area.x..area.right()).find(|&x| buf[(x, y)].symbol() == first) else {
-        return;
+        return false;
     };
     let mut x = start;
     for span in &line.spans {
@@ -743,7 +759,7 @@ pub fn paint_over(buf: &mut Buffer, area: Rect, line: &Line<'_>) {
             unicode_segmentation::UnicodeSegmentation::graphemes(span.content.as_ref(), true)
         {
             if x >= area.right() || buf[(x, y)].symbol() != grapheme {
-                return;
+                return false;
             }
             let cell = &mut buf[(x, y)];
             let style = cell.style().patch(span.style);
@@ -751,6 +767,7 @@ pub fn paint_over(buf: &mut Buffer, area: Rect, line: &Line<'_>) {
             x += (grapheme.width() as u16).max(1);
         }
     }
+    true
 }
 
 #[cfg(test)]

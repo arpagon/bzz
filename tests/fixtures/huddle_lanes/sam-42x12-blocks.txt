@@ -7,7 +7,7 @@
  ▐ ▌ ● live                        ▀▀▀▀▀▀
   Y  You       ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁▄▄▄▃▁▁ ▁
      muted                      ▀▀▀▔▔
- mic muted · nobody hears you · m unmutes
+ mic muted · nobody hears you
 
 
 --- styles ---
@@ -20,4 +20,4 @@
 6: 1-1 Indexed(113)/Reset/NONE 2-2 Indexed(233)/Indexed(113)/BOLD 3-3 Indexed(113)/Reset/NONE 5-10 Indexed(113)/Reset/NONE 35-36 Indexed(107)/Reset/NONE 37-40 Indexed(113)/Reset/NONE
 7: 2-2 Indexed(231)/Indexed(242)/BOLD 15-31 Indexed(242)/Reset/DIM 32-36 Indexed(242)/Reset/NONE 37-40 Indexed(242)/Reset/DIM
 8: 2-2 Indexed(231)/Indexed(242)/BOLD 5-9 Indexed(242)/Reset/NONE 32-36 Indexed(242)/Reset/NONE
-9: 1-40 Indexed(242)/Reset/NONE
+9: 1-28 Indexed(242)/Reset/NONE
