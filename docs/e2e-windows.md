@@ -15,7 +15,7 @@ real Windows console program: crossterm reads `INPUT_RECORD`s through the
 console API and writes VT sequences, exactly as it does in Windows Terminal.
 What reaches the console differs: over SSH, the keys are the bytes of the
 Linux terminal on the other side, which the console turns into key records
-with the Windows machine's keyboard layout. So:
+(a character the Windows layout cannot type comes as an Alt code). So:
 
 - proven over SSH: the console API path (key records, modifiers, Release
   events, resize, mouse records, raw mode, the alternate screen and how it
@@ -114,10 +114,13 @@ with crossterm 0.29:
 | `Alt+h Alt+l Alt+o Alt+Enter` | with Alt | the same |
 | Space, Enter, Backspace, F1, F5, Up, Shift+Up, Home, PageUp, Delete, Esc | the key | the same |
 | every key | one Press | a Press and a **Release** |
+| `¿ ¡ € °` (not on the US layout of the Windows machine) | the character | **a Release alone**: the console sends an Alt code |
 | a paste | one `Paste` event (bracketed paste) | **one key event per character**, `Enter` for a line break |
 
 bzz now gives every key the Linux form where keys enter it
-(`ui::keymap::normalize_key_event`); Release events were already ignored.
+(`ui::keymap::normalize_key_event`), and takes the release of a character
+outside ASCII that was never pressed as its press (`ui::keymap::KeyDoor`).
+Other releases are ignored, as before.
 
 ## Paste
 
@@ -126,8 +129,14 @@ event. Over SSH the console also swallows the bracketed-paste markers: the
 bytes `ESC [ 200 ~ ab LF c ESC [ 201 ~` sent to the probe arrived as `a`,
 `b`, Ctrl+Enter, `c`, nothing else. A Windows Terminal paste goes through
 the same console and the same backend, so it arrives as keys there too
-(not seen: no Windows Terminal on the machine). See the validation record
-for what bzz does about it.
+(not seen: no Windows Terminal on the machine).
+
+So on Windows, in the composer, an Enter with more key presses already
+waiting behind it is a line break and not "send"
+(`ui::keymap::paste_line_break`; the loop reads ahead what is ready,
+without waiting). A pasted text then stays in the composer, all its lines,
+until Enter. Outside the composer a paste is still keys. Check it with a
+tmux paste (`paste-buffer -p`) of a few lines into the composer.
 
 ## Cleaning up
 
@@ -137,12 +146,14 @@ with it), and bring the relay down as [`e2e-herdr.md`](e2e-herdr.md) says.
 
 ## For a person at Windows Terminal
 
-- `?` opens the help, `:` the command line, `Ctrl+K` the palette.
+- `?` opens the help, `:` the command line (and `Ctrl+K` the palette,
+  once v0.17.0 has it).
 - With a layout that has AltGr (Spanish, German, French): type `@`, `{`,
   `[`, `\`, `|`, `€` in the composer.
 - With Caps Lock on: `J` scrolls, `Ctrl+C` leaves an app.
 - Paste one line and three lines into the composer with `Ctrl+V` and with a
-  right click.
+  right click: all of it stays in the composer, nothing is sent until Enter.
+- Type `¿`, `€` and `ñ` with the keyboard (AltGr or a dead key).
 - The look: the frame lines, the colours of the theme, emoji width, and
   that the cursor and the screen come back after `q` then `y`.
 - A click, a double click and the wheel in the timeline.
