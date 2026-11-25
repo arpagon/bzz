@@ -1,6 +1,6 @@
 //! What a newcomer reads before bzz has anything of theirs: `bzz help`
 //! names the demo first, `bzz demo --help` says what it is, that nothing is
-//! saved and how to leave.
+//! saved and how to leave, and every shell's completion offers `demo`.
 
 use std::process::Command;
 
@@ -43,4 +43,17 @@ fn the_demos_help_says_what_it_is_that_nothing_is_saved_and_how_to_leave() {
         about.lines().all(|line| line.chars().count() <= 80),
         "{about}"
     );
+}
+
+#[test]
+fn every_shells_completion_offers_the_demo() {
+    for shell in ["bash", "elvish", "fish", "power-shell", "zsh"] {
+        let script = bzz(&["completions", shell]);
+        assert!(script.contains("demo"), "{shell}");
+    }
+    // Where the shell says what a command is, the demo's words are there.
+    for shell in ["fish", "zsh"] {
+        let script = bzz(&["completions", shell]);
+        assert!(script.contains("generated team"), "{shell}");
+    }
 }
