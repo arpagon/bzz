@@ -17,7 +17,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Clear, Paragraph},
+    widgets::{Clear, Paragraph},
 };
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
@@ -824,11 +824,7 @@ pub fn render(frame: &mut Frame<'_>, screen: Rect, palette: &Palette, theme: &Th
     frame.render_widget(Clear, popup);
     let inner_width = usize::from(popup.width.saturating_sub(2));
     let footer = footer(palette, theme, inner_width.saturating_sub(2));
-    let block = Block::bordered()
-        .border_type(theme.border_type(BorderSurface::Modal))
-        .border_style(theme.style(HighlightGroup::ModalBorder))
-        .title_style(theme.style(HighlightGroup::ModalTitle))
-        .title(" Actions ")
+    let block = crate::ui::frame::block(theme, BorderSurface::Modal, "Actions", true)
         .title_top(
             Line::from(Span::styled(" Esc ", theme.style(HighlightGroup::Muted))).right_aligned(),
         )
@@ -1044,14 +1040,43 @@ fn footer<'a>(palette: &Palette, theme: &Theme, width: usize) -> Line<'a> {
                 format!("only in the shell: {command} · Enter copies it"),
                 HighlightGroup::Warning,
             ),
-            Status::Ready => (keys_hint(palette), HighlightGroup::Muted),
+            Status::Ready => return keys_footer(palette, theme, width),
         },
-        (None, None) => (keys_hint(palette), HighlightGroup::Muted),
+        (None, None) => return keys_footer(palette, theme, width),
     };
     Line::from(Span::styled(
         format!(" {} ", truncate_cells(&text, width)),
         theme.style(group),
     ))
+}
+
+/// The palette's keys, coloured as every footer's (`frame::hints`), with
+/// the count of rows after them; cut to `width` when it does not fit.
+fn keys_footer<'a>(palette: &Palette, theme: &Theme, width: usize) -> Line<'a> {
+    let text = keys_hint(palette);
+    if text.width() > width {
+        return Line::from(Span::styled(
+            format!(" {} ", truncate_cells(&text, width)),
+            theme.style(HighlightGroup::Muted),
+        ));
+    }
+    let mut line = crate::ui::frame::hints(
+        theme,
+        &[
+            ("↵", "run"),
+            ("↑↓", "move"),
+            ("Esc", "close"),
+            ("> # @", "narrow"),
+        ],
+    );
+    line.spans.pop();
+    line.spans
+        .push(Span::styled(" · ", theme.style(HighlightGroup::Muted)));
+    line.spans.push(Span::styled(
+        format!("{} ", palette.item_count()),
+        theme.style(HighlightGroup::HintText),
+    ));
+    line
 }
 
 fn keys_hint(palette: &Palette) -> String {

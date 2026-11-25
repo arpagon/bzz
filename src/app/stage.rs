@@ -1007,4 +1007,62 @@ mod tests {
         }
         assert_eq!(handled, ["key j", "key k", "frame"]);
     }
+
+    /// One look: the palette and the first screen draw their frame, title
+    /// and keys through `frame.rs`, so their keys are in the hint colour and
+    /// the palette's title is a label, as every overlay's.
+    #[tokio::test(start_paused = true)]
+    async fn the_palette_and_the_first_screen_look_like_the_rest() {
+        use crate::ui::theme::HighlightGroup;
+        set_motion(Motion::Off);
+        let hint = |app: &super::App| {
+            crate::ui::frame::reduce(
+                app.theme.style(HighlightGroup::HintKey),
+                app.theme.color_mode(),
+            )
+            .fg
+        };
+        let find = |buf: &Buffer, text: &str| -> (u16, u16) {
+            for y in 0..buf.area.height {
+                let row = (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<Vec<_>>();
+                for x in 0..row.len() {
+                    if row[x..].concat().starts_with(text) {
+                        return (u16::try_from(x).unwrap(), y);
+                    }
+                }
+            }
+            panic!("{text} is not on screen");
+        };
+        let temporary = TempDir::new().unwrap();
+        let mut app = app(&temporary).await;
+        let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
+        app.open_palette();
+        let screen = draw(&mut app, &mut terminal);
+        let at = find(&screen, "Esc close");
+        assert_eq!(Some(screen[at].fg), hint(&app), "the palette's keys");
+        let title = find(&screen, " Actions ");
+        assert!(screen[title].modifier.contains(Modifier::REVERSED), "a label");
+        // The first screen, with no community.
+        let temporary = TempDir::new().unwrap();
+        let mut empty = app_without_community(&temporary).await;
+        let screen = draw(&mut empty, &mut terminal);
+        let at = find(&screen, "Enter choose");
+        assert_eq!(Some(screen[at].fg), hint(&empty), "the first screen's keys");
+    }
+
+    async fn app_without_community(temporary: &TempDir) -> super::App {
+        let paths = Paths {
+            config_dir: temporary.path().join("config"),
+            data_dir: temporary.path().join("data"),
+            cache_dir: temporary.path().join("cache"),
+        };
+        paths.ensure().unwrap();
+        let config = Config::default();
+        let mut store = Store::open(paths.database_file()).unwrap();
+        store.sync_config(&config).unwrap();
+        let handle = StoreHandle::spawn(store).unwrap();
+        super::App::new(config, paths, handle).await.unwrap()
+    }
 }
