@@ -640,7 +640,7 @@ visible = "__BZZ_HERDR_EXIT__:1"
 [[scenario]]
 id = "t15-cli-agent-move"
 kind = "harness"
-needs = ["t15-cli-agent-new"]
+needs = ["t15-cli-agent-new", "t15-cli-agent-move-mismatch"]
 description = "v0.15 M5: agent move, with the passphrase typed twice and never shown, seals the agent in one file and marks it moved away."
 args = ["agent", "move", "Rover", "--to", "{fixture}/out/rover.bzzagent"]
 ready = "Passphrase for the file (at least 12 characters"
@@ -720,8 +720,10 @@ keys = ["i", "type:@Sco"]
 visible = "@Scout"
 
 [[scenario.step]]
+# The reply under this mention, not under one an earlier scenario made.
 keys = ["tab", "space", "type:are you there?", "enter"]
-visible = "↳ 1 reply"
+visible = 'are you there\?[^\n]*\n[^\n]*↳ 1 reply'
+regex = true
 timeout = 90000
 
 [[scenario.step]]
@@ -746,7 +748,8 @@ timeout = 60000
 
 [[scenario.step]]
 keys = ["q"]
-visible = "↳ 3 replies"
+visible = 'are you there\?[^\n]*\n[^\n]*↳ 3 replies'
+regex = true
 absent = "q close"
 
 [[scenario.step]]
@@ -1401,7 +1404,9 @@ restored = true
 
 [[scenario.step]]
 keys = [":", "type:apps", "enter"]
-visible = "board (Board) · version 1 · open nowhere"
+# Listed, approved; open nowhere yet, or where another scenario left it.
+visible = 'board \(Board\) · version 1 · open (nowhere|in )'
+regex = true
 
 [[scenario.step]]
 keys = ["esc"]
@@ -1754,9 +1759,13 @@ visible = "__BZZ_HERDR_EXIT__:0"
 # fixture's folder and `$BZZ_BIN` the binary under test: what the owner
 # does outside bzz, such as saving the script of a folder.
 
+# The approval banner names the oldest version waiting: no other may wait
+# when this one is proposed, so the Board that t16-cli-app-add leaves
+# waiting is approved first.
 [[scenario]]
 id = "t16-m4-poll-approve-update-rollback"
 kind = "harness"
+needs = ["t16-cli-app-approve"]
 description = "v0.16 M4 exit gate: the Poll, written from its template, is added in the TUI and runs only after its approval there; a version that does not load is never offered; one that loads and fails as it is put to run leaves the old one running; an approved change replaces it in place with its state, and a rollback brings the old one back, with the state."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
@@ -2102,8 +2111,8 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t16-m6-share-offer-approve"
 kind = "harness"
-needs = ["t16-cli-app-approve"]
-description = "v0.16 M6 exit gate: the viewer shares the Board in #t9-general; another person's bzz shows the offer with the brief posted as a message and who signed it, nothing of it runs, the approval opens it there, and a card by each shows for the other; withdrawing leaves the installed copy. Needs t16-cli-app-new, -add and -approve first."
+needs = ["t16-m4-dev-remove-reinstall"]
+description = "v0.16 M6 exit gate: the viewer shares the Board in #t9-general; another person's bzz shows the offer with the brief posted as a message and who signed it, nothing of it runs, the approval opens it there, and a card by each shows for the other; withdrawing leaves the installed copy. It follows the M3 and M4 scenarios (needs)."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
 size = "160x40"
@@ -2264,7 +2273,8 @@ visible = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario.step]]
 keys = [":", "type:apps", "enter"]
-visible = "open in #t9-general"
+visible = 'board \(Board\) · version 1 · open in [^\n]*#t9-general'
+regex = true
 
 [[scenario.step]]
 keys = ["esc"]
@@ -2284,9 +2294,13 @@ visible = "__BZZ_HERDR_EXIT__:0"
 # filter of tests/fixtures/apps/board-priority, proposed as a version of
 # the owner's Board, here named `tasks`.
 
+# The approval banner names the oldest version waiting: no other may wait
+# when this one is proposed, so the Board that t16-cli-app-add leaves
+# waiting is approved first.
 [[scenario]]
 id = "t16-m5-agent-changes-the-open-board"
 kind = "harness"
+needs = ["t16-cli-app-approve"]
 description = "v0.16 M5 exit gate: the owner's Board is open in #t15-agents with a card selected; Scout, mentioned, proposes the Board with priority and filter through propose_app; the approval says it comes from the agent and who asked; approved in the overlay, the open Board changes in place with the card still selected and its new keys work; :app brief posts the brief; at its next turn Scout is told the version was applied."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
@@ -3365,6 +3379,18 @@ description = "v0.17 C9: \"Start a DM\" asks for a person; Scout is found by nam
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
 
+# bzz knows Scout once it has his profile: on a profile no earlier
+# scenario started, not yet when it is online. His join row, at the top
+# of #t15-agents, shows his name when it has.
+[[scenario.step]]
+keys = ["space", "space", "type:t15-ag", "enter"]
+visible = "message #t15-agents"
+
+[[scenario.step]]
+keys = ["3", "g", "g"]
+visible = "Scout joined"
+timeout = 30000
+
 [[scenario.step]]
 keys = ["ctrl+k", "type:start a dm"]
 visible = "▌· Start a DM"
@@ -3596,6 +3622,12 @@ timeout = 8000
 keys = ["ctrl+c"]
 visible = "NORMAL"
 
+# Left as it was found: the Board open nowhere it was not (t16-app-pane
+# and t16-m6-share-offer-approve read where it is open).
+[[scenario.step]]
+keys = [":", "type:app close", "enter"]
+visible = "board is closed here"
+
 [[scenario.step]]
 keys = ["q"]
 visible = "quit bzz?"
@@ -3611,6 +3643,18 @@ description = "v0.17 C9: the steps read at 80x24 and 160x45: a person step with 
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
 size = "80x24"
+
+# bzz knows Scout once it has his profile: on a profile no earlier
+# scenario started, not yet when it is online. His join row, at the top
+# of #t15-agents, shows his name when it has.
+[[scenario.step]]
+keys = ["space", "space", "type:t15-ag", "enter"]
+visible = "message #t15-agents"
+
+[[scenario.step]]
+keys = ["3", "g", "g"]
+visible = "Scout joined"
+timeout = 30000
 
 [[scenario.step]]
 keys = ["ctrl+k", "type:start a dm", "enter", "type:sc"]
@@ -4266,8 +4310,10 @@ keys = ["space", "space"]
 visible = "channel finder"
 
 [[scenario.step]]
-keys = ["t", "9", "-", "g", "e", "n", "enter"]
-visible = "NORMAL  #t9-general"
+# The fixture's #t17-thread: its newest rows are another person's
+# messages, not people joining, whatever ran before.
+keys = ["type:t17-thread", "enter"]
+visible = "NORMAL  #t17-thread"
 absent = "huddle-"
 
 [[scenario.step]]
@@ -4326,6 +4372,7 @@ description = "#t9-general with a thread and with the Board open, at 60x20, 80x2
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
 size = "160x45"
+needs = ["t16-cli-app-approve"]
 
 [[scenario.step]]
 keys = ["space", "space"]

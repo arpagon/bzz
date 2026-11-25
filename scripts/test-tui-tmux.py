@@ -179,6 +179,8 @@ def main():
     results = {}
     skipped = []
     try:
+        if fixture and any(s["kind"] == "harness" and not s.get("empty") for s in scenarios):
+            warm_up(tmux, binary, fixture, work)
         for scenario in scenarios:
             reason = skip_reason(scenario, results, default_size)
             if reason:
@@ -236,6 +238,29 @@ def check_needs(every):
         if "min_size" in scenario:
             area(scenario["min_size"])
         seen.add(scenario["id"])
+
+
+def warm_up(tmux, binary, fixture, work):
+    """Start the fixture's first profile once, until its channels are in,
+    and quit. On a profile's very first start bzz says `online` before the
+    relay has sent the channel list, and a scenario that types in the
+    finder at once finds nothing. No scenario is about that first start,
+    and in the manifest's order the first one happened to wait (v0.17)."""
+    started = time.monotonic()
+    tmux("resize-window", "-t", MAIN, "-x", "160", "-y", "45")
+    launch(tmux, MAIN, command_for({"id": "warm-up", "kind": "harness"}, binary, fixture, work, "first"))
+    try:
+        wait(tmux, MAIN, "online", False, 30000, False)
+        wait(tmux, MAIN, "#t9-general", False, 60000, False)
+        time.sleep(1)
+        send(tmux, MAIN, ["q"])
+        wait(tmux, MAIN, "quit bzz?", False, 15000, False)
+        send(tmux, MAIN, ["y"])
+        wait(tmux, MAIN, EXIT + "0", False, 15000, False)
+    except Failure as failure:
+        raise SystemExit(f"the fixture's profile did not start: {failure}")
+    print(f"warm-up: the fixture's profile started once, channels in, in {time.monotonic() - started:.1f} s",
+          flush=True)
 
 
 def ordered(scenarios, order):

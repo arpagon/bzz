@@ -11,7 +11,7 @@
 //! guest, and the viewer's own `t9-agent-config` system channel. For v0.17,
 //! channels no earlier scenario talks in, one for each scenario that needs
 //! that: `t17-palette`, `t17-react`, `t17-find`, `t17-sound` (the other
-//! person is a member too) and `t17-app`, each with messages by the owner
+//! person is a member too), `t17-app` and `t17-thread`, each with messages by the owner
 //! only.
 //!
 //! For v0.15 it also gives the viewer a **local agent**, `Scout`, on bzz's
@@ -172,7 +172,9 @@ async fn main() {
         return;
     }
     println!("fixture ready: #t9-general, #t9-announcements (guest), #t9-agent-config (system)");
-    println!("fixture ready: #t17-palette, #t17-react, #t17-find, #t17-sound, #t17-app");
+    println!(
+        "fixture ready: #t17-palette, #t17-react, #t17-find, #t17-sound, #t17-app, #t17-thread"
+    );
     looper_app(&root.join("looper"));
     // BZZ_FIXTURE_AGENTS=0: no local agent (a capture that needs none).
     if !fi {
@@ -635,7 +637,7 @@ async fn publish_content(
     // makes itself (a channel created, a person joined) now, so these
     // messages are dated now too, a second after those rows and a second
     // apart: the newest row of each channel is the owner's last message.
-    let quiet: [(&str, &[&str], bool); 5] = [
+    let quiet: [(&str, &[&str], bool); 6] = [
         (
             "t17-palette",
             &[
@@ -661,6 +663,14 @@ async fn publish_content(
         // Both people of the call are members.
         ("t17-sound", &["Generated t17-sound channel"], true),
         ("t17-app", &["Generated t17-app channel"], false),
+        (
+            "t17-thread",
+            &[
+                "Generated t17-thread message 1, by another person.",
+                "Generated t17-thread message 2, by another person.",
+            ],
+            false,
+        ),
     ];
     let mut channels = Vec::new();
     for (name, _, other_joins) in quiet {

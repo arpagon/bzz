@@ -103,6 +103,12 @@ for scenario in values:
         continue
     if not isinstance(steps, list) or not steps:
         raise SystemExit("Herdr scenario manifest has no steps")
+    # v0.17 `mouse` steps: Herdr sends keys only; scripts/test-tui-tmux.py
+    # runs these.
+    if any(isinstance(step, dict) and "mouse" in step for step in steps):
+        if wanted is None or identifier in wanted:
+            print(f"scenario {identifier} is run by scripts/test-tui-tmux.py only (mouse steps)", file=sys.stderr)
+        continue
     if wanted is not None and identifier not in wanted:
         continue
     if selected in {"automated", "harness"} and kind != selected:
