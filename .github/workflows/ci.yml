@@ -5,6 +5,12 @@ on:
   pull_request:
 permissions:
   contents: read
+# A push to a pull request cancels that pull request's run still in progress:
+# only the newest commit is judged. A run on `main` has a group of its own
+# (its run id), so it is never cancelled nor held behind another.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 defaults:
   run:
     shell: bash
