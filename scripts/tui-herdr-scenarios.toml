@@ -3236,7 +3236,16 @@ keys = ["i"]
 visible = "INSERT"
 
 [[scenario.step]]
-keys = ["esc", "esc"]
+keys = ["esc"]
+visible = " NORMAL "
+
+[[scenario.step]]
+keys = ["esc"]
+visible = " NORMAL "
+absent = "context ·"
+
+[[scenario.step]]
+keys = ["G"]
 visible = "↪ sent from thread"
 
 [[scenario.step]]
@@ -3311,11 +3320,13 @@ visible = "zoomed ┐"
 size = "80x24"
 keys = []
 visible = "Ctrl-c leave ┘"
+absent = "zoomed ┐"
 
 [[scenario.step]]
 size = "120x32"
 keys = []
 visible = "Ctrl-c leave ┘"
+absent = "zoomed ┐"
 
 [[scenario.step]]
 size = "160x45"
@@ -3325,6 +3336,12 @@ visible = "context ·"
 [[scenario.step]]
 keys = ["ctrl+c"]
 visible = " NORMAL "
+
+# q closes the thread first, then asks.
+[[scenario.step]]
+keys = ["q"]
+visible = " NORMAL "
+absent = "context ·"
 
 [[scenario.step]]
 keys = ["q"]
