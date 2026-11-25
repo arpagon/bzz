@@ -260,6 +260,9 @@ impl PeerMixer {
         for sample in &mut mixed {
             *sample = sample.clamp(-1.0, 1.0);
         }
+        // For the spectrum styles, only while one is on screen: atomics in a
+        // fixed ring, no lock, no allocation.
+        levels.publish_mix(&mixed);
         Some(mixed)
     }
 }
