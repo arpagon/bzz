@@ -3,7 +3,7 @@
 //! Help is derived from the validated typed map rather than a handwritten
 //! duplicate of defaults, so scoped user overrides and disabled bindings stay
 //! truthful without exposing the contents of `keymap.toml`. After the keys it
-//! lists the `:` commands of [`crate::ui::command::COMMANDS`] (v0.17 C3).
+//! lists the `:` commands of [`crate::ui::command::commands`] (v0.17 C3).
 //!
 //! The help scrolls: [`help_lines`] wraps it to the window's width, so the
 //! caller knows exactly how many rows there are, and [`HelpScroll`] keeps the
@@ -16,8 +16,10 @@ use ratatui::layout::Rect;
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
 use crate::ui::{
+    action_table::{ActionSpec, GROUPS, Group, Run, TABLE, Where, row_of},
     actions::ContextAction,
-    keymap::{KeyChord, KeyMap, KeyScope},
+    keymap::{KeyChord, KeyMap, KeyScope, UiAction},
+    palette::sequence_label,
 };
 
 /// How long a key sequence waits before the leader panel appears: who knows
@@ -65,34 +67,106 @@ impl HelpLine {
     }
 }
 
+/// The keys the live map gives `action` in `scope`, as the palette writes
+/// them: `j, Down, Ctrl+N`.
+fn keys_of(keymap: &KeyMap, scope: KeyScope, action: UiAction) -> Vec<String> {
+    keymap
+        .effective_bindings(scope)
+        .into_iter()
+        .filter(|binding| binding.action == action)
+        .map(|binding| sequence_label(&binding.sequence))
+        .collect()
+}
+
+/// The scope whose keys a row shows in the help opened from `scope`: where
+/// the row runs, so the help lists the same rows from the workspace and
+/// from the Inbox; a row that runs anywhere shows the keys of `scope`.
+const fn row_scope(spec: &ActionSpec, scope: KeyScope) -> KeyScope {
+    match spec.place {
+        Where::Writing => KeyScope::Composer,
+        Where::Inbox => KeyScope::Inbox,
+        Where::Workspace => KeyScope::Workspace,
+        Where::Anywhere => scope,
+    }
+}
+
+/// The rows of the registry that have a key, grouped as the palette groups
+/// them, each with every key the live map gives it: `(group, keys, title)`.
+/// A row that only shows another's key is left out where a row of its group
+/// runs that action ("Quit bzz" shows `q`, which "Back or close" runs).
+pub fn key_rows(keymap: &KeyMap, scope: KeyScope) -> Vec<(Group, String, &'static str)> {
+    let mut rows = Vec::new();
+    for group in GROUPS {
+        for spec in TABLE.iter().filter(|spec| spec.group == group) {
+            let Some(action) = spec.key_action() else {
+                continue;
+            };
+            if spec.run != Run::Ui(action)
+                && TABLE
+                    .iter()
+                    .any(|other| other.group == group && other.run == Run::Ui(action))
+            {
+                continue;
+            }
+            let keys = keys_of(keymap, row_scope(spec, scope), action);
+            if keys.is_empty() {
+                continue;
+            }
+            rows.push((group, keys.join(", "), spec.title));
+        }
+    }
+    rows
+}
+
 fn help_content(
     keymap: &KeyMap,
     scope: KeyScope,
     contextual_actions: &[ContextAction],
 ) -> Vec<HelpLine> {
-    let mut bindings = keymap
-        .effective_bindings(scope)
-        .into_iter()
-        .map(|binding| (binding.sequence.label(), binding.action.label()))
-        .collect::<Vec<_>>();
-    bindings.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-
     let mut lines = vec![
         HelpLine::plain("bzz effective keymap"),
         HelpLine::plain(String::new()),
         HelpLine::plain("The entries below include your active scoped overrides."),
         HelpLine::plain(HELP_KEYS_HINT),
-        HelpLine::plain(String::new()),
     ];
-    lines.extend(
-        bindings
-            .into_iter()
-            .map(|(keys, action)| HelpLine::entry(&keys, action)),
-    );
+    let rows = key_rows(keymap, scope);
+    let mut shown = Vec::new();
+    let mut group = None;
+    for (row_group, keys, title) in &rows {
+        if group != Some(*row_group) {
+            group = Some(*row_group);
+            lines.push(HelpLine::plain(String::new()));
+            lines.push(HelpLine::plain(row_group.label()));
+        }
+        lines.push(HelpLine::entry(keys, title));
+        shown.push(*title);
+    }
+    // A key bound to an action no row above lists here (none by default).
+    let mut other = keymap
+        .effective_bindings(scope)
+        .into_iter()
+        .filter(|binding| row_of(binding.action).is_none_or(|spec| !shown.contains(&spec.title)))
+        .map(|binding| {
+            (
+                sequence_label(&binding.sequence),
+                row_of(binding.action).map_or(binding.action.label(), |spec| spec.title),
+            )
+        })
+        .collect::<Vec<_>>();
+    other.sort_unstable();
+    if !other.is_empty() {
+        lines.push(HelpLine::plain(String::new()));
+        lines.push(HelpLine::plain("Other keys"));
+        lines.extend(
+            other
+                .into_iter()
+                .map(|(keys, title)| HelpLine::entry(&keys, title)),
+        );
+    }
     let mut disabled = keymap
         .disabled_bindings(scope)
         .into_iter()
-        .map(|sequence| sequence.label())
+        .map(sequence_label)
         .collect::<Vec<_>>();
     disabled.sort_unstable();
     if !disabled.is_empty() {
@@ -114,9 +188,9 @@ fn help_content(
     }
     lines.push(HelpLine::plain(String::new()));
     lines.push(HelpLine::plain(
-        "Commands: press :, type one, Enter runs it",
+        "Commands: press :, type one, Tab completes, Enter runs it",
     ));
-    for spec in crate::ui::command::COMMANDS {
+    for spec in crate::ui::command::commands() {
         let aliases = spec
             .aliases
             .iter()
@@ -137,6 +211,114 @@ fn help_content(
         }
     }
     lines
+}
+
+/// The command that writes `docs/keys.md`; a test fails when the file in
+/// the repository is not what it writes.
+pub const KEYS_DOC_COMMAND: &str = "cargo run --example keys_doc > docs/keys.md";
+
+/// Where a scope's keys work, as `docs/keys.md` says it.
+const fn scope_place(scope: KeyScope) -> &'static str {
+    match scope {
+        KeyScope::Global => "",
+        KeyScope::Workspace => "channels and messages",
+        KeyScope::Inbox => "Inbox",
+        KeyScope::Composer => "writing",
+        KeyScope::Filter => "search field",
+        KeyScope::Overlay => "any overlay",
+    }
+}
+
+fn markdown_cell(text: &str) -> String {
+    text.replace('|', "\\|")
+}
+
+/// `docs/keys.md`: every built-in key and `:` command, and what only the
+/// shell does, generated from the registry (v0.17 C8, plan rule 23).
+pub fn keys_markdown() -> String {
+    let mut out = String::new();
+    out.push_str("# bzz keys and commands\n\n");
+    out.push_str(&format!(
+        "Generated from bzz's table of actions (`src/ui/action_table.rs`) by \
+         `{KEYS_DOC_COMMAND}`. Do not edit it by hand: a test fails when it is \
+         stale. In bzz, `?` lists the same keys with your own `keymap.toml` \
+         applied, `Ctrl-K` finds any action by name, and Tab completes a `:` \
+         command.\n"
+    ));
+    out.push_str("\n## Keys\n");
+    for group in GROUPS {
+        let mut rows = Vec::new();
+        for spec in TABLE.iter().filter(|spec| spec.group == group) {
+            if spec.keys.is_empty() {
+                continue;
+            }
+            let mut by_scope: Vec<(KeyScope, Vec<String>)> = Vec::new();
+            for (scope, keys) in spec.keys {
+                let Some(sequence) = KeyMap::written_sequence(keys) else {
+                    continue;
+                };
+                let label = format!("`{}`", sequence_label(&sequence));
+                match by_scope.iter_mut().find(|(known, _)| known == scope) {
+                    Some((_, labels)) => labels.push(label),
+                    None => by_scope.push((*scope, vec![label])),
+                }
+            }
+            let keys = by_scope
+                .iter()
+                .map(|(scope, labels)| {
+                    let place = scope_place(*scope);
+                    if place.is_empty() {
+                        labels.join(" ")
+                    } else {
+                        format!("{} ({place})", labels.join(" "))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let command = spec
+                .command
+                .map(|command| format!("`{}`", markdown_cell(command)))
+                .unwrap_or_default();
+            rows.push(format!(
+                "| {} | {} | {} |\n",
+                markdown_cell(&keys),
+                markdown_cell(spec.title),
+                command
+            ));
+        }
+        if rows.is_empty() {
+            continue;
+        }
+        out.push_str(&format!(
+            "\n### {}\n\n| Key | Action | Also |\n|---|---|---|\n",
+            group.label()
+        ));
+        for row in rows {
+            out.push_str(&row);
+        }
+    }
+    out.push_str("\n## Commands\n\nPress `:`, type one, Enter runs it.\n\n");
+    out.push_str("| Command | What it does |\n|---|---|\n");
+    for spec in crate::ui::command::commands() {
+        let mut usage = format!("`{}`", markdown_cell(&spec.usage()));
+        for alias in spec.aliases {
+            usage.push_str(&format!(" `:{alias}`"));
+        }
+        out.push_str(&format!("| {usage} | {} |\n", markdown_cell(spec.summary)));
+    }
+    out.push_str("\n## Only in the shell\n\n");
+    out.push_str("The palette lists these and copies the command.\n\n");
+    out.push_str("| Command | What it does |\n|---|---|\n");
+    for spec in TABLE {
+        if let Run::Shell(command) = spec.run {
+            out.push_str(&format!(
+                "| `{}` | {} |\n",
+                markdown_cell(command),
+                markdown_cell(spec.title)
+            ));
+        }
+    }
+    out
 }
 
 pub fn effective_keymap(keymap: &KeyMap, scope: KeyScope) -> String {
@@ -282,22 +464,33 @@ fn which_key_hints(
     scope: KeyScope,
     prefix: &[KeyChord],
 ) -> Vec<(String, &'static str)> {
+    // v0.17 C8: each next key with its row's title, grouped as the palette
+    // groups them (the group's order, then the key).
     let mut hints = keymap
         .next_chords(scope, prefix)
         .into_iter()
         .map(|chord| {
             let mut sequence = prefix.to_vec();
             sequence.push(chord);
-            let label = match keymap.lookup(scope, &sequence) {
-                crate::ui::keymap::KeyLookup::Action(action) => action.label(),
-                crate::ui::keymap::KeyLookup::Pending => "continue sequence",
-                crate::ui::keymap::KeyLookup::NoMatch => "",
+            let (group, label) = match keymap.lookup(scope, &sequence) {
+                crate::ui::keymap::KeyLookup::Action(action) => match row_of(action) {
+                    Some(spec) => (
+                        GROUPS.iter().position(|group| *group == spec.group),
+                        spec.title,
+                    ),
+                    None => (None, action.label()),
+                },
+                crate::ui::keymap::KeyLookup::Pending => (None, "continue sequence"),
+                crate::ui::keymap::KeyLookup::NoMatch => (None, ""),
             };
-            (chord.label(), label)
+            (group.unwrap_or(GROUPS.len()), chord.label(), label)
         })
         .collect::<Vec<_>>();
-    hints.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    hints.sort_unstable_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
     hints
+        .into_iter()
+        .map(|(_, key, label)| (key, label))
+        .collect()
 }
 
 fn prefix_label(prefix: &[KeyChord]) -> String {
@@ -407,8 +600,13 @@ mod tests {
         .unwrap();
         let keymap = KeyMap::load_from(&path).unwrap();
         let help = effective_keymap(&keymap, KeyScope::Workspace);
-        assert!(help.contains("x                    open Inbox"));
-        assert!(!help.contains("show keymap help"));
+        // v0.17 C8: the registry's row, with its keys from the live map.
+        assert!(
+            help.lines()
+                .any(|line| line.contains("Space n, x ") && line.ends_with("Open Inbox")),
+            "{help}"
+        );
+        assert!(!help.contains("Show keyboard shortcuts"), "{help}");
         assert!(help.contains("Disabled in this scope"));
         assert!(help.contains("?                    disabled"));
     }
@@ -449,8 +647,16 @@ mod tests {
                 crossterm::event::KeyModifiers::NONE,
             )],
         );
-        assert!(output.contains("n            open Inbox"));
-        assert!(output.contains("Space        channel / DM switcher"));
+        assert!(output.contains("n            Open Inbox"), "{output}");
+        assert!(
+            output.contains("Space        Go to channel or DM"),
+            "{output}"
+        );
+        // Grouped as the palette groups them: Message, then Go, then View.
+        let profile = output.find("View author profile").unwrap();
+        let inbox = output.find("Open Inbox").unwrap();
+        let sort = output.find("Cycle channel sort").unwrap();
+        assert!(profile < inbox && inbox < sort, "{output}");
         assert!(!output.contains("refresh\n  z"));
     }
 
@@ -460,7 +666,7 @@ mod tests {
     fn help_lists_commands_after_the_keys_and_scrolls_to_the_end() {
         let keymap = KeyMap::builtin();
         let text = effective_keymap(&keymap, KeyScope::Workspace);
-        let keys = text.find("jump to last").unwrap();
+        let keys = text.find("Jump to last").unwrap();
         let commands = text.find("Commands: press :").unwrap();
         assert!(keys < commands);
         for usage in [
@@ -481,7 +687,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("y ") && line.contains("copy"))
+                .any(|line| line.contains("y ") && line.contains("Copy message"))
         );
         let mut scroll = HelpScroll::default();
         // 24 rows: the status line, the frame's two borders.
@@ -492,7 +698,7 @@ mod tests {
         }
         let shown = &lines[scroll.offset..scroll.offset + scroll.page];
         assert_eq!(shown.last(), lines.last());
-        assert!(shown.last().unwrap().contains("local cache"));
+        assert!(shown.last().unwrap().contains("asks first"));
         scroll.top();
         scroll.page_by(1);
         assert_eq!(scroll.offset, 20);

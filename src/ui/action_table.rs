@@ -13,7 +13,75 @@
 //! order, with [`Run::Steps`] (C9): the palette asks for each [`Arg`] in a
 //! step of its own and runs the `:` command they build.
 
-use crate::ui::keymap::UiAction;
+use crate::ui::{
+    command::CommandSpec,
+    keymap::{KeyScope, UiAction},
+};
+
+/// One default key sequence of a row, in the scope that owns it, as
+/// `keymap.toml` writes keys: `(GLOBAL, &["space", "n"])`.
+pub type DefaultKey = (KeyScope, &'static [&'static str]);
+
+/// Where the focus is, for the status line's hint (v0.17 C10).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FooterContext {
+    /// The timeline, a message selected.
+    Message,
+    /// The timeline with no message selected.
+    Timeline,
+    /// The thread pane.
+    Thread,
+    /// The channels or the communities.
+    Channels,
+    /// The Inbox.
+    Inbox,
+    /// Writing a message.
+    Composer,
+    /// The huddle panel.
+    Huddle,
+    /// Any other overlay: its own keys are in its frame.
+    Overlay,
+}
+
+impl FooterContext {
+    /// The key scope whose live bindings the hint reads.
+    pub const fn scope(self) -> KeyScope {
+        match self {
+            Self::Inbox => KeyScope::Inbox,
+            Self::Composer => KeyScope::Composer,
+            Self::Overlay | Self::Huddle => KeyScope::Overlay,
+            Self::Message | Self::Timeline | Self::Thread | Self::Channels => KeyScope::Workspace,
+        }
+    }
+}
+
+/// A row is a hint in the status line where the focus is `context`: its
+/// key from the live key map (or `key`, for an overlay's own key outside
+/// the map), then `label`. The lowest `rank` comes first.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Hint {
+    pub context: FooterContext,
+    pub rank: u8,
+    pub label: &'static str,
+    pub key: Option<&'static str>,
+}
+
+impl Hint {
+    pub const fn on(context: FooterContext, rank: u8, label: &'static str) -> Self {
+        Self {
+            context,
+            rank,
+            label,
+            key: None,
+        }
+    }
+
+    /// A key the overlay reads itself (the huddle panel's `m`).
+    pub const fn key(mut self, key: &'static str) -> Self {
+        self.key = Some(key);
+        self
+    }
+}
 
 /// Where a row can run. The Inbox route reduces only its own small set of
 /// actions (`action::reduce_inbox`); everything else waits for the
@@ -251,6 +319,16 @@ pub struct ActionSpec {
     pub key_of: Option<UiAction>,
     pub needs: Needs,
     pub place: Where,
+    /// The built-in keys of the row's [`ActionSpec::key_action`], scope by
+    /// scope, in the order the help names them. `KeyMap::builtin` is
+    /// generated from these (v0.17 C8); a user's `keymap.toml` goes on top.
+    pub keys: &'static [DefaultKey],
+    /// The row that stands for a `:` command's first word carries what the
+    /// help, "did you mean" and the `:` line say of it: its aliases, its
+    /// arguments and what it does. `command::commands` lists these rows'.
+    pub head: Option<CommandSpec>,
+    /// Where this row is a hint in the status line (v0.17 C10).
+    pub hints: &'static [Hint],
 }
 
 impl ActionSpec {
@@ -270,7 +348,38 @@ impl ActionSpec {
             key_of: None,
             needs: Needs::Nothing,
             place,
+            keys: &[],
+            head: None,
+            hints: &[],
         }
+    }
+
+    const fn hints(mut self, hints: &'static [Hint]) -> Self {
+        self.hints = hints;
+        self
+    }
+
+    /// This row stands for the `:` command `name`: `args` as a usage line
+    /// writes them, `summary` what it does.
+    const fn head(
+        mut self,
+        name: &'static str,
+        aliases: &'static [&'static str],
+        args: &'static str,
+        summary: &'static str,
+    ) -> Self {
+        self.head = Some(CommandSpec {
+            name,
+            aliases,
+            args,
+            summary,
+        });
+        self
+    }
+
+    const fn keys(mut self, keys: &'static [DefaultKey]) -> Self {
+        self.keys = keys;
+        self
     }
 
     const fn words(mut self, words: &'static str) -> Self {
@@ -322,10 +431,17 @@ impl ActionSpec {
     }
 }
 
+use FooterContext as F;
 use Group as G;
 use Needs as N;
 use Run::{Command as Cmd, Prefill, Shell, Ui};
 use UiAction as A;
+
+const GLOBAL: KeyScope = KeyScope::Global;
+const WORKSPACE: KeyScope = KeyScope::Workspace;
+const INBOX: KeyScope = KeyScope::Inbox;
+const COMPOSER: KeyScope = KeyScope::Composer;
+const OVERLAY: KeyScope = KeyScope::Overlay;
 
 const fn steps(
     id: &'static str,
@@ -426,9 +542,12 @@ pub static TABLE: &[ActionSpec] = &[
     ui("msg.thread", "Open thread", G::Message, A::ToggleThread)
         .words("reply in thread conversation context close thread")
         .key_of(A::ActivateFocused)
+        .hints(&[Hint::on(F::Message, 1, "thread")])
         .needs(N::Message),
     ui("msg.compose", "Write a message", G::Message, A::Compose)
         .words("compose reply send post new message")
+        .keys(&[(GLOBAL, &["i"])])
+        .hints(&[Hint::on(F::Message, 3, "reply"), Hint::on(F::Thread, 1, "reply"), Hint::on(F::Timeline, 1, "write"), Hint::on(F::Channels, 3, "write")])
         .needs(N::Channel),
     steps(
         "msg.react",
@@ -438,16 +557,21 @@ pub static TABLE: &[ActionSpec] = &[
         &[EMOJI],
     )
     .key_of(A::React)
+    .keys(&[(GLOBAL, &["r"])])
+    .hints(&[Hint::on(F::Message, 2, "react"), Hint::on(F::Thread, 2, "react")])
     .place(Where::Workspace)
     .words("emoji reaction")
     .aliases(&["react"])
     .needs(N::Message),
     ui("msg.edit", "Edit my message", G::Message, A::Edit)
         .words("change fix")
+        .keys(&[(GLOBAL, &["e"])])
+        .hints(&[Hint::on(F::Message, 4, "edit")])
         .aliases(&["edit"])
         .needs(N::Message),
     ui("msg.delete", "Delete my message", G::Message, A::Delete)
         .words("remove")
+        .keys(&[(WORKSPACE, &["d"])])
         .aliases(&["delete"])
         .needs(N::Message),
     ui(
@@ -457,9 +581,11 @@ pub static TABLE: &[ActionSpec] = &[
         A::MarkUnread,
     )
     .words("unread new")
+    .keys(&[(WORKSPACE, &["u"])])
     .needs(N::Message),
     ui("msg.copy", "Copy message", G::Message, A::CopyMessages)
         .words("clipboard yank copy messages")
+        .keys(&[(GLOBAL, &["y"])])
         .aliases(&["copy"])
         .needs(N::Message),
     ui(
@@ -469,6 +595,7 @@ pub static TABLE: &[ActionSpec] = &[
         A::ToggleCopySelection,
     )
     .words("range visual copy selection")
+    .keys(&[(GLOBAL, &["v"])])
     .needs(N::Message),
     ui("msg.preview_media", "Preview media", G::Message, A::Preview)
         .words("image picture attachment file")
@@ -480,7 +607,14 @@ pub static TABLE: &[ActionSpec] = &[
         A::ViewProfile,
     )
     .words("person who user")
+    .keys(&[(GLOBAL, &["space", "p"])])
     .command(":profile [npub|hex]")
+    .head(
+        "profile",
+        &[],
+        "[npub | hex]",
+        "the profile of the selected author, or of a key",
+    )
     .needs(N::Message),
     ask(
         "msg.report",
@@ -495,6 +629,12 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("moderators spam abuse")
     .command(":report [author] <reason> [note]")
+    .head(
+        "report",
+        &[],
+        "[author] <reason> [note]",
+        "report the selected message, or its author",
+    )
     .needs(N::Message),
     cmd(
         "msg.to_channel",
@@ -504,6 +644,12 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("also send to channel broadcast")
     .command(":tochannel")
+    .head(
+        "tochannel",
+        &["send-to-channel"],
+        "",
+        "send the open thread's draft to its channel",
+    )
     .needs(N::Thread),
     // Go: finding and moving.
     ui(
@@ -513,20 +659,42 @@ pub static TABLE: &[ActionSpec] = &[
         A::ChannelSwitcher,
     )
     .words("find switch jump open channel")
+    .keys(&[(GLOBAL, &["space", "space"])])
+    .hints(&[Hint::on(F::Channels, 2, "find"), Hint::on(F::Timeline, 2, "find")])
     .aliases(&["go"]),
     ui("search.open", "Search messages", G::Go, A::Search)
         .words("find text from in after before")
         .command(":search")
+        .head(
+            "search",
+            &[],
+            "",
+            "search messages",
+        )
         .key_of(A::Filter)
+        .keys(&[(GLOBAL, &["/"])])
         .aliases(&["search"]),
     ui("inbox.open", "Open Inbox", G::Go, A::OpenInbox)
         .words("mentions personal work notifications")
         .command(":inbox")
+        .head(
+            "inbox",
+            &[],
+            "",
+            "open the Inbox",
+        )
+        .keys(&[(GLOBAL, &["space", "n"])])
         .aliases(&["inbox"]),
     ask("dm.new", "Start a DM", G::Go, "dm", &[PERSON])
         .key_of(A::NewDm)
         .words("direct message person chat private")
         .command(":dm <npub|hex>")
+        .head(
+            "dm",
+            &[],
+            "[add | hide | <npub>…]",
+            "start a DM; add a person to this DM; hide it",
+        )
         .aliases(&["dm"])
         .needs(N::Connected),
     cmd("dm.pick", "Start a group DM", G::Go, "dm")
@@ -543,19 +711,29 @@ pub static TABLE: &[ActionSpec] = &[
     .words("people who user member agent")
     .command(":profile <npub|hex>"),
     ui("item.open", "Open selected", G::Go, A::ActivateFocused)
-        .words("channel thread community enter"),
-    ui("focus.channels", "Focus channels", G::Go, A::FocusChannels).words("sidebar pane"),
-    ui("focus.timeline", "Focus messages", G::Go, A::FocusTimeline).words("timeline pane"),
-    ui("focus.context", "Focus thread", G::Go, A::FocusContext).words("context pane"),
+        .words("channel thread community enter")
+        .keys(&[(GLOBAL, &["enter"])])
+        .hints(&[Hint::on(F::Channels, 1, "open")]),
+    ui("focus.channels", "Focus channels", G::Go, A::FocusChannels)
+        .words("sidebar pane")
+        .keys(&[(GLOBAL, &["2"])]),
+    ui("focus.timeline", "Focus messages", G::Go, A::FocusTimeline)
+        .words("timeline pane")
+        .keys(&[(GLOBAL, &["3"])]),
+    ui("focus.context", "Focus thread", G::Go, A::FocusContext)
+        .words("context pane")
+        .keys(&[(GLOBAL, &["4"])]),
     ui(
         "focus.communities",
         "Focus communities",
         G::Go,
         A::FocusCommunities,
     )
-    .words("rail pane"),
+    .words("rail pane")
+    .keys(&[(GLOBAL, &["1"])]),
     ui("focus.app", "Focus the app", G::Go, A::FocusApp)
         .words("app pane")
+        .keys(&[(GLOBAL, &["5"])])
         .needs(N::AppHere),
     ui(
         "community.switch",
@@ -567,21 +745,27 @@ pub static TABLE: &[ActionSpec] = &[
     .needs(N::Communities),
     ui("focus.next", "Next pane", G::Go, A::NextFocus)
         .words("focus cycle")
+        .keys(&[(GLOBAL, &["tab"]), (GLOBAL, &["l"])])
         .place(Where::Anywhere),
     ui("focus.prev", "Previous pane", G::Go, A::PreviousFocus)
         .words("focus cycle back")
+        .keys(&[(GLOBAL, &["backtab"]), (GLOBAL, &["h"])])
         .place(Where::Anywhere),
     ui("sel.next", "Next item", G::Go, A::SelectNext)
         .words("down move")
+        .keys(&[(GLOBAL, &["j"]), (GLOBAL, &["down"]), (GLOBAL, &["ctrl-n"])])
         .place(Where::Anywhere),
     ui("sel.prev", "Previous item", G::Go, A::SelectPrevious)
         .words("up move")
+        .keys(&[(GLOBAL, &["k"]), (GLOBAL, &["up"]), (GLOBAL, &["ctrl-p"])])
         .place(Where::Anywhere),
     ui("sel.first", "Jump to first", G::Go, A::JumpTop)
         .words("top start oldest")
+        .keys(&[(GLOBAL, &["g", "g"])])
         .place(Where::Anywhere),
     ui("sel.last", "Jump to last", G::Go, A::JumpBottom)
         .words("bottom end newest latest")
+        .keys(&[(GLOBAL, &["G"])])
         .place(Where::Anywhere),
     ui(
         "view.scroll_down",
@@ -589,15 +773,22 @@ pub static TABLE: &[ActionSpec] = &[
         G::Go,
         A::ScrollViewportDown,
     )
+    .keys(&[(GLOBAL, &["J"])])
     .place(Where::Anywhere),
-    ui("view.scroll_up", "Scroll up", G::Go, A::ScrollViewportUp).place(Where::Anywhere),
+    ui("view.scroll_up", "Scroll up", G::Go, A::ScrollViewportUp)
+        .keys(&[(GLOBAL, &["K"])])
+        .place(Where::Anywhere),
     ui("view.half_down", "Half page down", G::Go, A::HalfPageDown)
         .words("scroll page")
+        .keys(&[(GLOBAL, &["ctrl-d"])])
         .place(Where::Anywhere),
     ui("view.half_up", "Half page up", G::Go, A::HalfPageUp)
         .words("scroll page")
+        .keys(&[(GLOBAL, &["ctrl-u"])])
         .place(Where::Anywhere),
-    ui("cmd.open", "Command line", G::Go, A::OpenCommand).words("colon type a command"),
+    ui("cmd.open", "Command line", G::Go, A::OpenCommand)
+        .words("colon type a command")
+        .keys(&[(GLOBAL, &[":"])]),
     ui(
         "actions.menu",
         "Actions for the selected item",
@@ -605,9 +796,13 @@ pub static TABLE: &[ActionSpec] = &[
         A::OpenContextActions,
     )
     .words("context menu")
+    .keys(&[(GLOBAL, &["space", "a"])])
     .place(Where::Anywhere),
     ui("palette.open", "Find any action", G::Go, A::OpenPalette)
         .words("palette command commands")
+        // v0.17 D4. Text-owning scopes do not inherit Global keys, so
+        // Ctrl-K in the composer keeps deleting to the line end.
+        .keys(&[(GLOBAL, &["ctrl-k"]), (GLOBAL, &["space", "k"])])
         .place(Where::Anywhere),
     // View: panes, themes, help.
     steps(
@@ -618,9 +813,16 @@ pub static TABLE: &[ActionSpec] = &[
         &[Arg::new(Ask::Theme, "theme")],
     )
     .key_of(A::OpenOptions)
+    .keys(&[(GLOBAL, &["space", "o"])])
     .words("colors colours options appearance dark light")
     .aliases(&["theme", "themes"])
-    .command(":theme"),
+    .command(":theme")
+    .head(
+        "theme",
+        &[],
+        "[<name> | reload]",
+        "pick a theme; set one by name; reload the theme file",
+    ),
     ui(
         "help.keymap",
         "Show keyboard shortcuts",
@@ -630,6 +832,13 @@ pub static TABLE: &[ActionSpec] = &[
     .words("help keys keymap bindings")
     .aliases(&["help", "keys", "?"])
     .command(":help")
+    .head(
+        "help",
+        &[],
+        "",
+        "the keys and these commands",
+    )
+    .keys(&[(GLOBAL, &["?"])])
     .place(Where::Anywhere),
     ui(
         "view.toggle_communities",
@@ -637,23 +846,28 @@ pub static TABLE: &[ActionSpec] = &[
         G::View,
         A::ToggleCommunities,
     )
-    .words("toggle rail pane"),
+    .words("toggle rail pane")
+    .keys(&[(GLOBAL, &["space", "1"])]),
     ui(
         "view.toggle_channels",
         "Show or hide channels",
         G::View,
         A::ToggleChannels,
     )
-    .words("toggle sidebar pane"),
+    .words("toggle sidebar pane")
+    .keys(&[(GLOBAL, &["space", "2"])]),
     ui(
         "view.toggle_context",
         "Show or hide thread pane",
         G::View,
         A::ToggleContext,
     )
-    .words("toggle context pane"),
+    .words("toggle context pane")
+    .keys(&[(GLOBAL, &["space", "4"])])
+    .hints(&[Hint::on(F::Thread, 3, "hide")]),
     ui("app.zoom", "Zoom the app", G::View, A::ZoomApp)
         .words("app full screen")
+        .keys(&[(GLOBAL, &["space", "5"])])
         .command(":app zoom")
         .needs(N::AppHere),
     ui(
@@ -662,16 +876,19 @@ pub static TABLE: &[ActionSpec] = &[
         G::View,
         A::ResizeFocusedNarrow,
     )
-    .words("resize width smaller"),
+    .words("resize width smaller")
+    .keys(&[(GLOBAL, &["alt-h"])]),
     ui(
         "pane.widen",
         "Widen side pane",
         G::View,
         A::ResizeFocusedWide,
     )
-    .words("resize width larger"),
+    .words("resize width larger")
+    .keys(&[(GLOBAL, &["alt-l"])]),
     ui("sync.refresh", "Refresh", G::View, A::Refresh)
         .words("reload sync update")
+        .keys(&[(GLOBAL, &["space", "r"])])
         .place(Where::Anywhere),
     ui(
         "sidebar.sort_cycle",
@@ -679,7 +896,8 @@ pub static TABLE: &[ActionSpec] = &[
         G::View,
         A::CycleChannelSort,
     )
-    .words("order sidebar alphabetical recent"),
+    .words("order sidebar alphabetical recent")
+    .keys(&[(GLOBAL, &["space", "s"])]),
     ask(
         "sidebar.sort",
         "Set channel group sort",
@@ -689,6 +907,12 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("order sidebar alpha recent default")
     .command(":sort alpha|recent|default")
+    .head(
+        "sort",
+        &[],
+        "alpha | recent | default",
+        "how the selected channel's group is sorted",
+    )
     .needs(N::Channel),
     cmd(
         "sidebar.system",
@@ -697,7 +921,13 @@ pub static TABLE: &[ActionSpec] = &[
         "system",
     )
     .words("toggle sidebar access")
-    .command(":system"),
+    .command(":system")
+    .head(
+        "system",
+        &[],
+        "",
+        "show or hide the System channels",
+    ),
     ask(
         "section.new",
         "New sidebar section",
@@ -707,6 +937,12 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("group folder sidebar")
     .command(":section new <name>")
+    .head(
+        "section",
+        &[],
+        "new <name> | rename <name> | delete | move <name> | remove | up | down",
+        "sidebar sections, for the selected channel",
+    )
     .needs(N::Channel),
     ask(
         "section.rename",
@@ -764,13 +1000,21 @@ pub static TABLE: &[ActionSpec] = &[
         "media reload",
     )
     .words("images pictures graphics")
-    .command(":media reload"),
+    .command(":media reload")
+    .head(
+        "media",
+        &[],
+        "reload",
+        "detect the terminal's image support again",
+    ),
     // Inbox: its own route and keys.
     ui("inbox.reply", "Reply in place", G::Inbox, A::Compose)
         .words("inbox answer write")
+        .hints(&[Hint::on(F::Inbox, 2, "reply")])
         .place(Where::Inbox),
     ui("inbox.filter", "Cycle Inbox filter", G::Inbox, A::Filter)
         .words("inbox mentions unread show")
+        .keys(&[(INBOX, &["f"])])
         .place(Where::Inbox),
     ui(
         "inbox.open_source",
@@ -779,12 +1023,17 @@ pub static TABLE: &[ActionSpec] = &[
         A::OpenCanonicalContext,
     )
     .words("inbox go to channel thread")
+    .keys(&[(INBOX, &["o"])])
+    .hints(&[Hint::on(F::Inbox, 1, "open")])
     .place(Where::Inbox),
     ui("inbox.mark_read", "Mark read", G::Inbox, A::MarkRead)
         .words("inbox done")
+        .keys(&[(INBOX, &["m"])])
+        .hints(&[Hint::on(F::Inbox, 3, "read")])
         .place(Where::Inbox),
     ui("inbox.mark_unread", "Mark unread", G::Inbox, A::MarkUnread)
         .words("inbox")
+        .keys(&[(INBOX, &["U"])])
         .place(Where::Inbox),
     ui(
         "inbox.mark_visible_read",
@@ -793,6 +1042,7 @@ pub static TABLE: &[ActionSpec] = &[
         A::MarkVisibleRead,
     )
     .words("inbox all done")
+    .keys(&[(INBOX, &["a"])])
     .place(Where::Inbox),
     // Channel: what lives in a channel.
     cmd(
@@ -803,6 +1053,12 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("tasks files documents records")
     .command(":artifacts")
+    .head(
+        "artifacts",
+        &[],
+        "",
+        "the artifacts of this channel or thread",
+    )
     .needs(N::Channel),
     ask(
         "artifact.rename",
@@ -812,6 +1068,12 @@ pub static TABLE: &[ActionSpec] = &[
         &[Arg::new(Ask::Text, "title")],
     )
     .command(":artifact rename <title>")
+    .head(
+        "artifact",
+        &[],
+        "rename <title> | delete | restore | move <#channel>",
+        "change the selected artifact",
+    )
     .needs(N::Artifact),
     fill(
         "artifact.delete",
@@ -840,10 +1102,22 @@ pub static TABLE: &[ActionSpec] = &[
     .needs(N::Artifact),
     cmd("tasks.panel", "My tasks", G::Channel, "tasks")
         .words("assigned todo artifacts")
-        .command(":tasks"),
+        .command(":tasks")
+        .head(
+            "tasks",
+            &["my-tasks"],
+            "",
+            "the tasks assigned to you",
+        ),
     cmd("net.resync", "Resync channel history", G::Channel, "resync")
         .words("reload history messages")
         .command(":resync")
+        .head(
+            "resync",
+            &[],
+            "",
+            "load this channel's history again",
+        )
         .needs(N::Channel),
     fill("dm.hide", "Hide this DM", G::Channel, "dm hide")
         .words("direct message close")
@@ -862,11 +1136,23 @@ pub static TABLE: &[ActionSpec] = &[
     ask("solo.new", "New Solo chat", G::Channel, "solo", &[NAME])
         .words("notes private channel")
         .command(":solo <name>")
+        .head(
+            "solo",
+            &[],
+            "<name>",
+            "create a Solo chat",
+        )
         .needs(N::Connected),
     // Huddle: voice in a channel.
     cmd("huddle.panel", "Huddle panel", G::Huddle, "huddle")
         .words("call voice audio")
         .command(":huddle")
+        .head(
+            "huddle",
+            &[],
+            "[start | join | leave | end | mute | react <emoji> | devices | input <name> | output <name>]",
+            "the huddle of this channel",
+        )
         .aliases(&["huddle"])
         .needs(N::Channel),
     ask(
@@ -882,18 +1168,22 @@ pub static TABLE: &[ActionSpec] = &[
     cmd("huddle.start", "Start huddle", G::Huddle, "huddle start")
         .words("call voice audio")
         .command(":huddle start")
+        .hints(&[Hint::on(F::Huddle, 1, "start").key("s")])
         .needs(N::Channel),
     cmd("huddle.join", "Join huddle", G::Huddle, "huddle join")
         .words("call voice audio")
         .command(":huddle join")
+        .hints(&[Hint::on(F::Huddle, 1, "join").key("j")])
         .needs(N::Huddle),
     cmd("huddle.mute", "Mute or unmute", G::Huddle, "huddle mute")
         .words("huddle microphone call")
         .command(":huddle mute")
+        .hints(&[Hint::on(F::Huddle, 1, "mute").key("m")])
         .needs(N::InCall),
     cmd("huddle.leave", "Leave huddle", G::Huddle, "huddle leave")
         .words("call hang up")
         .command(":huddle leave")
+        .hints(&[Hint::on(F::Huddle, 2, "leave").key("l")])
         .needs(N::InCall),
     cmd(
         "huddle.end",
@@ -944,10 +1234,22 @@ pub static TABLE: &[ActionSpec] = &[
     cmd("apps.panel", "Installed apps", G::Apps, "apps")
         .words("app list")
         .command(":apps")
+        .head(
+            "apps",
+            &[],
+            "",
+            "the installed apps",
+        )
         .aliases(&["apps"]),
     ask("app.open", "Open app here", G::Apps, "app open", &[APP])
         .words("board app run")
         .command(":app open <name>")
+        .head(
+            "app",
+            &[],
+            "open <name> | close | zoom | share | unshare | pending | approve | refuse | rollback | enable | disable | remove | add | new | dev | brief",
+            "the app of this channel, and managing apps",
+        )
         .needs(N::Channel),
     cmd("app.close", "Close app here", G::Apps, "app close")
         .command(":app close")
@@ -1052,6 +1354,12 @@ pub static TABLE: &[ActionSpec] = &[
     cmd("agents.panel", "My agents", G::Agents, "agents")
         .words("local agents bots")
         .command(":agents [local|directory]")
+        .head(
+            "agents",
+            &[],
+            "[local | directory]",
+            "your agents, or the directory of verified agents",
+        )
         .aliases(&["agents"]),
     cmd(
         "agents.directory",
@@ -1063,13 +1371,31 @@ pub static TABLE: &[ActionSpec] = &[
     .command(":agents directory"),
     cmd("agent.new", "Create a local agent", G::Agents, "agent new")
         .words("new bot add agent")
-        .command(":agent new [name]"),
+        .command(":agent new [name]")
+        .head(
+            "agent",
+            &[],
+            "new [name]",
+            "create a local agent",
+        ),
     cmd("broker.panel", "Agent broker", G::Agents, "broker")
         .words("hosted agents")
-        .command(":broker"),
+        .command(":broker")
+        .head(
+            "broker",
+            &[],
+            "",
+            "the local agent broker",
+        ),
     cmd("approval.open", "Answer what waits", G::Agents, "approvals")
         .words("approve approval allow refuse agent command app version ctrl-y")
-        .command(":approvals"),
+        .command(":approvals")
+        .head(
+            "approvals",
+            &["approve", "approval"],
+            "",
+            "what waits for your answer (also Ctrl-y)",
+        ),
     // Me.
     ask(
         "status.set",
@@ -1085,6 +1411,12 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("away lunch busy presence")
     .command(":status [--expires N[smhdw]] <text>")
+    .head(
+        "status",
+        &[],
+        "[[--expires N[smhdw]] <text> | clear]",
+        "show your status; set it; clear it",
+    )
     .aliases(&["status"])
     .needs(N::Connected),
     cmd("status.clear", "Clear my status", G::Me, "status clear")
@@ -1098,18 +1430,42 @@ pub static TABLE: &[ActionSpec] = &[
         &[Arg::new(Ask::Choice(PRESENCE), "presence")],
     )
     .words("online away visible")
-    .command(":presence [on|off]"),
+    .command(":presence [on|off]")
+    .head(
+        "presence",
+        &[],
+        "[on | off]",
+        "show or change whether bzz publishes presence",
+    ),
     cmd("id.lock", "Lock identity", G::Me, "lock")
         .words("key secure away")
         .command(":lock")
+        .head(
+            "lock",
+            &[],
+            "",
+            "lock the identity until bzz restarts",
+        )
         .aliases(&["lock"]),
     cmd("auth.signin", "Federated sign-in", G::Me, "signin")
         .words("sign in login browser")
-        .command(":signin"),
+        .command(":signin")
+        .head(
+            "signin",
+            &["sign-in"],
+            "",
+            "federated sign-in for this community",
+        ),
     // Community.
     cmd("net.reconnect", "Reconnect", G::Community, "reconnect")
         .words("network relay online")
-        .command(":reconnect"),
+        .command(":reconnect")
+        .head(
+            "reconnect",
+            &[],
+            "",
+            "reconnect to the relay",
+        ),
     fill(
         "cache.purge",
         "Purge cache of this community",
@@ -1117,14 +1473,26 @@ pub static TABLE: &[ActionSpec] = &[
         "purge-cache",
     )
     .words("clear delete local data")
-    .command(":purge-cache"),
+    .command(":purge-cache")
+    .head(
+        "purge-cache",
+        &[],
+        "",
+        "delete this community's local cache",
+    ),
     shell(
         "community.add",
         "Add a community",
         "bzz community add <url>",
     )
     .words("join new relay")
-    .command(":community add"),
+    .command(":community add")
+    .head(
+        "community",
+        &[],
+        "add | remove",
+        "done from the shell: bzz community add | remove",
+    ),
     shell(
         "community.remove",
         "Remove a community",
@@ -1137,51 +1505,82 @@ pub static TABLE: &[ActionSpec] = &[
         .words("exit close leave")
         .aliases(&["q", "quit", "exit"])
         .command(":quit")
+        .head(
+            "quit",
+            &["q"],
+            "",
+            "quit bzz (asks first)",
+        )
         .key_of(A::BackOrQuit),
     ui("nav.back", "Back or close", G::Bzz, A::BackOrQuit)
         .words("escape")
+        .keys(&[
+            (GLOBAL, &["q"]),
+            (GLOBAL, &["esc"]),
+            // Overlays never inherit workspace actions: their owner
+            // decides which small set of close keys it accepts.
+            (OVERLAY, &["esc"]),
+            (OVERLAY, &["q"]),
+            (OVERLAY, &["?"]),
+            (COMPOSER, &["esc"]),
+        ])
+.hints(&[Hint::on(F::Composer, 3, "close"), Hint::on(F::Overlay, 1, "close"), Hint::on(F::Huddle, 3, "close")])
         .place(Where::Anywhere),
     // Writing: the composer's own keys (not listed in the palette).
-    writing("composer.send", "Send", A::Submit),
-    writing("composer.newline", "New line", A::InsertNewline),
+    writing("composer.send", "Send", A::Submit)
+        .keys(&[(COMPOSER, &["enter"])])
+        .hints(&[Hint::on(F::Composer, 1, "send")]),
+    writing("composer.newline", "New line", A::InsertNewline)
+        .keys(&[(COMPOSER, &["ctrl-j"]), (COMPOSER, &["alt-enter"])])
+        .hints(&[Hint::on(F::Composer, 2, "newline")]),
     writing(
         "composer.complete",
         "Complete @mention or :emoji",
         A::Complete,
-    ),
+    )
+    .keys(&[(COMPOSER, &["tab"])]),
     writing(
         "composer.del_word",
         "Delete previous word",
         A::DeletePreviousWord,
-    ),
+    )
+    .keys(&[(COMPOSER, &["ctrl-w"])]),
     writing(
         "composer.del_start",
         "Delete to line start",
         A::DeleteToStart,
-    ),
-    writing("composer.del_end", "Delete to line end", A::DeleteToEnd),
-    writing("composer.clear", "Clear draft", A::ClearComposer),
+    )
+    .keys(&[(COMPOSER, &["ctrl-u"])]),
+    writing("composer.del_end", "Delete to line end", A::DeleteToEnd)
+        .keys(&[(COMPOSER, &["ctrl-k"])]),
+    writing("composer.clear", "Clear draft", A::ClearComposer).keys(&[(COMPOSER, &["ctrl-c"])]),
     writing(
         "composer.paste",
         "Paste text or attachments",
         A::PasteClipboard,
-    ),
-    writing("composer.attach", "Choose files", A::AttachFile),
-    writing("composer.attach_path", "Attach by path", A::AttachPath),
+    )
+    .keys(&[(COMPOSER, &["ctrl-v"])]),
+    writing("composer.attach", "Choose files", A::AttachFile).keys(&[(COMPOSER, &["ctrl-o"])]),
+    writing("composer.attach_path", "Attach by path", A::AttachPath)
+        .keys(&[(COMPOSER, &["alt-o"])]),
     writing(
         "composer.remove_attachment",
         "Remove last attachment",
         A::RemoveLastAttachment,
-    ),
+    )
+    .keys(&[(COMPOSER, &["delete"])]),
     writing(
         "composer.retry",
         "Retry failed attachments",
         A::RetryAttachments,
-    ),
-    writing("composer.word_left", "Previous word", A::MoveWordLeft),
-    writing("composer.word_right", "Next word", A::MoveWordRight),
-    writing("composer.home", "Line start", A::MoveLineStart),
-    writing("composer.end", "Line end", A::MoveLineEnd),
+    )
+    .keys(&[(COMPOSER, &["ctrl-r"])]),
+    writing("composer.word_left", "Previous word", A::MoveWordLeft)
+        .keys(&[(COMPOSER, &["ctrl-left"])]),
+    writing("composer.word_right", "Next word", A::MoveWordRight)
+        .keys(&[(COMPOSER, &["ctrl-right"])]),
+    writing("composer.home", "Line start", A::MoveLineStart).keys(&[(COMPOSER, &["home"])]),
+    writing("composer.end", "Line end", A::MoveLineEnd).keys(&[(COMPOSER, &["end"])]),
     // Shell: what only the shell does today, worth knowing.
     shell("cli.identity.new", "Create an identity", "bzz identity new").words("key account nsec"),
     shell(
@@ -1303,6 +1702,32 @@ pub static TABLE: &[ActionSpec] = &[
 pub fn by_id(id: &str) -> Option<(usize, &'static ActionSpec)> {
     TABLE.iter().enumerate().find(|(_, spec)| spec.id == id)
 }
+
+/// The row that says what `action` is: the first that runs it, else the
+/// first that shows its key (C8: the leader panel and the help read it).
+pub fn row_of(action: UiAction) -> Option<&'static ActionSpec> {
+    TABLE
+        .iter()
+        .find(|spec| spec.run == Run::Ui(action))
+        .or_else(|| TABLE.iter().find(|spec| spec.key_of == Some(action)))
+}
+
+/// The palette's groups in the order the help lists them.
+pub const GROUPS: [Group; 13] = [
+    Group::Message,
+    Group::Go,
+    Group::View,
+    Group::Inbox,
+    Group::Channel,
+    Group::Huddle,
+    Group::Apps,
+    Group::Agents,
+    Group::Me,
+    Group::Community,
+    Group::Bzz,
+    Group::Writing,
+    Group::Shell,
+];
 
 #[cfg(test)]
 mod tests {
@@ -1769,6 +2194,12 @@ mod tests {
             for alias in spec.aliases {
                 assert_eq!(*alias, alias.to_lowercase(), "{}", spec.id);
             }
+            // A row's keys bind the action it shows a key for.
+            assert!(
+                spec.keys.is_empty() || spec.key_action().is_some(),
+                "{} has keys and no action",
+                spec.id
+            );
         }
     }
 }

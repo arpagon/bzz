@@ -407,132 +407,27 @@ pub struct KeyMap {
 }
 
 impl KeyMap {
-    pub fn builtin() -> Self {
+    /// The built-in map, generated from the keys of the rows of
+    /// [`crate::ui::action_table::TABLE`] (v0.17 C8, plan rule 23): each
+    /// row's keys bind its [`ActionSpec::key_action`](crate::ui::action_table::ActionSpec::key_action).
+    pub fn generated() -> Self {
         let mut bindings = Vec::new();
-        let mut add = |scope, keys: &[&str], action| {
-            bindings.push(KeyBinding {
-                scope,
-                sequence: KeySequence(
-                    keys.iter()
-                        .map(|key| KeyChord::parse(key).expect("builtin key chord is valid"))
-                        .collect(),
-                ),
-                action,
-            });
-        };
-
-        add(KeyScope::Global, &["?"], UiAction::OpenHelp);
-        add(KeyScope::Global, &["q"], UiAction::BackOrQuit);
-        add(KeyScope::Global, &["esc"], UiAction::BackOrQuit);
-        add(KeyScope::Global, &["1"], UiAction::FocusCommunities);
-        add(KeyScope::Global, &["2"], UiAction::FocusChannels);
-        add(KeyScope::Global, &["3"], UiAction::FocusTimeline);
-        add(KeyScope::Global, &["4"], UiAction::FocusContext);
-        add(KeyScope::Global, &["5"], UiAction::FocusApp);
-        add(KeyScope::Global, &["tab"], UiAction::NextFocus);
-        add(KeyScope::Global, &["backtab"], UiAction::PreviousFocus);
-        add(KeyScope::Global, &["h"], UiAction::PreviousFocus);
-        add(KeyScope::Global, &["l"], UiAction::NextFocus);
-        add(KeyScope::Global, &["alt-h"], UiAction::ResizeFocusedNarrow);
-        add(KeyScope::Global, &["alt-l"], UiAction::ResizeFocusedWide);
-        add(KeyScope::Global, &["j"], UiAction::SelectNext);
-        add(KeyScope::Global, &["down"], UiAction::SelectNext);
-        add(KeyScope::Global, &["ctrl-n"], UiAction::SelectNext);
-        add(KeyScope::Global, &["k"], UiAction::SelectPrevious);
-        add(KeyScope::Global, &["up"], UiAction::SelectPrevious);
-        add(KeyScope::Global, &["ctrl-p"], UiAction::SelectPrevious);
-        add(KeyScope::Global, &["J"], UiAction::ScrollViewportDown);
-        add(KeyScope::Global, &["K"], UiAction::ScrollViewportUp);
-        add(KeyScope::Global, &["ctrl-d"], UiAction::HalfPageDown);
-        add(KeyScope::Global, &["ctrl-u"], UiAction::HalfPageUp);
-        add(KeyScope::Global, &["g", "g"], UiAction::JumpTop);
-        add(KeyScope::Global, &["G"], UiAction::JumpBottom);
-        add(KeyScope::Global, &["enter"], UiAction::ActivateFocused);
-        add(KeyScope::Global, &["i"], UiAction::Compose);
-        add(KeyScope::Global, &["/"], UiAction::Filter);
-        add(KeyScope::Global, &["v"], UiAction::ToggleCopySelection);
-        add(KeyScope::Global, &["y"], UiAction::CopyMessages);
-        add(KeyScope::Global, &["r"], UiAction::React);
-        add(KeyScope::Global, &["e"], UiAction::Edit);
-        add(
-            KeyScope::Global,
-            &["space", "space"],
-            UiAction::ChannelSwitcher,
-        );
-        add(KeyScope::Global, &["space", "n"], UiAction::OpenInbox);
-        add(
-            KeyScope::Global,
-            &["space", "s"],
-            UiAction::CycleChannelSort,
-        );
-        add(
-            KeyScope::Global,
-            &["space", "a"],
-            UiAction::OpenContextActions,
-        );
-        add(
-            KeyScope::Global,
-            &["space", "1"],
-            UiAction::ToggleCommunities,
-        );
-        add(KeyScope::Global, &["space", "2"], UiAction::ToggleChannels);
-        add(KeyScope::Global, &["space", "4"], UiAction::ToggleContext);
-        add(KeyScope::Global, &["space", "5"], UiAction::ZoomApp);
-        add(KeyScope::Global, &["space", "r"], UiAction::Refresh);
-        add(KeyScope::Global, &["space", "p"], UiAction::ViewProfile);
-        add(KeyScope::Global, &["space", "o"], UiAction::OpenOptions);
-        add(KeyScope::Global, &[":"], UiAction::OpenCommand);
-        // v0.17 D4: the palette. Text-owning scopes do not inherit these,
-        // so Ctrl-K in the composer keeps deleting to the line end.
-        add(KeyScope::Global, &["ctrl-k"], UiAction::OpenPalette);
-        add(KeyScope::Global, &["space", "k"], UiAction::OpenPalette);
-
-        // Overlays never inherit workspace actions: their owner explicitly
-        // decides which small set of close/confirm keys it accepts.
-        add(KeyScope::Overlay, &["esc"], UiAction::BackOrQuit);
-        add(KeyScope::Overlay, &["q"], UiAction::BackOrQuit);
-        add(KeyScope::Overlay, &["?"], UiAction::BackOrQuit);
-
-        // Inbox owns its personal-work operations. These scoped bindings do
-        // not apply to a workspace timeline or any text-owning input.
-        add(KeyScope::Inbox, &["f"], UiAction::Filter);
-        add(KeyScope::Inbox, &["o"], UiAction::OpenCanonicalContext);
-        add(KeyScope::Inbox, &["m"], UiAction::MarkRead);
-        add(KeyScope::Inbox, &["U"], UiAction::MarkUnread);
-        add(KeyScope::Inbox, &["a"], UiAction::MarkVisibleRead);
-
-        add(KeyScope::Composer, &["esc"], UiAction::BackOrQuit);
-        add(KeyScope::Composer, &["enter"], UiAction::Submit);
-        add(KeyScope::Composer, &["ctrl-j"], UiAction::InsertNewline);
-        add(KeyScope::Composer, &["alt-enter"], UiAction::InsertNewline);
-        add(KeyScope::Composer, &["tab"], UiAction::Complete);
-        add(
-            KeyScope::Composer,
-            &["ctrl-w"],
-            UiAction::DeletePreviousWord,
-        );
-        add(KeyScope::Composer, &["ctrl-u"], UiAction::DeleteToStart);
-        add(KeyScope::Composer, &["ctrl-k"], UiAction::DeleteToEnd);
-        add(KeyScope::Composer, &["ctrl-c"], UiAction::ClearComposer);
-        add(KeyScope::Composer, &["ctrl-v"], UiAction::PasteClipboard);
-        add(KeyScope::Composer, &["ctrl-o"], UiAction::AttachFile);
-        add(KeyScope::Composer, &["alt-o"], UiAction::AttachPath);
-        add(
-            KeyScope::Composer,
-            &["delete"],
-            UiAction::RemoveLastAttachment,
-        );
-        add(KeyScope::Composer, &["ctrl-r"], UiAction::RetryAttachments);
-        add(KeyScope::Composer, &["ctrl-left"], UiAction::MoveWordLeft);
-        add(KeyScope::Composer, &["ctrl-right"], UiAction::MoveWordRight);
-        add(KeyScope::Composer, &["home"], UiAction::MoveLineStart);
-        add(KeyScope::Composer, &["end"], UiAction::MoveLineEnd);
-
-        // v0.17 D5: two keys of the actions menu get their own in the
-        // workspace; the Inbox keeps `U` and does not inherit these.
-        add(KeyScope::Workspace, &["d"], UiAction::Delete);
-        add(KeyScope::Workspace, &["u"], UiAction::MarkUnread);
-
+        for spec in crate::ui::action_table::TABLE {
+            let Some(action) = spec.key_action() else {
+                continue;
+            };
+            for (scope, keys) in spec.keys {
+                bindings.push(KeyBinding {
+                    scope: *scope,
+                    sequence: KeySequence(
+                        keys.iter()
+                            .map(|key| KeyChord::parse(key).expect("builtin key chord is valid"))
+                            .collect(),
+                    ),
+                    action,
+                });
+            }
+        }
         let keymap = Self {
             bindings,
             disabled: Vec::new(),
@@ -541,6 +436,23 @@ impl KeyMap {
             .validate()
             .expect("builtin keymap must be internally valid");
         keymap
+    }
+
+    /// A sequence as the registry's rows write it (`["space", "n"]`), for
+    /// the generated documents.
+    pub fn written_sequence(keys: &[&str]) -> Option<KeySequence> {
+        keys.iter()
+            .map(|key| KeyChord::parse(key).ok())
+            .collect::<Option<Vec<_>>>()
+            .map(KeySequence)
+    }
+
+    /// The built-in key map: [`KeyMap::generated`]. v0.16.0's hand-written
+    /// list was compared with it binding for binding before it was removed
+    /// (docs/validation-v0.17.0/registry.md); `tests/v016_pins_test.rs`
+    /// keeps every v0.16.0 key.
+    pub fn builtin() -> Self {
+        Self::generated()
     }
 
     /// Load the optional owner-private `keymap.toml`. A missing file means
@@ -1002,6 +914,50 @@ mod tests {
         KeyChord, KeyLookup, KeyMap, KeyScope, UiAction, normalize_key_event,
         normalize_key_event_on,
     };
+
+    /// v0.17 C8: an action with several keys keeps v0.16.0's order, as
+    /// the hand-written map had it: the first is the one the palette, the
+    /// help and the footer show. (The generated map was compared with the
+    /// hand-written one binding for binding, 169 in six scopes, before the
+    /// hand-written one was removed.)
+    #[test]
+    fn several_keys_of_one_action_keep_their_order() {
+        let keymap = KeyMap::builtin();
+        for (scope, action, keys) in [
+            (KeyScope::Global, UiAction::BackOrQuit, &["q", "Esc"][..]),
+            (KeyScope::Global, UiAction::NextFocus, &["Tab", "l"]),
+            (KeyScope::Global, UiAction::PreviousFocus, &["BackTab", "h"]),
+            (
+                KeyScope::Global,
+                UiAction::SelectNext,
+                &["j", "Down", "Ctrl+n"],
+            ),
+            (
+                KeyScope::Global,
+                UiAction::SelectPrevious,
+                &["k", "Up", "Ctrl+p"],
+            ),
+            (
+                KeyScope::Global,
+                UiAction::OpenPalette,
+                &["Ctrl+k", "Space k"],
+            ),
+            (
+                KeyScope::Composer,
+                UiAction::InsertNewline,
+                &["Ctrl+j", "Alt+Enter"],
+            ),
+            (KeyScope::Overlay, UiAction::BackOrQuit, &["Esc", "q", "?"]),
+        ] {
+            let found = keymap
+                .effective_bindings(scope)
+                .into_iter()
+                .filter(|binding| binding.action == action)
+                .map(|binding| binding.sequence.label())
+                .collect::<Vec<_>>();
+            assert_eq!(found, keys, "{scope:?} {action:?}");
+        }
+    }
 
     #[test]
     fn builtin_leader_sequences_are_typed_and_discoverable() {

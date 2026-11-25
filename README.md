@@ -249,7 +249,9 @@ see none of this but the brief, which bzz posts as a message
 ## Keys
 
 Press `?` in bzz for the complete, current list, and the commands after it
-(`j`, `PageDown` and `G` scroll it).
+(`j`, `PageDown` and `G` scroll it). Every key, command and shell-only
+action is in [docs/keys.md](docs/keys.md), generated from bzz's own table.
+The tables below are the ones to start with.
 
 | Key | Action |
 |---|---|

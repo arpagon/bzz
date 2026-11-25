@@ -172,158 +172,19 @@ impl CommandSpec {
     }
 }
 
-const fn spec(
-    name: &'static str,
-    aliases: &'static [&'static str],
-    args: &'static str,
-    summary: &'static str,
-) -> CommandSpec {
-    CommandSpec {
-        name,
-        aliases,
-        args,
-        summary,
-    }
+/// Every `:` command of [`parse`], one per first word, in the order of the
+/// registry (`crate::ui::action_table::TABLE`): the row that stands for a
+/// command says its aliases, arguments and summary (v0.17 C8, plan rule
+/// 23). A test keeps these and [`parse`] together.
+pub fn commands() -> impl Iterator<Item = &'static CommandSpec> {
+    crate::ui::action_table::TABLE
+        .iter()
+        .filter_map(|row| row.head.as_ref())
 }
-
-/// Every `:` command of [`parse`], in the order the help lists them: the
-/// ones a newcomer looks for first. A test keeps this table and [`parse`]
-/// together.
-pub const COMMANDS: &[CommandSpec] = &[
-    spec("help", &[], "", "the keys and these commands"),
-    spec("quit", &["q"], "", "quit bzz (asks first)"),
-    spec("search", &[], "", "search messages"),
-    spec("inbox", &[], "", "open the Inbox"),
-    spec(
-        "dm",
-        &[],
-        "[add | hide | <npub>…]",
-        "start a DM; add a person to this DM; hide it",
-    ),
-    spec(
-        "huddle",
-        &[],
-        "[start | join | leave | end | mute | react <emoji> | devices | input <name> | output <name>]",
-        "the huddle of this channel",
-    ),
-    spec(
-        "status",
-        &[],
-        "[[--expires N[smhdw]] <text> | clear]",
-        "show your status; set it; clear it",
-    ),
-    spec(
-        "presence",
-        &[],
-        "[on | off]",
-        "show or change whether bzz publishes presence",
-    ),
-    spec(
-        "profile",
-        &[],
-        "[npub | hex]",
-        "the profile of the selected author, or of a key",
-    ),
-    spec(
-        "theme",
-        &[],
-        "[<name> | reload]",
-        "pick a theme; set one by name; reload the theme file",
-    ),
-    spec(
-        "tochannel",
-        &["send-to-channel"],
-        "",
-        "send the open thread's draft to its channel",
-    ),
-    spec(
-        "report",
-        &[],
-        "[author] <reason> [note]",
-        "report the selected message, or its author",
-    ),
-    spec(
-        "artifacts",
-        &[],
-        "",
-        "the artifacts of this channel or thread",
-    ),
-    spec(
-        "artifact",
-        &[],
-        "rename <title> | delete | restore | move <#channel>",
-        "change the selected artifact",
-    ),
-    spec("tasks", &["my-tasks"], "", "the tasks assigned to you"),
-    spec(
-        "section",
-        &[],
-        "new <name> | rename <name> | delete | move <name> | remove | up | down",
-        "sidebar sections, for the selected channel",
-    ),
-    spec(
-        "sort",
-        &[],
-        "alpha | recent | default",
-        "how the selected channel's group is sorted",
-    ),
-    spec("solo", &[], "<name>", "create a Solo chat"),
-    spec("system", &[], "", "show or hide the System channels"),
-    spec(
-        "agents",
-        &[],
-        "[local | directory]",
-        "your agents, or the directory of verified agents",
-    ),
-    spec("agent", &[], "new [name]", "create a local agent"),
-    spec(
-        "approvals",
-        &["approve", "approval"],
-        "",
-        "what waits for your answer (also Ctrl-y)",
-    ),
-    spec("broker", &[], "", "the local agent broker"),
-    spec("apps", &[], "", "the installed apps"),
-    spec(
-        "app",
-        &[],
-        "open <name> | close | zoom | share | unshare | pending | approve | refuse | rollback | enable | disable | remove | add | new | dev | brief",
-        "the app of this channel, and managing apps",
-    ),
-    spec(
-        "signin",
-        &["sign-in"],
-        "",
-        "federated sign-in for this community",
-    ),
-    spec(
-        "community",
-        &[],
-        "add | remove",
-        "done from the shell: bzz community add | remove",
-    ),
-    spec("lock", &[], "", "lock the identity until bzz restarts"),
-    spec("reconnect", &[], "", "reconnect to the relay"),
-    spec("resync", &[], "", "load this channel's history again"),
-    spec(
-        "media",
-        &[],
-        "reload",
-        "detect the terminal's image support again",
-    ),
-    spec(
-        "purge-cache",
-        &[],
-        "",
-        "delete this community's local cache",
-    ),
-];
 
 /// The command whose first word (or alias) is `word`.
 pub fn find(word: &str) -> Option<&'static CommandSpec> {
-    COMMANDS
-        .iter()
-        .find(|spec| spec.name == word || spec.aliases.contains(&word))
+    commands().find(|spec| spec.name == word || spec.aliases.contains(&word))
 }
 
 /// The command nearest to a mistyped first word: one whose name starts with
@@ -334,7 +195,7 @@ pub fn nearest(word: &str) -> Option<&'static CommandSpec> {
         return None;
     }
     let names = || {
-        COMMANDS.iter().flat_map(|spec| {
+        commands().flat_map(|spec| {
             std::iter::once(spec.name)
                 .chain(spec.aliases.iter().copied())
                 .map(move |name| (name, spec))
@@ -424,9 +285,264 @@ fn edit_distance(left: &str, right: &str) -> usize {
     table[left.len() * width + right.len()]
 }
 
+/// What the `:` line completes from beside the registry: what bzz has now
+/// (v0.17 C11).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Words<'a> {
+    /// Theme ids, as `:theme <name>` takes them.
+    pub themes: &'a [&'a str],
+    /// The installed apps of the open community, by name.
+    pub apps: &'a [String],
+    /// Joined channels, by name, without the `#`.
+    pub channels: &'a [String],
+}
+
+/// What the `:` line offers for what is typed: the words that may come
+/// next, and the usage of the command typed so far.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Offer {
+    /// Everything before the word being typed, as typed.
+    pub stem: String,
+    /// The word being typed (after the last space).
+    pub partial: String,
+    /// The words that complete it, in the registry's order.
+    pub candidates: Vec<String>,
+    /// `usage: :huddle [start | …] · the huddle of this channel`.
+    pub usage: Option<String>,
+}
+
+type RowPath = (Vec<&'static str>, &'static [crate::ui::action_table::Arg]);
+
+/// The words of a row's `:` text and what its steps ask for after them:
+/// `"huddle react"`, `[Emoji]`. A row with no `:` text to run takes the
+/// literal words of its usage (`:theme` for the theme step).
+fn row_path(row: &crate::ui::action_table::ActionSpec) -> Option<RowPath> {
+    use crate::ui::action_table::{Run, Then};
+    let (text, args) = match row.run {
+        Run::Command(text) | Run::Prefill(text) => (text, &[][..]),
+        Run::Steps(Then::Command(text), args) => (text, args),
+        Run::Steps(_, args) => (row.command?, args),
+        Run::Shell(_) | Run::Ui(_) | Run::Quit => (row.command?, &[][..]),
+    };
+    let words = text
+        .trim_start_matches(':')
+        .split(' ')
+        .take_while(|word| !word.is_empty() && !word.starts_with(['[', '<']))
+        .collect::<Vec<_>>();
+    (!words.is_empty()).then_some((words, args))
+}
+
+/// The answers a step of `ask` has in a fixed list or in what bzz has.
+fn ask_words(ask: crate::ui::action_table::Ask, words: &Words<'_>) -> Vec<String> {
+    use crate::ui::action_table::Ask;
+    match ask {
+        Ask::Choice(choices) => choices
+            .iter()
+            .map(|(word, _)| (*word).to_owned())
+            .filter(|word| !word.is_empty())
+            .collect(),
+        Ask::Theme => words
+            .themes
+            .iter()
+            .map(|theme| (*theme).to_owned())
+            .collect(),
+        Ask::App => words.apps.to_vec(),
+        Ask::Channel => words
+            .channels
+            .iter()
+            .map(|channel| format!("#{channel}"))
+            .collect(),
+        Ask::Emoji => crate::ui::reaction_picker::REACTIONS
+            .iter()
+            .map(|emoji| (*emoji).to_owned())
+            .collect(),
+        Ask::Person | Ask::Duration | Ask::Text => Vec::new(),
+    }
+}
+
+fn head_usage(spec: &CommandSpec) -> String {
+    format!("usage: {} \u{b7} {}", spec.usage(), spec.summary)
+}
+
+/// What may follow `line` (the `:` line without its colon), read from the
+/// registry's rows: a command's name, then its sub-commands and fixed
+/// words, then the answers its steps take (themes, apps, channels).
+pub fn offer(line: &str, words: &Words<'_>) -> Offer {
+    let split = line.rfind(' ').map_or(0, |index| index + 1);
+    let (stem, partial) = line.split_at(split);
+    let lower = partial.to_lowercase();
+    let typed = stem.split_whitespace().collect::<Vec<_>>();
+    let mut candidates = Vec::<String>::new();
+    let mut push = |word: String| {
+        if word.to_lowercase().starts_with(&lower) && !candidates.contains(&word) {
+            candidates.push(word);
+        }
+    };
+    let mut offer = Offer {
+        stem: stem.to_owned(),
+        partial: partial.to_owned(),
+        ..Offer::default()
+    };
+    let Some(first) = typed.first() else {
+        for spec in commands() {
+            push(spec.name.to_owned());
+        }
+        offer.usage = find(partial)
+            .or_else(|| match candidates.as_slice() {
+                [only] => find(only),
+                _ => None,
+            })
+            .map(head_usage);
+        offer.candidates = candidates;
+        return offer;
+    };
+    let Some(head) = find(first) else {
+        return offer;
+    };
+    let rest = &typed[1..];
+    let mut usage = None;
+    for row in crate::ui::action_table::TABLE {
+        let Some((path, args)) = row_path(row) else {
+            continue;
+        };
+        if path[0] != head.name {
+            continue;
+        }
+        let after = &path[1..];
+        if rest.len() < after.len() {
+            if after[..rest.len()] == *rest {
+                push(after[rest.len()].to_owned());
+            }
+            continue;
+        }
+        if rest[..after.len()] != *after {
+            continue;
+        }
+        // A sub-command typed whole: its own usage is the one to show.
+        if rest.len() == after.len() && !after.is_empty() && usage.is_none() {
+            usage = row.command.map(|command| format!("usage: {command}"));
+        }
+        let step = rest.len() - after.len();
+        if let Some(arg) = args.iter().filter(|arg| !arg.lead).nth(step) {
+            for word in ask_words(arg.ask, words) {
+                push(word);
+            }
+        }
+    }
+    offer.candidates = candidates;
+    offer.usage = usage.or_else(|| Some(head_usage(head)));
+    offer
+}
+
+/// Tab on the `:` line (v0.17 C11): the first Tab completes the word being
+/// typed; while the line is what the last Tab wrote, Tab and Shift-Tab
+/// cycle through the other candidates. A single candidate is written with
+/// a space after it, so the next Tab offers what follows. Enter still runs
+/// exactly what is typed.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Completion {
+    offer: Offer,
+    /// The candidate written, while cycling.
+    index: Option<usize>,
+    /// The line as the last Tab left it.
+    written: String,
+}
+
+impl Completion {
+    /// Completes or cycles `line`; false when nothing completes it.
+    pub fn tab(&mut self, line: &mut String, words: &Words<'_>, forward: bool) -> bool {
+        if let Some(index) = self.index
+            && *line == self.written
+            && !self.offer.candidates.is_empty()
+        {
+            let count = self.offer.candidates.len();
+            let next = if forward {
+                (index + 1) % count
+            } else {
+                (index + count - 1) % count
+            };
+            self.index = Some(next);
+            *line = format!("{}{}", self.offer.stem, self.offer.candidates[next]);
+            self.written.clone_from(line);
+            return true;
+        }
+        self.offer = offer(line, words);
+        self.index = None;
+        let count = self.offer.candidates.len();
+        match count {
+            0 => false,
+            1 => {
+                *line = format!("{}{} ", self.offer.stem, self.offer.candidates[0]);
+                self.written.clone_from(line);
+                true
+            }
+            _ => {
+                let index = if forward { 0 } else { count - 1 };
+                *line = format!("{}{}", self.offer.stem, self.offer.candidates[index]);
+                self.index = Some(index);
+                self.written.clone_from(line);
+                true
+            }
+        }
+    }
+
+    /// Forgets the cycle (the prompt closed).
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// What is shown under the line as it is typed: the candidates (the
+    /// one Tab wrote in brackets while cycling) and the usage.
+    pub fn lines(&self, line: &str, words: &Words<'_>) -> Vec<String> {
+        let (offer, current) = match self.index {
+            Some(index) if line == self.written => (self.offer.clone(), Some(index)),
+            _ => (offer(line, words), None),
+        };
+        let mut lines = Vec::new();
+        let word = crate::render::sanitize::single_line(offer.partial.trim());
+        if offer.candidates.is_empty() {
+            let first = line.split_whitespace().next().unwrap_or_default();
+            if !word.is_empty() && offer.stem.trim().is_empty() {
+                lines.push(match nearest(&word) {
+                    Some(spec) => format!(
+                        "no command starts with {word} \u{b7} did you mean :{}?",
+                        spec.name
+                    ),
+                    None => format!("no command starts with {word} \u{b7} :help lists them"),
+                });
+            } else if !word.is_empty() && find(first).is_some() {
+                lines.push(format!(
+                    "nothing after :{} starts with {word}",
+                    crate::render::sanitize::single_line(offer.stem.trim())
+                ));
+            }
+        } else {
+            let shown = offer
+                .candidates
+                .iter()
+                .enumerate()
+                .map(|(index, candidate)| {
+                    let candidate = crate::render::sanitize::single_line(candidate);
+                    if Some(index) == current {
+                        format!("[{candidate}]")
+                    } else {
+                        candidate
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("  ");
+            lines.push(format!("Tab: {shown}"));
+        }
+        if let Some(usage) = offer.usage {
+            lines.push(usage);
+        }
+        lines
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{COMMANDS, Command, find, nearest, parse, unknown_answer};
+    use super::{Command, commands, find, nearest, parse, unknown_answer};
 
     #[test]
     fn theme_reload_is_an_explicit_command() {
@@ -526,7 +642,7 @@ mod tests {
     /// and by each alias, so the help never lists a word bzz refuses.
     #[test]
     fn the_table_and_the_parser_agree() {
-        for spec in COMMANDS {
+        for spec in commands() {
             for word in std::iter::once(spec.name).chain(spec.aliases.iter().copied()) {
                 let sample = match word {
                     "artifact" => "artifact delete".to_owned(),
@@ -541,6 +657,167 @@ mod tests {
                 assert_eq!(find(word), Some(spec));
             }
         }
+    }
+
+    /// v0.17 C8: the commands are read from the registry's rows, one row a
+    /// first word, and that row's own usage starts with the same word.
+    #[test]
+    fn each_first_word_has_one_row_of_the_registry() {
+        let mut names = commands().map(|spec| spec.name).collect::<Vec<_>>();
+        let count = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), count, "a first word stands in two rows");
+        let mut expected = vec![
+            "help",
+            "quit",
+            "search",
+            "inbox",
+            "dm",
+            "huddle",
+            "status",
+            "presence",
+            "profile",
+            "theme",
+            "tochannel",
+            "report",
+            "artifacts",
+            "artifact",
+            "tasks",
+            "section",
+            "sort",
+            "solo",
+            "system",
+            "agents",
+            "agent",
+            "approvals",
+            "broker",
+            "apps",
+            "app",
+            "signin",
+            "community",
+            "lock",
+            "reconnect",
+            "resync",
+            "media",
+            "purge-cache",
+        ];
+        expected.sort_unstable();
+        assert_eq!(names, expected);
+        for row in crate::ui::action_table::TABLE {
+            if let Some(head) = &row.head {
+                let usage = row.command.unwrap_or_default();
+                assert_eq!(
+                    usage.trim_start_matches(':').split(' ').next(),
+                    Some(head.name),
+                    "{}",
+                    row.id
+                );
+            }
+        }
+    }
+
+    fn words<'a>(themes: &'a [&'a str], apps: &'a [String]) -> super::Words<'a> {
+        super::Words {
+            themes,
+            apps,
+            channels: &[],
+        }
+    }
+
+    /// v0.17 C11: `:hu`, Tab gives `:huddle `, then Tab cycles its verbs,
+    /// read from the registry's rows.
+    #[test]
+    fn tab_completes_a_command_then_its_verbs_and_cycles() {
+        let words = words(&[], &[]);
+        let mut completion = super::Completion::default();
+        let mut line = "hu".to_owned();
+        assert!(completion.tab(&mut line, &words, true));
+        assert_eq!(line, "huddle ");
+        let offered = super::offer(&line, &words).candidates;
+        for verb in [
+            "start", "join", "leave", "mute", "end", "devices", "react", "input", "output",
+        ] {
+            assert!(
+                offered.iter().any(|word| word == verb),
+                "{verb}: {offered:?}"
+            );
+        }
+        assert!(completion.tab(&mut line, &words, true));
+        assert_eq!(line, "huddle start");
+        assert!(completion.tab(&mut line, &words, true));
+        assert_eq!(line, "huddle join");
+        assert!(completion.tab(&mut line, &words, false));
+        assert_eq!(line, "huddle start");
+        // Under the line: the candidates, the one written in brackets, and
+        // the usage of the command.
+        let lines = completion.lines(&line, &words);
+        assert!(lines[0].starts_with("Tab: [start]  join"), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("usage: :huddle [start")),
+            "{lines:?}"
+        );
+        // Typing goes on from what Tab wrote: Enter runs what is typed.
+        line.push('x');
+        assert_eq!(parse(&line), Command::Huddle("startx".into()));
+    }
+
+    #[test]
+    fn tab_completes_themes_apps_and_fixed_words() {
+        let apps = vec!["board".to_owned(), "poll".to_owned()];
+        let words = words(&["default", "nord", "paper"], &apps);
+        let mut completion = super::Completion::default();
+        let mut line = "theme n".to_owned();
+        assert!(completion.tab(&mut line, &words, true));
+        assert_eq!(line, "theme nord ");
+        assert_eq!(
+            super::offer("theme ", &words).candidates,
+            ["default", "nord", "paper", "reload"]
+        );
+        let mut line = "app open ".to_owned();
+        assert!(completion.tab(&mut line, &words, true));
+        assert_eq!(line, "app open board");
+        assert!(completion.tab(&mut line, &words, true));
+        assert_eq!(line, "app open poll");
+        assert_eq!(
+            super::offer("app open ", &words).usage.as_deref(),
+            Some("usage: :app open <name>")
+        );
+        assert_eq!(
+            super::offer("sort ", &words).candidates,
+            ["alpha", "recent", "default"]
+        );
+        assert_eq!(super::offer("presence ", &words).candidates, ["on", "off"]);
+        let verbs = super::offer("app ", &words).candidates;
+        for verb in ["open", "close", "zoom", "share", "approve", "dev", "brief"] {
+            assert!(verbs.iter().any(|word| word == verb), "{verb}: {verbs:?}");
+        }
+        // Every first word, from nothing typed.
+        assert_eq!(
+            super::offer("", &words).candidates.len(),
+            commands().count()
+        );
+    }
+
+    #[test]
+    fn a_wrong_word_completes_nothing_and_says_so() {
+        let words = words(&[], &[]);
+        let mut completion = super::Completion::default();
+        let mut line = "hudle".to_owned();
+        assert!(!completion.tab(&mut line, &words, true));
+        assert_eq!(line, "hudle");
+        let lines = completion.lines(&line, &words);
+        assert_eq!(
+            lines,
+            ["no command starts with hudle \u{b7} did you mean :huddle?"]
+        );
+        let mut line = "huddle xyz".to_owned();
+        assert!(!completion.tab(&mut line, &words, true));
+        let lines = completion.lines(&line, &words);
+        assert_eq!(lines[0], "nothing after :huddle starts with xyz");
+        assert!(lines[1].starts_with("usage: :huddle"));
     }
 
     #[test]

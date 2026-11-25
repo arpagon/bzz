@@ -189,7 +189,8 @@ async fn keys_and_a_paste_reach_the_focused_app_and_nothing_else() {
     assert!(shown.contains("┌ recorder ─"), "{shown}");
     assert!(shown.contains("5 focus ┘"), "{shown}");
     assert!(!shown.contains("Ctrl-c leaves the app"), "{shown}");
-    assert!(shown.contains("Ctrl-K actions · ? keys"), "{shown}");
+    // v0.17 C10: the hint follows the focus and ends in the palette's key.
+    assert!(shown.contains("Ctrl-K actions"), "{shown}");
     // Now keys are bzz's again, and the app is given none.
     assert!(!app.app_key(key(KeyCode::Char('x'))));
     // The writing dock owns the keyboard before the app, even focused.

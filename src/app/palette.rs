@@ -27,7 +27,7 @@ use crate::{
 
 impl App {
     /// The facts the palette judges its rows by, read once as it opens.
-    fn palette_facts(&self) -> Facts {
+    pub(super) fn palette_facts(&self) -> Facts {
         Facts {
             actions: self.action_context(),
             channel_is_dm: self
