@@ -4,12 +4,13 @@
 //!
 //! The real client runs unchanged against [`relay::Relay`], a small relay
 //! held in memory on a loopback port the system picks, guarded by a random
-//! token in its path. The same [`world`] is written to a fresh store first,
-//! so the first screen is full at once. Everything lives in a private
-//! folder of the temporary directory, `bzz-demo-<pid>-<random>`, removed
-//! when the demo ends: on quitting, on Ctrl-C and the signals bzz handles,
-//! and on a panic. A folder left by a demo that was killed outright is
-//! removed by the next one.
+//! token in its path. The same [`world`] is written first to a fresh store
+//! held in memory, so the first screen is full at once. The rest (the
+//! configuration, the media cache) lives in a private folder of the
+//! temporary directory, `bzz-demo-<pid>-<random>`, removed when the demo
+//! ends: on quitting, on SIGINT, SIGTERM and SIGHUP, and after a panic. A
+//! folder left by a demo that was killed outright is removed by the next
+//! one.
 
 mod relay;
 pub mod world;
@@ -119,7 +120,8 @@ pub async fn run() -> Result<()> {
         true,
     )?;
     let community = config.communities[0].id;
-    let mut store = Store::open(paths.database_file())?;
+    // In memory: nothing to write to disk, and no wait on it.
+    let mut store = Store::open_memory()?;
     store.sync_config(&config)?;
     store.pin_relay_pubkey(community, &relay_pubkey)?;
     for event in &seed {
