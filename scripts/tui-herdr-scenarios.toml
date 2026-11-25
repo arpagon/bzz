@@ -1262,9 +1262,12 @@ keys = [":", "type:agents", "enter"]
 visible = "Garnet · grok · unavailable"
 timeout = 60000
 
+# The sentence follows the fixture's path, so where it wraps depends on
+# the folder's name and the window: any space may be a line break.
 [[scenario.step]]
 keys = []
-visible = "Set BZZ_GROK to the path of `grok`, or unset it to use the one on PATH"
+visible = 'Set[\s│]+BZZ_GROK[\s│]+to[\s│]+the[\s│]+path[\s│]+of[\s│]+`grok`,[\s│]+or[\s│]+unset[\s│]+it[\s│]+to[\s│]+use[\s│]+the[\s│]+one[\s│]+on[\s│]+PATH'
+regex = true
 
 [[scenario.step]]
 keys = []

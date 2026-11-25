@@ -235,10 +235,19 @@ does.
 
 - **Open the channel you are about.** Never count on the channel selected at
   start; open it with the finder or the palette.
+- **The profile has started before.** The tmux runner starts the fixture's
+  profile once before the suite and waits for its channels: on a profile's
+  very first start bzz says `online` before the relay has sent the channel
+  list, and a finder typed into at once finds nothing.
+- **Look for your own row.** `↳ 1 reply` or `Scout joined` may be a row an
+  earlier scenario left; match the row with what you wrote in it
+  (`are you there\?[^\n]*\n[^\n]*↳ 1 reply`, `regex = true`), or go where
+  only yours can be (`3 g g` for the top of a channel).
 - **A channel of its own** when the scenario counts on what is in it: the
   newest message is another person's, nobody has reacted, no app is open.
   `examples/harness_fixture.rs` makes one for each such scenario
-  (`#t17-palette`, `#t17-react`, `#t17-find`, `#t17-sound`, `#t17-app`),
+  (`#t17-palette`, `#t17-react`, `#t17-find`, `#t17-sound`, `#t17-app`,
+  `#t17-thread`),
   with messages by another person, dated after the rows the relay adds
   itself, so that `G` selects the newest message. Add one there rather than
   reorder the manifest, and write in no channel another scenario reads.
