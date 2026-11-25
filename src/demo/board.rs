@@ -166,8 +166,11 @@ pub struct DemoBoard {
     /// The next of [`MOVES`] to try.
     next: usize,
     /// Says in the channel what a teammate did.
-    announce: Option<Box<dyn Fn(&Who, &str) + Send + Sync>>,
+    announce: Option<Say>,
 }
+
+/// How a teammate says something in the channel.
+type Say = Box<dyn Fn(&Who, &str) + Send + Sync>;
 
 impl DemoBoard {
     pub fn new(store: SharedStore, people: People) -> Self {
