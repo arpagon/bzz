@@ -594,6 +594,12 @@ impl MediaRuntime {
         self.last_used.retain(|key, _| !key.starts_with(&prefix));
     }
 
+    /// Whether work is in flight that [`Self::poll`] will pick up: the loop
+    /// polls often only then.
+    pub fn busy(&self) -> bool {
+        !self.in_flight.is_empty()
+    }
+
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(completed) = self.completed_rx.try_recv() {

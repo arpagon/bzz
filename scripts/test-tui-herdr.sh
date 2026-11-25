@@ -264,7 +264,7 @@ run_scenario() {
     # by Herdr, which is portable to the controlled target shell.
     local command
     printf -v command \
-        'env BZZ_CONFIG_DIR=%q BZZ_DATA_DIR=%q BZZ_CACHE_DIR=%q PULSE_SERVER=%q %q; status=$?; printf "__BZZ_HERDR_EXIT__:%%s\\n" "$status"' \
+        'env BZZ_NO_MOTION=1 BZZ_CONFIG_DIR=%q BZZ_DATA_DIR=%q BZZ_CACHE_DIR=%q PULSE_SERVER=%q %q; status=$?; printf "__BZZ_HERDR_EXIT__:%%s\\n" "$status"' \
         "$config" "$data" "$cache" "$pulse_server" "$binary"
     # Clear only the disposable terminal surface, with its scrollback, so a
     # prior label cannot satisfy a later readiness predicate. Nothing of it
@@ -298,7 +298,7 @@ harness_command() {
     fi
     printf '%s\n' 'pcm.!default { type null }' >"$root/null-asound.conf"
     local command word
-    printf -v command 'env BZZ_CONFIG_DIR=%q BZZ_DATA_DIR=%q BZZ_CACHE_DIR=%q BZZ_PASSPHRASE_FD=3 ALSA_CONFIG_PATH=%q PULSE_SERVER=%q' \
+    printf -v command 'env BZZ_NO_MOTION=1 BZZ_CONFIG_DIR=%q BZZ_DATA_DIR=%q BZZ_CACHE_DIR=%q BZZ_PASSPHRASE_FD=3 ALSA_CONFIG_PATH=%q PULSE_SERVER=%q' \
         "$home/config" "$home/data" "$home/cache" "$root/null-asound.conf" "$pulse_server"
     if [[ -f $fixture/env ]]; then
         local name value

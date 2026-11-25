@@ -185,6 +185,13 @@ def sound_server(work):
     return f"unix:{work}/no-sound-server/native", None
 
 
+def motion_words(scenario):
+    """Scenarios see the end state of every animation (v0.17 L7), as a
+    person with `BZZ_NO_MOTION` does, unless one tests motion
+    (`motion = true` in its entry)."""
+    return [] if scenario.get("motion") else ["BZZ_NO_MOTION=1"]
+
+
 def command_for(scenario, binary, fixture, work, profile):
     if scenario["kind"] == "automated":
         home = os.path.join(work, scenario["id"])
@@ -196,7 +203,8 @@ def command_for(scenario, binary, fixture, work, profile):
         words = [f"BZZ_CONFIG_DIR={shlex.quote(home + '/config')}",
                  f"BZZ_DATA_DIR={shlex.quote(home + '/data')}",
                  f"BZZ_CACHE_DIR={shlex.quote(home + '/cache')}",
-                 f"PULSE_SERVER={shlex.quote(PULSE_SERVER)}", shlex.quote(binary)]
+                 f"PULSE_SERVER={shlex.quote(PULSE_SERVER)}",
+                 *motion_words(scenario), shlex.quote(binary)]
         # An automated scenario may name a sub-command (`bzz demo`, v0.17).
         words.extend(shlex.quote(argument) for argument in scenario.get("args", []))
         return "env " + " ".join(words) + '; printf "__BZZ_HERDR_EXIT__:%s\\n" "$?"'
@@ -218,6 +226,7 @@ def command_for(scenario, binary, fixture, work, profile):
             if line:
                 name, value = line.split("=", 1)
                 words.append(f"{name}={shlex.quote(value)}")
+    words.extend(motion_words(scenario))
     words.append(shlex.quote(binary))
     for argument in scenario.get("args", []):
         words.append(shlex.quote(argument.replace("{fixture}", fixture)))

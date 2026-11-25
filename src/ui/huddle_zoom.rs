@@ -31,7 +31,7 @@ use crate::{
             Depth, Glyphs, Lanes, Paint, Rgb, UP, draw_badge, lerp, named_rgb, put, speaking_names,
             state_of, talking_muted, who_speaks,
         },
-        theme::{HighlightGroup, Theme},
+        theme::{BorderSurface, HighlightGroup, Theme},
     },
 };
 
@@ -93,7 +93,7 @@ pub fn render(buf: &mut Buffer, area: Rect, zoom: &Zoom<'_>, theme: &Theme) {
         height: area.height.saturating_sub(2),
     };
     if let Some(selected) = zoom.picker {
-        let width = picker(buf, body, selected, &paint);
+        let width = picker(buf, body, selected, &paint, theme, zoom.lanes.look);
         body.x += width + 1;
         body.width = body.width.saturating_sub(width + 1);
     }
@@ -133,7 +133,13 @@ pub fn render(buf: &mut Buffer, area: Rect, zoom: &Zoom<'_>, theme: &Theme) {
         .find(|&x| buf[(x, row.y)].symbol() != " ")
         .map_or(row.x, |x| x + 1);
     if at > used + 1 {
-        put(buf, row, at - row.x, 0, keys, paint.fg(paint.grey));
+        if zoom.lanes.look.depth == Depth::None {
+            put(buf, row, at - row.x, 0, keys, paint.fg(paint.grey));
+        } else {
+            // Coloured as every footer's keys (`frame::hints`).
+            let line = crate::ui::frame::hint_line(theme, keys);
+            buf.set_line(at - 1, row.y, &line, row.right().saturating_sub(at - 1));
+        }
     }
 }
 
@@ -173,36 +179,35 @@ fn header(buf: &mut Buffer, area: Rect, zoom: &Zoom<'_>, paint: &Paint) {
 
 /// The picker: each style with a line about it; the selected one is drawn
 /// live behind it.
-fn picker(buf: &mut Buffer, body: Rect, selected: usize, paint: &Paint) -> u16 {
+fn picker(
+    buf: &mut Buffer,
+    body: Rect,
+    selected: usize,
+    paint: &Paint,
+    theme: &Theme,
+    look: crate::ui::huddle_lanes::Look,
+) -> u16 {
     let width = 30.min(body.width / 2);
     let box_area = Rect {
         width,
         height: (HuddleStyle::ALL.len() as u16 + 2).min(body.height),
         ..body
     };
-    let border = paint.fg(paint.grey);
-    let (h, v, corners) = ('─', '│', ['╭', '╮', '╰', '╯']);
-    let (right, bottom) = (box_area.right() - 1, box_area.bottom() - 1);
-    for x in box_area.left()..=right {
-        buf[(x, box_area.y)].set_char(h).set_style(border);
-        buf[(x, bottom)].set_char(h).set_style(border);
-    }
-    for y in box_area.top()..=bottom {
-        buf[(box_area.x, y)].set_char(v).set_style(border);
-        buf[(right, y)].set_char(v).set_style(border);
-    }
-    buf[(box_area.x, box_area.y)].set_char(corners[0]);
-    buf[(right, box_area.y)].set_char(corners[1]);
-    buf[(box_area.x, bottom)].set_char(corners[2]);
-    buf[(right, bottom)].set_char(corners[3]);
-    put(
-        buf,
+    // The frame every picker has (`frame::block`); without colour, its
+    // lines and label only.
+    ratatui::widgets::Widget::render(
+        crate::ui::frame::block(theme, BorderSurface::Picker, "huddle style", true),
         box_area,
-        2,
-        0,
-        " huddle style ",
-        paint.text.add_modifier(Modifier::BOLD),
+        buf,
     );
+    if look.depth == Depth::None {
+        for y in box_area.top()..box_area.bottom() {
+            for x in box_area.left()..box_area.right() {
+                buf[(x, y)].fg = ratatui::style::Color::Reset;
+                buf[(x, y)].bg = ratatui::style::Color::Reset;
+            }
+        }
+    }
     for (row, style) in HuddleStyle::ALL.into_iter().enumerate() {
         let y = 1 + row as u16;
         if y + 1 >= box_area.height {

@@ -374,6 +374,19 @@ impl App {
         }
     }
 
+    /// Whether an app session runs: its timers and records are looked at
+    /// on the loop's busy housekeeping (v0.17 L9).
+    pub(super) fn apps_running(&self) -> bool {
+        #[cfg(feature = "apps")]
+        {
+            !self.apps.live.is_empty()
+        }
+        #[cfg(not(feature = "apps"))]
+        {
+            false
+        }
+    }
+
     /// The loop took the wake message.
     pub(super) fn app_woken(&mut self) {
         self.apps.wake.store(false, Ordering::SeqCst);

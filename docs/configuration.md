@@ -272,14 +272,18 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   `:huddle style` opens a picker that previews each style live, and Enter
   saves it here; `:huddle style <name>` saves it directly. Written to the
   file only when it is not `lanes` (since v0.17.0).
-- **`[ui] motion`** (v0.17.0, default `full`): how much the interface
-  moves, one setting for every animation. `full`; `calm`, fewer frames and
-  no flourishes (the huddle's meter at five frames a second); `off`,
-  nothing animates and the end state shows at once (the huddle's meter is
+- **`[ui] motion`** (v0.17.0, default `full`): how much the interface moves,
+  one setting for every animation. `full`: a toast slides in and out, an
+  arriving message is tinted for a moment, a rising unread count flashes, the
+  focus colour runs round the pane that takes the focus, an overlay unfolds,
+  placeholder rows shimmer while a channel's history loads, and the huddle's
+  visualizer runs at its full rate. `calm` keeps what informs (the toast, the
+  tint, the flash; the huddle's meter at five frames a second) and drops the
+  rest. `off` shows the end of every one at once (the huddle's meter is
   still, and changes only when who speaks changes). The environment variable
-  `BZZ_NO_MOTION`, set to anything but empty or `0`, turns motion off
-  whatever the file says. In v0.17.0 only the huddle's visualizer moves.
-  Written to the file only when it is not `full`.
+  `BZZ_NO_MOTION` (any value but empty or `0`) turns motion off whatever this
+  says. Nothing moves, and nothing is drawn, while nothing changes. Written
+  to the file only when it is not `full`.
 - **Colour** (v0.17.0) follows the terminal, decided once at start:
   `NO_COLOR` set to anything non-empty draws no colour at all (bold, dim,
   reverse and underline stay; the focused pane gets a heavy frame and a

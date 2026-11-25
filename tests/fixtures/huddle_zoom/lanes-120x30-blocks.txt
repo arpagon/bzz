@@ -45,4 +45,4 @@
 17: 2-2 Indexed(233)/Indexed(107)/BOLD 5-9 Indexed(242)/Reset/NONE
 22: 2-2 Indexed(231)/Indexed(242)/BOLD 30-117 Indexed(242)/Reset/DIM
 23: 2-2 Indexed(231)/Indexed(242)/BOLD 5-9 Indexed(242)/Reset/NONE
-29: 1-28 Indexed(242)/Reset/NONE 94-118 Indexed(242)/Reset/NONE
+29: 1-28 Indexed(242)/Reset/NONE 94-94 Cyan/Reset/BOLD 95-103 DarkGray/Reset/NONE 104-104 Cyan/Reset/BOLD 105-112 DarkGray/Reset/NONE 113-113 Cyan/Reset/BOLD 114-118 DarkGray/Reset/NONE

@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span, Text},
-    widgets::{Block, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 
 use crate::{
@@ -221,10 +221,10 @@ pub fn render(
         }
         lines.push(Line::default());
     }
-    lines.push(Line::styled(
-        "  Enter choose · ↑↓ move · Esc back · ? keys · q quit",
-        muted,
-    ));
+    let mut keys =
+        crate::ui::frame::hint_line(theme, "Enter choose · ↑↓ move · Esc back · ? keys · q quit");
+    keys.spans.insert(0, Span::raw(" "));
+    lines.push(keys);
     if let Some(notice) = notice {
         lines.push(Line::default());
         lines.push(Line::styled(
@@ -248,15 +248,9 @@ pub fn render(
             .style(theme.style(HighlightGroup::Normal))
             .wrap(Wrap { trim: false })
             .block(
-                Block::bordered()
-                    .border_type(theme.border_type(BorderSurface::Pane))
-                    .border_style(theme.style(HighlightGroup::PaneBorder))
-                    .title_style(theme.style(HighlightGroup::PaneTitle))
-                    .title(" bzz ")
-                    .title_bottom(Line::styled(
-                        format!(" bzz {} ", env!("CARGO_PKG_VERSION")),
-                        muted,
-                    )),
+                crate::ui::frame::block(theme, BorderSurface::Pane, "bzz", true).title_bottom(
+                    Line::styled(format!(" bzz {} ", env!("CARGO_PKG_VERSION")), muted),
+                ),
             ),
         area,
     );

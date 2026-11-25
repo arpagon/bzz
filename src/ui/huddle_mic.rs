@@ -6,7 +6,7 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::Modifier,
-    widgets::{Block, Clear, Widget as _},
+    widgets::{Clear, Widget as _},
 };
 
 use crate::{
@@ -34,11 +34,7 @@ pub fn render(
     theme: &Theme,
 ) {
     Clear.render(area, buf);
-    let block = Block::bordered()
-        .border_type(theme.border_type(BorderSurface::Modal))
-        .border_style(theme.style(HighlightGroup::ModalBorder))
-        .title_style(theme.style(HighlightGroup::ModalTitle))
-        .title(" join the huddle? ")
+    let block = crate::ui::frame::block(theme, BorderSurface::Modal, "join the huddle?", true)
         .style(theme.style(HighlightGroup::Normal));
     let inner = block.inner(area);
     block.render(area, buf);
@@ -100,7 +96,32 @@ pub fn render(
         }
     };
     put(buf, inner, 1, 3, &check.message(), message_style);
-    put(buf, inner, 1, inner.height - 1, KEYS, paint.text);
+    keys(buf, inner, look, theme, &paint);
+}
+
+/// The confirmation's keys, coloured as every footer's (`frame::hints`);
+/// without colour, as plain text.
+fn keys(buf: &mut Buffer, inner: Rect, look: Look, theme: &Theme, paint: &Paint) {
+    let y = inner.height - 1;
+    let Some((intro, rest)) = KEYS.split_once(" · ") else {
+        return;
+    };
+    if look.depth == crate::ui::huddle_lanes::Depth::None {
+        put(buf, inner, 1, y, KEYS, paint.text);
+        return;
+    }
+    let mut line = ratatui::text::Line::from(vec![
+        ratatui::text::Span::styled(intro, paint.text),
+        ratatui::text::Span::styled(" ·", theme.style(HighlightGroup::Muted)),
+    ]);
+    line.spans
+        .extend(crate::ui::frame::hint_line(theme, rest).spans);
+    buf.set_line(
+        inner.x + 1,
+        inner.y + y,
+        &line,
+        inner.width.saturating_sub(1),
+    );
 }
 
 #[cfg(test)]

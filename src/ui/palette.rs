@@ -21,7 +21,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Clear, Paragraph},
+    widgets::{Clear, Paragraph},
 };
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
@@ -1910,12 +1910,9 @@ pub fn render(frame: &mut Frame<'_>, screen: Rect, palette: &Palette, theme: &Th
     let footer = footer(palette, theme, inner_width.saturating_sub(2));
     let title = palette
         .breadcrumb()
-        .map_or_else(|| " Actions ".to_owned(), |crumb| format!(" {crumb} "));
-    let block = Block::bordered()
-        .border_type(theme.border_type(BorderSurface::Modal))
-        .border_style(theme.style(HighlightGroup::ModalBorder))
-        .title_style(theme.style(HighlightGroup::ModalTitle))
-        .title(truncate_cells(&title, inner_width.saturating_sub(6)))
+        .map_or_else(|| "Actions".to_owned(), |crumb| crumb.to_string());
+    let title = truncate_cells(&title, inner_width.saturating_sub(8));
+    let block = crate::ui::frame::block(theme, BorderSurface::Modal, &title, true)
         .title_top(
             Line::from(Span::styled(" Esc ", theme.style(HighlightGroup::Muted))).right_aligned(),
         )
@@ -2186,10 +2183,12 @@ pub fn footer_text(palette: &Palette) -> (String, HighlightGroup) {
 
 fn footer<'a>(palette: &Palette, theme: &Theme, width: usize) -> Line<'a> {
     let (text, group) = footer_text(palette);
-    Line::from(Span::styled(
-        format!(" {} ", truncate_cells(&text, width)),
-        theme.style(group),
-    ))
+    let text = truncate_cells(&text, width);
+    if group == HighlightGroup::Muted {
+        // The keys, coloured as every footer's (`frame::hint_line`).
+        return crate::ui::frame::hint_line(theme, &text);
+    }
+    Line::from(Span::styled(format!(" {text} "), theme.style(group)))
 }
 
 fn keys_hint(palette: &Palette, candidate: &Candidate) -> String {
