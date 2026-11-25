@@ -432,3 +432,24 @@ fn a_folder_left_by_a_killed_demo_is_removed_and_a_running_one_kept() {
         assert!(!super::left_behind(&other));
     }
 }
+
+/// A panic in the demo unwinds through its folder's guard; what a task
+/// writes afterwards is removed once main's runtime has stopped.
+#[test]
+fn the_folder_goes_on_a_panic_and_after_the_runtime_stops() {
+    let mut made = None;
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let scratch = super::Scratch::create().unwrap();
+        std::fs::create_dir_all(scratch.paths().cache_dir).unwrap();
+        made = Some(scratch.0.clone());
+        panic!("a generated failure");
+    }));
+    assert!(outcome.is_err());
+    let made = made.unwrap();
+    assert!(!made.exists(), "removed by the unwinding guard");
+
+    // A late write recreates it; main's clean-up removes it again.
+    std::fs::create_dir_all(made.join("cache")).unwrap();
+    super::clean_up_after_exit();
+    assert!(!made.exists());
+}
