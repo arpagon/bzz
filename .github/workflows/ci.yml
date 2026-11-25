@@ -62,6 +62,11 @@ jobs:
       - name: Smoke-test release binary
         shell: bash
         run: ${{ matrix.binary }} --version
+      # v0.17: on Linux bzz speaks the sound server's protocol itself, so the
+      # binary names no sound library and starts where none is installed.
+      - name: The Linux release binary names no sound library
+        if: runner.os == 'Linux'
+        run: ./scripts/check-linux-linkage.sh ${{ matrix.binary }}
       # `--lib` holds the app runtime, the six apps' cases, the session, the
       # store of apps and the pane (v0.16); the three `app_*` tests are the
       # command line and the records on a scripted relay, with real sockets.
@@ -136,6 +141,10 @@ jobs:
       - run: ./scripts/test-apps-bench.sh --release
   audio:
     # T7: huddle audio through a virtual device (tests/huddle_device_loopback_test.rs).
+    # Linux: bzz speaks the PulseAudio protocol; the job's image has
+    # PulseAudio. PipeWire (pipewire-pulse) is not in it and no product
+    # workflow installs packages, so PipeWire on Debian and EL9 is proven in
+    # containers by scripts/test-audio-containers.sh (docs/validation-v0.17.0).
     strategy:
       fail-fast: false
       matrix:
