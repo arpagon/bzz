@@ -857,6 +857,9 @@ kind = "harness"
 description = "v0.15 M7: a real command an agent asks to run waits for the owner: a line at the top of every screen, the dialog with the whole command, a yes after which the command's output arrives in the chat, and a no with a reason, which the agent passes on."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
+# The waiting line is one row of 108 characters; under 120 columns it is
+# cut (v0.17: measured at 80x24 and 100x30).
+min_size = "120x30"
 
 [[scenario.step]]
 keys = ["space", "space"]
@@ -1045,6 +1048,9 @@ needs = ["t15-cli-agent-move"]
 description = "v0.15 M4: :agent new, from its form to an answer: the checks, the owner's confirmation, the creation with its capability record, the agent started without a restart, added to the open channel from the panel, mentioned and answered. A moved-away agent is shown as that in the same panel."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
+# The form's sentences wrap inside its frame under 120 columns, between
+# the words a step looks for (v0.17: measured at 80x24 and 100x30).
+min_size = "120x30"
 
 [[scenario.step]]
 keys = ["space", "space"]
@@ -1177,6 +1183,10 @@ kind = "harness"
 description = "v0.15 M6: the agents panel lists an agent on each coding harness with its name of the promise (supported, experimental) and its capability record, Claude Code's with no sandbox of its own. Their programs are not on this profile: mentioned, one says so in the thread once, and the panel says what is missing and what to set. No program of the user's own is started."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
+# The agents panel shows an agent's whole record only from 120 columns and
+# 36 rows; below, the lines a step looks for wrap or fall under the frame
+# (v0.17: measured at 80x24, 120x30 and 100x40).
+min_size = "120x36"
 
 [[scenario.step]]
 keys = ["space", "space"]
