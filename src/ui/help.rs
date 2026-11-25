@@ -3,7 +3,7 @@
 //! Help is derived from the validated typed map rather than a handwritten
 //! duplicate of defaults, so scoped user overrides and disabled bindings stay
 //! truthful without exposing the contents of `keymap.toml`. After the keys it
-//! lists the `:` commands of [`crate::ui::command::COMMANDS`] (v0.17 C3).
+//! lists the `:` commands of [`crate::ui::command::commands`] (v0.17 C3).
 //!
 //! The help scrolls: [`help_lines`] wraps it to the window's width, so the
 //! caller knows exactly how many rows there are, and [`HelpScroll`] keeps the
@@ -116,7 +116,7 @@ fn help_content(
     lines.push(HelpLine::plain(
         "Commands: press :, type one, Enter runs it",
     ));
-    for spec in crate::ui::command::COMMANDS {
+    for spec in crate::ui::command::commands() {
         let aliases = spec
             .aliases
             .iter()
@@ -492,7 +492,7 @@ mod tests {
         }
         let shown = &lines[scroll.offset..scroll.offset + scroll.page];
         assert_eq!(shown.last(), lines.last());
-        assert!(shown.last().unwrap().contains("local cache"));
+        assert!(shown.last().unwrap().contains("asks first"));
         scroll.top();
         scroll.page_by(1);
         assert_eq!(scroll.offset, 20);

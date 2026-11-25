@@ -13,7 +13,10 @@
 //! order, with [`Run::Steps`] (C9): the palette asks for each [`Arg`] in a
 //! step of its own and runs the `:` command they build.
 
-use crate::ui::keymap::{KeyScope, UiAction};
+use crate::ui::{
+    command::CommandSpec,
+    keymap::{KeyScope, UiAction},
+};
 
 /// One default key sequence of a row, in the scope that owns it, as
 /// `keymap.toml` writes keys: `(GLOBAL, &["space", "n"])`.
@@ -259,6 +262,10 @@ pub struct ActionSpec {
     /// scope, in the order the help names them. `KeyMap::builtin` is
     /// generated from these (v0.17 C8); a user's `keymap.toml` goes on top.
     pub keys: &'static [DefaultKey],
+    /// The row that stands for a `:` command's first word carries what the
+    /// help, "did you mean" and the `:` line say of it: its aliases, its
+    /// arguments and what it does. `command::commands` lists these rows'.
+    pub head: Option<CommandSpec>,
 }
 
 impl ActionSpec {
@@ -279,7 +286,26 @@ impl ActionSpec {
             needs: Needs::Nothing,
             place,
             keys: &[],
+            head: None,
         }
+    }
+
+    /// This row stands for the `:` command `name`: `args` as a usage line
+    /// writes them, `summary` what it does.
+    const fn head(
+        mut self,
+        name: &'static str,
+        aliases: &'static [&'static str],
+        args: &'static str,
+        summary: &'static str,
+    ) -> Self {
+        self.head = Some(CommandSpec {
+            name,
+            aliases,
+            args,
+            summary,
+        });
+        self
     }
 
     const fn keys(mut self, keys: &'static [DefaultKey]) -> Self {
@@ -509,6 +535,12 @@ pub static TABLE: &[ActionSpec] = &[
     .words("person who user")
     .keys(&[(GLOBAL, &["space", "p"])])
     .command(":profile [npub|hex]")
+    .head(
+        "profile",
+        &[],
+        "[npub | hex]",
+        "the profile of the selected author, or of a key",
+    )
     .needs(N::Message),
     ask(
         "msg.report",
@@ -523,6 +555,12 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("moderators spam abuse")
     .command(":report [author] <reason> [note]")
+    .head(
+        "report",
+        &[],
+        "[author] <reason> [note]",
+        "report the selected message, or its author",
+    )
     .needs(N::Message),
     cmd(
         "msg.to_channel",
@@ -532,6 +570,12 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("also send to channel broadcast")
     .command(":tochannel")
+    .head(
+        "tochannel",
+        &["send-to-channel"],
+        "",
+        "send the open thread's draft to its channel",
+    )
     .needs(N::Thread),
     // Go: finding and moving.
     ui(
@@ -546,18 +590,36 @@ pub static TABLE: &[ActionSpec] = &[
     ui("search.open", "Search messages", G::Go, A::Search)
         .words("find text from in after before")
         .command(":search")
+        .head(
+            "search",
+            &[],
+            "",
+            "search messages",
+        )
         .key_of(A::Filter)
         .keys(&[(GLOBAL, &["/"])])
         .aliases(&["search"]),
     ui("inbox.open", "Open Inbox", G::Go, A::OpenInbox)
         .words("mentions personal work notifications")
         .command(":inbox")
+        .head(
+            "inbox",
+            &[],
+            "",
+            "open the Inbox",
+        )
         .keys(&[(GLOBAL, &["space", "n"])])
         .aliases(&["inbox"]),
     ask("dm.new", "Start a DM", G::Go, "dm", &[PERSON])
         .key_of(A::NewDm)
         .words("direct message person chat private")
         .command(":dm <npub|hex>")
+        .head(
+            "dm",
+            &[],
+            "[add | hide | <npub>…]",
+            "start a DM; add a person to this DM; hide it",
+        )
         .aliases(&["dm"])
         .needs(N::Connected),
     cmd("dm.pick", "Start a group DM", G::Go, "dm")
@@ -678,7 +740,13 @@ pub static TABLE: &[ActionSpec] = &[
     .keys(&[(GLOBAL, &["space", "o"])])
     .words("colors colours options appearance dark light")
     .aliases(&["theme", "themes"])
-    .command(":theme"),
+    .command(":theme")
+    .head(
+        "theme",
+        &[],
+        "[<name> | reload]",
+        "pick a theme; set one by name; reload the theme file",
+    ),
     ui(
         "help.keymap",
         "Show keyboard shortcuts",
@@ -688,6 +756,12 @@ pub static TABLE: &[ActionSpec] = &[
     .words("help keys keymap bindings")
     .aliases(&["help", "keys", "?"])
     .command(":help")
+    .head(
+        "help",
+        &[],
+        "",
+        "the keys and these commands",
+    )
     .keys(&[(GLOBAL, &["?"])])
     .place(Where::Anywhere),
     ui(
@@ -756,6 +830,12 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("order sidebar alpha recent default")
     .command(":sort alpha|recent|default")
+    .head(
+        "sort",
+        &[],
+        "alpha | recent | default",
+        "how the selected channel's group is sorted",
+    )
     .needs(N::Channel),
     cmd(
         "sidebar.system",
@@ -764,7 +844,13 @@ pub static TABLE: &[ActionSpec] = &[
         "system",
     )
     .words("toggle sidebar access")
-    .command(":system"),
+    .command(":system")
+    .head(
+        "system",
+        &[],
+        "",
+        "show or hide the System channels",
+    ),
     ask(
         "section.new",
         "New sidebar section",
@@ -774,6 +860,12 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("group folder sidebar")
     .command(":section new <name>")
+    .head(
+        "section",
+        &[],
+        "new <name> | rename <name> | delete | move <name> | remove | up | down",
+        "sidebar sections, for the selected channel",
+    )
     .needs(N::Channel),
     ask(
         "section.rename",
@@ -831,7 +923,13 @@ pub static TABLE: &[ActionSpec] = &[
         "media reload",
     )
     .words("images pictures graphics")
-    .command(":media reload"),
+    .command(":media reload")
+    .head(
+        "media",
+        &[],
+        "reload",
+        "detect the terminal's image support again",
+    ),
     // Inbox: its own route and keys.
     ui("inbox.reply", "Reply in place", G::Inbox, A::Compose)
         .words("inbox answer write")
@@ -875,6 +973,12 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("tasks files documents records")
     .command(":artifacts")
+    .head(
+        "artifacts",
+        &[],
+        "",
+        "the artifacts of this channel or thread",
+    )
     .needs(N::Channel),
     ask(
         "artifact.rename",
@@ -884,6 +988,12 @@ pub static TABLE: &[ActionSpec] = &[
         &[Arg::new(Ask::Text, "title")],
     )
     .command(":artifact rename <title>")
+    .head(
+        "artifact",
+        &[],
+        "rename <title> | delete | restore | move <#channel>",
+        "change the selected artifact",
+    )
     .needs(N::Artifact),
     fill(
         "artifact.delete",
@@ -912,10 +1022,22 @@ pub static TABLE: &[ActionSpec] = &[
     .needs(N::Artifact),
     cmd("tasks.panel", "My tasks", G::Channel, "tasks")
         .words("assigned todo artifacts")
-        .command(":tasks"),
+        .command(":tasks")
+        .head(
+            "tasks",
+            &["my-tasks"],
+            "",
+            "the tasks assigned to you",
+        ),
     cmd("net.resync", "Resync channel history", G::Channel, "resync")
         .words("reload history messages")
         .command(":resync")
+        .head(
+            "resync",
+            &[],
+            "",
+            "load this channel's history again",
+        )
         .needs(N::Channel),
     fill("dm.hide", "Hide this DM", G::Channel, "dm hide")
         .words("direct message close")
@@ -934,11 +1056,23 @@ pub static TABLE: &[ActionSpec] = &[
     ask("solo.new", "New Solo chat", G::Channel, "solo", &[NAME])
         .words("notes private channel")
         .command(":solo <name>")
+        .head(
+            "solo",
+            &[],
+            "<name>",
+            "create a Solo chat",
+        )
         .needs(N::Connected),
     // Huddle: voice in a channel.
     cmd("huddle.panel", "Huddle panel", G::Huddle, "huddle")
         .words("call voice audio")
         .command(":huddle")
+        .head(
+            "huddle",
+            &[],
+            "[start | join | leave | end | mute | react <emoji> | devices | input <name> | output <name>]",
+            "the huddle of this channel",
+        )
         .aliases(&["huddle"])
         .needs(N::Channel),
     ask(
@@ -1016,10 +1150,22 @@ pub static TABLE: &[ActionSpec] = &[
     cmd("apps.panel", "Installed apps", G::Apps, "apps")
         .words("app list")
         .command(":apps")
+        .head(
+            "apps",
+            &[],
+            "",
+            "the installed apps",
+        )
         .aliases(&["apps"]),
     ask("app.open", "Open app here", G::Apps, "app open", &[APP])
         .words("board app run")
         .command(":app open <name>")
+        .head(
+            "app",
+            &[],
+            "open <name> | close | zoom | share | unshare | pending | approve | refuse | rollback | enable | disable | remove | add | new | dev | brief",
+            "the app of this channel, and managing apps",
+        )
         .needs(N::Channel),
     cmd("app.close", "Close app here", G::Apps, "app close")
         .command(":app close")
@@ -1124,6 +1270,12 @@ pub static TABLE: &[ActionSpec] = &[
     cmd("agents.panel", "My agents", G::Agents, "agents")
         .words("local agents bots")
         .command(":agents [local|directory]")
+        .head(
+            "agents",
+            &[],
+            "[local | directory]",
+            "your agents, or the directory of verified agents",
+        )
         .aliases(&["agents"]),
     cmd(
         "agents.directory",
@@ -1135,13 +1287,31 @@ pub static TABLE: &[ActionSpec] = &[
     .command(":agents directory"),
     cmd("agent.new", "Create a local agent", G::Agents, "agent new")
         .words("new bot add agent")
-        .command(":agent new [name]"),
+        .command(":agent new [name]")
+        .head(
+            "agent",
+            &[],
+            "new [name]",
+            "create a local agent",
+        ),
     cmd("broker.panel", "Agent broker", G::Agents, "broker")
         .words("hosted agents")
-        .command(":broker"),
+        .command(":broker")
+        .head(
+            "broker",
+            &[],
+            "",
+            "the local agent broker",
+        ),
     cmd("approval.open", "Answer what waits", G::Agents, "approvals")
         .words("approve approval allow refuse agent command app version ctrl-y")
-        .command(":approvals"),
+        .command(":approvals")
+        .head(
+            "approvals",
+            &["approve", "approval"],
+            "",
+            "what waits for your answer (also Ctrl-y)",
+        ),
     // Me.
     ask(
         "status.set",
@@ -1157,6 +1327,12 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("away lunch busy presence")
     .command(":status [--expires N[smhdw]] <text>")
+    .head(
+        "status",
+        &[],
+        "[[--expires N[smhdw]] <text> | clear]",
+        "show your status; set it; clear it",
+    )
     .aliases(&["status"])
     .needs(N::Connected),
     cmd("status.clear", "Clear my status", G::Me, "status clear")
@@ -1170,18 +1346,42 @@ pub static TABLE: &[ActionSpec] = &[
         &[Arg::new(Ask::Choice(PRESENCE), "presence")],
     )
     .words("online away visible")
-    .command(":presence [on|off]"),
+    .command(":presence [on|off]")
+    .head(
+        "presence",
+        &[],
+        "[on | off]",
+        "show or change whether bzz publishes presence",
+    ),
     cmd("id.lock", "Lock identity", G::Me, "lock")
         .words("key secure away")
         .command(":lock")
+        .head(
+            "lock",
+            &[],
+            "",
+            "lock the identity until bzz restarts",
+        )
         .aliases(&["lock"]),
     cmd("auth.signin", "Federated sign-in", G::Me, "signin")
         .words("sign in login browser")
-        .command(":signin"),
+        .command(":signin")
+        .head(
+            "signin",
+            &["sign-in"],
+            "",
+            "federated sign-in for this community",
+        ),
     // Community.
     cmd("net.reconnect", "Reconnect", G::Community, "reconnect")
         .words("network relay online")
-        .command(":reconnect"),
+        .command(":reconnect")
+        .head(
+            "reconnect",
+            &[],
+            "",
+            "reconnect to the relay",
+        ),
     fill(
         "cache.purge",
         "Purge cache of this community",
@@ -1189,14 +1389,26 @@ pub static TABLE: &[ActionSpec] = &[
         "purge-cache",
     )
     .words("clear delete local data")
-    .command(":purge-cache"),
+    .command(":purge-cache")
+    .head(
+        "purge-cache",
+        &[],
+        "",
+        "delete this community's local cache",
+    ),
     shell(
         "community.add",
         "Add a community",
         "bzz community add <url>",
     )
     .words("join new relay")
-    .command(":community add"),
+    .command(":community add")
+    .head(
+        "community",
+        &[],
+        "add | remove",
+        "done from the shell: bzz community add | remove",
+    ),
     shell(
         "community.remove",
         "Remove a community",
@@ -1209,6 +1421,12 @@ pub static TABLE: &[ActionSpec] = &[
         .words("exit close leave")
         .aliases(&["q", "quit", "exit"])
         .command(":quit")
+        .head(
+            "quit",
+            &["q"],
+            "",
+            "quit bzz (asks first)",
+        )
         .key_of(A::BackOrQuit),
     ui("nav.back", "Back or close", G::Bzz, A::BackOrQuit)
         .words("escape")

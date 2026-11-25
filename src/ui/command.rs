@@ -172,158 +172,19 @@ impl CommandSpec {
     }
 }
 
-const fn spec(
-    name: &'static str,
-    aliases: &'static [&'static str],
-    args: &'static str,
-    summary: &'static str,
-) -> CommandSpec {
-    CommandSpec {
-        name,
-        aliases,
-        args,
-        summary,
-    }
+/// Every `:` command of [`parse`], one per first word, in the order of the
+/// registry (`crate::ui::action_table::TABLE`): the row that stands for a
+/// command says its aliases, arguments and summary (v0.17 C8, plan rule
+/// 23). A test keeps these and [`parse`] together.
+pub fn commands() -> impl Iterator<Item = &'static CommandSpec> {
+    crate::ui::action_table::TABLE
+        .iter()
+        .filter_map(|row| row.head.as_ref())
 }
-
-/// Every `:` command of [`parse`], in the order the help lists them: the
-/// ones a newcomer looks for first. A test keeps this table and [`parse`]
-/// together.
-pub const COMMANDS: &[CommandSpec] = &[
-    spec("help", &[], "", "the keys and these commands"),
-    spec("quit", &["q"], "", "quit bzz (asks first)"),
-    spec("search", &[], "", "search messages"),
-    spec("inbox", &[], "", "open the Inbox"),
-    spec(
-        "dm",
-        &[],
-        "[add | hide | <npub>…]",
-        "start a DM; add a person to this DM; hide it",
-    ),
-    spec(
-        "huddle",
-        &[],
-        "[start | join | leave | end | mute | react <emoji> | devices | input <name> | output <name>]",
-        "the huddle of this channel",
-    ),
-    spec(
-        "status",
-        &[],
-        "[[--expires N[smhdw]] <text> | clear]",
-        "show your status; set it; clear it",
-    ),
-    spec(
-        "presence",
-        &[],
-        "[on | off]",
-        "show or change whether bzz publishes presence",
-    ),
-    spec(
-        "profile",
-        &[],
-        "[npub | hex]",
-        "the profile of the selected author, or of a key",
-    ),
-    spec(
-        "theme",
-        &[],
-        "[<name> | reload]",
-        "pick a theme; set one by name; reload the theme file",
-    ),
-    spec(
-        "tochannel",
-        &["send-to-channel"],
-        "",
-        "send the open thread's draft to its channel",
-    ),
-    spec(
-        "report",
-        &[],
-        "[author] <reason> [note]",
-        "report the selected message, or its author",
-    ),
-    spec(
-        "artifacts",
-        &[],
-        "",
-        "the artifacts of this channel or thread",
-    ),
-    spec(
-        "artifact",
-        &[],
-        "rename <title> | delete | restore | move <#channel>",
-        "change the selected artifact",
-    ),
-    spec("tasks", &["my-tasks"], "", "the tasks assigned to you"),
-    spec(
-        "section",
-        &[],
-        "new <name> | rename <name> | delete | move <name> | remove | up | down",
-        "sidebar sections, for the selected channel",
-    ),
-    spec(
-        "sort",
-        &[],
-        "alpha | recent | default",
-        "how the selected channel's group is sorted",
-    ),
-    spec("solo", &[], "<name>", "create a Solo chat"),
-    spec("system", &[], "", "show or hide the System channels"),
-    spec(
-        "agents",
-        &[],
-        "[local | directory]",
-        "your agents, or the directory of verified agents",
-    ),
-    spec("agent", &[], "new [name]", "create a local agent"),
-    spec(
-        "approvals",
-        &["approve", "approval"],
-        "",
-        "what waits for your answer (also Ctrl-y)",
-    ),
-    spec("broker", &[], "", "the local agent broker"),
-    spec("apps", &[], "", "the installed apps"),
-    spec(
-        "app",
-        &[],
-        "open <name> | close | zoom | share | unshare | pending | approve | refuse | rollback | enable | disable | remove | add | new | dev | brief",
-        "the app of this channel, and managing apps",
-    ),
-    spec(
-        "signin",
-        &["sign-in"],
-        "",
-        "federated sign-in for this community",
-    ),
-    spec(
-        "community",
-        &[],
-        "add | remove",
-        "done from the shell: bzz community add | remove",
-    ),
-    spec("lock", &[], "", "lock the identity until bzz restarts"),
-    spec("reconnect", &[], "", "reconnect to the relay"),
-    spec("resync", &[], "", "load this channel's history again"),
-    spec(
-        "media",
-        &[],
-        "reload",
-        "detect the terminal's image support again",
-    ),
-    spec(
-        "purge-cache",
-        &[],
-        "",
-        "delete this community's local cache",
-    ),
-];
 
 /// The command whose first word (or alias) is `word`.
 pub fn find(word: &str) -> Option<&'static CommandSpec> {
-    COMMANDS
-        .iter()
-        .find(|spec| spec.name == word || spec.aliases.contains(&word))
+    commands().find(|spec| spec.name == word || spec.aliases.contains(&word))
 }
 
 /// The command nearest to a mistyped first word: one whose name starts with
@@ -334,7 +195,7 @@ pub fn nearest(word: &str) -> Option<&'static CommandSpec> {
         return None;
     }
     let names = || {
-        COMMANDS.iter().flat_map(|spec| {
+        commands().flat_map(|spec| {
             std::iter::once(spec.name)
                 .chain(spec.aliases.iter().copied())
                 .map(move |name| (name, spec))
@@ -426,7 +287,7 @@ fn edit_distance(left: &str, right: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{COMMANDS, Command, find, nearest, parse, unknown_answer};
+    use super::{Command, commands, find, nearest, parse, unknown_answer};
 
     #[test]
     fn theme_reload_is_an_explicit_command() {
@@ -526,7 +387,7 @@ mod tests {
     /// and by each alias, so the help never lists a word bzz refuses.
     #[test]
     fn the_table_and_the_parser_agree() {
-        for spec in COMMANDS {
+        for spec in commands() {
             for word in std::iter::once(spec.name).chain(spec.aliases.iter().copied()) {
                 let sample = match word {
                     "artifact" => "artifact delete".to_owned(),
@@ -539,6 +400,64 @@ mod tests {
                     "{sample}"
                 );
                 assert_eq!(find(word), Some(spec));
+            }
+        }
+    }
+
+    /// v0.17 C8: the commands are read from the registry's rows, one row a
+    /// first word, and that row's own usage starts with the same word.
+    #[test]
+    fn each_first_word_has_one_row_of_the_registry() {
+        let mut names = commands().map(|spec| spec.name).collect::<Vec<_>>();
+        let count = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), count, "a first word stands in two rows");
+        let mut expected = vec![
+            "help",
+            "quit",
+            "search",
+            "inbox",
+            "dm",
+            "huddle",
+            "status",
+            "presence",
+            "profile",
+            "theme",
+            "tochannel",
+            "report",
+            "artifacts",
+            "artifact",
+            "tasks",
+            "section",
+            "sort",
+            "solo",
+            "system",
+            "agents",
+            "agent",
+            "approvals",
+            "broker",
+            "apps",
+            "app",
+            "signin",
+            "community",
+            "lock",
+            "reconnect",
+            "resync",
+            "media",
+            "purge-cache",
+        ];
+        expected.sort_unstable();
+        assert_eq!(names, expected);
+        for row in crate::ui::action_table::TABLE {
+            if let Some(head) = &row.head {
+                let usage = row.command.unwrap_or_default();
+                assert_eq!(
+                    usage.trim_start_matches(':').split(' ').next(),
+                    Some(head.name),
+                    "{}",
+                    row.id
+                );
             }
         }
     }
