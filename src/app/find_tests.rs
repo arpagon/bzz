@@ -205,11 +205,30 @@ async fn a_long_usage_wraps_and_is_not_cut() {
     );
 }
 
-/// The rows' words, frames and line breaks taken out.
+/// The words inside the `:` prompt's box, its frame and line breaks taken
+/// out. Only the box is read: whatever screen lies behind it (the first
+/// screen, a conversation) shows to its left and right.
 fn squeeze(screen: &[String]) -> String {
-    screen
+    let rows = screen
         .iter()
-        .map(|row| row.trim_matches(|c: char| c == '│' || c == ' '))
+        .map(|row| row.chars().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let title = "┌ command".chars().collect::<Vec<_>>();
+    let Some((top, left)) = rows.iter().enumerate().find_map(|(y, row)| {
+        row.windows(title.len())
+            .position(|window| window == title.as_slice())
+            .map(|x| (y, x))
+    }) else {
+        return String::new();
+    };
+    let right = rows[top]
+        .iter()
+        .rposition(|character| *character == '┐')
+        .unwrap_or(rows[top].len() - 1);
+    rows[top + 1..]
+        .iter()
+        .take_while(|row| row.get(left) == Some(&'│'))
+        .map(|row| row[left + 1..right].iter().collect::<String>())
         .collect::<Vec<_>>()
         .join(" ")
         .split_whitespace()
