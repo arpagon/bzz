@@ -1,0 +1,23 @@
+ 4 in the call · Ada and Lin at once
+ ▐A▌ Ada       ▁ ▁▅▅▅▅▆▆▅▅▅▅▄▁ ▁ ▁ ▁ ▁▃▅▄
+ ▐ ▌ ● live       ▀▀▀▀▀▀▀▀▀▀▀▔        ▔▀▀
+ ▐L▌ Lin       ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁▅▅▅▅▅▅▅▅▅▄▅
+ ▐ ▌ ● live                   ▀▀▀▀▀▀▀▀▀▀▀
+  S  Sam       ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁
+     quiet
+  Y  You       ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁
+     muted
+ mic muted · nobody hears you · m unmutes
+
+
+--- styles ---
+0: 1-35 Indexed(44)/Reset/BOLD
+1: 1-1 Indexed(44)/Reset/NONE 2-2 Indexed(233)/Indexed(44)/BOLD 3-3 Indexed(44)/Reset/NONE 5-7 Indexed(44)/Reset/BOLD 15-17 Indexed(242)/Reset/DIM 18-24 Indexed(243)/Reset/NONE 25-29 Indexed(66)/Reset/NONE 30-37 Indexed(242)/Reset/DIM 38-39 Indexed(73)/Reset/NONE 40-40 Indexed(44)/Reset/NONE
+2: 1-1 Indexed(44)/Reset/NONE 2-2 Indexed(233)/Indexed(44)/BOLD 3-3 Indexed(44)/Reset/NONE 5-10 Indexed(44)/Reset/NONE 18-24 Indexed(243)/Reset/NONE 25-29 Indexed(66)/Reset/NONE 38-39 Indexed(73)/Reset/NONE 40-40 Indexed(44)/Reset/NONE
+3: 1-1 Indexed(176)/Reset/NONE 2-2 Indexed(233)/Indexed(176)/BOLD 3-3 Indexed(176)/Reset/NONE 5-7 Indexed(176)/Reset/BOLD 15-29 Indexed(242)/Reset/DIM 30-30 Indexed(103)/Reset/NONE 31-35 Indexed(139)/Reset/NONE 36-37 Indexed(140)/Reset/NONE 38-40 Indexed(176)/Reset/NONE
+4: 1-1 Indexed(176)/Reset/NONE 2-2 Indexed(233)/Indexed(176)/BOLD 3-3 Indexed(176)/Reset/NONE 5-10 Indexed(176)/Reset/NONE 30-30 Indexed(103)/Reset/NONE 31-35 Indexed(139)/Reset/NONE 36-37 Indexed(140)/Reset/NONE 38-40 Indexed(176)/Reset/NONE
+5: 2-2 Indexed(233)/Indexed(107)/BOLD 15-40 Indexed(242)/Reset/DIM
+6: 2-2 Indexed(233)/Indexed(107)/BOLD 5-9 Indexed(242)/Reset/NONE
+7: 2-2 Indexed(231)/Indexed(242)/BOLD 15-40 Indexed(242)/Reset/DIM
+8: 2-2 Indexed(231)/Indexed(242)/BOLD 5-9 Indexed(242)/Reset/NONE
+9: 1-40 Indexed(242)/Reset/NONE

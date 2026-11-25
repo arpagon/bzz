@@ -1,0 +1,22 @@
+ 4 in the call · Ada and Lin at once
+ ▐A▌ Ada       ▁ ▁▅▅▅▅▆▆▅▅▅▅▄▁ ▁ ▁ ▁ ▁▃▅▄
+ ▐ ▌ ● live       ▀▀▀▀▀▀▀▀▀▀▀▔        ▔▀▀
+ ▐L▌ Lin       ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁▅▅▅▅▅▅▅▅▅▄▅
+ ▐ ▌ ● live                   ▀▀▀▀▀▀▀▀▀▀▀
+  S  Sam       ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁
+     quiet
+  Y  You       ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁
+     muted
+ mic muted · nobody hears you · m unmutes
+
+
+--- styles ---
+0: 1-35 Reset/Reset/BOLD
+1: 2-2 Reset/Reset/BOLD 5-7 Reset/Reset/BOLD 15-26 Reset/Reset/DIM 30-37 Reset/Reset/DIM
+2: 2-2 Reset/Reset/BOLD 18-26 Reset/Reset/DIM
+3: 2-2 Reset/Reset/BOLD 5-7 Reset/Reset/BOLD 15-29 Reset/Reset/DIM
+4: 2-2 Reset/Reset/BOLD
+5: 2-2 Reset/Reset/BOLD 15-40 Reset/Reset/DIM
+6: 2-2 Reset/Reset/BOLD
+7: 2-2 Reset/Reset/BOLD 15-40 Reset/Reset/DIM
+8: 2-2 Reset/Reset/BOLD

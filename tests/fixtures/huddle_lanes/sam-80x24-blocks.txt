@@ -1,0 +1,35 @@
+ 4 in the call · Sam is speaking                                  10s ago … now
+  A  Ada                    ▁ ▁ ▁ ▁ ▁▅▅▅▅▅▆▅▅▅▅▅▅▂▁ ▁ ▁ ▁ ▁ ▁▅▅▅▅▆▆▅▅▂▁ ▁ ▁ ▁ ▁
+     2s ago                          ▀▀▀▀▀▀▀▀▀▀▀▀▔           ▀▀▀▀▀▀▀▀▔
+  L  Lin                    ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▂▅▅▄▅▅▅▅▅▅▅▅▅▅▅▄▁ ▁ ▁ ▁ ▁ ▁ ▁
+     2s ago                                       ▔▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▔
+ ▐S▌ Sam                    ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▄▄▄▄▄▅▄
+ ▐ ▌ ● live                                                             ▀▀▀▀▀▀▀
+  Y  You · your microphone  ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▂▄▄▄▃▁▁ ▁ ▁
+     muted                                                          ▔▀▀▀▔▔
+ mic muted · nobody hears you · m unmutes
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+--- styles ---
+0: 1-31 Indexed(113)/Reset/BOLD 66-78 Indexed(242)/Reset/NONE
+1: 2-2 Indexed(233)/Indexed(66)/BOLD 28-36 Indexed(242)/Reset/DIM 37-47 Indexed(243)/Reset/NONE 48-49 Indexed(66)/Reset/NONE 50-60 Indexed(242)/Reset/DIM 61-69 Indexed(73)/Reset/NONE 70-78 Indexed(242)/Reset/DIM
+2: 2-2 Indexed(233)/Indexed(66)/BOLD 5-10 Indexed(242)/Reset/NONE 37-47 Indexed(243)/Reset/NONE 48-49 Indexed(66)/Reset/NONE 61-69 Indexed(73)/Reset/NONE
+3: 2-2 Indexed(233)/Indexed(103)/BOLD 28-49 Indexed(242)/Reset/DIM 50-56 Indexed(96)/Reset/NONE 57-58 Indexed(103)/Reset/NONE 59-66 Indexed(139)/Reset/NONE 67-78 Indexed(242)/Reset/DIM
+4: 2-2 Indexed(233)/Indexed(103)/BOLD 5-10 Indexed(242)/Reset/NONE 50-56 Indexed(96)/Reset/NONE 57-58 Indexed(103)/Reset/NONE 59-66 Indexed(139)/Reset/NONE
+5: 1-1 Indexed(113)/Reset/NONE 2-2 Indexed(233)/Indexed(113)/BOLD 3-3 Indexed(113)/Reset/NONE 5-7 Indexed(113)/Reset/BOLD 28-71 Indexed(242)/Reset/DIM 72-78 Indexed(113)/Reset/NONE
+6: 1-1 Indexed(113)/Reset/NONE 2-2 Indexed(233)/Indexed(113)/BOLD 3-3 Indexed(113)/Reset/NONE 5-10 Indexed(113)/Reset/NONE 72-78 Indexed(113)/Reset/NONE
+7: 2-2 Indexed(231)/Indexed(242)/BOLD 28-67 Indexed(242)/Reset/DIM 68-73 Indexed(242)/Reset/NONE 74-78 Indexed(242)/Reset/DIM
+8: 2-2 Indexed(231)/Indexed(242)/BOLD 5-9 Indexed(242)/Reset/NONE 68-73 Indexed(242)/Reset/NONE
+9: 1-40 Indexed(242)/Reset/NONE

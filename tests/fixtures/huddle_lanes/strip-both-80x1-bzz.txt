@@ -1,0 +1,3 @@
+ NORMAL  🎧  ⣄⣀⣴⣤⣤⣴⣶⣦⣶⣶⣴⣴ Ada and Lin · mic mut…  online  SIXEL  ? help · q quit
+--- styles ---
+0: 0-7 White/DarkGray/NONE 8-9 Black/Yellow/BOLD 11-11 Black/Yellow/BOLD 12-13 Rgb(99, 121, 121)/Yellow/BOLD 14-15 Rgb(123, 110, 125)/Yellow/BOLD 16-16 Rgb(126, 111, 129)/Yellow/BOLD 17-17 Rgb(138, 113, 143)/Yellow/BOLD 18-18 Rgb(150, 115, 156)/Yellow/BOLD 19-19 Rgb(161, 117, 170)/Yellow/BOLD 20-20 Rgb(173, 118, 183)/Yellow/BOLD 21-21 Rgb(185, 120, 197)/Yellow/BOLD 22-22 Rgb(53, 186, 186)/Yellow/BOLD 23-23 Rgb(208, 124, 224)/Yellow/BOLD 24-24 Black/Yellow/BOLD 25-35 Rgb(46, 196, 196)/Yellow/BOLD 36-45 Rgb(108, 108, 108)/Yellow/BOLD 46-47 Black/Yellow/BOLD 48-55 Black/Cyan/NONE 56-62 White/Black/NONE 63-79 White/DarkGray/NONE
