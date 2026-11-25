@@ -24,6 +24,8 @@ mod palette;
 mod pane;
 #[cfg(feature = "apps")]
 mod share;
+// v0.17 L7 to L9: what moves, and when the loop wakes (task `motion`).
+mod stage;
 // v0.17 C3 to C7: the help, the `:` line, the finder, the leader panel
 // and two keys (task `find`).
 #[cfg(test)]
@@ -511,6 +513,8 @@ pub struct App {
     /// The visualizer (plan v0.17.0 B): levels read each frame, drawn and
     /// forgotten; cleared when the call stops.
     huddle_viz: HuddleViz,
+    /// What moves on screen: toasts, the focus sweep, tints (v0.17 L7, L8).
+    stage: stage::Stage,
     broker_attempted: Option<Uuid>,
     artifact_caps_requested: Option<Uuid>,
     artifact_sync: Option<ArtifactSync>,
@@ -694,7 +698,6 @@ pub enum Exit {
 const LEADER_TIMEOUT: Duration = Duration::from_millis(750);
 const TERMINAL_ERROR_YIELD: Duration = Duration::from_millis(50);
 const RELAY_LAG_YIELD: Duration = Duration::from_millis(5);
-const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const AGENT_SPINNER_INTERVAL: Duration = Duration::from_millis(200);
 const RELAY_EVENT_DEDUP_CAPACITY: usize = 16_384;
 const AGENT_TYPING_SUBSCRIPTION: &str = "agent-typing-selected";
@@ -1194,6 +1197,7 @@ impl App {
             #[cfg(feature = "huddles-audio")]
             huddle_call: None,
             huddle_viz: HuddleViz::default(),
+            stage: stage::Stage::default(),
             broker_attempted: None,
             local_agents: None,
             local_agents_attempted: None,
@@ -1354,23 +1358,32 @@ impl App {
         // read ahead of an Enter to see whether a paste goes on behind it.
         let mut door = crate::ui::keymap::KeyDoor::default();
         let mut read_ahead = std::collections::VecDeque::new();
-        let mut tick = tokio::time::interval(Duration::from_millis(100));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut frame_tick = tokio::time::interval(FRAME_INTERVAL);
-        frame_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // No fixed tick: the loop sleeps until the next thing that is due, a
+        // frame asked for, an animation's next frame, the huddle's levels,
+        // a notice's end or the housekeeping (v0.17 L9, rule 20).
+        let mut pacing = stage::Pacing::new();
         let mut redraw = RedrawGate::default();
         while !self.should_quit {
+            let now = tokio::time::Instant::now();
             // A notice lives about five seconds; the loop sleeps until then
             // and draws one frame when it goes (rule 20).
-            self.notice_timer
-                .observe(self.status_error.as_deref(), tokio::time::Instant::now());
+            self.notice_timer.observe(self.status_error.as_deref(), now);
             let notice_deadline = self.notice_timer.deadline();
+            let motion_at = self.motion_wake(now);
+            let huddle_polled = self.huddle_polled();
+            let draw_at = crate::ui::motion::earliest([
+                pacing.frame_at(redraw.pending(), now),
+                motion_at,
+                pacing.huddle_at(huddle_polled, now),
+            ]);
+            let tick_at = pacing.tick_at(self.housekeeping_busy(), now);
             tokio::select! {
                 biased;
                 _=&mut shutdown=>self.should_quit=true,
                 attachment=self.attachment_rx.recv()=>if let Some(event)=attachment{
                     self.handle_attachment_background(event).await?;
                     redraw.request();
+                    pacing.poke();
                 },
                 maybe=next_read_ahead_event(&mut read_ahead, &mut input)=>{
                     if let Some(event)=maybe {
@@ -1394,11 +1407,22 @@ impl App {
                             _ => {}
                         }
                         redraw.request();
+                        pacing.poke();
                     }
                 },
-                _=frame_tick.tick()=>{
-                    redraw.request_if(self.tick_huddle_viz());
-                    if redraw.take() {
+                // After the input: a waiting key is handled before a frame
+                // is drawn (rule 20).
+                () = stage::sleep_until(draw_at) => {
+                    let now = tokio::time::Instant::now();
+                    if pacing.huddle_due(huddle_polled, now) {
+                        pacing.huddle_read(now);
+                        redraw.request_if(self.tick_huddle_viz());
+                    }
+                    if motion_at.is_some_and(|at| at <= now) {
+                        self.stage.advance(now);
+                        redraw.request();
+                    }
+                    if pacing.frame_due(now) && redraw.take() {
                         // What the apps produced is taken before the frame
                         // that shows them.
                         self.poll_apps();
@@ -1406,10 +1430,13 @@ impl App {
                         terminal
                             .draw(|frame| self.render(frame))
                             .map_err(|error| Error::io("terminal", error))?;
+                        pacing.drawn(tokio::time::Instant::now());
                         self.huddle_frame_drawn(drawing.elapsed().as_secs_f64());
                     }
                 },
-                background=self.background_rx.recv()=>if let Some(event)=background{match event{
+                background=self.background_rx.recv()=>if let Some(event)=background{
+                pacing.poke();
+                match event{
                     Background::AppWake=>{
                         self.app_woken();
                         redraw.request_if(self.poll_apps());
@@ -1427,13 +1454,14 @@ impl App {
                         }
                     },
                     Background::Failed(message)=>{
+                        self.stage.loaded();
                         self.status_error=Some(message);
                         self.dm_picker.submitting=false;
                         self.inbox_loading=false;
                         self.inbox_detail_loading=false;
                         self.agent_directory.loading=false;
                     },
-                    Background::Saved=>self.status_error=Some("attachment saved".into()),
+                    Background::Saved=>self.toast("attachment saved"),
                     Background::FederatedReady=>{
                         self.status_error=Some("federated sign-in complete; reconnecting".into());
                         if let Some(runtime)=&self.runtime {
@@ -1446,6 +1474,7 @@ impl App {
                     },
                     Background::Notice(message)=>self.status_error=Some(message),
                     Background::HistoryLoaded { community, summaries }=>{
+                        self.stage.loaded();
                         self.cache_dirty=true;
                         if self.active_community_id()==Some(community) {
                             self.hydrate_cache().await?;
@@ -1661,12 +1690,14 @@ impl App {
                         redraw.request();
                     }
                 },
-                _=tick.tick()=>{
+                () = tokio::time::sleep_until(tick_at) => {
+                    pacing.ticked(tokio::time::Instant::now());
                     let changed=self.on_tick().await?;
                     let apps=self.tick_apps().await?;
                     redraw.request_if(changed || apps);
                 },
                 network=next_network(&mut self.runtime)=>{
+                    pacing.poke();
                     if let Some(event)=network {
                         let visible_changed = self.handle_network(event).await?;
                         redraw.request_if(visible_changed);
@@ -4446,7 +4477,7 @@ impl App {
                         _ => {}
                     }
                 }
-                self.status_error = Some(format!(
+                self.toast(format!(
                     "copied {} message(s), {} bytes to clipboard",
                     selected.len(),
                     bytes
@@ -6479,6 +6510,10 @@ impl App {
             self.last_marked.remove(&channel.to_string());
             self.subscribe_channel(channel).await?;
             self.spawn_backfill(channel);
+            if self.runtime.is_some() {
+                // Placeholder rows shimmer while nothing is cached (L8).
+                self.stage.loading(channel, tokio::time::Instant::now());
+            }
             // What was unread when the channel opened keeps its `── new ──`
             // line while the channel stays open, though it is read now.
             self.new_since = self.channel_read_at(channel).await?.map(|at| (channel, at));
@@ -6901,7 +6936,7 @@ impl App {
     async fn remove_last_attachment(&mut self) -> Result<()> {
         if let Some(staging) = self.staging_attachments.pop() {
             self.staging_media.remove(&staging.id);
-            self.status_error = Some("attachment removed".into());
+            self.toast("attachment removed");
             return Ok(());
         }
         let Some(attachment) = self.composer.attachments.pop() else {
@@ -6914,7 +6949,7 @@ impl App {
         {
             self.discard_pending_attachment(target.community_id, pending);
         }
-        self.status_error = Some("attachment removed".into());
+        self.toast("attachment removed");
         self.persist_draft().await
     }
 
@@ -8034,7 +8069,7 @@ impl App {
                     })
                     .await?;
                 self.cache_dirty = true;
-                self.status_error = Some("sidebar updated".into());
+                self.toast("sidebar updated");
             }
             Ok(None) => self.status_error = Some("sidebar unchanged".into()),
             Err(error) => self.status_error = Some(format!("sidebar not changed: {error}")),
@@ -11143,6 +11178,7 @@ impl App {
         }
         if self.presentation.route == Route::Inbox {
             self.render_inbox_workspace(frame, area, &mut hit_map);
+            self.stage_toast(frame, area);
             self.render_overlay(frame, area, &mut hit_map);
             self.last_hit_map = Some(hit_map);
             return;
@@ -11178,6 +11214,7 @@ impl App {
                 self.render_app_pane(frame, app, true, &mut hit_map);
             }
             self.render_status(frame, panes.status);
+            self.stage_toast(frame, area);
             self.render_overlay(frame, area, &mut hit_map);
             self.last_hit_map = Some(hit_map);
             return;
@@ -11379,6 +11416,7 @@ impl App {
             self.render_composer_dock(frame, composer, &mut hit_map);
         }
         self.render_status(frame, panes.status);
+        self.stage_workspace(frame, &panes, &hit_map);
         self.render_overlay(frame, area, &mut hit_map);
         self.last_hit_map = Some(hit_map);
     }
@@ -11828,6 +11866,13 @@ impl App {
             // clears and draws its own cells.
             crate::ui::frame::dim(frame.buffer_mut(), area, &self.theme);
         }
+        // An overlay unfolds as it opens and folds as it closes (L8).
+        let backdrop = self.stage_overlay_begin(frame.buffer_mut());
+        self.render_overlay_body(frame, area, hit_map);
+        self.stage_overlay_end(frame.buffer_mut(), area, backdrop);
+    }
+
+    fn render_overlay_body(&mut self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
         match self.presentation.overlay {
             Some(Overlay::Help) => {
                 let actions = derive_actions(self.action_context());

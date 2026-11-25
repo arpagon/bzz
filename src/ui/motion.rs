@@ -312,7 +312,8 @@ pub fn restore_outside(buf: &mut Buffer, from: &Buffer, rect: Rect, shown: Rect)
     let rect = rect.intersection(buf.area).intersection(from.area);
     for y in rect.top()..rect.bottom() {
         for x in rect.left()..rect.right() {
-            let inside = x >= shown.left() && x < shown.right() && y >= shown.top() && y < shown.bottom();
+            let inside =
+                x >= shown.left() && x < shown.right() && y >= shown.top() && y < shown.bottom();
             if !inside {
                 buf[(x, y)] = from[(x, y)].clone();
             }
@@ -370,12 +371,7 @@ pub fn shimmer(buf: &mut Buffer, area: Rect, phase: f32, quiet: Style, bright: S
         }
     }
     // Each placeholder: an author's width, then two lines of body.
-    let shapes: [(u16, [u16; 2]); 4] = [
-        (6, [70, 45]),
-        (8, [55, 0]),
-        (5, [80, 62]),
-        (7, [40, 0]),
-    ];
+    let shapes: [(u16, [u16; 2]); 4] = [(6, [70, 45]), (8, [55, 0]), (5, [80, 62]), (7, [40, 0])];
     let width = area.width.saturating_sub(2);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let band = (f32::from(width + 16) * phase.clamp(0.0, 1.0)) as u16;
@@ -428,7 +424,13 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_animation_asks_for_frames_only_while_it_runs() {
         let start = Instant::now();
-        let anim = Anim::new(start, scale::BASE, Ease::OutCubic, Motion::Full, Role::Informs);
+        let anim = Anim::new(
+            start,
+            scale::BASE,
+            Ease::OutCubic,
+            Motion::Full,
+            Role::Informs,
+        );
         assert_eq!(anim.wake(start), Some(at(start, 33)));
         assert_eq!(anim.wake(at(start, 140)), Some(at(start, 150)));
         assert_eq!(anim.progress(at(start, 150)), 1.0);
@@ -469,8 +471,20 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn calm_keeps_what_informs_and_drops_what_decorates() {
         let start = Instant::now();
-        let informs = Anim::new(start, scale::SLOW, Ease::Linear, Motion::Calm, Role::Informs);
-        let decorates = Anim::new(start, scale::SLOW, Ease::Linear, Motion::Calm, Role::Decorates);
+        let informs = Anim::new(
+            start,
+            scale::SLOW,
+            Ease::Linear,
+            Motion::Calm,
+            Role::Informs,
+        );
+        let decorates = Anim::new(
+            start,
+            scale::SLOW,
+            Ease::Linear,
+            Motion::Calm,
+            Role::Decorates,
+        );
         assert!(informs.running(start));
         assert!(!decorates.running(start));
         assert_eq!(decorates.wake(start), None);
@@ -535,11 +549,19 @@ mod tests {
         let mut after = before.clone();
         after[(4, 2)].set_symbol("x");
         after[(9, 3)].set_symbol("y");
-        assert_eq!(changed_rect(&before, &after, area), Some(Rect::new(4, 2, 6, 2)));
+        assert_eq!(
+            changed_rect(&before, &after, area),
+            Some(Rect::new(4, 2, 6, 2))
+        );
         assert_eq!(changed_rect(&before, &before, area), None);
         let cells = copy_cells(&after, Rect::new(4, 2, 6, 2));
         let mut empty = Buffer::empty(area);
-        paste_cells(&mut empty, Rect::new(4, 2, 6, 2), &cells, Rect::new(4, 2, 6, 2));
+        paste_cells(
+            &mut empty,
+            Rect::new(4, 2, 6, 2),
+            &cells,
+            Rect::new(4, 2, 6, 2),
+        );
         assert_eq!(empty[(9, 3)].symbol(), "y");
     }
 

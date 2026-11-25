@@ -35,6 +35,12 @@ impl RedrawGate {
         }
     }
 
+    /// Whether a frame is asked for and not yet drawn: the loop then wakes
+    /// to draw it (v0.17 L9).
+    pub const fn pending(&self) -> bool {
+        self.dirty
+    }
+
     /// Returns true once per requested frame and records that the caller is
     /// about to draw it.
     pub fn take(&mut self) -> bool {

@@ -243,7 +243,10 @@ mod tests {
         let start = Instant::now();
         let mut toasts = Toasts::default();
         toasts.push("Saved.", start, Motion::Off);
-        assert_eq!(toasts.current(start).map(|(_, phase)| phase), Some(Phase::Holding));
+        assert_eq!(
+            toasts.current(start).map(|(_, phase)| phase),
+            Some(Phase::Holding)
+        );
         let drawn = frames(&mut toasts, start, Duration::from_secs(10));
         // The frame that takes it away, at 3 s, and nothing else.
         assert_eq!(drawn, vec![3_000]);
@@ -276,10 +279,23 @@ mod tests {
             (0..40).map(|x| buf[(x, y)].symbol()).collect::<String>()
         };
         let mut settled = Buffer::empty(room);
-        toasts.render(&mut settled, room, &theme, start + Duration::from_millis(200));
-        assert_eq!(row(&settled, 8).trim_end(), format!("{}│ Saved. │", " ".repeat(30)));
+        toasts.render(
+            &mut settled,
+            room,
+            &theme,
+            start + Duration::from_millis(200),
+        );
+        assert_eq!(
+            row(&settled, 8).trim_end(),
+            format!("{}│ Saved. │", " ".repeat(30))
+        );
         let mut entering = Buffer::empty(room);
-        toasts.render(&mut entering, room, &theme, start + Duration::from_millis(20));
+        toasts.render(
+            &mut entering,
+            room,
+            &theme,
+            start + Duration::from_millis(20),
+        );
         assert!(row(&entering, 8).trim().len() < row(&settled, 8).trim().len());
     }
 }
