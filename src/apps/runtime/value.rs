@@ -205,6 +205,115 @@ pub fn to_lua(lua: &Lua, v: &Json) -> mlua::Result<Value> {
     })
 }
 
+/// The content a script writes back over the revision it read, with what
+/// Lua could not show it put back as it was read (F1, v0.17).
+///
+/// A script is handed a `null` as nil and an empty object as an empty
+/// table, and nothing it writes can tell those from a field it left out or
+/// an empty list; a whole number past what a Lua integer holds is a float
+/// to it. So, where the script's value is exactly what it was handed:
+///
+/// - a field that held `null` and that the script does not name stays
+///   `null` (in an object; in a list, a hole at a place that held `null`);
+/// - an empty table where the record held `{}` (or an object of nulls)
+///   is written as it was read;
+/// - a number equal to the one read is written as it was read.
+///
+/// Whatever the script changed is written as it wrote it.
+pub fn as_read(read: &Map<String, Json>, written: Map<String, Json>) -> Map<String, Json> {
+    match restore(&Json::Object(read.clone()), Json::Object(written)) {
+        Json::Object(map) => map,
+        // An object over an object stays one.
+        _ => Map::new(),
+    }
+}
+
+fn is_nothing(v: &Json) -> bool {
+    v.is_null()
+}
+
+fn restore(read: &Json, written: Json) -> Json {
+    match (read, written) {
+        (Json::Object(before), Json::Object(mut after)) => {
+            for (key, was) in before {
+                match after.remove(key) {
+                    Some(now) => {
+                        after.insert(key.clone(), restore(was, now));
+                    }
+                    None if is_nothing(was) => {
+                        after.insert(key.clone(), Json::Null);
+                    }
+                    None => {}
+                }
+            }
+            Json::Object(after)
+        }
+        // `{}`, or an object of nulls, was handed over as an empty table.
+        (Json::Object(before), Json::Array(after))
+            if after.is_empty() && before.values().all(is_nothing) =>
+        {
+            Json::Object(before.clone())
+        }
+        (Json::Array(before), Json::Array(after)) => {
+            // A list that ended in nulls is a shorter sequence in Lua.
+            let tail = before.get(after.len()..).unwrap_or_default();
+            let mut items: Vec<Json> = after
+                .into_iter()
+                .enumerate()
+                .map(|(i, now)| match before.get(i) {
+                    Some(was) => restore(was, now),
+                    None => now,
+                })
+                .collect();
+            if !tail.is_empty() && tail.iter().all(is_nothing) {
+                items.extend(tail.iter().cloned());
+            }
+            Json::Array(items)
+        }
+        // A list with a null inside is a table with a hole: an object of
+        // the places that hold something.
+        (Json::Array(before), Json::Object(after))
+            if !after.is_empty()
+                && after.keys().all(|key| {
+                    key.parse::<usize>()
+                        .is_ok_and(|i| i >= 1 && i <= before.len() && key == &i.to_string())
+                })
+                && before.iter().enumerate().all(|(i, was)| {
+                    after.contains_key(&(i + 1).to_string()) || is_nothing(was)
+                }) =>
+        {
+            let mut after = after;
+            Json::Array(
+                before
+                    .iter()
+                    .enumerate()
+                    .map(|(i, was)| match after.remove(&(i + 1).to_string()) {
+                        Some(now) => restore(was, now),
+                        None => Json::Null,
+                    })
+                    .collect(),
+            )
+        }
+        (Json::Number(before), Json::Number(after)) => {
+            // Two whole numbers are compared as such: past 2^53 two of them
+            // can be one float.
+            let same = match (before.as_i64(), after.as_i64()) {
+                (Some(a), Some(b)) => a == b,
+                _ => match (before.as_u64(), after.as_u64()) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => before.as_f64().is_some() && before.as_f64() == after.as_f64(),
+                },
+            };
+            if same {
+                Json::Number(before.clone())
+            } else {
+                Json::Number(after)
+            }
+        }
+        (_, written) => written,
+    }
+}
+
 pub fn map_to_lua(lua: &Lua, map: &Map<String, Json>) -> mlua::Result<Table> {
     let t = lua.create_table_with_capacity(0, map.len())?;
     for (key, item) in map {
@@ -383,6 +492,50 @@ mod tests {
         let Value::Table(t) = back else { panic!() };
         assert!(matches!(t.raw_get::<Value>("n"), Ok(Value::Integer(3))));
         assert!(matches!(t.raw_get::<Value>("w"), Ok(Value::Number(_))));
+    }
+
+    /// What a script writes back of `read` when it changes nothing: JSON to
+    /// Lua and back, as an update carries it.
+    fn round_trip(vm: &Vm, read: &Json) -> Map<String, Json> {
+        let Json::Object(read) = read else { panic!() };
+        let table = Value::Table(map_to_lua(vm.lua(), read).expect("lua"));
+        to_content(&table, 1 << 20, 32).expect("content")
+    }
+
+    #[test]
+    fn an_update_keeps_what_lua_could_not_show() {
+        let vm = vm();
+        let read = serde_json::json!({
+            "gone": null, "nested": { "a": 1, "b": null }, "meta": {}, "nulls": { "x": null },
+            "list": [1, null, 3], "tail": [1, null], "one": [null], "labels": [],
+            "big": 12345678901234567890_u64, "exact": 1795537221.1991239, "float": 1.0,
+            "deep": [{ "e": {} }, { "n": null }],
+        });
+        let written = round_trip(&vm, &read);
+        // Lua's view alone loses these.
+        assert_ne!(Json::Object(written.clone()), read);
+        let Json::Object(map) = &read else { panic!() };
+        assert_eq!(Json::Object(as_read(map, written)), read);
+    }
+
+    #[test]
+    fn an_update_writes_what_the_script_changed() {
+        let read = serde_json::json!({
+            "gone": null, "meta": {}, "big": 9007199254740992_i64, "f": 2.5, "list": [1, null],
+        });
+        let Json::Object(read) = read else { panic!() };
+        let written = serde_json::json!({
+            "gone": 1, "meta": [1], "big": 9007199254740993_i64, "f": 2.0, "list": [1, 2], "new": {},
+        });
+        let Json::Object(map) = written.clone() else {
+            panic!()
+        };
+        assert_eq!(Json::Object(as_read(&read, map)), written);
+        // Fields left out that held something stay out; a null stays.
+        assert_eq!(
+            Json::Object(as_read(&read, Map::new())),
+            serde_json::json!({ "gone": null })
+        );
     }
 
     #[test]

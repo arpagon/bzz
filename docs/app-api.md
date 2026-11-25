@@ -242,6 +242,16 @@ object; an empty table inside content is a list. A nil field is left out;
 number arrives as a Lua integer, any other as a float. Text must be valid
 UTF-8: cut a string with `ui.truncate` or `utf8.offset`, not by bytes.
 
+**An update keeps what Lua cannot show.** A script sees exactly the above,
+also of records other clients wrote. When it sends `data.update`, bzz
+writes back, as they were in the revision named by `rev`, the values the
+script could not tell apart: a `null` it left out (it saw nil), an empty
+table where the record held `{}`, a list whose `null` places it saw as
+holes, and a number it left equal to the one it read (a whole number past
+what a Lua integer holds arrives as a float). What the script changed is
+written as it wrote it. So a field another client set to `null` stays
+`null`; to make it something else, set it.
+
 **The title.** Other clients list a record by its title. bzz takes
 `content.title` when it is a string with something to show: control
 characters become spaces, the ends are trimmed, and it is
