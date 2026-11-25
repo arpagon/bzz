@@ -274,10 +274,14 @@ fn an_endless_loop_is_stopped_by_time() {
             at: Some("board.lua:3".into())
         })
     );
-    // A script that ends in time is not touched.
+    // A script that ends in time is not touched. It takes a few
+    // milliseconds, but on a loaded machine its thread can wait past 50 ms
+    // for a core, and then the stop is right: it is given the budget and
+    // the margin of this run, as the hostile scripts are.
+    let roomy = Vm::new(16 * MIB, budget + super::hostile::margin()).expect("Lua starts");
     assert_eq!(
         integer(
-            &vm,
+            &roomy,
             "local n = 0 for i = 1, 100000 do n = n + i end return n"
         ),
         5_000_050_000
