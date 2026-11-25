@@ -98,10 +98,14 @@ jobs:
   upgrade:
     # Release acceptance: a real profile of the last release (v0.15.0) opened
     # by this build on three systems; the one before it (v0.14.0) on Linux.
+    # macOS on Intel: hosted Apple Silicon runners are scarce, and on
+    # 2026-11-24 jobs waiting for `macos-15` were cancelled after 15 minutes
+    # ("not acquired by Runner of type hosted"). The profile does not depend
+    # on the processor; the `build` job still tests on Apple Silicon.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+        os: [ubuntu-latest, macos-15-intel, windows-latest]
         from: ['0150']
         include:
           - os: ubuntu-latest
@@ -163,14 +167,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Tone round trip and device release through a virtual device
         shell: bash
+        # An experimental row reports its result in this step and passes the
+        # job: with `continue-on-error` on the job alone, the run passes but
+        # the job and the pull request's check still show as failed.
+        continue-on-error: ${{ matrix.experimental }}
         run: ./scripts/test-audio-loopback.sh
   agent-host:
     # v0.15.0 M2 and M3: the Pi Durable agent host (agent-host/). Node only:
     # no Rust, no relay, no model and no network beyond this machine.
+    # macOS on Intel: Node does not care which processor, and hosted Apple
+    # Silicon runners are scarce (see `upgrade`).
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+        os: [ubuntu-latest, macos-15-intel, windows-latest]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
