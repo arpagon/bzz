@@ -1043,7 +1043,10 @@ mod tests {
         let at = find(&screen, "Esc close");
         assert_eq!(Some(screen[at].fg), hint(&app), "the palette's keys");
         let title = find(&screen, " Actions ");
-        assert!(screen[title].modifier.contains(Modifier::REVERSED), "a label");
+        assert!(
+            screen[title].modifier.contains(Modifier::REVERSED),
+            "a label"
+        );
         // The first screen, with no community.
         let temporary = TempDir::new().unwrap();
         let mut empty = app_without_community(&temporary).await;
@@ -1064,5 +1067,128 @@ mod tests {
         store.sync_config(&config).unwrap();
         let handle = StoreHandle::spawn(store).unwrap();
         super::App::new(config, paths, handle).await.unwrap()
+    }
+
+    /// A writer that counts what bzz writes to the terminal.
+    #[derive(Clone, Default)]
+    struct Counting(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl std::io::Write for Counting {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .fetch_add(data.len(), std::sync::atomic::Ordering::Relaxed);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Rule 20 over SSH: the bytes a transition writes through a real
+    /// terminal backend at 160x45, and none at rest. The study measured 1 to
+    /// 3 KB a transition and about 23 KB for an overlay with its dimming;
+    /// here the backdrop is dimmed once and only the overlay's own cells
+    /// change while it unfolds.
+    #[tokio::test(start_paused = true)]
+    async fn the_bytes_of_each_transition_are_bounded_and_none_at_rest() {
+        use std::sync::atomic::Ordering::Relaxed;
+        set_motion(Motion::Full);
+        let temporary = TempDir::new().unwrap();
+        let mut app = app(&temporary).await;
+        let counter = Counting::default();
+        let size = Rect::new(0, 0, 160, 45);
+        let mut terminal = ratatui::Terminal::with_options(
+            ratatui::backend::CrosstermBackend::new(counter.clone()),
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Fixed(size),
+            },
+        )
+        .unwrap();
+        let mut frame = |app: &mut super::App| {
+            terminal.draw(|frame| app.render(frame)).unwrap();
+        };
+        // Runs the animations to their end, as the loop does; answers the
+        // bytes written and the frames drawn.
+        async fn settle(
+            app: &mut super::App,
+            frame: &mut impl FnMut(&mut super::App),
+            counter: &Counting,
+        ) -> (usize, usize) {
+            let before = counter.0.load(Relaxed);
+            frame(app);
+            let mut frames = 1;
+            while let Some(at) = app.motion_wake(Instant::now()) {
+                tokio::time::advance(at.saturating_duration_since(Instant::now())).await;
+                app.stage.advance(Instant::now());
+                frame(app);
+                frames += 1;
+            }
+            (counter.0.load(Relaxed) - before, frames)
+        }
+        frame(&mut app);
+        let mut report = Vec::new();
+        let rest = counter.0.load(Relaxed);
+        for _ in 0..10 {
+            frame(&mut app);
+        }
+        let idle = counter.0.load(Relaxed) - rest;
+        // A frame drawn with nothing changed writes only the cursor's
+        // codes; the loop draws none at rest (the assertion below).
+        report.push(format!("ten frames with nothing changed: {idle} B"));
+        assert!(idle <= 10 * 32, "{idle}");
+        assert_eq!(
+            app.motion_wake(Instant::now()),
+            None,
+            "and none asked at rest"
+        );
+
+        app.toast("attachment saved");
+        let toast = settle(&mut app, &mut frame, &counter).await;
+        report.push(format!(
+            "toast in, held, out: {} B in {} frames",
+            toast.0, toast.1
+        ));
+        assert!(toast.0 < 4_096, "{toast:?}");
+
+        app.presentation.set_workspace_focus(FocusSurface::Channels);
+        let sweep = settle(&mut app, &mut frame, &counter).await;
+        report.push(format!("focus sweep: {} B in {} frames", sweep.0, sweep.1));
+        assert!(sweep.0 < 4_096, "{sweep:?}");
+        app.presentation.set_workspace_focus(FocusSurface::Timeline);
+        settle(&mut app, &mut frame, &counter).await;
+
+        let channel = app.channels[0].id;
+        app.messages.push(message(channel, "e9", OTHER, 0));
+        let tint = settle(&mut app, &mut frame, &counter).await;
+        report.push(format!(
+            "arrival with tint (step): {} B in {} frames",
+            tint.0, tint.1
+        ));
+
+        app.presentation.open_overlay(Overlay::Finder);
+        let open = settle(&mut app, &mut frame, &counter).await;
+        report.push(format!(
+            "overlay opens (with dimming): {} B in {} frames",
+            open.0, open.1
+        ));
+        app.presentation.close_overlay();
+        let close = settle(&mut app, &mut frame, &counter).await;
+        report.push(format!(
+            "overlay closes (undims): {} B in {} frames",
+            close.0, close.1
+        ));
+        assert!(open.0 + close.0 < 40_000, "{open:?} {close:?}");
+        // The same overlay with motion off: what the dimming alone costs.
+        set_motion(Motion::Off);
+        app.presentation.open_overlay(Overlay::Finder);
+        let still_open = settle(&mut app, &mut frame, &counter).await;
+        app.presentation.close_overlay();
+        let still_close = settle(&mut app, &mut frame, &counter).await;
+        report.push(format!(
+            "the same with motion off: {} B and {} B, one frame each",
+            still_open.0, still_close.0
+        ));
+        assert_eq!((still_open.1, still_close.1), (1, 1));
+        println!("{}", report.join("\n"));
     }
 }
