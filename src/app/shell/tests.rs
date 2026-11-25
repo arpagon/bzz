@@ -598,6 +598,7 @@ fn an_owners_map_that_binds_z_something_still_loads() {
 
 /// `text` with every `HH:MM` replaced by `00:00` and every `YYYY-MM-DD` by
 /// `0000-00-00` (the same widths).
+#[cfg(feature = "apps")]
 fn without_clock_times(text: &str) -> String {
     let mut characters = text.chars().collect::<Vec<_>>();
     for start in 0..characters.len().saturating_sub(9) {
