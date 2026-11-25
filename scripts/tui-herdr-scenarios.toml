@@ -2491,6 +2491,9 @@ visible = "message #t9-general"
 keys = ["i", "type:hi from t17 join", "enter"]
 visible = "hi from t17 join"
 timeout = 30000
+# Sent and acknowledged by the relay: no longer pending ("[pending]" may
+# wrap at 80 columns).
+absent = "pending]"
 
 [[scenario.step]]
 keys = []
@@ -2578,6 +2581,7 @@ timeout = 90000
 keys = ["type:t9-gen", "enter", "i", "type:admitted t17 join", "enter"]
 visible = "admitted t17 join"
 timeout = 30000
+absent = "pending]"
 
 [[scenario.step]]
 keys = ["q"]
