@@ -240,17 +240,19 @@ see none of this but the brief, which bzz posts as a message
 
 ## Keys
 
-Press `?` in bzz for the complete, current list.
+Press `?` in bzz for the complete, current list, and the commands after it
+(`j`, `PageDown` and `G` scroll it).
 
 | Key | Action |
 |---|---|
 | `j` `k` · `gg` `G` | Move down, up · jump to top, bottom |
 | `1`–`4` · `Tab` · `h` `l` | Focus communities, channels, conversation, context |
-| `Space` `Space` | Jump to any channel or DM |
+| `Space` `Space` | Jump to any channel or DM (`↓` `↑` or `Tab` choose, `Enter` opens) |
 | `Enter` | Open the selected thread |
 | `i` | Write (`Enter` sends, `Ctrl-j` adds a line) |
 | `@` | Mention someone; `Space` completes a unique name, `Tab` picks |
-| `r` · `e` | React · edit your own message |
+| `r` · `e` · `d` | React · edit your own message · delete it (asks) |
+| `u` | Mark unread from the selected message |
 | `/` | Search (`from:` `in:` `after:` `before:`; `Ctrl-o` loads older) |
 | `Space n` | Inbox: mentions, threads, DMs and drafts |
 | `Space a` | Every action for the selected item |
@@ -283,7 +285,8 @@ another, `Tab` shows the agents other people run.
 | `:app pending\|approve\|refuse\|rollback\|enable\|disable\|remove <name>` | Answer and manage apps |
 | `:app share\|unshare\|brief [name]` | Offer the open app to the channel · withdraw it · post its brief |
 | `:huddle start\|join\|leave\|end\|mute` | Huddles with audio |
-| `:status <text>` · `:presence on\|off` | Your status · publish your presence (off by default) |
+| `:status` · `:status <text>` · `:status clear` | Show your status · set it · clear it |
+| `:presence on\|off` | Publish your presence (off by default) |
 | `:profile` | The selected author's profile and verified identity |
 | `:artifacts` · `:tasks` | Channel artifacts · tasks assigned to you |
 | `:report <reason>` · `:tochannel` | Report a message · send a thread reply to the channel |
@@ -291,6 +294,7 @@ another, `Tab` shows the agents other people run.
 | `:signin` | Sign in to a community that requires federated identity |
 | `:system` | Show or hide System channels |
 | `:reconnect` · `:resync` · `:lock` | Recover the connection · reload history · lock the identity |
+| `:theme [name]` · `:help` · `:q` | Pick or set a theme · the keys and commands · quit |
 
 Outside the TUI, `bzz --help` lists everything: identities, communities,
 themes, media cache, your agents (`bzz agent`: `new`, `list`, `show`, `add`,

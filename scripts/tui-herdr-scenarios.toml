@@ -2424,75 +2424,6 @@ keys = ["d"]
 visible = "DEMO · generated, offline"
 timeout = 5000
 
-# v0.17 C1: the palette. Ctrl-K and Space k open it from any pane that is
-# not a text field; typing ranks actions, channels and DMs in one list.
-
-[[scenario]]
-id = "t17-palette-open-thr-quit"
-kind = "harness"
-description = "v0.17 C1: Ctrl-K and Space k open the palette and Esc closes it; \"thr\" puts Open thread first; \"q\" puts Quit bzz first and Enter asks to quit."
-ready = "online"
-exit = "__BZZ_HERDR_EXIT__:0"
-
-[[scenario.step]]
-keys = ["ctrl+k"]
-visible = "Type to search"
-
-[[scenario.step]]
-keys = ["esc"]
-visible = "online"
-absent = "Type to search"
-
-[[scenario.step]]
-keys = ["space", "k"]
-visible = "Type to search"
-
-[[scenario.step]]
-keys = ["type:thr"]
-visible = "▌· Open thread"
-
-[[scenario.step]]
-keys = ["ctrl+u", "q"]
-visible = "▌· Quit bzz"
-
-[[scenario.step]]
-keys = ["enter"]
-visible = "quit bzz?"
-
-[[scenario.step]]
-keys = ["y"]
-visible = "__BZZ_HERDR_EXIT__:0"
-
-[[scenario]]
-id = "t17-palette-unavailable-stays"
-kind = "harness"
-description = "v0.17 C1: over another person's message, Enter on Delete my message runs nothing, says why and leaves the palette open; Esc gives the focus back."
-ready = "online"
-exit = "__BZZ_HERDR_EXIT__:0"
-
-[[scenario.step]]
-keys = ["space", "space"]
-visible = "channel finder"
-
-[[scenario.step]]
-keys = ["type:t9-gen", "enter"]
-visible = "Generated custom emoji"
-
-[[scenario.step]]
-keys = ["3", "G", "ctrl+k", "type:delete"]
-visible = "▌· Delete my message"
-
-# The palette stays open: the row is still there, the reason below it.
-[[scenario.step]]
-keys = ["enter"]
-visible = "▌· Delete my message(.|\\n)*can't now: only your own message can be deleted"
-regex = true
-
-[[scenario.step]]
-keys = ["esc"]
-visible = "online"
-absent = "can't now"
-
 [[scenario.step]]
 keys = ["q"]
 visible = "quit bzz?"
@@ -2581,37 +2512,6 @@ keys = ["q"]
 visible = "DEMO · generated, offline"
 absent = "context · 1 reply"
 
-[[scenario]]
-id = "t17-palette-theme-status-channel"
-kind = "harness"
-description = "v0.17 C1: \"theme\" opens the theme picker; \"status\" opens the : line filled in with :status; # and a channel's name opens that channel."
-ready = "online"
-exit = "__BZZ_HERDR_EXIT__:0"
-
-[[scenario.step]]
-keys = ["ctrl+k", "type:theme", "enter"]
-visible = "Tab scope · Enter save · Esc cancel"
-
-[[scenario.step]]
-keys = ["esc"]
-visible = "online"
-
-[[scenario.step]]
-keys = ["ctrl+k", "type:status", "enter"]
-visible = "COMMAND"
-
-[[scenario.step]]
-keys = ["esc"]
-visible = "online"
-
-[[scenario.step]]
-keys = ["ctrl+k", "type:#t14-names"]
-visible = "▌# t14-names"
-
-[[scenario.step]]
-keys = ["enter"]
-visible = "Generated namesakes channel"
-
 [[scenario.step]]
 keys = ["q"]
 visible = "quit bzz?"
@@ -2659,6 +2559,131 @@ visible = "Demo: the huddle is a recording to look at."
 keys = ["esc"]
 visible = "DEMO · generated, offline"
 absent = "a generated recording · Esc"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+
+# v0.17 C1: the palette. Ctrl-K and Space k open it from any pane that is
+# not a text field; typing ranks actions, channels and DMs in one list.
+
+[[scenario]]
+id = "t17-palette-open-thr-quit"
+kind = "harness"
+description = "v0.17 C1: Ctrl-K and Space k open the palette and Esc closes it; \"thr\" puts Open thread first; \"q\" puts Quit bzz first and Enter asks to quit."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["ctrl+k"]
+visible = "Type to search"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+absent = "Type to search"
+
+[[scenario.step]]
+keys = ["space", "k"]
+visible = "Type to search"
+
+[[scenario.step]]
+keys = ["type:thr"]
+visible = "▌· Open thread"
+
+[[scenario.step]]
+keys = ["ctrl+u", "q"]
+visible = "▌· Quit bzz"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette-unavailable-stays"
+kind = "harness"
+description = "v0.17 C1: over another person's message, Enter on Delete my message runs nothing, says why and leaves the palette open; Esc gives the focus back."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t9-gen", "enter"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = ["3", "G", "ctrl+k", "type:delete"]
+visible = "▌· Delete my message"
+
+# The palette stays open: the row is still there, the reason below it.
+[[scenario.step]]
+keys = ["enter"]
+visible = "▌· Delete my message(.|\\n)*can't now: only your own message can be deleted"
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+absent = "can't now"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette-theme-status-channel"
+kind = "harness"
+description = "v0.17 C1: \"theme\" opens the theme picker; \"status\" opens the : line filled in with :status; # and a channel's name opens that channel."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:theme", "enter"]
+visible = "Tab scope · Enter save · Esc cancel"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:status", "enter"]
+visible = "COMMAND"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:#t14-names"]
+visible = "▌# t14-names"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Generated namesakes channel"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario]]
 id = "t17-palette-sizes"
@@ -2718,6 +2743,240 @@ visible = "only in the shell: bzz community add"
 keys = ["esc"]
 visible = "online"
 absent = "Type to search"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+
+# ---- v0.17.0: task find (C3 to C7) -----------------------------------------
+
+[[scenario]]
+id = "t17-find-help-80x24"
+kind = "automated"
+size = "80x24"
+description = "v0.17 C3: at 80x24 the help says which rows show; j moves a row, PageDown a page, G reaches its last row (the last : command), g the top."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["shift+?"]
+visible = "effective keymap · rows 1-22"
+
+[[scenario.step]]
+keys = ["j"]
+visible = "rows 2-23"
+
+[[scenario.step]]
+keys = ["pagedown"]
+visible = "rows 23-44"
+
+[[scenario.step]]
+keys = ["G"]
+visible = "delete this community's local cache"
+
+[[scenario.step]]
+keys = ["g"]
+visible = "rows 1-22"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-find-commands"
+kind = "automated"
+size = "80x24"
+description = "v0.17 C4: :hudle names :huddle under the prompt it keeps; a usage wraps whole; :community add names the shell command; :help opens the help; :theme the picker; :q asks to quit."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "type:hudle", "enter"]
+visible = "did you mean :huddle?"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+absent = "did you mean"
+
+[[scenario.step]]
+keys = [":", "type:agents nowhere", "enter"]
+visible = 'usage: :agents \(yours,(.|\n)*:agents directory'
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = [":", "type:community add", "enter"]
+visible = "communities are added in the shell"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = [":", "type:help", "enter"]
+visible = "effective keymap"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = [":", "type:theme", "enter"]
+visible = "Enter save · Esc cancel"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = [":", "type:q", "enter"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-find-leader"
+kind = "automated"
+size = "80x24"
+description = "v0.17 C6: the leader panel shows every key at 80x24 and at 120x32, sort included, and stays until Esc."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space"]
+visible = 'Space · next key(.|\n)*cycle channel sort(.|\n)*Esc cancels'
+regex = true
+
+[[scenario.step]]
+pause = 1500
+keys = []
+visible = "cycle channel sort"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+absent = "cycle channel sort"
+
+[[scenario.step]]
+size = "120x32"
+keys = ["space"]
+visible = 'Space · next key(.|\n)*cycle channel sort(.|\n)*Esc cancels'
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-find-finder"
+kind = "harness"
+size = "120x32"
+description = "v0.17 C5: in the channel finder \"gen\", Down and Enter open the second result, not the first."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+# The fixture's "gen" ranks +general (open, not joined) first and
+# #t9-general second.
+[[scenario.step]]
+keys = ["space", "space", "g", "e", "n"]
+visible = "› +general"
+
+[[scenario.step]]
+keys = ["down"]
+visible = "› #t9-general"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "message #t9-general"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-find-delete-unread-status"
+kind = "harness"
+description = "v0.17 C7: d on another person's message says why not; d and y delete my own; u marks the channel unread; a bare :status shows the status, :status clear clears it."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space", "type:t9-gen", "enter"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = ["i", "type:t17 delete me", "enter"]
+visible = "t17 delete me"
+
+# A message can be deleted once the relay has taken it. Sending closed
+# the composer. The first message of the channel is the fixture's, by
+# another person.
+[[scenario.step]]
+pause = 2000
+keys = ["3", "g", "g", "d"]
+visible = "delete own message: only your own message can be deleted"
+
+[[scenario.step]]
+keys = ["G", "d"]
+visible = "delete message?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "online"
+absent = "t17 delete me"
+
+[[scenario.step]]
+keys = ["k", "u"]
+visible = "marked #t9-general unread"
+
+[[scenario.step]]
+keys = [":", "type:status t17 lunch", "enter"]
+visible = "status updated"
+
+[[scenario.step]]
+pause = 1500
+keys = [":", "type:status", "enter"]
+visible = "your status: t17 lunch · :status clear clears it"
+
+[[scenario.step]]
+keys = [":", "type:status clear", "enter"]
+visible = "status cleared"
+
+[[scenario.step]]
+pause = 1500
+keys = [":", "type:status", "enter"]
+visible = "you have no status"
 
 [[scenario.step]]
 keys = ["q"]

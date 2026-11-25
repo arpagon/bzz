@@ -528,6 +528,11 @@ impl KeyMap {
         add(KeyScope::Composer, &["home"], UiAction::MoveLineStart);
         add(KeyScope::Composer, &["end"], UiAction::MoveLineEnd);
 
+        // v0.17 D5: two keys of the actions menu get their own in the
+        // workspace; the Inbox keeps `U` and does not inherit these.
+        add(KeyScope::Workspace, &["d"], UiAction::Delete);
+        add(KeyScope::Workspace, &["u"], UiAction::MarkUnread);
+
         let keymap = Self {
             bindings,
             disabled: Vec::new(),

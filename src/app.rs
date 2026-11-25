@@ -24,6 +24,10 @@ mod palette;
 mod pane;
 #[cfg(feature = "apps")]
 mod share;
+// v0.17 C3 to C7: the help, the `:` line, the finder, the leader panel
+// and two keys (task `find`).
+#[cfg(test)]
+mod find_tests;
 
 use crate::clock::WallClock as _;
 use crate::{
@@ -554,7 +558,13 @@ pub struct App {
     mention_choices: Option<(Uuid, Uuid, crate::domain::MentionChoices)>,
     /// Explicit mention selections per channel, most recent highest.
     mention_history: MentionHistory,
-    finder: String,
+    finder: crate::ui::finder::FinderState,
+    /// Where the help is scrolled to (v0.17 C3).
+    help_scroll: crate::ui::help::HelpScroll,
+    /// What the last `:` command answered when it was mistyped or missing
+    /// its arguments: shown, wrapped, under the prompt it keeps open
+    /// (v0.17 C4).
+    command_answer: Option<String>,
     reaction_index: usize,
     /// `Some(query)` while the reaction picker searches custom emoji.
     reaction_query: Option<String>,
@@ -622,7 +632,9 @@ pub struct App {
     palette_recent: Vec<&'static str>,
     keymap: KeyMap,
     input_router: InputRouter,
-    leader_started_at: Option<Instant>,
+    /// When the pending key sequence started, on Tokio's clock so a test
+    /// can move it: its panel appears 300 ms later (v0.17 C6).
+    leader_started_at: Option<tokio::time::Instant>,
     presentation: PresentationState,
     community_cursor: usize,
     connection: ConnectionState,
@@ -1168,7 +1180,9 @@ impl App {
             mention_picker: None,
             mention_choices: None,
             mention_history: MentionHistory::default(),
-            finder: String::new(),
+            finder: crate::ui::finder::FinderState::default(),
+            help_scroll: crate::ui::help::HelpScroll::default(),
+            command_answer: None,
             reaction_index: 0,
             reaction_query: None,
             reaction_candidates: Vec::new(),
@@ -2989,16 +3003,27 @@ impl App {
             self.typing_spinner_frame = 0;
             self.typing_spinner_advanced_at = Instant::now();
         }
-        if self
-            .leader_started_at
-            .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
-        {
-            self.input_router.cancel_sequence();
-            self.leader_started_at = None;
-            if self.presentation.overlay == Some(Overlay::WhichKey) {
-                self.presentation.overlay = None;
+        if let Some(started) = self.leader_started_at {
+            let elapsed = started.elapsed();
+            if !self.input_router.sequence_active() {
+                self.leader_started_at = None;
+            } else if self.presentation.overlay.is_none()
+                && crate::ui::help::leader_panel_due(elapsed)
+            {
+                // Who knows the next key never sees the panel; once shown it
+                // waits for that key, or Esc (v0.17 C6).
+                self.presentation.open_overlay(Overlay::WhichKey);
+                changed = true;
+            } else if self.presentation.overlay.is_some()
+                && self.presentation.overlay != Some(Overlay::WhichKey)
+                && elapsed >= LEADER_TIMEOUT
+            {
+                // Something else took the screen: the panel cannot show, and
+                // the sequence ends as in v0.16.
+                self.input_router.cancel_sequence();
+                self.leader_started_at = None;
+                changed = true;
             }
-            changed = true;
         }
         if self
             .search_dirty_since
@@ -3823,8 +3848,8 @@ impl App {
                     .await?;
             }
             InputDispatch::Pending { .. } => {
-                self.leader_started_at.get_or_insert_with(Instant::now);
-                self.presentation.open_overlay(Overlay::WhichKey);
+                self.leader_started_at
+                    .get_or_insert_with(tokio::time::Instant::now);
             }
             InputDispatch::Owned(InputOwner::Overlay) => {
                 self.handle_presentation_overlay_key(key, guard, terminal)
@@ -3866,8 +3891,8 @@ impl App {
                 self.dispatch_inbox_action(action, guard, terminal).await?;
             }
             InputDispatch::Pending { .. } => {
-                self.leader_started_at.get_or_insert_with(Instant::now);
-                self.presentation.open_overlay(Overlay::WhichKey);
+                self.leader_started_at
+                    .get_or_insert_with(tokio::time::Instant::now);
             }
             InputDispatch::Owned(InputOwner::Overlay) => {
                 self.handle_presentation_overlay_key(key, guard, terminal)
@@ -3887,6 +3912,24 @@ impl App {
         Ok(())
     }
 
+    /// The keys of the help: it scrolls (v0.17 C3).
+    fn help_key(&mut self, key: KeyEvent) {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down if !control => self.help_scroll.by(1),
+            KeyCode::Char('k') | KeyCode::Up if !control => self.help_scroll.by(-1),
+            KeyCode::Char('n') if control => self.help_scroll.by(1),
+            KeyCode::Char('p') if control => self.help_scroll.by(-1),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.help_scroll.page_by(1),
+            KeyCode::Char('d') if control => self.help_scroll.page_by(1),
+            KeyCode::PageUp => self.help_scroll.page_by(-1),
+            KeyCode::Char('u') if control => self.help_scroll.page_by(-1),
+            KeyCode::Char('g') | KeyCode::Home => self.help_scroll.top(),
+            KeyCode::Char('G') | KeyCode::End => self.help_scroll.bottom(),
+            _ => {}
+        }
+    }
+
     async fn handle_presentation_overlay_key(
         &mut self,
         key: KeyEvent,
@@ -3897,6 +3940,8 @@ impl App {
             Some(Overlay::Help) if matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'q')) => {
                 self.presentation.overlay = None;
             }
+            // v0.17 C3: the help scrolls.
+            Some(Overlay::Help) => self.help_key(key),
             Some(Overlay::Actions) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.presentation.overlay = None;
@@ -3959,6 +4004,9 @@ impl App {
             detail_available: self.inbox_state.selected(&self.inbox_items).is_some(),
         };
         let effect = reduce_inbox(&mut state, action);
+        if action == UiAction::OpenHelp {
+            self.help_scroll = crate::ui::help::HelpScroll::default();
+        }
         self.presentation = state.presentation;
         self.inbox_state.narrow_detail = state.narrow_detail;
         match effect {
@@ -4052,6 +4100,9 @@ impl App {
             self.apps.front = false;
         }
         let effect = reduce_workspace(&mut state, action);
+        if action == UiAction::OpenHelp {
+            self.help_scroll = crate::ui::help::HelpScroll::default();
+        }
         self.presentation = state.presentation;
         self.community_cursor = state.community_cursor;
         self.select_community_index(self.community_cursor);
@@ -4134,6 +4185,10 @@ impl App {
                         "cached read-only mode: restore or unlock the identity, then restart bzz"
                             .into(),
                     );
+                } else if let Some(refusal) = self.context_refusal(UiAction::Delete) {
+                    // `d` on another person's message says why not, as the
+                    // actions menu does (v0.17 D5).
+                    self.status_error = Some(refusal);
                 } else if self.selected_message().is_some_and(|message| {
                     self.runtime.as_ref().is_some_and(|runtime| {
                         message.pubkey == runtime.signer.public_key().to_hex()
@@ -4150,8 +4205,20 @@ impl App {
                         "cached read-only mode: restore or unlock the identity, then restart bzz"
                             .into(),
                     );
+                } else if let Some(refusal) = self.context_refusal(UiAction::MarkUnread) {
+                    self.status_error = Some(refusal);
                 } else {
                     self.mark_unread().await?;
+                    let marked = self.current_channel().map(|channel| {
+                        format!(
+                            "marked {}{} unread",
+                            crate::ui::finder::marker(channel),
+                            sanitize::single_line(&channel.name)
+                        )
+                    });
+                    if marked.is_some() {
+                        self.status_error = marked;
+                    }
                 }
             }
             WorkspaceEffect::FocusApp => self.focus_app(),
@@ -4174,6 +4241,24 @@ impl App {
             WorkspaceEffect::OpenPalette => self.open_palette(),
         }
         Ok(())
+    }
+
+    /// Why the actions menu would not offer `action` here, in its words: the
+    /// keys `d` and `u` and the menu answer alike (v0.17 D5).
+    fn context_refusal(&self, action: UiAction) -> Option<String> {
+        let actions = derive_actions(self.action_context());
+        match actions.iter().find(|entry| entry.action == action) {
+            Some(entry) if entry.enabled => None,
+            Some(entry) => Some(format!(
+                "{}: {}",
+                entry.label,
+                entry.reason.unwrap_or("not available here")
+            )),
+            None => Some(format!(
+                "{}: select a message in the conversation first (3 focuses it)",
+                action.label()
+            )),
+        }
     }
 
     fn scroll_focused_viewport(&mut self, scroll: ViewportScroll) {
@@ -7392,6 +7477,25 @@ impl App {
         Ok(())
     }
 
+    /// `:status`: your status as the community holds it, and how to change
+    /// it (v0.17 D6).
+    async fn show_status(&mut self) -> Result<()> {
+        let (Some(community), Some(pubkey)) = (
+            self.active_community_id(),
+            self.self_pubkey().map(str::to_owned),
+        ) else {
+            self.status_error = Some("no identity here, so no status".into());
+            return Ok(());
+        };
+        let status = self
+            .store
+            .call(move |store| store.user_status(community, &pubkey))
+            .await?;
+        let now = crate::clock::SystemClock.now_unix();
+        self.status_error = Some(status_notice(status.as_ref(), now));
+        Ok(())
+    }
+
     fn set_status(&mut self, arguments: &str) {
         let Some(runtime) = &self.runtime else {
             self.status_error = Some(
@@ -9630,50 +9734,117 @@ impl App {
     }
 
     async fn text_overlay_key(&mut self, key: KeyEvent, finder: bool) -> Result<()> {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        // v0.17 C5: the finder's selection moves; Enter opens that row.
+        if finder {
+            let delta = match key.code {
+                KeyCode::Down | KeyCode::Tab => Some(1),
+                KeyCode::Up | KeyCode::BackTab => Some(-1),
+                KeyCode::Char('n') if control => Some(1),
+                KeyCode::Char('p') if control => Some(-1),
+                _ => None,
+            };
+            if let Some(delta) = delta {
+                let len = crate::ui::finder::rows(&self.finder.query, &self.channels).len();
+                self.finder.move_by(delta, len);
+                return Ok(());
+            }
+        }
         match key.code {
-            KeyCode::Esc => self.presentation.close_overlay(),
+            KeyCode::Esc => {
+                self.command_answer = None;
+                self.presentation.close_overlay();
+            }
             KeyCode::Backspace => {
                 if finder {
                     self.finder.pop();
                 } else {
+                    self.command_answer = None;
                     self.command.pop();
                 }
             }
-            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(character) if !control => {
                 if finder {
                     self.finder.push(character)
                 } else {
+                    self.command_answer = None;
                     self.command.push(character)
                 }
             }
             KeyCode::Enter => {
                 if finder {
-                    if let Some(found) =
-                        crate::ui::finder::rank(&self.finder, &self.channels).first()
-                        && let Some(index) = self
-                            .channels
-                            .iter()
-                            .position(|channel| channel.id == found.id)
-                    {
-                        let found_is_member = found.is_member;
-                        self.select_channel_index(index);
-                        self.showing_open_channel = !found_is_member;
-                        self.load_selected_channel().await?;
-                        self.presentation
-                            .set_workspace_focus(FocusSurface::Timeline);
+                    let selected = crate::ui::finder::rows(&self.finder.query, &self.channels)
+                        .get(self.finder.selected)
+                        .map(|row| match row {
+                            crate::ui::finder::FinderRow::Channel(channel) => {
+                                Some((channel.id, channel.is_member))
+                            }
+                            crate::ui::finder::FinderRow::NewDm => None,
+                        });
+                    match selected {
+                        Some(Some((id, is_member))) => {
+                            if let Some(index) =
+                                self.channels.iter().position(|channel| channel.id == id)
+                            {
+                                self.select_channel_index(index);
+                                self.showing_open_channel = !is_member;
+                                self.load_selected_channel().await?;
+                                self.presentation
+                                    .set_workspace_focus(FocusSurface::Timeline);
+                            }
+                            self.presentation.close_overlay();
+                        }
+                        // The last row: a DM with someone, the query as
+                        // the search for the person.
+                        Some(None) => {
+                            let query = std::mem::take(&mut self.finder.query);
+                            self.presentation.close_overlay();
+                            self.open_dm_picker(None);
+                            if self.presentation.overlay == Some(Overlay::DmPicker)
+                                && !query.is_empty()
+                            {
+                                self.dm_picker.query = query;
+                                if let Some(pubkey) = self.self_pubkey().map(str::to_owned) {
+                                    self.dm_picker.reconcile(&self.profiles, &pubkey);
+                                }
+                                self.dm_dirty_since = Some(Instant::now());
+                            }
+                        }
+                        None => self.presentation.close_overlay(),
                     }
-                    self.presentation.close_overlay();
                 } else {
                     // Close only the command prompt before executing. Commands
                     // such as :search, :dm, and :agents may deliberately open
                     // their own overlay, which must survive this dispatch.
                     self.presentation.close_overlay();
+                    self.command_answer = None;
+                    let before = self.status_error.clone();
                     self.execute_command().await?;
+                    self.keep_prompt_for_answer(before);
                 }
             }
             _ => {}
         }
         Ok(())
+    }
+
+    /// A `:` command that was mistyped, or lacks what it needs, keeps its
+    /// prompt open with the text as typed and the answer under it, wrapped,
+    /// instead of one status line cut at the window's edge (v0.17 C4).
+    fn keep_prompt_for_answer(&mut self, before: Option<String>) {
+        if self.presentation.overlay.is_some() || self.status_error == before {
+            return;
+        }
+        let is_answer = self.status_error.as_deref().is_some_and(|answer| {
+            answer.starts_with("usage:")
+                || answer.starts_with("unknown command")
+                || answer == crate::ui::command::COMMUNITY_ANSWER
+                || answer.starts_with("no theme named")
+        });
+        if is_answer {
+            self.command_answer = self.status_error.take();
+            self.presentation.open_overlay(Overlay::Command);
+        }
     }
     fn open_theme_picker(&mut self) {
         let scope = if self.config.communities.is_empty() {
@@ -9869,6 +10040,10 @@ impl App {
             }
             crate::ui::command::Command::SignIn => self.begin_federated_sign_in().await,
             crate::ui::command::Command::ToChannel => self.send_draft_to_channel(),
+            // v0.17 D6: a bare `:status` shows the status; v0.16 cleared it.
+            crate::ui::command::Command::Status(arguments) if arguments.is_empty() => {
+                return self.show_status().await;
+            }
             crate::ui::command::Command::Status(arguments) => self.set_status(&arguments),
             crate::ui::command::Command::Presence(argument) => {
                 return self.presence_command(&argument).await;
@@ -10017,11 +10192,63 @@ impl App {
                 return self.app_command(&arguments).await;
             }
             crate::ui::command::Command::Unknown(value) => {
-                self.status_error = Some(format!("unknown command: {value}"))
+                self.status_error = Some(crate::ui::command::unknown_answer(&value));
             }
-            _ => self.status_error = Some("use the CLI to add/remove communities".into()),
+            crate::ui::command::Command::AddCommunity
+            | crate::ui::command::Command::RemoveCommunity => {
+                self.status_error = Some(crate::ui::command::COMMUNITY_ANSWER.into());
+            }
+            crate::ui::command::Command::Quit => {
+                self.presentation.open_confirmation(ConfirmationKind::Quit);
+            }
+            crate::ui::command::Command::Help => {
+                self.help_scroll = crate::ui::help::HelpScroll::default();
+                self.presentation.open_overlay(Overlay::Help);
+            }
+            crate::ui::command::Command::Theme(name) => self.theme_command(&name),
         }
         Ok(())
+    }
+
+    /// `:theme` opens the picker; `:theme <name>` sets that theme as the
+    /// picker's Enter would (v0.17 C4).
+    fn theme_command(&mut self, name: &str) {
+        self.open_theme_picker();
+        if name.is_empty() {
+            return;
+        }
+        let wanted = name.to_lowercase().replace([' ', '_'], "-");
+        let found = crate::ui::theme::ThemeRegistry::canonical_id(&wanted).or_else(|| {
+            crate::ui::theme::ThemeRegistry::entries()
+                .find(|entry| entry.name.to_lowercase().replace([' ', '_'], "-") == wanted)
+                .map(|entry| entry.id)
+        });
+        match found {
+            Some(id)
+                if self
+                    .theme_picker
+                    .as_mut()
+                    .is_some_and(|picker| picker.select_id(id)) =>
+            {
+                self.confirm_theme_selection();
+            }
+            _ => {
+                // Put back what the picker previewed, and say what exists.
+                if let Some(theme) = self.theme_before_preview.take() {
+                    self.theme = theme;
+                }
+                self.theme_picker = None;
+                self.presentation.close_overlay();
+                let names = crate::ui::theme::ThemeRegistry::entries()
+                    .map(|entry| entry.id)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.status_error = Some(format!(
+                    "no theme named {} · :theme opens the picker · themes: {names}",
+                    sanitize::single_line(name)
+                ));
+            }
+        }
     }
 
     async fn switch_community(
@@ -11085,41 +11312,55 @@ impl App {
             Some(Overlay::Help) => {
                 let actions = derive_actions(self.action_context());
                 frame.render_widget(Clear, area);
+                // Wrapped here to the frame's inside, so the scroll knows
+                // exactly how many rows there are (v0.17 C3).
+                let lines = crate::ui::help::help_lines(
+                    &self.keymap,
+                    if self.presentation.route == Route::Inbox {
+                        KeyScope::Inbox
+                    } else {
+                        KeyScope::Workspace
+                    },
+                    &actions,
+                    usize::from(area.width.saturating_sub(2)),
+                );
+                self.help_scroll
+                    .set_view(lines.len(), usize::from(area.height.saturating_sub(2)));
+                let shown = lines
+                    .iter()
+                    .skip(self.help_scroll.offset)
+                    .take(self.help_scroll.page)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 frame.render_widget(
-                    Paragraph::new(crate::ui::help::effective_keymap_with_actions(
-                        &self.keymap,
-                        if self.presentation.route == Route::Inbox {
-                            KeyScope::Inbox
-                        } else {
-                            KeyScope::Workspace
-                        },
-                        &actions,
-                    ))
-                    .style(self.theme.style(HighlightGroup::Normal))
-                    .block(
-                        Block::bordered()
-                            .border_type(self.theme.border_type(BorderSurface::Modal))
-                            .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                            .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                            .title(" effective keymap "),
-                    )
-                    .wrap(Wrap { trim: false }),
+                    Paragraph::new(shown)
+                        .style(self.theme.style(HighlightGroup::Normal))
+                        .block(
+                            Block::bordered()
+                                .border_type(self.theme.border_type(BorderSurface::Modal))
+                                .border_style(self.theme.style(HighlightGroup::ModalBorder))
+                                .title_style(self.theme.style(HighlightGroup::ModalTitle))
+                                .title(self.help_scroll.title()),
+                        ),
                     area,
                 );
             }
             Some(Overlay::WhichKey) => {
-                let popup = centered(area, 48, 14);
+                // Sized to show every key (v0.17 C6).
+                let (popup, lines) = crate::ui::help::leader_panel(
+                    &self.keymap,
+                    if self.presentation.route == Route::Inbox {
+                        KeyScope::Inbox
+                    } else {
+                        KeyScope::Workspace
+                    },
+                    self.input_router.sequence(),
+                    area,
+                );
                 frame.render_widget(Clear, popup);
                 frame.render_widget(
-                    Paragraph::new(crate::ui::help::which_key(
-                        &self.keymap,
-                        if self.presentation.route == Route::Inbox {
-                            KeyScope::Inbox
-                        } else {
-                            KeyScope::Workspace
-                        },
-                        self.input_router.sequence(),
-                    ))
+                    Paragraph::new(lines.join("\n"))
                     .style(self.theme.style(HighlightGroup::Normal))
                     .block(
                         Block::bordered()
@@ -11219,9 +11460,37 @@ impl App {
                 None => {}
             },
             Some(Overlay::Finder) => self.render_finder(frame, area, hit_map),
-            Some(Overlay::Command) => {
-                self.render_prompt(frame, area, " command ", &format!(":{}", self.command))
-            }
+            Some(Overlay::Command) => match &self.command_answer {
+                None => {
+                    self.render_prompt(frame, area, " command ", &format!(":{}", self.command))
+                }
+                // The answer to the last Enter, wrapped under the text as
+                // typed, never cut (v0.17 C4).
+                Some(answer) => {
+                    let inner = usize::from((area.width * 70 / 100).saturating_sub(3)).max(10);
+                    let mut lines = vec![sanitize::single_line(&format!(":{}", self.command))];
+                    lines.push(String::new());
+                    lines.extend(crate::ui::help::wrap_text(
+                        &sanitize::single_line(answer),
+                        inner,
+                    ));
+                    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
+                    let popup = centered(area, 70, height);
+                    frame.render_widget(Clear, popup);
+                    frame.render_widget(
+                        Paragraph::new(lines.join("\n"))
+                            .style(self.theme.style(HighlightGroup::Normal))
+                            .block(
+                                Block::bordered()
+                                    .border_type(self.theme.border_type(BorderSurface::Modal))
+                                    .border_style(self.theme.style(HighlightGroup::ModalBorder))
+                                    .title_style(self.theme.style(HighlightGroup::ModalTitle))
+                                    .title(" command · edit and Enter, or Esc "),
+                            ),
+                        popup,
+                    );
+                }
+            },
             Some(Overlay::Theme) => self.render_theme_picker(frame, area, hit_map),
             Some(Overlay::Reaction) => {
                 let popup = centered(area, 70, 5);
@@ -11658,30 +11927,48 @@ impl App {
     }
 
     fn render_finder(&self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
+        const SHOWN: usize = 8;
         let popup = centered(area, 70, 12);
         frame.render_widget(Clear, popup);
-        let ranked = crate::ui::finder::rank(&self.finder, &self.channels);
-        for (index, channel) in ranked.iter().take(8).enumerate() {
-            if let Some(row) = list_row(popup, index.saturating_add(1), 1) {
+        let rows = crate::ui::finder::rows(&self.finder.query, &self.channels);
+        let start = self.finder.window_start(SHOWN);
+        for (index, row) in rows.iter().skip(start).take(SHOWN).enumerate() {
+            if let crate::ui::finder::FinderRow::Channel(channel) = row
+                && let Some(row) = list_row(popup, index.saturating_add(1), 1)
+            {
                 hit_map.push(row, HitTarget::FinderChannel(channel.id.to_string()));
             }
         }
         let mut items = vec![ListItem::new(format!(
             "> {}",
-            sanitize::single_line(&self.finder)
+            sanitize::single_line(&self.finder.query)
         ))];
         items.extend(
-            ranked
-                .into_iter()
-                .take(8)
+            rows.into_iter()
                 .enumerate()
-                .map(|(index, channel)| {
-                    let membership = if channel.is_member { "#" } else { "+" };
-                    ListItem::new(format!(
-                        "{} {membership}{}",
-                        if index == 0 { "›" } else { " " },
-                        sanitize::single_line(&channel.name)
-                    ))
+                .skip(start)
+                .take(SHOWN)
+                .map(|(index, row)| {
+                    let mark = if index == self.finder.selected {
+                        "›"
+                    } else {
+                        " "
+                    };
+                    let text = match row {
+                        crate::ui::finder::FinderRow::Channel(channel) => format!(
+                            "{mark} {}{}",
+                            crate::ui::finder::marker(channel),
+                            sanitize::single_line(&channel.name)
+                        ),
+                        crate::ui::finder::FinderRow::NewDm if self.finder.query.is_empty() => {
+                            format!("{mark} → start a DM with someone")
+                        }
+                        crate::ui::finder::FinderRow::NewDm => format!(
+                            "{mark} → start a DM: find people named \"{}\"",
+                            sanitize::single_line(&self.finder.query)
+                        ),
+                    };
+                    ListItem::new(text)
                 }),
         );
         frame.render_widget(
@@ -11692,7 +11979,7 @@ impl App {
                         .border_type(self.theme.border_type(BorderSurface::Picker))
                         .border_style(self.theme.style(HighlightGroup::ModalBorder))
                         .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                        .title(" channel finder · Enter open "),
+                        .title(" channel finder · channels and DMs · ↑↓ Tab move · Enter open "),
                 ),
             popup,
         );
@@ -11980,6 +12267,36 @@ async fn next_network(runtime: &mut Option<Runtime>) -> Option<SupervisorEvent> 
         None => std::future::pending().await,
     }
 }
+/// What a bare `:status` says (v0.17 D6).
+fn status_notice(status: Option<&crate::protocol::presence::UserStatus>, now: u64) -> String {
+    match status.filter(|status| status.visible(now)) {
+        Some(status) => {
+            let text = [status.emoji.as_str(), status.text.as_str()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .map(sanitize::single_line)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let until = status
+                .expires_at
+                .and_then(|at| u64::try_from(at).ok())
+                .map(|at| {
+                    let left = at.saturating_sub(now);
+                    let (amount, unit) = match left {
+                        0..=59 => (left, "s"),
+                        60..=3_599 => (left / 60, "m"),
+                        3_600..=86_399 => (left / 3_600, "h"),
+                        _ => (left / 86_400, "d"),
+                    };
+                    format!(" · ends in {amount}{unit}")
+                })
+                .unwrap_or_default();
+            format!("your status: {text}{until} · :status clear clears it")
+        }
+        None => "you have no status · :status <text> sets one".into(),
+    }
+}
+
 fn dm_label(
     participants: &[String],
     self_pubkey: &str,
@@ -15668,38 +15985,6 @@ mod tests {
 
         assert!(!app.cache_dirty);
         assert!(!app.on_tick().await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn expired_leader_prefix_is_cancelled_without_an_action() {
-        let temporary = TempDir::new().unwrap();
-        let paths = Paths {
-            config_dir: temporary.path().join("config"),
-            data_dir: temporary.path().join("data"),
-            cache_dir: temporary.path().join("cache"),
-        };
-        paths.ensure().unwrap();
-        let config = Config::default();
-        let mut store = Store::open(paths.database_file()).unwrap();
-        store.sync_config(&config).unwrap();
-        let handle = StoreHandle::spawn(store).unwrap();
-        let mut app = super::App::new(config, paths, handle).await.unwrap();
-        let _ = app.input_router.dispatch(
-            &app.keymap,
-            crate::ui::input::InputContext::workspace(),
-            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
-        );
-        app.leader_started_at = Some(std::time::Instant::now() - super::LEADER_TIMEOUT);
-        app.presentation
-            .open_overlay(crate::ui::state::Overlay::WhichKey);
-
-        app.on_tick().await.unwrap();
-
-        assert!(!app.input_router.sequence_active());
-        assert_ne!(
-            app.presentation.overlay,
-            Some(crate::ui::state::Overlay::WhichKey)
-        );
     }
 
     #[tokio::test]
