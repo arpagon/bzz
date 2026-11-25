@@ -2448,6 +2448,10 @@ keys = ["tab"]
 visible = "message #t9-general"
 
 [[scenario.step]]
+keys = ["shift+tab"]
+visible = "message #t9-general"
+
+[[scenario.step]]
 keys = ["q"]
 visible = "quit bzz?"
 
