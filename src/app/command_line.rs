@@ -82,9 +82,10 @@ impl App {
             lines.push(String::new());
         }
         for line in below {
-            // At most two rows of candidates: the rest come by Tab.
+            // At most two rows of candidates (the rest come by Tab); the
+            // usage whole, up to four.
             let mut wrapped = crate::ui::help::wrap_text(&line, inner);
-            wrapped.truncate(2);
+            wrapped.truncate(if line.starts_with("Tab: ") { 2 } else { 4 });
             lines.extend(wrapped);
         }
         let height = u16::try_from(lines.len() + 2)
