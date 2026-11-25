@@ -2460,8 +2460,16 @@ pane = "second"
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
 visible = "Generated custom emoji"
 
+# The second client has the huddle before it joins.
 [[scenario.step]]
 pane = "second"
+keys = []
+visible = "1 in it"
+timeout = 30000
+
+[[scenario.step]]
+pane = "second"
+pause = 2000
 keys = [":", "h", "u", "d", "d", "l", "e", "space", "j", "o", "i", "n", "enter"]
 visible = "join the huddle?"
 timeout = 20000

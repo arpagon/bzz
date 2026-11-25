@@ -1245,9 +1245,10 @@ impl App {
                         self.huddle_joining=false;
                         match result {
                             Ok(call) => {
-                                // A saved device not found takes the hint's place.
+                                // A saved device not found comes first (the status
+                                // line is cut at its end) and takes the hint's place.
                                 let status = match call._devices.notice() {
-                                    Some(notice) => format!("joined the huddle · muted · {notice}"),
+                                    Some(notice) => format!("{notice} · joined the huddle · muted"),
                                     None => "joined the huddle · muted · m to unmute, space to talk".into(),
                                 };
                                 if let Some(previous) = self.huddle_call.replace(*call) {
