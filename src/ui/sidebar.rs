@@ -125,7 +125,9 @@ pub fn rows(
 ) -> Vec<SidebarRow> {
     let mut grouped = std::collections::BTreeMap::<Group, Vec<usize>>::new();
     for (index, channel) in channels.iter().enumerate() {
-        if channel.is_member && (show_system || !channel.kind.is_system()) {
+        if channel.is_member
+            && (show_system || !(channel.kind.is_system() || channel.is_huddle_backing()))
+        {
             grouped
                 .entry(group_of(channel, layout))
                 .or_default()

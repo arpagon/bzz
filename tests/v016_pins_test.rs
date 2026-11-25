@@ -232,8 +232,8 @@ const V016_COMMANDS: &str = "\
 :report spam	Report(\"spam\")
 ";
 
-/// The three changes v0.17.0 makes to what v0.16.0 did, by name.
-const DELIBERATE_CHANGES: [(&str, &str); 3] = [
+/// The changes v0.17.0 makes to what v0.16.0 did, by name.
+const DELIBERATE_CHANGES: [(&str, &str); 4] = [
     (
         "d deletes my selected message",
         "plan D5: a new key in the workspace (it asks, as the actions menu does)",
@@ -246,6 +246,17 @@ const DELIBERATE_CHANGES: [(&str, &str); 3] = [
         ":status shows the status",
         "plan D6: a bare :status shows your status instead of clearing it; :status clear clears",
     ),
+    (
+        "Esc in the workspace and the Inbox no longer asks to quit",
+        "plan L12: Esc closes what is open as before; with nothing open it says so and q asks to quit",
+    ),
+];
+
+/// v0.16.0 bindings v0.17.0 moves on purpose: scope, keys, what it did,
+/// what it does, and the change in `DELIBERATE_CHANGES` that allows it.
+const MOVED_KEYS: &[(&str, &str, &str, &str)] = &[
+    ("Workspace", "Esc", "BackOrQuit", "Back"),
+    ("Inbox", "Esc", "BackOrQuit", "Back"),
 ];
 
 /// Bindings v0.17.0 adds: scope, keys, action. Every one is new (no v0.16.0
@@ -261,6 +272,8 @@ const ADDED_KEYS: &[(&str, &str, &str)] = &[
     ("Workspace", "Space k", "OpenPalette"),
     ("Inbox", "Ctrl+k", "OpenPalette"),
     ("Inbox", "Space k", "OpenPalette"),
+    // Plan L10: the conversation alone, in the workspace.
+    ("Workspace", "z", "ConversationOnly"),
 ];
 
 /// Commands v0.16.0 answered with "unknown command" and v0.17.0 knows
@@ -316,6 +329,18 @@ fn pinned_keys() -> Vec<(String, String, String)> {
 fn every_v016_key_does_what_it_did() {
     let current = current_keys();
     for pinned in pinned_keys() {
+        if let Some(moved) = MOVED_KEYS.iter().find(|(scope, keys, old, _)| {
+            (*scope, *keys, *old) == (&pinned.0[..], &pinned.1[..], &pinned.2[..])
+        }) {
+            assert!(
+                current.contains(&(pinned.0.clone(), pinned.1.clone(), moved.3.to_owned())),
+                "{} {} was moved to {}",
+                pinned.0,
+                pinned.1,
+                moved.3
+            );
+            continue;
+        }
         assert!(
             current.contains(&pinned),
             "{} {} no longer does {}",
@@ -342,9 +367,19 @@ fn every_binding_is_v016s_or_named() {
             )
         })
         .collect::<Vec<_>>();
+    let moved = MOVED_KEYS
+        .iter()
+        .map(|(scope, keys, _, action)| {
+            (
+                (*scope).to_owned(),
+                (*keys).to_owned(),
+                (*action).to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
     for binding in current_keys() {
         assert!(
-            pinned.contains(&binding) || added.contains(&binding),
+            pinned.contains(&binding) || added.contains(&binding) || moved.contains(&binding),
             "{binding:?} is new: name it in ADDED_KEYS with its decision"
         );
     }
@@ -381,5 +416,5 @@ fn every_v016_command_parses_as_it_did() {
             "{input} was a v0.16.0 command"
         );
     }
-    assert_eq!(DELIBERATE_CHANGES.len(), 3);
+    assert_eq!(DELIBERATE_CHANGES.len(), 4);
 }

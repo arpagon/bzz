@@ -1006,6 +1006,17 @@ pub static TABLE: &[ActionSpec] = &[
         "bzz completions <shell>",
     )
     .words("bash zsh fish"),
+    // v0.17 L10 and L12 (task `layout`).
+    ui(
+        "view.conversation_only",
+        "Conversation only",
+        G::View,
+        A::ConversationOnly,
+    )
+    .words("zoom alone hide panes full width"),
+    ui("nav.close", "Close what is open", G::Bzz, A::Back)
+        .words("escape back")
+        .place(Where::Anywhere),
 ];
 
 /// The row of `id`, if it exists.
@@ -1103,6 +1114,8 @@ mod tests {
         MoveLineStart,
         MoveLineEnd,
         OpenPalette,
+        Back,
+        ConversationOnly,
     );
 
     macro_rules! all_commands {

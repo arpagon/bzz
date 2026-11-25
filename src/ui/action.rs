@@ -142,6 +142,10 @@ pub enum WorkspaceEffect {
     Unavailable(UiAction),
     /// The palette (v0.17).
     OpenPalette,
+    /// `Esc` with nothing to close: it does not ask to quit (v0.17 L12).
+    NothingToClose,
+    /// `z`: the conversation alone, or all the panes again (v0.17 L10).
+    ToggleConversationOnly,
 }
 
 /// Reduce one action using only presentation and local workspace facts.
@@ -160,7 +164,9 @@ pub struct InboxWorkspaceState {
 pub enum InboxEffect {
     None,
     MoveSelection(isize),
-    MoveSelectionToEdge { last: bool },
+    MoveSelectionToEdge {
+        last: bool,
+    },
     ScrollList(ViewportScroll),
     ScrollDetail(ViewportScroll),
     CycleFilter,
@@ -175,6 +181,8 @@ pub enum InboxEffect {
     RequestQuitConfirmation,
     Unavailable(UiAction),
     OpenPalette,
+    /// `Esc` with nothing to close: it does not ask to quit (v0.17 L12).
+    NothingToClose,
 }
 
 /// Reduce an Inbox route interaction without accessing messages, a store, a
@@ -182,7 +190,7 @@ pub enum InboxEffect {
 /// validating its selected conversation.
 pub fn reduce_inbox(state: &mut InboxWorkspaceState, action: UiAction) -> InboxEffect {
     match action {
-        UiAction::BackOrQuit => {
+        UiAction::BackOrQuit | UiAction::Back => {
             if state.presentation.overlay.take().is_some() {
                 InboxEffect::None
             } else if state.narrow_layout && state.narrow_detail {
@@ -191,6 +199,8 @@ pub fn reduce_inbox(state: &mut InboxWorkspaceState, action: UiAction) -> InboxE
                 InboxEffect::None
             } else if state.presentation.back() {
                 InboxEffect::None
+            } else if action == UiAction::Back {
+                InboxEffect::NothingToClose
             } else {
                 InboxEffect::RequestQuitConfirmation
             }
@@ -275,13 +285,15 @@ pub fn reduce_inbox(state: &mut InboxWorkspaceState, action: UiAction) -> InboxE
 
 pub fn reduce_workspace(state: &mut WorkspaceState, action: UiAction) -> WorkspaceEffect {
     match action {
-        UiAction::BackOrQuit => {
+        UiAction::BackOrQuit | UiAction::Back => {
             if state.presentation.back() {
                 WorkspaceEffect::None
             } else if state.context_visible {
                 state.context_visible = false;
                 state.focus_workspace(FocusSurface::Timeline);
                 WorkspaceEffect::CloseContext
+            } else if action == UiAction::Back {
+                WorkspaceEffect::NothingToClose
             } else {
                 WorkspaceEffect::RequestQuitConfirmation
             }
@@ -442,6 +454,10 @@ pub fn reduce_workspace(state: &mut WorkspaceState, action: UiAction) -> Workspa
             WorkspaceEffect::OpenProfile
         }
         UiAction::OpenPalette => WorkspaceEffect::OpenPalette,
+        UiAction::ConversationOnly => {
+            state.focus_workspace(FocusSurface::Timeline);
+            WorkspaceEffect::ToggleConversationOnly
+        }
         unsupported => WorkspaceEffect::Unavailable(unsupported),
     }
 }

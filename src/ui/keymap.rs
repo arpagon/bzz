@@ -83,6 +83,12 @@ pub enum UiAction {
     MoveLineEnd,
     /// The palette: find and run any action (v0.17, D4).
     OpenPalette,
+    /// `Esc` in the workspace and the Inbox: what `BackOrQuit` does, except
+    /// that with nothing to close it does not ask to quit (v0.17, L12).
+    Back,
+    /// `z`: the conversation and the writing dock alone; `z` again restores
+    /// (v0.17, L10).
+    ConversationOnly,
 }
 
 impl UiAction {
@@ -153,6 +159,8 @@ impl UiAction {
             Self::MoveLineStart => "line start",
             Self::MoveLineEnd => "line end",
             Self::OpenPalette => "find any action",
+            Self::Back => "back / close",
+            Self::ConversationOnly => "conversation only / all panes",
         }
     }
 }
@@ -532,6 +540,14 @@ impl KeyMap {
         // workspace; the Inbox keeps `U` and does not inherit these.
         add(KeyScope::Workspace, &["d"], UiAction::Delete);
         add(KeyScope::Workspace, &["u"], UiAction::MarkUnread);
+        // v0.17 L12: Esc closes what is open and, with nothing open, does
+        // not ask to quit; `q` still asks. Overlays and the composer keep
+        // their own Esc.
+        add(KeyScope::Workspace, &["esc"], UiAction::Back);
+        add(KeyScope::Inbox, &["esc"], UiAction::Back);
+        // v0.17 L10: the conversation alone. Workspace only, so the Inbox
+        // and text never see it; the huddle's panel keeps its own `z`.
+        add(KeyScope::Workspace, &["z"], UiAction::ConversationOnly);
 
         let keymap = Self {
             bindings,
