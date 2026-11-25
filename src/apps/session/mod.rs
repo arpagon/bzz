@@ -194,6 +194,18 @@ enum Door {
 /// A write the records have and have not answered.
 struct Sent {
     deletes: bool,
+    /// The record it revises or deletes, and the revision it was sent on.
+    on: Option<(Uuid, String)>,
+}
+
+/// A revision the app's own write made of another.
+struct Own {
+    /// The revisions the app's own writes replaced, the last few.
+    replaced: VecDeque<String>,
+    /// The revision the last of them made.
+    latest: String,
+    /// Its content as stored, for what Lua could not show (F1).
+    content: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A list that waits for the first complete set.
@@ -236,6 +248,17 @@ pub struct AppSession {
     /// Replies to lists the records keep back.
     kept: Vec<RecordReply>,
     sent: HashMap<u64, Sent>,
+    /// The app's own writes to one record are sent one after the other
+    /// (F2, v0.17): a revise or delete of a record that has a write of the
+    /// app on its way waits here for its answer.
+    queued: HashMap<Uuid, VecDeque<RecordRequest>>,
+    /// The record ids with a write of the app on their way.
+    busy: HashMap<Uuid, u64>,
+    /// What the app's own writes to a record made: a write the script
+    /// built on a revision one of them replaced, without having had the
+    /// answer yet, is sent on the app's own last one. Forgotten when
+    /// someone else changes the record.
+    own: HashMap<Uuid, Own>,
     budget: SharedBudget,
     /// Until when no write is sent, on the clock's `elapsed`: the relay's
     /// quota or the app's own budget said to wait.
@@ -305,6 +328,9 @@ impl AppSession {
             listed: Vec::new(),
             kept: Vec::new(),
             sent: HashMap::new(),
+            queued: HashMap::new(),
+            busy: HashMap::new(),
+            own: HashMap::new(),
             budget: options
                 .budget
                 .unwrap_or_else(|| Arc::new(Mutex::new(WriteBudget::default()))),
@@ -539,6 +565,22 @@ impl AppSession {
             .chain(self.set.values().map(|record| &record.author))
             .chain(self.asked.iter())
             .filter(|id| !self.names.contains_key(*id))
+            .cloned()
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// Everyone the session shows, named or not: the local participant,
+    /// whoever signed a record it holds, and the ids the script asked
+    /// `host.name` for while they had no name. For the owner to look up
+    /// once, and to give their names again when one changes
+    /// ([`AppSession::set_names`] keeps only what differs).
+    pub fn people(&self) -> Vec<String> {
+        let mut ids: Vec<String> = std::iter::once(&self.user)
+            .chain(self.set.values().map(|record| &record.author))
+            .chain(self.asked.iter())
             .cloned()
             .collect();
         ids.sort();
@@ -806,29 +848,117 @@ impl AppSession {
                 );
             }
             RecordOp::Update {
-                record_id,
-                record_type,
-                rev,
-                content,
-            } => match self.target(&record_id, &record_type, &rev) {
-                Ok(id) => self.write(
-                    request.id,
-                    Write::Update {
-                        id,
-                        revision: rev,
-                        content,
-                    },
-                ),
-                Err(error) => self.reply(request.id, Err(error)),
-            },
-            RecordOp::Delete {
-                record_id,
-                record_type,
-                rev,
-            } => match self.target(&record_id, &record_type, &rev) {
-                Ok(id) => self.write(request.id, Write::Delete { id, revision: rev }),
-                Err(error) => self.reply(request.id, Err(error)),
-            },
+                ref record_id,
+                ref record_type,
+                ref rev,
+                ..
+            }
+            | RecordOp::Delete {
+                ref record_id,
+                ref record_type,
+                ref rev,
+            } => {
+                if let Some(id) = self.waits(record_id) {
+                    self.queued.entry(id).or_default().push_back(request);
+                    return;
+                }
+                let rev = self.chained(record_id, rev);
+                let record_type = record_type.clone();
+                match self.target(record_id, &record_type, &rev) {
+                    Ok(id) => {
+                        let write = match request.op {
+                            RecordOp::Update { content, .. } => {
+                                // What Lua could not show the script is
+                                // written back as it was read (F1).
+                                let content = match self.read_at(id, &rev) {
+                                    Some(read) => super::runtime::as_read(read, content),
+                                    None => content,
+                                };
+                                Write::Update {
+                                    id,
+                                    revision: rev,
+                                    content,
+                                }
+                            }
+                            _ => Write::Delete { id, revision: rev },
+                        };
+                        self.write(request.id, write);
+                    }
+                    Err(error) => self.reply(request.id, Err(error)),
+                }
+            }
+        }
+    }
+
+    /// The record a revise or delete names, if a write of the app to it is
+    /// on its way: then this one waits for that one's answer.
+    fn waits(&self, record_id: &str) -> Option<Uuid> {
+        // Outside [`AppSession::release`] a record with writes waiting has
+        // one on its way.
+        let id = Uuid::parse_str(record_id).ok()?;
+        self.busy.contains_key(&id).then_some(id)
+    }
+
+    /// The revision a write of the app is to be sent on: the one it names,
+    /// or, if the app's own earlier write replaced that one, what it made.
+    /// A revision of anyone else is never put in its place.
+    fn chained(&self, record_id: &str, rev: &str) -> String {
+        let Ok(id) = Uuid::parse_str(record_id) else {
+            return rev.to_string();
+        };
+        self.follow(id, rev)
+    }
+
+    /// Where the app's own writes led from `rev`.
+    fn follow(&self, id: Uuid, rev: &str) -> String {
+        match self.own.get(&id) {
+            Some(own) if own.replaced.iter().any(|replaced| replaced == rev) => own.latest.clone(),
+            _ => rev.to_string(),
+        }
+    }
+
+    /// The app's own write to `id` replaced `before` with `stored`.
+    fn remember_own(&mut self, id: Uuid, before: &str, stored: &Record) {
+        // More than a burst at the budget of a minute.
+        const KEPT: usize = 64;
+        let own = self.own.entry(id).or_insert_with(|| Own {
+            replaced: VecDeque::new(),
+            latest: String::new(),
+            content: serde_json::Map::new(),
+        });
+        if own.replaced.len() >= KEPT {
+            own.replaced.pop_front();
+        }
+        own.replaced.push_back(before.to_string());
+        own.latest = stored.revision.clone();
+        own.content = stored.content.clone();
+    }
+
+    /// The content of `id` at `rev`: the set's, or the app's own write's
+    /// while the set has not caught up with it.
+    fn read_at(&self, id: Uuid, rev: &str) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        match self.set.get(&id) {
+            Some(held) if held.revision == rev => Some(&held.content),
+            _ => self
+                .own
+                .get(&id)
+                .filter(|own| own.latest == rev)
+                .map(|own| &own.content),
+        }
+    }
+
+    /// A write of the app to `id` was answered: the next that waited for it
+    /// is served, and once none waits, what was remembered for them goes.
+    fn release(&mut self, id: Uuid) {
+        while !self.busy.contains_key(&id) {
+            let next = self.queued.get_mut(&id).and_then(VecDeque::pop_front);
+            match next {
+                Some(request) => self.serve(request),
+                None => break,
+            }
+        }
+        if !self.busy.contains_key(&id) {
+            self.queued.remove(&id);
         }
     }
 
@@ -875,7 +1005,9 @@ impl AppSession {
             .and_then(|id| self.set.get(&id))
             .filter(|record| record.record_type == record_type)
             .ok_or(RecordError::NotFound)?;
-        if held.revision != rev {
+        // The session may not hold the app's own last revision yet: the
+        // records do, and judge the write.
+        if held.revision != rev && self.follow(held.id, &held.revision) != rev {
             return Err(RecordError::Conflict {
                 current: Box::new(held.clone()),
             });
@@ -901,10 +1033,20 @@ impl AppSession {
             self.reply(request, Err(RecordError::RateLimited { seconds }));
             return;
         }
+        let on = match &write {
+            Write::Update { id, revision, .. } | Write::Delete { id, revision } => {
+                Some((*id, revision.clone()))
+            }
+            Write::Create { .. } => None,
+        };
+        if let Some((id, _)) = &on {
+            self.busy.insert(*id, request);
+        }
         self.sent.insert(
             request,
             Sent {
                 deletes: matches!(write, Write::Delete { .. }),
+                on,
             },
         );
         self.records.write(request, write);
@@ -1081,6 +1223,8 @@ impl AppSession {
                     if known.as_deref() == Some(fresh.revision.as_str()) {
                         continue;
                     }
+                    // A revision of someone else: the app's own chain ends.
+                    self.own.remove(&fresh.id);
                     let pushed = if known.is_some() {
                         Pushed::Update
                     } else {
@@ -1092,6 +1236,7 @@ impl AppSession {
                     self.set.insert(fresh.id, fresh);
                 }
                 Change::Removed { record: last, by } => {
+                    self.own.remove(&last.id);
                     let Some(held) = self.set.remove(&last.id) else {
                         continue;
                     };
@@ -1114,6 +1259,29 @@ impl AppSession {
         let Some(sent) = self.sent.remove(&request) else {
             return;
         };
+        if let Some((id, revision)) = &sent.on {
+            if self.busy.get(id) == Some(&request) {
+                self.busy.remove(id);
+            }
+            match &result {
+                Ok(stored) if !sent.deletes => {
+                    let stored = stored.clone();
+                    self.remember_own(*id, revision, &stored);
+                }
+                Ok(_) => {
+                    self.own.remove(id);
+                }
+                Err(_) => {}
+            }
+        }
+        let on = sent.on.as_ref().map(|(id, _)| *id);
+        self.answer(request, sent, result);
+        if let Some(id) = on {
+            self.release(id);
+        }
+    }
+
+    fn answer(&mut self, request: u64, sent: Sent, result: Result<Record, RecordError>) {
         match result {
             Ok(carried) => {
                 // The relay took a write: the channel is not archived.

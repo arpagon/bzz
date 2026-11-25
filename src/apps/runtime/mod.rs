@@ -63,6 +63,7 @@ pub use records::{
     Who,
 };
 pub use ui::AppTheme;
+pub use value::as_read;
 pub use worker::{API_VERSION, HANDLERS};
 
 use ui::Node;

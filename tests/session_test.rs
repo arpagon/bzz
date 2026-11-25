@@ -102,6 +102,14 @@ fn global_aux_and_membership_subscriptions_match_buzz_routing() {
             .iter()
             .any(|kind| kind.as_u64() == Some(7))
     );
+    // v0.17 F5: a profile changed while bzz runs replaces the one it holds.
+    assert!(
+        global[0]["kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|kind| kind.as_u64() == Some(0))
+    );
     let membership = subscriptions::membership(&"a".repeat(64), 1_000);
     assert_eq!(membership[0]["kinds"], json!([44_100, 44_101]));
     assert_eq!(membership[0]["since"], json!(970));
