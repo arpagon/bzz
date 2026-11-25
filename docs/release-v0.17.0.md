@@ -128,7 +128,7 @@ its last section says how the build departed from it.
 ### Finding your way
 
 - **The status line's hint follows the focus** (C10): on a message `Enter
-  thread · r react · i reply · Ctrl-K actions`, in the channels `Enter open ·
+  thread · r react · i write · Ctrl-K actions`, in the channels `Enter open ·
   Space Space find · i write`, in the composer `Enter send · Ctrl-J newline ·
   Esc close`, in the Inbox `o open · i reply · m read`, and so on: up to
   three keys that can run there, each from your own key map, then the
@@ -480,10 +480,9 @@ What v0.17.0 does not do, and what was not seen. Each is in
 - In the writing dock `Ctrl+K` stays "delete to the end of the line". A
   terminal that keeps `Ctrl+K` (VS Code's, with chords) still has `Space k`
   ([palette]).
-- Seen and not fixed: on a message the hint says `i reply`, where `i`
-  writes a message in the channel; a space typed before Tab on the `:` line
-  leaves two spaces; in the composer the hint repeats two keys its frame
-  already shows ([principal], [registry]).
+- Seen and not fixed: a space typed before Tab on the `:` line leaves two
+  spaces; in the composer the hint repeats two keys its frame already shows
+  ([principal], [registry]).
 
 **Other defects seen and not fixed**
 

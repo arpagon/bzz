@@ -3801,7 +3801,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["type:t9-gen", "enter"]
-visible = "Enter thread · r react · i reply · Ctrl-K actions"
+visible = "Enter thread · r react · i write · Ctrl-K actions"
 
 [[scenario.step]]
 keys = [":", "type:app open", "space", "tab"]

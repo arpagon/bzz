@@ -25,7 +25,9 @@ cleanup() {
   if [[ -n ${PULSE_RUNTIME_PATH:-} && ${PULSE_RUNTIME_PATH:-} == "$work/pulse-runtime" ]]; then
     pulseaudio --kill >/dev/null 2>&1 || true
   fi
-  rm -rf -- "$work"
+  # The server may still be writing its state while it goes: a folder that
+  # is "not empty" for a moment must not turn a passed test into a failure.
+  rm -rf -- "$work" 2>/dev/null || { sleep 1; rm -rf -- "$work" 2>/dev/null || true; }
 }
 trap cleanup EXIT INT TERM
 

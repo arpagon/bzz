@@ -547,7 +547,7 @@ pub static TABLE: &[ActionSpec] = &[
     ui("msg.compose", "Write a message", G::Message, A::Compose)
         .words("compose reply send post new message")
         .keys(&[(GLOBAL, &["i"])])
-        .hints(&[Hint::on(F::Message, 3, "reply"), Hint::on(F::Thread, 1, "reply"), Hint::on(F::Timeline, 1, "write"), Hint::on(F::Channels, 3, "write")])
+        .hints(&[Hint::on(F::Message, 3, "write"), Hint::on(F::Thread, 1, "reply"), Hint::on(F::Timeline, 1, "write"), Hint::on(F::Channels, 3, "write")])
         .needs(N::Channel),
     steps(
         "msg.react",

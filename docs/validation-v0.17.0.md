@@ -112,9 +112,10 @@ scratch home and no network.
 - **At `006d8d1`** (registry merged): the footer follows the focus,
   `Enter thread · r react · i reply · Ctrl-K actions` on a message and
   `Enter send · Ctrl-J newline · Esc close` in the composer; `:hu`, Tab
-  gives `:huddle`, Tab again `start`, the usage under the line. Seen and
-  not fixed: `i reply` on a message, where `i` writes in the channel; a
-  space typed before Tab leaves two (`:huddle  start`).
+  gives `:huddle`, Tab again `start`, the usage under the line. Seen: the
+  hint said `i reply` on a message, where `i` writes in the channel (fixed
+  on 2026-11-26: it says `i write`); a space typed before Tab leaves two
+  (`:huddle  start`), not fixed.
 - **At `6fcd428`** (layout merged), at 80×24: opening a thread hides the
   sidebar and the frame says `hidden · channels 2`; `z` shows the
   conversation alone (`hidden · the other panes z`); `Esc` with nothing open
