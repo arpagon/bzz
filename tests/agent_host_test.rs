@@ -298,7 +298,7 @@ async fn the_real_host_is_installed_started_and_answers_once_across_kills_and_re
 
     // Killed in the middle of a turn: the turn ends with one reply. The
     // host reports this turn's first tool call (by its own words: the turn
-    // before can still be listed a moment), and is then in the turn's
+    // before may still be listed a moment), and is then in the turn's
     // sleep: the kill comes then, not after a fixed time that a loaded
     // machine can stretch past the sleep.
     let cut = world
