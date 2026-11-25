@@ -25,7 +25,8 @@ then the cases for this change. Only the differences are written here.
   column counts `To do (N)`, `Doing (N)`, `Done (N)` count only the cards
   shown. If no card is shown because of the filter or the search, show
   `No cards match.`.
-- `Loaded N cards.` still gives the number of records the list returned.
+- `Loaded N cards.` gives the number of cards on the board, in its three
+  columns, whatever the filter.
 
 ## Keys (on the board, no input open)
 

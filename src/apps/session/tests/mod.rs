@@ -1056,3 +1056,304 @@ fn a_session_can_be_owned_by_a_task() {
     sendable::<AppSession>();
     sendable::<SessionStatus>();
 }
+
+// ------------------------------------------------- v0.17: what the films found
+
+/// The Board fixture at the pane's size, on cards `seed` writes.
+fn board_on(seed: impl FnOnce(&mut MemoryStore)) -> Headless {
+    let clock = ManualClock::new(START_OF_TIME);
+    let mut store = MemoryStore::new(ana(), clock.clone());
+    seed(&mut store);
+    Headless::start_on(
+        BOARD,
+        HeadlessOptions::new("board.lua").limits(Limits::patient()),
+        store,
+        clock,
+    )
+    .expect("starts")
+}
+
+/// The content of the card titled `title`, as stored.
+fn card(app: &mut Headless, title: &str) -> serde_json::Value {
+    serde_json::Value::Object(app.store().find_by("title", title).expect(title).content)
+}
+
+#[test]
+fn a_card_another_client_wrote_comes_back_from_the_board_as_it_was_read() {
+    // F1: written by a client that is not bzz, with what Lua has no form
+    // for: a null, an empty object, a list with nulls, a whole number past
+    // a Lua integer. The Board moves the card: only `column` changes.
+    let written = json!({
+        "title": "Odd", "column": "todo", "order": 1795537221.1991239,
+        "gone": null, "nested": { "a": 1, "b": null }, "meta": {},
+        "list": [1, null, 3], "tail": [1, null], "nulls": [null], "labels": [],
+        "big": 12345678901234567890_u64, "deep": { "empty": {}, "x": [{}] },
+        "float": 1.0, "priority": "high",
+    });
+    let mut app = board_on(|store| {
+        store.seed("card", content(written.clone()), &bo());
+    });
+    assert_eq!(last_row(&app.screen()), "Loaded 1 cards.");
+    app.key("]");
+    assert_eq!(last_row(&app.screen()), "Saved.");
+    let mut wanted = written.clone();
+    wanted["column"] = json!("doing");
+    assert_eq!(card(&mut app, "Odd"), wanted);
+    // And back: the revision the Board wrote reads the same again.
+    app.key("[");
+    assert_eq!(card(&mut app, "Odd"), written);
+    assert_eq!(app.store().count("update"), 2);
+}
+
+#[test]
+fn a_change_of_the_script_is_written_as_it_wrote_it() {
+    // F1, the other side: only what the script could not tell apart is put
+    // back. A field it sets is its own, null or not; a number it changes,
+    // also by one past 2^53, is written as it wrote it.
+    const EDIT: &str = r#"
+local app = { api = 1, types = { "note" } }
+function app.init(ctx) data.list { type = "note", tag = "load" } return {} end
+function app.view(s, ctx) return ui.text { s.said or "" } end
+function app.key(s, key, ctx)
+  local n = s.note
+  local c = {}
+  for k, v in pairs(n.content) do c[k] = v end
+  c.gone = "set"           -- was null
+  c.meta = { 1 }           -- was {}
+  c.big = c.big + 1        -- 2^53 + 1, a Lua integer
+  c.order = c.order + 1    -- a float
+  c.nested.b = false       -- was null
+  data.update { record_id = n.id, rev = n.rev, content = c, tag = "edit" }
+end
+function app.reply(s, r, ctx)
+  if r.tag == "load" then s.note = r.records[1] else s.said = r.ok and "ok" or r.error.code end
+end
+return app
+"#;
+    let mut app = start_on("edit.lua", EDIT, |store| {
+        store.seed(
+            "note",
+            content(json!({
+                "title": "n", "gone": null, "meta": {}, "big": 9007199254740992_i64,
+                "order": 2.5, "nested": { "b": null }, "keep": null,
+            })),
+            &bo(),
+        );
+    });
+    app.key("e");
+    assert_eq!(app.screen().trim_end(), "ok");
+    assert_eq!(
+        card(&mut app, "n"),
+        json!({
+            "title": "n", "gone": "set", "meta": [1], "big": 9007199254740993_i64,
+            "order": 3.5, "nested": { "b": false }, "keep": null,
+        })
+    );
+}
+
+/// Holds the answer to every update until [`release_one`].
+fn hold_updates(app: &mut Headless, n: usize) {
+    for _ in 0..n {
+        app.store().hold_next("update");
+    }
+}
+
+/// Lets the relay answer the write it holds: true if there was one. A
+/// write of the app to one record waits for the one before, so there is
+/// never more than one.
+fn release_one(app: &mut Headless) -> bool {
+    let held = app.store().release();
+    assert!(
+        held.len() <= 1,
+        "{} writes on their way at once",
+        held.len()
+    );
+    if held.is_empty() {
+        return false;
+    }
+    app.deliver(held);
+    true
+}
+
+#[test]
+fn the_boards_own_moves_do_not_conflict_when_keys_come_faster_than_replies() {
+    // F2: the film's burst, 25 moves of one card while no reply has come.
+    // Each move was sent on the revision the Board held, and the relay
+    // refused the second of two as stale: 10 of 25. A person's own writes
+    // to one record are sent one after the other, each on the revision
+    // the one before made.
+    let mut app = board_on(|store| {
+        store.seed(
+            "card",
+            content(json!({ "title": "Alpha", "column": "todo", "order": 1 })),
+            &bo(),
+        );
+    });
+    hold_updates(&mut app, 25);
+    for n in 0..25 {
+        app.key(if n % 2 == 0 { "]" } else { "[" });
+    }
+    // Only the first is on its way; the Board shows the last at once.
+    assert_eq!(app.store().count("update"), 1);
+    assert!(app.screen().contains("Doing (1)"), "{}", app.screen());
+    let mut answered = 0;
+    while release_one(&mut app) {
+        answered += 1;
+        assert!(
+            !app.screen().contains("Conflict"),
+            "after {answered}: {}",
+            app.screen()
+        );
+        // While moves of its own are on their way the card stays shown
+        // where the last key put it.
+        if answered < 25 {
+            assert!(app.screen().contains("Doing (1)"), "{}", app.screen());
+        }
+    }
+    assert_eq!(answered, 25);
+    assert_eq!(app.store().count("update"), 25, "none refused, none again");
+    assert_eq!(last_row(&app.screen()), "Saved.");
+    assert_eq!(card(&mut app, "Alpha")["column"], "doing");
+    assert!(app.screen().contains("Doing (1)"), "{}", app.screen());
+}
+
+#[test]
+fn a_real_conflict_with_another_client_is_still_refused_in_a_burst() {
+    // F2, the other side: chaining the app's own revisions never builds on
+    // someone else's. bo renames the card between the Board's first and
+    // second move: the second is refused, merged, and nothing is lost.
+    let mut app = board_on(|store| {
+        store.seed(
+            "card",
+            content(json!({ "title": "Alpha", "column": "todo", "order": 1 })),
+            &bo(),
+        );
+    });
+    let alpha = app.store().find_by("title", "Alpha").expect("Alpha").id;
+    hold_updates(&mut app, 1);
+    app.key("]").key("]");
+    assert_eq!(app.store().count("update"), 1);
+    // Before the first is answered, bo writes on top of it.
+    let theirs = app.store().remote_update(
+        &bo(),
+        &alpha,
+        content(json!({ "title": "Alpha (bo)", "column": "doing", "order": 1 })),
+    );
+    app.deliver(theirs);
+    assert!(release_one(&mut app));
+    let screen = app.screen();
+    assert_eq!(
+        last_row(&screen),
+        "Conflict: merged with a newer change.",
+        "{screen}"
+    );
+    let stored = app.store().get(&alpha).expect("the card");
+    assert_eq!(
+        serde_json::Value::Object(stored.content),
+        json!({ "title": "Alpha (bo)", "column": "done", "order": 1 })
+    );
+    // The second move, on the first's revision, was refused before it was
+    // sent: bzz already held bo's. Then the merge.
+    assert_eq!(app.store().count("update"), 2);
+}
+
+#[test]
+fn queued_moves_still_spend_the_apps_budget() {
+    // F2 within the budget of 30 writes a minute: a move that waits for the
+    // one before is spent when it is sent, and past 30 it is refused with
+    // the wait, before anything is sent.
+    let mut app = board_on(|store| {
+        store.seed(
+            "card",
+            content(json!({ "title": "Alpha", "column": "todo", "order": 1 })),
+            &bo(),
+        );
+    });
+    hold_updates(&mut app, 31);
+    for n in 0..31 {
+        app.key(if n % 2 == 0 { "]" } else { "[" });
+    }
+    while release_one(&mut app) {}
+    assert_eq!(app.store().count("update"), APP_WRITES_PER_MINUTE as usize);
+    assert_eq!(last_row(&app.screen()), "Too many changes. Retry in 60 s.");
+}
+
+#[test]
+fn a_move_of_a_card_deleted_meanwhile_says_who_deleted_it() {
+    // F3: the Board said "Save failed." when the card it moved had been
+    // deleted by someone else. It says what happened and drops the card,
+    // whichever of the two bzz hears of first.
+    for push_first in [false, true] {
+        let mut app = board_on(|store| {
+            for (order, title) in ["Alpha", "Bravo"].into_iter().enumerate() {
+                store.seed(
+                    "card",
+                    content(json!({ "title": title, "column": "todo", "order": order })),
+                    &bo(),
+                );
+            }
+        });
+        let alpha = app.store().find_by("title", "Alpha").expect("Alpha").id;
+        // cy deletes Alpha; the Board has not heard of it yet.
+        let deleted = app.store().remote_delete(&cy(), &alpha);
+        if push_first {
+            hold_updates(&mut app, 1);
+            app.key("]");
+            app.deliver(deleted);
+            assert!(release_one(&mut app));
+        } else {
+            app.key("]");
+            assert_eq!(
+                last_row(&app.screen()),
+                "This card was deleted meanwhile.",
+                "{}",
+                app.screen()
+            );
+            app.deliver(deleted);
+        }
+        let screen = app.screen();
+        assert_eq!(
+            last_row(&screen),
+            "This card was deleted by cy.",
+            "{screen}"
+        );
+        assert!(!screen.contains("Alpha"), "{screen}");
+        assert!(screen.contains("To do (1)"), "{screen}");
+    }
+}
+
+#[test]
+fn the_board_counts_the_cards_it_shows() {
+    // F3: "Loaded 5 cards." with four on screen. A list answered after a
+    // deletion it was asked before counts the deleted card; a card of a
+    // column the Board does not show was counted too.
+    let mut app = board_on(|store| {
+        for (order, (title, column)) in [
+            ("Alpha", "todo"),
+            ("Bravo", "doing"),
+            ("Charlie", "done"),
+            ("Delta", "todo"),
+            ("Shelved", "archive"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            store.seed(
+                "card",
+                content(json!({ "title": title, "column": column, "order": order })),
+                &bo(),
+            );
+        }
+    });
+    assert_eq!(last_row(&app.screen()), "Loaded 4 cards.");
+    let charlie = app.store().find_by("title", "Charlie").expect("Charlie").id;
+    app.store().hold_next("list");
+    app.key("r");
+    let deleted = app.store().remote_delete(&cy(), &charlie);
+    app.deliver(deleted);
+    let late = app.store().release();
+    app.deliver(late);
+    let screen = app.screen();
+    assert_eq!(last_row(&screen), "Loaded 3 cards.", "{screen}");
+    assert!(!screen.contains("Charlie"), "{screen}");
+}

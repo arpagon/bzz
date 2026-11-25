@@ -118,6 +118,8 @@ function app.init(ctx)
   local s = {
     cards = {}, sel = nil, query = "", search_open = false, form = nil, status = "",
     undo = {}, -- request id -> { id = record id, content = what it was }
+    pending = {}, -- record id -> writes of this app to it not answered yet
+    gone = {}, gones = 0, -- record id -> who deleted it, of the last few
   }
   load(s)
   return s
@@ -203,6 +205,12 @@ function app.view(s, ctx)
   }
 end
 
+-- One more write of ours to the card `id` is on its way.
+local function on_its_way(s, id)
+  s.pending = s.pending or {}
+  s.pending[id] = (s.pending[id] or 0) + 1
+end
+
 local function move(s, dir)
   local ci, i, by = where(s)
   if not ci then return end
@@ -214,6 +222,7 @@ local function move(s, dir)
   content.column = target
   local id = data.update { record_id = card.id, rev = card.rev, content = content, tag = "move" }
   s.undo[id] = { id = card.id, content = before }
+  on_its_way(s, card.id)
   -- Shown in its new column at once; undone if the write fails.
   card.content = content
   if s.touched then s.touched[card.id] = true end
@@ -326,8 +335,28 @@ local function failure(e)
     return "Refused: " .. e.message
   elseif e.code == "limit" then
     return "The board is full."
+  elseif e.code == "not_found" then
+    return "This card was deleted meanwhile."
   end
   return "Save failed."
+end
+
+-- Cards shown: those of the three columns.
+local function shown(s)
+  local by = columns(s)
+  return #by.todo + #by.doing + #by.done
+end
+
+-- A write of ours to `id` was answered: true while another is on its way.
+local function answered(s, id)
+  s.pending = s.pending or {}
+  local left = (s.pending[id] or 1) - 1
+  s.pending[id] = left > 0 and left or nil
+  return left > 0
+end
+
+local function deleted_by(name)
+  return "This card was deleted by " .. name .. "."
 end
 
 function app.reply(s, r, ctx)
@@ -339,7 +368,7 @@ function app.reply(s, r, ctx)
     end
     s.cards = merge(s, r.records)
     keep_selection(s)
-    s.status = "Loaded " .. #r.records .. " cards."
+    s.status = "Loaded " .. shown(s) .. " cards."
   elseif r.tag == "create" then
     if not r.ok then
       if s.form then s.form.saving = false end
@@ -355,8 +384,11 @@ function app.reply(s, r, ctx)
   elseif r.tag == "move" or r.tag == "merge" then
     local undo = s.undo[r.id]
     s.undo[r.id] = nil
+    local more = undo and answered(s, undo.id)
     if r.ok then
-      put(s, r.record)
+      -- While a later move of ours is on its way the card stays as shown:
+      -- bzz sends that one on the revision this one made.
+      if not more then put(s, r.record) end
       s.status = r.tag == "merge" and "Conflict: merged with a newer change." or "Saved."
     elseif r.error.code == "conflict" then
       -- Keep their change, put ours (the column) on top, and try again.
@@ -366,6 +398,7 @@ function app.reply(s, r, ctx)
       put(s, r.current)
       local id = data.update { record_id = r.current.id, rev = r.current.rev, content = content, tag = "merge" }
       s.undo[id] = { id = r.current.id, content = theirs }
+      on_its_way(s, r.current.id)
     else
       -- The card goes back where it was.
       local i = undo and index_of(s, undo.id)
@@ -373,9 +406,14 @@ function app.reply(s, r, ctx)
         s.cards[i].content = undo.content
         table.sort(s.cards, by_order)
       end
-      if r.error.code == "not_found" and undo then remove(s, undo.id) end
-      keep_selection(s)
       s.status = failure(r.error)
+      if r.error.code == "not_found" and undo then
+        remove(s, undo.id)
+        -- Who deleted it, if bzz said so already; if not, when it does.
+        local who = s.gone and s.gone[undo.id]
+        if who then s.status = deleted_by(who) else s.lost = undo.id end
+      end
+      keep_selection(s)
     end
   end
 end
@@ -388,6 +426,12 @@ function app.push(s, p, ctx)
   local rec = p.record
   local i = index_of(s, rec.id)
   if p.change == "delete" then
+    -- A state carried from a version before these fields has none.
+    if not s.gone or (s.gones or 0) >= 64 then s.gone, s.gones = {}, 0 end
+    s.gone[rec.id], s.gones = p.by.name, s.gones + 1
+    if s.lost == rec.id then
+      s.status, s.lost = deleted_by(p.by.name), nil
+    end
     local ci, pos = where(s)
     local was_selected = i and s.sel == rec.id
     remove(s, rec.id)
