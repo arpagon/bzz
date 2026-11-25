@@ -1,0 +1,8 @@
+# A disposable PipeWire session for the huddle audio tests (Debian stable):
+# PipeWire, its PulseAudio front end (which bzz speaks to on Linux), and
+# WirePlumber. No sound card: the tests make a null sink. See README.md.
+FROM debian:stable-slim
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      pipewire pipewire-pulse wireplumber pulseaudio-utils dbus procps \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd -u 1000 -m bzz

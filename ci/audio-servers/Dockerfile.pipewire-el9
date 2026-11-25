@@ -1,0 +1,6 @@
+# A disposable PipeWire session for the huddle audio tests, EL9 layout
+# (lib64): PipeWire, its PulseAudio front end and WirePlumber. See README.md.
+FROM almalinux:9-minimal
+RUN microdnf install -y pipewire pipewire-pulseaudio wireplumber pulseaudio-utils dbus-daemon procps-ng shadow-utils \
+ && microdnf clean all \
+ && useradd -u 1000 -m bzz
