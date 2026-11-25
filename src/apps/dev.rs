@@ -566,6 +566,8 @@ pub fn run(options: DevOptions) -> crate::Result<Vec<String>> {
     let mut looked = Instant::now();
     let mut ticked = Instant::now();
     let mut dirty = true;
+    // Where keys enter: one form for every platform, Alt codes as presses.
+    let mut door = crate::ui::keymap::KeyDoor::default();
     let outcome = loop {
         if dirty {
             let drawn = terminal.draw(|frame| {
@@ -582,7 +584,7 @@ pub fn run(options: DevOptions) -> crate::Result<Vec<String>> {
         match crossterm::event::poll(Duration::from_millis(30)) {
             Ok(true) => match crossterm::event::read() {
                 Ok(TerminalEvent::Key(key)) => {
-                    let key = crate::ui::keymap::normalize_key_event(key);
+                    let key = door.admit(key);
                     let pressed = matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat);
                     if pressed
                         && key.modifiers.contains(KeyModifiers::CONTROL)

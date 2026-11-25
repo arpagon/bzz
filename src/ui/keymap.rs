@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde::Deserialize;
 
 use crate::{
@@ -902,6 +902,77 @@ pub fn normalize_key_event_on(mut event: KeyEvent, windows: bool) -> KeyEvent {
     event
 }
 
+/// What a Windows console sends that is not a key press but must be one.
+///
+/// A character the keyboard layout cannot type (`¿`, `¡`, `€`, `°` on a US
+/// layout, from a terminal or a paste) reaches a console as an Alt code,
+/// and crossterm reports it as the *release* of that character with no
+/// press before it. Every other key is a press, then its release. So a
+/// release of a character that was not pressed is the press of it. The
+/// door keeps the characters pressed and not yet released (a few: more
+/// than that are keys held from before bzz started). Only a character
+/// outside ASCII is taken so: every layout types ASCII, and every key of
+/// bzz's key map is ASCII, so a stray release can never become a command.
+#[derive(Clone, Debug, Default)]
+pub struct KeyDoor {
+    held: Vec<char>,
+}
+
+const HELD_KEYS: usize = 16;
+
+impl KeyDoor {
+    /// A key as it enters bzz: [`normalize_key_event`], and on Windows an
+    /// Alt code as the press it stands for. Other releases stay releases.
+    pub fn admit(&mut self, event: KeyEvent) -> KeyEvent {
+        self.admit_on(event, cfg!(windows))
+    }
+
+    pub fn admit_on(&mut self, event: KeyEvent, windows: bool) -> KeyEvent {
+        let mut event = normalize_key_event_on(event, windows);
+        let KeyCode::Char(character) = event.code else {
+            return event;
+        };
+        if !windows {
+            return event;
+        }
+        match event.kind {
+            KeyEventKind::Press | KeyEventKind::Repeat => {
+                if !self.held.contains(&character) {
+                    if self.held.len() == HELD_KEYS {
+                        self.held.remove(0);
+                    }
+                    self.held.push(character);
+                }
+            }
+            KeyEventKind::Release => {
+                if let Some(index) = self.held.iter().position(|held| *held == character) {
+                    self.held.remove(index);
+                } else if !character.is_ascii() {
+                    event.kind = KeyEventKind::Press;
+                }
+            }
+        }
+        event
+    }
+}
+
+/// The line break of a paste on Windows, where a paste arrives as keys
+/// (docs/e2e-windows.md): in the composer, an Enter with more key presses
+/// already waiting behind it is a new line, not "send". A person who types
+/// Enter and the next key before bzz has read the Enter gets a line break
+/// too, and sends with the next Enter; nothing is sent that was not meant.
+pub fn paste_line_break(event: KeyEvent, more_waiting: bool, windows: bool) -> KeyEvent {
+    if windows
+        && more_waiting
+        && event.code == KeyCode::Enter
+        && event.modifiers.is_empty()
+        && event.kind == KeyEventKind::Press
+    {
+        return KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
+    }
+    event
+}
+
 /// A character Windows reports with Ctrl+Alt that can only be AltGr text: a
 /// real Ctrl+Alt chord reports the key's own letter or digit.
 fn is_altgr_text(character: char) -> bool {
@@ -1341,6 +1412,69 @@ mod tests {
                 "{written}"
             );
         }
+    }
+
+    #[test]
+    fn windows_alt_codes_are_presses_and_releases_stay_releases() {
+        use crossterm::event::KeyEventKind;
+        let mut door = super::KeyDoor::default();
+        let release = |character| {
+            KeyEvent::new_with_kind(
+                KeyCode::Char(character),
+                KeyModifiers::NONE,
+                KeyEventKind::Release,
+            )
+        };
+        // `¿` from a terminal or a paste, exactly as crossterm gives it.
+        assert_eq!(door.admit_on(release('¿'), true).kind, KeyEventKind::Press);
+        // A typed key: its release after its press stays a release.
+        let press = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
+        assert_eq!(door.admit_on(press, true).kind, KeyEventKind::Press);
+        assert_eq!(
+            door.admit_on(release('a'), true).kind,
+            KeyEventKind::Release
+        );
+        // `?` is pressed with Shift and released without it: one key.
+        let shifted = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT);
+        assert_eq!(door.admit_on(shifted, true).kind, KeyEventKind::Press);
+        assert_eq!(
+            door.admit_on(release('?'), true).kind,
+            KeyEventKind::Release
+        );
+        // A release of an ASCII key never pressed (held from before bzz
+        // started) is not a key.
+        assert_eq!(
+            door.admit_on(release('q'), true).kind,
+            KeyEventKind::Release
+        );
+        // Elsewhere a release is a release.
+        assert_eq!(
+            door.admit_on(release('¿'), false).kind,
+            KeyEventKind::Release
+        );
+        // Keys held from before do not grow the door without bound.
+        for character in ('a'..='z').chain('A'..='Z') {
+            door.admit_on(
+                KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+                true,
+            );
+        }
+        assert!(door.held.len() <= super::HELD_KEYS);
+    }
+
+    #[test]
+    fn windows_paste_line_break_is_a_composer_newline_only_with_keys_behind() {
+        let keymap = KeyMap::builtin();
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let broken = super::paste_line_break(enter, true, true);
+        assert_eq!(
+            keymap.lookup(KeyScope::Composer, &[KeyChord::from_event(broken)]),
+            KeyLookup::Action(UiAction::InsertNewline)
+        );
+        assert_eq!(super::paste_line_break(enter, false, true), enter);
+        assert_eq!(super::paste_line_break(enter, true, false), enter);
+        let alt = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
+        assert_eq!(super::paste_line_break(alt, true, true), alt);
     }
 
     #[test]
