@@ -1,19 +1,19 @@
 ┌ general ───────────────── hidden · channels 2 · thread 4 ┐
 │ ⚠ offline · showing what is saved here                   │
 │      message number 51                                   │
-│ [◆0] 00000000…0001  00:00                                │
+│ [▼0] 00000000…0001  00:00                                │
 │      message number 52                                   │
 │ [■0] 00000000…0002  00:00                                │
 │      message number 53                                   │
 │ [●0] 00000000…0000  00:00                                │
 │      message number 54                                   │
-│ [◆0] 00000000…0001  00:00                                │
+│ [▼0] 00000000…0001  00:00                                │
 │      message number 55                                   │
 │ [■0] 00000000…0002  00:00                                │
 │      message number 56                                   │
 │ [●0] 00000000…0000  00:00                                │
 │      message number 57                                   │
-│ [◆0] 00000000…0001  00:00                                │
+│ [▼0] 00000000…0001  00:00                                │
 │      message number 58                                   │
 │▌[■0] 00000000…0002  00:00                                │
 │▌     message number 59                                   │

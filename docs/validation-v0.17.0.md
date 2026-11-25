@@ -250,6 +250,16 @@ The draft pull request of D14, read on GitHub:
   tests) and the federated-identity suite; every scenario at 200×50 (52 of
   52) and at 80×24 (48 of 48, four skipped for their size); the own-quota
   test. All green, the relay down after.
+- **Two things the site's preview showed, fixed on the candidate**
+  (2026-11-26, the owner chose both). In the capture of `bzz demo`'s first
+  screen the keys Ada's welcome asks for were the hardest text to read:
+  code in a sentence was muted and dim. It now takes the theme's accent
+  (`MarkdownInlineCode`; a theme that sets only `MarkdownCode` keeps both
+  alike), with tests of the group in every built-in theme and of the
+  rendered spans. And Ada's and Sam's badges drew `◆`, the agent's mark:
+  the badge's four shapes no longer include it (`▼`), with a test over 256
+  keys; sixteen layout goldens changed in that one character and nothing
+  else.
 
 ## What went wrong on the way
 

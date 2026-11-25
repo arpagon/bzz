@@ -198,7 +198,12 @@ Status and Markdown:
   `StatusOffline` (the dot before the connection);
 - `HintKey`, `HintText`: a key and its words in the hints of frames and
   the status line;
-- `MarkdownLink`, `MarkdownCode`, `MarkdownMarker`.
+- `MarkdownLink`, `MarkdownMarker`;
+- `MarkdownCode`: a block of code;
+- `MarkdownInlineCode`: code inside a sentence, such as a key or a
+  command to type. Since v0.17.0 it takes the theme's accent; before, it was
+  drawn as `MarkdownCode` is, muted and dim. A `theme.toml` that sets
+  `MarkdownCode` and not `MarkdownInlineCode` keeps both alike.
 
 Component groups link to semantic parents. For example,
 `MessageAuthor -> Info`, `MessageAvatar -> MessageAuthor`,

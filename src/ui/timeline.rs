@@ -1647,7 +1647,9 @@ fn reaction_line(
 /// URL or starts I/O. The visible initial is merely a readable supplement; the
 /// author label remains the identity-bearing text.
 pub fn avatar_marker(pubkey: &str, author: &str) -> String {
-    const SHAPES: [char; 4] = ['●', '◆', '■', '▲'];
+    // No diamond: `◆` beside a name says "agent" everywhere in bzz, and a
+    // person whose key drew it (one in four, until v0.17.0) read as one.
+    const SHAPES: [char; 4] = ['●', '▼', '■', '▲'];
     let hash = pubkey.bytes().fold(0_u8, |value, byte| {
         value.wrapping_mul(33).wrapping_add(byte)
     });
@@ -1718,6 +1720,17 @@ mod tests {
     use crate::{domain::Message, ui::theme::Theme};
     use ratatui::layout::Rect;
     use ratatui_image::sliced::SlicedProtocol;
+
+    /// No person's badge carries the agent's mark.
+    #[test]
+    fn a_badge_never_draws_the_agent_mark() {
+        for seed in 0..=u8::MAX {
+            let pubkey = format!("{seed:02x}{}", "ab".repeat(31));
+            let badge = super::avatar_marker(&pubkey, "Ada");
+            assert!(!badge.contains('◆') && !badge.contains('◇'), "{badge}");
+            assert!(badge.ends_with("A]"), "{badge}");
+        }
+    }
     use uuid::Uuid;
 
     fn message(pubkey: &str, created_at: u64) -> Message {

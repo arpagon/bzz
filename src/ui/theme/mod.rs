@@ -120,6 +120,7 @@ define_groups! {
     StateBanner => "StateBanner",
     NewMessageMarker => "NewMessageMarker",
     UnreadCount => "UnreadCount",
+    MarkdownInlineCode => "MarkdownInlineCode",
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -635,6 +636,15 @@ fn default_definitions() -> [HighlightDefinition; HighlightGroup::COUNT] {
         Some(H::Warning),
         Style::default().add_modifier(Modifier::BOLD),
     );
+    // Code inside a sentence is often the very thing to type or press (the
+    // demo's welcome names its keys this way), so it takes the theme's
+    // accent. Until v0.17.0 it was drawn as a code block is, muted and dim,
+    // and was the hardest text of a message to read.
+    set(
+        H::MarkdownInlineCode,
+        None,
+        Style::default().fg(Color::Yellow),
+    );
 
     definitions
 }
@@ -656,6 +666,7 @@ fn apply_palette(
         value_or(palette.selection_background, palette.primary),
     );
     set_foreground(definitions, H::SelectionBorder, palette.accent);
+    set_foreground(definitions, H::MarkdownInlineCode, palette.accent);
     set_foreground(definitions, H::Error, palette.error);
     set_foreground(definitions, H::Warning, palette.warning);
     set_foreground(definitions, H::Success, palette.accent);
@@ -768,6 +779,22 @@ fn apply_overrides(
     options: &ThemeOptions,
     warnings: &mut Vec<String>,
 ) {
+    // A theme written before v0.17.0 styled code in a sentence through
+    // `MarkdownCode`, the only group there was. It keeps what it chose:
+    // where a theme sets `MarkdownCode` and not the new group, the new
+    // group follows the old one.
+    if options
+        .highlights
+        .contains_key(&HighlightGroup::MarkdownCode)
+        && !options
+            .highlights
+            .contains_key(&HighlightGroup::MarkdownInlineCode)
+    {
+        definitions[HighlightGroup::MarkdownInlineCode as usize] = HighlightDefinition {
+            link: Some(HighlightGroup::MarkdownCode),
+            ..HighlightDefinition::default()
+        };
+    }
     for (&group, options) in &options.highlights {
         let definition = &mut definitions[group as usize];
         if let Some(link) = options.link {
@@ -1170,6 +1197,55 @@ bold = true
                 .style(HighlightGroup::MessageSelected)
                 .add_modifier
                 .contains(Modifier::BOLD)
+        );
+    }
+
+    /// Code inside a sentence takes the theme's accent and is not dimmed; a
+    /// block of code stays as it was. A theme written for v0.16.0, which
+    /// had one group for both, keeps both alike.
+    #[test]
+    fn code_in_a_sentence_takes_the_accent_and_an_older_theme_keeps_its_own() {
+        let body = Style::default().fg(Color::White);
+        let theme = Theme::default();
+        let inline = theme.apply(HighlightGroup::MarkdownInlineCode, body);
+        assert_eq!(inline.fg, Some(Color::Yellow));
+        assert!(!inline.add_modifier.contains(Modifier::DIM));
+        let block = theme.style(HighlightGroup::MarkdownCode);
+        assert_eq!(block.fg, Some(Color::DarkGray));
+        assert!(block.add_modifier.contains(Modifier::DIM));
+
+        for palette in super::builtin::PALETTES {
+            let theme =
+                Theme::from_palette(palette, &super::ThemeOptions::default(), &mut Vec::new());
+            assert_eq!(
+                theme.style(HighlightGroup::MarkdownInlineCode).fg,
+                theme.style(HighlightGroup::SelectionBorder).fg,
+                "{}: the accent",
+                palette.id
+            );
+        }
+
+        let (options, _) =
+            parse("[highlight.MarkdownCode]\nforeground = \"#112233\"\ndim = false\n").unwrap();
+        let palette = super::builtin::lookup("bzz").unwrap();
+        let theme = Theme::from_palette(palette, &options, &mut Vec::new());
+        assert_eq!(
+            theme.style(HighlightGroup::MarkdownInlineCode),
+            theme.style(HighlightGroup::MarkdownCode)
+        );
+        assert_eq!(
+            theme.style(HighlightGroup::MarkdownInlineCode).fg,
+            Some(Color::Rgb(0x11, 0x22, 0x33))
+        );
+
+        let (options, _) = parse(
+            "[highlight.MarkdownCode]\nforeground = \"#112233\"\n[highlight.MarkdownInlineCode]\nforeground = \"#445566\"\n",
+        )
+        .unwrap();
+        let theme = Theme::from_palette(palette, &options, &mut Vec::new());
+        assert_eq!(
+            theme.style(HighlightGroup::MarkdownInlineCode).fg,
+            Some(Color::Rgb(0x44, 0x55, 0x66))
         );
     }
 

@@ -176,6 +176,16 @@ its last section says how the build departed from it.
   a label. Keys left the titles for the frame's foot, in colour ([look]).
 - **The status line** (L3): the mode as a label, the channel, `● online` or
   `● offline`; no protocol words ([look]).
+- **Code in a sentence can be read** ([principal]). A key or a command
+  inside a message (`` `k` ``, `` `:join` ``) is drawn in the theme's
+  accent. It was muted and dim, as a block of code still is, and was the
+  hardest text of a message to read: the demo's welcome names its keys
+  that way. A new theme group, `MarkdownInlineCode`, carries it
+  ([themes](themes.md#semantic-groups)).
+- **A person's badge never looks like the agent's mark** ([principal]).
+  The shape in a text badge (`[●L]`) comes from the person's key, and one
+  of the four was `◆`, which beside a name means "agent" everywhere in
+  bzz. That shape is now `▼`.
 - **`NO_COLOR` and terminals without true colour** (L1): with `NO_COLOR`
   no cell carries a colour, and the focused pane has a heavy frame and a
   reversed title. Without true colour every colour goes to the nearest of
@@ -334,6 +344,8 @@ decisions changed: a bare `:status`, `d`, `u` and `Esc` (rule 19;
 | Widths at which panes show (L10) | the conversation kept 30 columns; an app docked from 72, beside the sidebar from 100; thread and app from 116, with the sidebar from 144, with the rail from 166; a thread from 74 at its own width, beside the sidebar from 102; under 70 columns the conversation alone | the conversation keeps **38**; an app docks from **80** (at 72 a focused app takes the window, an unfocused one is hidden with `app hidden · 5`), beside the sidebar from **108**; thread and app from **124**, with the sidebar from **152**, with the rail from **174**; a thread from **68** at 30 wide, beside the sidebar from **110**; the same rules at every width, and the frame names what is hidden. With one community the rail shows from 100 columns ([layout]) |
 | A double click on a message | toggled the thread, and closed another message's thread | opens the clicked message's thread, and keeps it open if it is the one open ([layout]) |
 | Unfocused frames | the theme's `Border` colour | the theme's `Muted` colour. A theme of yours that set only `[highlight.Border]` still loads, and no longer colours them: set `[highlight.PaneBorder]` for that ([look], [release]) |
+| Code inside a sentence of a message | muted and dim, as a block of code | the theme's accent, not dim (`MarkdownInlineCode`). A theme of yours that sets `[highlight.MarkdownCode]` and not the new group keeps both alike ([principal]) |
+| The text badge of one person in four | `[◆A]` | `[▼A]`; `◆` is the agent's mark only ([principal]) |
 | Titles of panes and overlays | carried their keys (`Board · Ctrl-c leave`) | the keys are at the frame's foot ([look]) |
 | The status line | `online  HALFBLOCKS  ? help · q quit` | ` NORMAL  #channel  ● online` and, at the right, the keys of where the focus is and `Ctrl-K actions`; a notice goes after about 5 s ([look], [registry]) |
 | bzz's own confirmations (an attachment saved or removed, messages copied, the sidebar updated) | a notice in the status line | a toast above the composer, for 3 s. An app's own words (`Saved.`) are still the app's, in its pane ([motion]) |
