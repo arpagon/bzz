@@ -81,6 +81,8 @@ pub enum UiAction {
     MoveWordRight,
     MoveLineStart,
     MoveLineEnd,
+    /// The palette: find and run any action (v0.17, D4).
+    OpenPalette,
 }
 
 impl UiAction {
@@ -150,6 +152,7 @@ impl UiAction {
             Self::MoveWordRight => "next word",
             Self::MoveLineStart => "line start",
             Self::MoveLineEnd => "line end",
+            Self::OpenPalette => "find any action",
         }
     }
 }
@@ -479,6 +482,10 @@ impl KeyMap {
         add(KeyScope::Global, &["space", "p"], UiAction::ViewProfile);
         add(KeyScope::Global, &["space", "o"], UiAction::OpenOptions);
         add(KeyScope::Global, &[":"], UiAction::OpenCommand);
+        // v0.17 D4: the palette. Text-owning scopes do not inherit these,
+        // so Ctrl-K in the composer keeps deleting to the line end.
+        add(KeyScope::Global, &["ctrl-k"], UiAction::OpenPalette);
+        add(KeyScope::Global, &["space", "k"], UiAction::OpenPalette);
 
         // Overlays never inherit workspace actions: their owner explicitly
         // decides which small set of close/confirm keys it accepts.

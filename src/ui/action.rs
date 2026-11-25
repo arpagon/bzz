@@ -140,6 +140,8 @@ pub enum WorkspaceEffect {
     /// Zoom the app pane to the whole window, or back.
     ZoomApp,
     Unavailable(UiAction),
+    /// The palette (v0.17).
+    OpenPalette,
 }
 
 /// Reduce one action using only presentation and local workspace facts.
@@ -172,6 +174,7 @@ pub enum InboxEffect {
     Refresh,
     RequestQuitConfirmation,
     Unavailable(UiAction),
+    OpenPalette,
 }
 
 /// Reduce an Inbox route interaction without accessing messages, a store, a
@@ -265,6 +268,7 @@ pub fn reduce_inbox(state: &mut InboxWorkspaceState, action: UiAction) -> InboxE
         UiAction::MarkVisibleRead => InboxEffect::ConfirmMarkVisibleRead,
         UiAction::OpenContextActions => InboxEffect::OpenContextActions,
         UiAction::Refresh => InboxEffect::Refresh,
+        UiAction::OpenPalette => InboxEffect::OpenPalette,
         unsupported => InboxEffect::Unavailable(unsupported),
     }
 }
@@ -437,6 +441,7 @@ pub fn reduce_workspace(state: &mut WorkspaceState, action: UiAction) -> Workspa
         {
             WorkspaceEffect::OpenProfile
         }
+        UiAction::OpenPalette => WorkspaceEffect::OpenPalette,
         unsupported => WorkspaceEffect::Unavailable(unsupported),
     }
 }

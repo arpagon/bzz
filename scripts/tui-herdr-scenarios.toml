@@ -2424,6 +2424,75 @@ keys = ["d"]
 visible = "DEMO · generated, offline"
 timeout = 5000
 
+# v0.17 C1: the palette. Ctrl-K and Space k open it from any pane that is
+# not a text field; typing ranks actions, channels and DMs in one list.
+
+[[scenario]]
+id = "t17-palette-open-thr-quit"
+kind = "harness"
+description = "v0.17 C1: Ctrl-K and Space k open the palette and Esc closes it; \"thr\" puts Open thread first; \"q\" puts Quit bzz first and Enter asks to quit."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["ctrl+k"]
+visible = "Type to search"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+absent = "Type to search"
+
+[[scenario.step]]
+keys = ["space", "k"]
+visible = "Type to search"
+
+[[scenario.step]]
+keys = ["type:thr"]
+visible = "▌· Open thread"
+
+[[scenario.step]]
+keys = ["ctrl+u", "q"]
+visible = "▌· Quit bzz"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette-unavailable-stays"
+kind = "harness"
+description = "v0.17 C1: over another person's message, Enter on Delete my message runs nothing, says why and leaves the palette open; Esc gives the focus back."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t9-gen", "enter"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = ["3", "G", "ctrl+k", "type:delete"]
+visible = "▌· Delete my message"
+
+# The palette stays open: the row is still there, the reason below it.
+[[scenario.step]]
+keys = ["enter"]
+visible = "▌· Delete my message(.|\\n)*can't now: only your own message can be deleted"
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+absent = "can't now"
+
 [[scenario.step]]
 keys = ["q"]
 visible = "quit bzz?"
@@ -2512,6 +2581,37 @@ keys = ["q"]
 visible = "DEMO · generated, offline"
 absent = "context · 1 reply"
 
+[[scenario]]
+id = "t17-palette-theme-status-channel"
+kind = "harness"
+description = "v0.17 C1: \"theme\" opens the theme picker; \"status\" opens the : line filled in with :status; # and a channel's name opens that channel."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:theme", "enter"]
+visible = "Tab scope · Enter save · Esc cancel"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:status", "enter"]
+visible = "COMMAND"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:#t14-names"]
+visible = "▌# t14-names"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Generated namesakes channel"
+
 [[scenario.step]]
 keys = ["q"]
 visible = "quit bzz?"
@@ -2559,6 +2659,65 @@ visible = "Demo: the huddle is a recording to look at."
 keys = ["esc"]
 visible = "DEMO · generated, offline"
 absent = "a generated recording · Esc"
+
+[[scenario]]
+id = "t17-palette-sizes"
+kind = "harness"
+description = "v0.17 C1: the palette reads at 80x24, 160x45 and 200x50: empty, \"thr\", and a row that cannot run."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "80x24"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:#t9-general"]
+visible = "▌# t9-general"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "┌ t9-general"
+
+[[scenario.step]]
+keys = ["3", "G", "ctrl+k"]
+visible = "Type to search"
+
+[[scenario.step]]
+keys = ["type:thr"]
+visible = "▌· Open thread"
+
+[[scenario.step]]
+keys = ["ctrl+u", "type:delete"]
+visible = "can't now"
+
+[[scenario.step]]
+size = "160x45"
+keys = ["ctrl+u"]
+visible = "Type to search"
+
+[[scenario.step]]
+keys = ["type:thr"]
+visible = "▌· Open thread"
+
+[[scenario.step]]
+keys = ["ctrl+u", "type:delete"]
+visible = "✕ only your own message can be deleted"
+
+[[scenario.step]]
+size = "200x50"
+keys = ["ctrl+u"]
+visible = "Type to search"
+
+[[scenario.step]]
+keys = ["type:thr"]
+visible = "▌· Open thread"
+
+[[scenario.step]]
+keys = ["ctrl+u", "type:community add"]
+visible = "only in the shell: bzz community add"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+absent = "Type to search"
 
 [[scenario.step]]
 keys = ["q"]

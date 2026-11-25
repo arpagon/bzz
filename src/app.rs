@@ -20,6 +20,7 @@ use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
 mod manage;
+mod palette;
 mod pane;
 #[cfg(feature = "apps")]
 mod share;
@@ -615,6 +616,10 @@ pub struct App {
     theme_picker: Option<ThemePicker>,
     theme_before_preview: Option<Theme>,
     action_menu: Option<ActionMenu>,
+    /// The palette while it is open (v0.17 C1).
+    palette: Option<crate::ui::palette::Palette>,
+    /// Actions run from the palette in this session, newest first.
+    palette_recent: Vec<&'static str>,
     keymap: KeyMap,
     input_router: InputRouter,
     leader_started_at: Option<Instant>,
@@ -1214,6 +1219,8 @@ impl App {
             theme_picker: None,
             theme_before_preview: None,
             action_menu: None,
+            palette: None,
+            palette_recent: Vec::new(),
             keymap,
             input_router: InputRouter::default(),
             leader_started_at: None,
@@ -3715,6 +3722,7 @@ impl App {
                 }
                 _ => {}
             },
+            Some(Overlay::Palette) => self.palette_key(key, guard, terminal).await?,
             None if self.presentation.composer_target.is_some() => {
                 self.handle_composer_key(key).await?
             }
@@ -3995,6 +4003,7 @@ impl App {
             InboxEffect::Unavailable(action) => {
                 self.status_error = Some(format!("{} is not available in Inbox", action.label()));
             }
+            InboxEffect::OpenPalette => self.open_palette(),
         }
         Ok(())
     }
@@ -4162,6 +4171,7 @@ impl App {
                     action.label()
                 ));
             }
+            WorkspaceEffect::OpenPalette => self.open_palette(),
         }
         Ok(())
     }
@@ -10979,6 +10989,7 @@ impl App {
             Some(Overlay::Artifacts) => "ARTIFACTS",
             Some(Overlay::Broker) => "BROKER",
             Some(Overlay::Profile) => "PROFILE",
+            Some(Overlay::Palette) => "PALETTE",
             Some(Overlay::Huddle) => "HUDDLE",
             Some(Overlay::Apps) => "APPS",
             Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) | None
@@ -11527,6 +11538,12 @@ impl App {
                     self_pubkey,
                     &self.theme,
                 );
+            }
+            Some(Overlay::Palette) => {
+                self.refresh_palette();
+                if let Some(palette) = &self.palette {
+                    crate::ui::palette::render(frame, area, palette, &self.theme);
+                }
             }
             None => {}
         }
