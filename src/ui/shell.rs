@@ -199,11 +199,7 @@ mod tests {
         layout::{Shell, SidePane, workspace},
         theme::Theme,
     };
-    use ratatui::{
-        buffer::Buffer,
-        layout::Rect,
-        text::{Line, Span},
-    };
+    use ratatui::{buffer::Buffer, layout::Rect};
 
     fn row(buffer: &Buffer, y: u16) -> String {
         (0..buffer.area.width)

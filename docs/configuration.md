@@ -118,7 +118,13 @@ enables mouse capture only on an interactive, non-`dumb` terminal; set it to
 `"on"` to force it or `"off"` to retain terminal text selection and avoid
 mouse-capture sequences. `ui.message_width` caps only the rendered text
 measure in a wider conversation pane; it never truncates, stores, or changes
-message content. The workspace uses labelled local community rows,
+message content. `ui.sidebar_width` (18–60) and `ui.thread_width` (30–80) are
+the widths the sidebar and the thread take when there is room; with the mouse
+on, dragging the border of either pane sets and saves them. While anything
+is beside it the conversation keeps 38 columns: a pane that does not fit is
+hidden, not closed, and the conversation's frame names it with the key that
+shows it (`hidden · channels 2`). With one community its rail shows from 100
+columns. `z` shows the conversation alone, and `z` again restores. The workspace uses labelled local community rows,
 deterministic textual author markers, a compact selected-message gutter,
 optional profile photographs, a segmented status bar, and a visible writing
 dock. `ui.profile_avatars = "trusted"` (the default) may fetch
