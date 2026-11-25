@@ -312,8 +312,7 @@ impl App {
             None => {
                 self.finder.clear();
                 self.presentation.open_overlay(Overlay::Finder);
-                self.status_error =
-                    Some("you are in no channel yet: choose one to open, Enter".into());
+                self.status_error = Some("choose a channel to open".into());
             }
         }
         Ok(true)
@@ -1228,7 +1227,7 @@ mod tests {
             app.status_error
                 .as_deref()
                 .unwrap()
-                .contains("choose one to open")
+                .contains("choose a channel to open")
         );
         assert!(app.join.landing.is_none(), "once");
         app.shutdown().await;

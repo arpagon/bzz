@@ -2446,12 +2446,21 @@ absent = "t17 join passphrase"
 [[scenario.step]]
 keys = ["type:t17 join passphrase"]
 size = "160x45"
-visible = "••••••••••••••••••••"
+visible = "› •••••••••••••••••••▏"
 absent = "t17 join passphrase"
+
+# The passphrase is in bzz's memory only: not in the arguments or the
+# environment of this profile's bzz (found by its BZZ_CONFIG_DIR). The
+# pattern is the scenario's generated passphrase, in this check's own
+# arguments only.
+[[scenario.step]]
+run = '''found=; for p in $(pgrep -x bzz); do if tr '\0' '\n' < /proc/$p/environ 2>/dev/null | grep -qxF "BZZ_CONFIG_DIR={home}/config"; then found=1; if grep -aqF 't17 join passphrase' /proc/$p/cmdline /proc/$p/environ; then exit 1; fi; fi; done; test -n "$found"'''
+keys = []
+visible = "The same passphrase again"
 
 [[scenario.step]]
 keys = ["enter"]
-visible = "you are in no channel yet: choose one to open"
+visible = "choose a channel to open"
 timeout = 60000
 
 [[scenario.step]]
@@ -2464,14 +2473,22 @@ keys = ["type:t9-gen", "enter"]
 visible = "message #t9-general"
 
 [[scenario.step]]
-keys = ["i", "type:hello from a newcomer, t17 join", "enter"]
-visible = "hello from a newcomer, t17 join"
+keys = ["i", "type:hi from t17 join", "enter"]
+visible = "hi from t17 join"
 timeout = 30000
 
 [[scenario.step]]
 keys = []
 size = "160x45"
-visible = "hello from a newcomer, t17 join"
+visible = "hi from t17 join"
+
+# Nothing bzz wrote holds the passphrase: its settings, its key file (an
+# encrypted envelope), its database, its diagnostics, its cache, and the
+# bytes it wrote to the terminal ({home}.raw, the pane's pipe).
+[[scenario.step]]
+run = '''test -s {home}.raw && test -n "$(ls {home}/data/keys)" && ! grep -raqF 't17 join passphrase' {home} {home}.raw'''
+keys = []
+visible = "hi from t17 join"
 
 [[scenario.step]]
 keys = ["q"]
@@ -2529,12 +2546,12 @@ visible = "waiting for an admin"
 [[scenario.step]]
 run = '''pk=$(sed -n 's/^pubkey = "\([0-9a-f]\{64\}\)"$/\1/p' {home}/config/config.toml | head -n 1); test -n "$pk"; docker compose -p buzz-harness -f "$BZZ_BUZZ_SOURCE/docker-compose.harness.yml" exec -T postgres psql -U buzz -d buzz -v ON_ERROR_STOP=1 -c "INSERT INTO relay_members (community_id,pubkey,role,added_by) SELECT id,'$pk','member',NULL FROM communities WHERE lower(host)='localhost:3030' ON CONFLICT (community_id,pubkey) DO NOTHING;"'''
 keys = []
-visible = "you are in no channel yet: choose one to open"
+visible = "choose a channel to open"
 timeout = 90000
 
 [[scenario.step]]
-keys = ["type:t9-gen", "enter", "i", "type:let in by an admin, t17 join", "enter"]
-visible = "let in by an admin, t17 join"
+keys = ["type:t9-gen", "enter", "i", "type:admitted t17 join", "enter"]
+visible = "admitted t17 join"
 timeout = 30000
 
 [[scenario.step]]
