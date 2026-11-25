@@ -826,6 +826,8 @@ pub struct Palette {
     answers: Vec<Answer>,
     /// The theme shown behind the theme step.
     previewing: Option<&'static str>,
+    /// This session's choices: a step lists the recent ones first.
+    recent: Vec<Recent>,
     /// Where the focus was; Esc puts it back.
     pub return_to: (Route, FocusSurface),
     /// What the candidates were built from (the App's channel count, unread
@@ -863,6 +865,7 @@ impl Palette {
             options: Vec::new(),
             answers: Vec::new(),
             previewing: None,
+            recent: recent.to_vec(),
             return_to,
             source: (0, 0, 0),
             offset: Cell::new(0),
@@ -883,6 +886,7 @@ impl Palette {
         recent: &[Recent],
     ) {
         mark_recent(&mut candidates, &sources, recent);
+        self.recent = recent.to_vec();
         self.empty = empty_rows(&candidates, facts);
         self.candidates = candidates;
         self.sources = sources;
@@ -1366,7 +1370,25 @@ impl Palette {
         let Some((_, arg)) = self.step() else {
             return;
         };
-        let (options, answers) = step_options(arg, &self.sources);
+        let (mut options, answers) = step_options(arg, &self.sources);
+        // A person, an app or a theme chosen in this session comes first.
+        for (option, answer) in options.iter_mut().zip(&answers).skip(1) {
+            option.recent = self
+                .recent
+                .iter()
+                .position(|recent| match (recent, arg.ask) {
+                    (Recent::Person(pubkey), Ask::Person) => *pubkey == answer.text,
+                    (Recent::App(name), Ask::App) => *name == answer.text,
+                    (Recent::Theme(id), Ask::Theme) => *id == answer.text,
+                    (Recent::Channel(id), Ask::Channel) => {
+                        self.sources.channels.iter().any(|channel| {
+                            channel.id == *id && format!("#{}", channel.name) == answer.text
+                        })
+                    }
+                    _ => false,
+                })
+                .and_then(|place| u8::try_from(place).ok());
+        }
         self.options = options;
         self.answers = answers;
         self.refilter();
@@ -1530,7 +1552,7 @@ impl Palette {
             .map(|index| index + 1)
             .collect::<Vec<_>>();
         if text.is_empty() {
-            listed.sort_unstable();
+            listed.sort_by_key(|index| (self.options[*index].recent.unwrap_or(u8::MAX), *index));
         }
         if listed.is_empty() && rows.iter().all(|row| !matches!(row, Row::Item(_))) {
             rows.push(Row::Hint(match arg.ask {
@@ -2531,6 +2553,14 @@ mod tests {
         assert_eq!(palette.breadcrumb(), None);
         assert_eq!(palette.query(), "status");
         assert_eq!(palette.item_titles()[0], "Set my status…");
+    }
+
+    #[test]
+    fn a_step_lists_this_sessions_choices_first() {
+        let mut palette = open(facts(), sources(), &[Recent::Person(SCOUT.into())]);
+        typed(&mut palette, "start a dm");
+        palette.key(key(KeyCode::Enter));
+        assert_eq!(palette.item_titles(), vec!["Scout", "Ada"]);
     }
 
     #[test]

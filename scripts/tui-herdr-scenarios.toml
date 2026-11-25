@@ -2584,13 +2584,13 @@ absent = "context · 1 reply"
 [[scenario]]
 id = "t17-palette-theme-status-channel"
 kind = "harness"
-description = "v0.17 C1: \"theme\" opens the theme picker; \"status\" opens the : line filled in with :status; # and a channel's name opens that channel."
+description = "v0.17 C1, C9: \"theme\" asks for a theme and \"status\" for the status, each in a step of the palette (until C9 the first opened the theme picker and the second the : line); # and a channel's name opens that channel."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario.step]]
 keys = ["ctrl+k", "type:theme", "enter"]
-visible = "Tab scope · Enter save · Esc cancel"
+visible = "Change theme › theme"
 
 [[scenario.step]]
 keys = ["esc"]
@@ -2598,7 +2598,7 @@ visible = "online"
 
 [[scenario.step]]
 keys = ["ctrl+k", "type:status", "enter"]
-visible = "COMMAND"
+visible = "Set my status › status"
 
 [[scenario.step]]
 keys = ["esc"]
@@ -2718,6 +2718,282 @@ visible = "only in the shell: bzz community add"
 keys = ["esc"]
 visible = "online"
 absent = "Type to search"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 C9 and C12: the palette asks for what an action needs, in steps of
+# its own, and shows the : line it builds; it finds people, agents, apps,
+# themes, and searches messages.
+
+[[scenario]]
+id = "t17-palette2-dm"
+kind = "harness"
+description = "v0.17 C9: \"Start a DM\" asks for a person; Scout is found by name, the footer shows the :dm line, and Enter opens the DM."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:start a dm"]
+visible = "▌· Start a DM"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Start a DM › person"
+
+[[scenario.step]]
+keys = ["type:Scout"]
+visible = "▌◆ Scout(.|\\n)*:dm npub1"
+regex = true
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "DM opened"
+absent = "Start a DM › person"
+timeout = 10000
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette2-status"
+kind = "harness"
+description = "v0.17 C9: \"status\" asks for the text, then the expiry; the footer shows :status --expires 2h In a meeting; Backspace on an empty field goes back a step; Enter sets the status."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:status", "enter"]
+visible = "Set my status › status(.|\\n)*usage: :status \\[--expires N\\[smhdw\\]\\] <text>"
+regex = true
+
+[[scenario.step]]
+keys = ["type:In a meeting"]
+visible = ":status In a meeting"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Set my status › In a meeting › expires"
+
+# Backspace on the empty expiry goes back to the text, as it was typed.
+[[scenario.step]]
+keys = ["backspace"]
+visible = "❯ In a meeting"
+absent = "› expires"
+
+[[scenario.step]]
+keys = ["enter", "type:2x"]
+visible = "«2x» is not a duration"
+
+[[scenario.step]]
+keys = ["backspace", "type:h"]
+visible = ":status --expires 2h In a meeting"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "status updated"
+absent = "Set my status"
+timeout = 8000
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette2-theme-react"
+kind = "harness"
+description = "v0.17 C9: the theme step previews as it moves and Esc puts the theme back (the step opens again on the theme in use); \"react\" asks for an emoji and Enter reacts to the selected message."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:theme", "enter"]
+visible = "Change theme › theme(.|\\n)*▌◑ bzz"
+regex = true
+
+[[scenario.step]]
+keys = ["type:nord"]
+visible = "▌◑ Nord"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+absent = "Change theme"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:theme", "enter"]
+visible = "▌◑ bzz"
+
+[[scenario.step]]
+keys = ["esc", "space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t9-gen", "enter"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = ["3", "G", "ctrl+k", "type:react to"]
+visible = "▌· React to message"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "React to message › emoji"
+
+[[scenario.step]]
+keys = ["type:party"]
+visible = "▌  🎉"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "🎉 1"
+absent = "React to message ›"
+timeout = 8000
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette2-find"
+kind = "harness"
+description = "v0.17 C12: a person is found by name and Enter opens their profile; the last row searches messages for what was typed."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:Honey"]
+visible = "▌@ Honey(.|\\n)*↵ profile · Ctrl\\+D DM"
+regex = true
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "profile · r refresh · Esc close"
+
+[[scenario.step]]
+keys = ["esc", "ctrl+k", "type:fixture"]
+visible = "/ Search messages for «fixture»"
+
+# Up from the first row wraps to the last: the search row.
+[[scenario.step]]
+keys = ["up"]
+visible = "▌/ Search messages for «fixture»"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "local \\+ relay"
+regex = true
+timeout = 8000
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# Run after t16-cli-app-new, t16-cli-app-add and t16-cli-app-approve, which
+# install the Board in the fixture's profile.
+[[scenario]]
+id = "t17-palette2-app"
+kind = "harness"
+description = "v0.17 C12: an installed app is found by name and Enter opens it beside the selected channel."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x30"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t9-gen", "enter"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:board"]
+visible = "▌▣ Open board here"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Board · Ctrl-c leave"
+timeout = 8000
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "NORMAL"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette2-sizes"
+kind = "harness"
+description = "v0.17 C9: the steps read at 80x24 and 160x45: a person step with its :dm line, a text step with its usage, an expiry step."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "80x24"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:start a dm", "enter", "type:sc"]
+visible = "Start a DM › person(.|\\n)*:dm npub1"
+regex = true
+
+[[scenario.step]]
+keys = ["ctrl+u", "backspace", "ctrl+u", "type:status", "enter"]
+visible = "usage: :status"
+
+[[scenario.step]]
+keys = ["type:In a meeting", "enter", "type:2"]
+visible = "— no expiry|2h"
+regex = true
+
+[[scenario.step]]
+size = "160x45"
+keys = ["esc", "ctrl+k", "type:start a dm", "enter", "type:sc"]
+visible = "Start a DM › person(.|\\n)*:dm npub1"
+regex = true
+
+[[scenario.step]]
+keys = ["ctrl+u", "backspace", "ctrl+u", "type:status", "enter"]
+visible = "usage: :status"
+
+[[scenario.step]]
+keys = ["type:In a meeting", "enter", "type:2"]
+visible = "2h"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+absent = "Set my status"
 
 [[scenario.step]]
 keys = ["q"]
