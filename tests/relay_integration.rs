@@ -11483,6 +11483,7 @@ async fn real_relay_v017_the_board_keeps_fields_its_own_burst_deletions_and_new_
 }
 
 /// The name `store` shows for `pubkey`.
+#[cfg(feature = "apps")]
 async fn label_of(store: &StoreHandle, community: uuid::Uuid, pubkey: &str) -> Option<String> {
     let pubkey = pubkey.to_owned();
     store

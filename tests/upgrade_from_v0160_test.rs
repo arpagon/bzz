@@ -20,6 +20,11 @@
 //! `BZZ_UPGRADE_AUDIO=1` and `PULSE_SERVER` names a server of a test (a
 //! container: `scripts/test-audio-containers.sh serve`), never the
 //! session's own.
+//!
+//! The seed has an installed app and saved huddle devices: this test is of
+//! the default build, as the released binary is.
+
+#![cfg(all(feature = "apps", feature = "huddles-audio"))]
 
 use std::path::{Path, PathBuf};
 
