@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { openModels } from "../src/model.mjs";
 import { loadPackages, NO_ENTRY, packagesNaming } from "../src/packages.mjs";
-import { bareEnv, MAIN, MODEL, script, sleep, startHost, tempDir, within } from "./support/client.mjs";
+import { bareEnv, MAIN, MODEL, script, sleep, startHost, tempDir, WAIT_MARGIN_MS, within } from "./support/client.mjs";
 
 const THREAD = "5b1e0c9e-7a34-4c53-9d0e-0f6c1a2b3c4d/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -252,7 +252,7 @@ setTimeout(() => { throw new Error("thrown from a timer of the package"); }, 40)
 	const host = startHost(t, join(root, "agent"), { home: root });
 	const answer = await host.initialize({ piDir: pi });
 	assert.deepEqual(answer._meta.bzz.packages, [{ source: stray, loaded: true, extensions: ["stray"], providers: [] }, { source: fine, loaded: true, extensions: ["fine"], providers: [] }]);
-	await within(5_000, (async () => { while (!host.stderr().includes("thrown from a timer")) await sleep(20); })(), `the timer's exception in the log\n${host.stderr()}`);
+	await within(5_000, (async () => { while (!host.stderr().includes("thrown from a timer")) await sleep(20); })(), () => `the timer's exception in the log\n${host.stderr()}`);
 	// Each is in the log, with the package where the stack names it, and the host is still there.
 	assert.match(host.stderr(), / a promise failed with nobody waiting for it in package \S+stray, and the host goes on: rejected at import, with nobody waiting\n/);
 	assert.match(host.stderr(), / a promise failed with nobody waiting for it, and the host goes on: ENOENT: no such file or directory, open \S+no-such-file'\n/);
@@ -310,7 +310,7 @@ test("bzz can switch package loading off for an agent, and a moved agent keeps t
  * exists. Its arguments and the one line it prints are the contract with bzz, which imports nothing of `src/`.
  */
 function checkModel(env, ...args) {
-	return within(30_000, new Promise((resolve, reject) => {
+	return within(30_000 + WAIT_MARGIN_MS, new Promise((resolve, reject) => {
 		execFile(process.execPath, [MAIN, "--check-model", ...args], { env }, (error, stdout, stderr) => {
 			if (error) return reject(new Error(`--check-model ended with ${error.code ?? error.signal}: ${stderr}`));
 			const lines = stdout.split("\n").filter(Boolean);

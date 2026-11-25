@@ -221,7 +221,15 @@ jobs:
       - run: node --version && git --version
       # As bzz installs it on first use: from the lock file, with install scripts off.
       - run: npm ci --ignore-scripts
+      # The hosted Intel Macs start Node and load packages several times
+      # slower than Linux (a test that takes 1 s there took 2 to 6 s, and
+      # twice in 12 runs `initialize` passed the client's 30 s); Windows once
+      # passed its 5 s wait for the host's exit. The test client's own waits
+      # get this margin; bounds a test states as claims do not
+      # (agent-host/test/support/client.mjs, docs/validation-v0.17.0/ci.md).
       - run: npm test
+        env:
+          BZZ_AGENT_HOST_WAIT_MARGIN_MS: ${{ matrix.os == 'macos-15-intel' && '60000' || matrix.os == 'windows-latest' && '30000' || '0' }}
       - name: Audit the packages an agent runs with
         if: runner.os == 'Linux'
         run: npm audit --omit=dev
