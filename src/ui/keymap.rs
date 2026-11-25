@@ -591,6 +591,7 @@ impl KeyMap {
             )));
         }
         let mut keymap = Self::builtin();
+        let added = added_in_v017();
         for binding in file.binding {
             let sequence = KeySequence::parse(&binding.keys).map_err(|_| {
                 Error::Config(format!(
@@ -620,8 +621,16 @@ impl KeyMap {
                     path.display()
                 )));
             };
+            // The owner's binding also wins over a key v0.17 added in its
+            // scope that one of the two would be a prefix of: a v0.16 map
+            // that bound `z i` keeps working beside v0.17's `z` (rule 19).
+            // With the keys v0.16 had, an ambiguity is still refused.
             keymap.bindings.retain(|candidate| {
-                !(candidate.scope == binding.scope && candidate.sequence == sequence)
+                !(candidate.scope == binding.scope
+                    && (candidate.sequence == sequence
+                        || (added.contains(&(candidate.scope, candidate.sequence.clone()))
+                            && (candidate.sequence.starts_with(&sequence)
+                                || sequence.starts_with(&candidate.sequence)))))
             });
             keymap
                 .disabled
@@ -775,6 +784,27 @@ impl KeyMap {
         }
         Ok(())
     }
+}
+
+/// The builtin sequences v0.17 added where v0.16 had none (plan D4, D5,
+/// L10). An owner's map written for v0.16 may use them as prefixes.
+fn added_in_v017() -> Vec<(KeyScope, KeySequence)> {
+    [
+        (KeyScope::Global, &["ctrl-k"][..]),
+        (KeyScope::Global, &["space", "k"][..]),
+        (KeyScope::Workspace, &["d"][..]),
+        (KeyScope::Workspace, &["u"][..]),
+        (KeyScope::Workspace, &["z"][..]),
+    ]
+    .into_iter()
+    .map(|(scope, keys)| {
+        let keys = keys.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>();
+        (
+            scope,
+            KeySequence::parse(&keys).expect("builtin key chord is valid"),
+        )
+    })
+    .collect()
 }
 
 fn composer_action(action: UiAction) -> bool {

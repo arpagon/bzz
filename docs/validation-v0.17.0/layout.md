@@ -100,6 +100,7 @@ wrapping, no character lost, left as it is.=<scratch>/captures python3 scripts/t
 | L11. Through a terminal, SGR mouse reports sent by tmux at 80×24: two wheel-ups show the checklist, a double click opens its thread, a drag from column 27 to 35 says `channel pane width saved as 36`, a click on `#design` opens it, a click on the hint opens the palette | tmux | `t17-layout-mouse` (the step field `mouse` of `scripts/test-tui-tmux.py`) | pass |
 | L11. Nothing the keyboard does needs the mouse | read | every gesture above has its key: Tab/1–5, Enter, J/K and Ctrl-d/u, Alt-h/Alt-l (resize), Space Space, Ctrl-K | — |
 | **L12.** `Esc` in the workspace and the Inbox is `Back`: it closes an overlay, the composer, the thread, the Inbox as before, and with nothing open says `nothing to close · q quits`; `q` still asks; overlays and the composer keep their own Esc | unit + tmux | `app::shell::tests::esc_with_nothing_open_does_not_ask_to_quit_and_q_does`; `t17-layout-mouse` steps 4–5 (`absent = "quit bzz?"`) | pass |
+| L12. Rule 19: an owner's v0.16 key map that binds a sequence starting with a key v0.17 added (`z i` in `custom-keymap-inbox`) still loads, and its binding wins in that scope; with v0.16's own keys an ambiguity is still refused | unit + tmux | `app::shell::tests::an_owners_map_that_binds_z_something_still_loads`; `ui::keymap::tests::action_prefix_ambiguity_is_rejected`; scenario `custom-keymap-inbox` | **red first**: with `z` added the scenario's bzz refused to start (`keymap has an action/prefix sequence ambiguity`); pass after the fix in `KeyMap::load_from` |
 | L12. Rule 19: the two moved bindings (`Workspace Esc`, `Inbox Esc`: `BackOrQuit` → `Back`) and the new `Workspace z` are named | integration | `cargo test --locked --test v016_pins_test` (`MOVED_KEYS`, `ADDED_KEYS`, a fourth `DELIBERATE_CHANGES`) | pass |
 | **F7.** A huddle's backing channel (a private stream `huddle-` and eight hex digits) is not in the sidebar, the finder or the palette; `:system` shows it in the sidebar | app buffer | `app::shell::tests::a_dm_composer_names_the_person_and_the_backing_channel_is_not_listed` | pass |
 | F7. A DM's composer says `message @Scout` (it said `message #Scout`) | app buffer + tmux | same test; `t17-layout-mouse` capture of `@Lin` | pass |
@@ -194,6 +195,14 @@ named "mine" ran the base's binary (cargo found this branch's release
 Every run tore its harness down (`docker compose … down -v` in the log, no
 `buzz-harness` container after).
 
+## The automated scenarios
+
+`PYTHONDONTWRITEBYTECODE=1 BZZ_BIN=<scratch>/bzz BZZ_TMUX_SCENARIOS=automated python3 scripts/test-tui-tmux.py`
+(debug build of the last commit): 10 of 11. `t17-demo-first-minute` waits
+for `reaction · Enter toggle`, a title the base no longer draws either (task
+`look` moved the keys to the footer: `┌ reaction ─`, `└ Enter toggle · :
+custom · Esc close ─`); not this task's, left for its owner.
+
 ## Captures
 
 Text from tmux, in `<scratch>`, read as a newcomer would:
@@ -228,8 +237,8 @@ wrapping, no character lost, left as it is.
 | `cargo fmt --check` | pass |
 | `cargo clippy --locked --all-targets -- -D warnings` | pass |
 | `cargo build --locked --example scripted_harness` | pass |
-| `cargo test --locked --all-targets --no-fail-fast` | every integration target passes; `--lib` 926 of 928 on a machine at load 17–24: `apps::runtime::tests::vm::an_endless_loop_is_stopped_by_time` and (in a second run) `apps::runtime::tests::drawing::the_largest_screen_a_script_can_return_is_drawn_in_good_time` fail on their time limits and pass alone (`cargo test --locked --lib <name>`). Neither touches what this task changed |
-| `cargo test --locked --no-default-features --lib` | 635 passed, 1 ignored |
+| `cargo test --locked --all-targets --no-fail-fast` | pass on the last commit (every target). Two earlier runs, at load 17–24, failed `apps::runtime::tests::vm::an_endless_loop_is_stopped_by_time` and `apps::runtime::tests::drawing::the_largest_screen_a_script_can_return_is_drawn_in_good_time` on their time limits; both pass alone and neither touches what this task changed |
+| `cargo test --locked --no-default-features --lib` | pass |
 | `cargo deny check`, `cargo audit` | not run: `Cargo.toml` and `Cargo.lock` unchanged |
 
 The first full run also failed `app::shell::tests::goldens_of_the_main_screens_at_four_widths`:

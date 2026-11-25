@@ -548,3 +548,43 @@ async fn goldens_of_the_main_screens_at_four_widths() {
         }
     }
 }
+
+/// Rule 19: a v0.16 key map that bound a sequence starting with `z` (the
+/// scenario `custom-keymap-inbox` binds `z i`) still loads, and its binding
+/// wins over v0.17's `z` in that scope; elsewhere `z` is untouched.
+#[test]
+fn an_owners_map_that_binds_z_something_still_loads() {
+    let temporary = TempDir::new().unwrap();
+    let path = temporary.path().join("keymap.toml");
+    std::fs::write(
+        &path,
+        "[[binding]]\nscope = \"workspace\"\nkeys = [\"z\", \"i\"]\naction = \"open-inbox\"\n",
+    )
+    .unwrap();
+    let keymap = KeyMap::load_from(&path).unwrap();
+    let chord = |character| {
+        crate::ui::keymap::KeyChord::new(
+            crossterm::event::KeyCode::Char(character),
+            KeyModifiers::NONE,
+        )
+    };
+    assert_eq!(
+        keymap.lookup(KeyScope::Workspace, &[chord('z'), chord('i')]),
+        KeyLookup::Action(UiAction::OpenInbox)
+    );
+    assert_eq!(
+        keymap.lookup(KeyScope::Workspace, &[chord('z')]),
+        KeyLookup::Pending
+    );
+    assert_eq!(
+        KeyMap::builtin().lookup(KeyScope::Workspace, &[chord('z')]),
+        KeyLookup::Action(UiAction::ConversationOnly)
+    );
+    // Two of the owner's own bindings that collide are still refused.
+    std::fs::write(
+        &path,
+        "[[binding]]\nscope = \"workspace\"\nkeys = [\"x\"]\naction = \"open-inbox\"\n\n[[binding]]\nscope = \"workspace\"\nkeys = [\"x\", \"i\"]\naction = \"open-inbox\"\n",
+    )
+    .unwrap();
+    assert!(KeyMap::load_from(&path).is_err());
+}
