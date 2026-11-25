@@ -16,6 +16,8 @@ pub mod help;
 pub mod hit_map;
 pub mod huddle;
 pub mod huddle_lanes;
+pub mod huddle_mic;
+pub mod huddle_zoom;
 pub mod inbox;
 pub mod input;
 pub mod keymap;

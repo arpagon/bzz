@@ -1,0 +1,40 @@
+ huddle in #team · 4 in the call · Ada and Lin at once                                      lanes · one lane per person
+                              12s ago                                                                              now
+                                                                                      ▁▁
+                                                                                ▆▆▅▆▆▇██▆▇▇▇▇▆▇▇▅                 ▆▆▅▂
+ ▐A▌ Ada                      ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁██████████████████▅▁▁▁ ▁ ▁ ▁ ▁ ▁ ▁▁████
+ ▐ ▌ ● live                                                                    ██████████████████▀▔▔             ▔████
+                                                                                ▀▀▀▀▀▀██▀▀▀▀▀▀▀▀▀                 ▀▀▀▔
+                                                                                      ▔▔
+
+                                                                                                    ▇▆▄▅▆▇▆██▆▅▇▇▇▆▅▆▆
+ ▐L▌ Lin                      ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁▇██████████████████
+ ▐ ▌ ● live                                                                                        ▀██████████████████
+                                                                                                    ▀▀▀▀▀▀▀██▀▀▀▀▀▀▀▀▀
+
+
+
+  S  Sam                      ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁
+     quiet
+
+
+
+
+  Y  You · your microphone    ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁
+     muted
+
+
+
+
+
+ mic muted · nobody hears you                                                                 v style · z back · m mute
+--- styles ---
+0: 1-53 Reset/Reset/BOLD
+4: 2-2 Reset/Reset/BOLD 5-7 Reset/Reset/BOLD 30-78 Reset/Reset/DIM 100-112 Reset/Reset/DIM
+5: 2-2 Reset/Reset/BOLD
+10: 2-2 Reset/Reset/BOLD 5-7 Reset/Reset/BOLD 30-98 Reset/Reset/DIM
+11: 2-2 Reset/Reset/BOLD
+16: 2-2 Reset/Reset/BOLD 30-117 Reset/Reset/DIM
+17: 2-2 Reset/Reset/BOLD
+22: 2-2 Reset/Reset/BOLD 30-117 Reset/Reset/DIM
+23: 2-2 Reset/Reset/BOLD
