@@ -1480,10 +1480,28 @@ pub static TABLE: &[ActionSpec] = &[
         "",
         "delete this community's local cache",
     ),
+    // Joining a community, here in bzz (v0.17 A9): the form asks the
+    // address and who you are there.
+    cmd(
+        "community.join",
+        "Join a community…",
+        G::Community,
+        "join",
+    )
+    .words("add new relay address invite pair import identity")
+    .aliases(&["join", "add"])
+    .command(":join")
+    .place(Where::Anywhere)
+    .head(
+        "join",
+        &[],
+        "[address | invite link]",
+        "join a community: its address, who you are there, and in",
+    ),
     shell(
         "community.add",
-        "Add a community",
-        "bzz community add <url>",
+        "Add a community from the shell",
+        "bzz community add <label> <wss://address> <identity-id>",
     )
     .words("join new relay")
     .command(":community add")
@@ -1491,7 +1509,7 @@ pub static TABLE: &[ActionSpec] = &[
         "community",
         &[],
         "add | remove",
-        "done from the shell: bzz community add | remove",
+        "add opens the join form; remove is done from the shell: bzz community remove",
     ),
     shell(
         "community.remove",
@@ -1872,6 +1890,7 @@ mod tests {
         Unknown(_),
         DmWith(_),
         DmAddPerson(_),
+        Join(_),
     );
 
     /// The `:` forms of each command that take an argument a person must
@@ -1905,6 +1924,9 @@ mod tests {
             ],
             Command::DmWith(_) => &["dm"],
             Command::DmAddPerson(_) => &["dm add"],
+            // The join form asks the address itself; `:join <address>` is
+            // the typed form of the same.
+            Command::Join(_) => &[],
             // `local` and `directory` each have a row of their own.
             Command::Agents(_) => &[],
             // `:agent new` opens a form that asks the name.

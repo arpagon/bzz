@@ -3,6 +3,7 @@ pub mod encrypted_file;
 pub mod federated;
 pub mod keychain;
 pub mod operation_policy;
+pub mod pairing;
 pub mod provider;
 pub mod signer;
 
@@ -148,6 +149,36 @@ impl<'a> IdentityManager<'a> {
             ));
         }
         Ok(keys)
+    }
+
+    /// Writes the settings with a new `identity` in them; when that fails,
+    /// the identity and its stored secret are taken back. Every door that
+    /// makes an identity (`bzz identity new`, `import`, the join form) ends
+    /// here.
+    pub fn save_new(&self, config: &mut Config, identity: &IdentityConfig) -> Result<()> {
+        if let Err(error) = config.save(self.paths) {
+            config.identities.retain(|entry| entry.id != identity.id);
+            let _ = self.delete(identity);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Takes back an identity this process made and the person chose not
+    /// to keep: its entry and its stored secret.
+    pub fn forget(&self, config: &mut Config, identity: &IdentityConfig) -> Result<()> {
+        if config
+            .communities
+            .iter()
+            .any(|community| community.identity_id == identity.id)
+        {
+            return Err(Error::Config(
+                "remove communities using this identity first".into(),
+            ));
+        }
+        config.identities.retain(|entry| entry.id != identity.id);
+        config.save(self.paths)?;
+        self.delete(identity)
     }
 
     pub fn delete(&self, identity: &IdentityConfig) -> Result<()> {

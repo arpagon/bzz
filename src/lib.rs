@@ -13,6 +13,7 @@ pub mod diagnostics;
 pub mod domain;
 pub mod error;
 pub mod huddle;
+pub mod join;
 pub mod media;
 pub mod paths;
 pub mod protocol;

@@ -38,6 +38,15 @@ What the manifest may say besides what test-tui-herdr.sh documents:
   step `size = "WxH"`         the window is resized before the keys
   step `paste = "text"`       a bracketed paste of the text before the keys
                               (`\\n` in it is a line break)
+  scenario `empty = true`     a harness scenario that starts, as an
+                              automated one does, from an empty profile of
+                              its own: the relay is there, nothing of the
+                              fixture is (v0.17 join). `{home}` in a step's
+                              `run` is that profile's folder
+  scenario `isolated = true`  that profile is the whole home too: HOME and
+                              the XDG folders are in it, and the session
+                              bus and the runtime folder are unset, so bzz
+                              finds no keychain (a container, SSH)
 """
 
 import os
@@ -193,7 +202,7 @@ def motion_words(scenario):
 
 
 def command_for(scenario, binary, fixture, work, profile):
-    if scenario["kind"] == "automated":
+    if scenario["kind"] == "automated" or scenario.get("empty"):
         home = os.path.join(work, scenario["id"])
         for part in ("config", "data", "cache"):
             os.makedirs(os.path.join(home, part), mode=0o700, exist_ok=True)
@@ -207,6 +216,13 @@ def command_for(scenario, binary, fixture, work, profile):
                  *motion_words(scenario), shlex.quote(binary)]
         # An automated scenario may name a sub-command (`bzz demo`, v0.17).
         words.extend(shlex.quote(argument) for argument in scenario.get("args", []))
+        if scenario.get("isolated"):
+            unset = ["-u", "DBUS_SESSION_BUS_ADDRESS", "-u", "XDG_RUNTIME_DIR",
+                     "-u", "DISPLAY", "-u", "WAYLAND_DISPLAY"]
+            xdg = [f"{name}={shlex.quote(home + '/' + part)}" for name, part in (
+                ("HOME", "."), ("XDG_CONFIG_HOME", "xdg/config"), ("XDG_DATA_HOME", "xdg/data"),
+                ("XDG_CACHE_HOME", "xdg/cache"), ("XDG_STATE_HOME", "xdg/state"))]
+            words = unset + xdg + words
         return "env " + " ".join(words) + '; printf "__BZZ_HERDR_EXIT__:%s\\n" "$?"'
     if not fixture:
         raise SystemExit("harness scenarios need BZZ_HERDR_FIXTURE")
@@ -307,7 +323,9 @@ def run(tmux, scenario, binary, fixture, work, captures, default_size):
         if "run" in step:
             # What the owner does outside bzz meanwhile: save a file, run a
             # command at another shell. `{fixture}` is the fixture's folder.
-            done = subprocess.run(["bash", "-c", step["run"].replace("{fixture}", fixture)],
+            home = os.path.join(work, identifier)
+            done = subprocess.run(["bash", "-c", step["run"].replace("{fixture}", fixture)
+                                   .replace("{home}", home)],
                                   env=dict(os.environ, BZZ_BIN=binary), capture_output=True, text=True)
             if done.returncode != 0:
                 raise Failure(f"step {number}: `{step['run']}` failed: {done.stderr.strip()}")

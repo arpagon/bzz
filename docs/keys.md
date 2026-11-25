@@ -132,7 +132,8 @@ Press `:`, type one, Enter runs it.
 | `:signin` `:sign-in` | federated sign-in for this community |
 | `:reconnect` | reconnect to the relay |
 | `:purge-cache` | delete this community's local cache |
-| `:community add \| remove` | done from the shell: bzz community add \| remove |
+| `:join [address \| invite link]` | join a community: its address, who you are there, and in |
+| `:community add \| remove` | add opens the join form; remove is done from the shell: bzz community remove |
 | `:quit` `:q` | quit bzz (asks first) |
 
 ## Only in the shell
@@ -141,7 +142,7 @@ The palette lists these and copies the command.
 
 | Command | What it does |
 |---|---|
-| `bzz community add <url>` | Add a community |
+| `bzz community add <label> <wss://address> <identity-id>` | Add a community from the shell |
 | `bzz community remove <name>` | Remove a community |
 | `bzz identity new` | Create an identity |
 | `bzz identity import` | Import an identity |

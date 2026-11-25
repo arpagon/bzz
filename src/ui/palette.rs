@@ -2455,12 +2455,12 @@ mod tests {
     #[test]
     fn a_shell_row_asks_to_copy_its_command() {
         let mut palette = palette(facts());
-        typed(&mut palette, "community add");
+        typed(&mut palette, "community from the shell");
         let first = palette.selected_candidate().unwrap();
-        assert_eq!(first.title, "Add a community");
+        assert_eq!(first.title, "Add a community from the shell");
         assert_eq!(
             palette.key(key(KeyCode::Enter)),
-            Outcome::Copy("bzz community add <url>")
+            Outcome::Copy("bzz community add <label> <wss://address> <identity-id>")
         );
     }
 

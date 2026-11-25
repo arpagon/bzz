@@ -59,6 +59,8 @@ pub enum Overlay {
     Profile,
     /// The palette: find and run any action (v0.17).
     Palette,
+    /// The join form: a community's address to its first channel (v0.17).
+    Join,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

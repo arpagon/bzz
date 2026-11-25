@@ -189,10 +189,11 @@ async fn a_long_usage_wraps_and_is_not_cut() {
         "{answer}\n{}",
         screen.join("\n")
     );
-    // :community add names the shell command, also whole.
+    // :community remove names the shell command, also whole;
+    // :community add opens the join form (v0.17 A9).
     app.presentation.close_overlay();
     app.command_answer = None;
-    command(&mut app, "community add").await;
+    command(&mut app, "community remove").await;
     assert_eq!(
         app.command_answer.as_deref(),
         Some(crate::ui::command::COMMUNITY_ANSWER)
@@ -202,6 +203,13 @@ async fn a_long_usage_wraps_and_is_not_cut() {
         squeeze(&screen).contains(crate::ui::command::COMMUNITY_ANSWER),
         "{}",
         screen.join("\n")
+    );
+    app.presentation.close_overlay();
+    app.command_answer = None;
+    command(&mut app, "community add").await;
+    assert_eq!(
+        app.presentation.overlay,
+        Some(crate::ui::state::Overlay::Join)
     );
 }
 

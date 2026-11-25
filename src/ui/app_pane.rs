@@ -115,12 +115,15 @@ pub enum PasteTarget {
     App,
     /// Nowhere: another overlay is open, or nothing takes text.
     Dropped,
+    /// The field of the join form being typed (v0.17).
+    Join,
 }
 
 pub fn paste_target(context: PasteContext) -> PasteTarget {
     match context.overlay {
         Some(Overlay::AgentNew) => PasteTarget::AgentForm,
         Some(Overlay::Approval | Overlay::AppApproval) => PasteTarget::ApprovalReason,
+        Some(Overlay::Join) => PasteTarget::Join,
         Some(_) => PasteTarget::Dropped,
         None if context.composer_open => PasteTarget::Composer,
         None if context.app_focused => PasteTarget::App,

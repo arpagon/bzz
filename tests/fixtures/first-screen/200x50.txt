@@ -19,7 +19,7 @@
                                                           │  There is no community on this machine yet. Start with one of these:             │
                                                           │                                                                                  │
                                                           │ › d  Try the demo       a generated team, offline; nothing is saved              │
-                                                          │   j  Join a community   a new identity, then the community's address             │
+                                                          │   j  Join a community   its address, then who you are there                      │
                                                           │   p  Pair with Buzz     use the account of Buzz desktop on this machine          │
                                                           │   k  Import a key       a Buzz key or a backup file you already have             │
                                                           │                                                                                  │

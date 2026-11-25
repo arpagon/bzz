@@ -58,6 +58,9 @@ pub enum Command {
     Apps,
     /// `:app open <name> | close | zoom`: the app of the selected channel.
     App(String),
+    /// `:join [address]` and `:community add [address]`: the join form,
+    /// with the address filled in when one is given (v0.17).
+    Join(String),
     Unknown(String),
     /// `:q` or `:quit`: asks, as `q` does (v0.17 C4).
     Quit,
@@ -143,6 +146,12 @@ pub fn parse(input: &str) -> Command {
         }
         value if value.starts_with("dm ") => {
             Command::DmWith(value.trim_start_matches("dm").trim().to_owned())
+        }
+        value if value == "join" || value.starts_with("join ") => {
+            Command::Join(value.trim_start_matches("join").trim().to_owned())
+        }
+        value if value.starts_with("community add ") => {
+            Command::Join(value.trim_start_matches("community add").trim().to_owned())
         }
         value => Command::Unknown(value.to_owned()),
     }
@@ -251,7 +260,7 @@ pub fn unknown_answer(input: &str) -> String {
 }
 
 /// What `:community add` and `:community remove` answer: the shell command.
-pub const COMMUNITY_ANSWER: &str = "communities are added in the shell: bzz community add <label> <wss://relay-address> <identity-id> (bzz identity list shows the id; bzz community add --help explains); bzz community remove <id> --yes removes one";
+pub const COMMUNITY_ANSWER: &str = "a community is removed in the shell: bzz community list shows its id; bzz community remove <id> --yes removes it. :join adds one, here in bzz";
 
 /// Optimal-string-alignment distance: insertions, deletions, substitutions
 /// and swaps of two neighbours each cost one.
@@ -584,6 +593,17 @@ mod tests {
         assert_eq!(parse(":app close"), Command::App("close".into()));
         assert_eq!(parse(":app"), Command::App(String::new()));
         assert!(matches!(parse(":application"), Command::Unknown(_)));
+        assert_eq!(parse(":community add"), Command::AddCommunity);
+        assert_eq!(parse(":join"), Command::Join(String::new()));
+        assert_eq!(
+            parse(":join my-team.example"),
+            Command::Join("my-team.example".into())
+        );
+        assert_eq!(
+            parse(":community add wss://my-team.example"),
+            Command::Join("wss://my-team.example".into())
+        );
+        assert!(matches!(parse(":joinx"), Command::Unknown(_)));
         assert_eq!(parse(":tasks"), Command::Tasks);
         assert_eq!(parse(":broker"), Command::Broker);
         assert_eq!(parse(":profile"), Command::Profile(String::new()));
@@ -696,6 +716,7 @@ mod tests {
             "app",
             "signin",
             "community",
+            "join",
             "lock",
             "reconnect",
             "resync",

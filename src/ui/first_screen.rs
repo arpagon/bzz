@@ -49,7 +49,7 @@ impl Choice {
     pub const fn hint(self) -> &'static str {
         match self {
             Self::Demo => "a generated team, offline; nothing is saved",
-            Self::Join => "a new identity, then the community's address",
+            Self::Join => "its address, then who you are there",
             Self::Pair => "use the account of Buzz desktop on this machine",
             Self::Import => "a Buzz key or a backup file you already have",
         }
@@ -119,6 +119,12 @@ impl FirstScreen {
 
     pub fn shown(&self) -> Option<Choice> {
         self.shown
+    }
+
+    /// The choice whose way in was just asked for, once: the app opens
+    /// the join form for it (v0.17 A9).
+    pub fn take_shown(&mut self) -> Option<Choice> {
+        self.shown.take()
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Outcome {
