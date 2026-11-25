@@ -276,7 +276,7 @@ async fn the_thread_and_the_app_share_the_right_side() {
     app.open_app_in_memory(channel, "recorder", RECORDER);
     app.thread_root = Some("e".repeat(64));
     app.apps.front = false;
-    // Asked for last, the thread has the right side under 144 columns, and
+    // Asked for last, the thread has the right side under 152 columns, and
     // a reply goes into it.
     let shown = screen(&mut app, 120, 30);
     assert_eq!(app.apps.placement, AppPlacement::HiddenBehindThread);
@@ -292,8 +292,9 @@ async fn the_thread_and_the_app_share_the_right_side() {
     assert!(!app.thread_drawn);
     assert_eq!(app.reply_root(), None);
     assert!(shown.contains("message #general"), "{shown}");
-    // From 144 both show.
-    screen(&mut app, 144, 30);
+    // From 152 both show (v0.16: 144; v0.17 L10 keeps 38 columns for the
+    // conversation instead of 30).
+    screen(&mut app, 152, 30);
     assert!(app.thread_drawn);
     assert_eq!(app.apps.placement, AppPlacement::Docked);
 }

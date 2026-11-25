@@ -23,3 +23,4 @@ migrations/0023_app_agent_proposals.sql text eol=lf
 tests/fixtures/first-screen/** text eol=lf
 tests/fixtures/huddle_lanes/** text eol=lf
 tests/fixtures/huddle_zoom/** text eol=lf
+tests/fixtures/layout/** text eol=lf

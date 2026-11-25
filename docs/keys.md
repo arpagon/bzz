@@ -58,6 +58,7 @@ Generated from bzz's table of actions (`src/ui/action_table.rs`) by `cargo run -
 | `Alt+L` | Widen side pane |  |
 | `Space r` | Refresh |  |
 | `Space s` | Cycle channel sort |  |
+| `z` (channels and messages) | Conversation only |  |
 
 ### Inbox
 
@@ -74,6 +75,7 @@ Generated from bzz's table of actions (`src/ui/action_table.rs`) by `cargo run -
 | Key | Action | Also |
 |---|---|---|
 | `q` `Esc` · `Esc` `q` `?` (any overlay) · `Esc` (writing) | Back or close |  |
+| `Esc` (channels and messages) · `Esc` (Inbox) | Close what is open |  |
 
 ### Writing
 
