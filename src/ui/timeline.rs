@@ -578,18 +578,24 @@ fn render_internal(
     if let Some(banner) = state.banner.as_deref()
         && content.height > 2
     {
+        // Wrapped to the pane's width, so a narrow pane keeps all of it
+        // (L10), in at most half the conversation.
+        let line = Line::from(Span::styled(
+            format!(" ⚠ {} ", sanitize::single_line(banner)),
+            theme.style(HighlightGroup::StateBanner),
+        ));
+        let rows = text_height(&line, content.width)
+            .min(content.height / 2)
+            .max(1);
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!(" ⚠ {} ", sanitize::single_line(banner)),
-                theme.style(HighlightGroup::StateBanner),
-            ))),
-            Rect::new(content.x, content.y, content.width, 1),
+            Paragraph::new(line).wrap(Wrap { trim: false }),
+            Rect::new(content.x, content.y, content.width, rows),
         );
         content = Rect::new(
             content.x,
-            content.y.saturating_add(1),
+            content.y.saturating_add(rows),
             content.width,
-            content.height - 1,
+            content.height - rows,
         );
     }
     if !messages.iter().any(|message| message.system.is_none()) && content.height >= 6 {
@@ -2152,6 +2158,7 @@ mod tests {
             at_live_bottom: true,
             selected_event: messages.last().map(|message| message.event_id.clone()),
             copy_anchor: messages.first().map(|message| message.event_id.clone()),
+            banner: Some("offline · showing what is saved here · :reconnect tries now".into()),
             ..TimelineState::default()
         };
         terminal

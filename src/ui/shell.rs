@@ -6,12 +6,16 @@
 //! the right of a frame's top edge, made of key hints); it lives here so
 //! the frame module of another task is not touched.
 
-use ratatui::{buffer::Buffer, layout::Rect};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    text::{Line, Span},
+};
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::ui::{
     layout::{MIN_CONVERSATION, Panes, SIDEBAR_MIN_WIDTH, THREAD_MIN_WIDTH},
-    theme::Theme,
+    theme::{HighlightGroup, Theme},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,9 +132,11 @@ pub fn find_hint(buffer: &Buffer, status: Rect) -> Option<Rect> {
     Some(Rect::new(x, row, width, 1))
 }
 
-/// Writes what is hidden, as key hints, at the right of `pane`'s top edge,
-/// after a title `title_width` wide. The names go first when they no longer
-/// fit, then the keys from the last.
+/// Writes what is hidden at the right of `pane`'s top edge, after a title
+/// `title_width` wide: `hidden · channels 2 · thread 4`, each name then the
+/// key that shows it (a digit before a name would read as a count). When
+/// it no longer fits `hidden ·` goes, then the names, then the keys from
+/// the last.
 pub fn draw_hidden(
     buffer: &mut Buffer,
     pane: Rect,
@@ -148,23 +154,42 @@ pub fn draw_hidden(
         .saturating_add(title_width.saturating_add(2).min(pane.width / 2))
         .saturating_add(1);
     let right = pane.right().saturating_sub(1);
-    let room = right.saturating_sub(left);
-    let shown = |pairs: &[(&str, &str)]| crate::ui::frame::hints(theme, pairs);
+    let room = usize::from(right.saturating_sub(left));
+    let line = |pairs: &[(&str, &str)], named: bool, said: bool| {
+        let muted = theme.style(HighlightGroup::HintText);
+        let mut spans = vec![Span::styled(if said { " hidden · " } else { " " }, muted)];
+        for (index, (key, label)) in pairs.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::styled(" · ", theme.style(HighlightGroup::Muted)));
+            }
+            if named {
+                spans.push(Span::styled(format!("{label} "), muted));
+            }
+            spans.push(Span::styled(
+                (*key).to_owned(),
+                theme.style(HighlightGroup::HintKey),
+            ));
+        }
+        spans.push(Span::raw(" "));
+        Line::from(spans)
+    };
     let mut pairs = keys.to_vec();
-    let mut line = shown(&pairs);
-    if line.width() > usize::from(room) {
-        pairs = keys.iter().map(|(key, _)| (*key, "")).collect();
-        line = shown(&pairs);
+    let mut shown = line(&pairs, true, true);
+    if shown.width() > room {
+        shown = line(&pairs, true, false);
     }
-    while line.width() > usize::from(room) && !pairs.is_empty() {
+    if shown.width() > room {
+        shown = line(&pairs, false, false);
+    }
+    while shown.width() > room && !pairs.is_empty() {
         pairs.pop();
-        line = shown(&pairs);
+        shown = line(&pairs, false, false);
     }
     if pairs.is_empty() {
         return;
     }
-    let width = u16::try_from(line.width()).unwrap_or(room);
-    buffer.set_line(right.saturating_sub(width), pane.y, &line, width);
+    let width = u16::try_from(shown.width()).unwrap_or(u16::MAX);
+    buffer.set_line(right.saturating_sub(width), pane.y, &shown, width);
 }
 
 #[cfg(test)]
@@ -174,7 +199,11 @@ mod tests {
         layout::{Shell, SidePane, workspace},
         theme::Theme,
     };
-    use ratatui::{buffer::Buffer, layout::Rect};
+    use ratatui::{
+        buffer::Buffer,
+        layout::Rect,
+        text::{Line, Span},
+    };
 
     fn row(buffer: &Buffer, y: u16) -> String {
         (0..buffer.area.width)
@@ -262,9 +291,16 @@ mod tests {
         let mut wide = Buffer::empty(Rect::new(0, 0, 60, 3));
         draw_hidden(&mut wide, Rect::new(0, 0, 60, 3), 8, &keys, &theme);
         assert!(
-            row(&wide, 0).ends_with(" 2 channels · 4 thread  "),
+            row(&wide, 0).ends_with(" hidden · channels 2 · thread 4  "),
             "{}",
             row(&wide, 0)
+        );
+        let mut middle = Buffer::empty(Rect::new(0, 0, 44, 3));
+        draw_hidden(&mut middle, Rect::new(0, 0, 44, 3), 8, &keys, &theme);
+        let shown = row(&middle, 0);
+        assert!(
+            shown.ends_with(" channels 2 · thread 4  ") && !shown.contains("hidden"),
+            "{shown}"
         );
         let mut narrow = Buffer::empty(Rect::new(0, 0, 30, 3));
         draw_hidden(&mut narrow, Rect::new(0, 0, 30, 3), 14, &keys, &theme);

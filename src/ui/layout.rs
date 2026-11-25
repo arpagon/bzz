@@ -136,7 +136,7 @@ impl Hidden {
     /// (`app hidden · 5`).
     pub fn keys(&self) -> Vec<(&'static str, &'static str)> {
         if self.conversation_only {
-            return vec![("z", "all panes")];
+            return vec![("z", "the other panes")];
         }
         let mut keys = Vec::new();
         if self.communities {
@@ -942,7 +942,7 @@ z: C60 | z · C72 | z · C80 | z · C100 | z · C120 | z · C160 | z · C200 | z
         assert!(panes.community.is_none() && panes.sidebar.is_none());
         assert!(panes.thread.is_none() && panes.app.is_none());
         assert_eq!(panes.composer, Some(Rect::new(0, 25, 120, 4)));
-        assert_eq!(panes.hidden.keys(), vec![("z", "all panes")]);
+        assert_eq!(panes.hidden.keys(), vec![("z", "the other panes")]);
     }
 
     #[test]

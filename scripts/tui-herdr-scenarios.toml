@@ -1494,16 +1494,24 @@ visible = "communities"
 keys = []
 visible = "5 focus ┘"
 
+# v0.17 L10: the conversation keeps 38 columns, so at 100 the app and the
+# conversation leave no room for the sidebar (the frame names what is
+# hidden), and the app docks from 80 columns (it was 72).
 [[scenario.step]]
 size = "100x30"
 keys = []
 visible = "5 focus ┘"
-absent = "communities"
+absent = "┌ communities"
+
+[[scenario.step]]
+size = "80x30"
+keys = []
+visible = "5 focus ┘"
 
 [[scenario.step]]
 size = "72x30"
 keys = []
-visible = "5 focus ┘"
+visible = "app hidden · 5"
 
 [[scenario.step]]
 size = "60x30"
@@ -3033,6 +3041,150 @@ visible = "status cleared"
 pause = 1500
 keys = [":", "type:status", "enter"]
 visible = "you have no status"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 L10 to L12 (task `layout`), on `bzz demo`: no network, no relay.
+
+[[scenario]]
+id = "t17-layout-mouse"
+kind = "automated"
+description = "The mouse at 80x24: the wheel scrolls the conversation, a double click opens a message's thread, Esc closes it and then says there is nothing to close, a drag widens the sidebar, a click opens a channel, a click on the status line's hint opens the palette."
+size = "80x24"
+args = ["demo"]
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+mouse = ["wheel-up 50 10", "wheel-up 50 10"]
+keys = []
+visible = "Release checklist for Thursday"
+
+[[scenario.step]]
+mouse = ["double 40 2"]
+keys = []
+visible = "context · 4 replies"
+
+[[scenario.step]]
+keys = []
+visible = "hidden · channels 2"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "context · 4 replies"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "nothing to close · q quits"
+absent = "quit bzz?"
+
+[[scenario.step]]
+mouse = ["drag 27 10 35 10"]
+keys = []
+visible = "channel pane width saved as 36"
+
+[[scenario.step]]
+mouse = ["click 6 3"]
+keys = []
+visible = "The new empty state"
+
+[[scenario.step]]
+pause = 5500
+keys = []
+visible = "Ctrl-K actions · ? keys"
+
+[[scenario.step]]
+mouse = ["click 62 23"]
+keys = []
+visible = "Search actions, channels"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "Search actions"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-layout-widths"
+kind = "automated"
+description = "One window from 60 to 200 columns: what does not fit is hidden and named with its key on the conversation's frame; a thread with the focus takes the conversation's place at 60 and 3 brings it back; z draws the conversation alone and z restores; widening brings every pane back."
+size = "60x20"
+args = ["demo"]
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+keys = []
+visible = "hidden · channels 2"
+
+[[scenario.step]]
+keys = ["k", "k", "k", "enter"]
+visible = "context · 4 replies"
+
+[[scenario.step]]
+keys = []
+visible = "conversation 3"
+
+[[scenario.step]]
+keys = ["3"]
+visible = "Release checklist for Thursday"
+absent = "context · 4 replies"
+
+[[scenario.step]]
+keys = []
+visible = "thread 4"
+
+[[scenario.step]]
+size = "80x24"
+keys = []
+visible = "context · 4 replies"
+
+[[scenario.step]]
+size = "120x32"
+keys = []
+visible = "channels ──"
+
+[[scenario.step]]
+keys = ["z"]
+visible = "hidden · the other panes z"
+absent = "context · 4 replies"
+
+[[scenario.step]]
+keys = ["z"]
+visible = "context · 4 replies"
+absent = "the other panes"
+
+[[scenario.step]]
+size = "160x45"
+keys = []
+visible = "┌ communities"
+
+[[scenario.step]]
+size = "200x50"
+keys = []
+visible = "context · 4 replies"
+absent = "hidden ·"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "context · 4 replies"
 
 [[scenario.step]]
 keys = ["q"]

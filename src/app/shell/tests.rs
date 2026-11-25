@@ -150,7 +150,7 @@ async fn the_frame_names_what_is_hidden_and_z_draws_the_conversation_alone() {
     app.thread_root = Some("event-59".into());
     app.presentation.set_workspace_focus(FocusSurface::Timeline);
     let rows = draw(&mut app, 80, 24);
-    assert!(rows[0].contains("2 channels"), "{rows:#?}");
+    assert!(rows[0].contains("hidden · channels 2"), "{rows:#?}");
     assert!(rows[0].contains("context"), "{rows:#?}");
     let panes = app.shell.last_panes.unwrap();
     assert_eq!(panes.timeline.width, 38);
@@ -173,7 +173,7 @@ async fn the_frame_names_what_is_hidden_and_z_draws_the_conversation_alone() {
     app.shell.conversation_only = true;
     app.presentation.set_workspace_focus(FocusSurface::Timeline);
     let rows = draw(&mut app, 160, 45);
-    assert!(rows[0].contains("z all panes"), "{rows:#?}");
+    assert!(rows[0].contains("hidden · the other panes z"), "{rows:#?}");
     assert!(!rows.iter().any(|row| row.contains("room-01")), "{rows:#?}");
     assert!(
         !rows.iter().any(|row| row.contains("context ·")),
@@ -466,4 +466,76 @@ async fn a_dm_composer_names_the_person_and_the_backing_channel_is_not_listed() 
     app.selected_channel = 0;
     let rows = draw(&mut app, 120, 60).join("\n");
     assert!(rows.contains("huddle-0a1b2c3d"), "{rows}");
+}
+
+/// An app that says how much room it has.
+#[cfg(feature = "apps")]
+const SIZE_APP: &str = r#"
+local app = { api = 1, types = { "note" } }
+function app.init(ctx) return {} end
+function app.view(s, ctx)
+  return ui.text { "board for the release", "room " .. ctx.width .. "x" .. ctx.height }
+end
+return app
+"#;
+
+/// The main screens at 60, 80, 120 and 160 columns with the sidebar, a
+/// thread, an app and both, in `tests/fixtures/layout/`. `BZZ_BLESS=1`
+/// writes them.
+#[cfg(feature = "apps")]
+#[tokio::test]
+async fn goldens_of_the_main_screens_at_four_widths() {
+    let temporary = TempDir::new().unwrap();
+    let mut app = fixture(&temporary).await;
+    let general = app.channels[0].id;
+    app.thread_messages = (40..43).map(|index| message(index, general)).collect();
+    app.thread_timeline.reconcile(&app.thread_messages);
+    app.thread_timeline.at_live_bottom = true;
+    let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/layout");
+    for (state, thread, app_open) in [
+        ("sidebar", false, false),
+        ("thread", true, false),
+        ("app", false, true),
+        ("both", true, true),
+    ] {
+        app.thread_root = thread.then(|| "event-40".to_owned());
+        if app_open {
+            app.open_app_in_memory(general, "board", SIZE_APP);
+            app.apps.front = true;
+        } else {
+            app.apps.open.clear();
+        }
+        // The focus is on the conversation, so nothing takes its place.
+        app.presentation.set_workspace_focus(FocusSurface::Timeline);
+        for (width, height) in [(60, 24), (80, 24), (120, 32), (160, 45)] {
+            let mut rows = Vec::new();
+            for _ in 0..200 {
+                app.poll_apps();
+                rows = draw(&mut app, width, height);
+                let shown = rows.join("\n");
+                let drawn = app.shell.last_panes.unwrap().app.is_some();
+                if !app_open || !drawn || shown.contains("board for the release") {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let text = rows
+                .iter()
+                .map(|row| row.trim_end())
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n";
+            let path = folder.join(format!("{state}-{width}x{height}.txt"));
+            if std::env::var_os("BZZ_BLESS").is_some() {
+                std::fs::create_dir_all(&folder).unwrap();
+                std::fs::write(&path, &text).unwrap();
+            }
+            let golden = std::fs::read_to_string(&path)
+                .unwrap_or_else(|_| panic!("{}: run with BZZ_BLESS=1 to write it", path.display()));
+            assert_eq!(
+                text, golden,
+                "{state} at {width}x{height}: run with BZZ_BLESS=1"
+            );
+        }
+    }
 }
