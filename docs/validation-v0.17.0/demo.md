@@ -60,6 +60,9 @@ in `<scratch>/tmp`); `bzz paths` named only `<scratch>/home`.
 | The same on screen | tmux, debug build, 160×45 | scenario `t17-demo-huddle` | passed: the strip `🎧 ⣀…⣶ Ada · mic muted` in `#infra`'s status line, the panel's title `a generated recording · Esc`, the microphone line `a recording · no microphone is open, nothing is sent`, `j` → `Demo: the huddle is a recording to look at.` |
 | No sound device is opened | strace | `strace -f -e trace=openat,connect bzz demo`, then `#infra`, `:huddle`, `j`, `m`, quit | the only sound file opened is `libasound.so.2` by the loader at start (the link E1 removes); no `/dev/snd`, PulseAudio or PipeWire socket. Every `inet` connect is to 127.0.0.1 |
 
+| After the merge, on the release binary | tmux; PTY in a namespace | the three `t17-demo-*` scenarios, three times; `demo_offline_test` with `BZZ_DEMO_BIN`, five times | `3 of 3 scenarios passed` each time (once the mention waits a second after Ada's answer: two messages of one second sort by id); full first screen in 0.169, 0.144, 0.130, 0.127, 0.126 s. The merged binary is 31 989 216 bytes, viz's work included; this task's own delta was measured before the merge (+277 888) |
+| The gates, on the merged branch | — | `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo build --locked --example scripted_harness`, `cargo test --locked --all-targets`, `cargo test --locked --no-default-features --lib` | all green; 1 662 tests passed, 0 failed |
+
 Captures, read as a newcomer: `<scratch>/first-screen-80x24.txt`,
 `first-screen-join-80x24.txt`, `first-screen-160x45.txt`,
 `first-screen-import-160x45.txt`, `demo-160x45-first.txt`,

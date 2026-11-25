@@ -2482,9 +2482,11 @@ visible = "Welcome aboard"
 timeout = 5000
 
 # The mention picker knows Scout as an agent; after the message, Scout
-# shows as typing, then answers in the thread of the mention.
+# shows as typing, then answers in the thread of the mention. A second
+# after Ada's answer, so that the mention is the newest message (the
+# timeline orders by second).
 [[scenario.step]]
-pause = 300
+pause = 1100
 keys = ["i", "type:@Sco"]
 visible = "◆ remote agent · eligible"
 
