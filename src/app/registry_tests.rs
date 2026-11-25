@@ -115,6 +115,64 @@ async fn tab_completes_the_command_line_and_shows_what_it_offers() {
     );
 }
 
+/// C8: a key a person binds in `keymap.toml` shows in the help, the leader
+/// panel, the palette and the footer, which all read the registry and the
+/// live key map.
+#[test]
+fn a_users_binding_shows_in_the_help_the_leader_panel_the_palette_and_the_footer() {
+    use crate::ui::{
+        action_table::FooterContext,
+        keymap::{KeyChord, KeyMap, KeyScope, UiAction},
+    };
+    let temporary = TempDir::new().unwrap();
+    let path = temporary.path().join("keymap.toml");
+    std::fs::write(
+        &path,
+        "[[binding]]\nkeys = ['r']\ndisabled = true\n\
+         [[binding]]\nkeys = ['x']\naction = 'react'\n\
+         [[binding]]\nkeys = ['space', 'x']\naction = 'react'\n",
+    )
+    .unwrap();
+    let keymap = KeyMap::load_from(&path).unwrap();
+    let scope = KeyScope::Workspace;
+    // The help: the row "React to message" with both keys, `r` disabled.
+    let help = crate::ui::help::help_lines(&keymap, scope, &[], 120).join("\n");
+    assert!(
+        help.lines()
+            .any(|line| line.contains("x, Space x") && line.ends_with("React to message")),
+        "{help}"
+    );
+    assert!(
+        !help
+            .lines()
+            .any(|line| line.trim_start().starts_with("r ") && line.contains("React")),
+        "{help}"
+    );
+    // The leader panel: Space x is there with the row's title.
+    let space = KeyChord::new(KeyCode::Char(' '), KeyModifiers::NONE);
+    let (_, lines) = crate::ui::help::leader_panel(
+        &keymap,
+        scope,
+        &[space],
+        ratatui::layout::Rect::new(0, 0, 80, 23),
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("x       React to message")),
+        "{lines:?}"
+    );
+    // The palette's key column.
+    assert_eq!(
+        crate::ui::palette::key_label(&keymap, scope, UiAction::React),
+        "x"
+    );
+    // The footer.
+    let keys = crate::ui::status::footer_keys(&keymap, FooterContext::Message, |_| true);
+    assert!(keys.contains(&("x".to_owned(), "react")), "{keys:?}");
+    assert!(!keys.iter().any(|(key, _)| key == "r"), "{keys:?}");
+}
+
 /// C10: the status line's hint follows the focus: the channels, the empty
 /// timeline, the Inbox, an overlay.
 #[tokio::test]

@@ -1703,6 +1703,32 @@ pub fn by_id(id: &str) -> Option<(usize, &'static ActionSpec)> {
     TABLE.iter().enumerate().find(|(_, spec)| spec.id == id)
 }
 
+/// The row that says what `action` is: the first that runs it, else the
+/// first that shows its key (C8: the leader panel and the help read it).
+pub fn row_of(action: UiAction) -> Option<&'static ActionSpec> {
+    TABLE
+        .iter()
+        .find(|spec| spec.run == Run::Ui(action))
+        .or_else(|| TABLE.iter().find(|spec| spec.key_of == Some(action)))
+}
+
+/// The palette's groups in the order the help lists them.
+pub const GROUPS: [Group; 13] = [
+    Group::Message,
+    Group::Go,
+    Group::View,
+    Group::Inbox,
+    Group::Channel,
+    Group::Huddle,
+    Group::Apps,
+    Group::Agents,
+    Group::Me,
+    Group::Community,
+    Group::Bzz,
+    Group::Writing,
+    Group::Shell,
+];
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

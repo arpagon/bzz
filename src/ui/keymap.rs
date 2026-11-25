@@ -438,6 +438,15 @@ impl KeyMap {
         keymap
     }
 
+    /// A sequence as the registry's rows write it (`["space", "n"]`), for
+    /// the generated documents.
+    pub fn written_sequence(keys: &[&str]) -> Option<KeySequence> {
+        keys.iter()
+            .map(|key| KeyChord::parse(key).ok())
+            .collect::<Option<Vec<_>>>()
+            .map(KeySequence)
+    }
+
     /// The built-in key map: [`KeyMap::generated`]. v0.16.0's hand-written
     /// list was compared with it binding for binding before it was removed
     /// (docs/validation-v0.17.0/registry.md); `tests/v016_pins_test.rs`

@@ -12442,11 +12442,14 @@ impl App {
                 hit_map.push(row, HitTarget::ActionMenu(entry.action));
             }
         }
+        // v0.17 C8: the registry's titles, with the live key of each.
+        let scope = if self.presentation.route == Route::Inbox {
+            KeyScope::Inbox
+        } else {
+            KeyScope::Workspace
+        };
         let items = entries.iter().map(|entry| {
-            let text = match entry.reason {
-                Some(reason) => format!("{} — {reason}", entry.label),
-                None => entry.label.to_owned(),
-            };
+            let text = crate::ui::actions::menu_line(entry, &self.keymap, scope);
             ListItem::new(text).style(self.theme.style(if entry.enabled {
                 HighlightGroup::Normal
             } else {
@@ -17012,7 +17015,8 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(text.contains("leader"));
-        assert!(text.contains("open Inbox"));
+        // v0.17 C8: the registry's title.
+        assert!(text.contains("Open Inbox"));
     }
 
     #[tokio::test]

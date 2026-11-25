@@ -359,17 +359,19 @@ async fn the_leader_panel_waits_300_ms_and_asks_for_one_frame() {
     for (width, height) in [(80, 24), (120, 32)] {
         let screen = rows(&mut app, width, height).join("\n");
         for label in [
-            "channel / DM switcher",
-            "contextual actions",
-            "cycle channel sort",
-            "open Inbox",
-            "options / theme",
-            "view author profile",
-            "refresh",
-            "zoom the app",
-            "toggle communities",
-            "toggle channels",
-            "toggle context",
+            // v0.17 C8: the registry's titles.
+            "Go to channel or DM",
+            "Actions for the selected item",
+            "Cycle channel sort",
+            "Open Inbox",
+            "Change theme…",
+            "View author profile",
+            "Refresh",
+            "Zoom the app",
+            "Show or hide communities",
+            "Show or hide channels",
+            "Show or hide thread pane",
+            "Find any action",
             "Esc cancels",
         ] {
             assert!(
@@ -425,13 +427,13 @@ async fn d_on_another_persons_message_says_why_not() {
     app.timeline.selected_event = Some("e1".into());
     assert_eq!(
         app.context_refusal(UiAction::Delete).as_deref(),
-        Some("delete own message: only your own message can be deleted")
+        Some("Delete my message: only your own message can be deleted")
     );
     // Without a selected message.
     app.timeline.selected_event = None;
     assert_eq!(
         app.context_refusal(UiAction::Delete).as_deref(),
-        Some("delete own message: select a message first")
+        Some("Delete my message: select a message first")
     );
     // Not in the conversation.
     app.presentation.set_workspace_focus(FocusSurface::Channels);

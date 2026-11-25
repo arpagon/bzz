@@ -43,11 +43,11 @@ action = "open-inbox"
 keys = ["z", "i"]
 visible = "Welcome to bzz"
 
-# `U` (mark unread) is bound only in the Inbox scope, and it fits a 40-row
-# pane; the longer Inbox list continues below the fold.
+# The help lists the registry's rows with the live keys: the custom
+# sequence shows beside the default on "Open Inbox" (v0.17 C8).
 [[scenario.step]]
 keys = ["shift+?"]
-visible = "mark unread"
+visible = "Space n, z i"
 
 [[scenario.step]]
 keys = ["esc"]
@@ -3062,23 +3062,23 @@ exit = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario.step]]
 keys = ["space"]
-visible = 'Space · next key(.|\n)*cycle channel sort(.|\n)*Esc cancels'
+visible = 'Space · next key(.|\n)*Cycle channel sort(.|\n)*Esc cancels'
 regex = true
 
 [[scenario.step]]
 pause = 1500
 keys = []
-visible = "cycle channel sort"
+visible = "Cycle channel sort"
 
 [[scenario.step]]
 keys = ["esc"]
 visible = "Welcome to bzz"
-absent = "cycle channel sort"
+absent = "Cycle channel sort"
 
 [[scenario.step]]
 size = "120x32"
 keys = ["space"]
-visible = 'Space · next key(.|\n)*cycle channel sort(.|\n)*Esc cancels'
+visible = 'Space · next key(.|\n)*Cycle channel sort(.|\n)*Esc cancels'
 regex = true
 
 [[scenario.step]]
@@ -3144,7 +3144,7 @@ visible = "t17 delete me"
 [[scenario.step]]
 pause = 2000
 keys = ["3", "g", "g", "d"]
-visible = "delete own message: only your own message can be deleted"
+visible = "Delete my message: only your own message can be deleted"
 
 [[scenario.step]]
 keys = ["G", "d"]

@@ -586,7 +586,7 @@ pub fn key_label(keymap: &KeyMap, scope: KeyScope, action: UiAction) -> String {
         .unwrap_or_default()
 }
 
-fn sequence_label(sequence: &KeySequence) -> String {
+pub fn sequence_label(sequence: &KeySequence) -> String {
     sequence
         .chords()
         .iter()
