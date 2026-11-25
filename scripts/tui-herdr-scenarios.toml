@@ -2408,10 +2408,10 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t17-sound-call"
 kind = "harness"
-description = "v0.17 E1: the first profile starts a huddle in #t9-general and unmutes; the second joins it; both hold the call for a few seconds, then leave and quit."
+description = "v0.17 E1: the first profile saves an ALSA microphone name as v0.16.0 did, starts a huddle in #t9-general (the default device opens and the join says once which name was not found) and unmutes; the second joins it; both hold the call for a few seconds, then leave, and the saved name is cleared."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
-size = "120x30"
+size = "160x45"
 beside = "second"
 
 [[scenario.step]]
@@ -2422,6 +2422,11 @@ visible = "channel finder"
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
 visible = "Generated custom emoji"
 
+# A name from ALSA's own list, as v0.16.0 saved it; no such card here.
+[[scenario.step]]
+keys = [":", "type:huddle input hw:CARD=PCH,DEV=0", "enter"]
+visible = "huddle input device saved; it applies on the next join"
+
 [[scenario.step]]
 keys = [":", "h", "u", "d", "d", "l", "e", "space", "s", "t", "a", "r", "t", "enter"]
 visible = "start a huddle?"
@@ -2430,6 +2435,10 @@ visible = "start a huddle?"
 keys = ["y"]
 visible = "you are in the call · muted"
 timeout = 20000
+
+[[scenario.step]]
+keys = []
+visible = 'saved input device "hw:CARD=PCH,DEV=0" not found; using the default'
 
 [[scenario.step]]
 keys = ["m"]
@@ -2491,6 +2500,10 @@ visible = "you are not in the call"
 [[scenario.step]]
 keys = ["esc"]
 visible = "online"
+
+[[scenario.step]]
+keys = [":", "type:huddle input", "enter"]
+visible = "huddle input device saved"
 
 [[scenario.step]]
 keys = ["q"]
