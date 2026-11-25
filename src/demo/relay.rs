@@ -163,6 +163,13 @@ impl Relay {
         let _ = self.inner.live.send(event);
     }
 
+    /// Something a generated teammate says by itself, now (the demo's
+    /// Board, when a teammate moves a card).
+    #[cfg_attr(not(feature = "apps"), allow(dead_code))]
+    pub fn post(&self, event: Event) {
+        self.accept(event);
+    }
+
     /// The viewer wrote: the script answers, each answer when it is due.
     fn answer(&self, event: &Event) {
         let replies = self.state().script.answer(event);

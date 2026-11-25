@@ -51,6 +51,8 @@ pub struct World {
     pub relay_keys: Keys,
     pub viewer: Keys,
     pub team: Uuid,
+    /// `#launch`, where the Board is open.
+    pub launch: Uuid,
     pub script: Script,
 }
 
@@ -107,6 +109,12 @@ impl Pen {
         let builder = buzz_sdk::build_reaction(target.id, emoji).expect("a demo reaction");
         self.sign(who, builder, minutes_ago);
     }
+}
+
+/// A message of `who` in `channel`, signed now.
+#[cfg_attr(not(feature = "apps"), allow(dead_code))]
+pub fn say_now(who: &Keys, channel: Uuid, text: &str) -> Option<Event> {
+    message(channel, text, None, &[]).sign_with_keys(who).ok()
 }
 
 /// A kind-9 message, in a thread under `root` when given.
@@ -311,6 +319,12 @@ pub fn build(origin: &str) -> World {
         290,
         "The blog post draft is ready for review.",
     );
+    pen.say(
+        &cast.ada,
+        launch,
+        25,
+        "The launch plan is on our Board now: `5` opens it, `n` adds a card, `]` moves the selected one on.",
+    );
 
     // #team: the first screen.
     pen.say(
@@ -425,6 +439,8 @@ pub fn build(origin: &str) -> World {
         viewer: viewer.public_key(),
         cast,
         said: 0,
+        #[cfg(feature = "apps")]
+        board: None,
     };
     World {
         events: pen.events,
@@ -432,18 +448,19 @@ pub fn build(origin: &str) -> World {
         relay_keys,
         viewer,
         team,
+        launch,
         script,
     }
 }
 
 /// Ada's welcome, the newest message of `#team`: what this is, and three
 /// things to try.
-pub const WELCOME: &str = "@You welcome to the team! Everything here is generated and stays in this terminal. Three things to try:\n1. `k` up to my checklist, then `Enter` opens its thread\n2. `/` searches: try rollback\n3. `i` writes a message: mention @Scout and our agent answers";
+pub const WELCOME: &str = "@You welcome to the team! Everything here is generated and stays in this terminal. Three things to try:\n1. `k` up to my checklist, then `Enter` opens its thread\n2. `/` searches: try rollback\n3. `i` writes a message: mention @Scout and our agent answers\nThen our Board in #launch: `5` opens it, `n` adds a card, `]` moves it on. Or ask: @Scout add Ship party";
 
 /// How long Scout "types" before it answers, and a teammate's pause.
 const SCOUT_TYPES_AFTER: Duration = Duration::from_millis(500);
 const SCOUT_ANSWERS_AFTER: Duration = Duration::from_millis(2_500);
-const TEAMMATE_ANSWERS_AFTER: Duration = Duration::from_millis(1_500);
+const TEAMMATE_ANSWERS_AFTER: Duration = Duration::from_millis(2_000);
 
 /// The scripted answers: a teammate where the viewer writes, Lin in the DM,
 /// and Scout in a thread whenever it is mentioned. A few, then the team
@@ -454,6 +471,9 @@ pub struct Script {
     viewer: PublicKey,
     cast: Cast,
     said: usize,
+    /// The demo's Board, where Scout adds and moves cards when asked.
+    #[cfg(feature = "apps")]
+    board: Option<(crate::apps::session::SharedStore, crate::apps::runtime::Who)>,
 }
 
 impl Script {
@@ -488,7 +508,7 @@ impl Script {
                 ),
                 (
                     SCOUT_ANSWERS_AFTER,
-                    Reply::message(&self.cast.scout, channel, SCOUT_ANSWER, Some(root)),
+                    self.scout_answers(event, channel, root).answering(event),
                 ),
             ];
         }
@@ -509,12 +529,38 @@ impl Script {
         };
         vec![(
             TEAMMATE_ANSWERS_AFTER,
-            Reply::message(who, channel, text, root),
+            Reply::message(who, channel, text, root).answering(event),
         )]
+    }
+
+    /// Scout's answer in the thread: what it did on the Board when it was
+    /// asked to, or what it says to anything else.
+    fn scout_answers(&self, event: &Event, channel: Uuid, root: EventId) -> Reply {
+        #[cfg(feature = "apps")]
+        if let Some((store, scout)) = &self.board
+            && let Some(asked) = super::board::ask(&event.content)
+        {
+            let (store, scout) = (store.clone(), scout.clone());
+            return Reply::message_later(&self.cast.scout, channel, Some(root), move || {
+                super::board::scout(&store, &scout, &asked)
+            });
+        }
+        let _ = event;
+        Reply::message(&self.cast.scout, channel, SCOUT_ANSWER, Some(root))
+    }
+
+    /// The Board's cards, for Scout to add and move them as `scout`.
+    #[cfg(feature = "apps")]
+    pub fn set_board(
+        &mut self,
+        store: crate::apps::session::SharedStore,
+        scout: crate::apps::runtime::Who,
+    ) {
+        self.board = Some((store, scout));
     }
 }
 
-pub const SCOUT_ANSWER: &str = "Hi, I'm Scout, Ada's agent, with scripted answers in this demo. In your own community an agent like me runs where its owner says, answers in a thread like this one, and does only what it is allowed. You can make one with bzz agent new.";
+pub const SCOUT_ANSWER: &str = "Hi, I'm Scout, Ada's agent, with scripted answers in this demo. In your own community an agent like me runs where its owner says, answers in a thread like this one, and does only what it is allowed. You can make one with bzz agent new. Here I can also add or move a card on the Board in #launch: @Scout add Ship party.";
 const ADA_ANSWERS: &str = "Welcome aboard 👋 What you write stays here until you leave the demo.";
 const SAM_ANSWERS: &str = "Try :theme to change the colours, or Space for more.";
 const LIN_ANSWERS: &str = "Mention @Scout and watch the thread.";
@@ -525,17 +571,52 @@ const SAM_ELSEWHERE: &str = "Seen 👍 (a scripted answer: the demo has no netwo
 /// One answer of the script, signed when it is due.
 pub struct Reply {
     keys: Keys,
-    builder: EventBuilder,
+    body: Body,
     /// Dated this much earlier than it is sent.
     earlier: Duration,
+    /// An answer: never dated before this second (the one after the
+    /// message it answers), and otherwise a second before it is sent.
+    after: Option<u64>,
+}
+
+enum Body {
+    Ready(EventBuilder),
+    /// A message whose words are found when it is due: what Scout says
+    /// after it did something on the Board.
+    Later {
+        channel: Uuid,
+        root: Option<EventId>,
+        words: Box<dyn FnOnce() -> String + Send>,
+    },
 }
 
 impl Reply {
     fn message(keys: &Keys, channel: Uuid, text: &str, root: Option<EventId>) -> Self {
         Self {
             keys: keys.clone(),
-            builder: message(channel, text, root, &[]),
+            body: Body::Ready(message(channel, text, root, &[])),
             earlier: Duration::ZERO,
+            after: None,
+        }
+    }
+
+    /// A message whose words `words` gives when it is due.
+    #[cfg_attr(not(feature = "apps"), allow(dead_code))]
+    fn message_later(
+        keys: &Keys,
+        channel: Uuid,
+        root: Option<EventId>,
+        words: impl FnOnce() -> String + Send + 'static,
+    ) -> Self {
+        Self {
+            keys: keys.clone(),
+            body: Body::Later {
+                channel,
+                root,
+                words: Box::new(words),
+            },
+            earlier: Duration::ZERO,
+            after: None,
         }
     }
 
@@ -551,8 +632,9 @@ impl Reply {
         .unwrap_or_else(|| EventBuilder::new(Kind::Custom(20_002), ""));
         Self {
             keys: keys.clone(),
-            builder,
+            body: Body::Ready(builder),
             earlier: Duration::ZERO,
+            after: None,
         }
     }
 
@@ -564,10 +646,32 @@ impl Reply {
         self
     }
 
+    /// An answer to `event`: the timeline orders messages by the second,
+    /// and two of one second by id, so an answer is dated at least a
+    /// second after what it answers. It is dated a second before it is
+    /// sent when it can be, so that what the person writes after reading
+    /// it comes after it too.
+    fn answering(mut self, event: &Event) -> Self {
+        self.after = Some(event.created_at.as_secs().saturating_add(1));
+        self
+    }
+
     pub fn sign(self) -> Option<Event> {
         let now = Timestamp::now().as_secs();
-        self.builder
-            .custom_created_at(Timestamp::from(now.saturating_sub(self.earlier.as_secs())))
+        let mut at = now.saturating_sub(self.earlier.as_secs());
+        if let Some(after) = self.after {
+            at = at.saturating_sub(1).max(after);
+        }
+        let builder = match self.body {
+            Body::Ready(builder) => builder,
+            Body::Later {
+                channel,
+                root,
+                words,
+            } => message(channel, &words(), root, &[]),
+        };
+        builder
+            .custom_created_at(Timestamp::from(at))
             .sign_with_keys(&self.keys)
             .ok()
     }

@@ -12,6 +12,8 @@
 //! folder left by a demo that was killed outright is removed by the next
 //! one.
 
+#[cfg(feature = "apps")]
+pub mod board;
 mod relay;
 pub mod world;
 
@@ -38,14 +40,22 @@ pub const STATUS_MARK: &str = "DEMO · generated, offline";
 /// The name of the demo's community in the rail.
 pub const COMMUNITY_LABEL: &str = "DEMO";
 
+/// The demo's notices are short: each is shown whole in the status line
+/// of an 80-column terminal, beside the demo's mark and the hint.
+pub const NOTICE_COLUMNS: usize = 24;
+
 /// What the demo answers where a real community is needed.
-pub const NEEDS_A_COMMUNITY: &str = "Demo only: quit and run bzz to join a real community.";
+pub const NEEDS_A_COMMUNITY: &str = "Demo: needs a community.";
 
 /// Joining or starting a huddle: nothing is opened, no device is touched.
-pub const HUDDLE_IS_A_RECORDING: &str = "Demo: the huddle is a recording to look at.";
+pub const HUDDLE_IS_A_RECORDING: &str = "Demo: a recorded huddle.";
 
-/// `:apps` and `:app`, until the demo has its Board (plan A2).
-pub const NO_APPS_YET: &str = "Demo: the Board comes in a later version.";
+/// `:apps` and `:app` in a bzz built without apps.
+pub const NO_APPS_YET: &str = "Demo: apps not built in.";
+
+/// Proposing, sharing, approving or changing an app: the demo's Board is
+/// installed and approved already, and nothing else is.
+pub const APPS_NEED_A_COMMUNITY: &str = "Demo: only the Board.";
 
 const FOLDER_PREFIX: &str = "bzz-demo-";
 
@@ -61,7 +71,15 @@ pub fn refuses(command: &Command) -> Option<&'static str> {
         | Command::Broker
         | Command::Agent(_) => Some(NEEDS_A_COMMUNITY),
         Command::Agents(which) if which == "local" => Some(NEEDS_A_COMMUNITY),
+        #[cfg(not(feature = "apps"))]
         Command::Apps | Command::App(_) => Some(NO_APPS_YET),
+        // The Board opens, closes, zooms and posts its brief as anywhere;
+        // nothing else of `:app` is the demo's.
+        #[cfg(feature = "apps")]
+        Command::App(arguments) => {
+            let verb = arguments.split_whitespace().next().unwrap_or_default();
+            (!matches!(verb, "open" | "close" | "zoom" | "brief")).then_some(APPS_NEED_A_COMMUNITY)
+        }
         Command::Huddle(arguments) => {
             let verb = arguments.split_whitespace().next().unwrap_or_default();
             matches!(
@@ -105,12 +123,36 @@ pub async fn run() -> Result<()> {
         .map_err(|error| Error::io("demo relay", error))?
         .port();
     let token = hex::encode(rand::random::<[u8; 16]>());
-    let world = world::build(&format!("http://127.0.0.1:{port}"));
+    #[cfg_attr(not(feature = "apps"), allow(unused_mut))]
+    let mut world = world::build(&format!("http://127.0.0.1:{port}"));
     let viewer = world.viewer.clone();
     let seed = world.events.clone();
     let team = world.team;
+    #[cfg(feature = "apps")]
+    let launch = world.launch;
+    // The Board's cards, in memory: Scout writes on them from the relay's
+    // script, the person and the teammates from bzz's window.
+    #[cfg(feature = "apps")]
+    let people = {
+        let cast = world::Cast::default();
+        let who = |keys: &nostr::Keys, name: &str| {
+            crate::apps::runtime::Who::new(keys.public_key().to_hex(), name)
+        };
+        board::People {
+            viewer: who(&viewer, "You"),
+            ada: who(&cast.ada, "Ada"),
+            lin: who(&cast.lin, "Lin"),
+            sam: who(&cast.sam, "Sam"),
+            scout: who(&cast.scout, "Scout"),
+        }
+    };
+    #[cfg(feature = "apps")]
+    let cards = board::records(&people);
+    #[cfg(feature = "apps")]
+    world.script.set_board(cards.clone(), people.scout.clone());
     let relay_pubkey = world.relay_keys.public_key().to_hex();
-    relay::Relay::new(world, token.clone()).serve(listener);
+    let relay = relay::Relay::new(world, token.clone());
+    relay.clone().serve(listener);
 
     let paths = scratch.paths();
     paths.ensure()?;
@@ -140,8 +182,11 @@ pub async fn run() -> Result<()> {
         let _ = store.apply_event(community, event);
     }
     store.reconcile_remote_agents(community)?;
+    #[cfg(feature = "apps")]
+    board::install(&mut store, &paths, community, launch)?;
     let store = StoreHandle::spawn(store)?;
-    let outcome = App::new_demo(
+    #[cfg_attr(not(feature = "apps"), allow(unused_mut))]
+    let mut app = App::new_demo(
         config,
         paths,
         store,
@@ -149,9 +194,24 @@ pub async fn run() -> Result<()> {
         &format!("/{token}/"),
         team,
     )
-    .await?
-    .run()
-    .await;
+    .await?;
+    #[cfg(feature = "apps")]
+    {
+        // A teammate who moves a card says so in `#launch`.
+        let cast = world::Cast::default();
+        let say = move |who: &crate::apps::runtime::Who, text: &str| {
+            let keys = [&cast.ada, &cast.lin, &cast.sam]
+                .into_iter()
+                .find(|keys| keys.public_key().to_hex() == who.id);
+            if let Some(event) = keys.and_then(|keys| world::say_now(keys, launch, text)) {
+                relay.post(event);
+            }
+        };
+        app.set_demo_board(board::DemoBoard::new(cards, people).announcing(say));
+    }
+    #[cfg(not(feature = "apps"))]
+    drop(relay);
+    let outcome = app.run().await;
     drop(scratch);
     outcome
 }
