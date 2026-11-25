@@ -1,0 +1,23 @@
+ 4 in the call · Sam is speaking
+  A  Ada       ▄▁▁ ▁ ▁ ▁ ▃▅▄▅▆▆▅▃▁ ▁ ▁ ▁
+     2s ago    ▀▔        ▔▀▀▀▀▀▀▔
+  L  Lin       ▁ ▅▅▅▅▅▅▅▅▅▄▅▅▅▁▁ ▁ ▁ ▁ ▁
+     2s ago      ▀▀▀▀▀▀▀▀▀▀▀▀▀▔
+ ▐S▌ Sam       ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▄▄▄▄▅▄
+ ▐ ▌ ● live                        ▀▀▀▀▀▀
+  Y  You       ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁▄▄▄▃▁▁ ▁
+     muted                      ▀▀▀▔▔
+ mic muted · nobody hears you
+
+
+--- styles ---
+0: 1-31 Rgb(138, 214, 74)/Reset/BOLD
+1: 2-2 Rgb(20, 17, 13)/Rgb(80, 148, 148)/BOLD 15-16 Rgb(99, 121, 121)/Reset/NONE 17-24 Rgb(108, 108, 108)/Reset/DIM 25-25 Rgb(96, 125, 125)/Reset/NONE 26-26 Rgb(93, 130, 130)/Reset/NONE 27-27 Rgb(89, 134, 134)/Reset/NONE 28-28 Rgb(86, 139, 139)/Reset/NONE 29-29 Rgb(83, 144, 144)/Reset/NONE 30-30 Rgb(79, 149, 149)/Reset/NONE 31-31 Rgb(76, 153, 153)/Reset/NONE 32-32 Rgb(73, 158, 158)/Reset/NONE 33-40 Rgb(108, 108, 108)/Reset/DIM
+2: 2-2 Rgb(20, 17, 13)/Rgb(80, 148, 148)/BOLD 5-10 Rgb(108, 108, 108)/Reset/NONE 15-16 Rgb(99, 121, 121)/Reset/NONE 25-25 Rgb(96, 125, 125)/Reset/NONE 26-26 Rgb(93, 130, 130)/Reset/NONE 27-27 Rgb(89, 134, 134)/Reset/NONE 28-28 Rgb(86, 139, 139)/Reset/NONE 29-29 Rgb(83, 144, 144)/Reset/NONE 30-30 Rgb(79, 149, 149)/Reset/NONE 31-31 Rgb(76, 153, 153)/Reset/NONE 32-32 Rgb(73, 158, 158)/Reset/NONE
+3: 2-2 Rgb(20, 17, 13)/Rgb(153, 115, 160)/BOLD 15-16 Rgb(108, 108, 108)/Reset/DIM 17-24 Rgb(123, 110, 125)/Reset/NONE 25-25 Rgb(127, 111, 130)/Reset/NONE 26-26 Rgb(133, 112, 137)/Reset/NONE 27-27 Rgb(138, 113, 143)/Reset/NONE 28-28 Rgb(143, 114, 149)/Reset/NONE 29-29 Rgb(149, 115, 155)/Reset/NONE 30-30 Rgb(154, 115, 162)/Reset/NONE 31-40 Rgb(108, 108, 108)/Reset/DIM
+4: 2-2 Rgb(20, 17, 13)/Rgb(153, 115, 160)/BOLD 5-10 Rgb(108, 108, 108)/Reset/NONE 17-24 Rgb(123, 110, 125)/Reset/NONE 25-25 Rgb(127, 111, 130)/Reset/NONE 26-26 Rgb(133, 112, 137)/Reset/NONE 27-27 Rgb(138, 113, 143)/Reset/NONE 28-28 Rgb(143, 114, 149)/Reset/NONE 29-29 Rgb(149, 115, 155)/Reset/NONE 30-30 Rgb(154, 115, 162)/Reset/NONE
+5: 1-1 Rgb(138, 214, 74)/Reset/NONE 2-2 Rgb(20, 17, 13)/Rgb(138, 214, 74)/BOLD 3-3 Rgb(138, 214, 74)/Reset/NONE 5-7 Rgb(138, 214, 74)/Reset/BOLD 15-34 Rgb(108, 108, 108)/Reset/DIM 35-35 Rgb(130, 185, 83)/Reset/NONE 36-36 Rgb(132, 191, 81)/Reset/NONE 37-37 Rgb(133, 197, 79)/Reset/NONE 38-38 Rgb(135, 203, 78)/Reset/NONE 39-39 Rgb(136, 208, 76)/Reset/NONE 40-40 Rgb(138, 214, 74)/Reset/NONE
+6: 1-1 Rgb(138, 214, 74)/Reset/NONE 2-2 Rgb(20, 17, 13)/Rgb(138, 214, 74)/BOLD 3-3 Rgb(138, 214, 74)/Reset/NONE 5-10 Rgb(138, 214, 74)/Reset/NONE 35-35 Rgb(130, 185, 83)/Reset/NONE 36-36 Rgb(132, 191, 81)/Reset/NONE 37-37 Rgb(133, 197, 79)/Reset/NONE 38-38 Rgb(135, 203, 78)/Reset/NONE 39-39 Rgb(136, 208, 76)/Reset/NONE 40-40 Rgb(138, 214, 74)/Reset/NONE
+7: 2-2 Rgb(255, 255, 255)/Rgb(108, 108, 108)/BOLD 15-31 Rgb(108, 108, 108)/Reset/DIM 32-36 Rgb(108, 108, 108)/Reset/NONE 37-40 Rgb(108, 108, 108)/Reset/DIM
+8: 2-2 Rgb(255, 255, 255)/Rgb(108, 108, 108)/BOLD 5-9 Rgb(108, 108, 108)/Reset/NONE 32-36 Rgb(108, 108, 108)/Reset/NONE
+9: 1-28 Rgb(108, 108, 108)/Reset/NONE

@@ -1,0 +1,3 @@
+ NORMAL  🎧  ⣀⣀⣀⣀⣀⣀⣀⣴⣤⣴⣶⣶ Ada · mic muted         online  SIXEL  ? help · q quit
+--- styles ---
+0: 0-7 White/DarkGray/NONE 8-9 Black/Yellow/BOLD 11-11 Black/Yellow/BOLD 12-18 Rgb(108, 108, 108)/Yellow/BOLD | DIM 19-19 Rgb(75, 155, 155)/Yellow/BOLD 20-20 Rgb(68, 165, 165)/Yellow/BOLD 21-21 Rgb(60, 175, 175)/Yellow/BOLD 22-22 Rgb(53, 186, 186)/Yellow/BOLD 23-23 Rgb(46, 196, 196)/Yellow/BOLD 24-24 Black/Yellow/BOLD 25-27 Rgb(46, 196, 196)/Yellow/BOLD 28-39 Rgb(108, 108, 108)/Yellow/BOLD 40-40 Black/Yellow/BOLD 41-47 White/DarkGray/NONE 48-55 Black/Cyan/NONE 56-62 White/Black/NONE 63-79 White/DarkGray/NONE

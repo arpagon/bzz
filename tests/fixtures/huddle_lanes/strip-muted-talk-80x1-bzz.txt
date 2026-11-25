@@ -1,0 +1,3 @@
+ NORMAL  🎧  ⣶⣴⣶⣶⣦⣶⣶⣶⣶⣤⣀⣀ quiet · you're muted    online  SIXEL  ? help · q quit
+--- styles ---
+0: 0-7 White/DarkGray/NONE 8-9 Black/Yellow/BOLD 11-11 Black/Yellow/BOLD 12-15 Rgb(123, 110, 125)/Yellow/BOLD 16-16 Rgb(97, 124, 124)/Yellow/BOLD 17-17 Rgb(89, 134, 134)/Yellow/BOLD 18-18 Rgb(82, 145, 145)/Yellow/BOLD 19-19 Rgb(75, 155, 155)/Yellow/BOLD 20-20 Rgb(68, 165, 165)/Yellow/BOLD 21-21 Rgb(60, 175, 175)/Yellow/BOLD 22-22 Rgb(53, 186, 186)/Yellow/BOLD 23-23 Rgb(108, 108, 108)/Yellow/BOLD | DIM 24-24 Black/Yellow/BOLD 25-32 Rgb(108, 108, 108)/Yellow/BOLD 33-44 Rgb(229, 192, 16)/Yellow/BOLD | REVERSED 45-45 Black/Yellow/BOLD 46-47 White/DarkGray/NONE 48-55 Black/Cyan/NONE 56-62 White/Black/NONE 63-79 White/DarkGray/NONE

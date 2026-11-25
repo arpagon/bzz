@@ -485,6 +485,9 @@ pub struct App {
     huddle_ptt_until: Option<Instant>,
     #[cfg(feature = "huddles-audio")]
     huddle_call: Option<HuddleCall>,
+    /// The visualizer (plan v0.17.0 B): levels read each frame, drawn and
+    /// forgotten; cleared when the call stops.
+    huddle_viz: HuddleViz,
     broker_attempted: Option<Uuid>,
     artifact_caps_requested: Option<Uuid>,
     artifact_sync: Option<ArtifactSync>,
@@ -662,6 +665,58 @@ impl BrokerRuntime {
             signer.lock().await;
         }
     }
+}
+
+/// What the huddle visualizer keeps between frames.
+struct HuddleViz {
+    meter: crate::huddle::meter::Meter,
+    pacer: crate::huddle::meter::Pacer,
+    epoch: Instant,
+    look: crate::ui::huddle_lanes::Look,
+    /// The other people of the call, named, in roster order.
+    people: Vec<crate::ui::huddle_lanes::Person>,
+    muted: bool,
+    on: bool,
+    /// A generated huddle (the demo's, and tests'): levels with no sound
+    /// device, relay or voice behind them.
+    generated: Option<GeneratedHuddle>,
+}
+
+/// Generated levels and the names they speak as.
+struct GeneratedHuddle {
+    source: crate::huddle::synth::Synthetic,
+    /// Relay-style index and public key of each generated person.
+    people: Vec<(u8, String)>,
+    muted: bool,
+}
+
+impl Default for HuddleViz {
+    fn default() -> Self {
+        Self {
+            meter: crate::huddle::meter::Meter::default(),
+            pacer: crate::huddle::meter::Pacer::default(),
+            epoch: Instant::now(),
+            look: crate::ui::huddle_lanes::Look::from_env(),
+            people: Vec::new(),
+            muted: true,
+            on: false,
+            generated: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for HuddleViz {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("HuddleViz { .. }")
+    }
+}
+
+/// What feeds the visualizer: a source of levels and the people it names.
+struct HuddleFeed {
+    levels: std::sync::Arc<crate::huddle::levels::Levels>,
+    /// Relay index and public key of everyone else in the call.
+    people: Vec<(u8, String)>,
+    muted: bool,
 }
 
 /// A joined huddle call: audio engine plus the devices it owns. Dropping it
@@ -997,6 +1052,7 @@ impl App {
             huddle_ptt_until: None,
             #[cfg(feature = "huddles-audio")]
             huddle_call: None,
+            huddle_viz: HuddleViz::default(),
             broker_attempted: None,
             local_agents: None,
             local_agents_attempted: None,
@@ -1155,6 +1211,7 @@ impl App {
                     }
                 },
                 _=frame_tick.tick()=>{
+                    redraw.request_if(self.tick_huddle_viz());
                     if redraw.take() {
                         // What the apps produced is taken before the frame
                         // that shows them.
@@ -4207,6 +4264,141 @@ impl App {
         {
             None
         }
+    }
+
+    /// SEAM (agent `demo`, plan A3): the demo's generated huddle feeds the
+    /// visualizer here, with `crate::huddle::synth::Synthetic` behind the same
+    /// levels: `set_generated_huddle`. A joined call comes first.
+    fn huddle_feed(&self) -> Option<HuddleFeed> {
+        let generated = self
+            .huddle_viz
+            .generated
+            .as_ref()
+            .map(|generated| HuddleFeed {
+                levels: generated.source.levels(),
+                people: generated.people.clone(),
+                muted: generated.muted,
+            });
+        #[cfg(feature = "huddles-audio")]
+        {
+            self.huddle_call
+                .as_ref()
+                .map(|call| HuddleFeed {
+                    levels: call.call.levels.clone(),
+                    people: call.call.others(),
+                    muted: call.call.is_muted(),
+                })
+                .or(generated)
+        }
+        #[cfg(not(feature = "huddles-audio"))]
+        {
+            generated
+        }
+    }
+
+    /// Feeds the visualizer from generated voices (`people`: index and
+    /// public key of each generated person). For `bzz demo` and tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn set_generated_huddle(
+        &mut self,
+        source: crate::huddle::synth::Synthetic,
+        people: Vec<(u8, String)>,
+        muted: bool,
+    ) {
+        self.huddle_viz.generated = Some(GeneratedHuddle {
+            source,
+            people,
+            muted,
+        });
+    }
+
+    /// Whether the status line shows the strip now: a call is on, the panel
+    /// is closed, and no app or agent line takes the activity slot.
+    fn huddle_strip_shown(&self) -> bool {
+        self.huddle_viz.on
+            && self.presentation.overlay != Some(Overlay::Huddle)
+            && self.app_status_line().is_none()
+            && self.visible_agent_typing_line(u16::MAX).is_none()
+    }
+
+    /// Reads the call's levels into the meter, once a frame tick, and says
+    /// whether the visualizer needs a frame (plan rule 20: none while hidden,
+    /// none after 2 s of silence, none with motion off unless the speaker
+    /// changed).
+    fn tick_huddle_viz(&mut self) -> bool {
+        let now = self.huddle_viz.epoch.elapsed().as_secs_f64();
+        self.tick_huddle_viz_at(now)
+    }
+
+    fn tick_huddle_viz_at(&mut self, now: f64) -> bool {
+        if let Some(generated) = &mut self.huddle_viz.generated {
+            generated.source.advance_to(now);
+        }
+        let Some(feed) = self.huddle_feed() else {
+            if self.huddle_viz.on {
+                self.huddle_viz.meter.clear();
+                self.huddle_viz.people.clear();
+                self.huddle_viz.on = false;
+            }
+            return false;
+        };
+        let indices = feed
+            .people
+            .iter()
+            .map(|(index, _)| *index)
+            .collect::<Vec<_>>();
+        self.huddle_viz
+            .meter
+            .update(feed.levels.as_ref(), &indices, now);
+        let people = feed
+            .people
+            .iter()
+            .map(|(index, pubkey)| crate::ui::huddle_lanes::Person {
+                index: *index,
+                name: self.huddle_person_name(pubkey),
+            })
+            .collect::<Vec<_>>();
+        let people_changed = people.len() != self.huddle_viz.people.len()
+            || people
+                .iter()
+                .zip(&self.huddle_viz.people)
+                .any(|(new, old)| new.index != old.index || new.name != old.name);
+        self.huddle_viz.people = people;
+        let muted_changed = self.huddle_viz.muted != feed.muted;
+        self.huddle_viz.muted = feed.muted;
+        let started = !self.huddle_viz.on;
+        self.huddle_viz.on = true;
+        let visible =
+            self.presentation.overlay == Some(Overlay::Huddle) || self.huddle_strip_shown();
+        let motion = self.config.ui.motion();
+        let wants = self
+            .huddle_viz
+            .pacer
+            .wants_frame(&self.huddle_viz.meter, visible, motion, now);
+        wants || (visible && (started || muted_changed || people_changed))
+    }
+
+    fn huddle_person_name(&self, pubkey: &str) -> String {
+        self.profiles
+            .get(pubkey)
+            .and_then(|profile| {
+                profile
+                    .display_name
+                    .clone()
+                    .or_else(|| profile.name.clone())
+            })
+            .map(|name| crate::protocol::artifact::display(&name, 32))
+            .unwrap_or_else(|| pubkey.chars().take(8).collect())
+    }
+
+    fn huddle_lanes(&self) -> Option<crate::ui::huddle_lanes::Lanes<'_>> {
+        self.huddle_viz.on.then(|| crate::ui::huddle_lanes::Lanes {
+            meter: &self.huddle_viz.meter,
+            people: &self.huddle_viz.people,
+            muted: self.huddle_viz.muted,
+            motion: self.config.ui.motion(),
+            look: self.huddle_viz.look,
+        })
     }
 
     async fn stop_huddle_call(&mut self) {
@@ -10685,6 +10877,12 @@ impl App {
                 .map(sanitize::single_line)
                 .unwrap_or_default()
         });
+        let strips = self
+            .huddle_strip_shown()
+            .then(|| self.huddle_lanes())
+            .flatten()
+            .map(|lanes| crate::ui::huddle_lanes::strips(&lanes, &self.theme));
+        let strip = strips.as_ref().map(|strips| &strips[0]);
         let huddle_line = self.active_huddle().map(|active| {
             let call = match self.huddle_call_state() {
                 Some(true) => " · you: muted",
@@ -10699,22 +10897,39 @@ impl App {
         let activity = self
             .app_status_line()
             .or_else(|| self.visible_agent_typing_line(area.width))
+            .or_else(|| strip.map(crate::ui::huddle_lanes::strip_text))
             .or(huddle_line);
         let app_focused = self.app_has_focus() && self.presentation.overlay.is_none();
-        crate::ui::status::render(
-            frame,
-            area,
-            &self.theme,
-            crate::ui::status::StatusBarView {
-                mode,
-                mode_group,
-                activity: activity.as_deref(),
-                notice: &notice,
-                connection: crate::ui::status::connection_label(self.connection),
-                media: self.media.protocol_name(),
-                app_focused,
-            },
-        );
+        let base = crate::ui::status::StatusBarView {
+            mode,
+            mode_group,
+            activity: activity.as_deref(),
+            notice: &notice,
+            connection: crate::ui::status::connection_label(self.connection),
+            media: self.media.protocol_name(),
+            app_focused,
+        };
+        crate::ui::status::render(frame, area, &self.theme, base);
+        // The strip shortens until it fits: its moving cells go first.
+        if let Some(strips) = &strips
+            && strip.is_some_and(|strip| {
+                activity.as_deref() == Some(&*crate::ui::huddle_lanes::strip_text(strip))
+            })
+        {
+            for (tried, line) in strips.iter().enumerate() {
+                let text = crate::ui::huddle_lanes::strip_text(line);
+                if tried > 0 {
+                    let view = crate::ui::status::StatusBarView {
+                        activity: Some(&text),
+                        ..base
+                    };
+                    crate::ui::status::render(frame, area, &self.theme, view);
+                }
+                if crate::ui::huddle_lanes::paint_over(frame.buffer_mut(), area, line) {
+                    break;
+                }
+            }
+        }
     }
     fn render_overlay(&mut self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
         match self.presentation.overlay {
@@ -10998,7 +11213,14 @@ impl App {
             Some(Overlay::Huddle) => {
                 let popup = centered(area, 90, area.height.saturating_sub(2).min(30));
                 let view = self.huddle_panel_view();
-                crate::ui::huddle::render(frame, popup, &view, &self.theme);
+                let lanes = self.huddle_lanes();
+                crate::ui::huddle::render_with_lanes(
+                    frame,
+                    popup,
+                    &view,
+                    &self.theme,
+                    lanes.as_ref(),
+                );
             }
             Some(Overlay::Broker) => {
                 let popup = centered(area, 100, area.height.saturating_sub(2).min(30));
@@ -13839,6 +14061,131 @@ mod tests {
             screen.contains("🎧  Guest Person") || screen.contains("🎧 Guest Person"),
             "{screen}"
         );
+    }
+
+    /// Rule 20: with no huddle call the visualizer asks for no frame, and
+    /// the redraw gate admits only the screen's first frame.
+    #[tokio::test]
+    async fn the_huddle_visualizer_asks_for_no_frame_without_a_call() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let mut gate = crate::ui::redraw_gate::RedrawGate::default();
+        assert!(gate.take());
+        for _ in 0..300 {
+            gate.request_if(app.tick_huddle_viz());
+            assert!(!gate.take());
+        }
+        assert!(app.huddle_lanes().is_none());
+        assert!(!app.huddle_strip_shown());
+    }
+
+    /// The whole screen with a generated huddle: the strip in the status
+    /// line while the panel is closed, the lanes in `:huddle`. Captures go to
+    /// `BZZ_VIZ_CAPTURES` when set.
+    #[tokio::test]
+    async fn a_generated_huddle_shows_its_strip_and_its_lanes() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.channels = vec![Channel {
+            id: Uuid::new_v4(),
+            name: "team".into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 4,
+            last_event_at: None,
+            facts: Default::default(),
+        }];
+        app.selected_channel = 0;
+        let mut people = Vec::new();
+        for (index, (name, key)) in [("Ada", 'a'), ("Lin", 'b'), ("Sam", 'c')]
+            .into_iter()
+            .enumerate()
+        {
+            let pubkey = key.to_string().repeat(63) + "1";
+            app.profiles.insert(
+                pubkey.clone(),
+                crate::domain::Profile {
+                    pubkey: pubkey.clone(),
+                    display_name: Some(name.into()),
+                    name: None,
+                    picture: None,
+                    nip05: None,
+                    about: None,
+                    event_id: "e".repeat(64),
+                    created_at: 1,
+                    verified: None,
+                    status: None,
+                    presence: None,
+                    in_huddle: true,
+                },
+            );
+            people.push((index as u8 + 1, pubkey));
+        }
+        app.set_generated_huddle(
+            crate::huddle::synth::Synthetic::new(&crate::huddle::synth::DEMO_SCRIPT, None),
+            people,
+            true,
+        );
+        app.huddle_viz.look = crate::ui::huddle_lanes::Look::default();
+        let mut frames = 0;
+        let mut t = 0.0;
+        while t <= 5.5 {
+            frames += u32::from(app.tick_huddle_viz_at(t));
+            t += 0.033;
+        }
+        assert!(frames > 100, "the strip moves while people speak: {frames}");
+        let draw = |app: &mut super::App, width: u16, height: u16| {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            (0..height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut captures = Vec::new();
+        for (width, height) in [(80, 24), (160, 45)] {
+            let screen = draw(&mut app, width, height);
+            let status = screen.lines().last().unwrap();
+            assert!(status.contains("🎧"), "{status}");
+            assert!(status.contains("Ada and Lin"), "{status}");
+            captures.push((format!("strip-{width}x{height}"), screen));
+        }
+        app.presentation.open_overlay(Overlay::Huddle);
+        assert!(!app.huddle_strip_shown());
+        for (width, height) in [(80, 24), (160, 45)] {
+            let screen = draw(&mut app, width, height);
+            assert!(screen.contains("Ada and Lin at once"), "{screen}");
+            assert!(screen.contains("You · your microphone"), "{screen}");
+            assert!(!screen.lines().last().unwrap().contains("🎧"));
+            captures.push((format!("panel-{width}x{height}"), screen));
+        }
+        // Silence after the passage: the frames stop.
+        let mut late = 0;
+        let mut t = 12.0;
+        while t <= 20.0 {
+            late += u32::from(app.tick_huddle_viz_at(t));
+            t += 0.033;
+        }
+        assert!(late <= 1, "no frames after 2 s of silence: {late}");
+        if let Some(directory) = std::env::var_os("BZZ_VIZ_CAPTURES") {
+            for (name, screen) in captures {
+                std::fs::write(
+                    std::path::Path::new(&directory).join(format!("{name}.txt")),
+                    screen,
+                )
+                .unwrap();
+            }
+        }
     }
 
     #[tokio::test]
