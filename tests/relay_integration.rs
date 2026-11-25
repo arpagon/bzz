@@ -2938,6 +2938,162 @@ async fn real_relay_huddle_lifecycle_and_audio_round_trip() {
     alice_supervisor.shutdown().await;
 }
 
+/// v0.17 B1: a person who joins the call after you has a name, and their
+/// own level reaches your visualizer while their generated tone plays (and
+/// not before). Alice joins first; Bob joins later and speaks.
+#[cfg(feature = "huddles-audio")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_huddle_names_a_late_joiner_and_shows_their_level() {
+    use bzz::{
+        huddle::{audio, meter::Meter, synth},
+        protocol::huddle,
+    };
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let alice_keys = Keys::generate();
+    let bob_keys = Keys::generate();
+    let _ = seed_member(&source, &alice_keys.public_key().to_hex());
+    let _ = seed_member(&source, &bob_keys.public_key().to_hex());
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let alice = SignerHandle::spawn(alice_keys.clone());
+    let bob = SignerHandle::spawn(bob_keys.clone());
+    let ws = url::Url::parse("ws://localhost:3030/").unwrap();
+    let supervisor = SupervisorHandle::spawn(ws.clone(), alice.clone());
+    let publish = |builder: EventBuilder| {
+        let alice = alice.clone();
+        let supervisor = supervisor.clone();
+        async move {
+            let event = alice.sign(builder).await.unwrap();
+            let ack = supervisor.publish(event).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+        }
+    };
+    let parent = uuid::Uuid::new_v4();
+    publish(
+        buzz_sdk::build_create_channel(
+            parent,
+            &format!("viz-{}", &parent.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Open),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    publish(buzz_sdk::build_add_member(parent, &bob_keys.public_key().to_hex(), None).unwrap())
+        .await;
+    let backing = uuid::Uuid::new_v4();
+    publish(huddle::backing_channel(backing).unwrap()).await;
+    publish(huddle::started(parent, backing).unwrap()).await;
+
+    // Alice is alone in the call: nobody else has a name or a lane.
+    let alice_joined = audio::join(&ws, backing, parent, &alice).await.unwrap();
+    let (_alice_capture, alice_capture_rx) = tokio::sync::mpsc::channel(64);
+    let (alice_playback, _alice_playback_rx) = tokio::sync::mpsc::channel(256);
+    let alice_call = audio::start(alice_joined, alice_capture_rx, alice_playback).unwrap();
+    assert!(alice_call.others().is_empty());
+
+    // Bob joins after her.
+    let bob_joined = audio::join(&ws, backing, parent, &bob).await.unwrap();
+    let (bob_capture, bob_capture_rx) = tokio::sync::mpsc::channel(64);
+    let (bob_playback, _bob_playback_rx) = tokio::sync::mpsc::channel(256);
+    let bob_call = audio::start(bob_joined, bob_capture_rx, bob_playback).unwrap();
+    let bob_hex = bob_keys.public_key().to_hex();
+    let mut named = None;
+    for _ in 0..50 {
+        named = alice_call
+            .others()
+            .into_iter()
+            .find(|(_, pubkey)| *pubkey == bob_hex);
+        if named.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (bob_index, _) = named.expect("Alice's call names Bob, who joined after her");
+    assert_eq!(bob_index, bob_call.index);
+
+    // Alice's meter, read every 33 ms as the interface does, while Bob sends
+    // 1 s of silence and then 1.5 s of 1 kHz at -20 dBFS, unmuted.
+    let started = std::time::Instant::now();
+    let meter = std::sync::Arc::new(std::sync::Mutex::new(Meter::default()));
+    let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let reader = {
+        let meter = meter.clone();
+        let levels = alice_call.levels.clone();
+        tokio::spawn(async move {
+            let mut speaking_at = Vec::new();
+            let mut tick = tokio::time::interval(Duration::from_millis(33));
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    _ = tick.tick() => {
+                        let now = started.elapsed().as_secs_f64();
+                        let mut meter = meter.lock().unwrap();
+                        meter.update(levels.as_ref(), &[bob_index], now);
+                        if meter.peer(bob_index).is_some_and(|track| track.speaking()) {
+                            speaking_at.push(now);
+                        }
+                    }
+                }
+            }
+            speaking_at
+        })
+    };
+    bob_call.set_muted(false);
+    let tone_from = 1.0;
+    let tone_to = 2.5;
+    let mut sample = 0_u64;
+    let mut frame_at = tokio::time::Instant::now();
+    for frame in 0..175_u64 {
+        let t = frame as f64 * 0.02;
+        let chunk = if (tone_from..tone_to).contains(&t) {
+            synth::tone(1000.0, -20.0, sample, 960)
+        } else {
+            vec![0.0; 960]
+        };
+        sample += 960;
+        bob_capture.send(chunk).await.unwrap();
+        frame_at += Duration::from_millis(20);
+        tokio::time::sleep_until(frame_at).await;
+    }
+    let _ = stop_tx.send(());
+    let speaking_at = reader.await.unwrap();
+    let first = *speaking_at
+        .first()
+        .expect("Bob's lane lit while his tone played");
+    let last = *speaking_at.last().unwrap();
+    println!(
+        "B1 relay: Bob (joined second) speaking on Alice's meter from {first:.2} s to {last:.2} s; tone 1.00 to 2.50 s"
+    );
+    assert!(first >= tone_from, "not before the tone: {first}");
+    assert!(
+        first < tone_from + 0.5,
+        "soon after the tone starts: {first}"
+    );
+    assert!(
+        last > tone_to - 0.1 && last < tone_to + 1.0,
+        "until about its end: {last}"
+    );
+
+    // Bob leaves: Alice's call forgets him.
+    bob_call.stop().await;
+    let mut gone = false;
+    for _ in 0..50 {
+        if alice_call.others().is_empty() {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(gone, "Alice's call drops Bob when he leaves");
+    alice_call.stop().await;
+    publish(huddle::ended(parent, backing).unwrap()).await;
+    supervisor.shutdown().await;
+}
+
 /// v0.13 M2.2: NIP-CL public membership lookup (kind 39009), the spec's
 /// normative example on the pinned relay.
 #[tokio::test]
