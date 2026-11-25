@@ -168,6 +168,13 @@ the newest `data.list` and ignore a reply with another id.
   A request for a type that is not in `app.types` is an error, pushes of
   other types never arrive, and only a record the app has received in a
   reply or a push can be updated or deleted.
+- **The app's own writes to one record do not conflict.** bzz sends them
+  one after the other: a `data.update` or `data.delete` made before the
+  reply to the app's previous write of the same record waits for that
+  reply, and if it names a `rev` that one of the app's own writes
+  replaced, it is sent on the revision the last of them made. Every
+  request still gets its reply, in order. Another client's revision is
+  never put in its place: a change by someone else is still a `conflict`.
 
 | Code | Means |
 |---|---|
