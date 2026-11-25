@@ -12,11 +12,12 @@
 #   scripts/test-audio-containers.sh start BZZ_BINARY
 #       bzz --version and bzz paths on clean Debian, Ubuntu 22.04 and 24.04
 #       and AlmaLinux 9, which have no sound library.
-#   scripts/test-audio-containers.sh serve DIR [tone] | stop DIR
+#   scripts/test-audio-containers.sh serve DIR [pipewire|tone] | stop DIR
 #       A PulseAudio with a mono null sink as its defaults, listening on
 #       DIR/native for bzz on this machine (PULSE_SERVER=unix:DIR/native):
 #       the TUI harness's huddles join it and reach no real device. With
-#       `tone` its default source is a 440 Hz sine instead (a microphone
+#       `pipewire`, a PipeWire session instead, on DIR/pulse/native; with
+#       `tone`, that session's microphone plays a 440 Hz tone (a microphone
 #       that speaks), for a call between two clients.
 #   scripts/test-audio-containers.sh record DIR SECONDS
 #       What the served null sink plays during SECONDS, as raw 48 kHz mono
@@ -91,24 +92,50 @@ case ${1:-} in
   serve)
     dir=$(mkdir -p "$2" && cd "$2" && pwd)
     name=bzz-sound-$(printf '%s' "$dir" | cksum | cut -d' ' -f1)
-    source=bzz_null.monitor
-    [[ ${3:-} == tone ]] && source=bzz_tone
-    docker run -d --rm --name "$name" --network none --user "$(id -u):$(id -g)" -e HOME=/tmp \
-      -e SOURCE="$source" -v "$dir:/sound" "$(image pulseaudio)" sh -c '
-        printf "%s\n" \
-          "load-module module-native-protocol-unix socket=/sound/native auth-anonymous=1" \
-          "load-module module-null-sink sink_name=bzz_null rate=48000 channels=1" \
-          "load-module module-sine-source source_name=bzz_tone rate=48000 frequency=440" \
-          "set-default-sink bzz_null" "set-default-source $SOURCE" >/tmp/bzz.pa
-        exec pulseaudio -n --daemonize=no --exit-idle-time=-1 --disallow-exit -F /tmp/bzz.pa' >/dev/null
-    for _ in $(seq 1 100); do [[ -S $dir/native ]] && break; sleep 0.1; done
-    [[ -S $dir/native ]] || { docker logs "$name" >&2; docker rm -f "$name" >/dev/null; exit 1; }
-    printf 'unix:%s/native\n' "$dir"
+    mode=${3:-}
+    if [[ $mode == pipewire || $mode == tone ]]; then
+      # A PipeWire session; pipewire-pulse listens on DIR/pulse/native. With
+      # `tone` the default source is the monitor of a second null sink that
+      # plays a 440 Hz tone in a loop (PulseAudio's own sine source works in
+      # fixed 2 s blocks, which a call hears as bursts).
+      mic=:
+      if [[ $mode == tone ]]; then
+        python3 -c 'import math, struct, sys
+sys.stdout.buffer.write(b"".join(struct.pack("<f", 0.4 * math.sin(2 * math.pi * 440 * n / 48000)) for n in range(48000 * 10)))' >"$dir/tone.f32"
+        mic='pactl load-module module-null-sink sink_name=bzz_mic rate=48000 channels=1 >/dev/null
+          pactl set-default-source bzz_mic.monitor
+          ( while :; do pacat --raw --format=float32le --rate=48000 --channels=1 --latency-msec=20 -d bzz_mic /sound/tone.f32; done ) &'
+      fi
+      docker run -d --rm --name "$name" --network none --user "$(id -u):$(id -g)" \
+        -e PULSE_SERVER=unix:/sound/pulse/native -v "$dir:/sound" "$(image pipewire-debian)" \
+        bash -c "${start_pipewire//XDG_RUNTIME_DIR=\/tmp\/runtime/XDG_RUNTIME_DIR=/sound}"'
+          pactl load-module module-null-sink sink_name=bzz_null rate=48000 channels=1 >/dev/null
+          pactl set-default-sink bzz_null && pactl set-default-source bzz_null.monitor
+          '"$mic"'
+          exec sleep infinity' >/dev/null
+      socket=$dir/pulse/native
+    else
+      docker run -d --rm --name "$name" --network none --user "$(id -u):$(id -g)" -e HOME=/tmp \
+        -e PULSE_SERVER=unix:/sound/native -v "$dir:/sound" "$(image pulseaudio)" sh -c '
+          printf "%s\n" \
+            "load-module module-native-protocol-unix socket=/sound/native auth-anonymous=1" \
+            "load-module module-null-sink sink_name=bzz_null rate=48000 channels=1" \
+            "set-default-sink bzz_null" "set-default-source bzz_null.monitor" >/tmp/bzz.pa
+          exec pulseaudio -n --daemonize=no --exit-idle-time=-1 --disallow-exit -F /tmp/bzz.pa' >/dev/null
+      socket=$dir/native
+    fi
+    for _ in $(seq 1 100); do [[ -S $socket ]] && break; sleep 0.1; done
+    [[ -S $socket ]] || { docker logs "$name" >&2; docker rm -f "$name" >/dev/null; exit 1; }
+    # The defaults are set once the server answers; wait for them too.
+    for _ in $(seq 1 50); do
+      docker exec "$name" sh -c 'pactl info 2>/dev/null | grep -q "Default Sink: bzz_null"' && break; sleep 0.1
+    done
+    printf 'unix:%s\n' "$socket"
     ;;
   record)
     dir=$(cd "$2" && pwd)
     docker exec "bzz-sound-$(printf '%s' "$dir" | cksum | cut -d' ' -f1)" sh -c \
-      'PULSE_SERVER=unix:/sound/native timeout "$1" parec --raw --format=float32le --rate=48000 --channels=1 -d bzz_null.monitor >/sound/played.f32; true' sh "$3"
+      'timeout "$1" parec --raw --format=float32le --rate=48000 --channels=1 -d bzz_null.monitor >/sound/played.f32; true' sh "$3"
     ;;
   stop)
     dir=$(cd "$2" && pwd)
