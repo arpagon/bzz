@@ -260,6 +260,17 @@ The draft pull request of D14, read on GitHub:
   the badge's four shapes no longer include it (`▼`), with a test over 256
   keys; sixteen layout goldens changed in that one character and nothing
   else.
+- **The site's section, looked at before it was placed** (2026-11-26). A
+  task made the three captures from `bzz demo` and a preview of the page;
+  its review found the first proposal's palette and huddle captures too
+  small to read and its loop without a way to play, and cards that said
+  more than these notes prove. The owner approved the corrected section.
+  The principal made the captures again on the release build with the two
+  fixes above, searched them (the tapes' bytes, every distinct screen, an
+  OCR of 65 images: nothing of the machine or its owner), placed them, and
+  looked at the page served from `site/public` at 1280 and 390 wide in a
+  headless browser: no request failed, the terminal's text reads at both.
+  Not looked at in a real browser or on a phone; nothing deployed.
 
 ## What went wrong on the way
 

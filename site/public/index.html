@@ -33,7 +33,7 @@
     bzz
   </a>
   <div class="links">
-    <a href="#new">new in 0.16</a>
+    <a href="#new">new in 0.17</a>
     <a href="#apps">apps</a>
     <a href="#harnesses">agents</a>
     <a href="#features">features</a>
@@ -115,7 +115,114 @@
 
 <section id="new">
 <div class="wrap">
-  <span class="kicker">new in v0.16.0</span>
+  <span class="kicker">new in v0.17.0</span>
+  <h2>The first minute, and everything within reach.</h2>
+  <!-- The demo's first screen: bzz 0.17.0, bzz demo, 120x32 cells (60x30 on
+       phones), the bzz theme, motion on. How it was made: site/README.md,
+       "New in v0.17.0". -->
+  <figure class="shot" id="demo-shot">
+    <div class="term"><picture>
+      <source media="(max-width: 640px)" srcset="/assets/demo-v017-narrow.png?v=1">
+      <img src="/assets/demo-v017.png?v=1" alt="bzz demo: the channel #team of a generated team, with Ada's welcome and three things to try, and DEMO · generated, offline in the status line" loading="lazy">
+    </picture></div>
+    <figcaption class="cap">The real bzz 0.17.0 in <code>bzz demo</code>. Everything on
+    screen is generated: the people, their messages, the huddle's voices. Offline, with
+    no account and no key, and its folder is removed when you quit.</figcaption>
+  </figure>
+  <div class="grid">
+    <div class="card">
+      <span class="k">/// bzz demo</span>
+      <h3>A living team, nothing to set up</h3>
+      <p><code>bzz demo</code> opens the real bzz on a generated team:
+      channels, a thread, a DM, a Board, a huddle in progress, and a scripted
+      agent that answers when you mention it. Offline, with no account, and
+      the screen always says the data is generated.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// :join</span>
+      <h3>Join your community from inside bzz</h3>
+      <p><code>:join</code> takes the community's address or the invite link
+      an admin sent you, says what is there, makes you an identity and lets
+      you in. Where only members may enter, it shows the id to send an admin
+      and comes in by itself once you are added.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// ctrl+k</span>
+      <h3>One key finds everything</h3>
+      <p><code>Ctrl+K</code> finds and runs any action, channel, person, app
+      or theme, and shows its key. An action that needs more asks for it, and
+      shows the <code>:</code> command it builds, so the palette teaches bzz.
+      One that cannot run now says why.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// huddle</span>
+      <h3>See who is speaking</h3>
+      <p>One lane per person, your microphone last: it moves while you are
+      muted and warns when you speak muted. Zoom it with <code>z</code> and
+      pick lanes, spectrum bars or the orb, previewed live.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// starts everywhere</span>
+      <h3>No sound library to install</h3>
+      <p>On Linux bzz speaks to PipeWire or PulseAudio itself, so it starts
+      on a clean machine with glibc 2.34 or newer; huddle audio needs one of
+      the two running. On Linux the installer checks the machine first and
+      says in one line what is missing.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// the look</span>
+      <h3>Focus you can see</h3>
+      <p>Quiet frames and one in colour where the focus is; a line before the
+      first new message and the unread count beside each channel.
+      <code>NO_COLOR</code> and 256-colour terminals are honoured. Motion is
+      small, and <code>[ui] motion = "off"</code> turns it off.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// any width</span>
+      <h3>Panes that give way</h3>
+      <p>As the window narrows, panes step aside and the frame names what is
+      hidden and the key that brings it back. <code>z</code> shows the
+      conversation alone. A click focuses, the wheel scrolls, and a border
+      drags; everything the mouse does has a key.</p>
+    </div>
+    <div class="card">
+      <span class="k">/// windows</span>
+      <h3>Shifted keys on Windows</h3>
+      <p><code>?</code>, <code>:</code> and every shifted symbol now reach
+      bzz on Windows, characters typed as Alt codes are kept, and a paste
+      into the writing dock keeps its lines.</p>
+    </div>
+  </div>
+  <!-- MEDIA 2 and 3, each the section's full width, so the terminal's text
+       can be read. On phones, captures of bzz at 60 columns. -->
+  <figure class="shot" id="palette-shot">
+    <div class="term"><picture>
+      <source media="(max-width: 640px)" srcset="/assets/palette-v017-narrow.png?v=1">
+      <img src="/assets/palette-v017.png?v=1" alt="The palette over bzz demo: thr typed, Open thread first with its key Enter, and the selected row, Send thread draft to channel, marked as unable to run, with its reason at the foot: open a thread first" loading="lazy">
+    </picture></div>
+    <figcaption class="cap"><code>Ctrl+K</code>, then <code>thr</code>: each row shows its key
+    or its <code>:</code> command. On a row that cannot run now, the foot says why.</figcaption>
+  </figure>
+  <figure class="shot" id="huddle-shot">
+    <div class="term"><video autoplay muted loop playsinline preload="metadata" poster="/assets/poster-huddle-styles-v017.png?v=1" aria-label="The huddle of bzz demo: the panel with a lane per person, then zoomed, the style picker, spectrum bars and the orb previewed live, and back">
+      <source src="/assets/huddle-styles-v017-narrow.webm?v=1" type="video/webm" media="(max-width: 640px)">
+      <source src="/assets/huddle-styles-v017-narrow.mp4?v=1" type="video/mp4" media="(max-width: 640px)">
+      <source src="/assets/huddle-styles-v017.webm?v=1" type="video/webm">
+      <source src="/assets/huddle-styles-v017.mp4?v=1" type="video/mp4">
+      <img src="/assets/poster-huddle-styles-v017.png?v=1" alt="The zoomed huddle of bzz demo with the style picker open on bars">
+    </video></div>
+    <figcaption class="cap">The huddle in <code>bzz demo</code> is a generated recording: no
+    call, no microphone, nothing sent. <code>z</code> zooms it, <code>v</code> picks lanes,
+    bars or the orb, previewed live.</figcaption>
+  </figure>
+  <div class="shot"><p class="cap">Full notes, with what changes if you already
+  use bzz: <a href="https://github.com/arpagon/bzz/blob/main/docs/release-v0.17.0.md">bzz v0.17.0 release notes</a>.</p></div>
+</div>
+</section>
+
+<section id="new-016">
+<div class="wrap">
+  <span class="kicker">since v0.16.0</span>
   <h2>Apps in the channel, written by your agent.</h2>
   <div class="grid">
     <div class="card">
