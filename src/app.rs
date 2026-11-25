@@ -1376,7 +1376,7 @@ impl App {
                 motion_at,
                 pacing.huddle_at(huddle_polled, now),
             ]);
-            let tick_at = pacing.tick_at(self.housekeeping_busy(), now);
+            let tick_at = pacing.tick_at(self.housekeeping_busy(), self.refresh_due(), now);
             tokio::select! {
                 biased;
                 _=&mut shutdown=>self.should_quit=true,

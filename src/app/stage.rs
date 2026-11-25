@@ -181,15 +181,20 @@ impl Pacing {
         self.last_huddle = Some(now);
     }
 
-    /// When the housekeeping is next due.
-    pub(super) fn tick_at(&self, busy: bool, now: Instant) -> Instant {
+    /// When the housekeeping is next due. At rest it comes when the store's
+    /// once-a-second refresh is due (`refresh_due`), never sooner than the
+    /// busy interval, so that refresh is not missed by a hair and put off a
+    /// second.
+    pub(super) fn tick_at(&self, busy: bool, refresh_due: Instant, now: Instant) -> Instant {
         let Some(last) = self.last_tick else {
             return now;
         };
-        last + if busy || self.poked {
-            HOUSEKEEPING_BUSY
+        if busy || self.poked {
+            last + HOUSEKEEPING_BUSY
         } else {
-            HOUSEKEEPING_REST
+            refresh_due
+                .max(last + HOUSEKEEPING_BUSY)
+                .min(last + HOUSEKEEPING_REST + HOUSEKEEPING_BUSY)
         }
     }
 
@@ -261,6 +266,12 @@ impl App {
             || self
                 .read_dirty_since
                 .is_some_and(|since| since.elapsed() + HOUSEKEEPING_REST >= Duration::from_secs(5))
+    }
+
+    /// When the housekeeping's store refresh is due: a little after a
+    /// second since the last (`on_tick` refreshes after more than one).
+    pub(super) fn refresh_due(&self) -> Instant {
+        Instant::from_std(self.last_cache_refresh) + HOUSEKEEPING_REST + Duration::from_millis(2)
     }
 
     /// Whether the huddle's levels are read at the frame rate: a call, the
@@ -965,23 +976,26 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_loop_sleeps_until_its_next_deadline() {
         let start = Instant::now();
+        let ms = Duration::from_millis;
         let mut pacing = Pacing::new();
+        let due = start + ms(1_002);
         assert_eq!(
-            pacing.tick_at(false, start),
+            pacing.tick_at(false, due, start),
             start,
             "the first comes at once"
         );
         pacing.ticked(start);
-        assert_eq!(pacing.tick_at(false, start), start + Duration::from_secs(1));
+        // At rest: when the store's refresh is due, a little after a second.
+        assert_eq!(pacing.tick_at(false, due, start), due);
+        // Never sooner than 100 ms, never later than 1.1 s.
+        assert_eq!(pacing.tick_at(false, start, start), start + ms(100));
         assert_eq!(
-            pacing.tick_at(true, start),
-            start + Duration::from_millis(100)
+            pacing.tick_at(false, start + ms(5_000), start),
+            start + ms(1_100)
         );
+        assert_eq!(pacing.tick_at(true, due, start), start + ms(100));
         pacing.poke();
-        assert_eq!(
-            pacing.tick_at(false, start),
-            start + Duration::from_millis(100)
-        );
+        assert_eq!(pacing.tick_at(false, due, start), start + ms(100));
         pacing.ticked(start);
         // Frames.
         assert_eq!(
