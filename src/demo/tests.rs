@@ -299,15 +299,37 @@ fn what_needs_a_real_community_says_so() {
     assert_eq!(people.len(), 3);
 }
 
+/// One request, and its whole answer: the head and as many bytes of body as
+/// its `Content-Length` says. The relay writes the two apart, and one read
+/// may bring only the head (it did once in CI, on macOS).
 async fn http(port: u16, request: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     stream.write_all(request.as_bytes()).await.unwrap();
-    let mut reply = vec![0_u8; 64 * 1024];
-    let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut reply))
-        .await
-        .unwrap()
-        .unwrap();
-    String::from_utf8_lossy(&reply[..read]).into_owned()
+    let mut reply = Vec::new();
+    let mut chunk = vec![0_u8; 64 * 1024];
+    let complete = |reply: &[u8]| {
+        let Some(head_end) = reply.windows(4).position(|window| window == b"\r\n\r\n") else {
+            return false;
+        };
+        let head = String::from_utf8_lossy(&reply[..head_end]).to_ascii_lowercase();
+        let length = head
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        reply.len() >= head_end + 4 + length
+    };
+    while !complete(&reply) {
+        let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut chunk))
+            .await
+            .unwrap()
+            .unwrap();
+        if read == 0 {
+            break;
+        }
+        reply.extend_from_slice(&chunk[..read]);
+    }
+    String::from_utf8_lossy(&reply).into_owned()
 }
 
 /// Only the path with the token reaches the relay, and media only with the

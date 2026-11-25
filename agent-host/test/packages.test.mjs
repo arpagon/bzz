@@ -268,8 +268,11 @@ setTimeout(() => { throw new Error("thrown from a timer of the package"); }, 40)
 	// The limit, shown as it is: an exception that no stack traces to a package is taken for the host's own, and ends it.
 	const silent = pkg("throws-a-string", `setTimeout(() => { throw "a string, which names no file"; }, 40);\nexport default () => ({});`);
 	const ended = startHost(t, join(tempDir(t, "ended"), "agent"), { home: root });
-	await ended.initialize({ piDir: writeSettings(tempDir(t, "pi"), [silent]) });
-	assert.deepEqual(await within(5_000, ended.exited, "the host to end"), { code: 1, signal: null });
+	// The package's timer runs from its import, inside `initialize`: on a slow machine it fires before the host has
+	// answered, and the host ends with the request unanswered (it did in CI, on macOS on Intel). Both orders are
+	// the same end, so the answer is not waited for; the time allowed covers the host's start, hence the margin.
+	ended.initialize({ piDir: writeSettings(tempDir(t, "pi"), [silent]) }).catch(() => {});
+	assert.deepEqual(await within(5_000 + WAIT_MARGIN_MS, ended.exited, () => `the host to end\n${ended.stderr()}`), { code: 1, signal: null });
 	assert.match(ended.stderr(), /a string, which names no file\n$/);
 });
 

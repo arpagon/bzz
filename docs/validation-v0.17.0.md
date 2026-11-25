@@ -283,6 +283,16 @@ The draft pull request of D14, read on GitHub:
   principal's own repeat runs failed for a reason of its own making: a
   longer scratch path wrapped a line of the agents panel at 80×24 and
   pushed the text the scenario waits for off the screen.
+- **CI at `23756ed` failed in two tests, and both were the tests**
+  (2026-11-26; the commit before it, with the same code, was green in all
+  22 jobs). On macOS on Apple Silicon a test of the demo's relay read its
+  answer with one read and got only the head, which the relay writes apart
+  from the body; it now reads the whole answer. On macOS on Intel a test of
+  the agent host waited for an answer from a host whose package ends it on
+  purpose 40 ms after its import: on a slow runner the host ended first,
+  as designed, and the test waited 90 s for nothing; it no longer waits for
+  that answer. The principal ran the second with the timer at zero, which
+  forces that order: it passes. Neither changes bzz or the agent host.
 
 ## What went wrong on the way
 
