@@ -2697,12 +2697,12 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["type:launch", "enter"]
-visible = 'Board · 5 focus[\s\S]*To do \(4\)[\s\S]*Ship party'
+visible = '┌ Board [\s\S]*To do \(4\)[\s\S]*Ship party'
 regex = true
 
 [[scenario.step]]
 keys = ["5"]
-visible = "Board · Ctrl-c leave"
+visible = "Ctrl-c leave ┘"
 
 [[scenario.step]]
 keys = ["n"]
@@ -3549,7 +3549,7 @@ visible = "▌▣ Open board here"
 
 [[scenario.step]]
 keys = ["enter"]
-visible = "Board · Ctrl-c leave"
+visible = "Ctrl-c leave ┘"
 timeout = 8000
 
 [[scenario.step]]

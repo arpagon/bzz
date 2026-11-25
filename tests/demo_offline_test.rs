@@ -241,12 +241,13 @@ fn the_board_takes_a_card_offline_and_the_demo_leaves_nothing() {
     keys(&["Enter"]);
     wait_for(&tmux, "the Board in #launch", |screen| {
         screen.contains("┌ launch ")
-            && screen.contains("Board · 5 focus")
+            && screen.contains("┌ Board ")
+            && screen.contains("5 focus ┘")
             && screen.contains("To do (3)")
     });
     keys(&["5"]);
     wait_for(&tmux, "the Board's focus", |screen| {
-        screen.contains("Board · Ctrl-c leave")
+        screen.contains("Ctrl-c leave ┘")
     });
     keys(&["n"]);
     wait_for(&tmux, "the form", |screen| screen.contains("New card"));
