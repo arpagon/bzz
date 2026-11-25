@@ -19,6 +19,8 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
+// v0.17 C11: Tab on the `:` line (task `registry`).
+mod command_line;
 mod manage;
 mod palette;
 mod pane;
@@ -28,6 +30,9 @@ mod share;
 // and two keys (task `find`).
 #[cfg(test)]
 mod find_tests;
+// v0.17 C8, C10, C11 (task `registry`).
+#[cfg(test)]
+mod registry_tests;
 
 use crate::clock::WallClock as _;
 use crate::{
@@ -681,6 +686,10 @@ pub struct App {
     new_since: Option<(Uuid, u64)>,
     /// Unread messages per channel, for the count in the sidebar (L6).
     unread_counts: HashMap<Uuid, usize>,
+    /// Tab on the `:` line, and the installed apps it completes `:app`
+    /// verbs with, read once while the line is open (v0.17 C11).
+    command_completion: crate::ui::command::Completion,
+    command_apps: Option<Vec<String>>,
 }
 
 /// How [`App::run_to_exit`] ended.
@@ -1315,6 +1324,8 @@ impl App {
             notice_timer: crate::ui::status::NoticeTimer::default(),
             new_since: None,
             unread_counts: HashMap::new(),
+            command_completion: crate::ui::command::Completion::default(),
+            command_apps: None,
         };
         app.sync_workspace_viewports();
         app.hydrate_cache().await?;
@@ -10228,9 +10239,16 @@ impl App {
                 return Ok(());
             }
         }
+        // v0.17 C11: Tab completes the `:` line and cycles.
+        if !finder && matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            self.command_answer = None;
+            self.complete_command(key.code == KeyCode::Tab).await;
+            return Ok(());
+        }
         match key.code {
             KeyCode::Esc => {
                 self.command_answer = None;
+                self.command_line_closed();
                 self.presentation.close_overlay();
             }
             KeyCode::Backspace => {
@@ -10296,6 +10314,7 @@ impl App {
                     // their own overlay, which must survive this dispatch.
                     self.presentation.close_overlay();
                     self.command_answer = None;
+                    self.command_line_closed();
                     let before = self.status_error.clone();
                     self.execute_command().await?;
                     self.keep_prompt_for_answer(before);
@@ -12019,9 +12038,9 @@ impl App {
             },
             Some(Overlay::Finder) => self.render_finder(frame, area, hit_map),
             Some(Overlay::Command) => match &self.command_answer {
-                None => {
-                    self.render_prompt(frame, area, " command ", &format!(":{}", self.command))
-                }
+                // The line, and under it what Tab offers and the usage
+                // (v0.17 C11).
+                None => self.render_command_line(frame, area),
                 // The answer to the last Enter, wrapped under the text as
                 // typed, never cut (v0.17 C4).
                 Some(answer) => {
