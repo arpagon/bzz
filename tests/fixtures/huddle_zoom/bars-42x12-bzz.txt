@@ -3,17 +3,18 @@
 
 
 
-
-             ▂ ▆ ▆   ⎼ ⎼ ▄ ⎺ ⎺ ⎼
- ▂ ▁ ▁ ▁ ⎻ ▃ █ █ █ █ ▄ █ █ █ █ ▅ ▁
- █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ ▁ ⎼
- █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ ▇ ▂
+             ▁ ▅ ▆   ⎽ ⎼ ▃ ⎺ ⎺ ⎼
+ ▁ ▁     ⎻ ▃ █ █ █ ▇ ▃ ▇ █ █ █ ▅
+ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ ⎼ ⎼
+ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ ▇ ▅
+ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ ▆
 
  ● Ada  ● Lin  · Sam  You · muted
 --- styles ---
 0: 1-35 Rgb(46, 196, 196)/Reset/BOLD
-6: 13-13 Rgb(17, 168, 205)/Reset/NONE 15-15 Rgb(17, 168, 205)/Reset/NONE 17-17 Rgb(17, 168, 205)/Reset/NONE 21-21 Rgb(240, 240, 240)/Reset/BOLD 23-23 Rgb(240, 240, 240)/Reset/BOLD 25-25 Rgb(17, 168, 205)/Reset/NONE 27-27 Rgb(240, 240, 240)/Reset/BOLD 29-29 Rgb(240, 240, 240)/Reset/BOLD 31-31 Rgb(240, 240, 240)/Reset/BOLD
-7: 1-1 Rgb(10, 101, 123)/Reset/NONE 3-3 Rgb(10, 101, 123)/Reset/NONE 5-5 Rgb(10, 101, 123)/Reset/NONE 7-7 Rgb(10, 101, 123)/Reset/NONE 9-9 Rgb(240, 240, 240)/Reset/BOLD 11-11 Rgb(10, 101, 123)/Reset/NONE 13-13 Rgb(10, 101, 123)/Reset/NONE 15-15 Rgb(10, 101, 123)/Reset/NONE 17-17 Rgb(10, 101, 123)/Reset/NONE 19-19 Rgb(10, 101, 123)/Reset/NONE 21-21 Rgb(10, 101, 123)/Reset/NONE 23-23 Rgb(10, 101, 123)/Reset/NONE 25-25 Rgb(10, 101, 123)/Reset/NONE 27-27 Rgb(10, 101, 123)/Reset/NONE 29-29 Rgb(10, 101, 123)/Reset/NONE 31-31 Rgb(10, 101, 123)/Reset/NONE 33-33 Rgb(10, 101, 123)/Reset/NONE
-8: 1-1 Rgb(10, 101, 123)/Reset/NONE 3-3 Rgb(10, 101, 123)/Reset/NONE 5-5 Rgb(10, 101, 123)/Reset/NONE 7-7 Rgb(10, 101, 123)/Reset/NONE 9-9 Rgb(10, 101, 123)/Reset/NONE 11-11 Rgb(10, 101, 123)/Reset/NONE 13-13 Rgb(10, 101, 123)/Reset/NONE 15-15 Rgb(10, 101, 123)/Reset/NONE 17-17 Rgb(10, 101, 123)/Reset/NONE 19-19 Rgb(10, 101, 123)/Reset/NONE 21-21 Rgb(10, 101, 123)/Reset/NONE 23-23 Rgb(10, 101, 123)/Reset/NONE 25-25 Rgb(10, 101, 123)/Reset/NONE 27-27 Rgb(10, 101, 123)/Reset/NONE 29-29 Rgb(10, 101, 123)/Reset/NONE 31-31 Rgb(10, 101, 123)/Reset/NONE 33-33 Rgb(10, 101, 123)/Reset/NONE 35-35 Rgb(10, 101, 123)/Reset/NONE 37-37 Rgb(240, 240, 240)/Reset/BOLD
+5: 13-13 Rgb(17, 168, 205)/Reset/NONE 15-15 Rgb(17, 168, 205)/Reset/NONE 17-17 Rgb(17, 168, 205)/Reset/NONE 21-21 Rgb(240, 240, 240)/Reset/BOLD 23-23 Rgb(240, 240, 240)/Reset/BOLD 25-25 Rgb(17, 168, 205)/Reset/NONE 27-27 Rgb(240, 240, 240)/Reset/BOLD 29-29 Rgb(240, 240, 240)/Reset/BOLD 31-31 Rgb(240, 240, 240)/Reset/BOLD
+6: 1-1 Rgb(17, 168, 205)/Reset/NONE 3-3 Rgb(17, 168, 205)/Reset/NONE 9-9 Rgb(240, 240, 240)/Reset/BOLD 11-11 Rgb(17, 168, 205)/Reset/NONE 13-13 Rgb(17, 168, 205)/Reset/NONE 15-15 Rgb(17, 168, 205)/Reset/NONE 17-17 Rgb(17, 168, 205)/Reset/NONE 19-19 Rgb(17, 168, 205)/Reset/NONE 21-21 Rgb(17, 168, 205)/Reset/NONE 23-23 Rgb(17, 168, 205)/Reset/NONE 25-25 Rgb(17, 168, 205)/Reset/NONE 27-27 Rgb(17, 168, 205)/Reset/NONE 29-29 Rgb(17, 168, 205)/Reset/NONE 31-31 Rgb(17, 168, 205)/Reset/NONE
+7: 1-1 Rgb(10, 101, 123)/Reset/NONE 3-3 Rgb(10, 101, 123)/Reset/NONE 5-5 Rgb(10, 101, 123)/Reset/NONE 7-7 Rgb(10, 101, 123)/Reset/NONE 9-9 Rgb(10, 101, 123)/Reset/NONE 11-11 Rgb(10, 101, 123)/Reset/NONE 13-13 Rgb(10, 101, 123)/Reset/NONE 15-15 Rgb(10, 101, 123)/Reset/NONE 17-17 Rgb(10, 101, 123)/Reset/NONE 19-19 Rgb(10, 101, 123)/Reset/NONE 21-21 Rgb(10, 101, 123)/Reset/NONE 23-23 Rgb(10, 101, 123)/Reset/NONE 25-25 Rgb(10, 101, 123)/Reset/NONE 27-27 Rgb(10, 101, 123)/Reset/NONE 29-29 Rgb(10, 101, 123)/Reset/NONE 31-31 Rgb(10, 101, 123)/Reset/NONE 33-33 Rgb(10, 101, 123)/Reset/NONE 35-35 Rgb(240, 240, 240)/Reset/BOLD 37-37 Rgb(240, 240, 240)/Reset/BOLD
+8: 1-1 Rgb(10, 101, 123)/Reset/NONE 3-3 Rgb(10, 101, 123)/Reset/NONE 5-5 Rgb(10, 101, 123)/Reset/NONE 7-7 Rgb(10, 101, 123)/Reset/NONE 9-9 Rgb(10, 101, 123)/Reset/NONE 11-11 Rgb(10, 101, 123)/Reset/NONE 13-13 Rgb(10, 101, 123)/Reset/NONE 15-15 Rgb(10, 101, 123)/Reset/NONE 17-17 Rgb(10, 101, 123)/Reset/NONE 19-19 Rgb(10, 101, 123)/Reset/NONE 21-21 Rgb(10, 101, 123)/Reset/NONE 23-23 Rgb(10, 101, 123)/Reset/NONE 25-25 Rgb(10, 101, 123)/Reset/NONE 27-27 Rgb(10, 101, 123)/Reset/NONE 29-29 Rgb(10, 101, 123)/Reset/NONE 31-31 Rgb(10, 101, 123)/Reset/NONE 33-33 Rgb(10, 101, 123)/Reset/NONE 35-35 Rgb(10, 101, 123)/Reset/NONE 37-37 Rgb(10, 101, 123)/Reset/NONE
 9: 1-1 Rgb(10, 101, 123)/Reset/NONE 3-3 Rgb(10, 101, 123)/Reset/NONE 5-5 Rgb(10, 101, 123)/Reset/NONE 7-7 Rgb(10, 101, 123)/Reset/NONE 9-9 Rgb(10, 101, 123)/Reset/NONE 11-11 Rgb(10, 101, 123)/Reset/NONE 13-13 Rgb(10, 101, 123)/Reset/NONE 15-15 Rgb(10, 101, 123)/Reset/NONE 17-17 Rgb(10, 101, 123)/Reset/NONE 19-19 Rgb(10, 101, 123)/Reset/NONE 21-21 Rgb(10, 101, 123)/Reset/NONE 23-23 Rgb(10, 101, 123)/Reset/NONE 25-25 Rgb(10, 101, 123)/Reset/NONE 27-27 Rgb(10, 101, 123)/Reset/NONE 29-29 Rgb(10, 101, 123)/Reset/NONE 31-31 Rgb(10, 101, 123)/Reset/NONE 33-33 Rgb(10, 101, 123)/Reset/NONE 35-35 Rgb(10, 101, 123)/Reset/NONE 37-37 Rgb(10, 101, 123)/Reset/NONE 39-39 Rgb(10, 101, 123)/Reset/NONE
 11: 1-5 Rgb(46, 196, 196)/Reset/BOLD 8-12 Rgb(208, 124, 224)/Reset/BOLD 15-19 Rgb(108, 108, 108)/Reset/NONE 22-32 Rgb(108, 108, 108)/Reset/NONE

@@ -4515,6 +4515,10 @@ impl App {
         let shown = self.presentation.overlay == Some(Overlay::Confirmation)
             && self.presentation.confirmation == Some(ConfirmationKind::HuddleJoin);
         let motion = self.config.ui.motion();
+        if !shown && self.huddle_viz.mic_check.is_some() {
+            // The confirmation went away another way: let the devices go.
+            self.stop_mic_check();
+        }
         let Some(run) = &mut self.huddle_viz.mic_check else {
             return false;
         };
@@ -16748,6 +16752,11 @@ mod tests {
             .unwrap();
         }
         app.stop_mic_check();
+        assert!(app.huddle_viz.mic_check.is_none());
+        // A confirmation closed any other way ends the check too.
+        app.start_mic_check();
+        app.presentation.close_overlay();
+        assert!(!app.tick_huddle_viz_at(14.0));
         assert!(app.huddle_viz.mic_check.is_none());
     }
 

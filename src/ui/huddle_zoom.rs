@@ -522,9 +522,9 @@ fn bars(buf: &mut Buffer, body: Rect, zoom: &Zoom<'_>, paint: &Paint, theme: &Th
     let height = f32::from(area.height);
     let tone = |row: u16| {
         let at = f32::from(row) / height;
-        let rgb = if at >= 0.62 {
+        let rgb = if at >= 0.55 {
             tones[2]
-        } else if at >= 0.3 {
+        } else if at >= 0.28 {
             tones[1]
         } else {
             tones[0]
@@ -542,7 +542,7 @@ fn bars(buf: &mut Buffer, body: Rect, zoom: &Zoom<'_>, paint: &Paint, theme: &Th
         let from = f32::from(i) / f32::from(count);
         let to = f32::from(i + 1) / f32::from(count);
         // A gentle curve: speech fills the middle, a shout the top.
-        let value = spectrum.level(from, to).powf(1.8);
+        let value = spectrum.level(from, to).powf(1.35);
         let eighths = (value * height * 8.0).round() as i32;
         for row in 0..area.height {
             let y = area.bottom() - 1 - row;
@@ -563,7 +563,7 @@ fn bars(buf: &mut Buffer, body: Rect, zoom: &Zoom<'_>, paint: &Paint, theme: &Th
         if zoom.lanes.motion == Motion::Off {
             continue;
         }
-        let peak = spectrum.peak(from, to).powf(1.8);
+        let peak = spectrum.peak(from, to).powf(1.35);
         let quarters = (peak * height * 4.0).round() as i32;
         let row = quarters / 4;
         if peak > value + 0.03 && row >= 0 && (row as u16) < area.height {
@@ -1109,6 +1109,8 @@ mod tests {
     struct SlowWriter {
         delay_ms: std::sync::Arc<std::sync::atomic::AtomicU64>,
         bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        /// Time spent writing, in microseconds.
+        spent: std::sync::Arc<std::sync::atomic::AtomicU64>,
     }
 
     impl std::io::Write for SlowWriter {
@@ -1118,8 +1120,13 @@ mod tests {
             Ok(data.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
+            let started = std::time::Instant::now();
             let ms = self.delay_ms.load(std::sync::atomic::Ordering::Relaxed);
             std::thread::sleep(std::time::Duration::from_millis(ms));
+            self.spent.fetch_add(
+                started.elapsed().as_micros() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             Ok(())
         }
     }
@@ -1136,11 +1143,13 @@ mod tests {
         let mut throttle = Throttle::default();
         let delay_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(30));
         let bytes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let spent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let size = Rect::new(0, 0, 120, 30);
         let mut terminal = ratatui::Terminal::with_options(
             ratatui::backend::CrosstermBackend::new(SlowWriter {
                 delay_ms: delay_ms.clone(),
                 bytes: bytes.clone(),
+                spent: spent.clone(),
             }),
             ratatui::TerminalOptions {
                 viewport: ratatui::Viewport::Fixed(size),
@@ -1174,11 +1183,15 @@ mod tests {
                 channel: "team",
                 picker: None,
             };
-            let started = std::time::Instant::now();
+            // The time the frame spent being written (in bzz, the whole
+            // draw is timed; here only the writer, so a busy test machine
+            // does not make a quick writer look slow).
+            let before = spent.load(std::sync::atomic::Ordering::Relaxed);
             terminal
                 .draw(|frame| render(frame.buffer_mut(), size, &zoom, &theme))
                 .unwrap();
-            throttle.record(started.elapsed().as_secs_f64(), base);
+            let micros = spent.load(std::sync::atomic::Ordering::Relaxed) - before;
+            throttle.record(micros as f64 / 1e6, base);
             intervals.push(throttle.interval(base));
             t += throttle.interval(base);
         }

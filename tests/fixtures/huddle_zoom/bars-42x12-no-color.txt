@@ -3,16 +3,16 @@
 
 
 
-
-             ▂ ▆ ▆   ▁ ▁ ▄ ▔ ▔ ▁
- ▂ ▁ ▁ ▁ ▔ ▃ █ █ █ █ ▄ █ █ █ █ ▅ ▁
+             ▁ ▅ ▆   ▁ ▁ ▃ ▔ ▔ ▁
+ ▁ ▁     ▔ ▃ █ █ █ ▇ ▃ ▇ █ █ █ ▅
  █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ ▁ ▁
- █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ ▇ ▂
+ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ ▇ ▅
+ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ ▆
 
  ● Ada  ● Lin  · Sam  You · muted
 --- styles ---
 0: 1-35 Reset/Reset/BOLD
-6: 21-21 Reset/Reset/BOLD 23-23 Reset/Reset/BOLD 27-27 Reset/Reset/BOLD 29-29 Reset/Reset/BOLD 31-31 Reset/Reset/BOLD
-7: 9-9 Reset/Reset/BOLD
-8: 37-37 Reset/Reset/BOLD
+5: 21-21 Reset/Reset/BOLD 23-23 Reset/Reset/BOLD 27-27 Reset/Reset/BOLD 29-29 Reset/Reset/BOLD 31-31 Reset/Reset/BOLD
+6: 9-9 Reset/Reset/BOLD
+7: 35-35 Reset/Reset/BOLD 37-37 Reset/Reset/BOLD
 11: 1-5 Reset/Reset/BOLD 8-12 Reset/Reset/BOLD
