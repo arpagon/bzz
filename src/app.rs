@@ -1245,10 +1245,11 @@ impl App {
                         self.huddle_joining=false;
                         match result {
                             Ok(call) => {
+                                let notice = call._devices.notice().map(|notice| format!(" · {notice}"));
                                 if let Some(previous) = self.huddle_call.replace(*call) {
                                     previous.stop().await;
                                 }
-                                self.status_error=Some("joined the huddle · muted · m to unmute, space to talk".into());
+                                self.status_error=Some(format!("joined the huddle · muted · m to unmute, space to talk{}", notice.unwrap_or_default()));
                             }
                             Err(error) => self.status_error=Some(error),
                         }
