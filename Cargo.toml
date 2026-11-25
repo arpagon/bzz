@@ -163,6 +163,15 @@ name = "palette"
 harness = false
 # The palette's filter over 3,500 rows and its frame (v0.17 C1).
 
+# A development build stays usable in a huddle on Linux. Unoptimised, the
+# `pulseaudio` crate spends about 4 ms growing its buffer before every read,
+# and it writes playback only when a read finds nothing waiting: with
+# capture arriving every few milliseconds that moment never comes, and
+# playback starves (found in CI's audio job, v0.17). Release builds are not
+# affected.
+[profile.dev.package.pulseaudio]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
