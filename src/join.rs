@@ -128,10 +128,7 @@ fn relay_of(url: &url::Url, secure: bool) -> std::result::Result<RelayAddress, S
     }
     let insecure = !secure;
     if insecure && !is_loopback(host) {
-        return Err(
-            "an address without TLS (ws:// or http://) works only on this machine; use wss://"
-                .into(),
-        );
+        return Err("ws:// and http:// work only on this machine; use wss://".into());
     }
     let authority = match url.port() {
         Some(port) => format!("{host}:{port}"),

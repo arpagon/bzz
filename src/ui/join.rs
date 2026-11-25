@@ -602,27 +602,29 @@ impl JoinForm {
     }
 }
 
-/// What the community is, in one line: its name, and who it lets in.
-pub fn describe(address: &Address, facts: &RelayFacts) -> String {
+/// What the community is, in two short lines: its name and where it
+/// is, then who it lets in.
+pub fn describe(address: &Address, facts: &RelayFacts) -> (String, String) {
     let relay = address.relay();
     let name = facts.label(relay);
-    let mut line = if facts.name.is_some() {
+    let title = if facts.name.is_some() {
         format!("{name} · a Buzz community at {}", relay.host())
     } else {
         format!("{name}: a Buzz community")
     };
-    line.push_str(match (address.invite().is_some(), facts.members_only) {
-        (true, _) => " · your invite lets you in",
-        (false, true) => " · it lets in its members only",
-        (false, false) => " · open: anyone who signs in may join",
-    });
+    let mut detail = match (address.invite().is_some(), facts.members_only) {
+        (true, _) => "your invite lets you in",
+        (false, true) => "it lets in its members only",
+        (false, false) => "open: anyone who signs in may join",
+    }
+    .to_owned();
     if facts.federated == Requirement::Required {
-        line.push_str(" · sign-in through its identity provider");
+        detail.push_str(" · sign-in through its identity provider");
     }
     if relay.insecure {
-        line.push_str(" · on this machine, without TLS");
+        detail.push_str(" · on this machine, no TLS");
     }
-    line
+    (title, detail)
 }
 
 /// Where the key of a new identity is kept, in one line.
@@ -630,7 +632,7 @@ pub fn kept_where(keychain: bool) -> &'static str {
     if keychain {
         "its key kept in this system's keychain"
     } else {
-        "no keychain here: key in a passphrase-locked file"
+        "no keychain: key in a file with a passphrase"
     }
 }
 
@@ -713,10 +715,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, form: &JoinForm, theme: &Theme)
         Check::Idle => {}
         Check::Checking(_) => lines.push(Line::styled(pad("  checking…".into()), muted)),
         Check::Known { address, facts, .. } if form.known().is_some() => {
+            let (title, detail) = describe(address, facts);
             lines.push(Line::styled(
-                pad(format!("  ✓ {}", describe(address, facts))),
+                pad(format!("  ✓ {title}")),
                 theme.style(HighlightGroup::Success),
             ));
+            lines.push(Line::styled(pad(format!("    {detail}")), muted));
             if let Some(description) = &facts.description {
                 lines.push(Line::styled(pad(format!("    {description}")), muted));
             }
@@ -963,9 +967,9 @@ pub fn choices(
                 "{} · {}",
                 crate::domain::abbreviated_pubkey(&npub),
                 match identity.backend {
-                    KeyBackend::Keychain => "an identity bzz holds, in the keychain",
-                    KeyBackend::EncryptedFile => "an identity bzz holds; asks its passphrase",
-                    KeyBackend::BuzzDesktop => "an identity paired with Buzz desktop",
+                    KeyBackend::Keychain => "yours, in the keychain",
+                    KeyBackend::EncryptedFile => "yours; asks its passphrase",
+                    KeyBackend::BuzzDesktop => "paired with Buzz desktop",
                 }
             ),
             unavailable: None,
@@ -987,7 +991,7 @@ pub fn choices(
                     .into(),
             ),
             Ok(_) => None,
-            Err(reason) => Some(format!("{reason}: start Buzz desktop, then come back")),
+            Err(reason) => Some(reason),
         },
         unlock: false,
     });
@@ -995,7 +999,7 @@ pub fn choices(
         rows.push(Choice {
             who: Who::Browser,
             label: "Sign in through the browser".into(),
-            hint: "a new identity, signed in with your company account (:signin)".into(),
+            hint: "a new identity, with your company sign-in".into(),
             unavailable: None,
             unlock: false,
         });
@@ -1003,7 +1007,7 @@ pub fn choices(
     rows.push(Choice {
         who: Who::Import,
         label: "Import a key".into(),
-        hint: "an nsec you already have, typed or pasted here, hidden".into(),
+        hint: "an nsec you have, typed or pasted, hidden".into(),
         unavailable: None,
         unlock: false,
     });
@@ -1048,7 +1052,7 @@ mod tests {
             &facts(members_only),
             &[],
             form.keychain,
-            Err("no running Buzz Desktop was found".into()),
+            Err("Buzz desktop is not running here: start it, then come back".into()),
         );
         form.set_choices(rows);
     }
@@ -1157,7 +1161,7 @@ mod tests {
             form.notice
                 .as_deref()
                 .unwrap()
-                .contains("start Buzz desktop")
+                .contains("start it, then come back")
         );
         assert_eq!(form.stage, Stage::Who);
     }
@@ -1218,12 +1222,12 @@ mod tests {
     #[test]
     fn describe_says_who_a_community_lets_in() {
         let address = parse_address("my-team.example").unwrap();
-        assert!(describe(&address, &facts(true)).contains("members only"));
-        assert!(describe(&address, &facts(false)).contains("open"));
+        assert!(describe(&address, &facts(true)).1.contains("members only"));
+        assert!(describe(&address, &facts(false)).1.contains("open"));
         let local = Address::Relay(RelayAddress {
             url: "ws://localhost:3030/".into(),
             insecure: true,
         });
-        assert!(describe(&local, &facts(false)).contains("without TLS"));
+        assert!(describe(&local, &facts(false)).1.contains("no TLS"));
     }
 }

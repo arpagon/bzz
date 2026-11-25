@@ -1485,7 +1485,7 @@ impl App {
                 _=tick.tick()=>{
                     let changed=self.on_tick().await?;
                     let apps=self.tick_apps().await?;
-                    let joining=self.join_tick();
+                    let joining=self.join_tick().await?;
                     redraw.request_if(changed || apps || joining);
                 },
                 network=next_network(&mut self.runtime)=>{

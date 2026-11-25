@@ -50,9 +50,24 @@ impl Default for Lookups {
             desktop: || {
                 pairing::find_desktop(None)
                     .map(|(instance, _)| instance)
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| desktop_unavailable(&error))
             },
         }
+    }
+}
+
+/// Why pairing cannot be chosen, in the form's words.
+fn desktop_unavailable(error: &crate::Error) -> String {
+    match error {
+        crate::Error::Config(said) if said.starts_with("no running") => {
+            "Buzz desktop is not running here: start it, then come back".into()
+        }
+        crate::Error::Config(said) if said.starts_with("several") => {
+            "several Buzz desktops run here: bzz identity pair-desktop --instance <name> picks one"
+                .into()
+        }
+        crate::Error::Config(said) | crate::Error::Unsupported(said) => said.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -66,6 +81,9 @@ pub(super) struct JoinState {
     claimed: bool,
     /// Asked once per process (`keychain::available`).
     keychain: Option<bool>,
+    /// A community just joined, until its channels are known: then the
+    /// person lands in its first channel, or chooses one to open.
+    landing: Option<(uuid::Uuid, Instant)>,
     pub lookups: Lookups,
 }
 
@@ -236,23 +254,69 @@ impl App {
         }
     }
 
-    /// Every 100 ms: the address after a pause, and asking again while an
-    /// admin has not let you in. True when the screen changed.
-    pub(super) fn join_tick(&mut self) -> bool {
+    /// Every 100 ms: the address after a pause, asking again while an
+    /// admin has not let you in, and the landing in a community just
+    /// joined. True when the screen changed.
+    pub(super) async fn join_tick(&mut self) -> Result<bool> {
+        if self.join.landing.is_some() {
+            return self.land().await;
+        }
         let now = Instant::now();
         let Some(form) = &self.join.form else {
-            return false;
+            return Ok(false);
         };
         if form.check_due(now) {
             self.spawn_join_check();
-            return true;
+            return Ok(true);
         }
         if form.stage == Stage::Waiting && !form.asking && form.next_try.is_some_and(|at| at <= now)
         {
             self.spawn_admission();
-            return true;
+            return Ok(true);
         }
-        false
+        Ok(false)
+    }
+
+    /// Once a joined community's channels are known: its first channel is
+    /// opened, or, when the person is in none yet, the channel finder
+    /// lists the ones they may open. Nothing is joined for them.
+    async fn land(&mut self) -> Result<bool> {
+        let Some((community, since)) = self.join.landing else {
+            return Ok(false);
+        };
+        if self.active_community_id() != Some(community)
+            || since.elapsed() > std::time::Duration::from_secs(30)
+        {
+            self.join.landing = None;
+            return Ok(false);
+        }
+        if self.channels.is_empty()
+            || self.connection != crate::domain::ConnectionState::Online
+            || self.presentation.overlay.is_some()
+        {
+            return Ok(false);
+        }
+        self.join.landing = None;
+        let first = self
+            .ordered_channel_indexes()
+            .into_iter()
+            .find(|&index| self.channels[index].is_member);
+        match first {
+            Some(index) => {
+                self.select_channel_index(index);
+                self.showing_open_channel = false;
+                self.load_selected_channel().await?;
+                self.presentation
+                    .set_workspace_focus(crate::ui::state::FocusSurface::Timeline);
+            }
+            None => {
+                self.finder.clear();
+                self.presentation.open_overlay(Overlay::Finder);
+                self.status_error =
+                    Some("you are in no channel yet: choose one to open, Enter".into());
+            }
+        }
+        Ok(true)
     }
 
     /// Reads the address and asks what answers there.
@@ -774,6 +838,7 @@ impl App {
         ) {
             Ok(runtime) => {
                 self.adopt_runtime(index, runtime).await?;
+                self.join.landing = Some((id, Instant::now()));
                 self.status_error = Some(format!(
                     "you are in {}",
                     crate::render::sanitize::single_line(&label)
@@ -829,7 +894,7 @@ mod tests {
         // Never this machine's keychain or its Buzz desktop.
         app.join.lookups = Lookups {
             keychain: || false,
-            desktop: || Err("no running Buzz Desktop was found".into()),
+            desktop: || Err("Buzz desktop is not running here: start it, then come back".into()),
         };
         app
     }
@@ -909,10 +974,11 @@ mod tests {
         next_join_step(app).await;
         let shown = screen(app, 80, 24);
         assert!(shown.contains("✓ My team · a Buzz community"), "{shown}");
+        assert!(shown.contains("it lets in its members only"), "{shown}");
         app.join_key(key(KeyCode::Enter)).await.unwrap();
         let shown = screen(app, 80, 24);
         assert!(shown.contains("A new identity, made here"), "{shown}");
-        assert!(shown.contains("no keychain here"), "{shown}");
+        assert!(shown.contains("no keychain: key in a file"), "{shown}");
         app.join_key(key(KeyCode::Enter)).await.unwrap();
         type_text(app, PASSPHRASE).await;
         app.join_key(key(KeyCode::Enter)).await.unwrap();
@@ -1007,7 +1073,7 @@ mod tests {
         let saved = Config::load(&app.paths).unwrap();
         assert_eq!(saved.communities.len(), 1);
         assert!(app.runtime.is_some());
-        assert_eq!(relay.frames_of("AUTH").len() >= 2, true);
+        assert!(relay.frames_of("AUTH").len() >= 2);
         app.shutdown().await;
         relay.stop();
     }
@@ -1021,10 +1087,10 @@ mod tests {
         join_with_a_new_identity(&mut app, &relay).await;
         app.join_key(key(KeyCode::Esc)).await.unwrap();
         // Nothing is asked before its time.
-        assert!(!app.join_tick());
+        assert!(!app.join_tick().await.unwrap());
         member.store(true, Ordering::SeqCst);
         app.join.form.as_mut().unwrap().next_try = Some(Instant::now());
-        assert!(app.join_tick());
+        assert!(app.join_tick().await.unwrap());
         next_join_step(&mut app).await;
         // Not on the screen and nothing else open: bzz opens it.
         assert!(app.join.form.is_none());
@@ -1130,5 +1196,42 @@ mod tests {
         app.join_key(key(KeyCode::Esc)).await.unwrap();
         assert!(app.join.form.is_none());
         assert_eq!(app.presentation.overlay, None);
+    }
+
+    #[tokio::test]
+    async fn after_joining_bzz_lands_in_the_first_channel_or_offers_the_open_ones() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = empty_app(&temporary).await;
+        let relay = relay(Arc::new(AtomicBool::new(true)), false).await;
+        join_with_a_new_identity(&mut app, &relay).await;
+        let community = app.active_community_id().unwrap();
+        assert_eq!(app.join.landing.map(|(id, _)| id), Some(community));
+        // Nothing until the channels are known.
+        assert!(!app.join_tick().await.unwrap());
+        let channel = |name: &str, is_member: bool| crate::domain::Channel {
+            id: uuid::Uuid::new_v4(),
+            name: name.into(),
+            about: String::new(),
+            kind: crate::domain::ChannelKind::Stream,
+            visibility: crate::domain::Visibility::Public,
+            is_member,
+            is_hidden: false,
+            member_count: 3,
+            last_event_at: None,
+            facts: Default::default(),
+        };
+        app.channels = vec![channel("general", false), channel("random", false)];
+        app.connection = crate::domain::ConnectionState::Online;
+        assert!(app.join_tick().await.unwrap());
+        assert_eq!(app.presentation.overlay, Some(Overlay::Finder));
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap()
+                .contains("choose one to open")
+        );
+        assert!(app.join.landing.is_none(), "once");
+        app.shutdown().await;
+        relay.stop();
     }
 }
