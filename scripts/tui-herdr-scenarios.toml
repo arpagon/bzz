@@ -2525,12 +2525,12 @@ exit = "__BZZ_HERDR_EXIT__:0"
 size = "80x24"
 
 [[scenario.step]]
-keys = ["space", "space"]
-visible = "channel finder"
+keys = ["ctrl+k", "type:#t9-general"]
+visible = "▌# t9-general"
 
 [[scenario.step]]
-keys = ["type:t9-gen", "enter"]
-visible = "message #t9-general"
+keys = ["enter"]
+visible = "┌ t9-general"
 
 [[scenario.step]]
 keys = ["3", "G", "ctrl+k"]
