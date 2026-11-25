@@ -3,6 +3,9 @@
 
 #[cfg(feature = "huddles-audio")]
 pub mod audio;
+pub mod levels;
+pub mod meter;
+pub mod synth;
 
 /// Whether this build can join huddle audio.
 pub const AUDIO: bool = cfg!(feature = "huddles-audio");

@@ -444,6 +444,43 @@ pub struct UiConfig {
     pub huddle_input_device: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub huddle_output_device: Option<String>,
+    /// How much the interface moves: `full`, `calm` or `off` (plan v0.17.0
+    /// D9). Read it through [`UiConfig::motion`], which honours
+    /// `BZZ_NO_MOTION`.
+    #[serde(default)]
+    pub motion: Motion,
+}
+
+/// How much the interface moves. One setting for every animation in bzz.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Motion {
+    #[default]
+    Full,
+    /// Fewer frames, no flourishes.
+    Calm,
+    /// Nothing animates; the end state shows at once.
+    Off,
+}
+
+impl Motion {
+    /// `BZZ_NO_MOTION` set to anything but empty or `0` turns motion off,
+    /// whatever the configuration says.
+    pub fn resolve(self, no_motion: Option<&str>) -> Self {
+        match no_motion {
+            Some(value) if !value.is_empty() && value != "0" => Self::Off,
+            _ => self,
+        }
+    }
+}
+
+impl UiConfig {
+    /// The motion setting in effect: the configuration, unless
+    /// `BZZ_NO_MOTION` turns it off.
+    pub fn motion(&self) -> Motion {
+        self.motion
+            .resolve(std::env::var("BZZ_NO_MOTION").ok().as_deref())
+    }
 }
 
 impl Default for UiConfig {
@@ -461,6 +498,7 @@ impl Default for UiConfig {
             broker_agent_presence: false,
             huddle_input_device: None,
             huddle_output_device: None,
+            motion: Motion::Full,
         }
     }
 }
