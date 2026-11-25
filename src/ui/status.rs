@@ -22,6 +22,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     domain::ConnectionState,
     ui::{
+        action_table::{ActionSpec, FooterContext, TABLE},
+        keymap::{KeyMap, KeyScope, UiAction},
         theme::{HighlightGroup, Theme},
         typing::truncate_cells,
     },
@@ -118,6 +120,9 @@ pub struct StatusBarView<'a> {
     /// At the right, before the connection: a mark such as
     /// `DEMO · generated, offline`.
     pub mark: Slot<'a>,
+    /// The hint for where the focus is ([`footer`], v0.17 C10); without one
+    /// the line shows [`hint`].
+    pub hint: Option<Slot<'a>>,
 }
 
 impl<'a> StatusBarView<'a> {
@@ -134,6 +139,7 @@ impl<'a> StatusBarView<'a> {
             app_focused: false,
             huddle: Slot::default(),
             mark: Slot::default(),
+            hint: None,
         }
     }
 
@@ -168,6 +174,113 @@ pub const APP_LEAVE_HINT: &str = " Ctrl-c leaves the app ";
 /// The hint at the right: the two keys that lead to everything else.
 pub fn hint(theme: &Theme) -> Line<'static> {
     crate::ui::frame::hints(theme, &[("Ctrl-K", "actions"), ("?", "keys")])
+}
+
+/// How many keys the hint names before the palette's.
+const FOOTER_KEYS: usize = 3;
+
+/// A key as the status line writes it: `Ctrl-K`, `Space p`, `Enter`.
+fn footer_key(keymap: &KeyMap, scope: KeyScope, action: UiAction) -> String {
+    crate::ui::palette::key_label(keymap, scope, action).replace('+', "-")
+}
+
+/// The keys of the hint where the focus is `context` (v0.17 C10): the rows
+/// of the registry that are a hint there and can run now (`can_run`), lowest
+/// rank first, three at most, each with the key the live key map gives it;
+/// then the palette's key, where the palette opens.
+pub fn footer_keys(
+    keymap: &KeyMap,
+    context: FooterContext,
+    can_run: impl Fn(&ActionSpec) -> bool,
+) -> Vec<(String, &'static str)> {
+    let scope = context.scope();
+    let mut rows = TABLE
+        .iter()
+        .flat_map(|spec| {
+            spec.hints
+                .iter()
+                .filter(move |hint| hint.context == context)
+                .map(move |hint| (hint, spec))
+        })
+        .filter(|(_, spec)| can_run(spec))
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|(hint, _)| hint.rank);
+    let mut keys: Vec<(String, &'static str)> = Vec::new();
+    for (hint, spec) in rows {
+        let key = match (hint.key, spec.key_action()) {
+            (Some(key), _) => key.to_owned(),
+            (None, Some(action)) => footer_key(keymap, scope, action),
+            (None, None) => String::new(),
+        };
+        if key.is_empty() || keys.iter().any(|(known, _)| *known == key) {
+            continue;
+        }
+        keys.push((key, hint.label));
+        if keys.len() == FOOTER_KEYS {
+            break;
+        }
+    }
+    keys
+}
+
+/// The hint where the focus is: [`footer_keys`] and the palette's key, and
+/// shorter forms down to `Ctrl-K actions · ? keys` for a narrow window.
+/// Read from the registry and the live key map, so a user's binding shows.
+/// It is drawn with the frame that drew the rest: it asks for none.
+pub fn footer(
+    theme: &Theme,
+    keymap: &KeyMap,
+    context: FooterContext,
+    can_run: impl Fn(&ActionSpec) -> bool,
+) -> Slot<'static> {
+    let scope = context.scope();
+    let keys = footer_keys(keymap, context, can_run);
+    let palette = footer_key(keymap, scope, UiAction::OpenPalette);
+    let help = footer_key(keymap, scope, UiAction::OpenHelp);
+    let mut tail = Vec::new();
+    if !palette.is_empty() {
+        tail.push((palette.clone(), "actions"));
+    }
+    let mut base = tail.clone();
+    if !help.is_empty() {
+        base.push((help, "keys"));
+    }
+    let line = |pairs: &[(String, &'static str)]| {
+        let pairs = pairs
+            .iter()
+            .map(|(key, label)| (key.as_str(), *label))
+            .collect::<Vec<_>>();
+        crate::ui::frame::hints(theme, &pairs)
+    };
+    // A shorter form loses the padding the status line keeps from the first.
+    let bare = |pairs: &[(String, &'static str)]| {
+        let mut shorter = line(pairs);
+        shorter.spans.remove(0);
+        shorter.spans.pop();
+        shorter
+    };
+    if keys.is_empty() {
+        return Slot::new(line(&base), priority::HINT);
+    }
+    let with = |count: usize| {
+        keys.iter()
+            .take(count)
+            .cloned()
+            .chain(tail.iter().cloned())
+            .collect::<Vec<_>>()
+    };
+    let mut shorter = (1..keys.len())
+        .rev()
+        .map(|count| bare(&with(count)))
+        .collect::<Vec<_>>();
+    if !base.is_empty() {
+        shorter.push(bare(&base));
+    }
+    Slot {
+        line: Some(line(&with(keys.len()))),
+        priority: priority::HINT,
+        shorter,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -284,11 +397,23 @@ fn layout<'a>(theme: &Theme, view: StatusBarView<'a>, total: usize) -> Line<'a> 
             shorter: Vec::new(),
         }
     } else {
-        Part {
-            line: hint(theme),
-            priority: priority::HINT,
-            side: Side::Right,
-            shorter: Vec::new(),
+        match view.hint {
+            Some(Slot {
+                line: Some(line),
+                priority,
+                shorter,
+            }) => Part {
+                line,
+                priority,
+                side: Side::Right,
+                shorter,
+            },
+            _ => Part {
+                line: hint(theme),
+                priority: priority::HINT,
+                side: Side::Right,
+                shorter: Vec::new(),
+            },
         }
     });
 
@@ -596,6 +721,136 @@ mod tests {
 
     fn row_160(view: &StatusBarView<'_>) -> String {
         row(view, 160)
+    }
+
+    fn with_footer(
+        mode: &'static str,
+        keymap: &crate::ui::keymap::KeyMap,
+        context: crate::ui::action_table::FooterContext,
+    ) -> StatusBarView<'static> {
+        let mut view = StatusBarView::new(mode, ConnectionState::Online);
+        view.channel = Some("#general");
+        view.hint = Some(super::footer(&Theme::default(), keymap, context, |_| true));
+        view
+    }
+
+    /// v0.17 C10: the hint names the keys that matter where the focus is,
+    /// read from the registry and the live key map, ending in the palette's
+    /// key; a narrow row takes fewer, down to `Ctrl-K actions · ? keys`.
+    #[test]
+    fn the_hint_follows_the_focus_at_60_80_and_160_columns() {
+        use crate::ui::action_table::FooterContext as F;
+        let keymap = crate::ui::keymap::KeyMap::builtin();
+        for (context, mode, wide) in [
+            (
+                F::Message,
+                "NORMAL",
+                "Enter thread · r react · i reply · Ctrl-K actions",
+            ),
+            (
+                F::Timeline,
+                "NORMAL",
+                "i write · Space Space find · Ctrl-K actions",
+            ),
+            (
+                F::Thread,
+                "NORMAL",
+                "i reply · r react · Space 4 hide · Ctrl-K actions",
+            ),
+            (
+                F::Channels,
+                "NORMAL",
+                "Enter open · Space Space find · i write · Ctrl-K actions",
+            ),
+            (
+                F::Inbox,
+                "INBOX",
+                "o open · i reply · m read · Ctrl-K actions",
+            ),
+            (
+                F::Composer,
+                "INSERT",
+                "Enter send · Ctrl-J newline · Esc close",
+            ),
+            (F::Huddle, "HUDDLE", "s start · j join · m mute"),
+            (F::Overlay, "PALETTE", "Esc close"),
+        ] {
+            let view = with_footer(mode, &keymap, context);
+            let wide_row = row(&view, 160);
+            assert!(wide_row.contains(wide), "{context:?} 160: {wide_row}");
+            let middle = row(&view, 80);
+            assert!(middle.contains("● online"), "{context:?} 80: {middle}");
+            let narrow = row(&view, 60);
+            assert!(narrow.contains("● online"), "{context:?} 60: {narrow}");
+            if wide.contains("Ctrl-K actions") {
+                // Wherever the palette opens, its key is the last word.
+                for shown in [&wide_row, &middle, &narrow] {
+                    if shown.contains("actions") {
+                        let end = shown.trim_end();
+                        assert!(
+                            end.ends_with("Ctrl-K actions")
+                                || end.ends_with("Ctrl-K actions · ? keys"),
+                            "{context:?}: {shown}"
+                        );
+                    }
+                }
+            }
+        }
+        // At 80 columns the message hint is whole; at 60 it takes fewer.
+        let view = with_footer("NORMAL", &keymap, F::Message);
+        assert!(row(&view, 80).contains("Enter thread · r react · i reply · Ctrl-K actions"));
+        let narrow = row(&view, 60);
+        assert!(narrow.contains("Enter thread"), "{narrow}");
+        assert!(!narrow.contains("i reply"), "{narrow}");
+        // Narrower still: the two keys that lead to everything else.
+        let mut tight = with_footer("NORMAL", &keymap, F::Message);
+        tight.activity = Some("◆ Scout is typing ⠹");
+        let tight_row = row(&tight, 80);
+        assert!(tight_row.contains("Ctrl-K actions"), "{tight_row}");
+    }
+
+    /// A key a person binds in `keymap.toml` is the one the hint shows.
+    #[test]
+    fn the_hint_shows_a_users_binding() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let path = temporary.path().join("keymap.toml");
+        std::fs::write(
+            &path,
+            "[[binding]]\nkeys = ['r']\ndisabled = true\n\
+             [[binding]]\nkeys = ['x']\naction = 'react'\n\
+             [[binding]]\nkeys = ['ctrl-k']\ndisabled = true\n",
+        )
+        .unwrap();
+        let keymap = crate::ui::keymap::KeyMap::load_from(&path).unwrap();
+        let view = with_footer(
+            "NORMAL",
+            &keymap,
+            crate::ui::action_table::FooterContext::Message,
+        );
+        let shown = row(&view, 160);
+        assert!(
+            shown.contains("Enter thread · x react · i reply · Space k actions"),
+            "{shown}"
+        );
+    }
+
+    /// Only what can run is offered: a row the caller refuses is left out.
+    #[test]
+    fn the_hint_offers_only_what_can_run() {
+        let keymap = crate::ui::keymap::KeyMap::builtin();
+        let keys = super::footer_keys(
+            &keymap,
+            crate::ui::action_table::FooterContext::Message,
+            |spec| spec.id != "msg.react",
+        );
+        assert_eq!(
+            keys,
+            [
+                ("Enter".to_owned(), "thread"),
+                ("i".to_owned(), "reply"),
+                ("e".to_owned(), "edit"),
+            ]
+        );
     }
 
     #[tokio::test(start_paused = true)]

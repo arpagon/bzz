@@ -22,6 +22,67 @@ use crate::ui::{
 /// `keymap.toml` writes keys: `(GLOBAL, &["space", "n"])`.
 pub type DefaultKey = (KeyScope, &'static [&'static str]);
 
+/// Where the focus is, for the status line's hint (v0.17 C10).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FooterContext {
+    /// The timeline, a message selected.
+    Message,
+    /// The timeline with no message selected.
+    Timeline,
+    /// The thread pane.
+    Thread,
+    /// The channels or the communities.
+    Channels,
+    /// The Inbox.
+    Inbox,
+    /// Writing a message.
+    Composer,
+    /// The huddle panel.
+    Huddle,
+    /// Any other overlay: its own keys are in its frame.
+    Overlay,
+}
+
+impl FooterContext {
+    /// The key scope whose live bindings the hint reads.
+    pub const fn scope(self) -> KeyScope {
+        match self {
+            Self::Inbox => KeyScope::Inbox,
+            Self::Composer => KeyScope::Composer,
+            Self::Overlay | Self::Huddle => KeyScope::Overlay,
+            Self::Message | Self::Timeline | Self::Thread | Self::Channels => KeyScope::Workspace,
+        }
+    }
+}
+
+/// A row is a hint in the status line where the focus is `context`: its
+/// key from the live key map (or `key`, for an overlay's own key outside
+/// the map), then `label`. The lowest `rank` comes first.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Hint {
+    pub context: FooterContext,
+    pub rank: u8,
+    pub label: &'static str,
+    pub key: Option<&'static str>,
+}
+
+impl Hint {
+    pub const fn on(context: FooterContext, rank: u8, label: &'static str) -> Self {
+        Self {
+            context,
+            rank,
+            label,
+            key: None,
+        }
+    }
+
+    /// A key the overlay reads itself (the huddle panel's `m`).
+    pub const fn key(mut self, key: &'static str) -> Self {
+        self.key = Some(key);
+        self
+    }
+}
+
 /// Where a row can run. The Inbox route reduces only its own small set of
 /// actions (`action::reduce_inbox`); everything else waits for the
 /// workspace.
@@ -266,6 +327,8 @@ pub struct ActionSpec {
     /// help, "did you mean" and the `:` line say of it: its aliases, its
     /// arguments and what it does. `command::commands` lists these rows'.
     pub head: Option<CommandSpec>,
+    /// Where this row is a hint in the status line (v0.17 C10).
+    pub hints: &'static [Hint],
 }
 
 impl ActionSpec {
@@ -287,7 +350,13 @@ impl ActionSpec {
             place,
             keys: &[],
             head: None,
+            hints: &[],
         }
+    }
+
+    const fn hints(mut self, hints: &'static [Hint]) -> Self {
+        self.hints = hints;
+        self
     }
 
     /// This row stands for the `:` command `name`: `args` as a usage line
@@ -362,6 +431,7 @@ impl ActionSpec {
     }
 }
 
+use FooterContext as F;
 use Group as G;
 use Needs as N;
 use Run::{Command as Cmd, Prefill, Shell, Ui};
@@ -472,10 +542,12 @@ pub static TABLE: &[ActionSpec] = &[
     ui("msg.thread", "Open thread", G::Message, A::ToggleThread)
         .words("reply in thread conversation context close thread")
         .key_of(A::ActivateFocused)
+        .hints(&[Hint::on(F::Message, 1, "thread")])
         .needs(N::Message),
     ui("msg.compose", "Write a message", G::Message, A::Compose)
         .words("compose reply send post new message")
         .keys(&[(GLOBAL, &["i"])])
+        .hints(&[Hint::on(F::Message, 3, "reply"), Hint::on(F::Thread, 1, "reply"), Hint::on(F::Timeline, 1, "write"), Hint::on(F::Channels, 3, "write")])
         .needs(N::Channel),
     steps(
         "msg.react",
@@ -486,6 +558,7 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .key_of(A::React)
     .keys(&[(GLOBAL, &["r"])])
+    .hints(&[Hint::on(F::Message, 2, "react"), Hint::on(F::Thread, 2, "react")])
     .place(Where::Workspace)
     .words("emoji reaction")
     .aliases(&["react"])
@@ -493,6 +566,7 @@ pub static TABLE: &[ActionSpec] = &[
     ui("msg.edit", "Edit my message", G::Message, A::Edit)
         .words("change fix")
         .keys(&[(GLOBAL, &["e"])])
+        .hints(&[Hint::on(F::Message, 4, "edit")])
         .aliases(&["edit"])
         .needs(N::Message),
     ui("msg.delete", "Delete my message", G::Message, A::Delete)
@@ -586,6 +660,7 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("find switch jump open channel")
     .keys(&[(GLOBAL, &["space", "space"])])
+    .hints(&[Hint::on(F::Channels, 2, "find"), Hint::on(F::Timeline, 2, "find")])
     .aliases(&["go"]),
     ui("search.open", "Search messages", G::Go, A::Search)
         .words("find text from in after before")
@@ -637,7 +712,8 @@ pub static TABLE: &[ActionSpec] = &[
     .command(":profile <npub|hex>"),
     ui("item.open", "Open selected", G::Go, A::ActivateFocused)
         .words("channel thread community enter")
-        .keys(&[(GLOBAL, &["enter"])]),
+        .keys(&[(GLOBAL, &["enter"])])
+        .hints(&[Hint::on(F::Channels, 1, "open")]),
     ui("focus.channels", "Focus channels", G::Go, A::FocusChannels)
         .words("sidebar pane")
         .keys(&[(GLOBAL, &["2"])]),
@@ -787,7 +863,8 @@ pub static TABLE: &[ActionSpec] = &[
         A::ToggleContext,
     )
     .words("toggle context pane")
-    .keys(&[(GLOBAL, &["space", "4"])]),
+    .keys(&[(GLOBAL, &["space", "4"])])
+    .hints(&[Hint::on(F::Thread, 3, "hide")]),
     ui("app.zoom", "Zoom the app", G::View, A::ZoomApp)
         .words("app full screen")
         .keys(&[(GLOBAL, &["space", "5"])])
@@ -933,6 +1010,7 @@ pub static TABLE: &[ActionSpec] = &[
     // Inbox: its own route and keys.
     ui("inbox.reply", "Reply in place", G::Inbox, A::Compose)
         .words("inbox answer write")
+        .hints(&[Hint::on(F::Inbox, 2, "reply")])
         .place(Where::Inbox),
     ui("inbox.filter", "Cycle Inbox filter", G::Inbox, A::Filter)
         .words("inbox mentions unread show")
@@ -946,10 +1024,12 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("inbox go to channel thread")
     .keys(&[(INBOX, &["o"])])
+    .hints(&[Hint::on(F::Inbox, 1, "open")])
     .place(Where::Inbox),
     ui("inbox.mark_read", "Mark read", G::Inbox, A::MarkRead)
         .words("inbox done")
         .keys(&[(INBOX, &["m"])])
+        .hints(&[Hint::on(F::Inbox, 3, "read")])
         .place(Where::Inbox),
     ui("inbox.mark_unread", "Mark unread", G::Inbox, A::MarkUnread)
         .words("inbox")
@@ -1088,18 +1168,22 @@ pub static TABLE: &[ActionSpec] = &[
     cmd("huddle.start", "Start huddle", G::Huddle, "huddle start")
         .words("call voice audio")
         .command(":huddle start")
+        .hints(&[Hint::on(F::Huddle, 1, "start").key("s")])
         .needs(N::Channel),
     cmd("huddle.join", "Join huddle", G::Huddle, "huddle join")
         .words("call voice audio")
         .command(":huddle join")
+        .hints(&[Hint::on(F::Huddle, 1, "join").key("j")])
         .needs(N::Huddle),
     cmd("huddle.mute", "Mute or unmute", G::Huddle, "huddle mute")
         .words("huddle microphone call")
         .command(":huddle mute")
+        .hints(&[Hint::on(F::Huddle, 1, "mute").key("m")])
         .needs(N::InCall),
     cmd("huddle.leave", "Leave huddle", G::Huddle, "huddle leave")
         .words("call hang up")
         .command(":huddle leave")
+        .hints(&[Hint::on(F::Huddle, 2, "leave").key("l")])
         .needs(N::InCall),
     cmd(
         "huddle.end",
@@ -1440,11 +1524,15 @@ pub static TABLE: &[ActionSpec] = &[
             (OVERLAY, &["?"]),
             (COMPOSER, &["esc"]),
         ])
+.hints(&[Hint::on(F::Composer, 3, "close"), Hint::on(F::Overlay, 1, "close"), Hint::on(F::Huddle, 3, "close")])
         .place(Where::Anywhere),
     // Writing: the composer's own keys (not listed in the palette).
-    writing("composer.send", "Send", A::Submit).keys(&[(COMPOSER, &["enter"])]),
+    writing("composer.send", "Send", A::Submit)
+        .keys(&[(COMPOSER, &["enter"])])
+        .hints(&[Hint::on(F::Composer, 1, "send")]),
     writing("composer.newline", "New line", A::InsertNewline)
-        .keys(&[(COMPOSER, &["ctrl-j"]), (COMPOSER, &["alt-enter"])]),
+        .keys(&[(COMPOSER, &["ctrl-j"]), (COMPOSER, &["alt-enter"])])
+        .hints(&[Hint::on(F::Composer, 2, "newline")]),
     writing(
         "composer.complete",
         "Complete @mention or :emoji",

@@ -24,6 +24,29 @@ async fn app(temporary: &TempDir) -> super::App {
     super::App::new(config, paths, handle).await.unwrap()
 }
 
+/// An App with a community, so the workspace and its status line are drawn;
+/// nothing connects.
+async fn app_with_community(temporary: &TempDir) -> super::App {
+    let mut app = app(temporary).await;
+    let identity = crate::config::IdentityConfig {
+        id: uuid::Uuid::new_v4(),
+        label: "registry".into(),
+        pubkey: "a".repeat(64),
+        backend: crate::config::KeyBackend::Keychain,
+        key_ref: "identity:registry".into(),
+    };
+    app.config.identities.push(identity.clone());
+    app.config
+        .add_community(
+            "registry".into(),
+            "wss://registry.example".into(),
+            identity.id,
+            false,
+        )
+        .unwrap();
+    app
+}
+
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
@@ -90,6 +113,41 @@ async fn tab_completes_the_command_line_and_shows_what_it_offers() {
         app.command_completion,
         crate::ui::command::Completion::default()
     );
+}
+
+/// C10: the status line's hint follows the focus: the channels, the empty
+/// timeline, the Inbox, an overlay.
+#[tokio::test]
+async fn the_status_line_hint_follows_the_focus() {
+    use crate::ui::state::{FocusSurface, Route};
+    let temporary = TempDir::new().unwrap();
+    let mut app = app_with_community(&temporary).await;
+    let last = |app: &mut super::App, width| {
+        screen(app, width, 24)
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    app.presentation.set_workspace_focus(FocusSurface::Channels);
+    let channels = last(&mut app, 160);
+    assert!(channels.contains("Space Space find"), "{channels}");
+    assert!(
+        channels.trim_end().ends_with("Ctrl-K actions"),
+        "{channels}"
+    );
+    app.presentation.set_workspace_focus(FocusSurface::Timeline);
+    let timeline = last(&mut app, 160);
+    assert_ne!(channels, timeline);
+    assert!(timeline.contains("Ctrl-K actions"), "{timeline}");
+    app.presentation.route = Route::Inbox;
+    let inbox = last(&mut app, 160);
+    assert!(inbox.contains("Ctrl-K actions"), "{inbox}");
+    app.presentation.route = Route::Workspace;
+    app.presentation.open_overlay(Overlay::Command);
+    let overlay = last(&mut app, 160);
+    assert!(overlay.contains("Esc close"), "{overlay}");
+    assert!(!overlay.contains("Ctrl-K"), "{overlay}");
 }
 
 /// C11: `:theme n`, Tab completes a theme id bzz has; a wrong word

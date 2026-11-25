@@ -21,6 +21,8 @@ use uuid::Uuid;
 
 // v0.17 C11: Tab on the `:` line (task `registry`).
 mod command_line;
+// v0.17 C10: the status line's hint follows the focus (task `registry`).
+mod footer;
 mod manage;
 mod palette;
 mod pane;
@@ -11811,6 +11813,8 @@ impl App {
         view.activity = activity.as_deref();
         view.notice = &notice;
         view.app_focused = app_focused;
+        // v0.17 C10: the keys that matter where the focus is.
+        view.hint = self.footer_slot();
         if let Some((lines, priority)) = self.status_huddle_slot() {
             view.huddle_slot_shortening(lines, priority);
         }
