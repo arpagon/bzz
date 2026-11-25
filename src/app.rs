@@ -13292,6 +13292,11 @@ mod tests {
         let top = world.screen()[0].clone();
         assert!(top.contains(banner), "the workspace: {top}");
         assert!(top.contains("refused in "), "{top}");
+        // The banner has its own row: the panes' titles are whole under it
+        // (L5).
+        let titles = world.screen()[1].clone();
+        assert!(titles.contains("┌ channels ─"), "{titles}");
+        assert!(titles.contains("┌ general ─"), "{titles}");
         // Not only in the agents panel: with the directory of other
         // people's agents open, with the help, a search, the Inbox, and
         // while a message is being written.
@@ -13317,6 +13322,10 @@ mod tests {
         // Under the help, which fills the screen; and in the Inbox.
         world.app.presentation.open_overlay(Overlay::Help);
         assert!(world.screen()[0].contains(banner), "the help");
+        assert!(
+            world.screen()[1].contains("effective keymap"),
+            "the help starts under the banner"
+        );
         world.app.presentation.close_overlay();
         world.app.open_inbox();
         assert!(world.screen()[0].contains(banner), "the Inbox");
@@ -13814,6 +13823,46 @@ mod tests {
             assert!(screen.contains(line.as_str()), "{screen}");
         }
         assert!(screen.contains("recent activity (no content)"), "{screen}");
+    }
+
+    /// L4: behind an overlay every cell steps back (the DIM attribute, so
+    /// it holds without colour); the overlay's own cells do not.
+    #[tokio::test]
+    async fn behind_an_overlay_every_cell_is_dim() {
+        use ratatui::style::Modifier;
+
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .all(|cell| !cell.modifier.contains(Modifier::DIM)),
+            "nothing is dim without an overlay"
+        );
+        app.presentation.open_overlay(Overlay::Finder);
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let popup = super::centered(Rect::new(0, 0, 100, 30), 70, 12);
+        let buffer = terminal.backend().buffer();
+        for y in 0..30 {
+            for x in 0..100 {
+                let inside = popup.contains(ratatui::layout::Position { x, y });
+                assert_eq!(
+                    buffer[(x, y)].modifier.contains(Modifier::DIM),
+                    !inside,
+                    "({x}, {y}) inside the finder: {inside}"
+                );
+            }
+        }
+        // Its keys are in the footer, the key in the hint colour.
+        let footer = (popup.x..popup.right())
+            .map(|x| buffer[(x, popup.bottom() - 1)].symbol())
+            .collect::<String>();
+        assert!(footer.contains("Enter open · Esc close"), "{footer}");
     }
 
     /// The deterministic twin of the `v013-panels-empty-profile` Herdr scenario.

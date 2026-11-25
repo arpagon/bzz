@@ -1726,6 +1726,95 @@ mod tests {
         }
     }
 
+    fn drawn(messages: &[Message], state: &mut TimelineState, width: u16) -> Vec<String> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 16)).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render(
+                    frame,
+                    frame.area(),
+                    messages,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    state,
+                    "general",
+                    &Theme::default(),
+                    true,
+                    Some("me"),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// L6: the line goes right before the first unread message, as wide
+    /// as the conversation, and nowhere without a marker.
+    #[test]
+    fn a_new_line_is_drawn_before_the_first_unread_message() {
+        let mut read = message("ada", 1_700_000_000);
+        read.content = "seen already".into();
+        let mut unread = message("lin", 1_700_000_060);
+        unread.content = "fresh news".into();
+        let messages = vec![read, unread.clone()];
+        let mut state = TimelineState {
+            at_live_bottom: true,
+            ..TimelineState::default()
+        };
+        let rows = drawn(&messages, &mut state, 40);
+        assert!(!rows.iter().any(|row| row.contains(" new ")), "{rows:#?}");
+        state.new_marker = Some(unread.event_id.clone());
+        let rows = drawn(&messages, &mut state, 40);
+        let line = rows
+            .iter()
+            .position(|row| row.contains("─ new ─"))
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        let fresh = rows
+            .iter()
+            .position(|row| row.contains("fresh news"))
+            .unwrap();
+        let seen = rows
+            .iter()
+            .position(|row| row.contains("seen already"))
+            .unwrap();
+        assert!(seen < line && line < fresh, "{rows:#?}");
+    }
+
+    /// L5: an empty conversation says so and what to do next; a banner
+    /// takes the first row with what to do when bzz is offline.
+    #[test]
+    fn an_empty_conversation_and_an_offline_one_say_what_to_do_next() {
+        let mut state = TimelineState {
+            at_live_bottom: true,
+            empty_hint: Some("i writes the first one".into()),
+            ..TimelineState::default()
+        };
+        let rows = drawn(&[], &mut state, 60);
+        let text = rows.join("\n");
+        assert!(text.contains("No messages here yet"), "{text}");
+        assert!(text.contains("i writes the first one"), "{text}");
+        state.banner = Some("offline · showing what is saved here · :reconnect tries now".into());
+        let mut hello = message("ada", 1_700_000_000);
+        hello.content = "hello".into();
+        let rows = drawn(&[hello], &mut state, 80);
+        assert!(
+            rows[1].contains("⚠ offline · showing what is saved here · :reconnect tries now"),
+            "{rows:#?}"
+        );
+        let text = rows.join("\n");
+        assert!(!text.contains("No messages here yet"), "{text}");
+        assert!(text.contains("hello"), "{text}");
+    }
+
     #[test]
     fn readable_area_keeps_the_pane_but_bounds_message_measure() {
         let area = readable_area(Rect::new(4, 2, 180, 10), Some(110));

@@ -489,6 +489,51 @@ fn thread_read_markers_clear_their_sidebar_unread_indicator() {
     );
 }
 
+/// L6: the count beside a channel is the number of messages the unread set
+/// counts as unread; reading the channel clears it.
+#[test]
+fn unread_counts_agree_with_the_unread_channels() {
+    let (mut store, community, channel, other) = fixture();
+    let self_pubkey = "a".repeat(64);
+    assert!(
+        store
+            .unread_channel_counts(community, &self_pubkey)
+            .unwrap()
+            .is_empty()
+    );
+    for (at, text) in [(10, "one"), (20, "two"), (30, "three")] {
+        let event = buzz_sdk::build_message(channel, text, None, &[], false, &[], &[])
+            .unwrap()
+            .custom_created_at(Timestamp::from(at))
+            .sign_with_keys(&other)
+            .unwrap();
+        store.apply_event(community, &event).unwrap();
+    }
+    store
+        .advance_read(community, &self_pubkey, &channel.to_string(), 10, true)
+        .unwrap();
+    let counts = store
+        .unread_channel_counts(community, &self_pubkey)
+        .unwrap();
+    assert_eq!(counts.get(&channel), Some(&2));
+    assert_eq!(
+        counts
+            .keys()
+            .copied()
+            .collect::<std::collections::HashSet<_>>(),
+        store.unread_channels(community, &self_pubkey).unwrap()
+    );
+    store
+        .advance_read(community, &self_pubkey, &channel.to_string(), 30, true)
+        .unwrap();
+    assert!(
+        store
+            .unread_channel_counts(community, &self_pubkey)
+            .unwrap()
+            .is_empty()
+    );
+}
+
 #[test]
 fn thread_summaries_count_delivered_non_deleted_descendants() {
     let (mut store, community, channel, author) = fixture();
