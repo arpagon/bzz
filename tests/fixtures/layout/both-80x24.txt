@@ -1,6 +1,6 @@
 ┌ general ──── channels 2 · thread 4 ┐┌ board ─────────────────────────────────┐
 │ ⚠ offline · showing what is saved  ││board for the release                   │
-│here                                ││room 40x16                              │
+│here                                ││room 40x18                              │
 │ [◆0] 00000000…0001  01:53          ││                                        │
 │      message number 52             ││                                        │
 │ [■0] 00000000…0002  02:03          ││                                        │

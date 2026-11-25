@@ -508,17 +508,26 @@ async fn goldens_of_the_main_screens_at_four_widths() {
         // The focus is on the conversation, so nothing takes its place.
         app.presentation.set_workspace_focus(FocusSurface::Timeline);
         for (width, height) in [(60, 24), (80, 24), (120, 32), (160, 45)] {
-            let mut rows = Vec::new();
-            for _ in 0..200 {
+            // The app's session answers on its own thread: wait for its
+            // view (a loaded machine takes seconds), never compare before.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let rows = loop {
                 app.poll_apps();
-                rows = draw(&mut app, width, height);
-                let shown = rows.join("\n");
-                let drawn = app.shell.last_panes.unwrap().app.is_some();
-                if !app_open || !drawn || shown.contains("board for the release") {
-                    break;
+                let rows = draw(&mut app, width, height);
+                // The view of this size, not the last size's.
+                let room = app.shell.last_panes.unwrap().app.map(|pane| {
+                    let inside = crate::ui::layout::inside(pane);
+                    format!("room {}x{}", inside.width, inside.height)
+                });
+                if !app_open || room.is_none_or(|room| rows.join("\n").contains(&room)) {
+                    break rows;
                 }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{state} at {width}x{height}: the app drew nothing in 30 s"
+                );
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
+            };
             let text = rows
                 .iter()
                 .map(|row| row.trim_end())

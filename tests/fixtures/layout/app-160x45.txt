@@ -1,6 +1,6 @@
 ┌ communities ───────┐┌ channels ───────── smart ┐┌ general ─────────────────────────────────────────────────────────┐┌ board ─────────────────────────────────┐
 │· shell             ││  Channels                ││ ⚠ offline · showing what is saved here                           ││board for the release                   │
-│                    ││  #general                ││ [■0] 00000000…0002  00:03                                        ││room 40x26                              │
+│                    ││  #general                ││ [■0] 00000000…0002  00:03                                        ││room 40x39                              │
 │                    ││  #room-00                ││      message number 41                                           ││                                        │
 │                    ││  #room-01                ││ [●0] 00000000…0000  00:13                                        ││                                        │
 │                    ││  #room-02                ││      message number 42                                           ││                                        │

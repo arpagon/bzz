@@ -1,6 +1,6 @@
 ┌ channels ───────── smart ┐┌ general ─────────────── hidden · communities 1 ┐┌ board ─────────────────────────────────┐
 │  Channels                ││ ⚠ offline · showing what is saved here         ││board for the release                   │
-│  #general                ││      message number 47                         ││room 40x18                              │
+│  #general                ││      message number 47                         ││room 40x26                              │
 │  #room-00                ││ [●0] 00000000…0000  01:13                      ││                                        │
 │  #room-01                ││      message number 48                         ││                                        │
 │  #room-02                ││ [◆0] 00000000…0001  01:23                      ││                                        │

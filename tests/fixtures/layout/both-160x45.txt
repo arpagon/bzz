@@ -1,6 +1,6 @@
 ┌ channels ───────── smart ┐┌ general ─────────── hidden · communities 1 ┐┌ context · 2 replies ─────────────────────┐┌ board ─────────────────────────────────┐
 │  Channels                ││ ⚠ offline · showing what is saved here     ││──── 2023-11-14 ────                      ││board for the release                   │
-│  #general                ││ [■0] 00000000…0002  00:03                  ││ [◆0] 00000000…0001  23:53                ││room 40x26                              │
+│  #general                ││ [■0] 00000000…0002  00:03                  ││ [◆0] 00000000…0001  23:53                ││room 40x39                              │
 │  #room-00                ││      message number 41                     ││      message number 40                   ││                                        │
 │  #room-01                ││ [●0] 00000000…0000  00:13                  ││──── 2023-11-15 ────                      ││                                        │
 │  #room-02                ││      message number 42                     ││ [■0] 00000000…0002  00:03                ││                                        │
