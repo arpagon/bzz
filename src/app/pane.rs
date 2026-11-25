@@ -1293,7 +1293,7 @@ impl App {
             })
             .collect::<Vec<_>>();
         let note = if self.demo {
-            "Enter opens the selected app in this channel · Esc closes this list. The demo's Board is installed and approved; proposing, sharing and approving need a real community."
+            "Enter opens it in this channel · Esc closes this list.\nIn the demo the Board is installed and approved."
         } else if rows.is_empty() {
             "No app is installed in this community. At the shell: bzz app new <name>, then bzz app add <folder>."
         } else {
