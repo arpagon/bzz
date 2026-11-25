@@ -606,7 +606,9 @@ pub struct App {
     action_menu: Option<ActionMenu>,
     keymap: KeyMap,
     input_router: InputRouter,
-    leader_started_at: Option<Instant>,
+    /// When the pending key sequence started, on Tokio's clock so a test
+    /// can move it: its panel appears 300 ms later (v0.17 C6).
+    leader_started_at: Option<tokio::time::Instant>,
     presentation: PresentationState,
     community_cursor: usize,
     connection: ConnectionState,
@@ -2831,16 +2833,27 @@ impl App {
             self.typing_spinner_frame = 0;
             self.typing_spinner_advanced_at = Instant::now();
         }
-        if self
-            .leader_started_at
-            .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
-        {
-            self.input_router.cancel_sequence();
-            self.leader_started_at = None;
-            if self.presentation.overlay == Some(Overlay::WhichKey) {
-                self.presentation.overlay = None;
+        if let Some(started) = self.leader_started_at {
+            let elapsed = started.elapsed();
+            if !self.input_router.sequence_active() {
+                self.leader_started_at = None;
+            } else if self.presentation.overlay.is_none()
+                && crate::ui::help::leader_panel_due(elapsed)
+            {
+                // Who knows the next key never sees the panel; once shown it
+                // waits for that key, or Esc (v0.17 C6).
+                self.presentation.open_overlay(Overlay::WhichKey);
+                changed = true;
+            } else if self.presentation.overlay.is_some()
+                && self.presentation.overlay != Some(Overlay::WhichKey)
+                && elapsed >= LEADER_TIMEOUT
+            {
+                // Something else took the screen: the panel cannot show, and
+                // the sequence ends as in v0.16.
+                self.input_router.cancel_sequence();
+                self.leader_started_at = None;
+                changed = true;
             }
-            changed = true;
         }
         if self
             .search_dirty_since
@@ -3652,8 +3665,8 @@ impl App {
                     .await?;
             }
             InputDispatch::Pending { .. } => {
-                self.leader_started_at.get_or_insert_with(Instant::now);
-                self.presentation.open_overlay(Overlay::WhichKey);
+                self.leader_started_at
+                    .get_or_insert_with(tokio::time::Instant::now);
             }
             InputDispatch::Owned(InputOwner::Overlay) => {
                 self.handle_presentation_overlay_key(key, guard, terminal)
@@ -3695,8 +3708,8 @@ impl App {
                 self.dispatch_inbox_action(action, guard, terminal).await?;
             }
             InputDispatch::Pending { .. } => {
-                self.leader_started_at.get_or_insert_with(Instant::now);
-                self.presentation.open_overlay(Overlay::WhichKey);
+                self.leader_started_at
+                    .get_or_insert_with(tokio::time::Instant::now);
             }
             InputDispatch::Owned(InputOwner::Overlay) => {
                 self.handle_presentation_overlay_key(key, guard, terminal)
@@ -10913,18 +10926,20 @@ impl App {
                 );
             }
             Some(Overlay::WhichKey) => {
-                let popup = centered(area, 48, 14);
+                // Sized to show every key (v0.17 C6).
+                let (popup, lines) = crate::ui::help::leader_panel(
+                    &self.keymap,
+                    if self.presentation.route == Route::Inbox {
+                        KeyScope::Inbox
+                    } else {
+                        KeyScope::Workspace
+                    },
+                    self.input_router.sequence(),
+                    area,
+                );
                 frame.render_widget(Clear, popup);
                 frame.render_widget(
-                    Paragraph::new(crate::ui::help::which_key(
-                        &self.keymap,
-                        if self.presentation.route == Route::Inbox {
-                            KeyScope::Inbox
-                        } else {
-                            KeyScope::Workspace
-                        },
-                        self.input_router.sequence(),
-                    ))
+                    Paragraph::new(lines.join("\n"))
                     .style(self.theme.style(HighlightGroup::Normal))
                     .block(
                         Block::bordered()
@@ -15171,38 +15186,6 @@ mod tests {
 
         assert!(!app.cache_dirty);
         assert!(!app.on_tick().await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn expired_leader_prefix_is_cancelled_without_an_action() {
-        let temporary = TempDir::new().unwrap();
-        let paths = Paths {
-            config_dir: temporary.path().join("config"),
-            data_dir: temporary.path().join("data"),
-            cache_dir: temporary.path().join("cache"),
-        };
-        paths.ensure().unwrap();
-        let config = Config::default();
-        let mut store = Store::open(paths.database_file()).unwrap();
-        store.sync_config(&config).unwrap();
-        let handle = StoreHandle::spawn(store).unwrap();
-        let mut app = super::App::new(config, paths, handle).await.unwrap();
-        let _ = app.input_router.dispatch(
-            &app.keymap,
-            crate::ui::input::InputContext::workspace(),
-            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
-        );
-        app.leader_started_at = Some(std::time::Instant::now() - super::LEADER_TIMEOUT);
-        app.presentation
-            .open_overlay(crate::ui::state::Overlay::WhichKey);
-
-        app.on_tick().await.unwrap();
-
-        assert!(!app.input_router.sequence_active());
-        assert_ne!(
-            app.presentation.overlay,
-            Some(crate::ui::state::Overlay::WhichKey)
-        );
     }
 
     #[tokio::test]

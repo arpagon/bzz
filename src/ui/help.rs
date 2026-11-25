@@ -7,14 +7,27 @@
 //!
 //! The help scrolls: [`help_lines`] wraps it to the window's width, so the
 //! caller knows exactly how many rows there are, and [`HelpScroll`] keeps the
-//! position.
+//! position. The leader panel ([`leader_panel`]) is sized to show every
+//! continuation, in two columns when one does not fit (v0.17 C6).
 
+use std::time::Duration;
+
+use ratatui::layout::Rect;
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
 use crate::ui::{
     actions::ContextAction,
     keymap::{KeyChord, KeyMap, KeyScope},
 };
+
+/// How long a key sequence waits before the leader panel appears: who knows
+/// the next key never sees it (v0.17 C6; which-key.nvim waits 200 ms).
+pub const LEADER_PANEL_DELAY: Duration = Duration::from_millis(300);
+
+/// Whether the leader panel is due, `elapsed` after the sequence started.
+pub fn leader_panel_due(elapsed: Duration) -> bool {
+    elapsed >= LEADER_PANEL_DELAY
+}
 
 /// The keys the help itself answers, as its first lines say.
 pub const HELP_KEYS_HINT: &str =
@@ -264,7 +277,11 @@ impl HelpScroll {
     }
 }
 
-pub fn which_key(keymap: &KeyMap, scope: KeyScope, prefix: &[KeyChord]) -> String {
+fn which_key_hints(
+    keymap: &KeyMap,
+    scope: KeyScope,
+    prefix: &[KeyChord],
+) -> Vec<(String, &'static str)> {
     let mut hints = keymap
         .next_chords(scope, prefix)
         .into_iter()
@@ -280,13 +297,23 @@ pub fn which_key(keymap: &KeyMap, scope: KeyScope, prefix: &[KeyChord]) -> Strin
         })
         .collect::<Vec<_>>();
     hints.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    hints
+}
 
-    let prefix = prefix
+fn prefix_label(prefix: &[KeyChord]) -> String {
+    prefix
         .iter()
         .map(|chord| chord.label())
         .collect::<Vec<_>>()
-        .join(" ");
-    let mut lines = vec![format!(" {prefix} · next key "), String::new()];
+        .join(" ")
+}
+
+pub fn which_key(keymap: &KeyMap, scope: KeyScope, prefix: &[KeyChord]) -> String {
+    let hints = which_key_hints(keymap, scope, prefix);
+    let mut lines = vec![
+        format!(" {} · next key ", prefix_label(prefix)),
+        String::new(),
+    ];
     lines.extend(
         hints
             .into_iter()
@@ -295,6 +322,61 @@ pub fn which_key(keymap: &KeyMap, scope: KeyScope, prefix: &[KeyChord]) -> Strin
     lines.push(String::new());
     lines.push("Esc cancels".into());
     lines.join("\n")
+}
+
+/// The leader panel for `area`: where it goes and its rows, every
+/// continuation shown. One column when the window is tall enough, else two
+/// (v0.17 C6: at 80x24 v0.16.0 lost keys below the panel's edge).
+pub fn leader_panel(
+    keymap: &KeyMap,
+    scope: KeyScope,
+    prefix: &[KeyChord],
+    area: Rect,
+) -> (Rect, Vec<String>) {
+    let hints = which_key_hints(keymap, scope, prefix)
+        .into_iter()
+        .map(|(key, action)| format!("  {key:<7} {action}"))
+        .collect::<Vec<_>>();
+    let mut lines = vec![
+        format!(" {} \u{b7} next key ", prefix_label(prefix)),
+        String::new(),
+    ];
+    // Header, a blank, the hints, a blank, the footer, two borders.
+    let fixed = 2 + 2 + 2;
+    let available = usize::from(area.height).saturating_sub(fixed).max(1);
+    let column_width = hints.iter().map(|hint| hint.width()).max().unwrap_or(0) + 2;
+    let columns = if hints.len() <= available { 1 } else { 2 };
+    let rows = hints.len().div_ceil(columns);
+    for row in 0..rows {
+        let mut line = String::new();
+        for column in 0..columns {
+            if let Some(hint) = hints.get(column * rows + row) {
+                if column + 1 < columns {
+                    line.push_str(&format!("{hint:<column_width$}"));
+                } else {
+                    line.push_str(hint);
+                }
+            }
+        }
+        lines.push(line.trim_end().to_owned());
+    }
+    lines.push(String::new());
+    lines.push(" Esc cancels".into());
+    let content_width = lines.iter().map(|line| line.width()).max().unwrap_or(0);
+    let width = u16::try_from(content_width + 4)
+        .unwrap_or(u16::MAX)
+        .max(30)
+        .min(area.width);
+    let height = u16::try_from(lines.len() + 2)
+        .unwrap_or(u16::MAX)
+        .min(area.height);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    (popup, lines)
 }
 
 #[cfg(test)]
@@ -309,7 +391,8 @@ mod tests {
     };
 
     use super::{
-        HelpScroll, effective_keymap, effective_keymap_with_actions, help_lines, which_key,
+        HelpScroll, effective_keymap, effective_keymap_with_actions, help_lines, leader_panel,
+        leader_panel_due, which_key,
     };
 
     #[test]
@@ -416,5 +499,37 @@ mod tests {
         scroll.bottom();
         assert_eq!(scroll.offset, lines.len() - 21);
         assert!(scroll.title().contains(&format!("of {}", lines.len())));
+    }
+
+    /// v0.17 C6: every continuation of the leader is in the panel at 80x24
+    /// and at 120x32, and the panel waits 300 ms.
+    #[test]
+    fn leader_panel_shows_every_key_at_80x24() {
+        let keymap = KeyMap::builtin();
+        let space = [KeyChord::new(
+            crossterm::event::KeyCode::Char(' '),
+            crossterm::event::KeyModifiers::NONE,
+        )];
+        let continuations = keymap.next_chords(KeyScope::Workspace, &space);
+        for (width, height) in [(80, 23), (120, 31), (40, 12)] {
+            let area = ratatui::layout::Rect::new(0, 0, width, height);
+            let (popup, lines) = leader_panel(&keymap, KeyScope::Workspace, &space, area);
+            assert!(popup.height <= area.height && popup.width <= area.width);
+            // Every line inside the frame.
+            assert!(usize::from(popup.height) >= lines.len() + 2);
+            let text = lines.join("\n");
+            for chord in &continuations {
+                let label = chord.label();
+                assert!(
+                    lines
+                        .iter()
+                        .any(|line| line.contains(&format!("  {label} "))),
+                    "{width}x{height}: {label} missing in\n{text}"
+                );
+            }
+            assert!(text.contains("sort"), "{text}");
+        }
+        assert!(!leader_panel_due(std::time::Duration::from_millis(299)));
+        assert!(leader_panel_due(std::time::Duration::from_millis(300)));
     }
 }

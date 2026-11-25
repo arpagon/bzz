@@ -2,6 +2,8 @@
 //! `:` line answers a mistake under its prompt, the finder's selection, the
 //! leader panel's delay, and `d`, `u` and `:status`.
 
+use std::time::Duration;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
 use tempfile::TempDir;
@@ -264,4 +266,73 @@ async fn the_finder_selection_moves() {
     let screen = rows(&mut app, 120, 40).join("\n");
     assert!(screen.contains("› @Scout"), "{screen}");
     assert!(screen.contains("start a DM"), "{screen}");
+}
+
+/// C6: the leader panel appears 300 ms after the key, on bzz's clock, asks
+/// for one frame then, and waits for the next key without timing out.
+#[tokio::test]
+async fn the_leader_panel_waits_300_ms_and_asks_for_one_frame() {
+    let temporary = TempDir::new().unwrap();
+    let mut app = app(&temporary).await;
+    let _ = app.input_router.dispatch(
+        &app.keymap,
+        crate::ui::input::InputContext::workspace(),
+        key(KeyCode::Char(' ')),
+    );
+    let now = tokio::time::Instant::now();
+    app.leader_started_at = Some(now - Duration::from_millis(150));
+    assert!(!app.on_tick().await.unwrap());
+    assert_eq!(app.presentation.overlay, None);
+    app.leader_started_at = Some(now - Duration::from_millis(300));
+    let mut frames = 0;
+    for _ in 0..5 {
+        frames += usize::from(app.on_tick().await.unwrap());
+    }
+    assert_eq!(frames, 1);
+    assert_eq!(app.presentation.overlay, Some(Overlay::WhichKey));
+    // Long after v0.16.0's 750 ms the panel is still there, for reading.
+    app.leader_started_at = Some(now - Duration::from_secs(5));
+    assert!(!app.on_tick().await.unwrap());
+    assert!(app.input_router.sequence_active());
+    assert_eq!(app.presentation.overlay, Some(Overlay::WhichKey));
+    for (width, height) in [(80, 24), (120, 32)] {
+        let screen = rows(&mut app, width, height).join("\n");
+        for label in [
+            "channel / DM switcher",
+            "contextual actions",
+            "cycle channel sort",
+            "open Inbox",
+            "options / theme",
+            "view author profile",
+            "refresh",
+            "zoom the app",
+            "toggle communities",
+            "toggle channels",
+            "toggle context",
+            "Esc cancels",
+        ] {
+            assert!(
+                screen.contains(label),
+                "{width}x{height}: {label}\n{screen}"
+            );
+        }
+    }
+}
+
+/// A sequence whose panel cannot show (something else holds the screen)
+/// still ends after 750 ms, as in v0.16.0.
+#[tokio::test]
+async fn a_sequence_behind_another_overlay_still_expires() {
+    let temporary = TempDir::new().unwrap();
+    let mut app = app(&temporary).await;
+    let _ = app.input_router.dispatch(
+        &app.keymap,
+        crate::ui::input::InputContext::workspace(),
+        key(KeyCode::Char(' ')),
+    );
+    app.presentation.open_overlay(Overlay::Broker);
+    app.leader_started_at = Some(tokio::time::Instant::now() - super::LEADER_TIMEOUT);
+    app.on_tick().await.unwrap();
+    assert!(!app.input_router.sequence_active());
+    assert_eq!(app.presentation.overlay, Some(Overlay::Broker));
 }
