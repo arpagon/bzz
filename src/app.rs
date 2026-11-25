@@ -12,7 +12,7 @@ use futures_util::StreamExt as _;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{Block, Clear, List, ListItem, Paragraph, Wrap},
 };
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
@@ -122,6 +122,20 @@ impl Runtime {
         signer: Option<SignerHandle>,
         diagnostics: DiagnosticHandle,
     ) -> Result<Self> {
+        Self::build_at(config, index, paths, store, signer, diagnostics, None)
+    }
+
+    /// As [`Self::build`], with the relay reached under `relay_path`
+    /// (`bzz demo`'s token) instead of the origin's root.
+    fn build_at(
+        config: &Config,
+        index: usize,
+        paths: &Paths,
+        store: StoreHandle,
+        signer: Option<SignerHandle>,
+        diagnostics: DiagnosticHandle,
+        relay_path: Option<&str>,
+    ) -> Result<Self> {
         let community = config
             .communities
             .get(index)
@@ -139,8 +153,12 @@ impl Runtime {
                 .transpose()?;
             IdentityManager::new(paths).signer(identity, passphrase.as_ref())?
         };
-        let endpoint =
+        let mut endpoint =
             validate_relay_url(&community.relay_url, community.allow_insecure_localhost)?;
+        if let Some(path) = relay_path {
+            endpoint.websocket.set_path(path);
+            endpoint.http_base.set_path(path);
+        }
         let evidence = crate::auth::federated::EvidenceSlot::default();
         if identity.backend == KeyBackend::BuzzDesktop {
             // Buzz Desktop owns the enterprise login; it supplies evidence.
@@ -631,6 +649,22 @@ pub struct App {
     /// The last layout drew the open thread. A reply goes into a thread
     /// only while it is drawn.
     thread_drawn: bool,
+    /// `bzz demo` (v0.17): a generated world on a loopback relay. The
+    /// status line says so, and what needs a real community says how to
+    /// join one (`crate::demo`).
+    demo: bool,
+    /// The first screen, while no community exists (v0.17 A4).
+    first_screen: crate::ui::first_screen::FirstScreen,
+    /// `d` on the first screen: leave, and open the demo in this process.
+    open_demo: bool,
+}
+
+/// How [`App::run_to_exit`] ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Exit {
+    Quit,
+    /// The person chose the demo on the first screen.
+    OpenDemo,
 }
 
 const LEADER_TIMEOUT: Duration = Duration::from_millis(750);
@@ -938,6 +972,51 @@ impl App {
         store: StoreHandle,
         diagnostics: DiagnosticHandle,
     ) -> Result<Self> {
+        Self::new_with(config, paths, store, diagnostics, None).await
+    }
+
+    /// `bzz demo` (`crate::demo`): the generated viewer's key is handed in
+    /// memory, nothing is unlocked or asked for, the relay is reached under
+    /// `relay_path`, and `#team` (`opening`) is open on the first frame.
+    pub async fn new_demo(
+        config: Config,
+        paths: Paths,
+        store: StoreHandle,
+        signer: SignerHandle,
+        relay_path: &str,
+        opening: Uuid,
+    ) -> Result<Self> {
+        let mut app = Self::new_with(
+            config,
+            paths,
+            store,
+            DiagnosticHandle::disabled(),
+            Some((signer, relay_path)),
+        )
+        .await?;
+        app.demo = true;
+        let (voices, people) = crate::demo::huddle();
+        app.set_generated_huddle(voices, people, true);
+        // One community: its rail only takes room from the conversation.
+        app.community_rail = false;
+        if let Some(index) = app
+            .channels
+            .iter()
+            .position(|channel| channel.id == opening)
+        {
+            app.select_channel_index(index);
+            app.hydrate_cache().await?;
+        }
+        Ok(app)
+    }
+
+    async fn new_with(
+        config: Config,
+        paths: Paths,
+        store: StoreHandle,
+        diagnostics: DiagnosticHandle,
+        demo: Option<(SignerHandle, &str)>,
+    ) -> Result<Self> {
         diagnostics.emit(DiagnosticEvent::ClientStarted {
             version: env!("CARGO_PKG_VERSION").into(),
             os: crate::diagnostics::event::normalized_os().into(),
@@ -957,13 +1036,15 @@ impl App {
         let (runtime, connection, status_error) = if config.communities.is_empty() {
             (None, ConnectionState::Offline, None)
         } else {
-            match Runtime::build(
+            let (signer, relay_path) = demo.unzip();
+            match Runtime::build_at(
                 &config,
                 selected_community,
                 &paths,
                 store.clone(),
-                None,
+                signer,
                 diagnostics.clone(),
+                relay_path,
             ) {
                 Ok(runtime) => (Some(runtime), ConnectionState::Connecting, None),
                 Err(error) => {
@@ -1164,18 +1245,26 @@ impl App {
             last_primary_click: None,
             apps: pane::AppPanes::default(),
             thread_drawn: false,
+            demo: false,
+            first_screen: crate::ui::first_screen::FirstScreen::default(),
+            open_demo: false,
         };
         app.sync_workspace_viewports();
         app.hydrate_cache().await?;
         Ok(app)
     }
 
-    pub async fn run(mut self) -> Result<()> {
+    pub async fn run(self) -> Result<()> {
+        self.run_to_exit().await.map(|_| ())
+    }
+
+    /// Runs bzz until the person leaves, and says how they left.
+    pub async fn run_to_exit(mut self) -> Result<Exit> {
         let shutdown = shutdown_signal();
         tokio::pin!(shutdown);
         tokio::select! {
             biased;
-            _ = &mut shutdown => return Ok(()),
+            _ = &mut shutdown => return Ok(Exit::Quit),
             _ = tokio::task::yield_now() => {},
         }
         let (mut guard, mut terminal) = TerminalGuard::enter(self.config.ui.mouse.enabled())?;
@@ -1508,7 +1597,11 @@ impl App {
             reason: "user".into(),
         });
         self.diagnostics.shutdown().await;
-        Ok(())
+        Ok(if self.open_demo {
+            Exit::OpenDemo
+        } else {
+            Exit::Quit
+        })
     }
 
     async fn start_sync(&mut self) -> Result<()> {
@@ -3385,6 +3478,18 @@ impl App {
         if self.global_key(key) {
             return Ok(());
         }
+        // The first screen's own keys, while no community exists (v0.17).
+        if self.config.communities.is_empty() && self.presentation.overlay.is_none() {
+            match self.first_screen.key(key) {
+                crate::ui::first_screen::Outcome::OpenDemo => {
+                    self.open_demo = true;
+                    self.should_quit = true;
+                    return Ok(());
+                }
+                crate::ui::first_screen::Outcome::Handled => return Ok(()),
+                crate::ui::first_screen::Outcome::Ignored => {}
+            }
+        }
         // Ctrl+Y when what waits is a version of an app (v0.16 M4).
         if self.app_review_key(key).await? {
             return Ok(());
@@ -4291,7 +4396,10 @@ impl App {
                 levels: generated.source.levels(),
                 people: generated.people.clone(),
                 muted: generated.muted,
-            });
+            })
+            // The demo's recording plays only where its huddle is running
+            // (`#infra`): nowhere else does the panel or the strip show it.
+            .filter(|_| !self.demo || self.active_huddle().is_some());
         #[cfg(feature = "huddles-audio")]
         {
             self.huddle_call
@@ -4411,6 +4519,7 @@ impl App {
             muted: self.huddle_viz.muted,
             motion: self.config.ui.motion(),
             look: self.huddle_viz.look,
+            recording: self.demo,
         })
     }
 
@@ -4620,6 +4729,7 @@ impl App {
             devices: self.huddle_devices.clone(),
             you_created: active
                 .is_some_and(|active| Some(active.creator.as_str()) == self.self_pubkey()),
+            recording: self.demo && active.is_some(),
         }
     }
 
@@ -4645,6 +4755,15 @@ impl App {
     }
 
     async fn huddle_command(&mut self, arguments: &str) -> Result<()> {
+        // The panel's keys come here too: the demo answers before any
+        // confirmation that would lead to a device.
+        if self.demo
+            && let Some(answer) =
+                crate::demo::refuses(&crate::ui::command::Command::Huddle(arguments.into()))
+        {
+            self.status_error = Some(answer.into());
+            return Ok(());
+        }
         let (verb, rest) = arguments.split_once(' ').unwrap_or((arguments, ""));
         let rest = rest.trim();
         if self.runtime.is_none() || self.current_channel().is_none() {
@@ -4777,6 +4896,10 @@ impl App {
 
     /// Start (after confirmation): backing channel, then 48100; then join.
     fn spawn_huddle_start(&mut self) {
+        if self.demo {
+            self.status_error = Some(crate::demo::HUDDLE_IS_A_RECORDING.into());
+            return;
+        }
         let (Some(runtime), Some(parent)) = (
             &self.runtime,
             self.current_channel().map(|channel| channel.id),
@@ -4821,6 +4944,10 @@ impl App {
 
     #[cfg_attr(not(feature = "huddles-audio"), allow(unused_variables))]
     fn spawn_huddle_join(&mut self, parent: Uuid, backing: Uuid) {
+        if self.demo {
+            self.status_error = Some(crate::demo::HUDDLE_IS_A_RECORDING.into());
+            return;
+        }
         #[cfg(not(feature = "huddles-audio"))]
         {
             self.status_error = Some(crate::huddle::VIEW_ONLY.into());
@@ -9666,7 +9793,14 @@ impl App {
     }
 
     async fn execute_command(&mut self) -> Result<()> {
-        match crate::ui::command::parse(&self.command) {
+        let command = crate::ui::command::parse(&self.command);
+        if self.demo
+            && let Some(answer) = crate::demo::refuses(&command)
+        {
+            self.status_error = Some(answer.into());
+            return Ok(());
+        }
+        match command {
             crate::ui::command::Command::Lock => {
                 // Nothing is served while bzz is locked.
                 if let Some(broker) = self.broker.take() {
@@ -10575,39 +10709,14 @@ impl App {
     }
 
     fn render_empty(&self, frame: &mut Frame<'_>, area: Rect) {
-        let mut lines = vec![
-            Line::styled(
-                "Welcome to bzz",
-                self.theme.style(HighlightGroup::CommunitySelected),
-            ),
-            Line::default(),
-            Line::from("No communities are configured."),
-            Line::from("Run bzz identity new, then bzz community add."),
-            Line::default(),
-            Line::from("? help · q quit"),
-        ];
         // Without a workspace there is no status bar: command feedback
         // (`:huddle`, `:presence`, ...) is shown here instead.
-        if let Some(notice) = &self.status_error {
-            lines.push(Line::default());
-            lines.push(Line::styled(
-                sanitize::single_line(notice),
-                self.theme.style(HighlightGroup::Muted),
-            ));
-        }
-        frame.render_widget(
-            Paragraph::new(Text::from(lines))
-                .style(self.theme.style(HighlightGroup::Normal))
-                .alignment(Alignment::Center)
-                .wrap(Wrap { trim: false })
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Pane))
-                        .border_style(self.theme.style(HighlightGroup::PaneBorder))
-                        .title_style(self.theme.style(HighlightGroup::PaneTitle))
-                        .title(" bzz "),
-                ),
+        crate::ui::first_screen::render(
+            frame,
             area,
+            &self.theme,
+            &self.first_screen,
+            self.status_error.as_deref(),
         );
     }
     fn render_communities(&self, frame: &mut Frame<'_>, area: Rect, focused: bool) {
@@ -10928,7 +11037,13 @@ impl App {
             mode_group,
             activity: activity.as_deref(),
             notice: &notice,
-            connection: crate::ui::status::connection_label(self.connection),
+            // Seam for agent `look`'s status slot (v0.17 L3): until it
+            // lands, the demo's mark takes the connection's place.
+            connection: if self.demo {
+                crate::demo::STATUS_MARK
+            } else {
+                crate::ui::status::connection_label(self.connection)
+            },
             media: self.media.protocol_name(),
             app_focused,
         };
@@ -14264,6 +14379,87 @@ mod tests {
                 .unwrap();
             }
         }
+    }
+
+    /// `bzz demo`'s huddle: the generated voices play only in the channel
+    /// whose huddle runs, and the panel says it is a recording, with no key
+    /// to join or unmute and nothing that contradicts the lanes.
+    #[tokio::test]
+    async fn the_demo_huddle_is_a_recording_only_where_it_runs() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.demo = true;
+        let channel = |name: &str| Channel {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 4,
+            last_event_at: None,
+            facts: Default::default(),
+        };
+        app.channels = vec![channel("team"), channel("infra")];
+        let infra = app.channels[1].id;
+        let (voices, people) = crate::demo::huddle();
+        app.huddle_view = Some((
+            infra,
+            Some(crate::protocol::huddle::ActiveHuddle {
+                backing: Uuid::new_v4(),
+                creator: people[2].1.clone(),
+                started_at: nostr::Timestamp::now().as_secs(),
+                participants: people.iter().map(|(_, pubkey)| pubkey.clone()).collect(),
+            }),
+        ));
+        app.set_generated_huddle(voices, people, true);
+        app.huddle_viz.look = crate::ui::huddle_lanes::Look::default();
+        let draw = |app: &mut super::App| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            (0..24)
+                .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        // #team: no huddle runs there, so nothing of it shows.
+        app.selected_channel = 0;
+        for step in 0..60 {
+            app.tick_huddle_viz_at(f64::from(step) * 0.05);
+        }
+        assert!(app.huddle_lanes().is_none());
+        app.presentation.open_overlay(Overlay::Huddle);
+        let team = draw(&mut app);
+        assert!(!team.contains("You · your microphone"), "{team}");
+        app.presentation.close_overlay();
+        // #infra: the lanes move, and the panel agrees with them.
+        app.selected_channel = 1;
+        for step in 0..60 {
+            app.tick_huddle_viz_at(3.0 + f64::from(step) * 0.05);
+        }
+        assert!(app.huddle_lanes().is_some());
+        app.presentation.open_overlay(Overlay::Huddle);
+        let panel = draw(&mut app);
+        for said in [
+            "a generated recording",
+            "4 in the call",
+            "You · your microphone",
+            "nothing is sent",
+        ] {
+            assert!(panel.contains(said), "{said}: {panel}");
+        }
+        for contradiction in [
+            "No huddle is running here",
+            "you are not in the call",
+            "j join",
+            "m unmutes",
+            "s start",
+        ] {
+            assert!(!panel.contains(contradiction), "{contradiction}: {panel}");
+        }
+        assert!(app.huddle_panel_view().recording);
     }
 
     #[tokio::test]

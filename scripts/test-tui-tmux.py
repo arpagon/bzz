@@ -155,6 +155,8 @@ def command_for(scenario, binary, fixture, work, profile):
         words = [f"BZZ_CONFIG_DIR={shlex.quote(home + '/config')}",
                  f"BZZ_DATA_DIR={shlex.quote(home + '/data')}",
                  f"BZZ_CACHE_DIR={shlex.quote(home + '/cache')}", shlex.quote(binary)]
+        # An automated scenario may name a sub-command (`bzz demo`, v0.17).
+        words.extend(shlex.quote(argument) for argument in scenario.get("args", []))
         return "env " + " ".join(words) + '; printf "__BZZ_HERDR_EXIT__:%s\\n" "$?"'
     if not fixture:
         raise SystemExit("harness scenarios need BZZ_HERDR_FIXTURE")

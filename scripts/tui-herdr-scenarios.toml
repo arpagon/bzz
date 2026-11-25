@@ -2399,3 +2399,171 @@ visible = "quit bzz?"
 [[scenario.step]]
 keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 A4: with no community, the first screen offers the demo; `j` shows
+# the commands to join one, and `d` opens the demo in the same process.
+[[scenario]]
+id = "t17-demo-first-screen"
+kind = "automated"
+description = "The first screen shows what bzz is and four ways on; j shows the commands to join a community; d opens the demo in the same process."
+size = "80x24"
+ready = "Try the demo"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["j"]
+visible = "bzz identity new --label me"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Try the demo"
+absent = "bzz identity new --label me"
+
+[[scenario.step]]
+keys = ["d"]
+visible = "DEMO · generated, offline"
+timeout = 5000
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 A1 and A8: the demo's first minute, at 80×24. Move, open the
+# thread, react, search, write (a teammate answers), mention Scout (it
+# types, then answers in a thread) and read its answer.
+[[scenario]]
+id = "t17-demo-first-minute"
+kind = "automated"
+description = "bzz demo: move to the checklist, open its thread, react, search, write and get an answer, mention Scout and read its answer in the thread."
+size = "80x24"
+args = ["demo"]
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+keys = ["k", "k", "k"]
+visible = "Release checklist for Thursday"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "context · 4 replies"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "DEMO · generated, offline"
+absent = "context · 4 replies"
+
+[[scenario.step]]
+keys = ["G", "r"]
+visible = "reaction · Enter toggle"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = 'our agent answers[^\n]*\n[^\n]*👍 1'
+regex = true
+
+[[scenario.step]]
+keys = ["/", "type:rollback"]
+visible = "rollback plan is step 7"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "Search ·"
+
+[[scenario.step]]
+keys = ["i", "type:hello team", "enter"]
+visible = "Welcome aboard"
+timeout = 5000
+
+# The mention picker knows Scout as an agent; after the message, Scout
+# shows as typing, then answers in the thread of the mention. A second
+# after Ada's answer, so that the mention is the newest message (the
+# timeline orders by second).
+[[scenario.step]]
+pause = 1100
+keys = ["i", "type:@Sco"]
+visible = "◆ remote agent · eligible"
+
+[[scenario.step]]
+keys = ["tab", "type:what do you do?", "enter"]
+visible = "◆ Scout ⠋|◆ Scout ⠙|◆ Scout ⠹|◆ Scout ⠸|◆ Scout ⠼|◆ Scout ⠴|◆ Scout ⠦|◆ Scout ⠧|◆ Scout ⠇|◆ Scout ⠏"
+regex = true
+timeout = 5000
+
+[[scenario.step]]
+keys = []
+visible = 'what do you do\?[^\n]*\n[^\n]*↳ 1 reply'
+regex = true
+timeout = 8000
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Hi, I'm Scout, Ada's agent"
+timeout = 5000
+
+[[scenario.step]]
+keys = ["q"]
+visible = "DEMO · generated, offline"
+absent = "context · 1 reply"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 A1 with viz's lanes: the huddle of #infra is a generated recording.
+# Its strip shows in #infra's status line, the panel's lanes move, and
+# joining answers that it is a recording; no device is opened.
+[[scenario]]
+id = "t17-demo-huddle"
+kind = "automated"
+description = "bzz demo: in #infra the huddle's strip and lanes move from generated voices; the panel says it is a recording, and j answers so."
+size = "160x45"
+args = ["demo"]
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+keys = ["2", "k", "k", "k", "k", "enter"]
+visible = "┌ infra "
+
+[[scenario.step]]
+keys = []
+visible = "🎧 [⣀⣄⣤⣦⣶⣷⣿ ]+"
+regex = true
+
+[[scenario.step]]
+keys = [":", "type:huddle", "enter"]
+visible = "a generated recording · Esc"
+
+[[scenario.step]]
+keys = []
+visible = "a recording · no microphone is open, nothing is sent"
+absent = "you are not in the call"
+
+[[scenario.step]]
+keys = ["j"]
+visible = "Demo: the huddle is a recording to look at."
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "a generated recording · Esc"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"

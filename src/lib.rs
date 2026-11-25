@@ -8,6 +8,7 @@ pub mod auth;
 pub mod broker;
 pub mod clock;
 pub mod config;
+pub mod demo;
 pub mod diagnostics;
 pub mod domain;
 pub mod error;
