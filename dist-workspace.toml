@@ -35,3 +35,9 @@ container = { image = "ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2da
 [dist.github-custom-runners.aarch64-unknown-linux-gnu]
 runner = "ubuntu-24.04-arm"
 container = { image = "ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d", host = "aarch64-unknown-linux-gnu" }
+
+# The Linux binary needs glibc 2.34 (its newest versioned symbols, checked with
+# `objdump -T`), but dist would take 2.35 from the Ubuntu 22.04 build image and
+# refuse RHEL, AlmaLinux and Rocky 9 and Amazon Linux 2023, where it runs.
+[dist.min-glibc-version]
+"*" = "2.34"

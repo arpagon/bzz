@@ -5,6 +5,12 @@
 //! capture sends 20 ms frames (960 mono f32 samples at 48 kHz), playback
 //! receives mixed 10 ms chunks (480 samples). Nothing here logs audio, levels
 //! or device names.
+//!
+//! The visualizer's levels ([`super::levels::Levels`]) are taken here: each
+//! person's after their audio is decoded and before the mix, your
+//! microphone's before the mute check. The relay's `joined`, `left` and
+//! `roster` messages keep [`AudioCall::peers`] current, so a person who joins
+//! after you has a name.
 
 use std::{
     collections::HashMap,
@@ -26,6 +32,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
+use super::levels::Levels;
 use crate::{
     auth::signer::SignerHandle,
     error::{Error, Result},
@@ -72,8 +79,11 @@ fn sanitize(error: &str) -> String {
 /// stops the engine; device streams are owned by the caller's device layer.
 pub struct AudioCall {
     pub muted: Arc<AtomicBool>,
+    /// The room as the relay last described it, you included.
     pub peers: Arc<Mutex<Vec<Peer>>>,
     pub index: u8,
+    /// Live levels for the visualizer; drawn and forgotten.
+    pub levels: Arc<Levels>,
     leave: Option<tokio::sync::oneshot::Sender<()>>,
     task: JoinHandle<()>,
 }
@@ -90,6 +100,20 @@ impl AudioCall {
 
     pub fn is_running(&self) -> bool {
         !self.task.is_finished()
+    }
+
+    /// The other people in the room: relay index and public key.
+    pub fn others(&self) -> Vec<(u8, String)> {
+        self.peers
+            .lock()
+            .map(|peers| {
+                peers
+                    .iter()
+                    .filter(|peer| peer.index != self.index)
+                    .map(|peer| (peer.index, peer.pubkey.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Sends `{"type":"leave"}` and waits briefly for the engine to stop.
@@ -118,12 +142,15 @@ pub fn start(
     let mut encoder = AudioEncoder::new().map_err(Error::Protocol)?;
     let muted = Arc::new(AtomicBool::new(true));
     let peers = Arc::new(Mutex::new(joined.peers.clone()));
+    let levels = Arc::new(Levels::default());
     let (leave_tx, mut leave_rx) = tokio::sync::oneshot::channel();
     let (mut sink, mut stream) = joined.socket.split();
     let task_muted = muted.clone();
+    let task_peers = peers.clone();
+    let task_levels = levels.clone();
     let index = joined.index;
     let task = tokio::spawn(async move {
-        let mut buffers: HashMap<u8, PeerJitterBuffer> = HashMap::new();
+        let mut mixer = PeerMixer::default();
         let mut playout = tokio::time::interval(Duration::from_millis(10));
         playout.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -135,6 +162,9 @@ pub fn start(
                 }
                 frame = capture.recv() => {
                     let Some(frame) = frame else { break };
+                    // Before the mute check: the lane shows that the
+                    // microphone works while nothing is sent.
+                    task_levels.publish_mic(&frame);
                     if task_muted.load(Ordering::Relaxed) || frame.len() != FRAME_SAMPLES {
                         continue;
                     }
@@ -145,42 +175,17 @@ pub fn start(
                     }
                 }
                 message = stream.next() => match message {
-                    Some(Ok(Message::Binary(bytes))) => {
-                        if let Some((peer, header, opus)) = parse_relay_frame(&bytes)
-                            && peer != index
-                        {
-                            let buffer = match buffers.entry(peer) {
-                                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                                std::collections::hash_map::Entry::Vacant(entry) => {
-                                    match PeerJitterBuffer::new(peer) {
-                                        Ok(buffer) => entry.insert(buffer),
-                                        Err(_) => continue,
-                                    }
-                                }
-                            };
-                            if !header.is_dtx() {
-                                let _ = buffer.insert_packet(header.seq, header.ts_48k, opus);
-                            }
-                        }
+                    Some(Ok(Message::Binary(bytes))) => mixer.insert(&bytes, index),
+                    Some(Ok(Message::Text(text))) => {
+                        apply_control(&text, index, &task_peers, &mut mixer);
                     }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                     Some(Ok(_)) => {}
                 },
                 _ = playout.tick() => {
-                    if buffers.is_empty() {
+                    let Some(mixed) = mixer.tick(&task_levels) else {
                         continue;
-                    }
-                    let mut mixed = vec![0.0_f32; PLAYOUT_SAMPLES];
-                    for buffer in buffers.values_mut() {
-                        if let Ok((samples, _)) = buffer.get_audio() {
-                            for (out, sample) in mixed.iter_mut().zip(samples) {
-                                *out += sample;
-                            }
-                        }
-                    }
-                    for sample in &mut mixed {
-                        *sample = sample.clamp(-1.0, 1.0);
-                    }
+                    };
                     if playback.try_send(mixed).is_err() && playback.is_closed() {
                         break;
                     }
@@ -192,9 +197,147 @@ pub fn start(
         muted,
         peers,
         index,
+        levels,
         leave: Some(leave_tx),
         task,
     })
+}
+
+/// One jitter buffer per person heard; the 10 ms mix of all of them.
+#[derive(Default)]
+pub struct PeerMixer {
+    buffers: HashMap<u8, PeerJitterBuffer>,
+}
+
+impl PeerMixer {
+    /// A media frame from the relay (`peer_index` + v2 header + Opus).
+    /// Your own echo is ignored.
+    pub fn insert(&mut self, bytes: &[u8], own_index: u8) {
+        let Some((peer, header, opus)) = parse_relay_frame(bytes) else {
+            return;
+        };
+        if peer == own_index {
+            return;
+        }
+        let buffer = match self.buffers.entry(peer) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => match PeerJitterBuffer::new(peer) {
+                Ok(buffer) => entry.insert(buffer),
+                Err(_) => return,
+            },
+        };
+        if !header.is_dtx() {
+            let _ = buffer.insert_packet(header.seq, header.ts_48k, opus);
+        }
+    }
+
+    /// Drops a person's decoder state (they left, or their index was given
+    /// to someone else), as the audio client's README asks.
+    pub fn forget(&mut self, index: u8) {
+        self.buffers.remove(&index);
+    }
+
+    /// Keeps only the people in `indices`.
+    pub fn retain(&mut self, indices: &[u8]) {
+        self.buffers.retain(|index, _| indices.contains(index));
+    }
+
+    /// One 10 ms playout: each person decoded, their level published before
+    /// the mix, then the mix. `None` when nobody is heard.
+    pub fn tick(&mut self, levels: &Levels) -> Option<Vec<f32>> {
+        if self.buffers.is_empty() {
+            return None;
+        }
+        let mut mixed = vec![0.0_f32; PLAYOUT_SAMPLES];
+        for (index, buffer) in &mut self.buffers {
+            if let Ok((samples, _)) = buffer.get_audio() {
+                levels.publish_peer(*index, &samples);
+                for (out, sample) in mixed.iter_mut().zip(samples) {
+                    *out += sample;
+                }
+            }
+        }
+        for sample in &mut mixed {
+            *sample = sample.clamp(-1.0, 1.0);
+        }
+        Some(mixed)
+    }
+}
+
+/// The relay's control messages during a call: `roster` replaces the room,
+/// `joined` adds (or re-seats) one person, `left` removes one. Anything else,
+/// or anything malformed, is ignored. Returns whether the room changed.
+pub fn apply_control(
+    text: &str,
+    own_index: u8,
+    peers: &Mutex<Vec<Peer>>,
+    mixer: &mut PeerMixer,
+) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    let Ok(mut peers) = peers.lock() else {
+        return false;
+    };
+    let one = |value: &serde_json::Value| {
+        buzz_audio_client::connection::parse_peers(&serde_json::json!({
+            "peers": [{
+                "peer_index": value["peer_index"],
+                "pubkey": value["pubkey"],
+                "epoch": value.get("epoch").cloned().unwrap_or(serde_json::json!(0)),
+            }]
+        }))
+        .ok()
+        .and_then(|mut list| list.pop())
+    };
+    match value["type"].as_str() {
+        Some("roster") => {
+            let Ok(room) = buzz_audio_client::connection::parse_peers(&value) else {
+                return false;
+            };
+            for peer in room.iter() {
+                // An index now held by someone else starts a fresh decoder.
+                let reseated = peers
+                    .iter()
+                    .any(|old| old.index == peer.index && old.pubkey != peer.pubkey);
+                if reseated {
+                    mixer.forget(peer.index);
+                }
+            }
+            let indices = room.iter().map(|peer| peer.index).collect::<Vec<_>>();
+            mixer.retain(&indices);
+            *peers = room;
+            true
+        }
+        Some("joined") => {
+            let Some(peer) = one(&value) else {
+                return false;
+            };
+            let reseated = peers
+                .iter()
+                .any(|old| old.index == peer.index && old.pubkey != peer.pubkey);
+            if reseated {
+                mixer.forget(peer.index);
+            }
+            peers.retain(|old| old.index != peer.index && old.pubkey != peer.pubkey);
+            peers.push(peer);
+            peers.sort_by_key(|peer| peer.index);
+            true
+        }
+        Some("left") => {
+            let Some(peer) = one(&value) else {
+                return false;
+            };
+            if peer.index == own_index {
+                return false;
+            }
+            mixer.forget(peer.index);
+            let before = peers.len();
+            peers.retain(|old| old.index != peer.index);
+            peers.len() != before
+        }
+        _ => false,
+    }
 }
 
 /// Fixed, actionable device errors; device names never appear.
@@ -475,7 +618,124 @@ impl Framer {
 
 #[cfg(test)]
 mod tests {
-    use super::Framer;
+    use super::{Framer, Levels, PeerMixer, apply_control};
+    use crate::huddle::{meter::Meter, synth};
+    use buzz_audio_client::{connection::Peer, encoder::AudioEncoder};
+    use std::sync::Mutex;
+
+    fn key(c: char) -> String {
+        c.to_string().repeat(64)
+    }
+
+    #[test]
+    fn the_relays_control_messages_keep_every_name() {
+        let peers = Mutex::new(vec![
+            Peer {
+                index: 0,
+                pubkey: key('a'),
+                epoch: 0,
+            },
+            Peer {
+                index: 1,
+                pubkey: key('b'),
+                epoch: 0,
+            },
+        ]);
+        let mut mixer = PeerMixer::default();
+        // Someone joins after you: they have a name.
+        let joined = format!(
+            r#"{{"type":"joined","revision":2,"pubkey":"{}","peer_index":2,"epoch":0,"peers":[]}}"#,
+            key('c')
+        );
+        assert!(apply_control(&joined, 0, &peers, &mut mixer));
+        let names = |peers: &Mutex<Vec<Peer>>| {
+            peers
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|peer| (peer.index, peer.pubkey.chars().next().unwrap()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&peers), vec![(0, 'a'), (1, 'b'), (2, 'c')]);
+        // Someone leaves.
+        let left = format!(
+            r#"{{"type":"left","revision":3,"pubkey":"{}","peer_index":1,"epoch":0}}"#,
+            key('b')
+        );
+        assert!(apply_control(&left, 0, &peers, &mut mixer));
+        assert_eq!(names(&peers), vec![(0, 'a'), (2, 'c')]);
+        // A full roster replaces the room; a seat taken by someone new.
+        let roster = format!(
+            r#"{{"type":"roster","revision":4,"peers":[{{"pubkey":"{}","peer_index":0,"epoch":0}},{{"pubkey":"{}","peer_index":2,"epoch":1}}]}}"#,
+            key('a'),
+            key('d')
+        );
+        assert!(apply_control(&roster, 0, &peers, &mut mixer));
+        assert_eq!(names(&peers), vec![(0, 'a'), (2, 'd')]);
+        // Malformed or unknown messages change nothing.
+        for text in [
+            "not json",
+            r#"{"type":"ping"}"#,
+            r#"{"type":"joined","pubkey":"short","peer_index":5}"#,
+            r#"{"type":"roster","peers":[{"pubkey":"x","peer_index":900}]}"#,
+        ] {
+            assert!(!apply_control(text, 0, &peers, &mut mixer), "{text}");
+        }
+        assert_eq!(names(&peers), vec![(0, 'a'), (2, 'd')]);
+    }
+
+    /// 1 kHz at −20 dBFS through the real path: Opus encoder, relay framing,
+    /// NetEQ and Opus decoder, the level taken before the mix, the meter at
+    /// 30 frames a second. The gate opens once the jitter buffer plays the
+    /// tone and closes 300 to 400 ms after it stops playing.
+    #[test]
+    fn a_tone_through_the_decode_path_opens_and_closes_the_gate() {
+        let mut encoder = AudioEncoder::new().unwrap();
+        let mut mixer = PeerMixer::default();
+        let levels = Levels::default();
+        let mut meter = Meter::default();
+        let (tone_from, tone_to) = (0.5_f64, 1.5_f64);
+        let mut opened = None;
+        let mut closed = None;
+        let mut next_frame = 0.0;
+        // 10 ms steps; a 20 ms frame is sent every other step.
+        for step in 0..300_u64 {
+            let t = step as f64 / 100.0;
+            if step % 2 == 0 {
+                let sample = step * 480;
+                let frame = if (tone_from..tone_to).contains(&t) {
+                    synth::tone(1000.0, -20.0, sample, 960)
+                } else {
+                    vec![0.0; 960]
+                };
+                let mut relayed = vec![7_u8];
+                relayed.extend(encoder.encode(&frame).unwrap());
+                mixer.insert(&relayed, 0);
+            }
+            let _ = mixer.tick(&levels);
+            let t_end = (step + 1) as f64 / 100.0;
+            while next_frame <= t_end + 1e-9 {
+                meter.update(&levels, &[7], next_frame);
+                let speaking = meter.peer(7).unwrap().speaking();
+                if speaking && opened.is_none() {
+                    opened = Some(next_frame);
+                }
+                if !speaking && opened.is_some() && closed.is_none() {
+                    closed = Some(next_frame);
+                }
+                next_frame += 1.0 / 30.0;
+            }
+        }
+        let opened = opened.expect("the gate opened") - tone_from;
+        let closed = closed.expect("the gate closed") - tone_to;
+        println!("gate opened {opened:.3} s after the tone, closed {closed:.3} s after it");
+        // The jitter buffer holds 40 to 200 ms, a frame is 33 ms: the gate
+        // opens within 250 ms of the tone, and closes 300 to 450 ms after the
+        // tone stops playing (the hang, then up to a frame and a chunk).
+        assert!((0.0..=0.25).contains(&opened), "opened {opened}");
+        let played_for = closed - opened;
+        assert!((0.3..=0.45).contains(&played_for), "closed {closed}");
+    }
 
     #[test]
     fn framer_resamples_to_48k_frames() {

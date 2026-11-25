@@ -7,15 +7,15 @@
 <meta name="description" content="bzz is a human-first terminal client for Buzz: fast keyboard navigation, local offline history, native Nostr authentication, and host-isolated communities. One Rust binary, 60 themes.">
 <link rel="canonical" href="https://getbzz.dev/">
 <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/styles.css?v=7">
+<link rel="stylesheet" href="/styles.css?v=8">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://getbzz.dev/">
 <meta property="og:title" content="bzz — a human-first terminal client for Buzz">
-<meta property="og:description" content="Fast keyboard navigation, offline history, native Nostr auth, host-isolated communities. One Rust binary, 60 themes.">
+<meta property="og:description" content="Buzz in your terminal: channels, threads, huddles, your own agents and apps beside the chat, from the keyboard, with history offline. Try it in a minute with bzz demo.">
 <meta property="og:image" content="https://getbzz.dev/assets/og.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="bzz — a human-first terminal client for Buzz">
-<meta name="twitter:description" content="Fast keyboard navigation, offline history, native Nostr auth, host-isolated communities. One Rust binary, 60 themes.">
+<meta name="twitter:description" content="Buzz in your terminal: channels, threads, huddles, your own agents and apps beside the chat, from the keyboard, with history offline. Try it in a minute with bzz demo.">
 <meta name="twitter:image" content="https://getbzz.dev/assets/og.png">
 </head>
 <body>
@@ -79,6 +79,7 @@
     <code id="install-cmd">curl -fsSL https://getbzz.dev/install.sh | sh</code>
     <button type="button" data-copy="#install-cmd">copy</button>
   </div>
+  <p class="then">then <code>bzz demo</code>: a generated team in your terminal, offline, with no account</p>
   <div class="cta">
     <a class="primary" href="#install">Install</a>
     <a href="https://github.com/arpagon/bzz/releases/latest">Releases</a>
@@ -633,7 +634,11 @@
 <section id="install">
 <div class="wrap">
   <span class="kicker">install</span>
-  <h2>One binary. Pick your platform.</h2>
+  <h2>Try it in 60 seconds.</h2>
+  <p class="lead"><b>Requirements:</b> Linux (x86_64 and arm64) with glibc
+  2.34 or newer: Ubuntu 22.04, Debian 12, Fedora 35, RHEL 9 or newer; macOS
+  (Apple Silicon and Intel); Windows (x86_64). Huddle audio on Linux needs
+  PipeWire or PulseAudio. No build for Alpine or other musl systems yet.</p>
 
   <div class="tabs" role="tablist">
     <button role="tab" aria-selected="true" data-tab="quick">Quick</button>
@@ -644,10 +649,15 @@
   </div>
 
   <div class="panel" data-panel="quick">
-<pre><code>curl -fsSL https://getbzz.dev/install.sh | sh</code></pre>
-    <p class="note">Detects OS and architecture. Read it first if you prefer:
-    <a href="/install.sh">install.sh</a> (redirects to the latest signed GitHub
-    release installer).</p>
+<pre><code>curl -fsSL https://getbzz.dev/install.sh | sh
+bzz demo</code></pre>
+    <p class="note"><code>bzz demo</code> opens a generated team: channels, a
+    thread, a DM, an agent that answers when you mention it, a huddle in
+    progress. It runs offline, asks for no account and no key, and leaves
+    nothing behind when you quit.</p>
+    <p class="note">The installer checks this machine first and says in one
+    line what is missing, then runs the latest signed GitHub release
+    installer. Read it first if you prefer: <a href="/install.sh">install.sh</a>.</p>
   </div>
 
   <div class="panel" data-panel="macos" hidden>
@@ -666,13 +676,14 @@ curl -fsSL https://github.com/arpagon/bzz/releases/latest/download/bzz-x86_64-un
 curl -fsSL https://github.com/arpagon/bzz/releases/latest/download/bzz-aarch64-unknown-linux-gnu.tar.xz | tar xJ
 
 sudo mv bzz /usr/local/bin/</code></pre>
-    <p class="note">Linux builds require glibc 2.35 or newer and ALSA's
-    <code>libasound.so.2</code> for huddle audio (Ubuntu 22.04+). No separate
-    DBus development package is needed.</p>
+    <p class="note">Linux builds need glibc 2.34 or newer (Ubuntu 22.04,
+    Debian 12, Fedora 35, RHEL 9 or newer). Huddle audio needs PipeWire or
+    PulseAudio. No separate DBus development package is needed.</p>
   </div>
 
   <div class="panel" data-panel="windows" hidden>
-<pre><code>powershell -ExecutionPolicy Bypass -c "irm https://github.com/arpagon/bzz/releases/latest/download/bzz-installer.ps1 | iex"</code></pre>
+<pre><code>powershell -ExecutionPolicy Bypass -c "irm https://github.com/arpagon/bzz/releases/latest/download/bzz-installer.ps1 | iex"
+bzz demo</code></pre>
     <p class="note">Or download <code>bzz-x86_64-pc-windows-msvc.zip</code> from the
     <a href="https://github.com/arpagon/bzz/releases/latest">latest release</a>
     and add <code>bzz.exe</code> to your PATH.</p>

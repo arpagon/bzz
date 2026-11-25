@@ -1,0 +1,3 @@
+ NORMAL  🎧  ▁▁▁▁▁▁▁▆▄▆▆▆ Ada · mic muted      ● online  Ctrl-K actions · ? keys
+--- styles ---
+0: 0-7 Black/Cyan/NONE 12-18 Indexed(242)/Reset/DIM 19-22 Indexed(73)/Reset/NONE 23-23 Indexed(44)/Reset/NONE 25-27 Indexed(44)/Reset/BOLD 28-39 Indexed(242)/Reset/NONE 45-47 Green/Reset/NONE 56-61 Cyan/Reset/BOLD 62-72 DarkGray/Reset/NONE 73-73 Cyan/Reset/BOLD 74-78 DarkGray/Reset/NONE

@@ -82,6 +82,9 @@ pub mod priority {
 pub struct Slot<'a> {
     pub line: Option<Line<'a>>,
     pub priority: u8,
+    /// Shorter forms of the line, longest first: taken in turn before the
+    /// slot is dropped.
+    pub shorter: Vec<Line<'a>>,
 }
 
 impl<'a> Slot<'a> {
@@ -89,6 +92,7 @@ impl<'a> Slot<'a> {
         Self {
             line: Some(line),
             priority,
+            shorter: Vec::new(),
         }
     }
 }
@@ -134,6 +138,20 @@ impl<'a> StatusBarView<'a> {
         self.huddle = Slot::new(line, priority);
     }
 
+    /// Fills the slot left of centre with forms of the strip from longest
+    /// to shortest; a narrow row takes a shorter form before dropping it.
+    pub fn huddle_slot_shortening(&mut self, mut lines: Vec<Line<'a>>, priority: u8) {
+        if lines.is_empty() {
+            return;
+        }
+        let line = lines.remove(0);
+        self.huddle = Slot {
+            line: Some(line),
+            priority,
+            shorter: lines,
+        };
+    }
+
     /// Fills the slot at the right (a mark such as the demo's).
     pub fn mark_slot(&mut self, line: Line<'a>, priority: u8) {
         self.mark = Slot::new(line, priority);
@@ -158,6 +176,28 @@ struct Part<'a> {
     line: Line<'a>,
     priority: u8,
     side: Side,
+    /// Shorter forms, taken before the part is dropped.
+    shorter: Vec<Line<'a>>,
+}
+
+/// Drops the part at `index`, or puts its next shorter form in its place.
+fn shorten_or_drop(parts: &mut Vec<Part<'_>>, index: usize) {
+    let part = &mut parts[index];
+    if part.shorter.is_empty() {
+        parts.remove(index);
+        return;
+    }
+    let mut line = part.shorter.remove(0);
+    if let Some(first) = part.line.spans.first().cloned()
+        && first.content == " "
+    {
+        // Keep the padding the part was given.
+        line.spans.insert(0, first);
+        if let Some(last) = part.line.spans.last().cloned() {
+            line.spans.push(last);
+        }
+    }
+    part.line = line;
 }
 
 /// Renders the status line on one row.
@@ -186,6 +226,7 @@ fn layout<'a>(theme: &Theme, view: StatusBarView<'a>, total: usize) -> Line<'a> 
             )),
             priority: priority::CHANNEL,
             side: Side::Left,
+            shorter: Vec::new(),
         });
     }
     if let Some(line) = view.huddle.line {
@@ -196,6 +237,7 @@ fn layout<'a>(theme: &Theme, view: StatusBarView<'a>, total: usize) -> Line<'a> 
             line: Line::from(spans),
             priority: view.huddle.priority,
             side: Side::Left,
+            shorter: view.huddle.shorter,
         });
     }
     if let Some(activity) = view.activity.filter(|activity| !activity.is_empty()) {
@@ -206,6 +248,7 @@ fn layout<'a>(theme: &Theme, view: StatusBarView<'a>, total: usize) -> Line<'a> 
             )),
             priority: priority::ACTIVITY,
             side: Side::Left,
+            shorter: Vec::new(),
         });
     }
     if let Some(line) = view.mark.line {
@@ -215,6 +258,7 @@ fn layout<'a>(theme: &Theme, view: StatusBarView<'a>, total: usize) -> Line<'a> 
             line: Line::from(spans),
             priority: view.mark.priority,
             side: Side::Right,
+            shorter: Vec::new(),
         });
     }
     parts.push(Part {
@@ -224,18 +268,21 @@ fn layout<'a>(theme: &Theme, view: StatusBarView<'a>, total: usize) -> Line<'a> 
         ]),
         priority: priority::CONNECTION,
         side: Side::Right,
+        shorter: Vec::new(),
     });
     parts.push(if view.app_focused {
         Part {
             line: Line::from(Span::styled(APP_LEAVE_HINT, bar)),
             priority: priority::APP_LEAVE,
             side: Side::Right,
+            shorter: Vec::new(),
         }
     } else {
         Part {
             line: hint(theme),
             priority: priority::HINT,
             side: Side::Right,
+            shorter: Vec::new(),
         }
     });
 
@@ -264,15 +311,13 @@ fn layout<'a>(theme: &Theme, view: StatusBarView<'a>, total: usize) -> Line<'a> 
                 break;
             }
             match lowest(&parts, u8::MAX) {
-                Some(index) => {
-                    parts.remove(index);
-                }
+                Some(index) => shorten_or_drop(&mut parts, index),
                 None => break,
             }
             continue;
         }
         if let Some(index) = lowest(&parts, priority::NOTICE) {
-            parts.remove(index);
+            shorten_or_drop(&mut parts, index);
             continue;
         }
         if fixed.saturating_add(notice_full.min(12)) <= total {
@@ -470,6 +515,32 @@ mod tests {
         let narrower = row(&view, 44);
         assert!(narrower.contains("DEMO · generated, offline"), "{narrower}");
         assert!(!narrower.contains("Ada"), "{narrower}");
+    }
+
+    /// A narrow row takes the huddle strip's shorter forms before it drops
+    /// it.
+    #[test]
+    fn the_huddle_slot_shortens_before_it_drops() {
+        let mut view = normal();
+        view.huddle_slot_shortening(
+            vec![
+                Line::from(Span::raw("🎧 ⣀⣤⣶⣿⣿⣶⣤⣀⣀⣤⣶⣿ Ada · mic muted")),
+                Line::from(Span::raw("🎧 ⣀⣤⣶⣿⣿⣶ Ada · mic muted")),
+                Line::from(Span::raw("🎧 Ada · mic muted")),
+            ],
+            priority::HUDDLE,
+        );
+        let wide = row(&view, 160);
+        assert!(wide.contains("⣀⣤⣶⣿⣿⣶⣤⣀⣀⣤⣶⣿ Ada"), "{wide}");
+        let narrow = row(&view, 45);
+        assert!(narrow.contains(" ⣀⣤⣶⣿⣿⣶ Ada · mic muted"), "{narrow}");
+        assert!(!narrow.contains("⣀⣤⣶⣿⣿⣶⣤"), "{narrow}");
+        let narrower = row(&view, 40);
+        assert!(narrower.contains("Ada · mic muted"), "{narrower}");
+        assert!(!narrower.contains('⣀'), "{narrower}");
+        let narrowest = row(&view, 30);
+        assert!(!narrowest.contains("Ada"), "{narrowest}");
+        assert!(narrowest.contains("online"), "{narrowest}");
     }
 
     /// While an app has the keyboard the status line never offers `?` or

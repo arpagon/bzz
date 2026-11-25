@@ -54,6 +54,10 @@ Before v0.13, bzz never touched a microphone, speaker or native audio library.
    logs, diagnostics, telemetry, support reports or test snapshots. Huddle
    diagnostics are fixed enums only: joined, left, permission denied, device
    lost, transport failed.
+   Test snapshots may hold levels of generated audio, never of real audio
+   (v0.17.0, plan D8). The visualizer's levels of a real call are drawn and
+   forgotten: never stored, logged, sent or put in diagnostics, and the
+   `Debug` of every type that holds one prints no number.
 
 ## Security consequences
 

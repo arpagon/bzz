@@ -1,0 +1,35 @@
+ 4 in the call · nobody is speaking                               10s ago … now
+  A  Ada                    ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▅▅▅▅▅▆▅▅▅▅▅▅▂ ▁ ▁ ▁ ▁ ▁ ▅▅▅▅▅▆▅▅▂ ▁
+     1s ago                                 ▀▀▀▀▀▀▀▀▀▀▀▀▔           ▀▀▀▀▀▀▀▀▔
+  L  Lin                    ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▅▅▄▅▅▅▅▅▅▅▅▄▅▅▅▂▁ ▁ ▁
+     1s ago                                               ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▔
+  S  Sam                    ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁
+     quiet
+ ▐Y▌ You · your microphone  ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁▂▄▄▄
+ ▐ ▌ muted!                                                                ▔▀▀▀
+ you're muted · nobody hears you · m unmutes
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+--- styles ---
+0: 1-34 Indexed(242)/Reset/NONE 66-78 Indexed(242)/Reset/NONE
+1: 2-2 Indexed(233)/Indexed(66)/BOLD 28-43 Indexed(242)/Reset/DIM 44-47 Indexed(243)/Reset/NONE 48-56 Indexed(66)/Reset/NONE 57-67 Indexed(242)/Reset/DIM 68-76 Indexed(73)/Reset/NONE 77-78 Indexed(242)/Reset/DIM
+2: 2-2 Indexed(233)/Indexed(66)/BOLD 5-10 Indexed(242)/Reset/NONE 44-47 Indexed(243)/Reset/NONE 48-56 Indexed(66)/Reset/NONE 68-76 Indexed(73)/Reset/NONE
+3: 2-2 Indexed(233)/Indexed(103)/BOLD 28-57 Indexed(242)/Reset/DIM 58-58 Indexed(103)/Reset/NONE 59-68 Indexed(139)/Reset/NONE 69-73 Indexed(140)/Reset/NONE 74-78 Indexed(242)/Reset/DIM
+4: 2-2 Indexed(233)/Indexed(103)/BOLD 5-10 Indexed(242)/Reset/NONE 58-58 Indexed(103)/Reset/NONE 59-68 Indexed(139)/Reset/NONE 69-73 Indexed(140)/Reset/NONE
+5: 2-2 Indexed(233)/Indexed(107)/BOLD 28-78 Indexed(242)/Reset/DIM
+6: 2-2 Indexed(233)/Indexed(107)/BOLD 5-9 Indexed(242)/Reset/NONE
+7: 1-1 Indexed(178)/Reset/NONE 2-2 Indexed(233)/Indexed(178)/BOLD 3-3 Indexed(178)/Reset/NONE 5-25 Indexed(178)/Reset/BOLD 28-74 Indexed(242)/Reset/DIM 75-78 Indexed(178)/Reset/NONE
+8: 1-1 Indexed(178)/Reset/NONE 2-2 Indexed(233)/Indexed(178)/BOLD 3-3 Indexed(178)/Reset/NONE 5-10 Indexed(178)/Reset/BOLD | REVERSED 75-78 Indexed(178)/Reset/NONE
+9: 1-43 Indexed(178)/Reset/BOLD

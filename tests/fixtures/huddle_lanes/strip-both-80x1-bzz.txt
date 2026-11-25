@@ -1,0 +1,3 @@
+ NORMAL  🎧  ⣄⣀⣴⣤⣤⣴⣶⣦⣶⣶⣴⣴ Ada and Lin · mic muted                       ● online
+--- styles ---
+0: 0-7 Black/Cyan/NONE 12-13 Rgb(99, 121, 121)/Reset/NONE 14-15 Rgb(123, 110, 125)/Reset/NONE 16-16 Rgb(126, 111, 129)/Reset/NONE 17-17 Rgb(138, 113, 143)/Reset/NONE 18-18 Rgb(150, 115, 156)/Reset/NONE 19-19 Rgb(161, 117, 170)/Reset/NONE 20-20 Rgb(173, 118, 183)/Reset/NONE 21-21 Rgb(185, 120, 197)/Reset/NONE 22-22 Rgb(53, 186, 186)/Reset/NONE 23-23 Rgb(208, 124, 224)/Reset/NONE 25-35 Rgb(46, 196, 196)/Reset/BOLD 36-47 Rgb(108, 108, 108)/Reset/NONE 70-72 Green/Reset/NONE

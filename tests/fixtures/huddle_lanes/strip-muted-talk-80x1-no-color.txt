@@ -1,0 +1,3 @@
+ NORMAL  🎧  ▆▆▆▆▆▆▆▆▆▄▂▁ quiet · you're muted                          ● online
+--- styles ---
+0: 0-7 Black/Cyan/NONE 23-23 Reset/Reset/DIM 33-44 Reset/Reset/BOLD | REVERSED 70-72 Green/Reset/NONE
