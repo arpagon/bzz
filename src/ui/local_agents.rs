@@ -451,7 +451,7 @@ mod tests {
             "doing now:    bash",
             "last outcome: answered · 2026-11-14T10:00:00Z",
             "model:       scripted/scripted",
-            "capability record: pi-durable (everything in v0.16.0)",
+            "capability record: pi-durable (everything in v0.17.0)",
             "its own disk:        yes",
             "one final reply per mention: bzz",
         ] {
