@@ -70,10 +70,14 @@ the real Buzz relay, so your teammates on Buzz desktop and mobile see exactly
 what you send.
 
 > **New in 0.17 — the first minute.** `bzz demo` opens a generated team in
-> your terminal, offline. `Ctrl+K` finds and runs any action, channel,
-> person or theme, and shows its key. The huddle shows who is speaking, and
-> your own microphone, muted or not. Quiet frames with a visible focus,
-> `NO_COLOR`, unread counts. On Linux bzz needs no sound library, and on
+> your terminal, offline. `:join` takes your community's address and lets
+> you in without a shell command. `Ctrl+K` finds and runs any action,
+> channel, person or theme, and shows its key; the status line shows the
+> keys of where you are, and Tab completes a `:` command. The huddle shows
+> who is speaking, and your own microphone, muted or not. Quiet frames with
+> a visible focus, a little motion you can turn off, and nothing drawn while
+> nothing changes. Panes fit any width, `z` shows the conversation alone,
+> and the mouse resizes them. On Linux bzz needs no sound library, and on
 > Windows every key works. [Release notes](docs/release-v0.17.0.md), with
 > what changes if you already use bzz.
 >
@@ -154,13 +158,22 @@ cargo install --git https://github.com/arpagon/bzz --locked
 
 ## Get started
 
+To look around first, run `bzz demo`: a generated team, offline, that
+leaves nothing behind.
+
 Start `bzz` and type `:join`, then the address of your team's community
-(or the invite link an admin sent you). bzz checks the address, makes you
+(or the invite link an admin sent you); with no community yet, the first
+screen offers the same with `j`. bzz checks the address, makes you
 an identity (its key goes in the system's keychain, or in a file locked
 with a passphrase when there is none), and lets you in; when the
 community lets in members only, it shows the id to send to an admin and
 comes in by itself once they add you. You can also pair with Buzz
 desktop or import a key there.
+
+Inside bzz, `Ctrl-K` finds any action, channel, person, app or theme by
+name and shows its key, and the status line shows the keys that matter
+where the focus is. `?` lists every key; [docs/keys.md](docs/keys.md) is
+the same list.
 
 The same from the command line:
 
@@ -270,7 +283,7 @@ The tables below are the ones to start with.
 | `i` | Write (`Enter` sends, `Ctrl-j` adds a line) |
 | `@` | Mention someone; `Space` completes a unique name, `Tab` picks |
 | `r` · `e` · `d` | React · edit your own message · delete it (asks) |
-| `u` | Mark unread from the selected message |
+| `u` | Mark the channel unread |
 | `/` | Search (`from:` `in:` `after:` `before:`; `Ctrl-o` loads older) |
 | `Space n` | Inbox: mentions, threads, DMs and drafts |
 | `Space a` | Every action for the selected item |
@@ -280,7 +293,8 @@ The tables below are the ones to start with.
 | `5` · `Space 5` | Give the app the keyboard · zoom it (`Ctrl-c` gives the keyboard back) |
 | `Ctrl-y` | Read and answer a command an agent asks to run, or a version of an app |
 | `:` | Commands (below) |
-| `q` | Back, then quit |
+| `q` · `Esc` | Back, then quit · back (with nothing open, it does not quit) |
+| `z` | The conversation alone; `z` again brings the other panes back |
 | `Ctrl-K` · `Space k` | Find and run any action, channel, person, app or theme |
 
 In `:agents`: `Space` pauses or resumes an agent, `x` stops the turn it is

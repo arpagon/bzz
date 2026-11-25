@@ -1010,6 +1010,67 @@ palette, Caps Lock with letters and with `Ctrl`, `Shift+Tab` moving the
 focus back. A key map of yours (`keymap.toml`) with `shift-` and without it
 binds the same key.
 
+### Joining, against the real thing
+
+The join form was run on the pinned relay (an open community and one that
+lets in members only) and on scripted relays. Each of these needs
+something that machine could not have. Start with a fresh profile (section
+0), so nothing of yours is touched.
+
+1. **Pairing with Buzz desktop.** With the current Buzz desktop running on
+   the same machine, signed in, and a system keychain: `bzz`, `:join
+   <address>`, choose "Pair with Buzz desktop", approve the request in Buzz.
+   bzz comes in with the desktop's npub (`:profile` on your own message),
+   and a message you send shows in Buzz desktop as yours. Without Buzz
+   running, the choice says `Buzz desktop is not running here: start it,
+   then come back` and stays.
+2. **The browser sign-in.** On a community whose relay signs in through an
+   identity provider (NIP-11 says so): the form offers it and asks the
+   address of the sign-in service (https). A browser opens, you sign in,
+   and bzz lands in a channel.
+3. **An invite link** that an admin of a real community made, in both
+   forms (`https://<relay>/invite/<code>` and `buzz://join?…`): pasted into
+   `:join`, the code is drawn as dots, and bzz comes in. An invite that was
+   used or withdrawn says so in Buzz desktop's words.
+4. **Members only, with a real admin:** the npub the form shows, sent to
+   the admin and added by them in Buzz; bzz comes in by itself, with no key
+   pressed, within a minute.
+
+### The mouse, in a real terminal
+
+In a terminal that reports the mouse (kitty, Ghostty, WezTerm, iTerm2,
+Windows Terminal), with a hand, at 80×24 and 160×45: a click focuses a
+pane and opens a channel; a double click on a message opens its thread,
+and on the open thread's message keeps it open; dragging the border of the
+sidebar and of the thread resizes it, within its limits, and the status
+line says the width was saved; the wheel scrolls the pane under the pointer
+without moving the focus, also while writing; a click on `Ctrl-K actions`
+in the status line opens the palette. Over SSH too. Then the same with the
+terminal's own selection (often Shift and drag): it still selects text.
+
+### Motion, by eye
+
+In a real terminal at 160×45, then over SSH from another machine, with
+`[ui] motion` unset (`full`): move the focus with `Tab` (its colour runs
+round the frame, once); open and close the palette and the finder (they
+unfold and fold, quickly); copy a message with `y` (a toast above the
+composer, 3 s, then gone); a message arriving from another client (tinted
+for a moment); one arriving in another channel (its count flashes once).
+Nothing flickers, nothing lags behind a key typed fast, and with nothing
+happening the screen is still. Then `motion = "calm"`, `motion = "off"`
+and `BZZ_NO_MOTION=1`: with `off` every change shows at once and nothing
+moves. In the demo, `#infra`: the huddle's lanes move with `full`, at five
+frames a second with `calm`, and are still with `off`.
+
+### The look under `NO_COLOR`
+
+In the same graphics terminal, `NO_COLOR=1 bzz demo`: no cell carries a
+colour; the focused pane is the one with the heavy frame and the reversed
+title; unread, `── new ──`, the huddle's speaker and `you're muted` are
+readable without colour; the palette and the help still read. Then
+`TERM=xterm-256color` without `COLORTERM`: the theme's colours, the nearest
+of 256.
+
 ## Results log
 
 | Section | Result | Evidence/notes |
