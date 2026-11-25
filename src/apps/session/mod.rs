@@ -200,9 +200,11 @@ struct Sent {
 
 /// A revision the app's own write made of another.
 struct Own {
-    before: String,
-    after: String,
-    /// The content as stored, for what Lua could not show (F1).
+    /// The revisions the app's own writes replaced, the last few.
+    replaced: VecDeque<String>,
+    /// The revision the last of them made.
+    latest: String,
+    /// Its content as stored, for what Lua could not show (F1).
     content: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -252,11 +254,11 @@ pub struct AppSession {
     queued: HashMap<Uuid, VecDeque<RecordRequest>>,
     /// The record ids with a write of the app on their way.
     busy: HashMap<Uuid, u64>,
-    /// What the app's own last writes to a record made of a revision, the
-    /// revision before and the one after: a write the script built on the
-    /// one before, without having had the answer yet, is sent on the app's
-    /// own one. Forgotten when someone else changes the record.
-    own: HashMap<Uuid, VecDeque<Own>>,
+    /// What the app's own writes to a record made: a write the script
+    /// built on a revision one of them replaced, without having had the
+    /// answer yet, is sent on the app's own last one. Forgotten when
+    /// someone else changes the record.
+    own: HashMap<Uuid, Own>,
     budget: SharedBudget,
     /// Until when no write is sent, on the clock's `elapsed`: the relay's
     /// quota or the app's own budget said to wait.
@@ -909,29 +911,27 @@ impl AppSession {
 
     /// Where the app's own writes led from `rev`.
     fn follow(&self, id: Uuid, rev: &str) -> String {
-        let mut rev = rev.to_string();
-        if let Some(chain) = self.own.get(&id) {
-            for own in chain {
-                if own.before == rev {
-                    rev = own.after.clone();
-                }
-            }
+        match self.own.get(&id) {
+            Some(own) if own.replaced.iter().any(|replaced| replaced == rev) => own.latest.clone(),
+            _ => rev.to_string(),
         }
-        rev
     }
 
     /// The app's own write to `id` replaced `before` with `stored`.
     fn remember_own(&mut self, id: Uuid, before: &str, stored: &Record) {
-        const KEPT: usize = 32;
-        let chain = self.own.entry(id).or_default();
-        if chain.len() >= KEPT {
-            chain.pop_front();
-        }
-        chain.push_back(Own {
-            before: before.to_string(),
-            after: stored.revision.clone(),
-            content: stored.content.clone(),
+        // More than a burst at the budget of a minute.
+        const KEPT: usize = 64;
+        let own = self.own.entry(id).or_insert_with(|| Own {
+            replaced: VecDeque::new(),
+            latest: String::new(),
+            content: serde_json::Map::new(),
         });
+        if own.replaced.len() >= KEPT {
+            own.replaced.pop_front();
+        }
+        own.replaced.push_back(before.to_string());
+        own.latest = stored.revision.clone();
+        own.content = stored.content.clone();
     }
 
     /// The content of `id` at `rev`: the set's, or the app's own write's
@@ -941,10 +941,8 @@ impl AppSession {
             Some(held) if held.revision == rev => Some(&held.content),
             _ => self
                 .own
-                .get(&id)?
-                .iter()
-                .rev()
-                .find(|own| own.after == rev)
+                .get(&id)
+                .filter(|own| own.latest == rev)
                 .map(|own| &own.content),
         }
     }
