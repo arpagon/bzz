@@ -66,6 +66,7 @@ case $backend in
     mkdir -m 700 "$PULSE_RUNTIME_PATH" "$PULSE_STATE_PATH"
     pulseaudio -D --exit-idle-time=-1
     for _ in $(seq 1 50); do pactl info >/dev/null 2>&1 && break; sleep 0.1; done
+    pactl info >/dev/null 2>&1 || { echo "the private PulseAudio did not answer in 5 s" >&2; exit 1; }
     module=$(pactl load-module module-null-sink sink_name=bzz_t7 rate=48000 channels=1)
     pactl set-default-sink bzz_t7
     pactl set-default-source bzz_t7.monitor
@@ -85,5 +86,13 @@ if [[ -n ${BZZ_T7_BINARY:-} ]]; then
   "$BZZ_T7_BINARY" --ignored --nocapture
 else
   cd "$repo_root"
-  cargo test --locked --test huddle_device_loopback_test -- --ignored --nocapture
+  # The `pulseaudio` crate optimised even in this debug build. Unoptimised,
+  # its reader zero-fills a 1 MiB buffer one byte at a time before every
+  # read of the socket (4 ms here, more on a CI runner) and writes playback
+  # only once a read finds nothing waiting; with capture arriving every few
+  # milliseconds that moment never comes, playback starves and T7 took 12
+  # minutes or never ended in CI (docs/validation-v0.17.0/ci.md). Release
+  # builds, which people run, are not affected.
+  cargo test --locked --config 'profile.dev.package.pulseaudio.opt-level=3' \
+    --test huddle_device_loopback_test -- --ignored --nocapture
 fi

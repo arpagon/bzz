@@ -176,6 +176,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.os == 'ubuntu-latest' && 'ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d' || null }}
     continue-on-error: ${{ matrix.experimental }}
+    # T7 itself takes under 10 s (docs/validation-v0.17.0/ci.md); the rest is
+    # the build. Until v0.17.0 it could hang for hours (a debug build of the
+    # `pulseaudio` crate starved playback).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install BlackHole
@@ -192,6 +196,8 @@ jobs:
         # job: with `continue-on-error` on the job alone, the run passes but
         # the job and the pull request's check still show as failed.
         continue-on-error: ${{ matrix.experimental }}
+        # Compiling the test is part of this step (2 to 3 minutes on Linux).
+        timeout-minutes: 15
         run: ./scripts/test-audio-loopback.sh
   agent-host:
     # v0.15.0 M2 and M3: the Pi Durable agent host (agent-host/). Node only:
