@@ -1,4 +1,5 @@
 pub mod action;
+pub mod action_table;
 pub mod actions;
 pub mod agents;
 #[cfg(feature = "apps")]
@@ -21,6 +22,7 @@ pub mod keymap;
 pub mod layout;
 pub mod local_agents;
 pub mod mention_picker;
+pub mod palette;
 pub mod profile;
 pub mod reaction_picker;
 pub mod redraw_gate;
