@@ -927,4 +927,36 @@ mod tests {
         }
         assert!(started.elapsed() < Duration::from_secs(1));
     }
+
+    /// The join's answer is shown whole in the status line at 80 columns,
+    /// with the mode, a huddle in the channel and the longest connection
+    /// word beside it.
+    #[test]
+    fn no_sound_server_fits_an_80_column_status_line() {
+        use ratatui::{Terminal, backend::TestBackend, text::Line};
+
+        use crate::{domain::ConnectionState, ui::status, ui::theme::Theme};
+        let theme = Theme::builtin("bzz").unwrap();
+        for (mode, connection) in [
+            ("HUDDLE", ConnectionState::Online),
+            ("NORMAL", ConnectionState::Authenticating),
+            ("COMMAND", ConnectionState::IdentityMissing),
+        ] {
+            let mut view = status::StatusBarView::new(mode, connection);
+            view.channel = Some("#general");
+            view.notice = NO_SOUND_SERVER;
+            view.huddle_slot(
+                Line::from("🎧 huddle · 12 in it · :huddle"),
+                status::priority::HUDDLE,
+            );
+            let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+            terminal
+                .draw(|frame| status::render(frame, frame.area(), &theme, view))
+                .unwrap();
+            let row: String = (0..80)
+                .map(|x| terminal.backend().buffer()[(x, 0)].symbol().to_owned())
+                .collect();
+            assert!(row.contains(NO_SOUND_SERVER), "{mode}: {row}");
+        }
+    }
 }
