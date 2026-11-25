@@ -2,7 +2,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState},
+    widgets::{Clear, List, ListItem, ListState},
 };
 
 use crate::{
@@ -104,9 +104,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &SearchState, theme: &Th
     } else {
         "local + relay"
     };
-    let title = format!(
-        " Search · {status} · from: in: after: before: · Enter open · Ctrl-o older · Esc close "
-    );
+    let title = "Search";
     let mut items = vec![ListItem::new(Line::from(vec![
         Span::styled("> ", theme.style(HighlightGroup::SelectionMarker)),
         Span::styled(
@@ -151,12 +149,18 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &SearchState, theme: &Th
             .highlight_symbol("› ")
             .highlight_style(theme.style(HighlightGroup::SelectedRow))
             .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(theme.border_type(BorderSurface::Picker))
-                    .border_style(theme.style(HighlightGroup::ModalBorder))
-                    .title_style(theme.style(HighlightGroup::ModalTitle))
-                    .title(title),
+                crate::ui::frame::modal(
+                    theme,
+                    BorderSurface::Picker,
+                    title,
+                    &[
+                        ("from: in: after: before:", ""),
+                        ("Enter", "open"),
+                        ("Ctrl-o", "older"),
+                        ("Esc", "close"),
+                    ],
+                )
+                .title(crate::ui::frame::info(theme, status)),
             ),
         area,
         &mut list_state,

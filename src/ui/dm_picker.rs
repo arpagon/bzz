@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState},
+    widgets::{Clear, List, ListItem, ListState},
 };
 use uuid::Uuid;
 
@@ -126,14 +126,7 @@ pub fn render(
     } else {
         "Private workspace DM · relay-readable, not end-to-end encrypted"
     };
-    let title = format!(
-        " {action} · Space select · Enter open · Esc cancel{} ",
-        if state.submitting {
-            " · submitting…"
-        } else {
-            ""
-        }
-    );
+    let title = action.to_string();
     let selected_labels = state
         .recipients
         .iter()
@@ -185,12 +178,20 @@ pub fn render(
             .highlight_symbol("› ")
             .highlight_style(theme.style(HighlightGroup::SelectedRow))
             .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(theme.border_type(BorderSurface::Picker))
-                    .border_style(theme.style(HighlightGroup::ModalBorder))
-                    .title_style(theme.style(HighlightGroup::ModalTitle))
-                    .title(title),
+                crate::ui::frame::modal(
+                    theme,
+                    BorderSurface::Picker,
+                    &title,
+                    &[("Space", "select"), ("Enter", "open"), ("Esc", "cancel")],
+                )
+                .title(crate::ui::frame::info(
+                    theme,
+                    if state.submitting {
+                        "submitting…"
+                    } else {
+                        ""
+                    },
+                )),
             ),
         area,
         &mut list_state,

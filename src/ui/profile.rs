@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph, Wrap},
 };
 use uuid::Uuid;
 
@@ -215,12 +215,12 @@ pub fn render(
     theme: &Theme,
 ) {
     frame.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(theme.border_type(BorderSurface::Picker))
-        .border_style(theme.style(HighlightGroup::ModalBorder))
-        .title_style(theme.style(HighlightGroup::ModalTitle))
-        .title(" profile · r refresh · Esc close ");
+    let block = crate::ui::frame::modal(
+        theme,
+        BorderSurface::Picker,
+        "profile",
+        &[("r", "refresh"), ("Esc", "close")],
+    );
     frame.render_widget(
         Paragraph::new(lines(card, now, channel_name, theme))
             .style(theme.style(HighlightGroup::Normal))

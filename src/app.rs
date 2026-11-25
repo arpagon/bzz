@@ -674,6 +674,13 @@ pub struct App {
     first_screen: crate::ui::first_screen::FirstScreen,
     /// `d` on the first screen: leave, and open the demo in this process.
     open_demo: bool,
+    /// When the transient notice (`status_error`) expires (C2).
+    notice_timer: crate::ui::status::NoticeTimer,
+    /// The channel in view and the read time it had when it was opened:
+    /// the `── new ──` line goes before its first later message (L6).
+    new_since: Option<(Uuid, u64)>,
+    /// Unread messages per channel, for the count in the sidebar (L6).
+    unread_counts: HashMap<Uuid, usize>,
 }
 
 /// How [`App::run_to_exit`] ended.
@@ -1269,6 +1276,9 @@ impl App {
             demo: false,
             first_screen: crate::ui::first_screen::FirstScreen::default(),
             open_demo: false,
+            notice_timer: crate::ui::status::NoticeTimer::default(),
+            new_since: None,
+            unread_counts: HashMap::new(),
         };
         app.sync_workspace_viewports();
         app.hydrate_cache().await?;
@@ -1302,6 +1312,11 @@ impl App {
         frame_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut redraw = RedrawGate::default();
         while !self.should_quit {
+            // A notice lives about five seconds; the loop sleeps until then
+            // and draws one frame when it goes (rule 20).
+            self.notice_timer
+                .observe(self.status_error.as_deref(), tokio::time::Instant::now());
+            let notice_deadline = self.notice_timer.deadline();
             tokio::select! {
                 biased;
                 _=&mut shutdown=>self.should_quit=true,
@@ -1584,6 +1599,17 @@ impl App {
                     Background::AgentPreflight { new, result }=>self.agent_preflight_done(*new, result),
                     }
                     redraw.request();
+                },
+                () = async {
+                    match notice_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if self.notice_timer.expire(self.status_error.as_deref(), tokio::time::Instant::now()) {
+                        self.status_error = None;
+                        redraw.request();
+                    }
                 },
                 _=tick.tick()=>{
                     let changed=self.on_tick().await?;
@@ -2461,14 +2487,15 @@ impl App {
             .call(move |store| store.ui_state(community, "manual_unread"))
             .await?
             .unwrap_or_default();
-        self.computed_unread = if let Some(runtime) = &self.runtime {
+        self.unread_counts = if let Some(runtime) = &self.runtime {
             let pubkey = runtime.signer.public_key().to_hex();
             self.store
-                .call(move |store| store.unread_channels(community, &pubkey))
+                .call(move |store| store.unread_channel_counts(community, &pubkey))
                 .await?
         } else {
-            HashSet::new()
+            HashMap::new()
         };
+        self.computed_unread = self.unread_counts.keys().copied().collect();
         self.cache_dirty = false;
         self.last_cache_refresh = Instant::now();
         Ok(())
@@ -6122,6 +6149,9 @@ impl App {
             self.last_marked.remove(&channel.to_string());
             self.subscribe_channel(channel).await?;
             self.spawn_backfill(channel);
+            // What was unread when the channel opened keeps its `── new ──`
+            // line while the channel stays open, though it is read now.
+            self.new_since = self.channel_read_at(channel).await?.map(|at| (channel, at));
             // Explicitly opening a channel starts at its live edge. Persist the
             // local marker now rather than waiting for a later redraw/tick.
             self.mark_current_read().await?;
@@ -8234,6 +8264,94 @@ impl App {
         }
         Ok(())
     }
+    /// The time up to which `channel` was read, for the `── new ──` line; a
+    /// channel never read counts from its latest message here, so only what
+    /// arrives from now on is new.
+    async fn channel_read_at(&self, channel: Uuid) -> Result<Option<u64>> {
+        let (Some(community), Some(identity)) = (
+            self.active_community_id(),
+            self.self_pubkey().map(str::to_owned),
+        ) else {
+            return Ok(None);
+        };
+        let contexts = self
+            .store
+            .call(move |store| store.read_contexts(community, &identity, false))
+            .await?;
+        let read_at = contexts
+            .get(&channel.to_string())
+            .copied()
+            .map_or(0, u64::from);
+        Ok(Some(if read_at == 0 {
+            self.messages
+                .iter()
+                .map(|message| message.created_at)
+                .max()
+                .unwrap_or(0)
+        } else {
+            read_at
+        }))
+    }
+
+    /// The first message after the read time the channel had when it was
+    /// opened, written by someone else: the `── new ──` line goes before it.
+    fn new_marker(&self) -> Option<String> {
+        let (channel, since) = self.new_since?;
+        if self.current_channel().map(|current| current.id) != Some(channel) {
+            return None;
+        }
+        let me = self.self_pubkey();
+        self.messages
+            .iter()
+            .find(|message| {
+                message.created_at > since
+                    && message.system.is_none()
+                    && me.is_none_or(|me| !message.pubkey.eq_ignore_ascii_case(me))
+            })
+            .map(|message| message.event_id.clone())
+    }
+
+    /// One line over the conversation when bzz is not online: what it shows
+    /// and what to do next (L5).
+    fn connection_banner(&self) -> Option<String> {
+        let saved = "showing what is saved here";
+        match self.connection {
+            ConnectionState::Offline if self.runtime.is_some() => Some(format!(
+                "offline · {saved} · bzz retries on its own · :reconnect tries now"
+            )),
+            ConnectionState::Offline => Some(format!("offline · {saved}")),
+            ConnectionState::Locked
+            | ConnectionState::IdentityMissing
+            | ConnectionState::IdentityCorrupt => Some(format!(
+                "{} · {saved} · restore or unlock the identity, then restart bzz",
+                crate::ui::status::connection_label(self.connection)
+            )),
+            ConnectionState::AccessDenied => Some(
+                "access denied · ask the community's admin for access, then :reconnect".into(),
+            ),
+            ConnectionState::ClockSkew => Some(
+                "clock skew · the relay refuses this machine's time · set the clock, then :reconnect"
+                    .into(),
+            ),
+            ConnectionState::Connecting
+            | ConnectionState::Authenticating
+            | ConnectionState::Online
+            | ConnectionState::Backfilling => None,
+        }
+    }
+
+    /// What to do in an empty conversation (L5).
+    fn empty_hint(&self) -> Option<String> {
+        let channel = self.current_channel()?;
+        Some(if let Some(reason) = channel.read_only_reason() {
+            reason.notice().to_owned()
+        } else if self.runtime.is_none() {
+            "Read-only: restore or unlock the identity to write.".to_owned()
+        } else {
+            "i writes the first one".to_owned()
+        })
+    }
+
     async fn mark_current_read(&mut self) -> Result<()> {
         let Some(community) = self.active_community_id() else {
             return Ok(());
@@ -8298,6 +8416,9 @@ impl App {
                 .await?;
             self.last_marked.insert(context, at);
             advanced = true;
+        }
+        if visible_channel {
+            self.unread_counts.remove(&channel);
         }
         if visible_channel
             && clear_visible_unread(&mut self.computed_unread, &mut self.manual_unread, channel)
@@ -10586,46 +10707,69 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) {
-        self.render_app(frame);
+        let color_mode = crate::ui::frame::ColorMode::detected();
+        self.theme.set_color_mode(color_mode);
+        self.render_frame(frame);
+        // The last pass: no colour under NO_COLOR, fewer without true colour.
+        crate::ui::frame::finish(frame.buffer_mut(), color_mode);
+    }
+
+    fn render_frame(&mut self, frame: &mut Frame<'_>) {
         // A command that waits for the owner is said on every screen,
-        // whatever is open, until he has seen it.
+        // whatever is open, until he has seen it. It takes its own row
+        // above the panes, so no pane loses its title to it (L5).
         let area = frame.area();
+        let banner = self
+            .waiting_banner()
+            .filter(|_| area.width >= 50 && area.height >= 13);
+        let Some(text) = banner else {
+            self.render_app(frame, area);
+            return;
+        };
+        let below = Rect::new(
+            area.x,
+            area.y.saturating_add(1),
+            area.width,
+            area.height - 1,
+        );
+        self.render_app(frame, below);
+        crate::ui::approval::render_banner(frame, area, &text, &self.theme);
+    }
+
+    /// What waits for the owner's answer, as the banner says it.
+    fn waiting_banner(&self) -> Option<String> {
         if let Some(first) = self.approvals.first()
             && self.presentation.overlay != Some(Overlay::Approval)
-            && area.width >= 50
-            && area.height >= 12
         {
-            let text = crate::ui::approval::banner_text(
+            return Some(crate::ui::approval::banner_text(
                 first,
                 &self.conversation_label(first),
                 self.approvals.len(),
                 seconds_left(first),
-            );
-            crate::ui::approval::render_banner(frame, area, &text, &self.theme);
-        } else if let Some(first) = self.apps.waiting.first()
+            ));
+        }
+        if let Some(first) = self.apps.waiting.first()
             && !matches!(
                 self.presentation.overlay,
                 Some(Overlay::Approval | Overlay::AppApproval)
             )
-            && area.width >= 50
-            && area.height >= 12
         {
             // A version of an app waits: said in the same place, the same
             // way, after an agent's command.
             #[cfg(feature = "apps")]
-            {
-                let text = crate::ui::app_approval::banner_text(first, self.apps.waiting.len());
-                crate::ui::approval::render_banner(frame, area, &text, &self.theme);
-            }
+            return Some(crate::ui::app_approval::banner_text(
+                first,
+                self.apps.waiting.len(),
+            ));
             #[cfg(not(feature = "apps"))]
             let _ = first;
         }
+        None
     }
 
-    fn render_app(&mut self, frame: &mut Frame<'_>) {
+    fn render_app(&mut self, frame: &mut Frame<'_>, area: Rect) {
         self.render_generation = self.render_generation.wrapping_add(1);
         let mut hit_map = HitMap::new(self.render_generation);
-        let area = frame.area();
         if area.width < 50 || area.height < 12 {
             // While an app has the focus `q` is the app's.
             let way_out = if self.app_has_focus() {
@@ -10637,13 +10781,12 @@ impl App {
                 Paragraph::new(format!("bzz needs at least 50×12\n{way_out}"))
                     .style(self.theme.style(HighlightGroup::Normal))
                     .alignment(Alignment::Center)
-                    .block(
-                        Block::bordered()
-                            .border_type(self.theme.border_type(BorderSurface::Pane))
-                            .border_style(self.theme.style(HighlightGroup::PaneBorder))
-                            .title_style(self.theme.style(HighlightGroup::PaneTitle))
-                            .title(" terminal too small "),
-                    ),
+                    .block(crate::ui::frame::block(
+                        &self.theme,
+                        BorderSurface::Pane,
+                        "terminal too small",
+                        true,
+                    )),
                 area,
             );
             self.last_hit_map = Some(hit_map);
@@ -10739,6 +10882,7 @@ impl App {
                 &self.agents,
                 &self.channel_viewport,
                 &self.unread_channels(),
+                &self.unread_counts,
                 self.config.ui.channel_sort,
                 self.show_system_channels,
                 &self.sidebar_layout,
@@ -10784,6 +10928,9 @@ impl App {
             },
         );
         let self_pubkey = self.self_pubkey().map(str::to_owned);
+        self.timeline.banner = self.connection_banner();
+        self.timeline.empty_hint = self.empty_hint();
+        self.timeline.new_marker = self.new_marker();
         hit_map.push(panes.timeline, HitTarget::Timeline);
         let mut timeline_hits = Vec::new();
         if self.presentation.overlay.is_none() && self.presentation.composer_target.is_none() {
@@ -10839,7 +10986,8 @@ impl App {
                 1 => "1 reply".to_owned(),
                 count => format!("{count} replies"),
             };
-            let thread_title = format!(" context · {reply_label} · q close ");
+            let thread_title = format!("context · {reply_label}");
+            self.thread_timeline.hints = vec![("q", "close")];
             let no_thread_summaries = HashMap::new();
             let mut thread_hits = Vec::new();
             if self.presentation.overlay.is_none() && self.presentation.composer_target.is_none() {
@@ -10990,17 +11138,12 @@ impl App {
         frame.render_stateful_widget(
             List::new(items)
                 .style(self.theme.style(HighlightGroup::CommunityRail))
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Pane))
-                        .border_style(self.theme.style(if focused {
-                            HighlightGroup::FocusedPaneBorder
-                        } else {
-                            HighlightGroup::PaneBorder
-                        }))
-                        .title_style(self.theme.style(HighlightGroup::PaneTitle))
-                        .title(" communities "),
-                )
+                .block(crate::ui::frame::block(
+                    &self.theme,
+                    BorderSurface::Pane,
+                    "communities",
+                    focused,
+                ))
                 .highlight_style(self.theme.style(HighlightGroup::Selection))
                 .highlight_symbol("› "),
             area,
@@ -11046,7 +11189,7 @@ impl App {
         } else {
             format!("message #{channel}")
         };
-        let (title, content, border, content_group) = if active {
+        let (title, content, _border, content_group) = if active {
             let mut attachment_lines = self
                 .composer
                 .attachments
@@ -11094,13 +11237,11 @@ impl App {
             let content = format!("{}{}", sanitize::text(&self.composer.body), attachments);
             let title = match self.active_edit() {
                 Some(editing) if editing.kept_attachments > 0 => format!(
-                    " edit message · keeps {} attachment(s) · Enter save · Esc cancel ",
+                    " edit message · keeps {} attachment(s) ",
                     editing.kept_attachments
                 ),
-                Some(_) => " edit message · Enter save · Esc cancel ".into(),
-                None => format!(
-                    " {target} · Enter send · Ctrl-v paste · Ctrl-o choose · Alt-o path · Del remove · Ctrl-c clear · Esc close "
-                ),
+                Some(_) => " edit message ".into(),
+                None => format!(" {target} "),
             };
             (
                 title,
@@ -11137,11 +11278,25 @@ impl App {
                 HighlightGroup::ComposerHint,
             )
         };
-        let block = Block::bordered()
-            .border_type(self.theme.border_type(BorderSurface::Composer))
-            .border_style(self.theme.style(border))
-            .title_style(self.theme.style(HighlightGroup::ComposerTitle))
-            .title(title);
+        // What to press lives at the foot of the frame, not in its title.
+        let keys: &[(&str, &str)] = match (active, self.active_edit().is_some()) {
+            (false, _) => &[],
+            (true, true) => &[("Enter", "save"), ("Esc", "cancel")],
+            (true, false) => &[
+                ("Enter", "send"),
+                ("Ctrl-v", "paste"),
+                ("Ctrl-o", "choose"),
+                ("Alt-o", "path"),
+                ("Del", "remove"),
+                ("Ctrl-c", "clear"),
+                ("Esc", "close"),
+            ],
+        };
+        let mut block =
+            crate::ui::frame::block(&self.theme, BorderSurface::Composer, &title, active);
+        if !keys.is_empty() {
+            block = block.title_bottom(crate::ui::frame::hints(&self.theme, keys));
+        }
         let inner = block.inner(area);
         if !inner.is_empty() {
             hit_map.push(inner, HitTarget::Composer);
@@ -11247,67 +11402,86 @@ impl App {
                 .map(sanitize::single_line)
                 .unwrap_or_default()
         });
-        let strips = self
+        let activity = self
+            .app_status_line()
+            .or_else(|| self.visible_agent_typing_line(area.width));
+        let app_focused = self.app_has_focus() && self.presentation.overlay.is_none();
+        let channel = self.current_channel().map(|channel| {
+            let name = sanitize::single_line(&channel.name);
+            if channel.kind.is_dm() {
+                name
+            } else {
+                format!("#{name}")
+            }
+        });
+        let mut view = crate::ui::status::StatusBarView::new(mode, self.connection);
+        view.mode_group = mode_group;
+        view.channel = channel.as_deref();
+        view.activity = activity.as_deref();
+        view.notice = &notice;
+        view.app_focused = app_focused;
+        if let Some((lines, priority)) = self.status_huddle_slot() {
+            view.huddle_slot_shortening(lines, priority);
+        }
+        if let Some((line, priority)) = self.status_mark_slot() {
+            view.mark_slot(line, priority);
+        }
+        crate::ui::status::render(frame, area, &self.theme, view);
+    }
+
+    /// The huddle strip, left of centre in the status line, longest first:
+    /// the status line takes a shorter one before it drops it. While a call
+    /// is on it is the strip of `huddle_lanes`; with only a huddle in the
+    /// channel, what v0.16.0 said.
+    fn status_huddle_slot(&self) -> Option<(Vec<Line<'static>>, u8)> {
+        if let Some(lanes) = self
             .huddle_strip_shown()
             .then(|| self.huddle_lanes())
             .flatten()
-            .map(|lanes| crate::ui::huddle_lanes::strips(&lanes, &self.theme));
-        let strip = strips.as_ref().map(|strips| &strips[0]);
-        let huddle_line = self.active_huddle().map(|active| {
-            let call = match self.huddle_call_state() {
-                Some(true) => " · you: muted",
-                Some(false) => " · you: LIVE",
-                None => "",
-            };
-            format!(
-                "🎧 huddle · {} in it{call} · :huddle",
-                active.participants.len()
-            )
-        });
-        let activity = self
-            .app_status_line()
-            .or_else(|| self.visible_agent_typing_line(area.width))
-            .or_else(|| strip.map(crate::ui::huddle_lanes::strip_text))
-            .or(huddle_line);
-        let app_focused = self.app_has_focus() && self.presentation.overlay.is_none();
-        let base = crate::ui::status::StatusBarView {
-            mode,
-            mode_group,
-            activity: activity.as_deref(),
-            notice: &notice,
-            // Seam for agent `look`'s status slot (v0.17 L3): until it
-            // lands, the demo's mark takes the connection's place.
-            connection: if self.demo {
-                crate::demo::STATUS_MARK
-            } else {
-                crate::ui::status::connection_label(self.connection)
-            },
-            media: self.media.protocol_name(),
-            app_focused,
-        };
-        crate::ui::status::render(frame, area, &self.theme, base);
-        // The strip shortens until it fits: its moving cells go first.
-        if let Some(strips) = &strips
-            && strip.is_some_and(|strip| {
-                activity.as_deref() == Some(&*crate::ui::huddle_lanes::strip_text(strip))
-            })
         {
-            for (tried, line) in strips.iter().enumerate() {
-                let text = crate::ui::huddle_lanes::strip_text(line);
-                if tried > 0 {
-                    let view = crate::ui::status::StatusBarView {
-                        activity: Some(&text),
-                        ..base
-                    };
-                    crate::ui::status::render(frame, area, &self.theme, view);
-                }
-                if crate::ui::huddle_lanes::paint_over(frame.buffer_mut(), area, line) {
-                    break;
-                }
-            }
+            return Some((
+                crate::ui::huddle_lanes::strips(&lanes, &self.theme).to_vec(),
+                crate::ui::status::priority::HUDDLE,
+            ));
         }
+        let active = self.active_huddle()?;
+        let call = match self.huddle_call_state() {
+            Some(true) => " · you: muted",
+            Some(false) => " · you: LIVE",
+            None => "",
+        };
+        Some((
+            vec![Line::from(Span::styled(
+                format!(
+                    "🎧 huddle · {} in it{call} · :huddle",
+                    active.participants.len()
+                ),
+                self.theme.style(HighlightGroup::StatusAgent),
+            ))],
+            crate::ui::status::priority::HUDDLE,
+        ))
+    }
+
+    /// SEAM (agent `demo`, A1): a mark at the right of the status line, such
+    /// as `DEMO · generated, offline` with `priority::ALWAYS`. None outside
+    /// the demo.
+    fn status_mark_slot(&self) -> Option<(Line<'static>, u8)> {
+        self.demo.then(|| {
+            (
+                Line::from(Span::styled(
+                    crate::demo::STATUS_MARK,
+                    self.theme.style(HighlightGroup::StatusOnline),
+                )),
+                crate::ui::status::priority::ALWAYS,
+            )
+        })
     }
     fn render_overlay(&mut self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
+        if self.presentation.overlay.is_some() {
+            // Behind an overlay the screen steps back (L4); the overlay
+            // clears and draws its own cells.
+            crate::ui::frame::dim(frame.buffer_mut(), area, &self.theme);
+        }
         match self.presentation.overlay {
             Some(Overlay::Help) => {
                 let actions = derive_actions(self.action_context());
@@ -11336,13 +11510,12 @@ impl App {
                 frame.render_widget(
                     Paragraph::new(shown)
                         .style(self.theme.style(HighlightGroup::Normal))
-                        .block(
-                            Block::bordered()
-                                .border_type(self.theme.border_type(BorderSurface::Modal))
-                                .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                                .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                                .title(self.help_scroll.title()),
-                        ),
+                        .block(crate::ui::frame::modal(
+                            &self.theme,
+                            BorderSurface::Modal,
+                            self.help_scroll.title().trim(),
+                            &[("Esc", "close")],
+                        )),
                     area,
                 );
             }
@@ -11362,13 +11535,12 @@ impl App {
                 frame.render_widget(
                     Paragraph::new(lines.join("\n"))
                     .style(self.theme.style(HighlightGroup::Normal))
-                    .block(
-                        Block::bordered()
-                            .border_type(self.theme.border_type(BorderSurface::Modal))
-                            .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                            .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                            .title(" leader "),
-                    )
+                    .block(crate::ui::frame::modal(
+                        &self.theme,
+                        BorderSurface::Modal,
+                        "leader",
+                        &[],
+                    ))
                     .wrap(Wrap { trim: false }),
                     popup,
                 );
@@ -11526,18 +11698,20 @@ impl App {
                             .collect::<Vec<_>>()
                             .join("  ")
                     };
-                    self.render_prompt(
+                    self.render_prompt_with_keys(
                         frame,
                         area,
-                        " custom emoji · Tab next · Enter react · Esc back ",
+                        "custom emoji",
+                        &[("Tab", "next"), ("Enter", "react"), ("Esc", "back")],
                         &sanitize::single_line(&format!(":{query}  {list}")),
                     );
                     return;
                 }
-                self.render_prompt(
+                self.render_prompt_with_keys(
                     frame,
                     area,
-                    " reaction · Enter toggle · : custom ",
+                    "reaction",
+                    &[("Enter", "toggle"), (":", "custom"), ("Esc", "close")],
                     crate::ui::reaction_picker::REACTIONS
                         .iter()
                         .enumerate()
@@ -11554,13 +11728,18 @@ impl App {
                 )
             }
             Some(Overlay::MediaPreview) => self.render_media_preview(frame, area),
-            Some(Overlay::Attachment) => self.render_prompt(
+            Some(Overlay::Attachment) => self.render_prompt_with_keys(
                 frame,
                 area,
                 if self.presentation.attachment_prompt == Some(AttachmentPrompt::Save) {
-                    " save attachment · no overwrite · Esc cancel "
+                    "save attachment · no overwrite"
                 } else {
-                    " attach by local path · Enter upload · Esc cancel "
+                    "attach by local path"
+                },
+                if self.presentation.attachment_prompt == Some(AttachmentPrompt::Save) {
+                    &[("Enter", "save"), ("Esc", "cancel")]
+                } else {
+                    &[("Enter", "upload"), ("Esc", "cancel")]
                 },
                 &self.attachment_input,
             ),
@@ -11618,13 +11797,12 @@ impl App {
                     Paragraph::new(text)
                         .style(self.theme.style(HighlightGroup::Normal))
                         .wrap(Wrap { trim: false })
-                        .block(
-                            Block::bordered()
-                                .border_type(self.theme.border_type(BorderSurface::Modal))
-                                .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                                .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                                .title(" apps · Enter open here · Esc close "),
-                        ),
+                        .block(crate::ui::frame::modal(
+                            &self.theme,
+                            BorderSurface::Modal,
+                            "apps",
+                            &[("Enter", "open here"), ("Esc", "close")],
+                        )),
                     popup,
                 );
             }
@@ -11849,13 +12027,12 @@ impl App {
             List::new(items)
                 .highlight_symbol("› ")
                 .highlight_style(self.theme.style(HighlightGroup::SelectedRow))
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Modal))
-                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                        .title(" actions · Enter run · Esc close "),
-                ),
+                .block(crate::ui::frame::modal(
+                    &self.theme,
+                    BorderSurface::Modal,
+                    "actions",
+                    &[("Enter", "run"), ("Esc", "close")],
+                )),
             popup,
             &mut state,
         );
@@ -11868,16 +12045,17 @@ impl App {
             self.presentation.close_overlay();
             return;
         };
-        let block = Block::bordered()
-            .border_type(self.theme.border_type(BorderSurface::Modal))
-            .border_style(self.theme.style(HighlightGroup::ModalBorder))
-            .title_style(self.theme.style(HighlightGroup::ModalTitle))
-            .title(format!(
-                " attachment {}/{} · [/] navigate · s save · Esc close ",
+        let block = crate::ui::frame::modal(
+            &self.theme,
+            BorderSurface::Modal,
+            &format!(
+                "attachment {}/{}",
                 self.preview_index + 1,
                 self.selected_message()
                     .map_or(0, |message| message.attachments.len())
-            ));
+            ),
+            &[("[ ]", "navigate"), ("s", "save"), ("Esc", "close")],
+        );
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
         let details = format!(
@@ -11974,13 +12152,16 @@ impl App {
         frame.render_widget(
             List::new(items)
                 .style(self.theme.style(HighlightGroup::Normal))
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Picker))
-                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                        .title(" channel finder · channels and DMs · ↑↓ Tab move · Enter open "),
-                ),
+                .block(crate::ui::frame::modal(
+                    &self.theme,
+                    BorderSurface::Picker,
+                    "channel finder \u{b7} channels and DMs",
+                    &[
+                        ("\u{2191}\u{2193} Tab", "move"),
+                        ("Enter", "open"),
+                        ("Esc", "close"),
+                    ],
+                )),
             popup,
         );
     }
@@ -12023,30 +12204,39 @@ impl App {
             List::new(items)
                 .style(self.theme.style(HighlightGroup::Normal))
                 .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Picker))
-                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                        .title(format!(
-                            " themes · {scope} · Tab scope · Enter save · Esc cancel "
-                        )),
+                    crate::ui::frame::modal(
+                        &self.theme,
+                        BorderSurface::Picker,
+                        "themes",
+                        &[("Tab", "scope"), ("Enter", "save"), ("Esc", "cancel")],
+                    )
+                    .title(crate::ui::frame::info(&self.theme, scope)),
                 ),
             popup,
         );
     }
     fn render_prompt(&self, frame: &mut Frame<'_>, area: Rect, title: &str, value: &str) {
+        self.render_prompt_with_keys(frame, area, title, &[], value);
+    }
+    fn render_prompt_with_keys(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        title: &str,
+        keys: &[(&str, &str)],
+        value: &str,
+    ) {
         let popup = centered(area, 70, 5);
         frame.render_widget(Clear, popup);
         frame.render_widget(
             Paragraph::new(sanitize::text(value))
                 .style(self.theme.style(HighlightGroup::Normal))
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Modal))
-                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                        .title(title),
-                ),
+                .block(crate::ui::frame::modal(
+                    &self.theme,
+                    BorderSurface::Modal,
+                    title,
+                    keys,
+                )),
             popup,
         );
     }
@@ -13044,7 +13234,8 @@ mod tests {
             "{shown}"
         );
         assert!(shown.contains("Scout · pi-durable · idle"), "{shown}");
-        assert!(shown.contains("agent broker · not serving"), "{shown}");
+        assert!(shown.contains("┌ agent broker ─"), "{shown}");
+        assert!(shown.contains(" not serving ┐"), "{shown}");
 
         // Space in the panel pauses the selected agent, and resumes it.
         app.broker_toggle_paused();
@@ -13348,7 +13539,8 @@ mod tests {
         wait_for(&app, Phase::Idle).await;
         let shown = screen(&mut app);
         for expected in [
-            "local agents · j/k select · space pause/resume · x stop its turn · i add to this channel · l log",
+            "┌ local agents ─",
+            " j/k select · space pause/resume · x stop its turn · i add to this channel · l log",
             "› Scout · pi-durable · idle",
             "state:        idle",
             "doing now:    nothing",
@@ -13844,6 +14036,11 @@ mod tests {
         let top = world.screen()[0].clone();
         assert!(top.contains(banner), "the workspace: {top}");
         assert!(top.contains("refused in "), "{top}");
+        // The banner has its own row: the panes' titles are whole under it
+        // (L5).
+        let titles = world.screen()[1].clone();
+        assert!(titles.contains("┌ channels ─"), "{titles}");
+        assert!(titles.contains("┌ general ─"), "{titles}");
         // Not only in the agents panel: with the directory of other
         // people's agents open, with the help, a search, the Inbox, and
         // while a message is being written.
@@ -13869,6 +14066,10 @@ mod tests {
         // Under the help, which fills the screen; and in the Inbox.
         world.app.presentation.open_overlay(Overlay::Help);
         assert!(world.screen()[0].contains(banner), "the help");
+        assert!(
+            world.screen()[1].contains("effective keymap"),
+            "the help starts under the banner"
+        );
         world.app.presentation.close_overlay();
         world.app.open_inbox();
         assert!(world.screen()[0].contains(banner), "the Inbox");
@@ -13907,7 +14108,8 @@ mod tests {
         assert_eq!(world.app.presentation.overlay, Some(Overlay::Approval));
         let shown = world.screen().join("\n");
         for expected in [
-            "a real command waits for your answer · a allow · r refuse",
+            "┌ a real command waits for your answer ─",
+            " a allow · r refuse ",
             "agent:        Scout",
             "conversation: #general (a thread) · it is answering you",
             &format!(
@@ -14367,6 +14569,46 @@ mod tests {
         assert!(screen.contains("recent activity (no content)"), "{screen}");
     }
 
+    /// L4: behind an overlay every cell steps back (the DIM attribute, so
+    /// it holds without colour); the overlay's own cells do not.
+    #[tokio::test]
+    async fn behind_an_overlay_every_cell_is_dim() {
+        use ratatui::style::Modifier;
+
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .all(|cell| !cell.modifier.contains(Modifier::DIM)),
+            "nothing is dim without an overlay"
+        );
+        app.presentation.open_overlay(Overlay::Finder);
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let popup = super::centered(Rect::new(0, 0, 100, 30), 70, 12);
+        let buffer = terminal.backend().buffer();
+        for y in 0..30 {
+            for x in 0..100 {
+                let inside = popup.contains(ratatui::layout::Position { x, y });
+                assert_eq!(
+                    buffer[(x, y)].modifier.contains(Modifier::DIM),
+                    !inside,
+                    "({x}, {y}) inside the finder: {inside}"
+                );
+            }
+        }
+        // Its keys are in the footer, the key in the hint colour.
+        let footer = (popup.x..popup.right())
+            .map(|x| buffer[(x, popup.bottom() - 1)].symbol())
+            .collect::<String>();
+        assert!(footer.contains("Enter open · Esc close"), "{footer}");
+    }
+
     /// The deterministic twin of the `v013-panels-empty-profile` Herdr scenario.
     #[tokio::test]
     async fn v013_commands_on_an_empty_profile_explain_or_open_their_panels() {
@@ -14396,7 +14638,8 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(screen.contains("agent broker · not serving"), "{screen}");
+        assert!(screen.contains("┌ agent broker ─"), "{screen}");
+        assert!(screen.contains(" not serving ┐"), "{screen}");
         assert!(!screen.contains("local agents"), "{screen}");
         assert!(
             screen.contains("o owner-signed agent presence: off"),
@@ -14936,7 +15179,8 @@ mod tests {
             " {} ",
             crate::ui::status::connection_label(app.connection)
         )));
-        assert!(status.contains(&format!(" {} ", app.media.protocol_name().to_uppercase())));
+        // No protocol word: the graphics protocol is :doctor's business.
+        assert!(!status.contains(&format!(" {} ", app.media.protocol_name().to_uppercase())));
 
         let mut narrow = Terminal::new(TestBackend::new(50, 12)).unwrap();
         narrow.draw(|frame| app.render(frame)).unwrap();
@@ -14952,7 +15196,7 @@ mod tests {
             narrow_status.contains("◆ Fizz ⠋"),
             "narrow status: {narrow_status:?}"
         );
-        assert!(!narrow_status.contains("help"));
+        assert!(!narrow_status.contains("? keys"));
 
         app.typing_spinner_advanced_at = Instant::now() - super::AGENT_SPINNER_INTERVAL;
         assert!(app.on_tick().await.unwrap());
@@ -16220,10 +16464,13 @@ mod tests {
             map.hit(sidebar.x.saturating_add(1), sidebar.y.saturating_add(1)),
             Some(&HitTarget::Channel(0))
         );
+        // Offline, the first row of the conversation says so and what to
+        // do; the first message starts under it.
+        assert!(screen.contains("offline · showing what is saved here"));
         assert_eq!(
             map.hit(
                 panes.timeline.x.saturating_add(1),
-                panes.timeline.y.saturating_add(1)
+                panes.timeline.y.saturating_add(2)
             ),
             Some(&HitTarget::TimelineMessage("event-1".into()))
         );

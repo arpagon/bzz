@@ -14,6 +14,8 @@ pub mod confirm;
 pub mod dm_picker;
 pub mod finder;
 pub mod first_screen;
+
+pub mod frame;
 pub mod help;
 pub mod hit_map;
 pub mod huddle;

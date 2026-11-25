@@ -62,18 +62,27 @@ impl Default for Look {
 }
 
 impl Look {
-    /// SEAM (agent `look`, plan L1): until bzz has one colour-depth setting
-    /// for the whole interface, the visualizer reads the environment itself:
-    /// `NO_COLOR` (any value) for no colour, `COLORTERM` for true colour,
-    /// else 256 colours; `TERM=linux` or `BZZ_BLOCKS_ONLY` for block glyphs.
+    /// The colour depth is bzz's one decision (`ui::frame::ColorMode`, plan
+    /// L1); the glyphs are the visualizer's: `TERM=linux` or
+    /// `BZZ_BLOCKS_ONLY` for block glyphs. Sixteen colours draw as 256 here
+    /// and the frame's last pass takes them down.
     pub fn from_env() -> Self {
         let var = |name: &str| std::env::var(name).ok();
-        Self::from_vars(
-            var("NO_COLOR").as_deref(),
-            var("COLORTERM").as_deref(),
+        let glyphs = Self::from_vars(
+            None,
+            None,
             var("TERM").as_deref(),
             var("BZZ_BLOCKS_ONLY").as_deref(),
         )
+        .glyphs;
+        let depth = match crate::ui::frame::ColorMode::detected() {
+            crate::ui::frame::ColorMode::True => Depth::TrueColor,
+            crate::ui::frame::ColorMode::Ansi256 | crate::ui::frame::ColorMode::Ansi16 => {
+                Depth::Ansi256
+            }
+            crate::ui::frame::ColorMode::None => Depth::None,
+        };
+        Self { depth, glyphs }
     }
 
     pub fn from_vars(
@@ -1106,28 +1115,19 @@ mod tests {
     }
 
     fn status_row(lanes: &Lanes<'_>, theme: &Theme) -> Buffer {
-        let line = strip(lanes, theme);
-        let text = strip_text(&line);
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 1)).unwrap();
         terminal
             .draw(|frame| {
-                crate::ui::status::render(
-                    frame,
-                    frame.area(),
-                    theme,
-                    crate::ui::status::StatusBarView {
-                        mode: "NORMAL",
-                        mode_group: HighlightGroup::StatusMode,
-                        activity: Some(&text),
-                        notice: "",
-                        connection: "online",
-                        media: "sixel",
-                        app_focused: false,
-                    },
+                let mut view = crate::ui::status::StatusBarView::new(
+                    "NORMAL",
+                    crate::domain::ConnectionState::Online,
                 );
-                let area = frame.area();
-                paint_over(frame.buffer_mut(), area, &line);
+                view.huddle_slot_shortening(
+                    strips(lanes, theme).to_vec(),
+                    crate::ui::status::priority::HUDDLE,
+                );
+                crate::ui::status::render(frame, frame.area(), theme, view);
             })
             .unwrap();
         terminal.backend().buffer().clone()

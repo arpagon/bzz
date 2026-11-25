@@ -152,7 +152,8 @@ async fn keys_and_a_paste_reach_the_focused_app_and_nothing_else() {
     app.open_app_in_memory(channel, "recorder", RECORDER);
     app.focus_app();
     let shown = until(&mut app, 120, 30, "keys").await;
-    assert!(shown.contains("recorder · Ctrl-c leave"), "{shown}");
+    assert!(shown.contains("┌ recorder ─"), "{shown}");
+    assert!(shown.contains("Ctrl-c leave ┘"), "{shown}");
     assert!(shown.contains(" APP "), "{shown}");
     assert!(shown.contains("Ctrl-c leaves the app"), "{shown}");
     for code in [
@@ -185,9 +186,10 @@ async fn keys_and_a_paste_reach_the_focused_app_and_nothing_else() {
     assert_eq!(app.presentation.focus, FocusSurface::Timeline);
     assert!(!app.app_has_focus());
     let shown = screen(&mut app, 120, 30);
-    assert!(shown.contains("recorder · 5 focus"), "{shown}");
+    assert!(shown.contains("┌ recorder ─"), "{shown}");
+    assert!(shown.contains("5 focus ┘"), "{shown}");
     assert!(!shown.contains("Ctrl-c leaves the app"), "{shown}");
-    assert!(shown.contains("? help · q quit"), "{shown}");
+    assert!(shown.contains("Ctrl-K actions · ? keys"), "{shown}");
     // Now keys are bzz's again, and the app is given none.
     assert!(!app.app_key(key(KeyCode::Char('x'))));
     // The writing dock owns the keyboard before the app, even focused.
@@ -236,7 +238,7 @@ async fn the_pane_follows_the_window_and_its_channel() {
     // 60 columns: the app takes the window while it has the focus.
     let shown = until(&mut app, 60, 24, "size 58x21").await;
     assert_eq!(app.apps.placement, AppPlacement::Zoomed);
-    assert!(!shown.contains("general"), "{shown}");
+    assert!(!shown.contains("┌ general"), "{shown}");
     // Without the focus it is hidden, and the status line says so.
     app.leave_app();
     let shown = screen(&mut app, 60, 24);
@@ -263,7 +265,7 @@ async fn the_pane_follows_the_window_and_its_channel() {
     assert!(!shown.contains("recorder"), "{shown}");
     // And the session kept its state for when the owner comes back.
     app.selected_channel = 0;
-    until(&mut app, 120, 30, "recorder · 5 focus").await;
+    until(&mut app, 120, 30, "5 focus ┘").await;
 }
 
 #[tokio::test]
@@ -495,7 +497,8 @@ return app
         assert_eq!(app.presentation.overlay, Some(Overlay::AppApproval));
         let shown = screen(&mut app, 120, 40);
         for expected in [
-            "a version of an app waits for your answer · a approve · r refuse",
+            "┌ a version of an app waits for your answer ─",
+            " a approve · r refuse ",
             "counter (Counter), version 1",
             "From:     you",
             &format!("Hash:     {hash}"),
@@ -521,7 +524,8 @@ return app
         // Approved: it opens, and runs exactly those bytes.
         command(&mut app, "open counter").await;
         let shown = turn(&mut app, "v1 count 0").await;
-        assert!(shown.contains("Counter · Ctrl-c leave"), "{shown}");
+        assert!(shown.contains("┌ Counter ─"), "{shown}");
+        assert!(shown.contains("Ctrl-c leave ┘"), "{shown}");
         for _ in 0..3 {
             assert!(app.app_key(key(KeyCode::Char('j'))));
         }
@@ -1053,7 +1057,7 @@ return app
             .iter()
             .enumerate()
             .find_map(|(row, line)| {
-                line.find("┌ Board · ")
+                line.find("┌ Board ─")
                     .map(|byte| (row, line[..byte].chars().count()))
             })
             .unwrap_or_else(|| panic!("the pane's border:\n{window}"));

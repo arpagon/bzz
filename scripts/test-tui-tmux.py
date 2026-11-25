@@ -14,6 +14,7 @@ Environment:
   BZZ_TMUX_SCENARIOS    automated | harness | all | ID[,ID...] (default harness)
   BZZ_TMUX_CAPTURES     a folder to keep a text capture of every step in
   BZZ_TMUX_SIZE         the window's size when a scenario names none (160x45)
+  BZZ_TMUX_CAPTURES_ANSI  set: each capture also kept with its colours (.ansi)
 
 What the manifest may say besides what test-tui-herdr.sh documents:
   scenario `size = "WxH"`     the window's size for the scenario
@@ -291,6 +292,10 @@ def run(tmux, scenario, binary, fixture, work, captures, default_size):
                 handle.write(f"# keys {keys} paste {step.get('paste')!r} size {step.get('size')} "
                              f"pane {target} · {visible!r} in {elapsed:.0f} ms\n")
                 handle.write(screen(tmux, target, False))
+            if os.environ.get("BZZ_TMUX_CAPTURES_ANSI"):
+                # The same screen with its colours and attributes (v0.17).
+                with open(os.path.join(folder, f"{number:02d}.ansi"), "w") as handle:
+                    handle.write(tmux("capture-pane", "-p", "-e", "-t", target))
         print(f"scenario {identifier} step {number} observed {visible!r} in {elapsed:.0f} ms", flush=True)
         if visible.startswith(EXIT):
             exited[target] = True

@@ -1,10 +1,11 @@
 use std::{cmp::Ordering, collections::HashMap};
+use unicode_width::UnicodeWidthStr as _;
 
 use ratatui::{
     Frame,
     layout::Rect,
-    text::Line,
-    widgets::{Block, Borders, List, ListItem, ListState},
+    text::{Line, Span},
+    widgets::{List, ListItem, ListState},
 };
 
 use crate::{
@@ -212,6 +213,7 @@ pub fn render(
     agents: &HashMap<String, RemoteAgentView>,
     viewport: &ViewportState,
     unread: &std::collections::HashSet<uuid::Uuid>,
+    unread_counts: &HashMap<uuid::Uuid, usize>,
     sort: ChannelSort,
     show_system: bool,
     layout: &SidebarLayout,
@@ -225,6 +227,14 @@ pub fn render(
         .iter()
         .filter(|channel| channel.is_member && channel.kind.is_system())
         .count();
+    let selected_row = viewport.selected_id.as_ref().and_then(|selected| {
+        rows.iter().position(|row| {
+            matches!(row, SidebarRow::Channel(index) if channels[*index].id.to_string() == *selected)
+        })
+    });
+    // The borders, and the selection mark when a row is selected.
+    let row_width = usize::from(area.width.saturating_sub(2))
+        .saturating_sub(if selected_row.is_some() { 2 } else { 0 });
     let items = rows.iter().map(|row| {
         let index = match row {
             SidebarRow::Header(label) => {
@@ -264,44 +274,55 @@ pub fn render(
         } else {
             ""
         };
-        ListItem::new(Line::from(format!(
+        let label = format!(
             "{badge} {privacy}{}{presence}{huddle}",
             sanitize::single_line(&channel.name)
-        )))
-        .style(theme.style(if is_unread {
+        );
+        // The unread count at the right of the row (L6).
+        let line = match unread_counts
+            .get(&channel.id)
+            .copied()
+            .filter(|count| *count > 0)
+        {
+            Some(count) => {
+                let count = if count > 99 {
+                    "99+".to_owned()
+                } else {
+                    count.to_string()
+                };
+                let room = row_width.saturating_sub(1);
+                let used = label.as_str().width().saturating_add(count.len());
+                let gap = room.saturating_sub(used).max(1);
+                Line::from(vec![
+                    Span::raw(label),
+                    Span::raw(" ".repeat(gap)),
+                    Span::styled(count, theme.style(HighlightGroup::UnreadCount)),
+                ])
+            }
+            None => Line::from(label),
+        };
+        ListItem::new(line).style(theme.style(if is_unread {
             HighlightGroup::ChannelUnread
         } else {
             HighlightGroup::SidebarText
         }))
     });
     let mut state = ListState::default()
-        .with_selected(viewport.selected_id.as_ref().and_then(|selected| {
-            rows.iter().position(|row| {
-                matches!(row, SidebarRow::Channel(index) if channels[*index].id.to_string() == *selected)
-            })
-        }))
+        .with_selected(selected_row)
         .with_offset(viewport.scroll);
-    let border_group = if focused {
-        HighlightGroup::FocusedPaneBorder
-    } else {
-        HighlightGroup::PaneBorder
+    // The title names the pane; the sort and the hidden system channels
+    // are quiet state at the right of the frame.
+    let info = match (system_count, show_system) {
+        (0, _) => sort.label().to_owned(),
+        (count, false) => format!("{} · ⚙{count}", sort.label()),
+        (_, true) => format!("{} · ⚙ open", sort.label()),
     };
     frame.render_stateful_widget(
         List::new(items)
             .style(theme.style(HighlightGroup::Sidebar))
             .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(theme.border_type(BorderSurface::Pane))
-                    .border_style(theme.style(border_group))
-                    .title_style(theme.style(HighlightGroup::PaneTitle))
-                    .title(match (system_count, show_system) {
-                        (0, _) => format!(" channels · {} ", sort.label()),
-                        (count, false) => {
-                            format!(" channels · {} · ⚙{count} ", sort.label())
-                        }
-                        (_, true) => format!(" channels · {} · ⚙ open ", sort.label()),
-                    }),
+                crate::ui::frame::block(theme, BorderSurface::Pane, "channels", focused)
+                    .title(crate::ui::frame::info(theme, &info)),
             )
             .highlight_style(theme.style(HighlightGroup::Selection))
             .highlight_symbol("› "),
@@ -335,6 +356,53 @@ mod tests {
             last_event_at,
             facts: Default::default(),
         }
+    }
+
+    /// L6: the unread count sits at the right of its channel's row, in the
+    /// unread colour, and a channel without unread messages has none.
+    #[test]
+    fn the_unread_count_is_at_the_right_of_its_channel() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        use crate::ui::theme::{HighlightGroup, Theme};
+
+        let channels = vec![channel("design", Some(20)), channel("launch", Some(10))];
+        let unread = HashSet::from([channels[1].id]);
+        let counts = std::collections::HashMap::from([(channels[1].id, 2_usize)]);
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(24, 6)).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render(
+                    frame,
+                    frame.area(),
+                    &channels,
+                    &std::collections::HashMap::new(),
+                    &crate::ui::state::ViewportState::default(),
+                    &unread,
+                    &counts,
+                    ChannelSort::Smart,
+                    false,
+                    &Default::default(),
+                    &std::collections::HashMap::new(),
+                    None,
+                    &theme,
+                    false,
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows = (0..6)
+            .map(|y| (0..24).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        let launch = rows.iter().position(|row| row.contains("#launch")).unwrap();
+        assert!(rows[launch].ends_with("2 │"), "{rows:#?}");
+        assert_eq!(
+            Some(buffer[(21, u16::try_from(launch).unwrap())].fg),
+            theme.style(HighlightGroup::UnreadCount).fg
+        );
+        let design = rows.iter().position(|row| row.contains("#design")).unwrap();
+        assert!(rows[design].ends_with("  │"), "{rows:#?}");
     }
 
     #[test]

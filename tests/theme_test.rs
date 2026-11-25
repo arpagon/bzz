@@ -104,6 +104,7 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
                             ..ViewportState::default()
                         },
                         &HashSet::from([channel_id]),
+                        &HashMap::from([(channel_id, 3)]),
                         ChannelSort::Smart,
                         false,
                         &Default::default(),
@@ -135,6 +136,12 @@ fn every_builtin_theme_renders_core_surfaces_at_supported_sizes() {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect::<String>();
+            // The unread count beside the channel, in every theme (L6).
+            assert!(
+                text.contains(" 3"),
+                "theme {} at {width}x{height}",
+                entry.id
+            );
             assert!(
                 text.contains("theme-test"),
                 "theme {} at {width}x{height}",

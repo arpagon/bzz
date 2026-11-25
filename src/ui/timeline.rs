@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 use ratatui_image::sliced::{SignedPosition, SlicedImage, SlicedProtocol};
 
@@ -42,6 +42,16 @@ pub struct TimelineState {
     /// Contextual author labels for this view (identity names v1), by key.
     /// Authors absent here keep their profile label.
     pub labels: HashMap<String, String>,
+    /// Keys shown at the foot of the frame while it has the focus.
+    pub hints: Vec<(&'static str, &'static str)>,
+    /// The message before which the `── new ──` line is drawn: the first
+    /// one that was unread when the channel was opened or arrived since.
+    pub new_marker: Option<String>,
+    /// What to do next, said under "No messages … yet" in an empty view.
+    pub empty_hint: Option<String>,
+    /// A one-line state over the conversation (offline, an error) with what
+    /// to do next.
+    pub banner: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -548,25 +558,40 @@ fn render_internal(
     mut hits: Option<&mut Vec<MessageHit>>,
     message_width: Option<u16>,
 ) {
-    let border_group = if focused {
-        HighlightGroup::FocusedPaneBorder
-    } else {
-        HighlightGroup::PaneBorder
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(theme.border_type(BorderSurface::Pane))
-        .border_style(theme.style(border_group))
-        .title_style(theme.style(HighlightGroup::PaneTitle))
-        .title(format!(" {} ", sanitize::single_line(title)));
+    let mut block = crate::ui::frame::block(theme, BorderSurface::Pane, title, focused);
+    if focused && !state.hints.is_empty() {
+        block = block.title_bottom(crate::ui::frame::hints(theme, &state.hints));
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.is_empty() {
         return;
     }
-    let content = readable_area(inner, message_width);
+    let mut content = readable_area(inner, message_width);
     if content.is_empty() {
         return;
+    }
+    // A state over the conversation (offline, an error) with what to do
+    // next takes the first row.
+    if let Some(banner) = state.banner.as_deref()
+        && content.height > 2
+    {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" ⚠ {} ", sanitize::single_line(banner)),
+                theme.style(HighlightGroup::StateBanner),
+            ))),
+            Rect::new(content.x, content.y, content.width, 1),
+        );
+        content = Rect::new(
+            content.x,
+            content.y.saturating_add(1),
+            content.width,
+            content.height - 1,
+        );
+    }
+    if !messages.iter().any(|message| message.system.is_none()) && content.height >= 6 {
+        render_empty(frame, content, state.empty_hint.as_deref(), theme);
     }
 
     // Keep wrapped body text within the six-cell avatar/author gutter.
@@ -599,7 +624,7 @@ fn render_internal(
         .and_then(|_| state.copy_bounds(messages));
     let labels = std::mem::take(&mut state.labels);
     let role_changes = role_changes(messages);
-    let blocks = messages
+    let mut blocks = messages
         .iter()
         .enumerate()
         .map(|(index, message)| {
@@ -641,6 +666,20 @@ fn render_internal(
         })
         .collect::<Vec<_>>();
     state.labels = labels;
+    if let Some(marker) = state.new_marker.as_deref()
+        && let Some(index) = messages
+            .iter()
+            .position(|message| message.event_id == marker)
+        && let Some(block) = blocks.get_mut(index)
+    {
+        block
+            .rows
+            .insert(0, TimelineRow::Text(new_line(content.width, theme)));
+        block.selection_before_row += 1;
+        if let Some(avatar) = &mut block.avatar {
+            avatar.before_row += 1;
+        }
+    }
     let heights = blocks
         .iter()
         .map(|block| block.height(content.width))
@@ -823,6 +862,45 @@ fn render_internal(
         }
         global_y += block_height;
     }
+}
+
+/// "No messages here yet" and what to do next, in the middle of an empty
+/// conversation; the notices of its creation stay where they are drawn.
+fn render_empty(frame: &mut Frame<'_>, content: Rect, hint: Option<&str>, theme: &Theme) {
+    let mut lines = vec![Line::from(Span::styled(
+        "No messages here yet",
+        theme.style(HighlightGroup::Strong),
+    ))];
+    if let Some(hint) = hint {
+        lines.push(Line::from(Span::styled(
+            sanitize::single_line(hint),
+            theme.style(HighlightGroup::Muted),
+        )));
+    }
+    let height = u16::try_from(lines.len()).unwrap_or(2);
+    let y = content
+        .y
+        .saturating_add(content.height / 2)
+        .saturating_sub(height);
+    frame.render_widget(
+        Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center),
+        Rect::new(content.x, y, content.width, height),
+    );
+}
+
+/// The line before the first unread message: `──── new ────`, as wide as the
+/// conversation.
+fn new_line(width: u16, theme: &Theme) -> Line<'static> {
+    let width = usize::from(width.max(9));
+    let side = width.saturating_sub(5) / 2;
+    Line::styled(
+        format!(
+            "{} new {}",
+            "─".repeat(side),
+            "─".repeat(width.saturating_sub(5).saturating_sub(side))
+        ),
+        theme.style(HighlightGroup::NewMessageMarker),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1646,6 +1724,95 @@ mod tests {
             emoji: Vec::new(),
             edited: false,
         }
+    }
+
+    fn drawn(messages: &[Message], state: &mut TimelineState, width: u16) -> Vec<String> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 16)).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render(
+                    frame,
+                    frame.area(),
+                    messages,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    state,
+                    "general",
+                    &Theme::default(),
+                    true,
+                    Some("me"),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// L6: the line goes right before the first unread message, as wide
+    /// as the conversation, and nowhere without a marker.
+    #[test]
+    fn a_new_line_is_drawn_before_the_first_unread_message() {
+        let mut read = message("ada", 1_700_000_000);
+        read.content = "seen already".into();
+        let mut unread = message("lin", 1_700_000_060);
+        unread.content = "fresh news".into();
+        let messages = vec![read, unread.clone()];
+        let mut state = TimelineState {
+            at_live_bottom: true,
+            ..TimelineState::default()
+        };
+        let rows = drawn(&messages, &mut state, 40);
+        assert!(!rows.iter().any(|row| row.contains(" new ")), "{rows:#?}");
+        state.new_marker = Some(unread.event_id.clone());
+        let rows = drawn(&messages, &mut state, 40);
+        let line = rows
+            .iter()
+            .position(|row| row.contains("─ new ─"))
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        let fresh = rows
+            .iter()
+            .position(|row| row.contains("fresh news"))
+            .unwrap();
+        let seen = rows
+            .iter()
+            .position(|row| row.contains("seen already"))
+            .unwrap();
+        assert!(seen < line && line < fresh, "{rows:#?}");
+    }
+
+    /// L5: an empty conversation says so and what to do next; a banner
+    /// takes the first row with what to do when bzz is offline.
+    #[test]
+    fn an_empty_conversation_and_an_offline_one_say_what_to_do_next() {
+        let mut state = TimelineState {
+            at_live_bottom: true,
+            empty_hint: Some("i writes the first one".into()),
+            ..TimelineState::default()
+        };
+        let rows = drawn(&[], &mut state, 60);
+        let text = rows.join("\n");
+        assert!(text.contains("No messages here yet"), "{text}");
+        assert!(text.contains("i writes the first one"), "{text}");
+        state.banner = Some("offline · showing what is saved here · :reconnect tries now".into());
+        let mut hello = message("ada", 1_700_000_000);
+        hello.content = "hello".into();
+        let rows = drawn(&[hello], &mut state, 80);
+        assert!(
+            rows[1].contains("⚠ offline · showing what is saved here · :reconnect tries now"),
+            "{rows:#?}"
+        );
+        let text = rows.join("\n");
+        assert!(!text.contains("No messages here yet"), "{text}");
+        assert!(text.contains("hello"), "{text}");
     }
 
     #[test]

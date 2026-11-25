@@ -267,14 +267,11 @@ pub fn render(
     let focus = view.focus;
     let theme = view.theme;
     let loading = view.loading;
-    let outer = Block::default()
-        .borders(Borders::ALL)
-        .border_type(theme.border_type(BorderSurface::Pane))
-        .border_style(theme.style(HighlightGroup::PaneBorder))
-        .title_style(theme.style(HighlightGroup::PaneTitle))
-        .title(format!(
-            " Inbox · {} · f filters · Enter detail · ? help ",
-            state.filter.label()
+    let outer = crate::ui::frame::block(theme, BorderSurface::Pane, "Inbox", false)
+        .title(crate::ui::frame::info(theme, state.filter.label()))
+        .title_bottom(crate::ui::frame::hints(
+            theme,
+            &[("f", "filters"), ("Enter", "detail"), ("?", "help")],
         ));
     frame.render_widget(outer, area);
     let route_layout = layout(area, state.narrow_detail);
@@ -435,7 +432,18 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, state: &mut InboxState, view
                                 HighlightGroup::PaneBorder
                             }),
                     )
-                    .title(" detail · i reply · o source · m mark read "),
+                    .title(crate::ui::frame::title_label(
+                        view.theme,
+                        "detail",
+                        view.focus == FocusSurface::InboxDetail,
+                    ))
+                    .title(
+                        crate::ui::frame::hints(
+                            view.theme,
+                            &[("i", "reply"), ("o", "source"), ("m", "mark read")],
+                        )
+                        .right_aligned(),
+                    ),
             ),
         area,
     );
