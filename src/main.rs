@@ -33,6 +33,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Try bzz offline with a generated team: no account, no key needed.
+    ///
+    /// Nothing of yours is read or saved. Leave with q, then y.
+    // First in `bzz help`: it is what the README asks a newcomer to run.
+    Demo,
     /// Manage signing identities without exposing secrets in arguments.
     Identity {
         #[command(subcommand)]
@@ -113,9 +118,6 @@ enum Command {
         #[arg(value_enum)]
         shell: CompletionShell,
     },
-    /// Try bzz with a generated team, offline: no account, no key, nothing
-    /// of yours read or saved.
-    Demo,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
