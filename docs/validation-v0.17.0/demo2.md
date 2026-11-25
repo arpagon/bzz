@@ -62,7 +62,7 @@ in `<scratch>/tmp`). `bzz-before` is the release build of `64156d3`,
 | A huddle person who has not spoken since the lanes appeared is "quiet", not "2s ago" | unit, 80×24 render; seen it fail | `cargo test --locked --lib in_the_demo_huddle_who_has_not_spoken_yet_is_quiet` | 30 s of the recording in `#team`, then `#infra` in the loop's silent first 0.35 s: no track has spoken, the panel says `quiet` three times and `ago` only in its scale; then Ada is live. **With the fix taken out it fails** (peer 1 had "spoken") |
 | The same on screen | tmux by hand, debug build, 80×24 | `huddle-later-80x24.txt` | `Ada · ● live`, `Lin · quiet`, `Sam · quiet` on opening `:huddle` a minute in |
 | No `HALFBLOCKS` in the demo's status line | capture | every capture | ` NORMAL … DEMO · generated, offline    ? help · q quit`; agent `look`'s L3 removes the word everywhere, so the line in `src/app.rs` is a one-line seam that its merge replaces |
-| An answer is dated after what it answers, whatever the seconds; the teammate's wait lets it be dated a second before it is sent | unit | `an_answer_is_dated_after_what_it_answers` | a message dated now, now + 1 and now + 5: every answer later; teammates and Scout wait at least 2 s. The scenario's mention no longer needs a pause after Ada's answer: `t17-demo2-first-minute` writes `hello team`, reads `Welcome aboard`, and mentions Scout at once; its answer lands under the mention every run |
+| An answer is dated after what it answers, whatever the seconds; the teammate's wait lets it be dated a second before it is sent | unit; seen it fail | `an_answer_is_dated_after_what_it_answers` | a message dated now, now + 1 and now + 5: every answer later; teammates and Scout wait at least 2 s. The scenario's mention no longer needs a pause after Ada's answer: `t17-demo2-first-minute` writes `hello team`, reads `Welcome aboard`, and mentions Scout at once; its answer lands under the mention every run. **Signed at `now` as before, it fails** at the first case (an answer of the same second) |
 | Every notice of the demo fits the status line at 80 columns | unit; tmux | `every_notice_of_the_demo_fits_an_80_column_status_line`; `t17-demo2-first-minute` step 18 | each at most 24 columns (`Demo: needs a community.`, `Demo: a recorded huddle.`, `Demo: only the Board.`, `Demo: apps not built in.`); mode + notice + mark + hint ≤ 80; `Demo: only the Board.` whole on screen at 80×24 |
 | Nothing is drawn at rest with the Board open (rule 20) | tmux `pipe-pane`, release binaries, 80×24, 10 s windows, twice each | `bzz-before`/`bzz-after`, `#team` and `#launch` | before: `#team` 50 and 25 bytes, `#launch` 0 and 25; after: `#team` 50 and 50, `#launch` 0 and 0. The bytes are a cursor-hide sequence of an empty frame (`ESC[39m ESC[49m ESC[59m ESC[0m ESC[?25l`), in both builds and with no app shown; agent `look`/L9's work, not this task's. The Board asks for a frame only when a card changes |
 | The demo's scenarios, three times in a row | tmux, release binary | `BZZ_BIN=<scratch>/bzz-after BZZ_TMUX_SCENARIOS=t17-demo-first-screen,t17-demo-first-minute,t17-demo-huddle,t17-demo2-first-minute python3 scripts/test-tui-tmux.py`, three times | `4 of 4 scenarios passed` each time: 2.6/9.6/2.0/25.9 s, 2.5/9.5/2.7/25.6 s, 2.1/9.8/3.3/26.0 s. `t17-demo-first-minute` takes the welcome's new last line in its reaction step, and `t17-demo-huddle` the new notice |
@@ -93,9 +93,14 @@ Doing at once. Lin's move comes with a line in the channel saying so.
 
 ## Not verified
 
-- **The gates were run once, on the final branch** (see the report);
-  `cargo deny` and `cargo audit` were not run: `Cargo.toml` and
-  `Cargo.lock` are unchanged.
+- **The gates**: `cargo fmt --check`, `cargo build --locked --example
+  scripted_harness`, `cargo test --locked --all-targets` (1 157 passed, 0
+  failed) and `cargo test --locked --no-default-features --lib` passed on
+  `acf5070`; `cargo clippy --locked --all-targets -- -D warnings` found one
+  complex type there, fixed in the last commit, and passed on it, with
+  `fmt --check`, `demo::` and `demo_offline_test` again. The whole test
+  suite was not run again for that change (a type alias). `cargo deny` and
+  `cargo audit` were not run: `Cargo.toml` and `Cargo.lock` are unchanged.
 - **macOS and Windows**: not built or run here.
 - **The second and third teammate moves on screen**: the one-minute gap is
   proven by the unit test with a stepped clock; on screen only the first
