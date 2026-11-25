@@ -206,8 +206,16 @@ impl std::fmt::Debug for JoinForm {
         formatter
             .debug_struct("JoinForm")
             .field("stage", &self.stage)
-            .field("address", &self.address)
-            .field("check", &self.check)
+            .field("address", &masked_address(&self.address))
+            .field(
+                "check",
+                &match self.check {
+                    Check::Idle => "idle",
+                    Check::Checking(_) => "checking",
+                    Check::Known { .. } => "known",
+                    Check::Bad { .. } => "bad",
+                },
+            )
             .field("chosen", &self.chosen)
             .field(
                 "identity",
@@ -636,6 +644,21 @@ pub fn kept_where(keychain: bool) -> &'static str {
     }
 }
 
+/// The address as the field draws it: an invite's code is a bearer of an
+/// admin's permission, so it is drawn as dots (and never captured).
+pub fn masked_address(address: &str) -> String {
+    for marker in ["/invite/", "code="] {
+        if let Some(start) = address.find(marker).map(|at| at + marker.len()) {
+            let end = address[start..]
+                .find('&')
+                .map_or(address.len(), |at| start + at);
+            let dots = "•".repeat(address[start..end].chars().count().min(12));
+            return format!("{}{dots}{}", &address[..start], &address[end..]);
+        }
+    }
+    address.to_owned()
+}
+
 /// The npub shown to give to an admin, shortened only when it must be.
 fn npub_line(npub: &str, width: usize) -> String {
     if npub.chars().count() + 4 <= width {
@@ -690,7 +713,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, form: &JoinForm, theme: &Theme)
         if address_focused { strong } else { muted },
     ));
     let shown: String = {
-        let address = sanitize::single_line(&form.address);
+        let address = masked_address(&sanitize::single_line(&form.address));
         let room = width.saturating_sub(4);
         let count = address.chars().count();
         address.chars().skip(count.saturating_sub(room)).collect()
@@ -1229,5 +1252,85 @@ mod tests {
             insecure: true,
         });
         assert!(describe(&local, &facts(false)).1.contains("no TLS"));
+    }
+
+    #[test]
+    fn the_browser_is_offered_where_the_community_signs_in_through_it() {
+        let mut federated = facts(false);
+        assert!(
+            !choices(&federated, &[], true, Ok("buzz".into()))
+                .iter()
+                .any(|choice| choice.who == Who::Browser)
+        );
+        federated.federated = Requirement::Required;
+        let rows = choices(&federated, &[], true, Ok("buzz".into()));
+        let browser = rows
+            .iter()
+            .position(|choice| choice.who == Who::Browser)
+            .unwrap();
+        // After the usual one and Buzz desktop, before importing a key.
+        assert_eq!(rows[0].who, Who::New);
+        assert_eq!(rows.last().unwrap().who, Who::Import);
+        assert!(browser > 0 && browser < rows.len() - 1);
+        let mut form = JoinForm::new(&JoinStart::Join, true);
+        form.address = "my-team.example".into();
+        form.check = Check::Known {
+            input: form.address.clone(),
+            address: parse_address("my-team.example").unwrap(),
+            facts: federated,
+        };
+        form.set_choices(rows);
+        form.stage = Stage::Who;
+        form.selected = browser;
+        form.key(key(KeyCode::Enter));
+        assert_eq!(form.stage, Stage::Typing(Field::Adapter));
+        type_text(&mut form, "http://sso.example");
+        assert_eq!(form.key(key(KeyCode::Enter)), Step::Nothing);
+        assert!(form.notice.is_some(), "an adapter is https");
+        form.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        type_text(&mut form, "https://sso.example");
+        assert_eq!(form.key(key(KeyCode::Enter)), Step::Start);
+    }
+
+    #[test]
+    fn a_held_identity_in_a_file_asks_its_passphrase_and_one_in_the_keychain_does_not() {
+        let held = |backend| IdentityConfig {
+            id: Uuid::new_v4(),
+            label: "My team".into(),
+            pubkey: nostr::Keys::generate().public_key().to_hex(),
+            backend,
+            key_ref: "identity:x".into(),
+        };
+        let identities = [held(KeyBackend::EncryptedFile), held(KeyBackend::Keychain)];
+        let rows = choices(&facts(false), &identities, true, Err("no".into()));
+        assert!(rows[1].hint.starts_with("npub1") && rows[1].unlock);
+        assert!(!rows[2].unlock);
+        let mut form = JoinForm::new(&JoinStart::Join, true);
+        form.address = "my-team.example".into();
+        known(&mut form, false);
+        form.set_choices(rows);
+        form.stage = Stage::Who;
+        form.selected = 1;
+        assert_eq!(form.key(key(KeyCode::Enter)), Step::Nothing);
+        assert_eq!(form.stage, Stage::Typing(Field::Unlock));
+        form.stage = Stage::Who;
+        form.selected = 2;
+        assert_eq!(form.key(key(KeyCode::Enter)), Step::Start);
+    }
+
+    #[test]
+    fn an_invite_code_is_drawn_as_dots() {
+        assert_eq!(
+            masked_address("https://my-team.example/invite/v2.abcdef"),
+            "https://my-team.example/invite/•••••••••"
+        );
+        assert_eq!(
+            masked_address("buzz://join?code=v2.abc&relay=wss://x.example"),
+            "buzz://join?code=••••••&relay=wss://x.example"
+        );
+        assert_eq!(masked_address("my-team.example"), "my-team.example");
+        let mut form = JoinForm::new(&JoinStart::Join, true);
+        form.paste("https://my-team.example/invite/v2.abcdef");
+        assert!(!format!("{form:?}").contains("abcdef"));
     }
 }

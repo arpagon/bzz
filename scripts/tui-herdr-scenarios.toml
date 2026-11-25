@@ -2421,6 +2421,11 @@ visible = "open: anyone who signs in may join"
 [[scenario.step]]
 keys = []
 size = "160x45"
+visible = '(?m)^[┌│└][^\n]{158}[┐│┘]$'
+regex = true
+
+[[scenario.step]]
+keys = []
 visible = "✓ Buzz Relay · a Buzz community at localhost:3030"
 
 [[scenario.step]]
@@ -2431,6 +2436,11 @@ visible = "no keychain: key in a file with a passphrase"
 [[scenario.step]]
 keys = []
 size = "160x45"
+visible = '(?m)^[┌│└][^\n]{158}[┐│┘]$'
+regex = true
+
+[[scenario.step]]
+keys = []
 visible = "A new identity, made here"
 
 [[scenario.step]]
@@ -2466,6 +2476,11 @@ timeout = 60000
 [[scenario.step]]
 keys = []
 size = "80x24"
+visible = '(?m)^[┌│└][^\n]{78}[┐│┘]$'
+regex = true
+
+[[scenario.step]]
+keys = []
 visible = "t9-general"
 
 [[scenario.step]]
@@ -2480,6 +2495,11 @@ timeout = 30000
 [[scenario.step]]
 keys = []
 size = "160x45"
+visible = '(?m)^[┌│└][^\n]{158}[┐│┘]$'
+regex = true
+
+[[scenario.step]]
+keys = []
 visible = "hi from t17 join"
 
 # Nothing bzz wrote holds the passphrase: its settings, its key file (an
@@ -2532,6 +2552,11 @@ visible = "waiting for an admin · asked 1 time"
 [[scenario.step]]
 keys = []
 size = "160x45"
+visible = '(?m)^[┌│└][^\n]{158}[┐│┘]$'
+regex = true
+
+[[scenario.step]]
+keys = []
 visible = "c copy your id · r ask now"
 
 [[scenario.step]]
@@ -2580,6 +2605,11 @@ visible = "✗ nothing answers at localhost:9"
 [[scenario.step]]
 keys = []
 size = "160x45"
+visible = '(?m)^[┌│└][^\n]{158}[┐│┘]$'
+regex = true
+
+[[scenario.step]]
+keys = []
 visible = "check the address with the person who gave it to you"
 
 [[scenario.step]]

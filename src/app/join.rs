@@ -1233,4 +1233,70 @@ mod tests {
         app.shutdown().await;
         relay.stop();
     }
+
+    #[tokio::test]
+    async fn an_invite_link_is_claimed_and_lets_in_a_members_only_community() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = empty_app(&temporary).await;
+        let member = Arc::new(AtomicBool::new(false));
+        let info = json!({
+            "name": "My team", "self": "ab".repeat(32), "supported_nips": [1, 11, 29, 42, 43]
+        });
+        let relay = {
+            let (member, claimed) = (member.clone(), member.clone());
+            ScriptedRelay::start(
+                Script::default()
+                    .http(move |request| {
+                        if request.path == "/api/invites/claim"
+                            && request.json()["code"] == "v2.letmein"
+                        {
+                            claimed.store(true, Ordering::SeqCst);
+                            return super::scripted_relay::HttpReply::json(
+                                200,
+                                &json!({"status": "joined"}),
+                            );
+                        }
+                        super::scripted_relay::default_http(request, &info)
+                    })
+                    .frames(move |frame| {
+                        if frame.value[0] == "AUTH" && !member.load(Ordering::SeqCst) {
+                            let event =
+                                nostr::Event::from_json(frame.value[1].to_string()).unwrap();
+                            return vec![WsAction::Send(json!([
+                                "OK",
+                                event.id.to_hex(),
+                                false,
+                                "restricted: not a relay member"
+                            ]))];
+                        }
+                        default_frame(frame)
+                    }),
+            )
+            .await
+        };
+        let port = relay.http_url.port().unwrap();
+        app.open_join(JoinStart::Join);
+        app.handle_terminal_paste(format!("http://localhost:{port}/invite/v2.letmein"))
+            .await
+            .unwrap();
+        app.join_key(key(KeyCode::Enter)).await.unwrap();
+        next_join_step(&mut app).await;
+        let shown = screen(&mut app, 80, 24);
+        assert!(shown.contains("your invite lets you in"), "{shown}");
+        // The code is a bearer: never on the screen.
+        assert!(!shown.contains("letmein"), "{shown}");
+        assert_eq!(app.join.form.as_ref().unwrap().stage, Stage::Who);
+        app.join_key(key(KeyCode::Enter)).await.unwrap();
+        type_text(&mut app, PASSPHRASE).await;
+        app.join_key(key(KeyCode::Enter)).await.unwrap();
+        type_text(&mut app, PASSPHRASE).await;
+        app.join_key(key(KeyCode::Enter)).await.unwrap();
+        next_join_step(&mut app).await; // the identity
+        next_join_step(&mut app).await; // claimed, then let in
+        assert!(app.join.form.is_none(), "{:?}", app.join.form);
+        assert_eq!(Config::load(&app.paths).unwrap().communities.len(), 1);
+        assert!(!written(&temporary).contains("v2.letmein"));
+        app.shutdown().await;
+        relay.stop();
+    }
 }
