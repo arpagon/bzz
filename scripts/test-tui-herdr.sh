@@ -79,7 +79,7 @@ if not isinstance(values, list) or not values:
     raise SystemExit("Herdr scenario manifest contains no scenarios")
 wanted = None if selected in {"all", "automated", "harness"} else set(selected.split(","))
 for scenario in values:
-    if set(scenario) - {"id", "kind", "description", "ready", "exit", "keymap", "step", "args", "profile", "size", "beside", "restored"}:
+    if set(scenario) - {"id", "kind", "description", "ready", "exit", "keymap", "step", "args", "profile", "size", "beside", "restored", "empty", "isolated"}:
         raise SystemExit("Herdr scenario manifest contains an unknown scenario field")
     identifier = scenario.get("id")
     kind = scenario.get("kind")
@@ -88,8 +88,12 @@ for scenario in values:
     steps = scenario.get("step")
     if not all(isinstance(value, str) and value for value in (identifier, kind, ready)):
         raise SystemExit("Herdr scenario manifest has invalid scenario metadata")
-    if kind not in {"automated", "operator", "harness"} or not isinstance(exit_marker, str):
+    if kind not in {"automated", "operator", "harness", "join"} or not isinstance(exit_marker, str):
         raise SystemExit("Herdr scenario manifest has an invalid scenario kind")
+    # v0.17 `join`: an empty, isolated profile against the harness relay,
+    # run by scripts/test-tui-tmux.py only (`empty`, `isolated`).
+    if kind == "join":
+        continue
     if not isinstance(steps, list) or not steps:
         raise SystemExit("Herdr scenario manifest has no steps")
     if wanted is not None and identifier not in wanted:

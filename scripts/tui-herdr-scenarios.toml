@@ -2399,3 +2399,186 @@ visible = "quit bzz?"
 [[scenario.step]]
 keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 A9, task join: from nothing to a channel without a shell. An empty,
+# isolated profile (HOME, XDG and no session bus, so no keychain) against
+# the harness relay with its default, open policy. Run with
+# `BZZ_TMUX_SCENARIOS=t17-join-open ./scripts/test-relay.sh --tmux`.
+[[scenario]]
+id = "t17-join-open"
+kind = "join"
+empty = true
+isolated = true
+size = "80x24"
+description = "A newcomer with no keychain joins an open community from the first screen: :join and the address, a new identity with a passphrase typed hidden, the open channels offered, one opened, a message sent."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "type:join localhost:3030", "enter"]
+visible = "open: anyone who signs in may join"
+
+[[scenario.step]]
+keys = []
+size = "160x45"
+visible = "✓ Buzz Relay · a Buzz community at localhost:3030"
+
+[[scenario.step]]
+keys = ["enter"]
+size = "80x24"
+visible = "no keychain: key in a file with a passphrase"
+
+[[scenario.step]]
+keys = []
+size = "160x45"
+visible = "A new identity, made here"
+
+[[scenario.step]]
+keys = ["enter"]
+size = "80x24"
+visible = "A passphrase for the file that keeps the key"
+
+[[scenario.step]]
+keys = ["type:t17 join passphrase", "enter"]
+visible = "The same passphrase again"
+absent = "t17 join passphrase"
+
+[[scenario.step]]
+keys = ["type:t17 join passphrase"]
+size = "160x45"
+visible = "••••••••••••••••••••"
+absent = "t17 join passphrase"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "you are in no channel yet: choose one to open"
+timeout = 60000
+
+[[scenario.step]]
+keys = []
+size = "80x24"
+visible = "t9-general"
+
+[[scenario.step]]
+keys = ["type:t9-gen", "enter"]
+visible = "message #t9-general"
+
+[[scenario.step]]
+keys = ["i", "type:hello from a newcomer, t17 join", "enter"]
+visible = "hello from a newcomer, t17 join"
+timeout = 30000
+
+[[scenario.step]]
+keys = []
+size = "160x45"
+visible = "hello from a newcomer, t17 join"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 A9, task join: a community that lets in its members only. Run with
+# the relay closed: `BUZZ_REQUIRE_RELAY_MEMBERSHIP=true
+# RELAY_OWNER_PUBKEY=<64 hex> BZZ_TMUX_SCENARIOS=t17-join-members
+# ./scripts/test-relay.sh --tmux`. The id is shown; the screen is left and
+# found again; an admin adds the person from the harness side (a row in
+# relay_members, as the fixture seeds them); bzz asks again on its own and
+# goes in without a restart.
+[[scenario]]
+id = "t17-join-members"
+kind = "join"
+empty = true
+isolated = true
+size = "80x24"
+description = "A newcomer joins a members-only community: the npub to send to an admin, the wait left and found again, the admin adds them, bzz gets in by itself and a message is sent."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "type:join localhost:3030", "enter"]
+visible = "it lets in its members only"
+
+[[scenario.step]]
+keys = ["enter", "enter", "type:t17 members passphrase", "enter", "type:t17 members passphrase", "enter"]
+visible = 'Your id, to send to an admin[\s│]+npub1[02-9ac-hj-np-z]{58}'
+regex = true
+timeout = 60000
+
+[[scenario.step]]
+keys = []
+visible = "waiting for an admin · asked 1 time"
+
+[[scenario.step]]
+keys = []
+size = "160x45"
+visible = "c copy your id · r ask now"
+
+[[scenario.step]]
+keys = ["esc"]
+size = "80x24"
+visible = "the join goes on; :join shows it again"
+
+[[scenario.step]]
+keys = [":", "type:join", "enter"]
+visible = "waiting for an admin"
+
+[[scenario.step]]
+run = '''pk=$(sed -n 's/^pubkey = "\([0-9a-f]\{64\}\)"$/\1/p' {home}/config/config.toml | head -n 1); test -n "$pk"; docker compose -p buzz-harness -f "$BZZ_BUZZ_SOURCE/docker-compose.harness.yml" exec -T postgres psql -U buzz -d buzz -v ON_ERROR_STOP=1 -c "INSERT INTO relay_members (community_id,pubkey,role,added_by) SELECT id,'$pk','member',NULL FROM communities WHERE lower(host)='localhost:3030' ON CONFLICT (community_id,pubkey) DO NOTHING;"'''
+keys = []
+visible = "you are in no channel yet: choose one to open"
+timeout = 90000
+
+[[scenario.step]]
+keys = ["type:t9-gen", "enter", "i", "type:let in by an admin, t17 join", "enter"]
+visible = "let in by an admin, t17 join"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 A9, task join: what the form says where nothing usable answers,
+# in the form's own screen, with nothing written. No relay needed.
+[[scenario]]
+id = "t17-join-not-there"
+kind = "automated"
+isolated = true
+size = "80x24"
+description = "The join form at an address where nothing answers, and at one bzz refuses to use, says what happened and what to try, and leaves nothing behind."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "type:join localhost:9", "enter"]
+visible = "✗ nothing answers at localhost:9"
+
+[[scenario.step]]
+keys = []
+size = "160x45"
+visible = "check the address with the person who gave it to you"
+
+[[scenario.step]]
+keys = ["ctrl+u", "type:ws://far.example", "enter"]
+size = "80x24"
+visible = "ws:// and http:// work only on this machine; use wss://"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+absent = "Join a community"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"

@@ -146,7 +146,15 @@ cargo install --git https://github.com/arpagon/bzz --locked
 
 ## Get started
 
-Create an identity, add your community and open bzz:
+Start `bzz` and type `:join`, then the address of your team's community
+(or the invite link an admin sent you). bzz checks the address, makes you
+an identity (its key goes in the system's keychain, or in a file locked
+with a passphrase when there is none), and lets you in; when the
+community lets in members only, it shows the id to send to an admin and
+comes in by itself once they add you. You can also pair with Buzz
+desktop or import a key there.
+
+The same from the command line:
 
 ```sh
 bzz identity new --label personal
