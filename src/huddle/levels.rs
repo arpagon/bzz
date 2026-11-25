@@ -19,6 +19,9 @@ pub const FLOOR_DB: f32 = -127.0;
 pub struct Levels {
     peers: [AtomicU32; 256],
     mic: AtomicU32,
+    /// The mixed samples, for the styles that draw a spectrum; written only
+    /// while one is on screen.
+    mix: super::spectrum::MixTap,
 }
 
 impl Default for Levels {
@@ -26,6 +29,7 @@ impl Default for Levels {
         Self {
             peers: std::array::from_fn(|_| AtomicU32::new(0)),
             mic: AtomicU32::new(0),
+            mix: super::spectrum::MixTap::default(),
         }
     }
 }
@@ -85,6 +89,17 @@ impl Levels {
         self.mic.fetch_max(encode(db), Ordering::Relaxed);
     }
 
+    /// Audio side: one chunk of the mix you hear. Returns at once unless a
+    /// style on screen asked for the samples.
+    pub fn publish_mix(&self, samples: &[f32]) {
+        self.mix.push(samples);
+    }
+
+    /// The mixed samples' ring, for the interface.
+    pub fn mix(&self) -> &super::spectrum::MixTap {
+        &self.mix
+    }
+
     /// Interface side: the loudest chunk since the last call, `None` when no
     /// chunk arrived (a person whose packets do not come looks quiet).
     pub fn take_peer(&self, index: u8) -> Option<f32> {
@@ -101,6 +116,8 @@ impl Levels {
             slot.store(0, Ordering::Relaxed);
         }
         self.mic.store(0, Ordering::Relaxed);
+        self.mix.want(false);
+        self.mix.clear();
     }
 }
 

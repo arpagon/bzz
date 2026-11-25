@@ -47,7 +47,9 @@ pub fn render_with_lanes(
         _ if view.recording => "a generated recording · Esc",
         (None, _) => "s start · Esc",
         (Some(_), None) => "j join (muted) · Esc",
-        (Some(_), Some(_)) => "m mute/unmute · space push-to-talk · l leave · Esc",
+        (Some(_), Some(_)) => {
+            "m mute/unmute · space push-to-talk · l leave · z zoom · v style · Esc"
+        }
     };
     let block = crate::ui::frame::block(
         theme,

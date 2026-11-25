@@ -1,0 +1,15 @@
+ 4 in the call · Ada and Lin at once
+                 ░░░░░░░░
+               ░░░░░░░░░░░░
+             ░░░░░░░░░░░░░░░░
+             ░░░░░▄░▄░█░░▄░▄░
+             ███████████░████
+             ███████████░████
+             ▀██████████████▀
+               ▀██████████▀
+                 ▀▀▀▀▀▀▀▀
+
+ ● Ada  ● Lin  · Sam  You · muted
+--- styles ---
+0: 1-35 Reset/Reset/BOLD
+11: 1-5 Reset/Reset/BOLD 8-12 Reset/Reset/BOLD

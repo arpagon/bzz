@@ -449,6 +449,41 @@ pub struct UiConfig {
     /// `BZZ_NO_MOTION`.
     #[serde(default)]
     pub motion: Motion,
+    /// The huddle's zoomed visualizer: `lanes`, `bars` or `orb` (plan
+    /// v0.17.0 B5, B6). Chosen in its picker, which saves it here.
+    #[serde(default)]
+    pub huddle_style: HuddleStyle,
+}
+
+/// A look of the huddle's zoomed visualizer.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HuddleStyle {
+    /// One lane per person, your microphone last.
+    #[default]
+    Lanes,
+    /// A spectrum of the call's mix, with peak marks.
+    Bars,
+    /// A sphere of liquid in the colour of whoever speaks.
+    Orb,
+}
+
+impl HuddleStyle {
+    pub const ALL: [Self; 3] = [Self::Lanes, Self::Bars, Self::Orb];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Lanes => "lanes",
+            Self::Bars => "bars",
+            Self::Orb => "orb",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|style| style.name().eq_ignore_ascii_case(name.trim()))
+    }
 }
 
 /// How much the interface moves. One setting for every animation in bzz.
@@ -499,6 +534,7 @@ impl Default for UiConfig {
             huddle_input_device: None,
             huddle_output_device: None,
             motion: Motion::Full,
+            huddle_style: HuddleStyle::Lanes,
         }
     }
 }

@@ -738,6 +738,34 @@ struct HuddleViz {
     /// A generated huddle (the demo's, and tests'): levels with no sound
     /// device, relay or voice behind them.
     generated: Option<GeneratedHuddle>,
+    /// The zoomed view is on (plan v0.17.0 B5); it shows while the panel is
+    /// open and a call is on.
+    zoomed: bool,
+    /// The style picker's selected row, while it is open. The style it
+    /// selects is drawn live; Esc puts the saved one back.
+    picker: Option<usize>,
+    /// The call's spectrum, analysed only while bars or the orb are seen.
+    spectrum: crate::huddle::spectrum::Spectrum,
+    /// Steps the orb's rate down when writing to the terminal is slow.
+    throttle: crate::huddle::meter::Throttle,
+    /// The microphone check of the join confirmation (plan B7).
+    mic_check: Option<MicCheckRun>,
+    mic_pacer: crate::huddle::meter::Pacer,
+    /// After a check, the join waits for its devices to be let go.
+    mic_released: Option<tokio::sync::oneshot::Receiver<()>>,
+    /// With motion off: who spoke when the spectrum was last read.
+    still: Option<(Vec<u8>, bool)>,
+}
+
+/// A microphone check in progress: the check, and the device task that
+/// feeds it (none in tests, which feed it themselves).
+struct MicCheckRun {
+    check: crate::huddle::mic_check::MicCheck,
+    /// Dropping it stops the device task.
+    _stop: Option<tokio::sync::oneshot::Sender<()>>,
+    failed: Option<tokio::sync::oneshot::Receiver<String>>,
+    /// Fires once the device task let the devices go.
+    released: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
 /// Generated levels and the names they speak as.
@@ -759,6 +787,14 @@ impl Default for HuddleViz {
             muted: true,
             on: false,
             generated: None,
+            zoomed: false,
+            picker: None,
+            spectrum: crate::huddle::spectrum::Spectrum::default(),
+            throttle: crate::huddle::meter::Throttle::default(),
+            mic_check: None,
+            mic_pacer: crate::huddle::meter::Pacer::default(),
+            mic_released: None,
+            still: None,
         }
     }
 }
@@ -1300,6 +1336,18 @@ impl App {
         }
         let (mut guard, mut terminal) = TerminalGuard::enter(self.config.ui.mouse.enabled())?;
         self.media.initialize_terminal();
+        // For development and the film only: a generated huddle (Ada, Lin
+        // and Sam, and you muted) feeds the visualizer, with no call, sound
+        // device or relay; `:huddle zoom` shows it. Not a user feature.
+        if std::env::var_os("BZZ_DEV_GENERATED_HUDDLE").is_some()
+            && self.huddle_viz.generated.is_none()
+        {
+            self.set_generated_huddle(
+                crate::huddle::synth::Synthetic::demo(),
+                vec![(1, "Ada".into()), (2, "Lin".into()), (3, "Sam".into())],
+                true,
+            );
+        }
         self.start_sync().await?;
         let mut input = EventStream::new();
         // Where keys enter: Windows' Alt codes as presses, and the events
@@ -1354,9 +1402,11 @@ impl App {
                         // What the apps produced is taken before the frame
                         // that shows them.
                         self.poll_apps();
+                        let drawing = Instant::now();
                         terminal
                             .draw(|frame| self.render(frame))
                             .map_err(|error| Error::io("terminal", error))?;
+                        self.huddle_frame_drawn(drawing.elapsed().as_secs_f64());
                     }
                 },
                 background=self.background_rx.recv()=>if let Some(event)=background{match event{
@@ -3594,6 +3644,7 @@ impl App {
                         match kind {
                             ConfirmationKind::HuddleStart => self.spawn_huddle_start(),
                             ConfirmationKind::HuddleJoin => {
+                                self.stop_mic_check();
                                 if let Some(active) = self.active_huddle().cloned()
                                     && let Some(parent) =
                                         self.current_channel().map(|channel| channel.id)
@@ -3605,6 +3656,7 @@ impl App {
                         }
                     }
                     KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                        self.stop_mic_check();
                         self.presentation.return_to_overlay(Overlay::Huddle);
                     }
                     _ => {}
@@ -4574,6 +4626,11 @@ impl App {
     }
 
     fn tick_huddle_viz_at(&mut self, now: f64) -> bool {
+        let mic_check = self.tick_mic_check(now);
+        mic_check | self.tick_call_viz(now)
+    }
+
+    fn tick_call_viz(&mut self, now: f64) -> bool {
         if let Some(generated) = &mut self.huddle_viz.generated {
             generated.source.advance_to(now);
         }
@@ -4582,6 +4639,10 @@ impl App {
                 self.huddle_viz.meter.clear();
                 self.huddle_viz.people.clear();
                 self.huddle_viz.on = false;
+                self.huddle_viz.zoomed = false;
+                self.huddle_viz.picker = None;
+                self.huddle_viz.spectrum.clear();
+                self.huddle_viz.throttle.reset();
             }
             return false;
         };
@@ -4614,11 +4675,171 @@ impl App {
         let visible =
             self.presentation.overlay == Some(Overlay::Huddle) || self.huddle_strip_shown();
         let motion = self.config.ui.motion();
+        // The spectrum: the audio side hands samples over only while bars or
+        // the orb are on screen, and only then are they analysed.
+        let style = self.huddle_style();
+        let zoomed = self.huddle_zoomed();
+        let spectral = zoomed
+            && matches!(
+                style,
+                crate::config::HuddleStyle::Bars | crate::config::HuddleStyle::Orb
+            );
+        let mix = feed.levels.mix();
+        if mix.is_wanted() != spectral {
+            mix.want(spectral);
+            self.huddle_viz.spectrum.clear();
+        }
+        // With motion off the picture holds: the spectrum moves only when
+        // the speaker changes, with the frame that shows it.
+        if spectral {
+            let still =
+                (motion == crate::config::Motion::Off).then(|| self.huddle_viz.meter.signature());
+            if still.is_none() || still != self.huddle_viz.still {
+                self.huddle_viz.spectrum.update(mix, now);
+                self.huddle_viz.still = still;
+            }
+        }
+        let interval = self.huddle_interval(motion);
+        let wants =
+            self.huddle_viz
+                .pacer
+                .wants_frame_every(&self.huddle_viz.meter, visible, interval, now);
+        let falling = spectral
+            && motion != crate::config::Motion::Off
+            && !self.huddle_viz.spectrum.is_still()
+            && self.huddle_viz.meter.is_silent();
+        wants || falling || (visible && (started || muted_changed || people_changed))
+    }
+
+    /// The zoomed view's style: the picker's selection while it is open,
+    /// else the saved one.
+    fn huddle_style(&self) -> crate::config::HuddleStyle {
+        self.huddle_viz
+            .picker
+            .and_then(|row| crate::config::HuddleStyle::ALL.get(row).copied())
+            .unwrap_or(self.config.ui.huddle_style)
+    }
+
+    /// Whether the zoomed view is on screen.
+    fn huddle_zoomed(&self) -> bool {
+        self.huddle_viz.zoomed
+            && self.huddle_viz.on
+            && self.presentation.overlay == Some(Overlay::Huddle)
+    }
+
+    /// The shortest time between two frames of the visualizer: the orb, the
+    /// costliest to write, at 20 a second and slower on a slow terminal.
+    fn huddle_interval(&self, motion: crate::config::Motion) -> Option<f64> {
+        let base = crate::huddle::meter::Pacer::interval(motion)?;
+        if self.huddle_zoomed() && self.huddle_style() == crate::config::HuddleStyle::Orb {
+            Some(self.huddle_viz.throttle.interval(base.max(1.0 / 20.0)))
+        } else {
+            Some(base)
+        }
+    }
+
+    /// How long the last frame took to draw and write; the orb's rate
+    /// follows it.
+    fn huddle_frame_drawn(&mut self, seconds: f64) {
+        if self.huddle_zoomed() && self.huddle_style() == crate::config::HuddleStyle::Orb {
+            if let Some(base) = crate::huddle::meter::Pacer::interval(self.config.ui.motion()) {
+                self.huddle_viz
+                    .throttle
+                    .record(seconds, base.max(1.0 / 20.0));
+            }
+        } else {
+            self.huddle_viz.throttle.reset();
+        }
+    }
+
+    /// The microphone check of the join confirmation: reads its level and
+    /// says whether it needs a frame.
+    fn tick_mic_check(&mut self, now: f64) -> bool {
+        let shown = self.presentation.overlay == Some(Overlay::Confirmation)
+            && self.presentation.confirmation == Some(ConfirmationKind::HuddleJoin);
+        let motion = self.config.ui.motion();
+        if !shown && self.huddle_viz.mic_check.is_some() {
+            // The confirmation went away another way: let the devices go.
+            self.stop_mic_check();
+        }
+        let Some(run) = &mut self.huddle_viz.mic_check else {
+            return false;
+        };
+        if let Some(failed) = &mut run.failed
+            && let Ok(message) = failed.try_recv()
+        {
+            run.check.fail(message);
+            run.failed = None;
+        }
+        let changed = run.check.update(now);
         let wants = self
             .huddle_viz
-            .pacer
-            .wants_frame(&self.huddle_viz.meter, visible, motion, now);
-        wants || (visible && (started || muted_changed || people_changed))
+            .mic_pacer
+            .wants_frame(run.check.meter(), shown, motion, now);
+        shown && (changed || wants)
+    }
+
+    /// Opens your microphone for the check, without the call: nothing is
+    /// encoded or sent. In tests nothing is opened; they feed the check.
+    fn start_mic_check(&mut self) {
+        let check =
+            crate::huddle::mic_check::MicCheck::new(self.config.ui.huddle_input_device.clone());
+        #[cfg_attr(not(all(feature = "huddles-audio", not(test))), allow(unused_mut))]
+        let mut run = MicCheckRun {
+            check,
+            _stop: None,
+            failed: None,
+            released: None,
+        };
+        #[cfg(all(feature = "huddles-audio", not(test)))]
+        {
+            let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+            let (failed_tx, failed_rx) = tokio::sync::oneshot::channel::<String>();
+            let (released_tx, released_rx) = tokio::sync::oneshot::channel::<()>();
+            let levels = run.check.levels();
+            let input = self.config.ui.huddle_input_device.clone();
+            let output = self.config.ui.huddle_output_device.clone();
+            tokio::spawn(async move {
+                let opened = tokio::task::spawn_blocking(move || {
+                    crate::huddle::audio::open_devices(input.as_deref(), output.as_deref())
+                })
+                .await;
+                match opened {
+                    Ok(Ok((devices, mut capture, _playback))) => {
+                        loop {
+                            tokio::select! {
+                                _ = &mut stop_rx => break,
+                                frame = capture.recv() => match frame {
+                                    Some(frame) => levels.publish_mic(&frame),
+                                    None => break,
+                                },
+                            }
+                        }
+                        drop(devices);
+                    }
+                    Ok(Err(error)) => {
+                        let _ = failed_tx.send(error.to_string());
+                    }
+                    Err(_) => {
+                        let _ = failed_tx.send(crate::huddle::audio::MICROPHONE_DENIED.into());
+                    }
+                }
+                let _ = released_tx.send(());
+            });
+            run._stop = Some(stop_tx);
+            run.failed = Some(failed_rx);
+            run.released = Some(released_rx);
+        }
+        self.huddle_viz.mic_pacer = crate::huddle::meter::Pacer::default();
+        self.huddle_viz.mic_check = Some(run);
+    }
+
+    /// Ends the check and lets its devices go; a join that follows waits
+    /// for them.
+    fn stop_mic_check(&mut self) {
+        if let Some(run) = self.huddle_viz.mic_check.take() {
+            self.huddle_viz.mic_released = run.released;
+        }
     }
 
     fn huddle_person_name(&self, pubkey: &str) -> String {
@@ -4856,7 +5077,46 @@ impl App {
     }
 
     async fn huddle_key(&mut self, key: KeyEvent) -> Result<()> {
+        // The style picker: moving previews, Enter keeps, Esc puts back.
+        if let Some(row) = self.huddle_viz.picker {
+            let count = crate::config::HuddleStyle::ALL.len();
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.huddle_viz.picker = Some((row + count - 1) % count);
+                }
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
+                    self.huddle_viz.picker = Some((row + 1) % count);
+                }
+                KeyCode::Enter => {
+                    let style = self.huddle_style();
+                    self.huddle_viz.picker = None;
+                    self.save_huddle_style(style);
+                }
+                KeyCode::Esc | KeyCode::Char('q' | 'v') => self.huddle_viz.picker = None,
+                _ => {}
+            }
+            return Ok(());
+        }
+        if self.huddle_zoomed() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q' | 'z') => {
+                    self.huddle_viz.zoomed = false;
+                    return Ok(());
+                }
+                KeyCode::Char('v') => {
+                    self.open_huddle_picker();
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         match key.code {
+            KeyCode::Char('z') | KeyCode::Char('v') if self.huddle_viz.on => {
+                self.huddle_viz.zoomed = true;
+                if key.code == KeyCode::Char('v') {
+                    self.open_huddle_picker();
+                }
+            }
             KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
             KeyCode::Char('s') => return self.huddle_command("start").await,
             KeyCode::Char('j') => return self.huddle_command("join").await,
@@ -4876,6 +5136,66 @@ impl App {
         Ok(())
     }
 
+    /// Opens the zoomed view's style picker on the style in use.
+    fn open_huddle_picker(&mut self) {
+        let current = self.huddle_style();
+        self.huddle_viz.picker = crate::config::HuddleStyle::ALL
+            .iter()
+            .position(|style| *style == current);
+    }
+
+    fn save_huddle_style(&mut self, style: crate::config::HuddleStyle) {
+        self.config.ui.huddle_style = style;
+        self.status_error = Some(match self.config.save(&self.paths) {
+            Ok(()) => format!("huddle style: {}", style.name()),
+            Err(error) => error.to_string(),
+        });
+    }
+
+    /// `:huddle zoom` and `:huddle style [name]` (plan v0.17.0 B5). They
+    /// need no channel: a generated huddle has none.
+    fn huddle_view_command(&mut self, verb: &str, rest: &str) {
+        match (verb, rest) {
+            ("zoom", _) if !self.huddle_viz.on => {
+                self.status_error =
+                    Some("the zoomed view shows a call: join the huddle first".into());
+            }
+            ("zoom", _) => {
+                let zoomed = self.huddle_zoomed();
+                self.huddle_viz.picker = None;
+                self.huddle_viz.zoomed = !zoomed;
+                self.presentation.open_overlay(Overlay::Huddle);
+            }
+            (_, "") if self.huddle_viz.on => {
+                self.huddle_viz.zoomed = true;
+                self.presentation.open_overlay(Overlay::Huddle);
+                self.open_huddle_picker();
+            }
+            (_, "") => {
+                self.status_error = Some(format!(
+                    "huddle style: {} (lanes, bars or orb: :huddle style <name>)",
+                    self.config.ui.huddle_style.name()
+                ));
+            }
+            (_, name) => match crate::config::HuddleStyle::from_name(name) {
+                Some(style) => {
+                    self.huddle_viz.picker = None;
+                    self.save_huddle_style(style);
+                    if self.huddle_viz.on {
+                        self.huddle_viz.zoomed = true;
+                        self.presentation.open_overlay(Overlay::Huddle);
+                    }
+                }
+                None => {
+                    self.status_error = Some(format!(
+                        "unknown huddle style {:?}: lanes, bars or orb",
+                        crate::protocol::artifact::display(name, 24)
+                    ));
+                }
+            },
+        }
+    }
+
     async fn huddle_command(&mut self, arguments: &str) -> Result<()> {
         // The panel's keys come here too: the demo answers before any
         // confirmation that would lead to a device.
@@ -4888,6 +5208,10 @@ impl App {
         }
         let (verb, rest) = arguments.split_once(' ').unwrap_or((arguments, ""));
         let rest = rest.trim();
+        if matches!(verb, "zoom" | "style") {
+            self.huddle_view_command(verb, rest);
+            return Ok(());
+        }
         if self.runtime.is_none() || self.current_channel().is_none() {
             self.status_error = Some("select a channel in a connected community".into());
             return Ok(());
@@ -4927,6 +5251,7 @@ impl App {
                 self.presentation.open_overlay(Overlay::Huddle);
                 self.presentation
                     .open_confirmation(ConfirmationKind::HuddleJoin);
+                self.start_mic_check();
             }
             "leave" => self.leave_huddle().await,
             "end"
@@ -5009,7 +5334,7 @@ impl App {
             }
             _ => {
                 self.status_error = Some(
-                    "usage: :huddle [start|join|leave|end|mute|react <emoji>|devices|input <name>|output <name>]".into(),
+                    "usage: :huddle [start|join|leave|end|mute|react <emoji>|devices|input <name>|output <name>|zoom|style [lanes|bars|orb]]".into(),
                 );
             }
         }
@@ -5094,7 +5419,12 @@ impl App {
             let input = self.config.ui.huddle_input_device.clone();
             let output = self.config.ui.huddle_output_device.clone();
             let tx = self.background_tx.clone();
+            let released = self.huddle_viz.mic_released.take();
             tokio::spawn(async move {
+                // The microphone check lets its devices go first.
+                if let Some(released) = released {
+                    let _ = tokio::time::timeout(Duration::from_secs(2), released).await;
+                }
                 let joined = async {
                     let (devices, capture, playback) = tokio::task::spawn_blocking(move || {
                         crate::huddle::audio::open_devices(input.as_deref(), output.as_deref())
@@ -10792,6 +11122,19 @@ impl App {
             self.last_hit_map = Some(hit_map);
             return;
         }
+        if self.huddle_zoomed() {
+            // The huddle's zoomed view and the status line; nothing under
+            // them is laid out, so its frames stay cheap.
+            let status = Rect {
+                y: area.bottom() - 1,
+                height: 1,
+                ..area
+            };
+            self.render_status(frame, status);
+            self.render_overlay(frame, area, &mut hit_map);
+            self.last_hit_map = Some(hit_map);
+            return;
+        }
         if self.config.communities.is_empty() {
             self.render_empty(frame, area);
             self.render_overlay(frame, area, &mut hit_map);
@@ -11610,12 +11953,23 @@ impl App {
                     " start a huddle? ",
                     "Everyone in this channel can see it and join · you join muted · y start · n/Esc cancel",
                 ),
-                Some(ConfirmationKind::HuddleJoin) => self.render_prompt(
-                    frame,
-                    area,
-                    " join the huddle? ",
-                    "bzz opens your microphone and speaker; you start muted · y join · n/Esc cancel",
-                ),
+                Some(ConfirmationKind::HuddleJoin) => match &self.huddle_viz.mic_check {
+                    // Your lane, live before anything is sent (plan B7).
+                    Some(run) => crate::ui::huddle_mic::render(
+                        frame.buffer_mut(),
+                        centered(area, 74, crate::ui::huddle_mic::HEIGHT),
+                        &run.check,
+                        self.huddle_viz.look,
+                        self.config.ui.motion(),
+                        &self.theme,
+                    ),
+                    None => self.render_prompt(
+                        frame,
+                        area,
+                        " join the huddle? ",
+                        "bzz opens your microphone and speaker; you start muted · y join · n/Esc cancel",
+                    ),
+                },
                 Some(ConfirmationKind::HuddleEnd) => self.render_prompt(
                     frame,
                     area,
@@ -11808,6 +12162,32 @@ impl App {
                         )),
                     popup,
                 );
+            }
+            Some(Overlay::Huddle) if self.huddle_zoomed() => {
+                // The zoomed view: the whole window but the status line.
+                let zoom_area = Rect {
+                    height: area.height.saturating_sub(1),
+                    ..area
+                };
+                if let Some(lanes) = self.huddle_lanes() {
+                    let channel = self
+                        .current_channel()
+                        .map(|channel| channel.name.clone())
+                        .unwrap_or_default();
+                    let zoom = crate::ui::huddle_zoom::Zoom {
+                        lanes,
+                        spectrum: &self.huddle_viz.spectrum,
+                        style: self.huddle_style(),
+                        channel: &channel,
+                        picker: self.huddle_viz.picker,
+                    };
+                    crate::ui::huddle_zoom::render(
+                        frame.buffer_mut(),
+                        zoom_area,
+                        &zoom,
+                        &self.theme,
+                    );
+                }
             }
             Some(Overlay::Huddle) => {
                 let popup = centered(area, 90, area.height.saturating_sub(2).min(30));
@@ -17006,5 +17386,403 @@ mod tests {
         app.profile_key(KeyEvent::from(KeyCode::Esc));
         assert!(app.profile_card.is_none());
         assert_eq!(app.presentation.overlay, None);
+    }
+
+    /// An app with a generated huddle in `#team`: Ada (1), Lin (2) and Sam
+    /// (3), you muted, the passage played once (`looped: None`) or looping.
+    async fn zoom_test_app(
+        temporary: &TempDir,
+        script: &[crate::huddle::synth::Line],
+    ) -> super::App {
+        let mut app = attachment_test_app(temporary).await;
+        app.channels = vec![Channel {
+            id: Uuid::new_v4(),
+            name: "team".into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 4,
+            last_event_at: None,
+            facts: Default::default(),
+        }];
+        app.selected_channel = 0;
+        app.set_generated_huddle(
+            crate::huddle::synth::Synthetic::new(script, None),
+            vec![(1, "Ada".into()), (2, "Lin".into()), (3, "Sam".into())],
+            true,
+        );
+        app.huddle_viz.look = crate::ui::huddle_lanes::Look::default();
+        app
+    }
+
+    fn zoom_screen(app: &mut super::App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Plan B5: `z` in the panel and `:huddle zoom` zoom the visualizer to
+    /// the window and back; `v` opens the picker, which draws the selected
+    /// style live; Esc puts the saved one back, Enter keeps and saves it.
+    #[tokio::test]
+    async fn the_zoomed_view_and_its_picker_preview_keep_and_restore() {
+        use crate::config::HuddleStyle;
+        let temporary = TempDir::new().unwrap();
+        let mut app = zoom_test_app(&temporary, &crate::huddle::synth::DEMO_SCRIPT).await;
+        let mut t = 0.0;
+        while t <= 5.5 {
+            app.tick_huddle_viz_at(t);
+            t += 1.0 / 30.0;
+        }
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        // Not zoomed until asked; then the whole window but the status line.
+        app.presentation.open_overlay(Overlay::Huddle);
+        assert!(!app.huddle_zoomed());
+        app.huddle_key(key(KeyCode::Char('z'))).await.unwrap();
+        assert!(app.huddle_zoomed());
+        let screen = zoom_screen(&mut app, 120, 30);
+        assert!(
+            screen.contains("huddle in #team · 4 in the call · Ada and Lin at once"),
+            "{screen}"
+        );
+        assert!(screen.contains("You · your microphone"), "{screen}");
+        assert!(
+            screen.lines().last().unwrap().contains("HUDDLE"),
+            "{screen}"
+        );
+        app.huddle_key(key(KeyCode::Char('z'))).await.unwrap();
+        assert!(!app.huddle_zoomed());
+        assert_eq!(app.presentation.overlay, Some(Overlay::Huddle));
+        app.huddle_command("zoom").await.unwrap();
+        assert!(app.huddle_zoomed());
+        // The picker: Down previews bars, Down again the orb; Esc restores.
+        app.huddle_key(key(KeyCode::Char('v'))).await.unwrap();
+        assert_eq!(app.huddle_viz.picker, Some(0));
+        app.huddle_key(key(KeyCode::Down)).await.unwrap();
+        assert_eq!(app.huddle_style(), HuddleStyle::Bars);
+        app.tick_huddle_viz_at(t);
+        let screen = zoom_screen(&mut app, 120, 30);
+        assert!(screen.contains("bars · the call's spectrum"), "{screen}");
+        assert!(screen.contains("▶ bars"), "{screen}");
+        assert!(screen.contains("Enter keep"), "{screen}");
+        app.huddle_key(key(KeyCode::Down)).await.unwrap();
+        assert_eq!(app.huddle_style(), HuddleStyle::Orb);
+        app.huddle_key(key(KeyCode::Esc)).await.unwrap();
+        assert_eq!(app.huddle_viz.picker, None);
+        assert_eq!(app.huddle_style(), HuddleStyle::Lanes);
+        assert_eq!(app.config.ui.huddle_style, HuddleStyle::Lanes);
+        assert!(app.huddle_zoomed(), "Esc closes the picker, not the view");
+        let screen = zoom_screen(&mut app, 120, 30);
+        assert!(screen.contains("lanes · one lane per person"), "{screen}");
+        // Enter keeps the selection and saves it.
+        app.huddle_key(key(KeyCode::Char('v'))).await.unwrap();
+        app.huddle_key(key(KeyCode::Up)).await.unwrap();
+        app.huddle_key(key(KeyCode::Enter)).await.unwrap();
+        assert_eq!(app.config.ui.huddle_style, HuddleStyle::Orb);
+        let saved = std::fs::read_to_string(app.paths.config_file()).unwrap();
+        assert!(saved.contains("huddle_style = \"orb\""), "{saved}");
+        assert_eq!(app.status_error.as_deref(), Some("huddle style: orb"));
+        // `:huddle style <name>` and a wrong name.
+        app.huddle_command("style bars").await.unwrap();
+        assert_eq!(app.config.ui.huddle_style, HuddleStyle::Bars);
+        app.huddle_command("style disco").await.unwrap();
+        assert_eq!(app.config.ui.huddle_style, HuddleStyle::Bars);
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap()
+                .contains("lanes, bars or orb")
+        );
+        // Esc leaves the zoom, then the panel; the keys of v0.16 still work.
+        app.huddle_key(key(KeyCode::Esc)).await.unwrap();
+        assert!(!app.huddle_zoomed());
+        assert_eq!(app.presentation.overlay, Some(Overlay::Huddle));
+        app.huddle_key(key(KeyCode::Esc)).await.unwrap();
+        assert_eq!(app.presentation.overlay, None);
+    }
+
+    /// With no call the zoom says what it needs and changes nothing.
+    #[tokio::test]
+    async fn zoom_without_a_call_says_so() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.huddle_command("zoom").await.unwrap();
+        assert!(!app.huddle_zoomed());
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap()
+                .contains("join the huddle first")
+        );
+        app.huddle_command("style").await.unwrap();
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap()
+                .starts_with("huddle style: lanes")
+        );
+    }
+
+    /// Rule 20 for the zoomed view: the spectrum is asked of the audio side
+    /// only while bars or the orb are seen; frames stop in silence; with
+    /// motion off, only a change of speaker draws.
+    #[tokio::test]
+    async fn the_zoomed_view_counts_its_frames() {
+        use crate::huddle::synth::DEMO_SCRIPT;
+        let count = |app: &mut super::App, from: f64, to: f64| {
+            let mut frames = 0;
+            let mut t = from;
+            while t < to {
+                frames += u32::from(app.tick_huddle_viz_at(t));
+                t += 0.033;
+            }
+            frames
+        };
+        // Bars, zoomed: about 30 a second while people speak (0.35 to 9.6 s,
+        // and the bars' fall), none once the call is quiet.
+        let mut app = zoom_test_app(&TempDir::new().unwrap(), &DEMO_SCRIPT).await;
+        app.config.ui.huddle_style = crate::config::HuddleStyle::Bars;
+        app.tick_huddle_viz_at(0.0);
+        app.huddle_command("zoom").await.unwrap();
+        let speaking = count(&mut app, 0.0, 13.0);
+        let mix = app.huddle_feed().unwrap().levels;
+        assert!(mix.mix().is_wanted(), "the bars ask for the mix");
+        // Two seconds after the meters fall quiet, nothing more.
+        let quiet = count(&mut app, 13.0, 20.0);
+        assert!((250..=370).contains(&speaking), "{speaking}");
+        assert_eq!(quiet, 0, "no frame in silence");
+        // The zoom hidden: the mix is no longer asked for, nor analysed.
+        app.huddle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        app.tick_huddle_viz_at(20.1);
+        assert!(!mix.mix().is_wanted());
+        // A call that never speaks: the first frame only.
+        let mut app = zoom_test_app(&TempDir::new().unwrap(), &[]).await;
+        app.config.ui.huddle_style = crate::config::HuddleStyle::Orb;
+        assert!(
+            app.tick_huddle_viz_at(0.0),
+            "the first frame shows the call"
+        );
+        app.huddle_command("zoom").await.unwrap();
+        assert_eq!(count(&mut app, 0.0, 10.0), 0);
+        // Motion off: a still picture, a frame when the speaker changes.
+        for style in crate::config::HuddleStyle::ALL {
+            let mut app = zoom_test_app(&TempDir::new().unwrap(), &DEMO_SCRIPT).await;
+            app.config.ui.motion = crate::config::Motion::Off;
+            app.config.ui.huddle_style = style;
+            app.tick_huddle_viz_at(0.0);
+            app.huddle_command("zoom").await.unwrap();
+            let off = count(&mut app, 0.0, 12.0);
+            // Start, Ada, quiet, Lin, Lin and Ada, Ada, quiet, your mic,
+            // quiet, Sam, quiet: about eleven.
+            assert!((5..=14).contains(&off), "{style:?}: {off}");
+        }
+        // The orb drops its rate when frames are slow to write.
+        let mut app = zoom_test_app(&TempDir::new().unwrap(), &DEMO_SCRIPT).await;
+        app.config.ui.huddle_style = crate::config::HuddleStyle::Orb;
+        app.tick_huddle_viz_at(0.0);
+        app.huddle_command("zoom").await.unwrap();
+        assert_eq!(app.huddle_interval(crate::config::Motion::Full), Some(0.05));
+        for _ in 0..3 {
+            app.huddle_frame_drawn(0.04);
+        }
+        assert_eq!(app.huddle_interval(crate::config::Motion::Full), Some(0.1));
+        let full = count(&mut app, 1.0, 2.0);
+        assert!((8..=11).contains(&full), "ten frames a second: {full}");
+    }
+
+    /// Plan B7: the join confirmation shows your lane before anything is
+    /// sent, from a fake device; three seconds of nothing names the device.
+    #[tokio::test]
+    async fn the_join_confirmation_checks_the_microphone() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.huddle_viz.look = crate::ui::huddle_lanes::Look::default();
+        app.presentation.open_overlay(Overlay::Huddle);
+        app.presentation
+            .open_confirmation(crate::ui::state::ConfirmationKind::HuddleJoin);
+        app.start_mic_check();
+        let levels = app.huddle_viz.mic_check.as_ref().unwrap().check.levels();
+        let mut frames = 0;
+        let mut t = 0.0;
+        while t < 1.0 {
+            levels.publish_mic(&crate::huddle::synth::tone(220.0, -22.0, 0, 960));
+            frames += u32::from(app.tick_huddle_viz_at(t));
+            t += 0.033;
+        }
+        assert!(frames > 20, "your lane moves: {frames}");
+        let screen = zoom_screen(&mut app, 80, 24);
+        assert!(screen.contains("join the huddle?"), "{screen}");
+        assert!(
+            screen.contains("nothing is sent until you join"),
+            "{screen}"
+        );
+        assert!(screen.contains("your microphone works"), "{screen}");
+        assert!(screen.contains("y join"), "{screen}");
+        assert_eq!(app.huddle_call_state(), None, "nothing joined");
+        app.stop_mic_check();
+        // A device that gives nothing.
+        app.config.ui.huddle_input_device = Some("USB Mic".into());
+        app.start_mic_check();
+        let mut t = 10.0;
+        while t < 13.2 {
+            app.tick_huddle_viz_at(t);
+            t += 0.033;
+        }
+        let screen = zoom_screen(&mut app, 80, 24);
+        assert!(screen.contains("no sound from “USB Mic”"), "{screen}");
+        if let Some(directory) = std::env::var_os("BZZ_VIZ_CAPTURES") {
+            std::fs::write(
+                std::path::Path::new(&directory).join("mic-check-80x24.txt"),
+                &screen,
+            )
+            .unwrap();
+        }
+        app.stop_mic_check();
+        assert!(app.huddle_viz.mic_check.is_none());
+        // A confirmation closed any other way ends the check too.
+        app.start_mic_check();
+        app.presentation.close_overlay();
+        assert!(!app.tick_huddle_viz_at(14.0));
+        assert!(app.huddle_viz.mic_check.is_none());
+    }
+
+    /// Captures of the zoomed view in the real `App::render`, with the
+    /// generated huddle, to `BZZ_VIZ_CAPTURES` when set.
+    #[tokio::test]
+    async fn zoomed_view_captures() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = zoom_test_app(&temporary, &crate::huddle::synth::DEMO_SCRIPT).await;
+        app.tick_huddle_viz_at(0.0);
+        app.huddle_command("zoom").await.unwrap();
+        for style in crate::config::HuddleStyle::ALL {
+            app.config.ui.huddle_style = style;
+            app.huddle_viz.spectrum.clear();
+            let mut t = 0.0;
+            while t <= 5.5 {
+                app.tick_huddle_viz_at(t);
+                t += 1.0 / 30.0;
+            }
+            for (width, height) in [(80, 24), (160, 45)] {
+                let screen = zoom_screen(&mut app, width, height);
+                assert!(screen.contains("Ada and Lin at once"), "{screen}");
+                if let Some(directory) = std::env::var_os("BZZ_VIZ_CAPTURES") {
+                    std::fs::write(
+                        std::path::Path::new(&directory)
+                            .join(format!("zoom-{}-{width}x{height}.txt", style.name())),
+                        &screen,
+                    )
+                    .unwrap();
+                }
+            }
+            app.huddle_viz.generated.as_mut().unwrap().source =
+                crate::huddle::synth::Synthetic::new(&crate::huddle::synth::DEMO_SCRIPT, None);
+            app.huddle_viz.meter.clear();
+        }
+    }
+
+    /// Counts what a frame writes to the terminal.
+    #[derive(Clone, Default)]
+    struct CountingWriter(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl std::io::Write for CountingWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .fetch_add(data.len(), std::sync::atomic::Ordering::Relaxed);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The cost of each zoomed style in bzz: the real `App`, the generated
+    /// huddle looping, the frame tick every 33 ms, a frame drawn through the
+    /// crossterm backend whenever the visualizer asks for one; 12 s after
+    /// a 1 s warm-up. Prints a table; `--ignored` to run (B6, B8).
+    #[tokio::test]
+    #[ignore = "a measurement; run with --ignored --nocapture"]
+    async fn measure_the_zoomed_styles() {
+        use crate::config::HuddleStyle;
+        println!("| style | size | frames/s | KiB/s | ms a frame | CPU % of a core |");
+        println!("|---|---|---|---|---|---|");
+        for (size, zoomed) in [
+            ((120_u16, 30_u16), true),
+            ((50, 12), true),
+            ((120, 30), false),
+        ] {
+            for style in HuddleStyle::ALL {
+                if !zoomed && style != HuddleStyle::Lanes {
+                    continue;
+                }
+                let temporary = TempDir::new().unwrap();
+                let mut app = zoom_test_app(&temporary, &[]).await;
+                app.set_generated_huddle(
+                    crate::huddle::synth::Synthetic::demo(),
+                    vec![(1, "Ada".into()), (2, "Lin".into()), (3, "Sam".into())],
+                    true,
+                );
+                app.config.ui.huddle_style = style;
+                app.tick_huddle_viz_at(0.0);
+                app.presentation.open_overlay(Overlay::Huddle);
+                app.huddle_viz.zoomed = zoomed;
+                let counter = CountingWriter::default();
+                let mut terminal = Terminal::with_options(
+                    ratatui::backend::CrosstermBackend::new(counter.clone()),
+                    ratatui::TerminalOptions {
+                        viewport: ratatui::Viewport::Fixed(Rect::new(0, 0, size.0, size.1)),
+                    },
+                )
+                .unwrap();
+                let (mut frames, mut busy, mut drawing) = (0_u32, 0.0_f64, 0.0_f64);
+                let mut bytes_at_start = 0;
+                let mut t = 0.0;
+                while t < 13.0 {
+                    let started = Instant::now();
+                    let wants = app.tick_huddle_viz_at(t);
+                    if wants || t == 0.0 {
+                        let drawn = Instant::now();
+                        terminal.draw(|frame| app.render(frame)).unwrap();
+                        let seconds = drawn.elapsed().as_secs_f64();
+                        app.huddle_frame_drawn(seconds);
+                        if t >= 1.0 {
+                            frames += 1;
+                            drawing += seconds;
+                        }
+                    }
+                    if t >= 1.0 {
+                        busy += started.elapsed().as_secs_f64();
+                    } else {
+                        bytes_at_start = counter.0.load(std::sync::atomic::Ordering::Relaxed);
+                    }
+                    t += 0.033;
+                }
+                let bytes = counter.0.load(std::sync::atomic::Ordering::Relaxed) - bytes_at_start;
+                println!(
+                    "| {}{} | {}×{} | {:.1} | {:.1} | {:.2} | {:.2} |",
+                    style.name(),
+                    if zoomed { "" } else { " (panel, not zoomed)" },
+                    size.0,
+                    size.1,
+                    f64::from(frames) / 12.0,
+                    bytes as f64 / 12.0 / 1024.0,
+                    drawing * 1000.0 / f64::from(frames.max(1)),
+                    busy / 12.0 * 100.0,
+                );
+            }
+        }
     }
 }

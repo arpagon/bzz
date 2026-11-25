@@ -322,13 +322,25 @@ impl Pacer {
     /// after [`SILENT_AFTER_SECONDS`] of silence, or, with motion off, unless
     /// the speaker changed.
     pub fn wants_frame(&mut self, meter: &Meter, visible: bool, motion: Motion, now: f64) -> bool {
+        self.wants_frame_every(meter, visible, Self::interval(motion), now)
+    }
+
+    /// As [`Pacer::wants_frame`], with the shortest time between two frames
+    /// of motion given (`None`: motion off).
+    pub fn wants_frame_every(
+        &mut self,
+        meter: &Meter,
+        visible: bool,
+        interval: Option<f64>,
+        now: f64,
+    ) -> bool {
         if !visible {
             self.shown = None;
             return false;
         }
         let signature = meter.signature();
         let changed = self.shown.as_ref() != Some(&signature);
-        let due = match Self::interval(motion) {
+        let due = match interval {
             _ if changed => true,
             None => false,
             Some(_) if meter.is_silent() => false,
@@ -341,6 +353,59 @@ impl Pacer {
             self.last_frame = Some(now);
         }
         due
+    }
+}
+
+/// Steps a costly style's rate down when writing to the terminal is slow
+/// (SSH, a slow link): when a frame took more than a third of its interval
+/// to draw three times running, the interval doubles, up to
+/// [`Throttle::SLOWEST`]; after thirty quick frames it halves back.
+#[derive(Debug, Default)]
+pub struct Throttle {
+    /// How many times the interval was doubled.
+    steps: u8,
+    slow: u8,
+    quick: u8,
+}
+
+impl Throttle {
+    /// Five frames a second at the slowest.
+    pub const SLOWEST: f64 = 0.2;
+
+    /// The interval to use, from the style's own.
+    pub fn interval(&self, base: f64) -> f64 {
+        (base * f64::from(1_u32 << self.steps)).min(Self::SLOWEST.max(base))
+    }
+
+    /// How long a frame took to draw and write, against the interval it was
+    /// drawn at.
+    pub fn record(&mut self, seconds: f64, base: f64) {
+        let interval = self.interval(base);
+        if seconds > interval / 3.0 {
+            self.quick = 0;
+            self.slow += 1;
+            if self.slow >= 3 {
+                self.slow = 0;
+                if self.interval(base) < Self::SLOWEST {
+                    self.steps += 1;
+                }
+            }
+        } else if seconds < interval / 6.0 {
+            self.slow = 0;
+            self.quick += 1;
+            if self.quick >= 30 {
+                self.quick = 0;
+                self.steps = self.steps.saturating_sub(1);
+            }
+        } else {
+            self.slow = 0;
+            self.quick = 0;
+        }
+    }
+
+    /// Back to the style's own rate (another style, or the view closed).
+    pub fn reset(&mut self) {
+        *self = Self::default();
     }
 }
 

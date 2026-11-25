@@ -1,0 +1,20 @@
+ 4 in the call · Ada and Lin at once
+
+
+
+
+             ▁ ▅ ▆   ▁ ▁ ▃ ▔ ▔ ▁
+ ▁ ▁     ▔ ▃ █ █ █ ▇ ▃ ▇ █ █ █ ▅
+ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ ▁ ▁
+ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ ▇ ▅
+ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ ▆
+
+ ● Ada  ● Lin  · Sam  You · muted
+--- styles ---
+0: 1-35 Indexed(44)/Reset/BOLD
+5: 13-13 Indexed(38)/Reset/NONE 15-15 Indexed(38)/Reset/NONE 17-17 Indexed(38)/Reset/NONE 21-21 Indexed(255)/Reset/BOLD 23-23 Indexed(255)/Reset/BOLD 25-25 Indexed(38)/Reset/NONE 27-27 Indexed(255)/Reset/BOLD 29-29 Indexed(255)/Reset/BOLD 31-31 Indexed(255)/Reset/BOLD
+6: 1-1 Indexed(38)/Reset/NONE 3-3 Indexed(38)/Reset/NONE 9-9 Indexed(255)/Reset/BOLD 11-11 Indexed(38)/Reset/NONE 13-13 Indexed(38)/Reset/NONE 15-15 Indexed(38)/Reset/NONE 17-17 Indexed(38)/Reset/NONE 19-19 Indexed(38)/Reset/NONE 21-21 Indexed(38)/Reset/NONE 23-23 Indexed(38)/Reset/NONE 25-25 Indexed(38)/Reset/NONE 27-27 Indexed(38)/Reset/NONE 29-29 Indexed(38)/Reset/NONE 31-31 Indexed(38)/Reset/NONE
+7: 1-1 Indexed(24)/Reset/NONE 3-3 Indexed(24)/Reset/NONE 5-5 Indexed(24)/Reset/NONE 7-7 Indexed(24)/Reset/NONE 9-9 Indexed(24)/Reset/NONE 11-11 Indexed(24)/Reset/NONE 13-13 Indexed(24)/Reset/NONE 15-15 Indexed(24)/Reset/NONE 17-17 Indexed(24)/Reset/NONE 19-19 Indexed(24)/Reset/NONE 21-21 Indexed(24)/Reset/NONE 23-23 Indexed(24)/Reset/NONE 25-25 Indexed(24)/Reset/NONE 27-27 Indexed(24)/Reset/NONE 29-29 Indexed(24)/Reset/NONE 31-31 Indexed(24)/Reset/NONE 33-33 Indexed(24)/Reset/NONE 35-35 Indexed(255)/Reset/BOLD 37-37 Indexed(255)/Reset/BOLD
+8: 1-1 Indexed(24)/Reset/NONE 3-3 Indexed(24)/Reset/NONE 5-5 Indexed(24)/Reset/NONE 7-7 Indexed(24)/Reset/NONE 9-9 Indexed(24)/Reset/NONE 11-11 Indexed(24)/Reset/NONE 13-13 Indexed(24)/Reset/NONE 15-15 Indexed(24)/Reset/NONE 17-17 Indexed(24)/Reset/NONE 19-19 Indexed(24)/Reset/NONE 21-21 Indexed(24)/Reset/NONE 23-23 Indexed(24)/Reset/NONE 25-25 Indexed(24)/Reset/NONE 27-27 Indexed(24)/Reset/NONE 29-29 Indexed(24)/Reset/NONE 31-31 Indexed(24)/Reset/NONE 33-33 Indexed(24)/Reset/NONE 35-35 Indexed(24)/Reset/NONE 37-37 Indexed(24)/Reset/NONE
+9: 1-1 Indexed(24)/Reset/NONE 3-3 Indexed(24)/Reset/NONE 5-5 Indexed(24)/Reset/NONE 7-7 Indexed(24)/Reset/NONE 9-9 Indexed(24)/Reset/NONE 11-11 Indexed(24)/Reset/NONE 13-13 Indexed(24)/Reset/NONE 15-15 Indexed(24)/Reset/NONE 17-17 Indexed(24)/Reset/NONE 19-19 Indexed(24)/Reset/NONE 21-21 Indexed(24)/Reset/NONE 23-23 Indexed(24)/Reset/NONE 25-25 Indexed(24)/Reset/NONE 27-27 Indexed(24)/Reset/NONE 29-29 Indexed(24)/Reset/NONE 31-31 Indexed(24)/Reset/NONE 33-33 Indexed(24)/Reset/NONE 35-35 Indexed(24)/Reset/NONE 37-37 Indexed(24)/Reset/NONE 39-39 Indexed(24)/Reset/NONE
+11: 1-5 Indexed(44)/Reset/BOLD 8-12 Indexed(176)/Reset/BOLD 15-19 Indexed(242)/Reset/NONE 22-32 Indexed(242)/Reset/NONE

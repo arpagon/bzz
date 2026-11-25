@@ -105,6 +105,8 @@ pub struct Synthetic {
     /// Samples generated so far.
     position: u64,
     scratch: [f32; CHUNK],
+    /// The harmonics of the syllables being spoken, by line and syllable.
+    timbres: Vec<((usize, u32), Timbre)>,
 }
 
 impl std::fmt::Debug for Synthetic {
@@ -122,6 +124,7 @@ impl Synthetic {
             looped,
             position: 0,
             scratch: [0.0; CHUNK],
+            timbres: Vec::new(),
         }
     }
 
@@ -158,8 +161,10 @@ impl Synthetic {
         if self.position < skip_before {
             self.position = skip_before - skip_before % CHUNK as u64;
         }
+        let mixing = self.levels.mix().is_wanted();
         while self.position + CHUNK as u64 <= target {
             let start = self.position;
+            let mut mix = [0.0_f32; CHUNK];
             for speaker in self.speakers() {
                 let mut any = false;
                 let mut scratch = self.scratch;
@@ -172,10 +177,19 @@ impl Synthetic {
                 if !any {
                     continue;
                 }
+                // What you hear: everyone but your own microphone.
+                if mixing && matches!(speaker, Speaker::Peer(_)) {
+                    for (out, sample) in mix.iter_mut().zip(&self.scratch) {
+                        *out += sample;
+                    }
+                }
                 match speaker {
                     Speaker::Peer(index) => self.levels.publish_peer(index, &self.scratch),
                     Speaker::Mic => self.levels.publish_mic(&self.scratch),
                 }
+            }
+            if mixing {
+                self.levels.publish_mix(&mix);
             }
             self.position += CHUNK as u64;
         }
@@ -191,16 +205,44 @@ impl Synthetic {
         speakers
     }
 
-    fn sample(&self, speaker: Speaker, t: f32) -> f32 {
+    fn sample(&mut self, speaker: Speaker, t: f32) -> f32 {
         let local = match self.looped {
             Some(period) if period > 0.0 => t % period,
             _ => t,
         };
-        self.script
+        let voice = voice_of(speaker);
+        let mut sum = 0.0;
+        for line in 0..self.script.len() {
+            let Line {
+                speaker: who,
+                start,
+                end,
+            } = self.script[line];
+            if who != speaker || !(start..end).contains(&local) {
+                continue;
+            }
+            let syllable = ((local - start) * voice.syllables_per_second) as u32;
+            let timbre = self.timbre(line, syllable, voice);
+            sum += speech(voice, &timbre, local - start, end - start);
+        }
+        sum
+    }
+
+    /// The harmonics of one syllable, kept while it lasts.
+    fn timbre(&mut self, line: usize, syllable: u32, voice: Voice) -> Timbre {
+        if let Some((_, timbre)) = self
+            .timbres
             .iter()
-            .filter(|line| line.speaker == speaker && (line.start..line.end).contains(&local))
-            .map(|line| speech(voice_of(speaker), local - line.start, line.end - line.start))
-            .sum()
+            .find(|(key, _)| *key == (line, syllable))
+        {
+            return *timbre;
+        }
+        let timbre = Timbre::new(voice, syllable);
+        if self.timbres.len() >= 8 {
+            self.timbres.remove(0);
+        }
+        self.timbres.push(((line, syllable), timbre));
+        timbre
     }
 }
 
@@ -213,8 +255,69 @@ fn noise(n: u32) -> f32 {
     (x & 0xFFFF) as f32 / 65_535.0
 }
 
+/// The most harmonics a voice has (up to about 6 kHz).
+const HARMONICS: usize = 56;
+
+/// Vowels as their first three formants, in hertz.
+const VOWELS: [(f32, f32, f32); 6] = [
+    (730.0, 1090.0, 2440.0),
+    (530.0, 1840.0, 2480.0),
+    (270.0, 2290.0, 3010.0),
+    (570.0, 840.0, 2410.0),
+    (300.0, 870.0, 2240.0),
+    (660.0, 1720.0, 2410.0),
+];
+
+/// The weight of each harmonic in one syllable: a vowel's three formants
+/// over a falling glottal slope, so the spectrum looks like speech. Scaled
+/// so a syllable carries the same energy as a plain six-harmonic voice,
+/// which keeps every level what it was.
+#[derive(Clone, Copy)]
+struct Timbre {
+    weights: [f32; HARMONICS],
+    count: usize,
+}
+
+impl Timbre {
+    fn new(voice: Voice, index: u32) -> Self {
+        let plain = (1..=6_u32)
+            .map(|harmonic| {
+                let formant = 2.0 + 2.0 * noise(index.wrapping_add(harmonic));
+                (1.0 / (1.0 + (harmonic as f32 - formant).abs())).powi(2)
+            })
+            .sum::<f32>();
+        let vowel = VOWELS[(noise(index.wrapping_add(11)) * 5.99) as usize];
+        // Higher voices have shorter tracts: their formants sit higher.
+        let scale = 1.0 + (voice.pitch - 150.0) / 700.0;
+        let formants = [
+            (vowel.0 * scale, 90.0, 1.0),
+            (vowel.1 * scale, 120.0, 0.55),
+            (vowel.2 * scale, 180.0, 0.3),
+        ];
+        let count = ((6_000.0 / voice.pitch) as usize).clamp(6, HARMONICS);
+        let mut weights = [0.0; HARMONICS];
+        for (harmonic, weight) in weights.iter_mut().enumerate().take(count) {
+            let hz = (harmonic + 1) as f32 * voice.pitch;
+            let resonance = formants
+                .iter()
+                .map(|(centre, width, gain)| {
+                    let off = (hz - centre) / (width * 2.0);
+                    gain / (1.0 + off * off)
+                })
+                .sum::<f32>();
+            *weight = (resonance + 0.04) / ((harmonic + 1) as f32).powf(0.6);
+        }
+        let energy = weights.iter().map(|w| w * w).sum::<f32>();
+        let fit = (plain / energy.max(1e-9)).sqrt();
+        for weight in &mut weights {
+            *weight *= fit;
+        }
+        Self { weights, count }
+    }
+}
+
 /// One sample of a generated phrase `local` seconds in, of `length` seconds.
-fn speech(voice: Voice, local: f32, length: f32) -> f32 {
+fn speech(voice: Voice, timbre: &Timbre, local: f32, length: f32) -> f32 {
     use std::f32::consts::PI;
     let syllable = local * voice.syllables_per_second;
     let index = syllable as u32;
@@ -232,12 +335,15 @@ fn speech(voice: Voice, local: f32, length: f32) -> f32 {
         * (1.06 - 0.12 * (local / length.max(0.1)))
         * (1.0 + 0.08 * (noise(index.wrapping_add(3)) - 0.5));
     let phase = 2.0 * PI * pitch * local;
+    // sin(h·phase) for every harmonic by the Chebyshev recurrence.
+    let (first, twice_cos) = (phase.sin(), 2.0 * phase.cos());
+    let (mut previous, mut current) = (0.0_f32, first);
     let mut wave = 0.0;
-    for harmonic in 1..=6 {
-        // A vowel-like emphasis that moves from syllable to syllable.
-        let formant = 2.0 + 2.0 * noise(index.wrapping_add(harmonic));
-        let weight = 1.0 / (1.0 + (harmonic as f32 - formant).abs());
-        wave += weight * (phase * harmonic as f32).sin();
+    for weight in &timbre.weights[..timbre.count] {
+        wave += weight * current;
+        let next = twice_cos * current - previous;
+        previous = current;
+        current = next;
     }
     0.09 * voice.gain * shape * amp * edges * wave
 }

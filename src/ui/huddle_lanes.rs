@@ -110,7 +110,7 @@ impl Look {
     }
 }
 
-type Rgb = (u8, u8, u8);
+pub(crate) type Rgb = (u8, u8, u8);
 
 /// Person colours for dark and light backgrounds. None is amber: amber
 /// means "you're muted".
@@ -131,7 +131,7 @@ const PEOPLE_LIGHT: [Rgb; 6] = [
     (0x6A, 0x50, 0xD8),
 ];
 
-fn named_rgb(color: Color) -> Option<Rgb> {
+pub(crate) fn named_rgb(color: Color) -> Option<Rgb> {
     Some(match color {
         Color::Rgb(r, g, b) => (r, g, b),
         Color::Black => (0, 0, 0),
@@ -186,24 +186,26 @@ pub fn to_ansi256((r, g, b): Rgb) -> u8 {
     }
 }
 
-fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
+pub(crate) fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let t = t.clamp(0.0, 1.0);
     let mix = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
     (mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
 }
 
 /// The colours of one frame, resolved from the theme and the look.
-struct Paint {
-    look: Look,
+pub(crate) struct Paint {
+    pub(crate) look: Look,
     people: [Rgb; 6],
-    you: Rgb,
-    amber: Rgb,
-    grey: Rgb,
-    text: Style,
+    pub(crate) you: Rgb,
+    pub(crate) amber: Rgb,
+    pub(crate) grey: Rgb,
+    pub(crate) text: Style,
+    /// Whether the theme's background is light.
+    pub(crate) light: bool,
 }
 
 impl Paint {
-    fn new(theme: &Theme, look: Look) -> Self {
+    pub(crate) fn new(theme: &Theme, look: Look) -> Self {
         let normal = theme.style(HighlightGroup::Normal);
         let light = normal
             .bg
@@ -231,10 +233,11 @@ impl Paint {
             } else {
                 normal
             },
+            light,
         }
     }
 
-    fn color(&self, rgb: Rgb) -> Option<Color> {
+    pub(crate) fn color(&self, rgb: Rgb) -> Option<Color> {
         match self.look.depth {
             Depth::TrueColor => Some(Color::Rgb(rgb.0, rgb.1, rgb.2)),
             Depth::Ansi256 => Some(Color::Indexed(to_ansi256(rgb))),
@@ -242,19 +245,19 @@ impl Paint {
         }
     }
 
-    fn fg(&self, rgb: Rgb) -> Style {
+    pub(crate) fn fg(&self, rgb: Rgb) -> Style {
         match self.color(rgb) {
             Some(color) => self.text.fg(color),
             None => Style::default(),
         }
     }
 
-    fn person(&self, slot: usize) -> Rgb {
+    pub(crate) fn person(&self, slot: usize) -> Rgb {
         self.people[slot % self.people.len()]
     }
 
     /// Older history greys out; the right edge is the colour itself.
-    fn aged(&self, rgb: Rgb, age: f32) -> Rgb {
+    pub(crate) fn aged(&self, rgb: Rgb, age: f32) -> Rgb {
         lerp(rgb, self.grey, (age * 1.4).min(0.85))
     }
 }
@@ -292,13 +295,13 @@ impl std::fmt::Debug for Lanes<'_> {
 }
 
 /// Talking while muted, long enough to say so.
-fn talking_muted(lanes: &Lanes<'_>) -> bool {
+pub(crate) fn talking_muted(lanes: &Lanes<'_>) -> bool {
     lanes.muted
         && lanes.meter.mic().speaking()
         && lanes.meter.mic().open_for() >= MUTED_TALK_SECONDS
 }
 
-fn speaking_names<'a>(lanes: &Lanes<'a>) -> Vec<&'a str> {
+pub(crate) fn speaking_names<'a>(lanes: &Lanes<'a>) -> Vec<&'a str> {
     lanes
         .people
         .iter()
@@ -307,7 +310,7 @@ fn speaking_names<'a>(lanes: &Lanes<'a>) -> Vec<&'a str> {
         .collect()
 }
 
-fn who_speaks(names: &[&str]) -> String {
+pub(crate) fn who_speaks(names: &[&str]) -> String {
     match names {
         [] => "nobody is speaking".into(),
         [one] => format!("{one} is speaking"),
@@ -316,7 +319,7 @@ fn who_speaks(names: &[&str]) -> String {
     }
 }
 
-fn put(buf: &mut Buffer, area: Rect, x: u16, y: u16, text: &str, style: Style) -> u16 {
+pub(crate) fn put(buf: &mut Buffer, area: Rect, x: u16, y: u16, text: &str, style: Style) -> u16 {
     if y >= area.height || x >= area.width {
         return 0;
     }
@@ -326,7 +329,7 @@ fn put(buf: &mut Buffer, area: Rect, x: u16, y: u16, text: &str, style: Style) -
     end - (area.x + x)
 }
 
-fn state_of(track: &Track, now: f64, motion: Motion) -> String {
+pub(crate) fn state_of(track: &Track, now: f64, motion: Motion) -> String {
     if track.speaking() {
         return "● live".into();
     }
@@ -340,7 +343,7 @@ fn state_of(track: &Track, now: f64, motion: Motion) -> String {
 }
 
 /// Lower eighths, the upper half of a lane growing up from the middle.
-const UP: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+pub(crate) const UP: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 /// The lower half mirrors it, as near as Block Elements go.
 fn down(eighths: usize) -> char {
@@ -354,7 +357,7 @@ fn down(eighths: usize) -> char {
 
 /// One person's level over the last `seconds`, newest at the right edge.
 #[allow(clippy::too_many_arguments)]
-fn draw_lane(
+pub(crate) fn draw_lane(
     buf: &mut Buffer,
     area: Rect,
     x: u16,
@@ -405,7 +408,7 @@ fn draw_lane(
 /// A two-row badge: the initial on the person's colour, ringed while they
 /// speak (the ring reads without colour too).
 #[allow(clippy::too_many_arguments)]
-fn draw_badge(
+pub(crate) fn draw_badge(
     buf: &mut Buffer,
     area: Rect,
     x: u16,

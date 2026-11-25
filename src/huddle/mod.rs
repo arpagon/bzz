@@ -5,6 +5,8 @@
 pub mod audio;
 pub mod levels;
 pub mod meter;
+pub mod mic_check;
+pub mod spectrum;
 pub mod synth;
 
 /// Whether this build can join huddle audio.
