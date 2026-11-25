@@ -4468,6 +4468,15 @@ impl App {
             .iter()
             .map(|(index, _)| *index)
             .collect::<Vec<_>>();
+        if !self.huddle_viz.on {
+            // The levels hold the loudest chunk since they were last read,
+            // which may be long ago: a person who has not spoken since the
+            // lanes appeared is quiet, not "2s ago".
+            for index in &indices {
+                let _ = feed.levels.take_peer(*index);
+            }
+            let _ = feed.levels.take_mic();
+        }
         self.huddle_viz
             .meter
             .update(feed.levels.as_ref(), &indices, now);
@@ -11044,7 +11053,13 @@ impl App {
             } else {
                 crate::ui::status::connection_label(self.connection)
             },
-            media: self.media.protocol_name(),
+            // The demo's line names no graphics protocol (agent `look`
+            // removes it from every status line, v0.17 L3).
+            media: if self.demo {
+                ""
+            } else {
+                self.media.protocol_name()
+            },
             app_focused,
         };
         crate::ui::status::render(frame, area, &self.theme, base);
@@ -16454,5 +16469,76 @@ mod tests {
         app.profile_key(KeyEvent::from(KeyCode::Esc));
         assert!(app.profile_card.is_none());
         assert_eq!(app.presentation.overlay, None);
+    }
+
+    /// `bzz demo` (v0.17, demo2): the huddle's lanes appear when the person
+    /// comes to `#infra`, long after the recording began. Who has not
+    /// spoken since says "quiet", not "2s ago": the levels the voices left
+    /// while nobody looked are not taken for speech.
+    #[tokio::test]
+    async fn in_the_demo_huddle_who_has_not_spoken_yet_is_quiet() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.demo = true;
+        let channel = |name: &str| Channel {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 4,
+            last_event_at: None,
+            facts: Default::default(),
+        };
+        app.channels = vec![channel("team"), channel("infra")];
+        let infra = app.channels[1].id;
+        let (voices, people) = crate::demo::huddle();
+        app.huddle_view = Some((
+            infra,
+            Some(crate::protocol::huddle::ActiveHuddle {
+                backing: Uuid::new_v4(),
+                creator: people[2].1.clone(),
+                started_at: nostr::Timestamp::now().as_secs(),
+                participants: people.iter().map(|(_, pubkey)| pubkey.clone()).collect(),
+            }),
+        ));
+        app.set_generated_huddle(voices, people, true);
+        app.huddle_viz.look = crate::ui::huddle_lanes::Look::default();
+        // Thirty seconds in #team, where the recording plays unseen.
+        app.selected_channel = 0;
+        for step in 0..600 {
+            app.tick_huddle_viz_at(f64::from(step) * 0.05);
+        }
+        // #infra at 36 s: the loop's first 0.35 s, when nobody speaks.
+        app.selected_channel = 1;
+        for step in 0..6 {
+            app.tick_huddle_viz_at(36.0 + f64::from(step) * 0.05);
+        }
+        let now = app.huddle_viz.meter.now();
+        for index in [1, 2, 3] {
+            let track = app.huddle_viz.meter.peer(index).unwrap();
+            assert!(!track.speaking(), "{index}");
+            assert_eq!(track.since_spoke(now), None, "{index}");
+        }
+        app.presentation.open_overlay(Overlay::Huddle);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let panel = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert_eq!(panel.matches("quiet").count(), 3, "{panel}");
+        // Only the scale says "ago": "10s ago … now".
+        assert_eq!(panel.matches("s ago").count(), 1, "{panel}");
+        // Then Ada speaks, and is live.
+        for step in 0..20 {
+            app.tick_huddle_viz_at(36.3 + f64::from(step) * 0.05);
+        }
+        assert!(app.huddle_viz.meter.peer(1).unwrap().speaking());
     }
 }
