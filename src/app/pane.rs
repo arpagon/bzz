@@ -433,11 +433,7 @@ impl App {
                 .apps
                 .unnamed()
                 .into_iter()
-                .filter(|id| {
-                    is_key(id)
-                        && !self.profiles.contains_key(id)
-                        && !self.profile_requested.contains(id)
-                })
+                .filter(|id| is_key(id) && !self.profile_requested.contains(id))
                 .take(AT_ONCE)
                 .collect();
             if unknown.is_empty() {
@@ -1361,13 +1357,14 @@ impl AppPanes {
         redraw
     }
 
-    /// The ids the open apps have no name for.
+    /// The ids the open apps show, named or not: each is looked up once a
+    /// run, as the timeline's authors are (v0.17 F5).
     fn unnamed(&self) -> Vec<String> {
         let mut ids: Vec<String> = self
             .live
             .iter()
             .filter_map(live::Live::session_ref)
-            .flat_map(crate::apps::session::AppSession::unnamed)
+            .flat_map(crate::apps::session::AppSession::people)
             .collect();
         ids.sort();
         ids.dedup();
@@ -1803,8 +1800,9 @@ mod live {
             let Some(session) = self.session_mut() else {
                 return false;
             };
+            // Everyone it shows: a name bzz learns, or one that changed.
             let names: Vec<(String, String)> = session
-                .unnamed()
+                .people()
                 .into_iter()
                 .filter_map(|id| name_of(&id).map(|name| (id, name)))
                 .collect();

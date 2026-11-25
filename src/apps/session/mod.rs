@@ -570,6 +570,22 @@ impl AppSession {
         ids
     }
 
+    /// Everyone the session shows, named or not: the local participant,
+    /// whoever signed a record it holds, and the ids the script asked
+    /// `host.name` for while they had no name. For the owner to look up
+    /// once, and to give their names again when one changes
+    /// ([`AppSession::set_names`] keeps only what differs).
+    pub fn people(&self) -> Vec<String> {
+        let mut ids: Vec<String> = std::iter::once(&self.user)
+            .chain(self.set.values().map(|record| &record.author))
+            .chain(self.asked.iter())
+            .cloned()
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
     pub fn status(&self) -> SessionStatus {
         let script = self.runtime.status();
         let sync = match &self.door {

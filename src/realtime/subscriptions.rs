@@ -60,9 +60,11 @@ pub fn presence(now: u64) -> Vec<Value> {
     vec![json!({"kinds":[20001,20003],"since":now,"limit":200})]
 }
 
+/// Kind 0 is here so that a profile changed while bzz runs replaces the
+/// one it holds (v0.17 F5): bzz asked for a profile only when it had none.
 pub fn global_stream(since: u64) -> Vec<Value> {
     vec![
-        json!({"kinds":[5,7,9,9005,30030,30180,30315,30382,39000,39002,40002,40003,40099],"since":since.saturating_sub(300),"limit":50}),
+        json!({"kinds":[0,5,7,9,9005,30030,30180,30315,30382,39000,39002,40002,40003,40099],"since":since.saturating_sub(300),"limit":50}),
     ]
 }
 

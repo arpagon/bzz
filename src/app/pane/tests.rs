@@ -1245,3 +1245,48 @@ return app
         assert!(message.len() < crate::agents::runtime::tools::MAX_TEXT_BYTES);
     }
 }
+
+/// v0.17 F5: an app shows a person by the name bzz holds, and a newer
+/// profile replaces it there too. bzz gave an open app only the names it
+/// had none of, so a renamed person kept the old name.
+#[tokio::test]
+async fn a_renamed_profile_reaches_an_open_app() {
+    const WHO: &str = r#"
+local app = { api = 1, types = { "note" } }
+function app.init(ctx) return {} end
+function app.view(s, ctx) return ui.text { "me " .. ctx.user.name } end
+return app
+"#;
+    fn profile(name: &str, created_at: u64) -> crate::domain::Profile {
+        crate::domain::Profile {
+            pubkey: "a".repeat(64),
+            display_name: None,
+            name: Some(name.into()),
+            picture: None,
+            nip05: None,
+            about: None,
+            event_id: format!("{created_at:064}"),
+            created_at,
+            verified: None,
+            status: None,
+            presence: None,
+            in_huddle: false,
+        }
+    }
+    // The names of bzz's profiles, as the pane's tick gives them.
+    fn names(app: &mut App, channel: Uuid) {
+        let profiles = app.profiles.clone();
+        app.apps
+            .tick(Some(channel), |id| profiles.get(id).map(|p| p.label()));
+    }
+    let temporary = TempDir::new().unwrap();
+    let (mut app, channel) = fixture(&temporary).await;
+    app.profiles.insert("a".repeat(64), profile("Watcher", 1));
+    app.open_app_in_memory(channel, "who", WHO);
+    names(&mut app, channel);
+    until(&mut app, 120, 30, "me Watcher").await;
+    app.profiles.insert("a".repeat(64), profile("Cy", 2));
+    names(&mut app, channel);
+    let shown = until(&mut app, 120, 30, "me Cy").await;
+    assert!(!shown.contains("Watcher"), "{shown}");
+}

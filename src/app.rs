@@ -2249,11 +2249,12 @@ impl App {
             profile_subjects.extend(system.target.iter().cloned());
             profile_subjects.extend(system.participants.iter().cloned());
         }
+        // Each person once a run, also one whose profile bzz holds: a
+        // profile changed while bzz was closed is asked for here, and one
+        // changed while it runs arrives on the global stream (v0.17 F5).
         let unknown_authors = profile_subjects
             .into_iter()
-            .filter(|pubkey| {
-                !self.profiles.contains_key(pubkey) && !self.profile_requested.contains(pubkey)
-            })
+            .filter(|pubkey| !self.profile_requested.contains(pubkey))
             .collect::<HashSet<_>>();
         self.profile_requested
             .extend(unknown_authors.iter().cloned());
