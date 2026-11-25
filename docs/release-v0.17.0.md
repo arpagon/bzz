@@ -520,6 +520,14 @@ What v0.17.0 does not do, and what was not seen. Each is in
   moves; frames that redraw only its region (B8) were not built ([viz2]).
 - With motion on, housekeeping wakes every 100 ms while local agents run or
   an app session is open; at rest otherwise, once a second ([motion]).
+- **Once, a local agent did not answer a mention, and it is not
+  explained.** In one run of the scenario suite at 80×24 on the candidate,
+  the scripted agent on Pi Durable gave no reply within 90 s to a mention in
+  its channel; the next scenario's mention, a new start of bzz on the same
+  profile, was answered. The run's folders were not kept. It did not happen
+  again in eight runs of that scenario with its neighbours or in six runs of
+  the whole suite at that size, nor in any of the three runs at 200×50
+  ([principal]).
 
 **Not in this version**
 

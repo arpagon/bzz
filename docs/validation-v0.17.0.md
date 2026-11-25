@@ -271,6 +271,18 @@ The draft pull request of D14, read on GitHub:
   looked at the page served from `site/public` at 1280 and 390 wide in a
   headless browser: no request failed, the terminal's text reads at both.
   Not looked at in a real browser or on a phone; nothing deployed.
+- **The candidate again, after those two fixes** (`fdfa004`, 2026-11-26):
+  the same pass as above, green in everything but one scenario at 80×24:
+  `t15-agent-answers-mention` saw no reply from the scripted agent within
+  90 s (47 of 48). The same scenario passed at 200×50 in that pass, and at
+  80×24 in the two passes before. The principal ran it with its two
+  neighbours eight times and the whole suite at 80×24 six times more: all
+  passed. The failing run's profile and journal had been removed with the
+  run, so the cause is unknown; `scripts/test-relay.sh` now keeps the
+  fixture's profiles under `BZZ_TMUX_KEEP`, for the next time. One of the
+  principal's own repeat runs failed for a reason of its own making: a
+  longer scratch path wrapped a line of the agents panel at 80×24 and
+  pushed the text the scenario waits for off the screen.
 
 ## What went wrong on the way
 
