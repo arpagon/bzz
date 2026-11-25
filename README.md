@@ -295,8 +295,10 @@ Details: [`docs/security.md`](docs/security.md).
 bzz follows the Buzz protocol and is tested against a pinned `block/buzz`
 relay revision; the revision and every supported surface are listed in
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md). It runs on
-Linux, macOS (Intel and Apple Silicon) and Windows. Huddle audio on Windows
-is experimental. Agents need Node.js 22.19 or newer and were proven on Linux;
+Linux, macOS (Intel and Apple Silicon) and Windows. On Linux bzz needs no
+sound library; huddle audio needs PipeWire or PulseAudio running in your
+session, as every current desktop has (a machine with ALSA alone has no
+huddle audio, and joining says so). Huddle audio on Windows is experimental. Agents need Node.js 22.19 or newer and were proven on Linux;
 on macOS and Windows no agent has been run, only its tests in CI. Apps need
 nothing installed; they were run on Linux, and on macOS and Windows only
 their tests run, in CI. On Windows a paste reaches an app (and the writing
