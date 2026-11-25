@@ -11028,3 +11028,295 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
     owner_supervisor.shutdown().await;
     owner.lock().await;
 }
+
+/// v0.17 F1 to F5, on the pinned relay, with two clients: what the films of
+/// v0.16 found with Buzz desktop and bzz on one Board. Ana runs the Board
+/// fixture; Ben is the other client, writing records and his profile
+/// through bzz's records service and supervisor, not through Lua.
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_v017_the_board_keeps_fields_its_own_burst_deletions_and_new_names() {
+    use bzz::apps::session::SessionOptions;
+    use bzz::protocol::artifact;
+    use bzz::service::records::{RecordEvent, SyncState};
+    use serde_json::json;
+    use support::app_pane::{Pane, board_cards, last_row};
+
+    const BOARD: &str = include_str!("fixtures/apps/board/app.lua");
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let folder = tempfile::tempdir().unwrap();
+    let ana = RecordsProfile::person(&source, folder.path(), "ana", "member").await;
+    let ben = RecordsProfile::person(&source, folder.path(), "ben", "member").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let channel = uuid::Uuid::new_v4();
+    ana.send(
+        buzz_sdk::build_create_channel(
+            channel,
+            &format!("v017-{}", &channel.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Private),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    ana.send(buzz_sdk::build_add_member(channel, &ben.pubkey(), None).unwrap())
+        .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let names: std::collections::HashMap<String, String> = [
+        (ana.pubkey(), "ana".to_owned()),
+        (ben.pubkey(), "ben".to_owned()),
+    ]
+    .into();
+    let (ben_app, mut ben_events) = ben.service.open(channel, "board", &["card"]).await.unwrap();
+    while !matches!(
+        tokio::time::timeout(Duration::from_secs(20), ben_events.recv()).await,
+        Ok(Some(RecordEvent::State(SyncState::Live)))
+    ) {}
+    // The head of a record, as the relay holds it.
+    let head = |id: uuid::Uuid| {
+        let http = ana.http.clone();
+        async move {
+            http.query_raw(&[artifact::head_filter(id)])
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|event| artifact::parse(event).is_ok_and(|head| head.id == id))
+                .expect("a head")
+        }
+    };
+
+    // F1 and F4. Ben writes a card with what Lua has no form for, and an
+    // `order` of seventeen digits.
+    let odd = json!({
+        "title": "Odd", "column": "todo", "order": 1_795_537_221.199_123_9_f64,
+        "gone": null, "nested": {"a": 1, "b": null}, "meta": {}, "list": [1, null, 3],
+        "big": 12_345_678_901_234_567_890_u64,
+    });
+    let card = ben_app
+        .create("card", odd.as_object().unwrap().clone())
+        .await
+        .unwrap();
+    let written = head(card.id).await.content;
+    assert!(written.contains("1795537221.1991239"), "{written}");
+    // The app's budget of writes, on a clock the test reads too: it counts
+    // every write sent, refused or not.
+    let clock = bzz::apps::runtime::SystemClock::shared();
+    let budget = std::sync::Arc::new(std::sync::Mutex::new(
+        bzz::protocol::record::WriteBudget::default(),
+    ));
+    let mut pane = Pane::open_with(
+        &ana.service,
+        channel,
+        BOARD,
+        SessionOptions::new("board")
+            .names(names.clone())
+            .clock(clock.clone())
+            .budget(budget.clone()),
+    );
+    pane.settled("Loaded 1 cards.").await;
+    pane.key("]");
+    pane.settled("Saved.").await;
+    let moved = head(card.id).await;
+    assert_eq!(moved.pubkey.to_hex(), ana.pubkey());
+    // Byte for byte, but the column.
+    assert_eq!(
+        moved.content,
+        written.replace("\"column\":\"todo\"", "\"column\":\"doing\""),
+        "as Ben wrote it:\n{written}"
+    );
+    eprintln!(
+        "F1: Ben's card after Ana's Board moved it: {}",
+        moved.content
+    );
+
+    // F2. Twenty-five moves while no reply has come: none refused, each
+    // sent on the revision the one before made, within the app's budget.
+    pane.key("[");
+    pane.until("the card back in To do", |screen, _| {
+        last_row(screen) == "Saved." && board_cards(screen)["todo"] == ["Odd"]
+    })
+    .await;
+    let started = std::time::Instant::now();
+    for n in 0..25 {
+        pane.key(if n % 2 == 0 { "]" } else { "[" });
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let screen = pane
+        .until("the burst answered", |screen, status| {
+            seen.insert(last_row(screen).to_owned());
+            // The Board says "Saving..." while a move of its own is on its
+            // way; the screen before the keys said "Saved." already.
+            seen.contains("Saving...") && last_row(screen) == "Saved." && status.wait.is_none()
+        })
+        .await;
+    // Let any late answer arrive, and look again.
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        seen.insert(last_row(&pane.screen()).to_owned());
+    }
+    eprintln!(
+        "F2: 25 moves answered in {} ms; status lines seen: {seen:?}",
+        started.elapsed().as_millis()
+    );
+    assert!(
+        seen.iter()
+            .all(|row| ["Saving...", "Saved."].contains(&row.as_str())),
+        "{seen:?}"
+    );
+    assert_eq!(board_cards(&screen)["doing"], ["Odd"], "{screen}");
+    // What was sent: the first move, its way back and the twenty-five,
+    // and nothing more. A refused move would have cost a write and its
+    // merge another.
+    let mut left = 0;
+    while budget.lock().unwrap().spend(clock.elapsed()).is_ok() && left < 40 {
+        left += 1;
+    }
+    let sent = 30 - left;
+    let history = ana
+        .http
+        .query_raw(&[json!({"artifact": "history", "#d": [card.id.to_string()]})])
+        .await
+        .unwrap();
+    let ours = history
+        .iter()
+        .filter(|event| event.pubkey.to_hex() == ana.pubkey())
+        .count();
+    eprintln!(
+        "F2: Ana's Board sent {sent} writes in all; the relay's history holds {} revisions, {ours} of Ana's",
+        history.len()
+    );
+    assert_eq!(sent, 27);
+    let last = head(card.id).await;
+    assert_eq!(
+        last.content,
+        written.replace("\"column\":\"todo\"", "\"column\":\"doing\"")
+    );
+
+    // F3. Ben deletes a card while Ana moves it. A pane of its own: the
+    // budget above is spent.
+    drop(pane);
+    let mut pane = Pane::open_with(
+        &ana.service,
+        channel,
+        BOARD,
+        SessionOptions::new("board").names(names.clone()),
+    );
+    pane.settled("Loaded 1 cards.").await;
+    let doomed = ben_app
+        .create(
+            "card",
+            json!({"title": "Doomed", "column": "todo", "order": 0})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .await
+        .unwrap();
+    pane.until("the doomed card", |screen, _| screen.contains("Doomed"))
+        .await;
+    pane.key("h");
+    pane.until("the doomed card selected", |screen, _| {
+        screen.contains("> Doomed")
+    })
+    .await;
+    ben_app.delete(doomed.id, &doomed.revision).await.unwrap();
+    pane.key("]");
+    let screen = pane.settled("This card was deleted by ben.").await;
+    assert!(!screen.contains("Doomed"), "{screen}");
+    // The count is of what is shown.
+    pane.key("r");
+    let screen = pane.settled("Loaded 1 cards.").await;
+    assert_eq!(
+        board_cards(&screen).values().map(Vec::len).sum::<usize>(),
+        1
+    );
+    drop(pane);
+    drop(ben_app);
+
+    // F5. Ana holds Ben's profile; Ben renames himself while Ana's bzz
+    // runs. The global stream brings the new one, which replaces it.
+    let profile = |name: &str| {
+        EventBuilder::new(
+            Kind::Metadata,
+            json!({"name": name, "display_name": name}).to_string(),
+        )
+    };
+    ben.send(profile("Watcher")).await;
+    let community = ana.community;
+    let ben_key = ben.pubkey();
+    bzz::sync::directory::hydrate_profiles(community, [ben_key.clone()], &ana.http, &ana.handle)
+        .await
+        .unwrap();
+    assert_eq!(
+        label_of(&ana.handle, community, &ben_key).await.as_deref(),
+        Some("Watcher")
+    );
+    let mut events = ana.supervisor.subscribe_events();
+    ana.supervisor
+        .subscribe(
+            "global-stream",
+            bzz::realtime::subscriptions::global_stream(Timestamp::now().as_secs()),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // A second apart: a profile is replaced by a newer one.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let started = std::time::Instant::now();
+    let renamed = ben.send(profile("Cy")).await;
+    let arrived = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(bzz::realtime::supervisor::SupervisorEvent::Session(SessionEvent::Event {
+                event,
+                ..
+            })) = events.recv().await
+                && event.id == renamed.id
+            {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("the new profile on the global stream");
+    eprintln!(
+        "F5: Ben's new profile reached Ana's global stream {} ms after it was sent",
+        started.elapsed().as_millis()
+    );
+    let event = arrived.clone();
+    ana.handle
+        .call(move |store| store.apply_event(community, &event))
+        .await
+        .unwrap();
+    assert_eq!(
+        label_of(&ana.handle, community, &ben_key).await.as_deref(),
+        Some("Cy")
+    );
+    // And after a restart, where nothing live is heard: a held profile is
+    // asked for again once a run.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    ben.send(profile("Cy 2")).await;
+    bzz::sync::directory::hydrate_profiles(community, [ben_key.clone()], &ana.http, &ana.handle)
+        .await
+        .unwrap();
+    assert_eq!(
+        label_of(&ana.handle, community, &ben_key).await.as_deref(),
+        Some("Cy 2")
+    );
+    for profile in [ana, ben] {
+        profile.stop().await;
+    }
+}
+
+/// The name `store` shows for `pubkey`.
+async fn label_of(store: &StoreHandle, community: uuid::Uuid, pubkey: &str) -> Option<String> {
+    let pubkey = pubkey.to_owned();
+    store
+        .call(move |store| store.profile(community, &pubkey))
+        .await
+        .unwrap()
+        .map(|profile| profile.label())
+}
