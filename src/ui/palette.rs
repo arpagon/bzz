@@ -258,10 +258,11 @@ pub fn rank(
             };
             let alias = candidate.aliases.iter().any(|alias| *alias == lowered)
                 || candidate.title.eq_ignore_ascii_case(&lowered);
-            let mut score = match (title, words) {
+            let raw = match (title, words) {
                 (None, None) if !alias => return None,
                 (title, words) => title.unwrap_or(0).max(words.unwrap_or(0)),
             };
+            let mut score = raw;
             if alias {
                 score = score.saturating_add(ALIAS_BONUS);
             }
@@ -270,8 +271,19 @@ pub fn rank(
                 Status::Unavailable(_) => score.saturating_mul(2) / 3,
                 Status::Shell(_) => score / 2,
             };
-            Some((score, candidate.kind, index))
+            Some((score, candidate.kind, index, raw, alias))
         })
+        .collect::<Vec<_>>();
+    // From three letters on, a match scattered over the words of a row
+    // ("thr" in "resize width larger") is noise beside a whole word: rows
+    // under two fifths of the best match go.
+    if query.chars().count() >= 3 {
+        let best = scored.iter().map(|row| row.3).max().unwrap_or(0);
+        scored.retain(|row| row.4 || row.3.saturating_mul(5) >= best.saturating_mul(2));
+    }
+    let mut scored = scored
+        .into_iter()
+        .map(|(score, kind, index, _, _)| (score, kind, index))
         .collect::<Vec<_>>();
     scored.sort_by(|left, right| {
         right
@@ -681,7 +693,8 @@ fn empty_rows(candidates: &[Candidate], facts: &Facts, recent: &[&'static str]) 
             (Route::Inbox, _) => "For the selected Inbox item",
             (_, FocusSurface::Channels) => "For the selected channel",
             (_, FocusSurface::Communities) => "For the selected community",
-            _ => "For the selected message",
+            _ if facts.actions.has_selected_event => "For the selected message",
+            _ => "For this channel",
         };
         rows.push(Row::Header(title.into()));
         rows.extend(context.into_iter().take(CONTEXT_SHOWN).map(Row::Item));
@@ -1114,6 +1127,15 @@ mod tests {
         let mut palette = palette(facts());
         typed(&mut palette, "thr");
         assert_eq!(palette.item_titles()[0], "Open thread");
+    }
+
+    #[test]
+    fn a_match_scattered_over_words_is_not_listed() {
+        let mut palette = palette(facts());
+        typed(&mut palette, "thr");
+        let titles = palette.item_titles();
+        assert!(!titles.contains(&"Widen side pane"), "{titles:?}");
+        assert!(titles.contains(&"Focus thread"), "{titles:?}");
     }
 
     #[test]
