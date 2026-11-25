@@ -451,9 +451,13 @@ impl App {
         let motion = self.motion();
         let overlay = self.presentation.overlay;
         let seen = self.stage.overlay_seen;
+        // The huddle's panel and zoom redraw their lanes at the visualizer's
+        // rate and take most of the screen: they open whole, and no frame
+        // of theirs pays for a copy of the screen.
+        let animated = motion::plays(motion, Role::Decorates) && overlay != Some(Overlay::Huddle);
         if seen != overlay {
             match (seen, overlay) {
-                (None, Some(_)) => {
+                (None, Some(_)) if animated => {
                     self.stage.opening = Some(Anim::new(
                         now,
                         scale::BASE,
@@ -478,7 +482,6 @@ impl App {
             self.stage.overlay_cells = None;
             self.stage.overlay_seen = overlay;
         }
-        let animated = motion::plays(motion, Role::Decorates);
         (overlay.is_some() && animated).then(|| buf.clone())
     }
 
@@ -779,6 +782,23 @@ mod tests {
         let first = draw(&mut app, &mut terminal);
         let popup = super::super::centered(Rect::new(0, 0, 100, 30), 70, 12);
         assert!(!first[(popup.x, popup.y)].modifier.contains(Modifier::DIM));
+        assert_eq!(app.motion_wake(Instant::now()), None);
+        app.presentation.close_overlay();
+        draw(&mut app, &mut terminal);
+        assert_eq!(app.motion_wake(Instant::now()), None);
+    }
+
+    /// The huddle's panel redraws at the visualizer's rate: it opens whole,
+    /// and asks for no frame of its own.
+    #[tokio::test(start_paused = true)]
+    async fn the_huddle_panel_opens_whole() {
+        set_motion(Motion::Full);
+        let temporary = TempDir::new().unwrap();
+        let mut app = app(&temporary).await;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        draw(&mut app, &mut terminal);
+        app.presentation.open_overlay(Overlay::Huddle);
+        draw(&mut app, &mut terminal);
         assert_eq!(app.motion_wake(Instant::now()), None);
         app.presentation.close_overlay();
         draw(&mut app, &mut terminal);

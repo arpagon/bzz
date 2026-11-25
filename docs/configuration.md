@@ -269,6 +269,15 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   sphere in the speaker's colour). `z` in the huddle panel zooms; `v` or
   `:huddle style` opens a picker that previews each style live, and Enter
   saves it here; `:huddle style <name>` saves it directly.
+- **`[ui] motion`** (default `full`): how much the interface moves. `full`:
+  a toast slides in and out, an arriving message is tinted for a moment, a
+  rising unread count flashes, the focus colour runs round the pane that
+  takes the focus, an overlay unfolds, and placeholder rows shimmer while a
+  channel's history loads. `calm` keeps what informs (the toast, the tint,
+  the flash) and drops the rest. `off` shows the end of every one at once.
+  The environment variable `BZZ_NO_MOTION` (any value but empty or `0`)
+  turns motion off whatever this says. Nothing moves, and nothing is drawn,
+  while nothing changes.
 - **`[[hosted_agents]]`**: written by `bzz broker create`; do not hand-edit.
   Change an agent's allowed actions with `bzz broker allow` or in `:broker`
   (`j`/`k` select, `1`–`6` toggle an action, `Space` pause that agent).
