@@ -234,8 +234,43 @@ fn what_needs_a_real_community_says_so() {
             "{command}"
         );
     }
+    #[cfg(not(feature = "apps"))]
     for command in [":apps", ":app open board"] {
         assert_eq!(super::refuses(&parse(command)), Some(super::NO_APPS_YET));
+    }
+    // The Board works as in a real community; nothing else of apps does.
+    #[cfg(feature = "apps")]
+    {
+        for command in [
+            ":apps",
+            ":app open board",
+            ":app close",
+            ":app zoom",
+            ":app brief",
+        ] {
+            assert_eq!(super::refuses(&parse(command)), None, "{command}");
+        }
+        for command in [
+            ":app add ./mine",
+            ":app new mine",
+            ":app dev ./mine",
+            ":app share",
+            ":app unshare board",
+            ":app pending",
+            ":app approve board",
+            ":app refuse board no",
+            ":app rollback board",
+            ":app disable board",
+            ":app enable board",
+            ":app remove board",
+            ":app",
+        ] {
+            assert_eq!(
+                super::refuses(&parse(command)),
+                Some(super::APPS_NEED_A_COMMUNITY),
+                "{command}"
+            );
+        }
     }
     for command in [
         ":huddle join",
@@ -454,4 +489,369 @@ fn the_folder_goes_on_a_panic_and_after_the_runtime_stops() {
     std::fs::create_dir_all(made.join("cache")).unwrap();
     super::clean_up_after_exit();
     assert!(!made.exists());
+}
+
+/// Every notice of the demo is shown whole in the status line of an
+/// 80-column terminal: the mode, the notice, the demo's mark and the hint
+/// on one row.
+#[test]
+fn every_notice_of_the_demo_fits_an_80_column_status_line() {
+    use unicode_width::UnicodeWidthStr as _;
+    let notices = [
+        super::NEEDS_A_COMMUNITY,
+        super::HUDDLE_IS_A_RECORDING,
+        super::NO_APPS_YET,
+        #[cfg(feature = "apps")]
+        super::APPS_NEED_A_COMMUNITY,
+    ];
+    for notice in notices {
+        assert!(notice.width() <= super::NOTICE_COLUMNS, "{notice}");
+        assert!(notice.starts_with("Demo"), "{notice}");
+    }
+    // What the row holds at 80 columns besides the notice today.
+    let mode = " NORMAL ".width();
+    let mark = format!(" {} ", super::STATUS_MARK).width();
+    let media = "  ".width();
+    let hint = " ? help · q quit ".width();
+    assert!(mode + 1 + super::NOTICE_COLUMNS + mark + media + hint <= 80);
+}
+
+/// An answer is dated after what it answers, whatever the second of
+/// either: the timeline orders by the second, then by id.
+#[test]
+fn an_answer_is_dated_after_what_it_answers() {
+    let mut world = world::build(ORIGIN);
+    let now = nostr::Timestamp::now().as_secs();
+    for ahead in [0, 1, 5] {
+        let said = buzz_sdk::build_message(world.team, "hello", None, &[], false, &[], &[])
+            .unwrap()
+            .custom_created_at(nostr::Timestamp::from(now + ahead))
+            .sign_with_keys(&world.viewer)
+            .unwrap();
+        for (_, reply) in world.script.answer(&said) {
+            let answer = reply.sign().unwrap();
+            assert!(answer.created_at > said.created_at, "{ahead}");
+        }
+    }
+    // A teammate waits long enough that the answer can be dated a second
+    // before it is sent and still after what it answers: what the person
+    // writes after reading it then comes after it too.
+    let scout = world::build(ORIGIN)
+        .events
+        .iter()
+        .find(|event| event.kind.as_u16() == 10_100)
+        .unwrap()
+        .pubkey
+        .to_hex();
+    let mut world = world::build(ORIGIN);
+    for (text, mentions) in [("hi", vec![]), ("@Scout hi", vec![scout.as_str()])] {
+        let said = viewer_message(&world, text, &mentions);
+        let delay = world.script.answer(&said).last().unwrap().0;
+        assert!(delay >= Duration::from_secs(2), "{text}");
+    }
+}
+
+#[cfg(feature = "apps")]
+mod board {
+    use std::time::{Duration, Instant};
+
+    use serde_json::Value;
+
+    use super::super::board::{self, Ask, DemoBoard, People};
+    use super::{ORIGIN, viewer_message, world};
+    use crate::apps::runtime::Who;
+    use crate::apps::runtime::headless::{Headless, HeadlessOptions};
+    use crate::apps::store::{Apps, templates};
+
+    fn people() -> People {
+        let cast = world::Cast::default();
+        let who = |keys: &nostr::Keys, name: &str| Who::new(keys.public_key().to_hex(), name);
+        People {
+            viewer: Who::new("f".repeat(64), "You"),
+            ada: who(&cast.ada, "Ada"),
+            lin: who(&cast.lin, "Lin"),
+            sam: who(&cast.sam, "Sam"),
+            scout: who(&cast.scout, "Scout"),
+        }
+    }
+
+    fn column_of(store: &crate::apps::session::SharedStore, title: &str) -> Option<String> {
+        store
+            .lock()
+            .find_by("title", title)
+            .and_then(|card| card.content.get("column")?.as_str().map(str::to_owned))
+    }
+
+    /// The Board is the shipped template, proposed and approved in the
+    /// demo's own store, and handed out by `Apps::runnable` as any app.
+    #[test]
+    fn the_board_is_the_approved_template_from_the_one_door() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let paths = crate::paths::Paths {
+            config_dir: directory.path().join("config"),
+            data_dir: directory.path().join("data"),
+            cache_dir: directory.path().join("cache"),
+        };
+        let mut config = crate::config::Config::default();
+        let identity = crate::config::IdentityConfig {
+            id: uuid::Uuid::new_v4(),
+            label: "viewer".into(),
+            pubkey: "f".repeat(64),
+            backend: crate::config::KeyBackend::EncryptedFile,
+            key_ref: "demo".into(),
+        };
+        config.identities.push(identity.clone());
+        config
+            .add_community(
+                "DEMO".into(),
+                "ws://127.0.0.1:4242/".into(),
+                identity.id,
+                true,
+            )
+            .unwrap();
+        let community = config.communities[0].id;
+        let launch = uuid::Uuid::new_v4();
+        let mut store = crate::store::Store::open_memory().unwrap();
+        store.sync_config(&config).unwrap();
+        board::install(&mut store, &paths, community, launch).unwrap();
+        let apps = Apps::new(&mut store, &paths);
+        let runnable = apps.runnable(community, board::NAME).unwrap();
+        let template = templates::find("board").unwrap();
+        assert_eq!(runnable.script(), template.script.as_bytes());
+        assert_eq!(runnable.title(), "Board");
+        assert_eq!(runnable.types(), ["card"]);
+        assert_eq!(apps.open_in_channel(community, launch).unwrap(), ["board"]);
+        // Its files are in the demo's folder, nowhere else.
+        assert!(
+            apps.app_dir(community, board::NAME)
+                .starts_with(directory.path())
+        );
+    }
+
+    /// On the seeded cards: `n`, a title, Enter, `]`, and the new card is
+    /// in Doing; the cards of the story are there.
+    #[test]
+    fn a_card_added_and_moved_is_in_the_next_column() {
+        let people = people();
+        let clock = crate::apps::runtime::ManualClock::new(1_800_000_000);
+        let store = board::seeded(&people, clock.clone());
+        let template = templates::find("board").unwrap();
+        let mut app = Headless::start_on(
+            template.script,
+            HeadlessOptions::new("board.lua").user(people.viewer.clone()),
+            store,
+            clock,
+        )
+        .unwrap();
+        let screen = app.screen();
+        for title in ["Launch tweet", "Blog post review", "2.4-rc2 on staging"] {
+            assert!(screen.contains(title), "{screen}");
+        }
+        assert!(screen.contains("To do (3)"), "{screen}");
+        app.key("n").type_text("Press kit").key("enter");
+        assert!(app.screen().contains("To do (4)"), "{}", app.screen());
+        app.key("]");
+        let screen = app.screen();
+        assert!(screen.contains("Doing (3)"), "{screen}");
+        let card = app.store().find_by("title", "Press kit").unwrap();
+        assert_eq!(card.content.get("column"), Some(&Value::from("doing")));
+        assert_eq!(card.by.id, people.viewer.id);
+    }
+
+    /// A teammate moves a card while the Board is on screen: the first a
+    /// while after it is first shown, then at most once a minute, never
+    /// while the person types in it, and says so.
+    #[test]
+    fn a_teammate_moves_a_card_calmly_and_not_while_the_person_types() {
+        let people = people();
+        let store = board::records(&people);
+        let said = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let heard = said.clone();
+        let mut demo =
+            DemoBoard::new(store.clone(), people.clone()).announcing(move |who, text| {
+                heard
+                    .lock()
+                    .unwrap()
+                    .push((who.name.clone(), text.to_owned()));
+            });
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        // Not on screen: nothing, however long.
+        assert!(!demo.tick(false, at(0)));
+        assert!(!demo.tick(false, at(600)));
+        // First shown at 600; the first move 15 s later.
+        assert!(!demo.tick(true, at(600)));
+        assert!(!demo.tick(true, at(614)));
+        assert!(demo.tick(true, at(615)));
+        assert_eq!(
+            column_of(&store, "Blog post review").as_deref(),
+            Some("done")
+        );
+        assert_eq!(
+            said.lock().unwrap().as_slice(),
+            [(
+                "Lin".to_owned(),
+                "Moved \"Blog post review\" to Done on the Board.".to_owned()
+            )]
+        );
+        // Not again within a minute.
+        for second in 616..675 {
+            assert!(!demo.tick(true, at(second)), "{second}");
+        }
+        // The person types at 670: nothing until ten seconds after.
+        demo.typed(at(670));
+        assert!(!demo.tick(true, at(675)));
+        assert!(!demo.tick(true, at(679)));
+        assert!(demo.tick(true, at(680)));
+        assert_eq!(
+            column_of(&store, "On-call handover").as_deref(),
+            Some("doing")
+        );
+        // A move whose card the person moved already is skipped.
+        {
+            let held = store.lock();
+            let card = held.find_by("title", "Changelog TODO").unwrap();
+            drop(held);
+            let mut content = card.content.clone();
+            content.insert("column".into(), "done".into());
+            let told = store
+                .lock()
+                .remote_update(&people.viewer, &card.id, content);
+            store.tell(told);
+        }
+        assert!(!demo.tick(true, at(800)));
+        assert_eq!(column_of(&store, "Changelog TODO").as_deref(), Some("done"));
+        assert_eq!(said.lock().unwrap().len(), 2);
+        // Then the team leaves the board alone.
+        assert!(!demo.tick(true, at(2000)));
+    }
+
+    #[test]
+    fn scout_reads_add_and_move_and_nothing_else() {
+        assert_eq!(
+            board::ask("@Scout add Ship party"),
+            Some(Ask::Add("Ship party".into()))
+        );
+        assert_eq!(
+            board::ask("@Scout please add a card: Order cake."),
+            Some(Ask::Add("Order cake".into()))
+        );
+        assert_eq!(
+            board::ask("nostr:npub1xyz move launch tweet to Done"),
+            Some(Ask::Move {
+                title: "launch tweet".into(),
+                to: Some("done".into())
+            })
+        );
+        assert_eq!(
+            board::ask("@Scout move the blog post"),
+            Some(Ask::Move {
+                title: "blog post".into(),
+                to: None
+            })
+        );
+        assert_eq!(board::ask("@Scout what is on the board?"), Some(Ask::Other));
+        assert_eq!(board::ask("@Scout what do you do?"), None);
+        // A verb that is not the first word is not an order.
+        assert_eq!(board::ask("@Scout can you add more tests?"), None);
+    }
+
+    #[test]
+    fn scout_adds_and_moves_cards_and_says_what_it_did() {
+        let people = people();
+        let store = board::records(&people);
+        let said = board::scout(&store, &people.scout, &Ask::Add("Ship party".into()));
+        assert_eq!(
+            said,
+            "Done: I added \"Ship party\" to To do on the Board in #launch."
+        );
+        let card = store.lock().find_by("title", "Ship party").unwrap();
+        assert_eq!(card.by.name, "Scout");
+        assert_eq!(column_of(&store, "Ship party").as_deref(), Some("todo"));
+        let said = board::scout(
+            &store,
+            &people.scout,
+            &Ask::Move {
+                title: "launch tweet".into(),
+                to: None,
+            },
+        );
+        assert_eq!(
+            said,
+            "Done: I moved \"Launch tweet\" from To do to Doing on the Board in #launch."
+        );
+        let said = board::scout(
+            &store,
+            &people.scout,
+            &Ask::Move {
+                title: "Dark theme".into(),
+                to: None,
+            },
+        );
+        assert!(said.contains("in Done already"), "{said}");
+        let said = board::scout(
+            &store,
+            &people.scout,
+            &Ask::Move {
+                title: "nonsense".into(),
+                to: Some("done".into()),
+            },
+        );
+        assert!(
+            said.starts_with("I found no card called \"nonsense\""),
+            "{said}"
+        );
+        assert!(said.contains(board::SCOUT_CAN), "{said}");
+        assert_eq!(
+            board::scout(&store, &people.scout, &Ask::Other),
+            board::SCOUT_CAN
+        );
+        let said = board::scout(&store, &people.scout, &Ask::Add(String::new()));
+        assert!(said.starts_with("Which card?"), "{said}");
+    }
+
+    /// Through the relay's script: a mention that asks Scout to add a card
+    /// adds it when Scout answers, in the thread of the mention.
+    #[test]
+    fn a_mention_that_asks_scout_writes_on_the_board_when_it_answers() {
+        let people = people();
+        let store = board::records(&people);
+        let mut world = world::build(ORIGIN);
+        world.script.set_board(store.clone(), people.scout.clone());
+        let asked = viewer_message(&world, "@Scout add Order cake", &[]);
+        let mut answers = world.script.answer(&asked);
+        assert_eq!(answers.len(), 3);
+        // Nothing is written before Scout answers.
+        assert!(store.lock().find_by("title", "Order cake").is_none());
+        let answer = answers.pop().unwrap().1.sign().unwrap();
+        assert_eq!(
+            answer.content,
+            "Done: I added \"Order cake\" to To do on the Board in #launch."
+        );
+        assert_eq!(column_of(&store, "Order cake").as_deref(), Some("todo"));
+        // Anything else gets Scout's usual answer, which says what it can do here.
+        let other = viewer_message(&world, "@Scout what do you do?", &[]);
+        let answer = world.script.answer(&other).pop().unwrap().1.sign().unwrap();
+        assert_eq!(answer.content, world::SCOUT_ANSWER);
+        assert!(answer.content.contains("@Scout add"));
+    }
+
+    /// Ada's welcome names the Board and its keys, and the words to ask
+    /// Scout; the Board's keys are the template's.
+    #[test]
+    fn the_welcome_names_the_board_its_keys_and_the_words_for_scout() {
+        for said in [
+            "Board in #launch",
+            "`5` opens it",
+            "`n` adds a card",
+            "`]` moves",
+            "@Scout add",
+        ] {
+            assert!(world::WELCOME.contains(said), "{said}");
+        }
+        let brief = templates::find("board").unwrap().brief;
+        assert!(brief.contains("`n` opens a form"));
+        assert!(brief.contains("`]` and `[`"));
+        assert!(board::ask("@Scout add Ship party").is_some());
+    }
 }

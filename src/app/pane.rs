@@ -112,6 +112,10 @@ pub struct AppPanes {
     pub offers: Option<(Uuid, crate::service::offers::OffersService)>,
     /// What came of offers lately, for `:apps`.
     pub offer_notes: Vec<String>,
+    /// `bzz demo`'s Board: its records in memory, and the teammates who
+    /// move its cards (`crate::demo::board`).
+    #[cfg(feature = "apps")]
+    pub demo: Option<crate::demo::board::DemoBoard>,
 }
 
 /// How often the store is asked again: an answer given at the shell, or by
@@ -222,6 +226,9 @@ impl App {
         let Some((channel, _)) = self.shown_app() else {
             return;
         };
+        if let Some(board) = &mut self.apps.demo {
+            board.typed(std::time::Instant::now());
+        }
         if let Some(key) = crate::apps::runtime::Key::from_crossterm(key)
             && let Some(session) = self.apps.session_mut(channel)
         {
@@ -246,6 +253,10 @@ impl App {
         let Some(text) = app_pane::app_paste_text(text) else {
             return;
         };
+        #[cfg(feature = "apps")]
+        if let Some(board) = &mut self.apps.demo {
+            board.typed(std::time::Instant::now());
+        }
         #[cfg(feature = "apps")]
         if let Some((channel, _)) = self.shown_app()
             && let Some(session) = self.apps.session_mut(channel)
@@ -401,6 +412,15 @@ impl App {
             }
             for live in &mut self.apps.live {
                 changed |= live.watch();
+            }
+            // The demo's teammates move a card now and then, while the
+            // Board is on screen; its session hears of it as it is polled.
+            let board_shown = self.apps.placement.is_drawn()
+                && self
+                    .shown_app()
+                    .is_some_and(|(_, name)| name == crate::demo::board::NAME);
+            if let Some(board) = &mut self.apps.demo {
+                board.tick(board_shown, std::time::Instant::now());
             }
             let shown = self.shown_app().map(|(channel, _)| channel);
             let profiles = &self.profiles;
@@ -693,6 +713,10 @@ impl App {
         #[cfg(test)]
         if let Some(memory) = &self.apps.memory {
             return Some(live::Where::Memory(memory));
+        }
+        // `bzz demo`: the Board's cards are held in memory.
+        if let Some(board) = &self.apps.demo {
+            return Some(live::Where::Memory(board.store()));
         }
         self.runtime
             .as_ref()
@@ -1268,7 +1292,9 @@ impl App {
                 }
             })
             .collect::<Vec<_>>();
-        let note = if rows.is_empty() {
+        let note = if self.demo {
+            "Enter opens the selected app in this channel · Esc closes this list. The demo's Board is installed and approved; proposing, sharing and approving need a real community."
+        } else if rows.is_empty() {
             "No app is installed in this community. At the shell: bzz app new <name>, then bzz app add <folder>."
         } else {
             "Enter opens the selected app in this channel · a shows its waiting version for your answer · :app share offers the open one here · :app close closes it · Esc closes this list. Only an approved app runs."
@@ -1288,6 +1314,12 @@ impl App {
         });
         self.presentation.open_overlay(Overlay::Apps);
         Ok(())
+    }
+
+    /// `bzz demo`'s Board: its cards in memory, where the approved Board
+    /// runs (`crate::demo::board`).
+    pub fn set_demo_board(&mut self, board: crate::demo::board::DemoBoard) {
+        self.apps.demo = Some(board);
     }
 
     /// Tests open an app on records in memory, with no store behind it.
@@ -1498,7 +1530,7 @@ mod live {
     /// Where a session's records are.
     pub enum Where<'a> {
         Relay(&'a RecordsService),
-        #[cfg(test)]
+        /// A test's records, or `bzz demo`'s.
         Memory(&'a crate::apps::session::SharedStore),
     }
 
@@ -1511,7 +1543,6 @@ mod live {
         ) -> std::io::Result<AppSession> {
             match self {
                 Self::Relay(service) => AppSession::on_relay(script, options, service, channel),
-                #[cfg(test)]
                 Self::Memory(store) => {
                     let _ = channel;
                     AppSession::in_memory(script, options, store)

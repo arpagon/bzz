@@ -2464,7 +2464,7 @@ visible = "reaction · Enter toggle"
 
 [[scenario.step]]
 keys = ["enter"]
-visible = 'our agent answers[^\n]*\n[^\n]*👍 1'
+visible = 'add Ship party[^\n]*\n[^\n]*👍 1'
 regex = true
 
 [[scenario.step]]
@@ -2553,7 +2553,7 @@ absent = "you are not in the call"
 
 [[scenario.step]]
 keys = ["j"]
-visible = "Demo: the huddle is a recording to look at."
+visible = "Demo: a recorded huddle."
 
 [[scenario.step]]
 keys = ["esc"]
