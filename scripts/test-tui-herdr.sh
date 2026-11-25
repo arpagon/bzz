@@ -79,7 +79,7 @@ if not isinstance(values, list) or not values:
     raise SystemExit("Herdr scenario manifest contains no scenarios")
 wanted = None if selected in {"all", "automated", "harness"} else set(selected.split(","))
 for scenario in values:
-    if set(scenario) - {"id", "kind", "description", "ready", "exit", "keymap", "step", "args", "profile", "size", "beside", "restored", "empty", "isolated"}:
+    if set(scenario) - {"id", "kind", "description", "ready", "exit", "keymap", "step", "args", "profile", "size", "beside", "restored", "empty", "isolated", "motion", "needs", "min_size"}:
         raise SystemExit("Herdr scenario manifest contains an unknown scenario field")
     identifier = scenario.get("id")
     kind = scenario.get("kind")
@@ -94,20 +94,44 @@ for scenario in values:
     # run by scripts/test-tui-tmux.py only (`empty`, `isolated`).
     if kind == "join":
         continue
+    # v0.17 `empty` and `isolated` (a profile that is the whole home, with
+    # no session bus): scripts/test-tui-tmux.py only. `min_size` is read by
+    # it only too; here the pane is the size it is.
+    if scenario.get("empty") or scenario.get("isolated"):
+        if wanted is None or identifier in wanted:
+            print(f"scenario {identifier} is run by scripts/test-tui-tmux.py only (empty or isolated profile)", file=sys.stderr)
+        continue
     if not isinstance(steps, list) or not steps:
         raise SystemExit("Herdr scenario manifest has no steps")
+    # v0.17 `mouse` steps: Herdr sends keys only; scripts/test-tui-tmux.py
+    # runs these.
+    if any(isinstance(step, dict) and "mouse" in step for step in steps):
+        if wanted is None or identifier in wanted:
+            print(f"scenario {identifier} is run by scripts/test-tui-tmux.py only (mouse steps)", file=sys.stderr)
+        continue
     if wanted is not None and identifier not in wanted:
         continue
     if selected in {"automated", "harness"} and kind != selected:
         continue
+    # v0.17 `needs`: scenarios earlier in the manifest that make what this
+    # one uses. They run first in the manifest's order, and the first
+    # failure stops the run; a selection that leaves one out is told.
+    needs = scenario.get("needs", [])
+    if not isinstance(needs, list) or not all(isinstance(need, str) for need in needs):
+        raise SystemExit("Herdr scenario has invalid needs")
+    if wanted is not None:
+        for need in needs:
+            if need not in wanted:
+                print(f"scenario {identifier} needs {need}, which is not selected", file=sys.stderr)
     # `args`: run `bzz <args>` on the harness profile instead of the TUI.
     # `profile = "second"`: the fixture's second profile of the same owner.
     args = scenario.get("args", [])
     profile = scenario.get("profile", "first")
     if not isinstance(args, list) or not all(isinstance(arg, str) and arg for arg in args):
         raise SystemExit("Herdr scenario has invalid args")
-    if profile not in {"first", "second"} or (kind != "harness" and (args or profile != "first")):
-        raise SystemExit("Herdr scenario has an invalid profile, or args outside a harness scenario")
+    # v0.17: an automated scenario may name a sub-command (`bzz demo`).
+    if profile not in {"first", "second"} or (kind != "harness" and profile != "first"):
+        raise SystemExit("Herdr scenario has an invalid profile outside a harness scenario")
     # v0.16: `size` (WxH), `beside = "second"`, `restored` (checked by
     # scripts/test-tui-tmux.py only: Herdr does not show what bzz wrote).
     size = scenario.get("size", "-")
@@ -116,10 +140,14 @@ for scenario in values:
         raise SystemExit("Herdr scenario has an invalid size or beside")
     if not isinstance(scenario.get("restored", False), bool):
         raise SystemExit("Herdr scenario has an invalid restored flag")
+    # v0.17 `motion = true`: bzz runs without BZZ_NO_MOTION.
+    motion = scenario.get("motion", False)
+    if not isinstance(motion, bool):
+        raise SystemExit("Herdr scenario has an invalid motion flag")
     safe = [identifier, kind, ready, exit_marker, scenario.get("keymap", "")]
     if any(control(value) for value in safe[:-1] + args):
         raise SystemExit("Herdr scenario manifest contains unsupported control characters")
-    print("\t".join(["H"] + safe[:4] + [encoded(safe[4]), profile, encoded("\x1f".join(args)), size, beside]))
+    print("\t".join(["H"] + safe[:4] + [encoded(safe[4]), profile, encoded("\x1f".join(args)), size, beside, "motion" if motion else "still"]))
     for step in steps:
         if not {"keys", "visible"} <= set(step) or set(step) - {"keys", "visible", "absent", "timeout", "regex", "pause", "size", "paste", "pane", "run"}:
             raise SystemExit("Herdr scenario step takes keys, visible, absent, timeout, regex, pause, size, paste, pane and run")
@@ -266,10 +294,21 @@ run_scenario() {
     # one shell word per value for the disposable target pane; no credential or
     # fixture value is passed to the process. Every visual wait below is bounded
     # by Herdr, which is portable to the controlled target shell.
-    local command
+    local command word still=BZZ_NO_MOTION=1
+    [[ $scenario_motion != motion ]] || still=
     printf -v command \
-        'env BZZ_NO_MOTION=1 BZZ_CONFIG_DIR=%q BZZ_DATA_DIR=%q BZZ_CACHE_DIR=%q PULSE_SERVER=%q %q; status=$?; printf "__BZZ_HERDR_EXIT__:%%s\\n" "$status"' \
-        "$config" "$data" "$cache" "$pulse_server" "$binary"
+        'env %s BZZ_CONFIG_DIR=%q BZZ_DATA_DIR=%q BZZ_CACHE_DIR=%q PULSE_SERVER=%q %q' \
+        "$still" "$config" "$data" "$cache" "$pulse_server" "$binary"
+    # v0.17: an automated scenario's `args` (`bzz demo`).
+    if [[ $encoded_args != "=" ]]; then
+        local -a arguments
+        mapfile -d $'\x1f' -t arguments < <(decoded "$encoded_args")
+        for word in "${arguments[@]}"; do
+            printf -v word ' %q' "$word"
+            command+=$word
+        done
+    fi
+    command+='; status=$?; printf "__BZZ_HERDR_EXIT__:%s\n" "$status"'
     # Clear only the disposable terminal surface, with its scrollback, so a
     # prior label cannot satisfy a later readiness predicate. Nothing of it
     # is saved.
@@ -302,8 +341,10 @@ harness_command() {
     fi
     printf '%s\n' 'pcm.!default { type null }' >"$root/null-asound.conf"
     local command word
-    printf -v command 'env BZZ_NO_MOTION=1 BZZ_CONFIG_DIR=%q BZZ_DATA_DIR=%q BZZ_CACHE_DIR=%q BZZ_PASSPHRASE_FD=3 ALSA_CONFIG_PATH=%q PULSE_SERVER=%q' \
-        "$home/config" "$home/data" "$home/cache" "$root/null-asound.conf" "$pulse_server"
+    local still=BZZ_NO_MOTION=1
+    [[ $scenario_motion != motion ]] || still=
+    printf -v command 'env %s BZZ_CONFIG_DIR=%q BZZ_DATA_DIR=%q BZZ_CACHE_DIR=%q BZZ_PASSPHRASE_FD=3 ALSA_CONFIG_PATH=%q PULSE_SERVER=%q' \
+        "$still" "$home/config" "$home/data" "$home/cache" "$root/null-asound.conf" "$pulse_server"
     if [[ -f $fixture/env ]]; then
         local name value
         while IFS='=' read -r name value; do
@@ -370,6 +411,7 @@ active_identifier=
 active_exit=
 scenario_size=-
 scenario_beside=-
+scenario_motion=still
 second_pane=
 for row in "${scenarios[@]}"; do
     IFS=$'\t' read -r tag first second third fourth fifth sixth seventh eighth ninth tenth eleventh <<<"$row"
@@ -382,6 +424,7 @@ for row in "${scenarios[@]}"; do
             source=visible
             scenario_size=$eighth
             scenario_beside=$ninth
+            scenario_motion=$tenth
             run_scenario "$first" "$second" "$third" "$fourth" "$fifth" "$sixth" "$seventh"
             active_identifier=$first
             active_exit=$fourth

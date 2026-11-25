@@ -15,6 +15,11 @@ Environment:
   BZZ_TMUX_CAPTURES     a folder to keep a text capture of every step in
   BZZ_TMUX_SIZE         the window's size when a scenario names none (160x45)
   BZZ_TMUX_CAPTURES_ANSI  set: each capture also kept with its colours (.ansi)
+  BZZ_TMUX_KEEP         set: the run's own folder is left (otherwise removed)
+  BZZ_TMUX_ORDER        manifest (default) | reverse | shuffle[:SEED]: the
+                        order the scenarios run in, each still after what
+                        it `needs`; a scenario that stands alone passes in
+                        any of them
   BZZ_TEST_PULSE_SERVER the sound server bzz's huddles join (PULSE_SERVER
                         form). Unset: a PulseAudio with a null sink in a
                         disposable container (scripts/test-audio-containers.sh
@@ -47,6 +52,15 @@ What the manifest may say besides what test-tui-herdr.sh documents:
                               the XDG folders are in it, and the session
                               bus and the runtime folder are unset, so bzz
                               finds no keychain (a container, SSH)
+  scenario `needs = ["ID", ...]`  scenarios earlier in the manifest that
+                              make what this one uses (an agent, an app).
+                              A selection by id runs them first; when one
+                              did not pass, this one is reported skipped,
+                              with the reason, and is not run (v0.17)
+  scenario `min_size = "WxH"`  the smallest window the scenario holds at.
+                              A scenario with no `size` of its own, in a
+                              run whose BZZ_TMUX_SIZE is smaller, is
+                              reported skipped, not failed (v0.17)
   step `mouse = ["click X Y", ...]`  mouse gestures before the keys, as the
                               terminal reports them (SGR, 1006): `click`,
                               `double`, `wheel-up`, `wheel-down` at a cell,
@@ -55,6 +69,7 @@ What the manifest may say besides what test-tui-herdr.sh documents:
 """
 
 import os
+import random
 import re
 import shlex
 import shutil
@@ -126,15 +141,29 @@ def main():
     default_size = os.environ.get("BZZ_TMUX_SIZE", "160x45")
     with open(MANIFEST, "rb") as handle:
         document = tomllib.load(handle)
+    every = document["scenario"]
+    check_needs(every)
     wanted = None if selection in {"automated", "harness", "all"} else set(selection.split(","))
+    if wanted is not None:
+        unknown = wanted - {scenario["id"] for scenario in every}
+        if unknown:
+            raise SystemExit(f"no such scenario: {', '.join(sorted(unknown))}")
+        # What a chosen scenario needs runs first, in the manifest's order.
+        for scenario in reversed(every):
+            if scenario["id"] in wanted:
+                for need in scenario.get("needs", []):
+                    if need not in wanted:
+                        print(f"scenario {need} added: {scenario['id']} needs it", flush=True)
+                        wanted.add(need)
     scenarios = [
-        scenario for scenario in document["scenario"]
+        scenario for scenario in every
         if (wanted is None and (selection == "all" or scenario["kind"] == selection))
         or (wanted is not None and scenario["id"] in wanted)
     ]
     scenarios = [s for s in scenarios if s["kind"] != "operator"]
     if not scenarios:
         raise SystemExit("no scenarios selected")
+    scenarios = ordered(scenarios, os.environ.get("BZZ_TMUX_ORDER", "manifest"))
     work = tempfile.mkdtemp(prefix="bzz-tmux.")
     tmux = Tmux(os.path.join(work, "sock"))
     width, height = size_of(default_size)
@@ -147,14 +176,27 @@ def main():
     global PULSE_SERVER
     PULSE_SERVER, sound = sound_server(work)
     failures = 0
+    # id: "passed", "failed" or "skipped", for `needs`.
+    results = {}
+    skipped = []
     try:
+        if fixture and any(s["kind"] == "harness" and not s.get("empty") for s in scenarios):
+            warm_up(tmux, binary, fixture, work)
         for scenario in scenarios:
+            reason = skip_reason(scenario, results, default_size)
+            if reason:
+                results[scenario["id"]] = "skipped"
+                skipped.append(scenario["id"])
+                print(f"scenario {scenario['id']} SKIPPED: {reason}", flush=True)
+                continue
             started = time.monotonic()
             try:
                 run(tmux, scenario, binary, fixture, work, captures, default_size)
+                results[scenario["id"]] = "passed"
                 print(f"scenario {scenario['id']} passed in {time.monotonic() - started:.1f} s", flush=True)
             except Failure as failure:
                 failures += 1
+                results[scenario["id"]] = "failed"
                 print(f"scenario {scenario['id']} FAILED: {failure}", flush=True)
                 # Leave no TUI in the panes for the next scenario: a new
                 # shell takes the place of whatever runs there.
@@ -169,12 +211,106 @@ def main():
             subprocess.run([os.path.join(ROOT, "scripts/test-audio-containers.sh"), "stop", sound],
                            check=False)
             print("sound server container removed", flush=True)
-    print(f"{len(scenarios) - failures} of {len(scenarios)} scenarios passed", flush=True)
+        # The run's own folder (empty profiles, the bytes each scenario
+        # wrote): about 9 MB a run, in a TMPDIR that is often memory.
+        if not os.environ.get("BZZ_TMUX_KEEP"):
+            shutil.rmtree(work, ignore_errors=True)
+    ran = len(scenarios) - len(skipped)
+    print(f"{ran - failures} of {ran} scenarios passed"
+          + (f", {len(skipped)} skipped ({', '.join(skipped)})" if skipped else ""), flush=True)
     return 1 if failures else 0
 
 
 class Failure(Exception):
     pass
+
+
+def area(text):
+    width, height = size_of(text)
+    return int(width), int(height)
+
+
+def check_needs(every):
+    """`needs` names scenarios earlier in the manifest; `min_size` is WxH."""
+    seen = set()
+    for scenario in every:
+        needs = scenario.get("needs", [])
+        if not isinstance(needs, list) or not all(isinstance(need, str) for need in needs):
+            raise SystemExit(f"scenario {scenario['id']}: needs is a list of ids")
+        for need in needs:
+            if need not in seen:
+                raise SystemExit(f"scenario {scenario['id']} needs {need!r}, which is not an earlier scenario")
+        if "min_size" in scenario:
+            area(scenario["min_size"])
+        seen.add(scenario["id"])
+
+
+def warm_up(tmux, binary, fixture, work):
+    """Start each of the fixture's profiles once, until its channels are
+    in, and quit. On a profile's very first start bzz says `online` before
+    the relay has sent the channel list, and a scenario that types in the
+    finder at once finds nothing. No scenario is about that first start,
+    and in the manifest's order the first one happened to wait (v0.17)."""
+    tmux("resize-window", "-t", MAIN, "-x", "160", "-y", "45")
+    for profile in ("first", "second", "other"):
+        if profile != "first" and not os.path.isdir(os.path.join(fixture, profile, "config")):
+            continue
+        started = time.monotonic()
+        launch(tmux, MAIN, command_for({"id": "warm-up", "kind": "harness"}, binary, fixture, work, profile))
+        try:
+            wait(tmux, MAIN, "online", False, 30000, False)
+            # Every profile of the fixture is in #t9-general.
+            wait(tmux, MAIN, "#t9-general", False, 60000, False)
+            time.sleep(1)
+            send(tmux, MAIN, ["q"])
+            wait(tmux, MAIN, "quit bzz?", False, 15000, False)
+            send(tmux, MAIN, ["y"])
+            wait(tmux, MAIN, EXIT + "0", False, 15000, False)
+        except Failure as failure:
+            raise SystemExit(f"the fixture's {profile} profile did not start: {failure}")
+        print(f"warm-up: the fixture's {profile} profile started once, channels in, "
+              f"in {time.monotonic() - started:.1f} s", flush=True)
+
+
+def ordered(scenarios, order):
+    """The scenarios in the order asked for, each after what it needs."""
+    if order == "manifest":
+        return scenarios
+    if order == "reverse":
+        wish = list(reversed(scenarios))
+    elif order == "shuffle" or order.startswith("shuffle:"):
+        seed = order.partition(":")[2] or str(random.randrange(1 << 30))
+        print(f"order: shuffle:{seed}", flush=True)
+        wish = list(scenarios)
+        random.Random(seed).shuffle(wish)
+    else:
+        raise SystemExit(f"BZZ_TMUX_ORDER is manifest, reverse or shuffle[:SEED], not {order!r}")
+    chosen = {scenario["id"] for scenario in scenarios}
+    placed, result = set(), []
+    while wish:
+        # The first wished-for scenario whose needs have all run.
+        for index, scenario in enumerate(wish):
+            if all(need in placed or need not in chosen for need in scenario.get("needs", [])):
+                break
+        scenario = wish.pop(index)
+        placed.add(scenario["id"])
+        result.append(scenario)
+    print("order: " + " ".join(scenario["id"] for scenario in result), flush=True)
+    return result
+
+
+def skip_reason(scenario, results, default_size):
+    """Why a scenario is not run, or None."""
+    for need in scenario.get("needs", []):
+        result = results.get(need)
+        if result != "passed":
+            return f"needs {need}, which {result or 'was not run'}"
+    if "min_size" in scenario and "size" not in scenario:
+        width, height = area(default_size)
+        least_width, least_height = area(scenario["min_size"])
+        if width < least_width or height < least_height:
+            return f"holds at {scenario['min_size']} or larger; this run is at {default_size}"
+    return None
 
 
 def sound_server(work):
