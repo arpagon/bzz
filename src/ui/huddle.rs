@@ -127,6 +127,9 @@ pub fn render_with_lanes(
             "devices (:huddle input <name> / :huddle output <name>)",
             muted,
         )));
+        if inputs.is_empty() && outputs.is_empty() {
+            lines.push(Line::from(format!("  {}", no_devices_reason())));
+        }
         for name in inputs.iter().take(8) {
             lines.push(Line::from(format!(
                 "  mic: {}",
@@ -168,6 +171,21 @@ pub fn render_with_lanes(
             frame.render_widget(paragraph, text_area);
         }
         _ => frame.render_widget(paragraph.block(block), area),
+    }
+}
+
+/// Why `:huddle devices` lists nothing. On Linux the lists come from the
+/// sound server, and are empty only when none answered (a server that runs
+/// always has an output, if only its null sink): the panel says what
+/// joining says.
+fn no_devices_reason() -> &'static str {
+    #[cfg(all(feature = "huddles-audio", target_os = "linux"))]
+    {
+        crate::huddle::audio::NO_SOUND_SERVER
+    }
+    #[cfg(not(all(feature = "huddles-audio", target_os = "linux")))]
+    {
+        "no microphone or speaker found"
     }
 }
 
@@ -250,5 +268,48 @@ mod tests {
         assert!(plain.contains("active for 4 min · 4 in it"), "{plain}");
         assert!(!plain.contains("at once"), "{plain}");
         println!("{wide}\n\n{small}");
+    }
+
+    /// `:huddle devices` with nothing found says why, in the words of the
+    /// join (on Linux: no sound server answered), not two empty lists.
+    #[test]
+    fn devices_with_none_found_say_why() {
+        let theme = Theme::builtin("bzz").unwrap();
+        let view = HuddleView {
+            channel: "team".into(),
+            audio_available: true,
+            devices: Some((Vec::new(), Vec::new())),
+            ..HuddleView::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 22)).unwrap();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &view, &theme))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let shown = (0..22)
+            .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(shown.contains(no_devices_reason()), "{shown}");
+        #[cfg(all(feature = "huddles-audio", target_os = "linux"))]
+        assert!(
+            shown.contains("needs PipeWire or PulseAudio running"),
+            "{shown}"
+        );
+        // With devices, the lists and no reason.
+        let view = HuddleView {
+            devices: Some((vec!["Built-in mic".into()], vec!["Speakers".into()])),
+            ..view
+        };
+        terminal
+            .draw(|frame| render(frame, frame.area(), &view, &theme))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let shown = (0..22)
+            .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(shown.contains("mic: Built-in mic"), "{shown}");
+        assert!(!shown.contains(no_devices_reason()), "{shown}");
     }
 }

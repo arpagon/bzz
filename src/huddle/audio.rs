@@ -348,9 +348,10 @@ pub const MICROPHONE_DENIED: &str = "microphone unavailable: allow microphone ac
 pub const SPEAKER_UNAVAILABLE: &str =
     "speaker unavailable: check the output device, then join again";
 /// Linux: no PipeWire or PulseAudio in the session to speak to (a server, a
-/// container, a machine with ALSA alone).
-pub const NO_SOUND_SERVER: &str =
-    "huddle audio on Linux needs PipeWire or PulseAudio running in your session";
+/// container, a machine with ALSA alone). Short enough to be shown whole in
+/// the status line of an 80-column terminal, beside the mode and the
+/// connection; `:huddle devices` says the same.
+pub const NO_SOUND_SERVER: &str = "huddle audio needs PipeWire or PulseAudio running";
 
 // Linux devices speak the PulseAudio protocol in pure Rust (PipeWire answers
 // it too), so the binary names no sound library. macOS and Windows use cpal.

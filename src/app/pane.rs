@@ -999,7 +999,17 @@ impl App {
                         "{name}: version {version} runs in place of {from}, its state kept"
                     ));
                 }
-                live::Pending::Closed { channel } => self.forget_app(channel).await?,
+                live::Pending::Closed { channel } => {
+                    // The demo's Board closes on its own `q`, as anywhere;
+                    // a newcomer is told the way back.
+                    let demo_board = self.apps.demo.is_some()
+                        && self.apps.open.get(&channel).map(String::as_str)
+                            == Some(crate::demo::board::NAME);
+                    self.forget_app(channel).await?;
+                    if demo_board {
+                        self.status_error = Some(crate::demo::BOARD_CLOSED.into());
+                    }
+                }
             }
         }
         Ok(true)
@@ -1658,6 +1668,10 @@ mod live {
                 #[cfg(test)]
                 Run::Tested { session } => {
                     for output in session.poll() {
+                        if matches!(output, Output::Close) {
+                            pending.push(Pending::Closed { channel });
+                            return true;
+                        }
                         redraw |= matches!(output, Output::Redraw | Output::Loaded { .. });
                     }
                     return redraw;

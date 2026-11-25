@@ -503,6 +503,7 @@ fn every_notice_of_the_demo_fits_an_80_column_status_line() {
         super::NO_APPS_YET,
         #[cfg(feature = "apps")]
         super::APPS_NEED_A_COMMUNITY,
+        super::BOARD_CLOSED,
     ];
     for notice in notices {
         assert!(notice.width() <= super::NOTICE_COLUMNS, "{notice}");
@@ -848,6 +849,11 @@ mod board {
             "@Scout add",
         ] {
             assert!(world::WELCOME.contains(said), "{said}");
+        }
+        // Ada's line beside the Board says how to step out and what `q`
+        // does: the key is the Board's, as in any community.
+        for said in ["`5` opens it", "`Ctrl-c` steps out", "`q` closes it"] {
+            assert!(world::BOARD_LINE.contains(said), "{said}");
         }
         let brief = templates::find("board").unwrap().brief;
         assert!(brief.contains("`n` opens a form"));
