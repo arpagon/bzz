@@ -59,6 +59,12 @@ pub enum Command {
     /// `:app open <name> | close | zoom`: the app of the selected channel.
     App(String),
     Unknown(String),
+    /// `:dm <npub|hex> [npub|hex…]`: open the DM with these people, as the
+    /// DM picker's Enter does (v0.17 C9: the palette's "Start a DM" step).
+    DmWith(String),
+    /// `:dm add <npub|hex>`: add this person to the open DM, as the picker
+    /// does in `:dm add` (v0.17 C9).
+    DmAddPerson(String),
 }
 
 pub fn parse(input: &str) -> Command {
@@ -119,6 +125,12 @@ pub fn parse(input: &str) -> Command {
         }
         value if value == "report" || value.starts_with("report ") => {
             Command::Report(value.trim_start_matches("report").trim().to_owned())
+        }
+        value if value.starts_with("dm add ") => {
+            Command::DmAddPerson(value.trim_start_matches("dm add").trim().to_owned())
+        }
+        value if value.starts_with("dm ") => {
+            Command::DmWith(value.trim_start_matches("dm").trim().to_owned())
         }
         value => Command::Unknown(value.to_owned()),
     }
@@ -185,6 +197,22 @@ mod tests {
         assert_eq!(
             parse(":artifact move #ops"),
             Command::Artifact("move #ops".into())
+        );
+    }
+
+    #[test]
+    fn dm_takes_people_and_its_bare_forms_stay() {
+        assert_eq!(parse(":dm"), Command::Dm);
+        assert_eq!(parse(":dm add"), Command::DmAdd);
+        assert_eq!(parse(":dm hide"), Command::DmHide);
+        assert_eq!(parse(":dm npub1x"), Command::DmWith("npub1x".into()));
+        assert_eq!(
+            parse(":dm npub1x npub1y"),
+            Command::DmWith("npub1x npub1y".into())
+        );
+        assert_eq!(
+            parse(":dm add npub1x"),
+            Command::DmAddPerson("npub1x".into())
         );
     }
 }

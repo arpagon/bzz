@@ -1,7 +1,7 @@
-//! The palette's cost on the UI thread (v0.17 C1): one keystroke's filter
-//! over 2,000 channels, 1,000 DMs and 500 actions (3,500 rows), and one
-//! frame of 200×50 with the palette open. Budget: the filter's p95 at or
-//! under 4 ms in release. A report, not a gate: `cargo bench --bench
+//! The palette's cost on the UI thread (v0.17 C1, C12): one keystroke's
+//! filter over 2,000 channels, 1,000 DMs, 1,000 people, 500 actions, 60
+//! themes and 50 apps (4,610 rows), and one frame of 200×50 with the
+//! palette open. Budget: the filter's p95 at or under 4 ms in release. A report, not a gate: `cargo bench --bench
 //! palette` prints the numbers; under `cargo test` it runs each case once.
 
 use std::{
@@ -12,9 +12,9 @@ use std::{
 use bzz::ui::{
     actions::ActionContext,
     keymap::KeyMap,
-    palette::{self, Candidate, Facts, Narrow, Palette, PaletteChannel},
+    palette::{self, Candidate, Facts, Narrow, Palette, PaletteChannel, PalettePerson, Sources},
     state::{FocusSurface, Route},
-    theme::Theme,
+    theme::{Theme, ThemeEntry, ThemeRegistry},
 };
 use nucleo_matcher::{Config, Matcher};
 use ratatui::{Terminal, backend::TestBackend};
@@ -23,8 +23,12 @@ use uuid::Uuid;
 const CHANNELS: usize = 2_000;
 const PEOPLE: usize = 1_000;
 const ACTIONS: usize = 500;
+const THEMES: usize = 60;
+const APPS: usize = 50;
 const RUNS: usize = 50;
-const QUERIES: &[&str] = &["t", "thr", "gen", "delete", "status", "#eng", "@ada lin"];
+const QUERIES: &[&str] = &[
+    "t", "thr", "gen", "delete", "status", "#eng", "@ada lin", "nord", "board",
+];
 const WORDS: &[&str] = &[
     "general",
     "engineering",
@@ -72,9 +76,10 @@ fn facts() -> Facts {
     }
 }
 
-/// 2,000 channels and 1,000 DMs from the table's own rows plus generated
+/// 2,000 channels, 1,000 DMs, 1,000 people, 60 themes (the built-in ones
+/// and generated names) and 50 apps; the table's own rows plus generated
 /// actions up to 500.
-fn candidates() -> Vec<Candidate> {
+fn sources() -> Sources {
     let mut channels = (0..CHANNELS)
         .map(|index| PaletteChannel {
             id: Uuid::from_u128(index as u128),
@@ -100,8 +105,43 @@ fn candidates() -> Vec<Candidate> {
         last_event_at: index as u64,
     }));
     palette::order_channels(&mut channels);
-    let mut all = palette::candidates(&KeyMap::builtin(), &facts(), &channels);
-    let table_actions = all.len() - channels.len();
+    let people = (0..PEOPLE)
+        .map(|index| PalettePerson {
+            pubkey: format!("{index:064x}"),
+            name: format!(
+                "{} {} {index}",
+                NAMES[index % NAMES.len()],
+                NAMES[(index / NAMES.len()) % NAMES.len()]
+            ),
+            agent: index % 50 == 0,
+        })
+        .collect();
+    let mut themes = ThemeRegistry::entries().collect::<Vec<_>>();
+    let extra = THEMES.saturating_sub(themes.len());
+    themes.extend((0..extra).map(|index| ThemeEntry {
+        id: Box::leak(format!("theme-{index}").into_boxed_str()),
+        name: Box::leak(format!("{} theme {index}", WORDS[index % WORDS.len()]).into_boxed_str()),
+    }));
+    let apps = (0..APPS)
+        .map(|index| format!("{}-{index}", WORDS[(index * 3) % WORDS.len()]))
+        .collect();
+    Sources {
+        channels,
+        people,
+        apps,
+        communities: Vec::new(),
+        themes,
+        theme: "bzz".into(),
+        recent_emoji: Vec::new(),
+    }
+}
+
+fn candidates(sources: &Sources) -> Vec<Candidate> {
+    let mut all = palette::candidates(&KeyMap::builtin(), &facts(), sources);
+    let table_actions = bzz::ui::action_table::TABLE
+        .iter()
+        .filter(|spec| spec.listed())
+        .count();
     for index in table_actions..ACTIONS {
         all.push(Candidate::synthetic(
             &format!(
@@ -127,11 +167,12 @@ fn main() {
     if !measuring {
         println!("one run of each case, not a measurement: `cargo bench --bench palette` measures");
     }
-    let candidates = candidates();
+    let sources = sources();
+    let candidates = candidates(&sources);
     let mut matcher = Matcher::new(Config::DEFAULT);
     let mut all = Vec::new();
     println!(
-        "palette filter over {} rows ({CHANNELS} channels, {PEOPLE} DMs, {ACTIONS} actions)",
+        "palette filter over {} rows ({CHANNELS} channels, {PEOPLE} DMs, {PEOPLE} people, {ACTIONS} actions, {THEMES} themes, {APPS} apps)",
         candidates.len()
     );
     for query in QUERIES {
@@ -174,12 +215,13 @@ fn main() {
     let mut opens = Vec::with_capacity(runs);
     for _ in 0..runs {
         let start = Instant::now();
-        black_box(self::candidates());
+        black_box(self::candidates(&sources));
         opens.push(start.elapsed());
     }
     opens.sort_unstable();
     println!(
-        "palette open (3,500 candidates built): median {:.3?} p95 {:.3?}",
+        "palette open ({} candidates built): median {:.3?} p95 {:.3?}",
+        candidates.len(),
         percentile(&opens, 0.5),
         percentile(&opens, 0.95)
     );
@@ -187,6 +229,7 @@ fn main() {
     // One frame of 200×50 with the palette open and "thr" typed.
     let mut palette = Palette::open(
         candidates,
+        sources,
         &facts(),
         &[],
         (Route::Workspace, FocusSurface::Timeline),
