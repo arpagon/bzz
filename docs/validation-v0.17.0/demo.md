@@ -3,7 +3,9 @@
 Plan: [`docs/planning/2026-11-24/v0.17.0.md`](../planning/2026-11-24/v0.17.0.md),
 track A, D2, rule 22. Method:
 [`bzz-prove-it-works`](../../.agents/skills/bzz-prove-it-works/SKILL.md).
-Linux x86_64, 2026-11-24, branch `t3/demo` cut from `v0.17.0` at `543dbd1`.
+Linux x86_64, 2026-11-24, branch `t3/demo` cut from `v0.17.0` at `543dbd1`;
+`v0.17.0` merged in at `bfd340f` (viz) for the huddle's lanes. The rows
+above "The huddle of `#infra`" were measured before that merge.
 The machine was shared with six other agents' builds throughout (load
 average 16 to 28), which is in every time below.
 
@@ -49,11 +51,21 @@ in `<scratch>/tmp`); `bzz paths` named only `<scratch>/home`.
 | `d` on the first screen opens the demo in the same process | tmux, release binary | scenario `t17-demo-first-screen` | passed: `j` shows `bzz identity new --label me`, Esc, `d` → `DEMO · generated, offline`, quit exit 0 |
 | The welcome screen still shows command feedback | unit (existing) | `empty_profile_welcome_screen_shows_command_feedback` | passes unchanged |
 
+### The huddle of `#infra`, with viz's lanes (after the merge)
+
+| Claim | Rung | Command | Seen |
+|---|---|---|---|
+| Ada, Lin and Sam speak in generated voices in `#infra`'s huddle; You listen muted, your lane still (the script's lines for you are left out) | unit | `cargo test --locked --lib demo::` (`what_needs_a_real_community_says_so`: peers `[1, 2, 3]`) | passes |
+| The recording plays only where its huddle runs, and the panel does not contradict its lanes | unit, 80×24 render | `cargo test --locked --lib the_demo_huddle_is_a_recording_only_where_it_runs` | in `#team` no lanes and no strip; in `#infra` the lanes, `a generated recording`, `4 in the call` (the panel's roster: `4 in it`), `nothing is sent`; none of `No huddle is running here`, `you are not in the call`, `j join`, `m unmutes`, `s start` |
+| The same on screen | tmux, debug build, 160×45 | scenario `t17-demo-huddle` | passed: the strip `🎧 ⣀…⣶ Ada · mic muted` in `#infra`'s status line, the panel's title `a generated recording · Esc`, the microphone line `a recording · no microphone is open, nothing is sent`, `j` → `Demo: the huddle is a recording to look at.` |
+| No sound device is opened | strace | `strace -f -e trace=openat,connect bzz demo`, then `#infra`, `:huddle`, `j`, `m`, quit | the only sound file opened is `libasound.so.2` by the loader at start (the link E1 removes); no `/dev/snd`, PulseAudio or PipeWire socket. Every `inet` connect is to 127.0.0.1 |
+
 Captures, read as a newcomer: `<scratch>/first-screen-80x24.txt`,
 `first-screen-join-80x24.txt`, `first-screen-160x45.txt`,
 `first-screen-import-160x45.txt`, `demo-160x45-first.txt`,
 `demo-160x45-thread.txt`, `demo-160x45-dm.txt`,
-`demo-80x24-theme-preview.txt`, the scenario steps in `<scratch>/captures/`,
+`demo-80x24-theme-preview.txt`, `demo-80x24-huddle.txt`,
+`demo-80x24-infra-strip.txt`, the scenario steps in `<scratch>/captures/`,
 the container's `first-80x24.txt` and `after-write-80x24.txt`.
 
 ## Not verified

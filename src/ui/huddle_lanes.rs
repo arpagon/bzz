@@ -271,6 +271,9 @@ pub struct Lanes<'a> {
     pub muted: bool,
     pub motion: Motion,
     pub look: Look,
+    /// `bzz demo`: a generated recording. Your microphone's line says that
+    /// nothing is heard, and offers no key.
+    pub recording: bool,
 }
 
 impl std::fmt::Debug for Lanes<'_> {
@@ -587,6 +590,10 @@ pub fn render(buf: &mut Buffer, area: Rect, lanes: &Lanes<'_>, theme: &Theme) {
     y += 2;
     if footer == 1 && y < area.height {
         let (line, style) = match (lanes.muted, warn) {
+            _ if lanes.recording => (
+                "a recording · no microphone is open, nothing is sent",
+                paint.fg(paint.grey),
+            ),
             (true, true) if area.width < 46 => (
                 "you're muted · nobody hears you",
                 paint.fg(paint.amber).add_modifier(Modifier::BOLD),
@@ -817,6 +824,7 @@ mod tests {
             muted: true,
             motion,
             look,
+            recording: false,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
         let area = buf.area;
@@ -1047,6 +1055,7 @@ mod tests {
             muted: true,
             motion: Motion::Full,
             look: BLOCKS,
+            recording: false,
         };
         let buf = draw(&meter, 42, 12, BLOCKS, "bzz", Motion::Full);
         let strip = strip_text(&strip(&lanes, &theme));
@@ -1075,6 +1084,7 @@ mod tests {
             muted: true,
             motion: Motion::Full,
             look: TRUE,
+            recording: false,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 42, 12));
         let area = buf.area;
@@ -1143,6 +1153,7 @@ mod tests {
                     muted: true,
                     motion: Motion::Full,
                     look,
+                    recording: false,
                 };
                 let buf = status_row(&lanes, &theme);
                 check_golden(&format!("strip-{moment}-80x1-{look_name}"), &golden(&buf));
@@ -1155,6 +1166,7 @@ mod tests {
             muted: true,
             motion: Motion::Full,
             look: TRUE,
+            recording: false,
         };
         let buf = status_row(&lanes, &theme);
         let row = text(&buf);
@@ -1175,6 +1187,7 @@ mod tests {
             muted: true,
             motion: Motion::Full,
             look: TRUE,
+            recording: false,
         };
         let row = text(&status_row(&lanes, &theme));
         assert!(row.contains("Ada · mic muted"), "{row}");
@@ -1200,6 +1213,7 @@ mod tests {
             muted: true,
             motion: Motion::Full,
             look: TRUE,
+            recording: false,
         };
         for debug in [format!("{lanes:?}"), format!("{:?}", people[0])] {
             assert!(!debug.chars().any(|c| c.is_ascii_digit()), "{debug}");

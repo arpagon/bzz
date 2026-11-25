@@ -74,12 +74,23 @@ pub fn refuses(command: &Command) -> Option<&'static str> {
     }
 }
 
-/// Seam for the huddle visualizer (agent `viz`, plan A3 and B): the levels
-/// of the demo's generated speakers, by pubkey, from 0.0 to 1.0. Until the
-/// visualizer lands there is nothing to draw, and no sound device is ever
-/// opened in the demo.
-pub fn huddle_levels() -> Vec<(String, f32)> {
-    Vec::new()
+/// The huddle of `#infra` (plan A3, with agent `viz`'s visualizer): Ada,
+/// Lin and Sam take turns in generated voices, looping, and You listen with
+/// the microphone muted. Your lane stays still: no microphone is opened, so
+/// the script's lines for you are left out rather than shown as yours.
+pub fn huddle() -> (crate::huddle::synth::Synthetic, Vec<(u8, String)>) {
+    use crate::huddle::synth::{DEMO_LOOP_SECONDS, DEMO_SCRIPT, Speaker, Synthetic};
+    let others = DEMO_SCRIPT
+        .iter()
+        .copied()
+        .filter(|line| line.speaker != Speaker::Mic)
+        .collect::<Vec<_>>();
+    let cast = world::Cast::default();
+    let people = [(1, &cast.ada), (2, &cast.lin), (3, &cast.sam)]
+        .into_iter()
+        .map(|(index, keys)| (index, keys.public_key().to_hex()))
+        .collect();
+    (Synthetic::new(&others, Some(DEMO_LOOP_SECONDS)), people)
 }
 
 /// Runs the demo until the person leaves it.

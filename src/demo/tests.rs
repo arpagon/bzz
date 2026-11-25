@@ -259,7 +259,9 @@ fn what_needs_a_real_community_says_so() {
     ] {
         assert_eq!(super::refuses(&parse(command)), None, "{command}");
     }
-    assert!(super::huddle_levels().is_empty());
+    let (voices, people) = super::huddle();
+    assert_eq!(voices.peers(), [1, 2, 3], "no line is the viewer's");
+    assert_eq!(people.len(), 3);
 }
 
 async fn http(port: u16, request: &str) -> String {

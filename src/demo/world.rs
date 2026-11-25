@@ -24,6 +24,13 @@ pub struct Cast {
     pub scout: Keys,
 }
 
+/// The same four keys on every run.
+impl Default for Cast {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Cast {
     fn new() -> Self {
         Self {
@@ -381,7 +388,9 @@ pub fn build(origin: &str) -> World {
         2,
     );
 
-    // A huddle in #infra: Sam started it, Sam and Ada are in. Joins are
+    // A huddle in #infra: Sam started it, Sam, Ada and Lin are in, and You
+    // listen as the demo starts (its lanes are generated voices, and your
+    // microphone is never opened). Joins are
     // signed by the relay, as Buzz does it.
     let backing = channel_id("huddle-infra").to_string();
     let lifecycle = |kind: u16| {
@@ -392,7 +401,12 @@ pub fn build(origin: &str) -> World {
         .tags([tag(&["h", &infra.to_string()])])
     };
     pen.sign(&cast.sam, lifecycle(48_100), 16);
-    for (who, minutes_ago) in [(&cast.sam, 16), (&cast.ada, 15)] {
+    for (who, minutes_ago) in [
+        (&cast.sam, 16),
+        (&cast.ada, 15),
+        (&cast.lin, 12),
+        (&viewer, 0),
+    ] {
         let joined = lifecycle(48_101).tags([tag(&["p", &who.public_key().to_hex()])]);
         pen.sign(&relay_keys, joined, minutes_ago);
     }

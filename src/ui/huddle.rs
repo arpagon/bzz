@@ -25,6 +25,9 @@ pub struct HuddleView {
     pub audio_available: bool,
     pub devices: Option<(Vec<String>, Vec<String>)>,
     pub you_created: bool,
+    /// `bzz demo` (v0.17): the huddle is a generated recording to look at;
+    /// there is nothing to join, and no device is opened.
+    pub recording: bool,
 }
 
 pub fn render(frame: &mut Frame<'_>, area: Rect, view: &HuddleView, theme: &Theme) {
@@ -41,6 +44,7 @@ pub fn render_with_lanes(
 ) {
     frame.render_widget(Clear, area);
     let keys = match (&view.roster, view.call) {
+        _ if view.recording => "a generated recording · Esc",
         (None, _) => "s start · Esc",
         (Some(_), None) => "j join (muted) · Esc",
         (Some(_), Some(_)) => "m mute/unmute · space push-to-talk · l leave · Esc",
@@ -84,6 +88,10 @@ pub fn render_with_lanes(
     lines.push(Line::from(""));
     lines.push(Line::from(
         match (view.call, view.joining, view.audio_available) {
+            _ if view.recording => Span::styled(
+                "the voices are generated: a recording to look at, with nothing to join",
+                muted,
+            ),
             (_, _, false) => Span::styled(crate::huddle::VIEW_ONLY, muted),
             (_, true, _) => Span::raw("joining…"),
             (Some(true), _, _) => Span::raw("you are in the call · muted"),
@@ -220,6 +228,7 @@ mod tests {
             muted: true,
             motion: Motion::Full,
             look: Look::default(),
+            recording: false,
         };
         let wide = screen(80, 22, Some(&lanes));
         assert!(wide.contains("Ada and Lin at once"), "{wide}");

@@ -995,6 +995,8 @@ impl App {
         )
         .await?;
         app.demo = true;
+        let (voices, people) = crate::demo::huddle();
+        app.set_generated_huddle(voices, people, true);
         // One community: its rail only takes room from the conversation.
         app.community_rail = false;
         if let Some(index) = app
@@ -4381,7 +4383,10 @@ impl App {
                 levels: generated.source.levels(),
                 people: generated.people.clone(),
                 muted: generated.muted,
-            });
+            })
+            // The demo's recording plays only where its huddle is running
+            // (`#infra`): nowhere else does the panel or the strip show it.
+            .filter(|_| !self.demo || self.active_huddle().is_some());
         #[cfg(feature = "huddles-audio")]
         {
             self.huddle_call
@@ -4501,6 +4506,7 @@ impl App {
             muted: self.huddle_viz.muted,
             motion: self.config.ui.motion(),
             look: self.huddle_viz.look,
+            recording: self.demo,
         })
     }
 
@@ -4710,6 +4716,7 @@ impl App {
             devices: self.huddle_devices.clone(),
             you_created: active
                 .is_some_and(|active| Some(active.creator.as_str()) == self.self_pubkey()),
+            recording: self.demo && active.is_some(),
         }
     }
 
@@ -14294,6 +14301,87 @@ mod tests {
                 .unwrap();
             }
         }
+    }
+
+    /// `bzz demo`'s huddle: the generated voices play only in the channel
+    /// whose huddle runs, and the panel says it is a recording, with no key
+    /// to join or unmute and nothing that contradicts the lanes.
+    #[tokio::test]
+    async fn the_demo_huddle_is_a_recording_only_where_it_runs() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.demo = true;
+        let channel = |name: &str| Channel {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 4,
+            last_event_at: None,
+            facts: Default::default(),
+        };
+        app.channels = vec![channel("team"), channel("infra")];
+        let infra = app.channels[1].id;
+        let (voices, people) = crate::demo::huddle();
+        app.huddle_view = Some((
+            infra,
+            Some(crate::protocol::huddle::ActiveHuddle {
+                backing: Uuid::new_v4(),
+                creator: people[2].1.clone(),
+                started_at: nostr::Timestamp::now().as_secs(),
+                participants: people.iter().map(|(_, pubkey)| pubkey.clone()).collect(),
+            }),
+        ));
+        app.set_generated_huddle(voices, people, true);
+        app.huddle_viz.look = crate::ui::huddle_lanes::Look::default();
+        let draw = |app: &mut super::App| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            (0..24)
+                .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        // #team: no huddle runs there, so nothing of it shows.
+        app.selected_channel = 0;
+        for step in 0..60 {
+            app.tick_huddle_viz_at(f64::from(step) * 0.05);
+        }
+        assert!(app.huddle_lanes().is_none());
+        app.presentation.open_overlay(Overlay::Huddle);
+        let team = draw(&mut app);
+        assert!(!team.contains("You · your microphone"), "{team}");
+        app.presentation.close_overlay();
+        // #infra: the lanes move, and the panel agrees with them.
+        app.selected_channel = 1;
+        for step in 0..60 {
+            app.tick_huddle_viz_at(3.0 + f64::from(step) * 0.05);
+        }
+        assert!(app.huddle_lanes().is_some());
+        app.presentation.open_overlay(Overlay::Huddle);
+        let panel = draw(&mut app);
+        for said in [
+            "a generated recording",
+            "4 in the call",
+            "You · your microphone",
+            "nothing is sent",
+        ] {
+            assert!(panel.contains(said), "{said}: {panel}");
+        }
+        for contradiction in [
+            "No huddle is running here",
+            "you are not in the call",
+            "j join",
+            "m unmutes",
+            "s start",
+        ] {
+            assert!(!panel.contains(contradiction), "{contradiction}: {panel}");
+        }
+        assert!(app.huddle_panel_view().recording);
     }
 
     #[tokio::test]
