@@ -5,7 +5,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph, Wrap},
 };
 
 use crate::ui::theme::{BorderSurface, HighlightGroup, Theme};
@@ -34,20 +34,26 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, view: &HuddleView, theme: &Them
         (Some(_), None) => "j join (muted) · Esc",
         (Some(_), Some(_)) => "m mute/unmute · space push-to-talk · l leave · Esc",
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(theme.border_type(BorderSurface::Picker))
-        .border_style(theme.style(HighlightGroup::ModalBorder))
-        .title_style(theme.style(HighlightGroup::ModalTitle))
-        .title(format!(
-            " huddle in #{} · {keys}{} ",
-            crate::protocol::artifact::display(&view.channel, 40),
+    let block = crate::ui::frame::block(
+        theme,
+        BorderSurface::Picker,
+        &format!(
+            "huddle in #{}",
+            crate::protocol::artifact::display(&view.channel, 40)
+        ),
+        true,
+    )
+    .title_bottom(crate::ui::frame::hint_line(
+        theme,
+        &format!(
+            "{keys}{}",
             if view.you_created && view.roster.is_some() {
                 " · e end for everyone"
             } else {
                 ""
             }
-        ));
+        ),
+    ));
     let muted = theme.style(HighlightGroup::Muted);
     let mut lines = Vec::new();
     match &view.roster {

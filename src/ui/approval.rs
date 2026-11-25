@@ -14,7 +14,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph, Wrap},
 };
 
 use crate::{
@@ -199,12 +199,13 @@ pub fn render(
     } else {
         "a allow · r refuse · j/k PgUp/PgDn scroll · Tab the next one · Esc decide later"
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(theme.border_type(BorderSurface::Modal))
-        .border_style(theme.style(HighlightGroup::ModalBorder))
-        .title_style(theme.style(HighlightGroup::ModalTitle))
-        .title(format!(" a real command waits for your answer · {keys} "));
+    let block = crate::ui::frame::block(
+        theme,
+        BorderSurface::Modal,
+        "a real command waits for your answer",
+        true,
+    )
+    .title_bottom(crate::ui::frame::hint_line(theme, keys));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(view) = view else {

@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 use ratatui_image::sliced::{SignedPosition, SlicedImage, SlicedProtocol};
 
@@ -42,6 +42,16 @@ pub struct TimelineState {
     /// Contextual author labels for this view (identity names v1), by key.
     /// Authors absent here keep their profile label.
     pub labels: HashMap<String, String>,
+    /// Keys shown at the foot of the frame while it has the focus.
+    pub hints: Vec<(&'static str, &'static str)>,
+    /// The message before which the `── new ──` line is drawn: the first
+    /// one that was unread when the channel was opened or arrived since.
+    pub new_marker: Option<String>,
+    /// What to do next, said under "No messages … yet" in an empty view.
+    pub empty_hint: Option<String>,
+    /// A one-line state over the conversation (offline, an error) with what
+    /// to do next.
+    pub banner: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -548,17 +558,10 @@ fn render_internal(
     mut hits: Option<&mut Vec<MessageHit>>,
     message_width: Option<u16>,
 ) {
-    let border_group = if focused {
-        HighlightGroup::FocusedPaneBorder
-    } else {
-        HighlightGroup::PaneBorder
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(theme.border_type(BorderSurface::Pane))
-        .border_style(theme.style(border_group))
-        .title_style(theme.style(HighlightGroup::PaneTitle))
-        .title(format!(" {} ", sanitize::single_line(title)));
+    let mut block = crate::ui::frame::block(theme, BorderSurface::Pane, title, focused);
+    if focused && !state.hints.is_empty() {
+        block = block.title_bottom(crate::ui::frame::hints(theme, &state.hints));
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.is_empty() {

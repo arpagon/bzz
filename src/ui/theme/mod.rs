@@ -16,6 +16,7 @@ use ratatui::{
 use crate::{
     error::{Error, Result},
     paths::{Paths, set_private_permissions},
+    ui::frame::ColorMode,
 };
 
 pub const DEFAULT_THEME_ID: &str = "bzz";
@@ -110,6 +111,15 @@ define_groups! {
     MarkdownCode => "MarkdownCode",
     MarkdownMarker => "MarkdownMarker",
     Placeholder => "Placeholder",
+    FocusedPaneTitle => "FocusedPaneTitle",
+    HintKey => "HintKey",
+    HintText => "HintText",
+    StatusChannel => "StatusChannel",
+    StatusOnline => "StatusOnline",
+    StatusOffline => "StatusOffline",
+    StateBanner => "StateBanner",
+    NewMessageMarker => "NewMessageMarker",
+    UnreadCount => "UnreadCount",
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,9 +159,26 @@ pub struct Theme {
     name: String,
     highlights: [ResolvedHighlight; HighlightGroup::COUNT],
     borders: [BorderType; BorderSurface::COUNT],
+    color_mode: ColorMode,
 }
 
 impl Theme {
+    /// How much colour the terminal shows; the frame function draws focus
+    /// without colour when there is none.
+    pub const fn color_mode(&self) -> ColorMode {
+        self.color_mode
+    }
+
+    pub const fn set_color_mode(&mut self, mode: ColorMode) {
+        self.color_mode = mode;
+    }
+
+    #[must_use]
+    pub const fn with_color_mode(mut self, mode: ColorMode) -> Self {
+        self.color_mode = mode;
+        self
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -204,6 +231,7 @@ impl Theme {
             name: palette.name.to_owned(),
             highlights: resolve_definitions(&definitions, warnings),
             borders: resolve_borders(&options.borders),
+            color_mode: ColorMode::True,
         }
     }
 }
@@ -436,7 +464,7 @@ fn default_definitions() -> [HighlightDefinition; HighlightGroup::COUNT] {
     set(H::Muted, None, Style::default().fg(Color::DarkGray));
     set(H::Title, Some(H::Strong), Style::default());
     set(H::Border, None, Style::default());
-    set(H::FocusBorder, None, Style::default());
+    set(H::FocusBorder, None, Style::default().fg(Color::Cyan));
     set(
         H::Selection,
         None,
@@ -457,8 +485,10 @@ fn default_definitions() -> [HighlightDefinition; HighlightGroup::COUNT] {
     set(H::Info, None, Style::default().fg(Color::Cyan));
     set(H::Pending, Some(H::Warning), Style::default());
     set(H::Rejected, Some(H::Error), Style::default());
-    set(H::PaneTitle, Some(H::Title), Style::default());
-    set(H::PaneBorder, Some(H::Border), Style::default());
+    // Quiet frames: an unfocused pane's frame and title are muted; the
+    // focused one carries the primary colour (`FocusedPaneTitle`).
+    set(H::PaneTitle, Some(H::Muted), Style::default());
+    set(H::PaneBorder, Some(H::Muted), Style::default());
     set(H::FocusedPaneBorder, Some(H::FocusBorder), Style::default());
     set(H::ModalTitle, Some(H::Title), Style::default());
     set(H::ModalBorder, Some(H::FocusBorder), Style::default());
@@ -525,31 +555,27 @@ fn default_definitions() -> [HighlightDefinition; HighlightGroup::COUNT] {
     );
     set(H::ComposerDisabled, Some(H::Warning), Style::default());
     set(H::ComposerTitle, Some(H::Title), Style::default());
-    set(H::ComposerBorder, Some(H::Border), Style::default());
+    set(H::ComposerBorder, Some(H::PaneBorder), Style::default());
     set(
         H::ActiveComposerBorder,
         Some(H::FocusBorder),
         Style::default(),
     );
-    set(
-        H::StatusBar,
-        None,
-        Style::default().bg(Color::DarkGray).fg(Color::White),
-    );
+    set(H::StatusBar, None, Style::default());
     set(
         H::StatusMode,
         None,
-        Style::default().bg(Color::DarkGray).fg(Color::White),
+        Style::default().bg(Color::Cyan).fg(Color::Black),
     );
     set(
         H::StatusModeInsert,
         None,
-        Style::default().bg(Color::DarkGray).fg(Color::White),
+        Style::default().bg(Color::Yellow).fg(Color::Black),
     );
     set(
         H::StatusModeCommand,
         None,
-        Style::default().bg(Color::DarkGray).fg(Color::White),
+        Style::default().bg(Color::Yellow).fg(Color::Black),
     );
     set(
         H::StatusAgent,
@@ -581,6 +607,34 @@ fn default_definitions() -> [HighlightDefinition; HighlightGroup::COUNT] {
     );
     set(H::MarkdownMarker, Some(H::Muted), Style::default());
     set(H::Placeholder, Some(H::Muted), Style::default());
+    set(
+        H::FocusedPaneTitle,
+        Some(H::FocusBorder),
+        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+    );
+    set(
+        H::HintKey,
+        Some(H::Info),
+        Style::default().add_modifier(Modifier::BOLD),
+    );
+    set(H::HintText, Some(H::Muted), Style::default());
+    set(H::StatusChannel, Some(H::Muted), Style::default());
+    set(H::StatusOnline, Some(H::Success), Style::default());
+    set(H::StatusOffline, Some(H::Warning), Style::default());
+    set(
+        H::StateBanner,
+        None,
+        Style::default()
+            .bg(Color::Yellow)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+    );
+    set(H::NewMessageMarker, Some(H::Warning), Style::default());
+    set(
+        H::UnreadCount,
+        Some(H::Warning),
+        Style::default().add_modifier(Modifier::BOLD),
+    );
 
     definitions
 }
@@ -673,6 +727,12 @@ fn apply_palette(
         palette.primary,
     );
     set_colors(definitions, H::StatusMedia, palette.text, palette.surface);
+    set_colors(
+        definitions,
+        H::StateBanner,
+        palette.background,
+        palette.warning,
+    );
 }
 
 fn value_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
@@ -1026,7 +1086,7 @@ mod tests {
     }
 
     #[test]
-    fn bzz_default_keeps_plain_borders_and_original_focus_color() {
+    fn bzz_default_keeps_plain_borders_with_quiet_frames_and_a_primary_focus() {
         let theme = Theme::default();
         for surface in [
             BorderSurface::Pane,
@@ -1040,8 +1100,29 @@ mod tests {
                 ratatui::widgets::BorderType::Plain
             );
         }
-        assert_eq!(theme.style(HighlightGroup::FocusedPaneBorder).fg, None);
         assert_eq!(
+            theme.style(HighlightGroup::FocusedPaneBorder).fg,
+            Some(Color::Cyan)
+        );
+        assert_eq!(
+            theme.style(HighlightGroup::PaneBorder).fg,
+            Some(Color::DarkGray)
+        );
+        assert_eq!(
+            theme.style(HighlightGroup::PaneTitle).fg,
+            Some(Color::DarkGray)
+        );
+        assert!(
+            theme
+                .style(HighlightGroup::FocusedPaneTitle)
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
+        assert_eq!(
+            theme.style(HighlightGroup::StatusMode).bg,
+            Some(Color::Cyan)
+        );
+        assert_ne!(
             theme.style(HighlightGroup::StatusBar),
             theme.style(HighlightGroup::StatusMode)
         );

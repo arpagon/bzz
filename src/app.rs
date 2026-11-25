@@ -13,7 +13,7 @@ use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     text::{Line, Span, Text},
-    widgets::{Block, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Clear, List, ListItem, Paragraph, Wrap},
 };
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use tokio::sync::{broadcast, mpsc};
@@ -10000,6 +10000,14 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) {
+        let color_mode = crate::ui::frame::ColorMode::detected();
+        self.theme.set_color_mode(color_mode);
+        self.render_frame(frame);
+        // The last pass: no colour under NO_COLOR, fewer without true colour.
+        crate::ui::frame::finish(frame.buffer_mut(), color_mode);
+    }
+
+    fn render_frame(&mut self, frame: &mut Frame<'_>) {
         self.render_app(frame);
         // A command that waits for the owner is said on every screen,
         // whatever is open, until he has seen it.
@@ -10051,13 +10059,12 @@ impl App {
                 Paragraph::new(format!("bzz needs at least 50×12\n{way_out}"))
                     .style(self.theme.style(HighlightGroup::Normal))
                     .alignment(Alignment::Center)
-                    .block(
-                        Block::bordered()
-                            .border_type(self.theme.border_type(BorderSurface::Pane))
-                            .border_style(self.theme.style(HighlightGroup::PaneBorder))
-                            .title_style(self.theme.style(HighlightGroup::PaneTitle))
-                            .title(" terminal too small "),
-                    ),
+                    .block(crate::ui::frame::block(
+                        &self.theme,
+                        BorderSurface::Pane,
+                        "terminal too small",
+                        true,
+                    )),
                 area,
             );
             self.last_hit_map = Some(hit_map);
@@ -10385,13 +10392,12 @@ impl App {
                 .style(self.theme.style(HighlightGroup::Normal))
                 .alignment(Alignment::Center)
                 .wrap(Wrap { trim: false })
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Pane))
-                        .border_style(self.theme.style(HighlightGroup::PaneBorder))
-                        .title_style(self.theme.style(HighlightGroup::PaneTitle))
-                        .title(" bzz "),
-                ),
+                .block(crate::ui::frame::block(
+                    &self.theme,
+                    BorderSurface::Pane,
+                    "bzz",
+                    true,
+                )),
             area,
         );
     }
@@ -10429,17 +10435,12 @@ impl App {
         frame.render_stateful_widget(
             List::new(items)
                 .style(self.theme.style(HighlightGroup::CommunityRail))
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Pane))
-                        .border_style(self.theme.style(if focused {
-                            HighlightGroup::FocusedPaneBorder
-                        } else {
-                            HighlightGroup::PaneBorder
-                        }))
-                        .title_style(self.theme.style(HighlightGroup::PaneTitle))
-                        .title(" communities "),
-                )
+                .block(crate::ui::frame::block(
+                    &self.theme,
+                    BorderSurface::Pane,
+                    "communities",
+                    focused,
+                ))
                 .highlight_style(self.theme.style(HighlightGroup::Selection))
                 .highlight_symbol("› "),
             area,
@@ -10485,7 +10486,7 @@ impl App {
         } else {
             format!("message #{channel}")
         };
-        let (title, content, border, content_group) = if active {
+        let (title, content, _border, content_group) = if active {
             let mut attachment_lines = self
                 .composer
                 .attachments
@@ -10533,13 +10534,11 @@ impl App {
             let content = format!("{}{}", sanitize::text(&self.composer.body), attachments);
             let title = match self.active_edit() {
                 Some(editing) if editing.kept_attachments > 0 => format!(
-                    " edit message · keeps {} attachment(s) · Enter save · Esc cancel ",
+                    " edit message · keeps {} attachment(s) ",
                     editing.kept_attachments
                 ),
-                Some(_) => " edit message · Enter save · Esc cancel ".into(),
-                None => format!(
-                    " {target} · Enter send · Ctrl-v paste · Ctrl-o choose · Alt-o path · Del remove · Ctrl-c clear · Esc close "
-                ),
+                Some(_) => " edit message ".into(),
+                None => format!(" {target} "),
             };
             (
                 title,
@@ -10576,11 +10575,25 @@ impl App {
                 HighlightGroup::ComposerHint,
             )
         };
-        let block = Block::bordered()
-            .border_type(self.theme.border_type(BorderSurface::Composer))
-            .border_style(self.theme.style(border))
-            .title_style(self.theme.style(HighlightGroup::ComposerTitle))
-            .title(title);
+        // What to press lives at the foot of the frame, not in its title.
+        let keys: &[(&str, &str)] = match (active, self.active_edit().is_some()) {
+            (false, _) => &[],
+            (true, true) => &[("Enter", "save"), ("Esc", "cancel")],
+            (true, false) => &[
+                ("Enter", "send"),
+                ("Ctrl-v", "paste"),
+                ("Ctrl-o", "choose"),
+                ("Alt-o", "path"),
+                ("Del", "remove"),
+                ("Ctrl-c", "clear"),
+                ("Esc", "close"),
+            ],
+        };
+        let mut block =
+            crate::ui::frame::block(&self.theme, BorderSurface::Composer, &title, active);
+        if !keys.is_empty() {
+            block = block.title_bottom(crate::ui::frame::hints(&self.theme, keys));
+        }
         let inner = block.inner(area);
         if !inner.is_empty() {
             hit_map.push(inner, HitTarget::Composer);
@@ -10732,13 +10745,12 @@ impl App {
                         &actions,
                     ))
                     .style(self.theme.style(HighlightGroup::Normal))
-                    .block(
-                        Block::bordered()
-                            .border_type(self.theme.border_type(BorderSurface::Modal))
-                            .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                            .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                            .title(" effective keymap "),
-                    )
+                    .block(crate::ui::frame::modal(
+                        &self.theme,
+                        BorderSurface::Modal,
+                        "effective keymap",
+                        &[("Esc", "close")],
+                    ))
                     .wrap(Wrap { trim: false }),
                     area,
                 );
@@ -10757,13 +10769,12 @@ impl App {
                         self.input_router.sequence(),
                     ))
                     .style(self.theme.style(HighlightGroup::Normal))
-                    .block(
-                        Block::bordered()
-                            .border_type(self.theme.border_type(BorderSurface::Modal))
-                            .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                            .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                            .title(" leader "),
-                    )
+                    .block(crate::ui::frame::modal(
+                        &self.theme,
+                        BorderSurface::Modal,
+                        "leader",
+                        &[],
+                    ))
                     .wrap(Wrap { trim: false }),
                     popup,
                 );
@@ -10893,18 +10904,20 @@ impl App {
                             .collect::<Vec<_>>()
                             .join("  ")
                     };
-                    self.render_prompt(
+                    self.render_prompt_with_keys(
                         frame,
                         area,
-                        " custom emoji · Tab next · Enter react · Esc back ",
+                        "custom emoji",
+                        &[("Tab", "next"), ("Enter", "react"), ("Esc", "back")],
                         &sanitize::single_line(&format!(":{query}  {list}")),
                     );
                     return;
                 }
-                self.render_prompt(
+                self.render_prompt_with_keys(
                     frame,
                     area,
-                    " reaction · Enter toggle · : custom ",
+                    "reaction",
+                    &[("Enter", "toggle"), (":", "custom"), ("Esc", "close")],
                     crate::ui::reaction_picker::REACTIONS
                         .iter()
                         .enumerate()
@@ -10921,13 +10934,18 @@ impl App {
                 )
             }
             Some(Overlay::MediaPreview) => self.render_media_preview(frame, area),
-            Some(Overlay::Attachment) => self.render_prompt(
+            Some(Overlay::Attachment) => self.render_prompt_with_keys(
                 frame,
                 area,
                 if self.presentation.attachment_prompt == Some(AttachmentPrompt::Save) {
-                    " save attachment · no overwrite · Esc cancel "
+                    "save attachment · no overwrite"
                 } else {
-                    " attach by local path · Enter upload · Esc cancel "
+                    "attach by local path"
+                },
+                if self.presentation.attachment_prompt == Some(AttachmentPrompt::Save) {
+                    &[("Enter", "save"), ("Esc", "cancel")]
+                } else {
+                    &[("Enter", "upload"), ("Esc", "cancel")]
                 },
                 &self.attachment_input,
             ),
@@ -10985,13 +11003,12 @@ impl App {
                     Paragraph::new(text)
                         .style(self.theme.style(HighlightGroup::Normal))
                         .wrap(Wrap { trim: false })
-                        .block(
-                            Block::bordered()
-                                .border_type(self.theme.border_type(BorderSurface::Modal))
-                                .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                                .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                                .title(" apps · Enter open here · Esc close "),
-                        ),
+                        .block(crate::ui::frame::modal(
+                            &self.theme,
+                            BorderSurface::Modal,
+                            "apps",
+                            &[("Enter", "open here"), ("Esc", "close")],
+                        )),
                     popup,
                 );
             }
@@ -11203,13 +11220,12 @@ impl App {
             List::new(items)
                 .highlight_symbol("› ")
                 .highlight_style(self.theme.style(HighlightGroup::SelectedRow))
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Modal))
-                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                        .title(" actions · Enter run · Esc close "),
-                ),
+                .block(crate::ui::frame::modal(
+                    &self.theme,
+                    BorderSurface::Modal,
+                    "actions",
+                    &[("Enter", "run"), ("Esc", "close")],
+                )),
             popup,
             &mut state,
         );
@@ -11222,16 +11238,17 @@ impl App {
             self.presentation.close_overlay();
             return;
         };
-        let block = Block::bordered()
-            .border_type(self.theme.border_type(BorderSurface::Modal))
-            .border_style(self.theme.style(HighlightGroup::ModalBorder))
-            .title_style(self.theme.style(HighlightGroup::ModalTitle))
-            .title(format!(
-                " attachment {}/{} · [/] navigate · s save · Esc close ",
+        let block = crate::ui::frame::modal(
+            &self.theme,
+            BorderSurface::Modal,
+            &format!(
+                "attachment {}/{}",
                 self.preview_index + 1,
                 self.selected_message()
                     .map_or(0, |message| message.attachments.len())
-            ));
+            ),
+            &[("[ ]", "navigate"), ("s", "save"), ("Esc", "close")],
+        );
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
         let details = format!(
@@ -11310,13 +11327,12 @@ impl App {
         frame.render_widget(
             List::new(items)
                 .style(self.theme.style(HighlightGroup::Normal))
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Picker))
-                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                        .title(" channel finder · Enter open "),
-                ),
+                .block(crate::ui::frame::modal(
+                    &self.theme,
+                    BorderSurface::Picker,
+                    "channel finder",
+                    &[("Enter", "open"), ("Esc", "close")],
+                )),
             popup,
         );
     }
@@ -11359,30 +11375,39 @@ impl App {
             List::new(items)
                 .style(self.theme.style(HighlightGroup::Normal))
                 .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Picker))
-                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                        .title(format!(
-                            " themes · {scope} · Tab scope · Enter save · Esc cancel "
-                        )),
+                    crate::ui::frame::modal(
+                        &self.theme,
+                        BorderSurface::Picker,
+                        "themes",
+                        &[("Tab", "scope"), ("Enter", "save"), ("Esc", "cancel")],
+                    )
+                    .title(crate::ui::frame::info(&self.theme, scope)),
                 ),
             popup,
         );
     }
     fn render_prompt(&self, frame: &mut Frame<'_>, area: Rect, title: &str, value: &str) {
+        self.render_prompt_with_keys(frame, area, title, &[], value);
+    }
+    fn render_prompt_with_keys(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        title: &str,
+        keys: &[(&str, &str)],
+        value: &str,
+    ) {
         let popup = centered(area, 70, 5);
         frame.render_widget(Clear, popup);
         frame.render_widget(
             Paragraph::new(sanitize::text(value))
                 .style(self.theme.style(HighlightGroup::Normal))
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Modal))
-                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                        .title(title),
-                ),
+                .block(crate::ui::frame::modal(
+                    &self.theme,
+                    BorderSurface::Modal,
+                    title,
+                    keys,
+                )),
             popup,
         );
     }

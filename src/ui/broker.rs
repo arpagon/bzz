@@ -4,7 +4,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph, Wrap},
 };
 
 use crate::{
@@ -45,15 +45,21 @@ pub fn render(
         (Some(port), true) => format!("127.0.0.1:{port} · ALL PAUSED"),
         (Some(port), false) => format!("127.0.0.1:{port}"),
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(theme.border_type(BorderSurface::Picker))
-        .border_style(theme.style(HighlightGroup::ModalBorder))
-        .title_style(theme.style(HighlightGroup::ModalTitle))
-        .title(format!(
-            " agent broker · {state} · p pause/resume all · o owner-signed agent presence: {} · Esc ",
-            if agent_presence { "on" } else { "off" }
-        ));
+    let presence = format!(
+        "owner-signed agent presence: {}",
+        if agent_presence { "on" } else { "off" }
+    );
+    let block = crate::ui::frame::modal(
+        theme,
+        BorderSurface::Picker,
+        "agent broker",
+        &[
+            ("p", "pause/resume all"),
+            ("o", &presence),
+            ("Esc", "close"),
+        ],
+    )
+    .title(crate::ui::frame::info(theme, &state));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let panes = Layout::default()

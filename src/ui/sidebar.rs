@@ -4,7 +4,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::Line,
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{List, ListItem, ListState},
 };
 
 use crate::{
@@ -281,27 +281,19 @@ pub fn render(
             })
         }))
         .with_offset(viewport.scroll);
-    let border_group = if focused {
-        HighlightGroup::FocusedPaneBorder
-    } else {
-        HighlightGroup::PaneBorder
+    // The title names the pane; the sort and the hidden system channels
+    // are quiet state at the right of the frame.
+    let info = match (system_count, show_system) {
+        (0, _) => sort.label().to_owned(),
+        (count, false) => format!("{} · ⚙{count}", sort.label()),
+        (_, true) => format!("{} · ⚙ open", sort.label()),
     };
     frame.render_stateful_widget(
         List::new(items)
             .style(theme.style(HighlightGroup::Sidebar))
             .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(theme.border_type(BorderSurface::Pane))
-                    .border_style(theme.style(border_group))
-                    .title_style(theme.style(HighlightGroup::PaneTitle))
-                    .title(match (system_count, show_system) {
-                        (0, _) => format!(" channels · {} ", sort.label()),
-                        (count, false) => {
-                            format!(" channels · {} · ⚙{count} ", sort.label())
-                        }
-                        (_, true) => format!(" channels · {} · ⚙ open ", sort.label()),
-                    }),
+                crate::ui::frame::block(theme, BorderSurface::Pane, "channels", focused)
+                    .title(crate::ui::frame::info(theme, &info)),
             )
             .highlight_style(theme.style(HighlightGroup::Selection))
             .highlight_symbol("› "),

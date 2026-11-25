@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph, Wrap},
 };
 use uuid::Uuid;
 
@@ -87,14 +87,14 @@ pub fn render(
     theme: &Theme,
 ) {
     frame.render_widget(Clear, area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(theme.border_type(BorderSurface::Picker))
-        .border_style(theme.style(HighlightGroup::ModalBorder))
-        .title_style(theme.style(HighlightGroup::ModalTitle))
-        .title(format!(
-            " local agents{} · j/k select · space pause/resume · x stop its turn · i add to this channel · l log · n new · Tab directory · Esc ",
-            if running { "" } else { " · not running: unlock to run them" }
+    let block = crate::ui::frame::block(theme, BorderSurface::Picker, "local agents", true)
+        .title(crate::ui::frame::info(
+            theme,
+            if running { "" } else { "not running: unlock to run them" },
+        ))
+        .title_bottom(crate::ui::frame::hint_line(
+            theme,
+            "j/k select · space pause/resume · x stop its turn · i add to this channel · l log · n new · Tab directory · Esc close",
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -326,12 +326,8 @@ pub fn render_form(
         FormStage::Confirm { .. } => "Enter sign and create · e edit the answers · Esc cancel",
         FormStage::Done(_) => "Enter or Esc close",
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(theme.border_type(BorderSurface::Picker))
-        .border_style(theme.style(HighlightGroup::ModalBorder))
-        .title_style(theme.style(HighlightGroup::ModalTitle))
-        .title(format!(" new local agent · {keys} "));
+    let block = crate::ui::frame::block(theme, BorderSurface::Picker, "new local agent", true)
+        .title_bottom(crate::ui::frame::hint_line(theme, keys));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let muted = |text: String| Line::from(Span::styled(text, theme.style(HighlightGroup::Muted)));

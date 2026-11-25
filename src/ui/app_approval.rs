@@ -20,7 +20,7 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph, Wrap},
 };
 
 use crate::{
@@ -178,14 +178,13 @@ pub fn render(
     } else {
         "a approve · r refuse · j/k PgUp/PgDn scroll · Tab the next one · Esc decide later"
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(theme.border_type(BorderSurface::Modal))
-        .border_style(theme.style(HighlightGroup::ModalBorder))
-        .title_style(theme.style(HighlightGroup::ModalTitle))
-        .title(format!(
-            " a version of an app waits for your answer · {keys} "
-        ));
+    let block = crate::ui::frame::block(
+        theme,
+        BorderSurface::Modal,
+        "a version of an app waits for your answer",
+        true,
+    )
+    .title_bottom(crate::ui::frame::hint_line(theme, keys));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(review) = &state.review else {
