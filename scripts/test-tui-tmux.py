@@ -241,26 +241,30 @@ def check_needs(every):
 
 
 def warm_up(tmux, binary, fixture, work):
-    """Start the fixture's first profile once, until its channels are in,
-    and quit. On a profile's very first start bzz says `online` before the
-    relay has sent the channel list, and a scenario that types in the
+    """Start each of the fixture's profiles once, until its channels are
+    in, and quit. On a profile's very first start bzz says `online` before
+    the relay has sent the channel list, and a scenario that types in the
     finder at once finds nothing. No scenario is about that first start,
     and in the manifest's order the first one happened to wait (v0.17)."""
-    started = time.monotonic()
     tmux("resize-window", "-t", MAIN, "-x", "160", "-y", "45")
-    launch(tmux, MAIN, command_for({"id": "warm-up", "kind": "harness"}, binary, fixture, work, "first"))
-    try:
-        wait(tmux, MAIN, "online", False, 30000, False)
-        wait(tmux, MAIN, "#t9-general", False, 60000, False)
-        time.sleep(1)
-        send(tmux, MAIN, ["q"])
-        wait(tmux, MAIN, "quit bzz?", False, 15000, False)
-        send(tmux, MAIN, ["y"])
-        wait(tmux, MAIN, EXIT + "0", False, 15000, False)
-    except Failure as failure:
-        raise SystemExit(f"the fixture's profile did not start: {failure}")
-    print(f"warm-up: the fixture's profile started once, channels in, in {time.monotonic() - started:.1f} s",
-          flush=True)
+    for profile in ("first", "second", "other"):
+        if profile != "first" and not os.path.isdir(os.path.join(fixture, profile, "config")):
+            continue
+        started = time.monotonic()
+        launch(tmux, MAIN, command_for({"id": "warm-up", "kind": "harness"}, binary, fixture, work, profile))
+        try:
+            wait(tmux, MAIN, "online", False, 30000, False)
+            # Every profile of the fixture is in #t9-general.
+            wait(tmux, MAIN, "#t9-general", False, 60000, False)
+            time.sleep(1)
+            send(tmux, MAIN, ["q"])
+            wait(tmux, MAIN, "quit bzz?", False, 15000, False)
+            send(tmux, MAIN, ["y"])
+            wait(tmux, MAIN, EXIT + "0", False, 15000, False)
+        except Failure as failure:
+            raise SystemExit(f"the fixture's {profile} profile did not start: {failure}")
+        print(f"warm-up: the fixture's {profile} profile started once, channels in, "
+              f"in {time.monotonic() - started:.1f} s", flush=True)
 
 
 def ordered(scenarios, order):
