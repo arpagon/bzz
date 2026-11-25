@@ -314,6 +314,17 @@ The draft pull request of D14, read on GitHub:
   was not available to it, which is how the gate is made. One run; not
   repeated. The site's badge for Pi Durable follows the binary, which
   prints `everything in v0.17.0` from its own version.
+- **One more test that leaned on timing, found by CI at `bd4621d`** (a
+  commit of documents only). In the relay test where two profiles move one
+  card at once, five times, the last assertion needs the first profile to
+  be told of a conflict at least once; the rounds meant for that gave the
+  second profile 60 ms of head start, and in that run the relay took the
+  first profile's write first in all five. Every round's own checks held:
+  one write stored, the other told and merged, both screens on the same
+  card, no card lost. The test now waits until the second profile's write
+  is stored before it carries the first's. Run by the principal four times
+  before the change and three after, alone on the pinned relay: passed
+  each time.
 
 ## What went wrong on the way
 
