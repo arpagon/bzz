@@ -19,6 +19,7 @@ use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
+mod join;
 mod manage;
 mod pane;
 #[cfg(feature = "apps")]
@@ -431,6 +432,8 @@ enum Background {
         new: Box<crate::agents::manage::NewAgent>,
         result: std::result::Result<Vec<String>, String>,
     },
+    /// A step of the join form finished (v0.17 A9, `app::join`).
+    Join(Box<join::JoinEvent>),
 }
 
 pub struct App {
@@ -631,6 +634,8 @@ pub struct App {
     /// The last layout drew the open thread. A reply goes into a thread
     /// only while it is drawn.
     thread_drawn: bool,
+    /// The join form and the join it drives (v0.17 A9).
+    join: join::JoinState,
 }
 
 const LEADER_TIMEOUT: Duration = Duration::from_millis(750);
@@ -1164,6 +1169,7 @@ impl App {
             last_primary_click: None,
             apps: pane::AppPanes::default(),
             thread_drawn: false,
+            join: join::JoinState::default(),
         };
         app.sync_workspace_viewports();
         app.hydrate_cache().await?;
@@ -1472,13 +1478,15 @@ impl App {
                         }
                     }
                     Background::AgentPreflight { new, result }=>self.agent_preflight_done(*new, result),
+                    Background::Join(event)=>self.join_event(*event).await?,
                     }
                     redraw.request();
                 },
                 _=tick.tick()=>{
                     let changed=self.on_tick().await?;
                     let apps=self.tick_apps().await?;
-                    redraw.request_if(changed || apps);
+                    let joining=self.join_tick();
+                    redraw.request_if(changed || apps || joining);
                 },
                 network=next_network(&mut self.runtime)=>{
                     if let Some(event)=network {
@@ -3360,6 +3368,14 @@ impl App {
                 self.paste_to_app(&text);
                 return Ok(());
             }
+            // The join form: its address, or a hidden field (an nsec).
+            crate::ui::app_pane::PasteTarget::Join => {
+                let text = zeroize::Zeroizing::new(text);
+                if let Some(form) = &mut self.join.form {
+                    form.paste(&text);
+                }
+                return Ok(());
+            }
             crate::ui::app_pane::PasteTarget::Dropped => return Ok(()),
             crate::ui::app_pane::PasteTarget::Composer => {}
         }
@@ -3587,6 +3603,7 @@ impl App {
             Some(Overlay::Huddle) => self.huddle_key(key).await?,
             Some(Overlay::Profile) => self.profile_key(key),
             Some(Overlay::Apps) => self.apps_panel_key(key).await?,
+            Some(Overlay::Join) => self.join_key(key).await?,
             Some(Overlay::Broker) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
                 // The owner's one-key pause for every hosted agent.
@@ -9872,6 +9889,16 @@ impl App {
             crate::ui::command::Command::App(arguments) => {
                 return self.app_command(&arguments).await;
             }
+            crate::ui::command::Command::AddCommunity => {
+                self.open_join(crate::ui::join::JoinStart::Join);
+            }
+            crate::ui::command::Command::Join(address) => {
+                self.open_join(if address.is_empty() {
+                    crate::ui::join::JoinStart::Join
+                } else {
+                    crate::ui::join::JoinStart::Address(address)
+                });
+            }
             crate::ui::command::Command::Unknown(value) => {
                 self.status_error = Some(format!("unknown command: {value}"))
             }
@@ -9920,49 +9947,7 @@ impl App {
             *terminal = new_terminal;
         }
         match built {
-            Ok(runtime) => {
-                self.close_all_apps();
-                if let Some(old) = self.runtime.take() {
-                    old.supervisor.shutdown().await;
-                    if old.identity_id != runtime.identity_id {
-                        old.signer.lock().await;
-                    }
-                }
-                self.media.bind(
-                    runtime.community_id,
-                    runtime.identity_id,
-                    runtime.media.clone(),
-                );
-                self.runtime = Some(runtime);
-                self.selected_community = index;
-                self.select_community_index(index);
-                self.config.default_community = Some(target_id);
-                self.config.save(&self.paths)?;
-                self.reload_theme();
-                self.selected_channel = 0;
-                self.channel_viewport = ViewportState::default();
-                self.showing_open_channel = false;
-                self.thread_root = None;
-                self.last_marked.clear();
-                self.profile_requested.clear();
-                self.subscribed_channels.clear();
-                self.closed_channel_subscriptions.clear();
-                self.agent_typing.clear();
-                self.typing_subscription_channel = None;
-                self.closed_typing_channel = None;
-                self.inbox_items.clear();
-                self.inbox_messages.clear();
-                self.inbox_state = InboxState::default();
-                self.search_state = SearchState::default();
-                self.dm_picker = DmPickerState::default();
-                self.dm_dirty_since = None;
-                self.clear_agent_directory_state();
-                self.presentation.close_overlay();
-                self.connection = ConnectionState::Connecting;
-                self.last_inbox_refresh = Instant::now();
-                self.hydrate_cache().await?;
-                self.start_sync().await?;
-            }
+            Ok(runtime) => self.adopt_runtime(index, runtime).await?,
             Err(error) => {
                 let recovery = identity_recovery_connection(&error);
                 if let Some(connection) = recovery {
@@ -10005,6 +9990,55 @@ impl App {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Makes `runtime`, built for the community at `index`, the open one:
+    /// the old runtime stops, and the new one syncs. `switch_community` and
+    /// the join form (`app::join`) both end here.
+    async fn adopt_runtime(&mut self, index: usize, runtime: Runtime) -> Result<()> {
+        let target_id = runtime.community_id;
+        self.close_all_apps();
+        if let Some(old) = self.runtime.take() {
+            old.supervisor.shutdown().await;
+            if old.identity_id != runtime.identity_id {
+                old.signer.lock().await;
+            }
+        }
+        self.media.bind(
+            runtime.community_id,
+            runtime.identity_id,
+            runtime.media.clone(),
+        );
+        self.runtime = Some(runtime);
+        self.selected_community = index;
+        self.select_community_index(index);
+        self.config.default_community = Some(target_id);
+        self.config.save(&self.paths)?;
+        self.reload_theme();
+        self.selected_channel = 0;
+        self.channel_viewport = ViewportState::default();
+        self.showing_open_channel = false;
+        self.thread_root = None;
+        self.last_marked.clear();
+        self.profile_requested.clear();
+        self.subscribed_channels.clear();
+        self.closed_channel_subscriptions.clear();
+        self.agent_typing.clear();
+        self.typing_subscription_channel = None;
+        self.closed_typing_channel = None;
+        self.inbox_items.clear();
+        self.inbox_messages.clear();
+        self.inbox_state = InboxState::default();
+        self.search_state = SearchState::default();
+        self.dm_picker = DmPickerState::default();
+        self.dm_dirty_since = None;
+        self.clear_agent_directory_state();
+        self.presentation.close_overlay();
+        self.connection = ConnectionState::Connecting;
+        self.last_inbox_refresh = Instant::now();
+        self.hydrate_cache().await?;
+        self.start_sync().await?;
         Ok(())
     }
 
@@ -10582,7 +10616,7 @@ impl App {
             ),
             Line::default(),
             Line::from("No communities are configured."),
-            Line::from("Run bzz identity new, then bzz community add."),
+            Line::from("Type :join to join a community, here in bzz."),
             Line::default(),
             Line::from("? help · q quit"),
         ];
@@ -10872,6 +10906,7 @@ impl App {
             Some(Overlay::Profile) => "PROFILE",
             Some(Overlay::Huddle) => "HUDDLE",
             Some(Overlay::Apps) => "APPS",
+            Some(Overlay::Join) => "JOIN",
             Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) | None
                 if self.presentation.composer_target.is_some() =>
             {
@@ -11390,6 +11425,7 @@ impl App {
                     hit_map,
                 );
             }
+            Some(Overlay::Join) => self.render_join(frame, area),
             Some(Overlay::DmPicker) => {
                 let popup = centered(area, 86, area.height.saturating_sub(4).min(28));
                 let self_pubkey = self.self_pubkey().unwrap_or_default();

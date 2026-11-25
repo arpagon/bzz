@@ -18,6 +18,7 @@ pub mod huddle;
 pub mod huddle_lanes;
 pub mod inbox;
 pub mod input;
+pub mod join;
 pub mod keymap;
 pub mod layout;
 pub mod local_agents;

@@ -58,6 +58,9 @@ pub enum Command {
     Apps,
     /// `:app open <name> | close | zoom`: the app of the selected channel.
     App(String),
+    /// `:join [address]` and `:community add [address]`: the join form,
+    /// with the address filled in when one is given (v0.17).
+    Join(String),
     Unknown(String),
 }
 
@@ -120,6 +123,12 @@ pub fn parse(input: &str) -> Command {
         value if value == "report" || value.starts_with("report ") => {
             Command::Report(value.trim_start_matches("report").trim().to_owned())
         }
+        value if value == "join" || value.starts_with("join ") => {
+            Command::Join(value.trim_start_matches("join").trim().to_owned())
+        }
+        value if value.starts_with("community add ") => {
+            Command::Join(value.trim_start_matches("community add").trim().to_owned())
+        }
         value => Command::Unknown(value.to_owned()),
     }
 }
@@ -167,6 +176,17 @@ mod tests {
         assert_eq!(parse(":app close"), Command::App("close".into()));
         assert_eq!(parse(":app"), Command::App(String::new()));
         assert!(matches!(parse(":application"), Command::Unknown(_)));
+        assert_eq!(parse(":community add"), Command::AddCommunity);
+        assert_eq!(parse(":join"), Command::Join(String::new()));
+        assert_eq!(
+            parse(":join my-team.example"),
+            Command::Join("my-team.example".into())
+        );
+        assert_eq!(
+            parse(":community add wss://my-team.example"),
+            Command::Join("wss://my-team.example".into())
+        );
+        assert!(matches!(parse(":joinx"), Command::Unknown(_)));
         assert_eq!(parse(":tasks"), Command::Tasks);
         assert_eq!(parse(":broker"), Command::Broker);
         assert_eq!(parse(":profile"), Command::Profile(String::new()));
