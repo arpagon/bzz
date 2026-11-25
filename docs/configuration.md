@@ -260,6 +260,11 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   speaker names for huddles; unset means the system defaults. Set them with
   `:huddle input <name>` / `:huddle output <name>`; `:huddle devices` lists
   them. Device names are stored here and nowhere else.
+- **`[ui] huddle_style`** (default `lanes`): the huddle's zoomed view,
+  `lanes` (one lane per person), `bars` (the call's spectrum) or `orb` (a
+  sphere in the speaker's colour). `z` in the huddle panel zooms; `v` or
+  `:huddle style` opens a picker that previews each style live, and Enter
+  saves it here; `:huddle style <name>` saves it directly.
 - **`[[hosted_agents]]`**: written by `bzz broker create`; do not hand-edit.
   Change an agent's allowed actions with `bzz broker allow` or in `:broker`
   (`j`/`k` select, `1`–`6` toggle an action, `Space` pause that agent).
