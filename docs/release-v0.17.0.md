@@ -417,6 +417,17 @@ decisions changed: a bare `:status`, `d`, `u` and `Esc` (rule 19;
 - **Size:** the demo added 326,528 bytes to the Linux release binary, of
   the plan's 350,000 ([demo], [demo2]), and the sound server's protocol
   335 KB ([sound]). The size of the final binary was not measured.
+- **A real model wrote an app once on this version, and its script missed
+  one case.** One run of v0.16's gate on the candidate, allowed by the
+  owner, with Pi Durable and `openai-codex/gpt-6.1-sol`: the agent proposed
+  version 2 of the Board 247 s after the mention, it waited for approval
+  with its brief, was approved, and the agent's next turn was told; one
+  reply per mention held. What bzz promises of the harness held. The
+  model's script then passed 16 of the bench's 17 `board-priority` cases
+  at both sizes: it searched the cards it had instead of asking the
+  service, which one of the Board's own cases checks. On v0.16.0 the same
+  gate passed 17 of 17, twice. The coding harnesses were not run again
+  ([principal]).
 - **Benchmarks** against v0.16.0 were not run.
 - **Building from source:** a debug build (`cargo build`, `cargo run`)
   builds the `pulseaudio` crate optimised (`[profile.dev.package.pulseaudio]

@@ -293,6 +293,27 @@ The draft pull request of D14, read on GitHub:
   as designed, and the test waited 90 s for nothing; it no longer waits for
   that answer. The principal ran the second with the timer at zero, which
   forces that order: it passes. Neither changes bzz or the agent host.
+- **The head's own Linux binary where the certificate defect was found**
+  (CI's release build at `481ac5a`, 2026-11-26): in `debian:stable-slim`
+  with no network, which has no `/etc/ssl` at all, `bzz demo` opens; the
+  palette finds "Join a community…"; a mention of Scout is answered; `q`,
+  `y` ends with status 0.
+- **A real model on this version, once** (2026-11-26, the owner allowed
+  this run): `BZZ_AUTHOR_ALLOWED=yes BZZ_AUTHOR_MODEL=openai-codex/gpt-6.1-sol
+  scripts/test-agent-authors-app.sh pi-durable` at `481ac5a`, on the pinned
+  relay with a generated identity, through the owner's own Pi sign-in, the
+  answer hidden as in v0.16. The relay test passed: the agent proposed
+  `board (Board), version 2` after 247 s (script 9.6 KiB against the 13.5
+  KiB that ran, brief `CHANGED`, record types the same), it was approved,
+  and the second mention was answered "version 2 of the board is approved
+  and installed". **The gate as a whole did not pass:** the approved
+  script passed 16 of 17 `board-priority` cases at 80×24 and at 40×16.
+  Case 05, one of the Board's own twelve, expects a `data.list` with the
+  query for every change of the search; the model's script filters the
+  cards it holds and asks the service nothing. Its message said the bench
+  was not available to it, which is how the gate is made. One run; not
+  repeated. The site's badge for Pi Durable follows the binary, which
+  prints `everything in v0.17.0` from its own version.
 
 ## What went wrong on the way
 
