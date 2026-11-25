@@ -9404,11 +9404,13 @@ async fn real_relay_app_session_two_profiles_share_a_board() {
             ana_pane.screen();
             ben_pane.screen();
         } else {
-            // Ben's a moment sooner: Ana's bzz may know the new head by
-            // the time her write would be sent. To her script the answer
-            // is the same conflict.
-            ben_pane.screen();
-            tokio::time::sleep(Duration::from_millis(60)).await;
+            // Ben's first, and stored before Ana's is carried: her bzz may
+            // know the new head by the time her write would be sent. To
+            // her script the answer is the same conflict. (A head start of
+            // 60 ms was not enough to say whose write the relay takes
+            // first: once in CI Ana's was stored first in both of these
+            // rounds, and nobody was left to be told in her place.)
+            ben_pane.settled(SAVED).await;
             ana_pane.screen();
         }
         let mut ends = Vec::new();
