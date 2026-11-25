@@ -122,6 +122,20 @@ impl Runtime {
         signer: Option<SignerHandle>,
         diagnostics: DiagnosticHandle,
     ) -> Result<Self> {
+        Self::build_at(config, index, paths, store, signer, diagnostics, None)
+    }
+
+    /// As [`Self::build`], with the relay reached under `relay_path`
+    /// (`bzz demo`'s token) instead of the origin's root.
+    fn build_at(
+        config: &Config,
+        index: usize,
+        paths: &Paths,
+        store: StoreHandle,
+        signer: Option<SignerHandle>,
+        diagnostics: DiagnosticHandle,
+        relay_path: Option<&str>,
+    ) -> Result<Self> {
         let community = config
             .communities
             .get(index)
@@ -139,8 +153,12 @@ impl Runtime {
                 .transpose()?;
             IdentityManager::new(paths).signer(identity, passphrase.as_ref())?
         };
-        let endpoint =
+        let mut endpoint =
             validate_relay_url(&community.relay_url, community.allow_insecure_localhost)?;
+        if let Some(path) = relay_path {
+            endpoint.websocket.set_path(path);
+            endpoint.http_base.set_path(path);
+        }
         let evidence = crate::auth::federated::EvidenceSlot::default();
         if identity.backend == KeyBackend::BuzzDesktop {
             // Buzz Desktop owns the enterprise login; it supplies evidence.
@@ -628,6 +646,10 @@ pub struct App {
     /// The last layout drew the open thread. A reply goes into a thread
     /// only while it is drawn.
     thread_drawn: bool,
+    /// `bzz demo` (v0.17): a generated world on a loopback relay. The
+    /// status line says so, and what needs a real community says how to
+    /// join one (`crate::demo`).
+    demo: bool,
 }
 
 const LEADER_TIMEOUT: Duration = Duration::from_millis(750);
@@ -883,6 +905,49 @@ impl App {
         store: StoreHandle,
         diagnostics: DiagnosticHandle,
     ) -> Result<Self> {
+        Self::new_with(config, paths, store, diagnostics, None).await
+    }
+
+    /// `bzz demo` (`crate::demo`): the generated viewer's key is handed in
+    /// memory, nothing is unlocked or asked for, the relay is reached under
+    /// `relay_path`, and `#team` (`opening`) is open on the first frame.
+    pub async fn new_demo(
+        config: Config,
+        paths: Paths,
+        store: StoreHandle,
+        signer: SignerHandle,
+        relay_path: &str,
+        opening: Uuid,
+    ) -> Result<Self> {
+        let mut app = Self::new_with(
+            config,
+            paths,
+            store,
+            DiagnosticHandle::disabled(),
+            Some((signer, relay_path)),
+        )
+        .await?;
+        app.demo = true;
+        // One community: its rail only takes room from the conversation.
+        app.community_rail = false;
+        if let Some(index) = app
+            .channels
+            .iter()
+            .position(|channel| channel.id == opening)
+        {
+            app.select_channel_index(index);
+            app.hydrate_cache().await?;
+        }
+        Ok(app)
+    }
+
+    async fn new_with(
+        config: Config,
+        paths: Paths,
+        store: StoreHandle,
+        diagnostics: DiagnosticHandle,
+        demo: Option<(SignerHandle, &str)>,
+    ) -> Result<Self> {
         diagnostics.emit(DiagnosticEvent::ClientStarted {
             version: env!("CARGO_PKG_VERSION").into(),
             os: crate::diagnostics::event::normalized_os().into(),
@@ -902,13 +967,15 @@ impl App {
         let (runtime, connection, status_error) = if config.communities.is_empty() {
             (None, ConnectionState::Offline, None)
         } else {
-            match Runtime::build(
+            let (signer, relay_path) = demo.unzip();
+            match Runtime::build_at(
                 &config,
                 selected_community,
                 &paths,
                 store.clone(),
-                None,
+                signer,
                 diagnostics.clone(),
+                relay_path,
             ) {
                 Ok(runtime) => (Some(runtime), ConnectionState::Connecting, None),
                 Err(error) => {
@@ -1108,6 +1175,7 @@ impl App {
             last_primary_click: None,
             apps: pane::AppPanes::default(),
             thread_drawn: false,
+            demo: false,
         };
         app.sync_workspace_viewports();
         app.hydrate_cache().await?;
@@ -4440,6 +4508,15 @@ impl App {
     }
 
     async fn huddle_command(&mut self, arguments: &str) -> Result<()> {
+        // The panel's keys come here too: the demo answers before any
+        // confirmation that would lead to a device.
+        if self.demo
+            && let Some(answer) =
+                crate::demo::refuses(&crate::ui::command::Command::Huddle(arguments.into()))
+        {
+            self.status_error = Some(answer.into());
+            return Ok(());
+        }
         let (verb, rest) = arguments.split_once(' ').unwrap_or((arguments, ""));
         let rest = rest.trim();
         if self.runtime.is_none() || self.current_channel().is_none() {
@@ -4572,6 +4649,10 @@ impl App {
 
     /// Start (after confirmation): backing channel, then 48100; then join.
     fn spawn_huddle_start(&mut self) {
+        if self.demo {
+            self.status_error = Some(crate::demo::HUDDLE_IS_A_RECORDING.into());
+            return;
+        }
         let (Some(runtime), Some(parent)) = (
             &self.runtime,
             self.current_channel().map(|channel| channel.id),
@@ -4616,6 +4697,10 @@ impl App {
 
     #[cfg_attr(not(feature = "huddles-audio"), allow(unused_variables))]
     fn spawn_huddle_join(&mut self, parent: Uuid, backing: Uuid) {
+        if self.demo {
+            self.status_error = Some(crate::demo::HUDDLE_IS_A_RECORDING.into());
+            return;
+        }
         #[cfg(not(feature = "huddles-audio"))]
         {
             self.status_error = Some(crate::huddle::VIEW_ONLY.into());
@@ -9451,7 +9536,14 @@ impl App {
     }
 
     async fn execute_command(&mut self) -> Result<()> {
-        match crate::ui::command::parse(&self.command) {
+        let command = crate::ui::command::parse(&self.command);
+        if self.demo
+            && let Some(answer) = crate::demo::refuses(&command)
+        {
+            self.status_error = Some(answer.into());
+            return Ok(());
+        }
+        match command {
             crate::ui::command::Command::Lock => {
                 // Nothing is served while bzz is locked.
                 if let Some(broker) = self.broker.take() {
@@ -10710,7 +10802,13 @@ impl App {
                 mode_group,
                 activity: activity.as_deref(),
                 notice: &notice,
-                connection: crate::ui::status::connection_label(self.connection),
+                // Seam for agent `look`'s status slot (v0.17 L3): until
+                // it lands, the demo's mark takes the connection's place.
+                connection: if self.demo {
+                    crate::demo::STATUS_MARK
+                } else {
+                    crate::ui::status::connection_label(self.connection)
+                },
                 media: self.media.protocol_name(),
                 app_focused,
             },

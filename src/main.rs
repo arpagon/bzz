@@ -113,6 +113,9 @@ enum Command {
         #[arg(value_enum)]
         shell: CompletionShell,
     },
+    /// Try bzz with a generated team, offline: no account, no key, nothing
+    /// of yours read or saved.
+    Demo,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -424,6 +427,8 @@ fn main() {
         Ok(work) => work.join(),
         Err(error) => Ok(Err(Error::io("main thread", error))),
     };
+    // The runtime has stopped: nothing writes into a demo's folder now.
+    bzz::demo::clean_up_after_exit();
     match outcome {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
@@ -456,6 +461,11 @@ async fn run() -> Result<()> {
     // environment and only passes tool calls to the bzz that started it.
     if matches!(cli.command, Some(Command::AgentTools)) {
         return bzz::agents::runtime::mcp::run_stdio().await;
+    }
+    // Before bzz looks for its own paths: the demo reads and writes none
+    // of them.
+    if matches!(cli.command, Some(Command::Demo)) {
+        return bzz::demo::run().await;
     }
     let paths = Paths::discover()?;
     paths.ensure()?;
@@ -516,7 +526,7 @@ async fn run() -> Result<()> {
             println!("cache:  {}", paths.cache_dir.display());
             Ok(())
         }
-        Some(Command::Completions { .. }) => Ok(()),
+        Some(Command::Completions { .. } | Command::Demo) => Ok(()),
         None => {
             // Validate keymap.toml before entering raw mode. The M1 router
             // consumes this typed map during its vertical-slice cutover; this
