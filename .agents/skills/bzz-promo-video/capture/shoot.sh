@@ -15,6 +15,7 @@ rm -f "$C/tapes/$name.jsonl"
 if [ -n "$scene" ]; then (sleep "$delay"; "$FIX" drive "$F" "$scene" "$@" > "$C/tapes/$name.driver.log" 2>&1) & fi
 BZZ_CONFIG_DIR=$F/config BZZ_DATA_DIR=$F/data BZZ_CACHE_DIR=$F/cache BZZ_PASSPHRASE_FD=3 \
 ALSA_CONFIG_PATH=$C/null-asound.conf \
+PULSE_SERVER=${BZZ_CAPTURE_PULSE_SERVER:-unix:$C/no-sound-server/native} \
   python3 "$REC" --out "$C/tapes/$name.jsonl" --cols "${COLS:-120}" --rows "${ROWS:-32}" \
   --cell-width 12 --cell-height 26 --timeline "$C/run/$name.timeline.json" --start-after "${START:-3}" --tail "${TAIL:-2}" \
   -- ${CMD:-"$B"} 3<"$F/passphrase"

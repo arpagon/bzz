@@ -111,6 +111,13 @@ experiment before running it.
 - A shell shot (`SHELL_SHOT=1`, 100×24) runs `bash --noprofile --norc` with
   the profile's variables set; `mountTape({align: "center"})` fits it.
 - Delete the profiles when the take is done: they hold the generated keys.
+- **Sound, from bzz 0.17.** On Linux bzz speaks to the session's sound server
+  (PipeWire or PulseAudio), so a huddle in a take would open this machine's
+  real microphone. `shoot.sh` sets `PULSE_SERVER` to a socket that does not
+  exist, and joining then says there is no sound server. For a take with
+  live audio, start a disposable server with
+  `scripts/test-audio-containers.sh serve <folder>` and pass what it prints
+  as `BZZ_CAPTURE_PULSE_SERVER`. Never record a huddle without one of the two.
 
 ## Review
 

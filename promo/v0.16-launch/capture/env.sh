@@ -27,6 +27,7 @@ bzz_env() {
   export BZZ_NODE=$R/node/bin/node PI_CODING_AGENT_DIR=$R/pi npm_config_cache=$H/npm-cache
   export BZZ_GROK=$R/absent BZZ_CODEX=$R/absent BZZ_CLAUDE=$R/absent
   export ALSA_CONFIG_PATH=$C/null-asound.conf
+  export PULSE_SERVER=${BZZ_CAPTURE_PULSE_SERVER:-unix:$C/no-sound-server/native}
   export PATH=$R/node/bin:/usr/bin:/bin
   unset SSH_AUTH_SOCK DBUS_SESSION_BUS_ADDRESS BZZ_AGENT_HOST_SCRIPTED_MODEL
 }
