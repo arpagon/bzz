@@ -4015,12 +4015,14 @@ size = "80x24"
 visible = '(?m)^[┌│└][^\n]{78}[┐│┘]$'
 regex = true
 
+# The fixture's open channels outnumber the finder's rows at 80x24 (v0.17
+# suite added six): narrowed, #t9-general is the first offered.
 [[scenario.step]]
-keys = []
-visible = "t9-general"
+keys = ["type:t9-gen"]
+visible = "› +t9-general"
 
 [[scenario.step]]
-keys = ["type:t9-gen", "enter"]
+keys = ["enter"]
 visible = "message #t9-general"
 
 [[scenario.step]]
