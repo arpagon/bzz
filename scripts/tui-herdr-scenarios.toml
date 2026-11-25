@@ -2838,16 +2838,29 @@ absent = "Change theme"
 keys = ["ctrl+k", "type:theme", "enter"]
 visible = "▌◑ bzz"
 
+# Esc alone: Esc and a key at once read as Alt and that key.
 [[scenario.step]]
-keys = ["esc", "space", "space"]
+keys = ["esc"]
+visible = "online"
+absent = "Change theme"
+
+[[scenario.step]]
+keys = ["space", "space"]
 visible = "channel finder"
 
 [[scenario.step]]
 keys = ["type:t9-gen", "enter"]
 visible = "Generated custom emoji"
 
+# The newest rows are people joining; three up is the custom emoji's
+# message, one a person can react to.
 [[scenario.step]]
-keys = ["3", "G", "ctrl+k", "type:react to"]
+keys = ["3", "G", "k", "k", "k"]
+visible = "▌[^\\n]*Generated custom emoji :bzzwave:"
+regex = true
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:react to"]
 visible = "▌· React to message"
 
 [[scenario.step]]
@@ -2860,7 +2873,8 @@ visible = "▌  🎉"
 
 [[scenario.step]]
 keys = ["enter"]
-visible = "🎉 1"
+visible = "bzzwave:[^\\n]*\\n[^\\n]*🎉 1"
+regex = true
 absent = "React to message ›"
 timeout = 8000
 
@@ -2889,7 +2903,12 @@ keys = ["enter"]
 visible = "profile · r refresh · Esc close"
 
 [[scenario.step]]
-keys = ["esc", "ctrl+k", "type:fixture"]
+keys = ["esc"]
+visible = "online"
+absent = "profile · r refresh"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:fixture"]
 visible = "/ Search messages for «fixture»"
 
 # Up from the first row wraps to the last: the search row.
@@ -2978,7 +2997,12 @@ regex = true
 
 [[scenario.step]]
 size = "160x45"
-keys = ["esc", "ctrl+k", "type:start a dm", "enter", "type:sc"]
+keys = ["esc"]
+visible = "online"
+absent = "Set my status"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:start a dm", "enter", "type:sc"]
 visible = "Start a DM › person(.|\\n)*:dm npub1"
 regex = true
 
