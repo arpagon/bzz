@@ -425,7 +425,8 @@ pub static TABLE: &[ActionSpec] = &[
     // View: panes, themes, help.
     ui("theme.pick", "Change theme…", G::View, A::OpenOptions)
         .words("colors colours options appearance dark light")
-        .aliases(&["theme", "themes"]),
+        .aliases(&["theme", "themes"])
+        .command(":theme"),
     ui(
         "help.keymap",
         "Show keyboard shortcuts",
@@ -434,6 +435,7 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("help keys keymap bindings")
     .aliases(&["help", "keys", "?"])
+    .command(":help")
     .place(Where::Anywhere),
     ui(
         "view.toggle_communities",
@@ -843,6 +845,7 @@ pub static TABLE: &[ActionSpec] = &[
     ActionSpec::new("app.quit", "Quit bzz", G::Bzz, Run::Quit)
         .words("exit close leave")
         .aliases(&["q", "quit", "exit"])
+        .command(":quit")
         .key_of(A::BackOrQuit),
     ui("nav.back", "Back or close", G::Bzz, A::BackOrQuit)
         .words("escape")
@@ -1147,6 +1150,9 @@ mod tests {
         Solo(_),
         Apps,
         App(_),
+        Quit,
+        Help,
+        Theme(_),
         Unknown(_),
     );
 

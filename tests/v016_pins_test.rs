@@ -253,6 +253,14 @@ const DELIBERATE_CHANGES: [(&str, &str); 3] = [
 const ADDED_KEYS: &[(&str, &str, &str)] = &[
     ("Workspace", "d", "Delete"),
     ("Workspace", "u", "MarkUnread"),
+    // Plan D4: the palette. Global, so every scope that inherits Global
+    // bindings shows them.
+    ("Global", "Ctrl+k", "OpenPalette"),
+    ("Global", "Space k", "OpenPalette"),
+    ("Workspace", "Ctrl+k", "OpenPalette"),
+    ("Workspace", "Space k", "OpenPalette"),
+    ("Inbox", "Ctrl+k", "OpenPalette"),
+    ("Inbox", "Space k", "OpenPalette"),
 ];
 
 /// Commands v0.16.0 answered with "unknown command" and v0.17.0 knows
