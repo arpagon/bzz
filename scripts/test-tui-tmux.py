@@ -15,6 +15,7 @@ Environment:
   BZZ_TMUX_CAPTURES     a folder to keep a text capture of every step in
   BZZ_TMUX_SIZE         the window's size when a scenario names none (160x45)
   BZZ_TMUX_CAPTURES_ANSI  set: each capture also kept with its colours (.ansi)
+  BZZ_TMUX_KEEP         set: the run's own folder is left (otherwise removed)
   BZZ_TMUX_ORDER        manifest (default) | reverse | shuffle[:SEED]: the
                         order the scenarios run in, each still after what
                         it `needs`; a scenario that stands alone passes in
@@ -210,6 +211,10 @@ def main():
             subprocess.run([os.path.join(ROOT, "scripts/test-audio-containers.sh"), "stop", sound],
                            check=False)
             print("sound server container removed", flush=True)
+        # The run's own folder (empty profiles, the bytes each scenario
+        # wrote): about 9 MB a run, in a TMPDIR that is often memory.
+        if not os.environ.get("BZZ_TMUX_KEEP"):
+            shutil.rmtree(work, ignore_errors=True)
     ran = len(scenarios) - len(skipped)
     print(f"{ran - failures} of {ran} scenarios passed"
           + (f", {len(skipped)} skipped ({', '.join(skipped)})" if skipped else ""), flush=True)
