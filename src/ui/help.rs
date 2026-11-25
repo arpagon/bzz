@@ -78,12 +78,15 @@ fn keys_of(keymap: &KeyMap, scope: KeyScope, action: UiAction) -> Vec<String> {
         .collect()
 }
 
-/// The scope whose keys a row shows in the help opened from `scope`.
+/// The scope whose keys a row shows in the help opened from `scope`: where
+/// the row runs, so the help lists the same rows from the workspace and
+/// from the Inbox; a row that runs anywhere shows the keys of `scope`.
 const fn row_scope(spec: &ActionSpec, scope: KeyScope) -> KeyScope {
     match spec.place {
         Where::Writing => KeyScope::Composer,
         Where::Inbox => KeyScope::Inbox,
-        Where::Workspace | Where::Anywhere => scope,
+        Where::Workspace => KeyScope::Workspace,
+        Where::Anywhere => scope,
     }
 }
 

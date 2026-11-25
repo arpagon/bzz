@@ -43,8 +43,9 @@ action = "open-inbox"
 keys = ["z", "i"]
 visible = "Welcome to bzz"
 
-# The help lists the registry's rows with the live keys: the custom
-# sequence shows beside the default on "Open Inbox" (v0.17 C8).
+# `z i` opened the Inbox. The help lists the registry's rows with the live
+# keys: the custom workspace sequence shows beside the default on "Open
+# Inbox" (v0.17 C8).
 [[scenario.step]]
 keys = ["shift+?"]
 visible = "Space n, z i"
@@ -2516,7 +2517,7 @@ absent = "context · 4 replies"
 
 [[scenario.step]]
 keys = ["G", "r"]
-visible = "reaction · Enter toggle"
+visible = "Enter toggle · : custom"
 
 [[scenario.step]]
 keys = ["enter"]
@@ -3609,6 +3610,131 @@ visible = "2h"
 keys = ["esc"]
 visible = "online"
 absent = "Set my status"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-registry-complete"
+kind = "automated"
+size = "80x24"
+description = "v0.17 C11: the : line completes with Tab from the registry: :hu, Tab, Tab gives :huddle start with its verbs and usage under the line; :theme n, Tab a theme; a wrong word says what is near. Enter still runs what is typed."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "type:hu"]
+visible = "Tab: huddle"
+
+[[scenario.step]]
+keys = ["tab"]
+visible = 'Tab: start  join(.|\n)*usage: :huddle \[start'
+regex = true
+
+[[scenario.step]]
+keys = ["tab"]
+visible = ':huddle start(.|\n)*Tab: \[start\]  join'
+regex = true
+
+[[scenario.step]]
+keys = ["tab"]
+visible = ':huddle join(.|\n)*Tab: start  \[join\]'
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+absent = "Tab: "
+
+[[scenario.step]]
+keys = [":", "type:theme n", "tab"]
+visible = ':theme n[a-z-]+ (.|\n)*usage: :theme'
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = [":", "type:hudle", "tab"]
+visible = "no command starts with hudle · did you mean :huddle?"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = [":", "type:sort", "space", "tab"]
+visible = ':sort alpha(.|\n)*Tab: \[alpha\]  recent  default'
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-registry-app-footer"
+kind = "harness"
+size = "160x45"
+description = "v0.17 C11 and C10: :app open, Tab completes an installed app; the status line's hint follows the focus (a message, the channels, the composer, the huddle panel) at 160x45 and 80x24, ending in the palette's key."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t9-gen", "enter"]
+visible = "Enter thread · r react · i reply · Ctrl-K actions"
+
+[[scenario.step]]
+keys = [":", "type:app open", "space", "tab"]
+visible = ':app open [a-z]+(.|\n)*usage: :app open <name>'
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Enter thread · r react"
+
+[[scenario.step]]
+keys = ["2"]
+visible = "Enter open · Space Space find · i write · Ctrl-K actions"
+
+[[scenario.step]]
+keys = ["3", "i"]
+visible = "Enter send · Ctrl-J newline · Esc close"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Enter thread · r react"
+
+[[scenario.step]]
+keys = [":", "type:huddle", "enter"]
+visible = '(s start|j join|m mute)(.|\n)*Esc close'
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Enter thread · r react"
+
+[[scenario.step]]
+size = "80x24"
+keys = []
+visible = "Ctrl-K actions"
 
 [[scenario.step]]
 keys = ["q"]
