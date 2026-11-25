@@ -629,7 +629,7 @@ pub struct App {
     /// The palette while it is open (v0.17 C1).
     palette: Option<crate::ui::palette::Palette>,
     /// Actions run from the palette in this session, newest first.
-    palette_recent: Vec<&'static str>,
+    palette_recent: Vec<crate::ui::palette::Recent>,
     keymap: KeyMap,
     input_router: InputRouter,
     /// When the pending key sequence started, on Tokio's clock so a test
@@ -4136,7 +4136,7 @@ impl App {
             InboxEffect::Unavailable(action) => {
                 self.status_error = Some(format!("{} is not available in Inbox", action.label()));
             }
-            InboxEffect::OpenPalette => self.open_palette(),
+            InboxEffect::OpenPalette => self.open_palette().await,
         }
         Ok(())
     }
@@ -4323,7 +4323,7 @@ impl App {
                     action.label()
                 ));
             }
-            WorkspaceEffect::OpenPalette => self.open_palette(),
+            WorkspaceEffect::OpenPalette => self.open_palette().await,
         }
         Ok(())
     }
@@ -7697,6 +7697,14 @@ impl App {
         self.cache_dirty = true;
     }
     fn send_reaction(&mut self) {
+        let emoji = crate::ui::reaction_picker::REACTIONS[self.reaction_index].to_owned();
+        self.send_reaction_emoji(emoji);
+    }
+
+    /// React to the selected message with `emoji`, or take my reaction back
+    /// when I already reacted with it: the reaction picker's Enter, and the
+    /// palette's "React to message" step (v0.17 C9).
+    fn send_reaction_emoji(&mut self, emoji: String) {
         if let Some(reason) = self.current_channel().and_then(Channel::read_only_reason) {
             self.status_error = Some(reason.notice().into());
             self.presentation.close_overlay();
@@ -7708,7 +7716,6 @@ impl App {
         };
         let service = runtime.messages.clone();
         let target = message.event_id.clone();
-        let emoji = crate::ui::reaction_picker::REACTIONS[self.reaction_index].to_owned();
         let self_pubkey = runtime.signer.public_key().to_hex();
         let own_reaction = self.reactions.get(&target).and_then(|reactions| {
             reactions
@@ -10677,6 +10684,8 @@ impl App {
                 self.presentation.open_overlay(Overlay::Help);
             }
             crate::ui::command::Command::Theme(name) => self.theme_command(&name),
+            crate::ui::command::Command::DmWith(people) => self.dm_command(&people, false),
+            crate::ui::command::Command::DmAddPerson(person) => self.dm_command(&person, true),
         }
         Ok(())
     }

@@ -9,7 +9,9 @@
 //!
 //! Rule 23 of the v0.17 plan: one place says what an action is. Wave 2 (C8)
 //! grows this table into the registry that generates the key map, the help
-//! and the leader panel; arguments as steps (C9) hang off [`Run::Prefill`].
+//! and the leader panel. A row that needs something more says what, in
+//! order, with [`Run::Steps`] (C9): the palette asks for each [`Arg`] in a
+//! step of its own and runs the `:` command they build.
 
 use crate::ui::keymap::UiAction;
 
@@ -130,6 +132,103 @@ pub enum Run {
     Quit,
     /// Only the shell can do this: the command a person copies.
     Shell(&'static str),
+    /// Asks for each argument in a step of the palette, in order, then runs
+    /// what they build (v0.17 C9).
+    Steps(Then, &'static [Arg]),
+}
+
+/// What a row with steps runs once the last step is answered.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Then {
+    /// The `:` command whose first words these are, the answers after them
+    /// ([`command_text`]); run as if typed on the `:` line.
+    Command(&'static str),
+    /// React to the selected message with the emoji, as the reaction picker
+    /// does: bzz has no `:` form for it.
+    React,
+    /// Keep the theme, as the theme picker's Enter does. Seam: when `:theme
+    /// <name>` exists (agent `find`, v0.17 C4), this becomes
+    /// `Command("theme")`.
+    Theme,
+}
+
+/// What one step asks for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ask {
+    /// A person bzz has a profile of; the answer is their npub.
+    Person,
+    /// A joined channel; the answer is `#name`.
+    Channel,
+    /// An emoji, recent ones first; the answer is the emoji.
+    Emoji,
+    /// How long until it expires: `30m`, `2h`, `1d`, checked as typed.
+    Duration,
+    /// Free text; the usage of the command is shown under the field.
+    Text,
+    /// One of a few words: (the word, what it means).
+    Choice(&'static [(&'static str, &'static str)]),
+    /// A theme, previewed as the selection moves; the answer is its id.
+    Theme,
+    /// An installed app; the answer is its name.
+    App,
+}
+
+/// One argument of a row with steps.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Arg {
+    pub ask: Ask,
+    /// The step's name in the breadcrumb: "Start a DM › person".
+    pub label: &'static str,
+    /// Written before the answer: "--expires " for the status's expiry.
+    pub form: &'static str,
+    /// Written before the answers of the steps asked earlier (`:status
+    /// --expires 2h text` asks the text first).
+    pub lead: bool,
+    /// The step may be left out; this names that choice ("no expiry").
+    pub skip: Option<&'static str>,
+}
+
+impl Arg {
+    const fn new(ask: Ask, label: &'static str) -> Self {
+        Self {
+            ask,
+            label,
+            form: "",
+            lead: false,
+            skip: None,
+        }
+    }
+
+    const fn optional(mut self, skip: &'static str) -> Self {
+        self.skip = Some(skip);
+        self
+    }
+
+    const fn lead(mut self, form: &'static str) -> Self {
+        self.form = form;
+        self.lead = true;
+        self
+    }
+}
+
+/// The `:` text a row with steps builds from its answers, in the order the
+/// steps were asked: "status", ["In a meeting", "2h"] →
+/// "status --expires 2h In a meeting". An empty answer (a step left out)
+/// writes nothing.
+pub fn command_text(command: &str, args: &[Arg], answers: &[&str]) -> String {
+    let mut text = command.to_owned();
+    for lead in [true, false] {
+        for (arg, answer) in args.iter().zip(answers) {
+            let answer = answer.trim();
+            if arg.lead != lead || answer.is_empty() {
+                continue;
+            }
+            text.push(' ');
+            text.push_str(arg.form);
+            text.push_str(answer);
+        }
+    }
+    text
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -228,6 +327,67 @@ use Needs as N;
 use Run::{Command as Cmd, Prefill, Shell, Ui};
 use UiAction as A;
 
+const fn steps(
+    id: &'static str,
+    title: &'static str,
+    group: Group,
+    then: Then,
+    args: &'static [Arg],
+) -> ActionSpec {
+    ActionSpec::new(id, title, group, Run::Steps(then, args))
+}
+
+const fn ask(
+    id: &'static str,
+    title: &'static str,
+    group: Group,
+    command: &'static str,
+    args: &'static [Arg],
+) -> ActionSpec {
+    steps(id, title, group, Then::Command(command), args)
+}
+
+const PERSON: Arg = Arg::new(Ask::Person, "person");
+const CHANNEL: Arg = Arg::new(Ask::Channel, "channel");
+const EMOJI: Arg = Arg::new(Ask::Emoji, "emoji");
+const APP: Arg = Arg::new(Ask::App, "app");
+const NAME: Arg = Arg::new(Ask::Text, "name");
+const FOLDER: Arg = Arg::new(Ask::Text, "folder");
+
+/// The NIP-56 reasons, as `buzz_sdk::REPORT_TYPES` lists them (a test
+/// keeps the two together).
+const REPORT_REASONS: &[(&str, &str)] = &[
+    ("spam", "unwanted or repeated"),
+    ("impersonation", "pretends to be someone"),
+    ("profanity", "abusive language"),
+    ("nudity", "explicit content"),
+    ("illegal", "against the law"),
+    ("malware", "harmful links or files"),
+    ("other", "something else"),
+];
+
+const SORTS: &[(&str, &str)] = &[
+    ("alpha", "by name"),
+    ("recent", "latest activity first"),
+    ("default", "the community's order"),
+];
+
+const HUDDLE_VERBS: &[(&str, &str)] = &[
+    ("start", "start a huddle here"),
+    ("join", "join the huddle here"),
+    ("leave", "leave the call"),
+    ("mute", "mute or unmute your microphone"),
+    ("end", "end it for everyone"),
+    ("devices", "list the audio devices"),
+];
+
+const REPORT_WHAT: &[(&str, &str)] = &[("", "the selected message"), ("author", "its author")];
+
+const PRESENCE: &[(&str, &str)] = &[
+    ("on", "publish online, away, offline"),
+    ("off", "publish nothing"),
+];
+
 const fn ui(id: &'static str, title: &'static str, group: Group, action: UiAction) -> ActionSpec {
     ActionSpec::new(id, title, group, Ui(action))
 }
@@ -270,10 +430,18 @@ pub static TABLE: &[ActionSpec] = &[
     ui("msg.compose", "Write a message", G::Message, A::Compose)
         .words("compose reply send post new message")
         .needs(N::Channel),
-    ui("msg.react", "React to message", G::Message, A::React)
-        .words("emoji reaction")
-        .aliases(&["react"])
-        .needs(N::Message),
+    steps(
+        "msg.react",
+        "React to message",
+        G::Message,
+        Then::React,
+        &[EMOJI],
+    )
+    .key_of(A::React)
+    .place(Where::Workspace)
+    .words("emoji reaction")
+    .aliases(&["react"])
+    .needs(N::Message),
     ui("msg.edit", "Edit my message", G::Message, A::Edit)
         .words("change fix")
         .aliases(&["edit"])
@@ -284,7 +452,7 @@ pub static TABLE: &[ActionSpec] = &[
         .needs(N::Message),
     ui(
         "msg.mark_unread",
-        "Mark unread from here",
+        "Mark this channel unread",
         G::Message,
         A::MarkUnread,
     )
@@ -314,11 +482,16 @@ pub static TABLE: &[ActionSpec] = &[
     .words("person who user")
     .command(":profile [npub|hex]")
     .needs(N::Message),
-    fill(
+    ask(
         "msg.report",
         "Report message or author",
         G::Message,
-        "report ",
+        "report",
+        &[
+            Arg::new(Ask::Choice(REPORT_WHAT), "what"),
+            Arg::new(Ask::Choice(REPORT_REASONS), "reason"),
+            Arg::new(Ask::Text, "note").optional("no note"),
+        ],
     )
     .words("moderators spam abuse")
     .command(":report [author] <reason> [note]")
@@ -350,11 +523,25 @@ pub static TABLE: &[ActionSpec] = &[
         .words("mentions personal work notifications")
         .command(":inbox")
         .aliases(&["inbox"]),
-    ui("dm.new", "Start a DM", G::Go, A::NewDm)
+    ask("dm.new", "Start a DM", G::Go, "dm", &[PERSON])
+        .key_of(A::NewDm)
         .words("direct message person chat private")
-        .command(":dm")
+        .command(":dm <npub|hex>")
         .aliases(&["dm"])
         .needs(N::Connected),
+    cmd("dm.pick", "Start a group DM", G::Go, "dm")
+        .words("direct message several people pick choose")
+        .command(":dm")
+        .needs(N::Connected),
+    ask(
+        "person.profile",
+        "View a person's profile",
+        G::Go,
+        "profile",
+        &[PERSON],
+    )
+    .words("people who user member agent")
+    .command(":profile <npub|hex>"),
     ui("item.open", "Open selected", G::Go, A::ActivateFocused)
         .words("channel thread community enter"),
     ui("focus.channels", "Focus channels", G::Go, A::FocusChannels).words("sidebar pane"),
@@ -423,10 +610,17 @@ pub static TABLE: &[ActionSpec] = &[
         .words("palette command commands")
         .place(Where::Anywhere),
     // View: panes, themes, help.
-    ui("theme.pick", "Change theme…", G::View, A::OpenOptions)
-        .words("colors colours options appearance dark light")
-        .aliases(&["theme", "themes"])
-        .command(":theme"),
+    steps(
+        "theme.pick",
+        "Change theme…",
+        G::View,
+        Then::Theme,
+        &[Arg::new(Ask::Theme, "theme")],
+    )
+    .key_of(A::OpenOptions)
+    .words("colors colours options appearance dark light")
+    .aliases(&["theme", "themes"])
+    .command(":theme"),
     ui(
         "help.keymap",
         "Show keyboard shortcuts",
@@ -486,10 +680,16 @@ pub static TABLE: &[ActionSpec] = &[
         A::CycleChannelSort,
     )
     .words("order sidebar alphabetical recent"),
-    fill("sidebar.sort", "Set channel group sort", G::View, "sort ")
-        .words("order sidebar alpha recent default")
-        .command(":sort alpha|recent|default")
-        .needs(N::Channel),
+    ask(
+        "sidebar.sort",
+        "Set channel group sort",
+        G::View,
+        "sort",
+        &[Arg::new(Ask::Choice(SORTS), "sort")],
+    )
+    .words("order sidebar alpha recent default")
+    .command(":sort alpha|recent|default")
+    .needs(N::Channel),
     cmd(
         "sidebar.system",
         "Show or hide System channels",
@@ -498,20 +698,22 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("toggle sidebar access")
     .command(":system"),
-    fill(
+    ask(
         "section.new",
         "New sidebar section",
         G::View,
-        "section new ",
+        "section new",
+        &[NAME],
     )
     .words("group folder sidebar")
     .command(":section new <name>")
     .needs(N::Channel),
-    fill(
+    ask(
         "section.rename",
         "Rename sidebar section",
         G::View,
-        "section rename ",
+        "section rename",
+        &[NAME],
     )
     .words("group folder sidebar")
     .command(":section rename <name>")
@@ -525,11 +727,12 @@ pub static TABLE: &[ActionSpec] = &[
     .words("group folder sidebar remove")
     .command(":section delete")
     .needs(N::Channel),
-    fill(
+    ask(
         "section.move",
         "Move channel to a section",
         G::View,
-        "section move ",
+        "section move",
+        &[Arg::new(Ask::Text, "section")],
     )
     .words("group folder sidebar")
     .command(":section move <name>")
@@ -601,11 +804,12 @@ pub static TABLE: &[ActionSpec] = &[
     .words("tasks files documents records")
     .command(":artifacts")
     .needs(N::Channel),
-    fill(
+    ask(
         "artifact.rename",
         "Rename artifact",
         G::Channel,
-        "artifact rename ",
+        "artifact rename",
+        &[Arg::new(Ask::Text, "title")],
     )
     .command(":artifact rename <title>")
     .needs(N::Artifact),
@@ -625,11 +829,12 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .command(":artifact restore")
     .needs(N::Artifact),
-    fill(
+    ask(
         "artifact.move",
         "Move artifact to a channel",
         G::Channel,
-        "artifact move #",
+        "artifact move",
+        &[CHANNEL],
     )
     .command(":artifact move <#channel>")
     .needs(N::Artifact),
@@ -644,11 +849,17 @@ pub static TABLE: &[ActionSpec] = &[
         .words("direct message close")
         .command(":dm hide")
         .needs(N::Dm),
-    cmd("dm.add", "Add a person to this DM", G::Channel, "dm add")
-        .words("direct message invite group")
-        .command(":dm add")
-        .needs(N::Dm),
-    fill("solo.new", "New Solo chat", G::Channel, "solo ")
+    ask(
+        "dm.add",
+        "Add a person to this DM",
+        G::Channel,
+        "dm add",
+        &[PERSON],
+    )
+    .words("direct message invite group")
+    .command(":dm add <npub|hex>")
+    .needs(N::Dm),
+    ask("solo.new", "New Solo chat", G::Channel, "solo", &[NAME])
         .words("notes private channel")
         .command(":solo <name>")
         .needs(N::Connected),
@@ -658,6 +869,16 @@ pub static TABLE: &[ActionSpec] = &[
         .command(":huddle")
         .aliases(&["huddle"])
         .needs(N::Channel),
+    ask(
+        "huddle.verb",
+        "Huddle: start, join, leave, mute…",
+        G::Huddle,
+        "huddle",
+        &[Arg::new(Ask::Choice(HUDDLE_VERBS), "what")],
+    )
+    .words("call voice audio")
+    .command(":huddle <start|join|leave|mute|end|devices>")
+    .needs(N::Channel),
     cmd("huddle.start", "Start huddle", G::Huddle, "huddle start")
         .words("call voice audio")
         .command(":huddle start")
@@ -683,11 +904,12 @@ pub static TABLE: &[ActionSpec] = &[
     .words("call stop")
     .command(":huddle end")
     .needs(N::Huddle),
-    fill(
+    ask(
         "huddle.react",
         "React in huddle",
         G::Huddle,
-        "huddle react ",
+        "huddle react",
+        &[EMOJI],
     )
     .words("call emoji")
     .command(":huddle react <emoji>")
@@ -700,19 +922,21 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("huddle microphone speaker sound")
     .command(":huddle devices"),
-    fill(
+    ask(
         "huddle.input",
         "Choose microphone",
         G::Huddle,
-        "huddle input ",
+        "huddle input",
+        &[Arg::new(Ask::Text, "device")],
     )
     .words("huddle audio device input")
     .command(":huddle input <name>"),
-    fill(
+    ask(
         "huddle.output",
         "Choose speaker",
         G::Huddle,
-        "huddle output ",
+        "huddle output",
+        &[Arg::new(Ask::Text, "device")],
     )
     .words("huddle audio device output headphones")
     .command(":huddle output <name>"),
@@ -721,19 +945,31 @@ pub static TABLE: &[ActionSpec] = &[
         .words("app list")
         .command(":apps")
         .aliases(&["apps"]),
-    fill("app.open", "Open app here", G::Apps, "app open ")
+    ask("app.open", "Open app here", G::Apps, "app open", &[APP])
         .words("board app run")
         .command(":app open <name>")
         .needs(N::Channel),
     cmd("app.close", "Close app here", G::Apps, "app close")
         .command(":app close")
         .needs(N::AppHere),
-    fill("app.share", "Share app", G::Apps, "app share ")
-        .words("app channel")
-        .command(":app share [name]"),
-    fill("app.unshare", "Stop sharing app", G::Apps, "app unshare ")
-        .words("app channel")
-        .command(":app unshare [name]"),
+    ask(
+        "app.share",
+        "Share app",
+        G::Apps,
+        "app share",
+        &[APP.optional("the app open here")],
+    )
+    .words("app channel")
+    .command(":app share [name]"),
+    ask(
+        "app.unshare",
+        "Stop sharing app",
+        G::Apps,
+        "app unshare",
+        &[APP.optional("the app open here")],
+    )
+    .words("app channel")
+    .command(":app unshare [name]"),
     cmd(
         "app.pending",
         "Review waiting app version",
@@ -742,35 +978,73 @@ pub static TABLE: &[ActionSpec] = &[
     )
     .words("approve update version")
     .command(":app pending [name]"),
-    fill(
+    ask(
         "app.approve",
         "Approve app version",
         G::Apps,
-        "app approve ",
+        "app approve",
+        &[APP],
     )
     .words("update version")
     .command(":app approve <name>"),
-    fill("app.refuse", "Refuse app version", G::Apps, "app refuse ")
-        .words("reject update version")
-        .command(":app refuse <name> [reason]"),
-    fill("app.rollback", "Roll back app", G::Apps, "app rollback ")
-        .words("previous version undo")
-        .command(":app rollback <name> [version]"),
-    fill("app.enable", "Enable app", G::Apps, "app enable ").command(":app enable <name>"),
-    fill("app.disable", "Disable app", G::Apps, "app disable ").command(":app disable <name>"),
-    fill("app.remove", "Remove app", G::Apps, "app remove ")
+    ask(
+        "app.refuse",
+        "Refuse app version",
+        G::Apps,
+        "app refuse",
+        &[APP, Arg::new(Ask::Text, "reason").optional("no reason")],
+    )
+    .words("reject update version")
+    .command(":app refuse <name> [reason]"),
+    ask(
+        "app.rollback",
+        "Roll back app",
+        G::Apps,
+        "app rollback",
+        &[
+            APP,
+            Arg::new(Ask::Text, "version").optional("the previous version"),
+        ],
+    )
+    .words("previous version undo")
+    .command(":app rollback <name> [version]"),
+    ask("app.enable", "Enable app", G::Apps, "app enable", &[APP]).command(":app enable <name>"),
+    ask("app.disable", "Disable app", G::Apps, "app disable", &[APP])
+        .command(":app disable <name>"),
+    ask("app.remove", "Remove app", G::Apps, "app remove", &[APP])
         .words("delete uninstall")
         .command(":app remove <name>"),
-    fill("app.add", "Propose app from folder", G::Apps, "app add ")
-        .words("install")
-        .command(":app add <folder>"),
-    fill("app.new", "New app from template", G::Apps, "app new ")
-        .words("create")
-        .command(":app new <name> [template]"),
-    fill("app.dev", "Dev-run app folder", G::Apps, "app dev ")
-        .words("develop test")
-        .command(":app dev <folder>")
-        .needs(N::Channel),
+    ask(
+        "app.add",
+        "Propose app from folder",
+        G::Apps,
+        "app add",
+        &[FOLDER],
+    )
+    .words("install")
+    .command(":app add <folder>"),
+    ask(
+        "app.new",
+        "New app from template",
+        G::Apps,
+        "app new",
+        &[
+            NAME,
+            Arg::new(Ask::Text, "template").optional("the default template"),
+        ],
+    )
+    .words("create")
+    .command(":app new <name> [template]"),
+    ask(
+        "app.dev",
+        "Dev-run app folder",
+        G::Apps,
+        "app dev",
+        &[FOLDER],
+    )
+    .words("develop test")
+    .command(":app dev <folder>")
+    .needs(N::Channel),
     cmd("app.brief", "Post app brief", G::Apps, "app brief")
         .words("describe agent")
         .command(":app brief [name]"),
@@ -797,17 +1071,34 @@ pub static TABLE: &[ActionSpec] = &[
         .words("approve approval allow refuse agent command app version ctrl-y")
         .command(":approvals"),
     // Me.
-    fill("status.set", "Set my status…", G::Me, "status ")
-        .words("away lunch busy presence")
-        .command(":status [--expires N[smhdw]] <text>")
-        .aliases(&["status"])
-        .needs(N::Connected),
+    ask(
+        "status.set",
+        "Set my status…",
+        G::Me,
+        "status",
+        &[
+            Arg::new(Ask::Text, "status"),
+            Arg::new(Ask::Duration, "expires")
+                .optional("no expiry")
+                .lead("--expires "),
+        ],
+    )
+    .words("away lunch busy presence")
+    .command(":status [--expires N[smhdw]] <text>")
+    .aliases(&["status"])
+    .needs(N::Connected),
     cmd("status.clear", "Clear my status", G::Me, "status clear")
         .command(":status clear")
         .needs(N::Connected),
-    fill("presence.toggle", "Presence on or off", G::Me, "presence ")
-        .words("online away visible")
-        .command(":presence [on|off]"),
+    ask(
+        "presence.toggle",
+        "Presence on or off",
+        G::Me,
+        "presence",
+        &[Arg::new(Ask::Choice(PRESENCE), "presence")],
+    )
+    .words("online away visible")
+    .command(":presence [on|off]"),
     cmd("id.lock", "Lock identity", G::Me, "lock")
         .words("key secure away")
         .command(":lock")
@@ -1017,7 +1308,7 @@ pub fn by_id(id: &str) -> Option<(usize, &'static ActionSpec)> {
 mod tests {
     use std::collections::HashSet;
 
-    use super::{Run, TABLE, Where};
+    use super::{Ask, Run, TABLE, Then, Where, command_text};
     use crate::ui::{
         command::{Command, parse},
         keymap::UiAction,
@@ -1154,14 +1445,106 @@ mod tests {
         Help,
         Theme(_),
         Unknown(_),
+        DmWith(_),
+        DmAddPerson(_),
     );
+
+    /// The `:` forms of each command that take an argument a person must
+    /// give. An exhaustive `match`: a command added to bzz does not compile
+    /// here until someone says whether it takes one, and then
+    /// `every_command_with_an_argument_has_its_steps` asks for its steps.
+    fn forms_with_an_argument(command: &Command) -> &'static [&'static str] {
+        match command {
+            Command::Status(_) => &["status"],
+            Command::Report(_) => &["report"],
+            Command::Profile(_) => &["profile"],
+            Command::Presence(_) => &["presence"],
+            Command::Sort(_) => &["sort"],
+            Command::Solo(_) => &["solo"],
+            Command::Huddle(_) => &["huddle", "huddle react", "huddle input", "huddle output"],
+            Command::Artifact(_) => &["artifact rename", "artifact move"],
+            Command::Section(_) => &["section new", "section rename", "section move"],
+            Command::App(_) => &[
+                "app open",
+                "app share",
+                "app unshare",
+                "app approve",
+                "app refuse",
+                "app rollback",
+                "app enable",
+                "app disable",
+                "app remove",
+                "app add",
+                "app new",
+                "app dev",
+            ],
+            Command::DmWith(_) => &["dm"],
+            Command::DmAddPerson(_) => &["dm add"],
+            // `local` and `directory` each have a row of their own.
+            Command::Agents(_) => &[],
+            // `:agent new` opens a form that asks the name.
+            Command::Agent(_) => &[],
+            // The theme row asks for the theme in a step that previews it;
+            // `:theme <name>` is the typed form of the same.
+            Command::Theme(_) => &[],
+            Command::Quit
+            | Command::Help
+            | Command::Lock
+            | Command::Reconnect
+            | Command::Resync
+            | Command::ThemeReload
+            | Command::MediaReload
+            | Command::Inbox
+            | Command::Search
+            | Command::Dm
+            | Command::DmHide
+            | Command::DmAdd
+            | Command::Approvals
+            | Command::AddCommunity
+            | Command::RemoveCommunity
+            | Command::PurgeCache
+            | Command::System
+            | Command::SignIn
+            | Command::ToChannel
+            | Command::Artifacts
+            | Command::Tasks
+            | Command::Broker
+            | Command::Apps
+            | Command::Unknown(_) => &[],
+        }
+    }
+
+    /// One answer of each kind, to build a row's `:` text in a test.
+    fn sample(ask: Ask) -> &'static str {
+        match ask {
+            Ask::Person => "npub1sg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f237lmu63q0uf63m",
+            Ask::Channel => "#general",
+            Ask::Emoji => "🎉",
+            Ask::Duration => "2h",
+            Ask::Text => "Plans",
+            Ask::Choice(choices) => choices
+                .iter()
+                .map(|(word, _)| *word)
+                .next_back()
+                .unwrap_or(""),
+            Ask::Theme => "nord",
+            Ask::App => "board",
+        }
+    }
 
     /// The `:` texts the table runs or shows, without their usage.
     fn command_texts() -> Vec<String> {
         let mut texts = Vec::new();
         for spec in TABLE {
-            if let Run::Command(text) | Run::Prefill(text) = spec.run {
+            if let Run::Command(text) | Run::Prefill(text) | Run::Steps(Then::Command(text), _) =
+                spec.run
+            {
                 texts.push(text.to_owned());
+            }
+            // And what its steps build: `:dm <npub>` is not `:dm`.
+            if let Run::Steps(Then::Command(text), args) = spec.run {
+                let answers = args.iter().map(|arg| sample(arg.ask)).collect::<Vec<_>>();
+                texts.push(command_text(text, args, &answers));
             }
             if let Some(command) = spec.command {
                 // ":status [--expires …] <text>" → "status"; the usage's
@@ -1274,6 +1657,101 @@ mod tests {
                 ":{verb} has no row"
             );
         }
+    }
+
+    /// C9: every `:` command that takes an argument is asked for in steps.
+    #[test]
+    fn every_command_with_an_argument_has_its_steps() {
+        let stepped = TABLE
+            .iter()
+            .filter_map(|spec| match spec.run {
+                Run::Steps(Then::Command(command), args) if !args.is_empty() => Some(command),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for text in command_texts() {
+            for form in forms_with_an_argument(&parse(&text)) {
+                assert!(
+                    stepped.contains(form),
+                    ":{form} takes an argument and no row of src/ui/action_table.rs asks for it in steps"
+                );
+            }
+        }
+        // And the forms are reached from the table at all.
+        for kind in ALL_COMMANDS {
+            let found = command_texts()
+                .iter()
+                .any(|text| command_kind(&parse(text)) == *kind);
+            assert!(found || *kind == "Unknown", "{kind}");
+        }
+    }
+
+    /// A usage with a required `<argument>` is never opened as a bare
+    /// prefill: its row has steps.
+    #[test]
+    fn no_row_leaves_a_required_argument_to_be_typed() {
+        for spec in TABLE {
+            let required = spec.command.is_some_and(|usage| usage.contains('<'));
+            if required && !matches!(spec.run, Run::Shell(_)) {
+                assert!(
+                    matches!(spec.run, Run::Steps(..)),
+                    "{} needs an argument and has no steps",
+                    spec.id
+                );
+            }
+        }
+    }
+
+    /// What the steps build is a command bzz parses, of the row's kind.
+    #[test]
+    fn the_steps_build_commands_bzz_parses() {
+        for spec in TABLE {
+            let Run::Steps(then, args) = spec.run else {
+                continue;
+            };
+            assert!(!args.is_empty(), "{}", spec.id);
+            let Then::Command(command) = then else {
+                continue;
+            };
+            let answers = args.iter().map(|arg| sample(arg.ask)).collect::<Vec<_>>();
+            let text = command_text(command, args, &answers);
+            let parsed = parse(&text);
+            assert!(
+                !matches!(parsed, Command::Unknown(_)),
+                "{}: :{text} is not a command bzz parses",
+                spec.id
+            );
+            assert_eq!(
+                command_kind(&parsed),
+                command_kind(&parse(&format!("{command} x"))),
+                "{}: :{text}",
+                spec.id
+            );
+        }
+        assert_eq!(
+            command_text(
+                "status",
+                match super::by_id("status.set").unwrap().1.run {
+                    Run::Steps(_, args) => args,
+                    _ => unreachable!(),
+                },
+                &["In a meeting", "2h"]
+            ),
+            "status --expires 2h In a meeting"
+        );
+    }
+
+    #[test]
+    fn the_report_reasons_are_the_relays() {
+        let words = super::REPORT_REASONS
+            .iter()
+            .map(|(word, _)| *word)
+            .collect::<HashSet<_>>();
+        let relay = buzz_sdk::REPORT_TYPES
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        assert_eq!(words, relay);
     }
 
     #[test]

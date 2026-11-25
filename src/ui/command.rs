@@ -66,6 +66,12 @@ pub enum Command {
     /// `:theme` opens the theme picker; `:theme <name>` sets that theme.
     /// `:theme reload` stays [`Command::ThemeReload`] (v0.17 C4).
     Theme(String),
+    /// `:dm <npub|hex> [npub|hex…]`: open the DM with these people, as the
+    /// DM picker's Enter does (v0.17 C9: the palette's "Start a DM" step).
+    DmWith(String),
+    /// `:dm add <npub|hex>`: add this person to the open DM, as the picker
+    /// does in `:dm add` (v0.17 C9).
+    DmAddPerson(String),
 }
 
 pub fn parse(input: &str) -> Command {
@@ -132,6 +138,12 @@ pub fn parse(input: &str) -> Command {
         value if value == "theme" || value.starts_with("theme ") => {
             Command::Theme(value.trim_start_matches("theme").trim().to_owned())
         }
+        value if value.starts_with("dm add ") => {
+            Command::DmAddPerson(value.trim_start_matches("dm add").trim().to_owned())
+        }
+        value if value.starts_with("dm ") => {
+            Command::DmWith(value.trim_start_matches("dm").trim().to_owned())
+        }
         value => Command::Unknown(value.to_owned()),
     }
 }
@@ -185,7 +197,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     spec(
         "dm",
         &[],
-        "[add | hide]",
+        "[add | hide | <npub>…]",
         "start a DM; add a person to this DM; hide it",
     ),
     spec(
@@ -499,7 +511,7 @@ mod tests {
         assert!(unknown_answer("commands").contains(":help"));
         assert!(unknown_answer("zzzzzzzz").contains(":help lists the commands"));
         // The first word is right, what follows is not: its usage.
-        assert!(unknown_answer("dm everyone").starts_with("usage: :dm [add | hide]"));
+        assert!(unknown_answer("dm everyone").starts_with("usage: :dm [add | hide | <npub>…]"));
         assert!(unknown_answer("media").starts_with("usage: :media reload"));
         for input in ["hudle", "x", "dm everyone", "", "zzzzzzzz"] {
             assert!(
@@ -529,5 +541,21 @@ mod tests {
                 assert_eq!(find(word), Some(spec));
             }
         }
+    }
+
+    #[test]
+    fn dm_takes_people_and_its_bare_forms_stay() {
+        assert_eq!(parse(":dm"), Command::Dm);
+        assert_eq!(parse(":dm add"), Command::DmAdd);
+        assert_eq!(parse(":dm hide"), Command::DmHide);
+        assert_eq!(parse(":dm npub1x"), Command::DmWith("npub1x".into()));
+        assert_eq!(
+            parse(":dm npub1x npub1y"),
+            Command::DmWith("npub1x npub1y".into())
+        );
+        assert_eq!(
+            parse(":dm add npub1x"),
+            Command::DmAddPerson("npub1x".into())
+        );
     }
 }
