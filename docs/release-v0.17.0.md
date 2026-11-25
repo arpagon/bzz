@@ -1,6 +1,6 @@
 # bzz v0.17.0 — The first minute, and everything within reach
 
-**Status:** Release candidate, not released. See
+**Status:** Released 2026-11-25, by the owner's approval. See
 [`validation-v0.17.0.md`](validation-v0.17.0.md) for what was proven, how,
 and what was not. Every claim below names its proof there, or says it was
 not verified.
@@ -455,8 +455,8 @@ What v0.17.0 does not do, and what was not seen. Each is in
   Inbox, DMs, search, the store, the terminal's restore and apps there, the
   system keychain with a generated identity, the upgrade test on Intel, the agent host
   on Intel, and the tone round trip through a virtual audio device on
-  Apple Silicon. CI at the last commits had not finished when this was
-  written ([the principal's own checks][principal]).
+  Apple Silicon. All of it was green at the merged head
+  ([the principal's own checks][principal]).
 - **No person has used this version in Windows Terminal.** It was driven
   in a console over SSH (a ConPTY, from Linux through tmux): by task
   `windows` with a build of its own, and by the principal with the release
@@ -558,13 +558,10 @@ of an app but its brief; one app shown in a channel at a time
 
 **Pending acceptance**
 
-- The version (0.17.0 in `Cargo.toml`) is on the candidate since
-  2026-11-26 ([release], [principal]).
-- The installer on clean machines with this release published: until then
-  the full install was seen with v0.16.0's archives only ([install]).
-- CI green at the candidate on the four platforms, and two consecutive green
-  runs on `main` (F6), which run once the branch is merged ([ci],
-  [install]).
+- The installer on clean machines with this release published: before the
+  release the full install was seen with v0.16.0's archives only
+  ([install]). It is run once the archives exist, and what it showed is
+  added to the validation document after this text.
 - The checks only a person can do ([`e2e-manual.md`](e2e-manual.md), section
   15), and the owner's release acceptance: `bzz demo` from the published
   installer; `Ctrl+K` to do three things he did not know the key for; a
