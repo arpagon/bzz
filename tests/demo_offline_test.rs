@@ -112,7 +112,11 @@ fn the_demo_fills_its_first_screen_offline_and_leaves_nothing() {
     };
     let home_dir = home.path().display().to_string();
     let inner = format!(
+        // No certificate store either (a minimal container has none):
+        // the demo speaks plain HTTP to its own relay and needs none. A
+        // v0.17 candidate failed here with "network error: builder error".
         "ip link set lo up && exec env -u DBUS_SESSION_BUS_ADDRESS HOME={home_dir} \
+         SSL_CERT_FILE={home_dir}/no-such.pem SSL_CERT_DIR={home_dir}/no-such-certs \
          XDG_CONFIG_HOME={home_dir}/.config XDG_DATA_HOME={home_dir}/.local/share \
          XDG_CACHE_HOME={home_dir}/.cache XDG_STATE_HOME={home_dir}/.local/state \
          TMPDIR={} {binary} demo",

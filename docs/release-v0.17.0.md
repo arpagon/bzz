@@ -65,6 +65,15 @@ its last section says how the build departed from it.
   `bzz paths` run on clean `debian:stable-slim`, `ubuntu:22.04`,
   `ubuntu:24.04` and `almalinux:9-minimal`, which have no sound library and
   where v0.16.0 stopped at `libasound.so.2` ([sound]).
+- **It needs no certificate store to start** ([principal]). On a machine
+  that has none (a minimal container), bzz could not build its HTTP client
+  at all, and `bzz demo`, which speaks plain HTTP to a relay inside its own
+  process, ended with "network error: builder error". bzz now builds the
+  client with no trusted certificate there: the demo and a relay on the same
+  machine work, and an HTTPS address fails saying its certificate cannot be
+  verified, which is the truth on that machine until `ca-certificates` is
+  installed. Found on the release candidate, in a clean container with
+  nothing installed and no network.
 - **glibc 2.34** (A6, D12): the installer generated for this release
   accepts glibc 2.34, so RHEL 9 and its rebuilds install; the release
   workflow is unchanged ([install]).

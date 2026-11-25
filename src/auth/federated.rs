@@ -301,13 +301,14 @@ impl AdapterClient {
                 "identity_adapter must be a plain origin".into(),
             ));
         }
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
-            .user_agent(crate::realtime::session::USER_AGENT)
-            .build()
-            .map_err(|error| Error::Network(error.to_string()))?;
+        let client = crate::protocol::http::build_client(|| {
+            Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(30))
+                .user_agent(crate::realtime::session::USER_AGENT)
+        })
+        .map_err(|error| Error::Network(error.to_string()))?;
         Ok(Self { base, client })
     }
 

@@ -209,6 +209,22 @@ The draft pull request of D14, read on GitHub:
   the merge of the scenario suite. The macOS build on Apple Silicon was
   cancelled by GitHub for lack of a runner ("not acquired by Runner of type
   hosted"), as on `main` before this version; not a result.
+- **The candidate's own Linux binary** (built by CI at `c79f827`, version
+  0.17.0, 2026-11-26), with nothing installed and no network:
+  `bzz --version`, `bzz paths` and `bzz demo --help` answer on
+  `debian:stable-slim`, `ubuntu:22.04`, `ubuntu:24.04`,
+  `almalinux:9-minimal` and `fedora:latest`; on `ubuntu:20.04` the loader
+  refuses it (glibc 2.31) and on Alpine it does not start (musl), as the
+  release notes say. Its `NEEDED` names no sound library.
+- **A defect found there and fixed.** In that Debian container `bzz demo`
+  ended with "network error: builder error": the image has no certificate
+  store, and reqwest cannot build a client without one. Every earlier proof
+  of the demo had run where a store exists. Fixed with
+  `protocol::http::build_client` (a client with no trusted certificate when
+  the store cannot be loaded), used by the relay's HTTP client, media,
+  avatars, the join form's probe, the agents' tool server and the sign-in
+  service; `tests/demo_offline_test.rs` now runs the demo with no store,
+  seen failing without the fix and passing with it.
 
 ## What went wrong on the way
 

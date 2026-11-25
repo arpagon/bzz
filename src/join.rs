@@ -330,12 +330,13 @@ pub async fn probe(relay: &RelayAddress) -> std::result::Result<RelayFacts, Prob
 
 /// The relay's NIP-11 document, unauthenticated, following no redirect.
 pub async fn nip11(endpoint: &RelayEndpoint) -> std::result::Result<Value, ProbeFailure> {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(ANSWER_TIMEOUT)
-        .user_agent(crate::realtime::session::USER_AGENT)
-        .build()
-        .map_err(|_| ProbeFailure::NoAnswer)?;
+    let client = crate::protocol::http::build_client(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(ANSWER_TIMEOUT)
+            .user_agent(crate::realtime::session::USER_AGENT)
+    })
+    .map_err(|_| ProbeFailure::NoAnswer)?;
     let response = client
         .get(endpoint.http_base.clone())
         .header("Accept", "application/nostr+json")
