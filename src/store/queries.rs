@@ -1509,6 +1509,18 @@ impl Store {
         Ok(profiles)
     }
 
+    /// The newest NIP-38 status of one person, whether or not a profile of
+    /// theirs is stored (`:status`, v0.17 D6).
+    pub fn user_status(
+        &self,
+        community_id: Uuid,
+        pubkey: &str,
+    ) -> Result<Option<crate::protocol::presence::UserStatus>> {
+        Ok(self
+            .user_statuses(community_id, Some(pubkey))?
+            .remove(pubkey))
+    }
+
     fn user_statuses(
         &self,
         community_id: Uuid,

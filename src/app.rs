@@ -4001,6 +4001,10 @@ impl App {
                         "cached read-only mode: restore or unlock the identity, then restart bzz"
                             .into(),
                     );
+                } else if let Some(refusal) = self.context_refusal(UiAction::Delete) {
+                    // `d` on another person's message says why not, as the
+                    // actions menu does (v0.17 D5).
+                    self.status_error = Some(refusal);
                 } else if self.selected_message().is_some_and(|message| {
                     self.runtime.as_ref().is_some_and(|runtime| {
                         message.pubkey == runtime.signer.public_key().to_hex()
@@ -4017,8 +4021,20 @@ impl App {
                         "cached read-only mode: restore or unlock the identity, then restart bzz"
                             .into(),
                     );
+                } else if let Some(refusal) = self.context_refusal(UiAction::MarkUnread) {
+                    self.status_error = Some(refusal);
                 } else {
                     self.mark_unread().await?;
+                    let marked = self.current_channel().map(|channel| {
+                        format!(
+                            "marked {}{} unread",
+                            crate::ui::finder::marker(channel),
+                            sanitize::single_line(&channel.name)
+                        )
+                    });
+                    if marked.is_some() {
+                        self.status_error = marked;
+                    }
                 }
             }
             WorkspaceEffect::FocusApp => self.focus_app(),
@@ -4040,6 +4056,24 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Why the actions menu would not offer `action` here, in its words: the
+    /// keys `d` and `u` and the menu answer alike (v0.17 D5).
+    fn context_refusal(&self, action: UiAction) -> Option<String> {
+        let actions = derive_actions(self.action_context());
+        match actions.iter().find(|entry| entry.action == action) {
+            Some(entry) if entry.enabled => None,
+            Some(entry) => Some(format!(
+                "{}: {}",
+                entry.label,
+                entry.reason.unwrap_or("not available here")
+            )),
+            None => Some(format!(
+                "{}: select a message in the conversation first (3 focuses it)",
+                action.label()
+            )),
+        }
     }
 
     fn scroll_focused_viewport(&mut self, scroll: ViewportScroll) {
@@ -7101,6 +7135,25 @@ impl App {
         Ok(())
     }
 
+    /// `:status`: your status as the community holds it, and how to change
+    /// it (v0.17 D6).
+    async fn show_status(&mut self) -> Result<()> {
+        let (Some(community), Some(pubkey)) = (
+            self.active_community_id(),
+            self.self_pubkey().map(str::to_owned),
+        ) else {
+            self.status_error = Some("no identity here, so no status".into());
+            return Ok(());
+        };
+        let status = self
+            .store
+            .call(move |store| store.user_status(community, &pubkey))
+            .await?;
+        let now = crate::clock::SystemClock.now_unix();
+        self.status_error = Some(status_notice(status.as_ref(), now));
+        Ok(())
+    }
+
     fn set_status(&mut self, arguments: &str) {
         let Some(runtime) = &self.runtime else {
             self.status_error = Some(
@@ -9628,6 +9681,10 @@ impl App {
             }
             crate::ui::command::Command::SignIn => self.begin_federated_sign_in().await,
             crate::ui::command::Command::ToChannel => self.send_draft_to_channel(),
+            // v0.17 D6: a bare `:status` shows the status; v0.16 cleared it.
+            crate::ui::command::Command::Status(arguments) if arguments.is_empty() => {
+                return self.show_status().await;
+            }
             crate::ui::command::Command::Status(arguments) => self.set_status(&arguments),
             crate::ui::command::Command::Presence(argument) => {
                 return self.presence_command(&argument).await;
@@ -11778,6 +11835,36 @@ async fn next_network(runtime: &mut Option<Runtime>) -> Option<SupervisorEvent> 
         None => std::future::pending().await,
     }
 }
+/// What a bare `:status` says (v0.17 D6).
+fn status_notice(status: Option<&crate::protocol::presence::UserStatus>, now: u64) -> String {
+    match status.filter(|status| status.visible(now)) {
+        Some(status) => {
+            let text = [status.emoji.as_str(), status.text.as_str()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .map(sanitize::single_line)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let until = status
+                .expires_at
+                .and_then(|at| u64::try_from(at).ok())
+                .map(|at| {
+                    let left = at.saturating_sub(now);
+                    let (amount, unit) = match left {
+                        0..=59 => (left, "s"),
+                        60..=3_599 => (left / 60, "m"),
+                        3_600..=86_399 => (left / 3_600, "h"),
+                        _ => (left / 86_400, "d"),
+                    };
+                    format!(" · ends in {amount}{unit}")
+                })
+                .unwrap_or_default();
+            format!("your status: {text}{until} · :status clear clears it")
+        }
+        None => "you have no status · :status <text> sets one".into(),
+    }
+}
+
 fn dm_label(
     participants: &[String],
     self_pubkey: &str,

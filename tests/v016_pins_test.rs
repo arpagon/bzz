@@ -250,7 +250,10 @@ const DELIBERATE_CHANGES: [(&str, &str); 3] = [
 
 /// Bindings v0.17.0 adds: scope, keys, action. Every one is new (no v0.16.0
 /// binding moves) and named in `DELIBERATE_CHANGES` or by its decision.
-const ADDED_KEYS: &[(&str, &str, &str)] = &[];
+const ADDED_KEYS: &[(&str, &str, &str)] = &[
+    ("Workspace", "d", "Delete"),
+    ("Workspace", "u", "MarkUnread"),
+];
 
 /// Commands v0.16.0 answered with "unknown command" and v0.17.0 knows
 /// (plan C4); they move nothing that worked.

@@ -11,11 +11,17 @@ use uuid::Uuid;
 
 use crate::{
     config::Config,
-    domain::{Channel, ChannelFacts, ChannelKind, Visibility},
+    domain::{Channel, ChannelFacts, ChannelKind, Message, Visibility},
     paths::Paths,
     store::{Store, writer::StoreHandle},
-    ui::state::{ConfirmationKind, Overlay},
+    ui::{
+        keymap::UiAction,
+        state::{ConfirmationKind, FocusSurface, Overlay},
+    },
 };
+
+const OWN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const OTHER: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 async fn app(temporary: &TempDir) -> super::App {
     let paths = Paths {
@@ -31,6 +37,28 @@ async fn app(temporary: &TempDir) -> super::App {
     super::App::new(config, paths, handle).await.unwrap()
 }
 
+/// An App with a community whose identity is `OWN`; nothing connects.
+async fn app_with_identity(temporary: &TempDir) -> super::App {
+    let mut app = app(temporary).await;
+    let identity = crate::config::IdentityConfig {
+        id: Uuid::new_v4(),
+        label: "find".into(),
+        pubkey: OWN.into(),
+        backend: crate::config::KeyBackend::Keychain,
+        key_ref: "identity:find".into(),
+    };
+    app.config.identities.push(identity.clone());
+    app.config
+        .add_community(
+            "find".into(),
+            "wss://find.example".into(),
+            identity.id,
+            false,
+        )
+        .unwrap();
+    app
+}
+
 fn channel(name: &str, kind: ChannelKind) -> Channel {
     Channel {
         id: Uuid::new_v4(),
@@ -44,6 +72,20 @@ fn channel(name: &str, kind: ChannelKind) -> Channel {
         last_event_at: None,
         facts: ChannelFacts::default(),
     }
+}
+
+fn message(channel: Uuid, id: &str, author: &str) -> Message {
+    serde_json::from_value(serde_json::json!({
+        "event_id": id,
+        "channel_id": channel,
+        "pubkey": author,
+        "created_at": 1_800_000_000_u64,
+        "content": "generated message",
+        "root_event_id": null,
+        "parent_event_id": null,
+        "deleted": false,
+    }))
+    .unwrap()
 }
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -335,4 +377,88 @@ async fn a_sequence_behind_another_overlay_still_expires() {
     app.on_tick().await.unwrap();
     assert!(!app.input_router.sequence_active());
     assert_eq!(app.presentation.overlay, Some(Overlay::Broker));
+}
+
+/// C7: `d` and `u` are the workspace's, and `d` on another person's message
+/// says why not in the words of the actions menu.
+#[tokio::test]
+async fn d_on_another_persons_message_says_why_not() {
+    let temporary = TempDir::new().unwrap();
+    let mut app = app_with_identity(&temporary).await;
+    let keymap = &app.keymap;
+    for (character, action) in [('d', UiAction::Delete), ('u', UiAction::MarkUnread)] {
+        let chord = crate::ui::keymap::KeyChord::new(KeyCode::Char(character), KeyModifiers::NONE);
+        assert_eq!(
+            keymap.lookup(crate::ui::keymap::KeyScope::Workspace, &[chord]),
+            crate::ui::keymap::KeyLookup::Action(action)
+        );
+        // The Inbox keeps its own: `u` is not `U` there.
+        assert_eq!(
+            keymap.lookup(crate::ui::keymap::KeyScope::Inbox, &[chord]),
+            crate::ui::keymap::KeyLookup::NoMatch
+        );
+    }
+    let general = channel("general", ChannelKind::Stream);
+    let id = general.id;
+    app.channels = vec![general];
+    app.messages = vec![message(id, "e1", OTHER), message(id, "e2", OWN)];
+    app.presentation.set_workspace_focus(FocusSurface::Timeline);
+    app.timeline.selected_event = Some("e1".into());
+    assert_eq!(
+        app.context_refusal(UiAction::Delete).as_deref(),
+        Some("delete own message: only your own message can be deleted")
+    );
+    // Without a selected message.
+    app.timeline.selected_event = None;
+    assert_eq!(
+        app.context_refusal(UiAction::Delete).as_deref(),
+        Some("delete own message: select a message first")
+    );
+    // Not in the conversation.
+    app.presentation.set_workspace_focus(FocusSurface::Channels);
+    assert!(
+        app.context_refusal(UiAction::MarkUnread)
+            .is_some_and(|refusal| refusal.contains("select a message in the conversation"))
+    );
+}
+
+/// C7, D6: a bare `:status` shows the status (v0.16.0 cleared it).
+#[test]
+fn bare_status_shows() {
+    let lunch = crate::protocol::presence::UserStatus {
+        text: "lunch".into(),
+        emoji: "🍕".into(),
+        expires_at: Some(1_000 + 2 * 3_600),
+    };
+    assert_eq!(
+        super::status_notice(Some(&lunch), 1_000),
+        "your status: 🍕 lunch · ends in 2h · :status clear clears it"
+    );
+    assert_eq!(
+        super::status_notice(Some(&lunch), 1_000 + 3 * 3_600),
+        "you have no status · :status <text> sets one"
+    );
+    assert_eq!(
+        super::status_notice(None, 0),
+        "you have no status · :status <text> sets one"
+    );
+}
+
+#[tokio::test]
+async fn bare_status_does_not_clear() {
+    let temporary = TempDir::new().unwrap();
+    let mut app = app_with_identity(&temporary).await;
+    command(&mut app, "status").await;
+    // Without a connection v0.16.0 answered "cached read-only mode" and,
+    // connected, published an empty status; v0.17.0 reads it.
+    assert_eq!(
+        app.status_error.as_deref(),
+        Some("you have no status · :status <text> sets one")
+    );
+    command(&mut app, "status clear").await;
+    assert!(
+        app.status_error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("cached read-only mode"))
+    );
 }
