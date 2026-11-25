@@ -124,6 +124,9 @@ fn main() {
     // `cargo bench` passes `--bench`; `cargo test --all-targets` does not.
     let measuring = std::env::args().any(|argument| argument == "--bench");
     let runs = if measuring { RUNS } else { 1 };
+    if !measuring {
+        println!("one run of each case, not a measurement: `cargo bench --bench palette` measures");
+    }
     let candidates = candidates();
     let mut matcher = Matcher::new(Config::DEFAULT);
     let mut all = Vec::new();
@@ -160,10 +163,10 @@ fn main() {
         "  all queries: median {:.3?} p95 {p95:.3?} max {:.3?} (budget p95 ≤ 4 ms: {})",
         percentile(&all, 0.5),
         all[all.len() - 1],
-        if p95 <= Duration::from_millis(4) {
-            "within"
-        } else {
-            "OVER"
+        match (measuring, p95 <= Duration::from_millis(4)) {
+            (false, _) => "not measured",
+            (true, true) => "within",
+            (true, false) => "OVER",
         }
     );
 
