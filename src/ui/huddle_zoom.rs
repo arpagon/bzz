@@ -1123,7 +1123,11 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             let started = std::time::Instant::now();
             let ms = self.delay_ms.load(std::sync::atomic::Ordering::Relaxed);
-            std::thread::sleep(std::time::Duration::from_millis(ms));
+            // A sleep of zero still gives up the time slice, which on
+            // Windows is long enough to look like a slow writer.
+            if ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
             self.spent.fetch_add(
                 started.elapsed().as_micros() as u64,
                 std::sync::atomic::Ordering::Relaxed,
