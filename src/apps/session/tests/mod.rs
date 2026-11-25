@@ -1205,9 +1205,11 @@ fn the_boards_own_moves_do_not_conflict_when_keys_come_faster_than_replies() {
             app.screen()
         );
         // While moves of its own are on their way the card stays shown
-        // where the last key put it.
+        // where the last key put it, and the Board says it is saving.
         if answered < 25 {
-            assert!(app.screen().contains("Doing (1)"), "{}", app.screen());
+            let screen = app.screen();
+            assert!(screen.contains("Doing (1)"), "{screen}");
+            assert_eq!(last_row(&screen), "Saving...");
         }
     }
     assert_eq!(answered, 25);

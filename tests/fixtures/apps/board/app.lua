@@ -388,8 +388,12 @@ function app.reply(s, r, ctx)
     if r.ok then
       -- While a later move of ours is on its way the card stays as shown:
       -- bzz sends that one on the revision this one made.
-      if not more then put(s, r.record) end
-      s.status = r.tag == "merge" and "Conflict: merged with a newer change." or "Saved."
+      if more then
+        s.status = "Saving..."
+      else
+        put(s, r.record)
+        s.status = r.tag == "merge" and "Conflict: merged with a newer change." or "Saved."
+      end
     elseif r.error.code == "conflict" then
       -- Keep their change, put ours (the column) on top, and try again.
       local content = r.current.content
