@@ -2990,10 +2990,25 @@ async fn real_relay_huddle_names_a_late_joiner_and_shows_their_level() {
 
     // Alice is alone in the call: nobody else has a name or a lane.
     let alice_joined = audio::join(&ws, backing, parent, &alice).await.unwrap();
-    let (_alice_capture, alice_capture_rx) = tokio::sync::mpsc::channel(64);
+    let (alice_capture, alice_capture_rx) = tokio::sync::mpsc::channel(64);
     let (alice_playback, _alice_playback_rx) = tokio::sync::mpsc::channel(256);
     let alice_call = audio::start(alice_joined, alice_capture_rx, alice_playback).unwrap();
     assert!(alice_call.others().is_empty());
+    // Muted, her microphone's level still reaches her own lane.
+    assert!(alice_call.is_muted());
+    let _ = alice_call.levels.take_mic();
+    for frame in 0..10_u64 {
+        alice_capture
+            .send(synth::tone(1000.0, -20.0, frame * 960, 960))
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mic = alice_call
+        .levels
+        .take_mic()
+        .expect("a muted microphone's level");
+    assert!(mic > -25.0, "{mic}");
 
     // Bob joins after her.
     let bob_joined = audio::join(&ws, backing, parent, &bob).await.unwrap();

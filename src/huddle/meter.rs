@@ -527,5 +527,8 @@ mod tests {
         // Hidden halfway through: nothing after.
         let half = count_frames(|t| t < 2.0, Motion::Full, speech);
         assert!(half < full && half <= 45, "{half}");
+        println!(
+            "frames in 10 s: hidden 0, silence 1, full {full}, calm {calm}, off {off}, hidden at 2 s {half}"
+        );
     }
 }
