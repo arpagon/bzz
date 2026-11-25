@@ -537,6 +537,8 @@ pub struct App {
     /// Explicit mention selections per channel, most recent highest.
     mention_history: MentionHistory,
     finder: crate::ui::finder::FinderState,
+    /// Where the help is scrolled to (v0.17 C3).
+    help_scroll: crate::ui::help::HelpScroll,
     /// What the last `:` command answered when it was mistyped or missing
     /// its arguments: shown, wrapped, under the prompt it keeps open
     /// (v0.17 C4).
@@ -1035,6 +1037,7 @@ impl App {
             mention_choices: None,
             mention_history: MentionHistory::default(),
             finder: crate::ui::finder::FinderState::default(),
+            help_scroll: crate::ui::help::HelpScroll::default(),
             command_answer: None,
             reaction_index: 0,
             reaction_query: None,
@@ -3713,6 +3716,24 @@ impl App {
         Ok(())
     }
 
+    /// The keys of the help: it scrolls (v0.17 C3).
+    fn help_key(&mut self, key: KeyEvent) {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down if !control => self.help_scroll.by(1),
+            KeyCode::Char('k') | KeyCode::Up if !control => self.help_scroll.by(-1),
+            KeyCode::Char('n') if control => self.help_scroll.by(1),
+            KeyCode::Char('p') if control => self.help_scroll.by(-1),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.help_scroll.page_by(1),
+            KeyCode::Char('d') if control => self.help_scroll.page_by(1),
+            KeyCode::PageUp => self.help_scroll.page_by(-1),
+            KeyCode::Char('u') if control => self.help_scroll.page_by(-1),
+            KeyCode::Char('g') | KeyCode::Home => self.help_scroll.top(),
+            KeyCode::Char('G') | KeyCode::End => self.help_scroll.bottom(),
+            _ => {}
+        }
+    }
+
     async fn handle_presentation_overlay_key(
         &mut self,
         key: KeyEvent,
@@ -3723,6 +3744,8 @@ impl App {
             Some(Overlay::Help) if matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'q')) => {
                 self.presentation.overlay = None;
             }
+            // v0.17 C3: the help scrolls.
+            Some(Overlay::Help) => self.help_key(key),
             Some(Overlay::Actions) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.presentation.overlay = None;
@@ -3785,6 +3808,9 @@ impl App {
             detail_available: self.inbox_state.selected(&self.inbox_items).is_some(),
         };
         let effect = reduce_inbox(&mut state, action);
+        if action == UiAction::OpenHelp {
+            self.help_scroll = crate::ui::help::HelpScroll::default();
+        }
         self.presentation = state.presentation;
         self.inbox_state.narrow_detail = state.narrow_detail;
         match effect {
@@ -3877,6 +3903,9 @@ impl App {
             self.apps.front = false;
         }
         let effect = reduce_workspace(&mut state, action);
+        if action == UiAction::OpenHelp {
+            self.help_scroll = crate::ui::help::HelpScroll::default();
+        }
         self.presentation = state.presentation;
         self.community_cursor = state.community_cursor;
         self.select_community_index(self.community_cursor);
@@ -9744,6 +9773,7 @@ impl App {
                 self.presentation.open_confirmation(ConfirmationKind::Quit);
             }
             crate::ui::command::Command::Help => {
+                self.help_scroll = crate::ui::help::HelpScroll::default();
                 self.presentation.open_overlay(Overlay::Help);
             }
             crate::ui::command::Command::Theme(name) => self.theme_command(&name),
@@ -10848,25 +10878,37 @@ impl App {
             Some(Overlay::Help) => {
                 let actions = derive_actions(self.action_context());
                 frame.render_widget(Clear, area);
+                // Wrapped here to the frame's inside, so the scroll knows
+                // exactly how many rows there are (v0.17 C3).
+                let lines = crate::ui::help::help_lines(
+                    &self.keymap,
+                    if self.presentation.route == Route::Inbox {
+                        KeyScope::Inbox
+                    } else {
+                        KeyScope::Workspace
+                    },
+                    &actions,
+                    usize::from(area.width.saturating_sub(2)),
+                );
+                self.help_scroll
+                    .set_view(lines.len(), usize::from(area.height.saturating_sub(2)));
+                let shown = lines
+                    .iter()
+                    .skip(self.help_scroll.offset)
+                    .take(self.help_scroll.page)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 frame.render_widget(
-                    Paragraph::new(crate::ui::help::effective_keymap_with_actions(
-                        &self.keymap,
-                        if self.presentation.route == Route::Inbox {
-                            KeyScope::Inbox
-                        } else {
-                            KeyScope::Workspace
-                        },
-                        &actions,
-                    ))
-                    .style(self.theme.style(HighlightGroup::Normal))
-                    .block(
-                        Block::bordered()
-                            .border_type(self.theme.border_type(BorderSurface::Modal))
-                            .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                            .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                            .title(" effective keymap "),
-                    )
-                    .wrap(Wrap { trim: false }),
+                    Paragraph::new(shown)
+                        .style(self.theme.style(HighlightGroup::Normal))
+                        .block(
+                            Block::bordered()
+                                .border_type(self.theme.border_type(BorderSurface::Modal))
+                                .border_style(self.theme.style(HighlightGroup::ModalBorder))
+                                .title_style(self.theme.style(HighlightGroup::ModalTitle))
+                                .title(self.help_scroll.title()),
+                        ),
                     area,
                 );
             }

@@ -69,6 +69,44 @@ async fn command(app: &mut super::App, text: &str) {
         .unwrap();
 }
 
+/// C3: at 80x24 the help shows where it is, and `j`, PageDown and `G` reach
+/// its last row (the last `:` command), which v0.16.0 never showed.
+#[tokio::test]
+async fn the_help_scrolls_to_its_last_row_at_80x24() {
+    let temporary = TempDir::new().unwrap();
+    let mut app = app(&temporary).await;
+    command(&mut app, "help").await;
+    assert_eq!(app.presentation.overlay, Some(Overlay::Help));
+    let first = rows(&mut app, 80, 24).join("\n");
+    assert!(first.contains("bzz effective keymap"), "{first}");
+    assert!(first.contains("rows 1-"), "{first}");
+    assert!(!first.contains("local cache"), "{first}");
+    let total = app.help_scroll.total;
+    // One row at a time: j reaches the end and stops there.
+    for _ in 0..total {
+        app.help_key(key(KeyCode::Char('j')));
+        rows(&mut app, 80, 24);
+    }
+    let end = rows(&mut app, 80, 24).join("\n");
+    assert!(end.contains(":purge-cache"), "{end}");
+    assert!(end.contains("local cache"), "{end}");
+    assert!(end.contains(&format!("of {total}")), "{end}");
+    app.help_key(key(KeyCode::Char('g')));
+    assert_eq!(app.help_scroll.offset, 0);
+    // A page at a time.
+    let mut pages = 0;
+    while app.help_scroll.offset < app.help_scroll.max_offset() {
+        app.help_key(key(KeyCode::PageDown));
+        pages += 1;
+        assert!(pages < 50);
+    }
+    assert!(rows(&mut app, 80, 24).join("\n").contains("local cache"));
+    app.help_key(key(KeyCode::Char('g')));
+    app.help_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
+    assert_eq!(app.help_scroll.offset, app.help_scroll.max_offset());
+    assert!(total > 22, "the help is longer than one 80x24 screen");
+}
+
 /// C4: a mistyped command keeps its prompt, and the nearest command is
 /// named under it.
 #[tokio::test]
