@@ -628,6 +628,13 @@ pub struct App {
     /// The last layout drew the open thread. A reply goes into a thread
     /// only while it is drawn.
     thread_drawn: bool,
+    /// When the transient notice (`status_error`) expires (C2).
+    notice_timer: crate::ui::status::NoticeTimer,
+    /// The channel in view and the read time it had when it was opened:
+    /// the `── new ──` line goes before its first later message (L6).
+    new_since: Option<(Uuid, u64)>,
+    /// Unread messages per channel, for the count in the sidebar (L6).
+    unread_counts: HashMap<Uuid, usize>,
 }
 
 const LEADER_TIMEOUT: Duration = Duration::from_millis(750);
@@ -1108,6 +1115,9 @@ impl App {
             last_primary_click: None,
             apps: pane::AppPanes::default(),
             thread_drawn: false,
+            notice_timer: crate::ui::status::NoticeTimer::default(),
+            new_since: None,
+            unread_counts: HashMap::new(),
         };
         app.sync_workspace_viewports();
         app.hydrate_cache().await?;
@@ -1132,6 +1142,11 @@ impl App {
         frame_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut redraw = RedrawGate::default();
         while !self.should_quit {
+            // A notice lives about five seconds; the loop sleeps until then
+            // and draws one frame when it goes (rule 20).
+            self.notice_timer
+                .observe(self.status_error.as_deref(), tokio::time::Instant::now());
+            let notice_deadline = self.notice_timer.deadline();
             tokio::select! {
                 biased;
                 _=&mut shutdown=>self.should_quit=true,
@@ -1404,6 +1419,17 @@ impl App {
                     Background::AgentPreflight { new, result }=>self.agent_preflight_done(*new, result),
                     }
                     redraw.request();
+                },
+                () = async {
+                    match notice_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if self.notice_timer.expire(self.status_error.as_deref(), tokio::time::Instant::now()) {
+                        self.status_error = None;
+                        redraw.request();
+                    }
                 },
                 _=tick.tick()=>{
                     let changed=self.on_tick().await?;
@@ -2277,14 +2303,15 @@ impl App {
             .call(move |store| store.ui_state(community, "manual_unread"))
             .await?
             .unwrap_or_default();
-        self.computed_unread = if let Some(runtime) = &self.runtime {
+        self.unread_counts = if let Some(runtime) = &self.runtime {
             let pubkey = runtime.signer.public_key().to_hex();
             self.store
-                .call(move |store| store.unread_channels(community, &pubkey))
+                .call(move |store| store.unread_channel_counts(community, &pubkey))
                 .await?
         } else {
-            HashSet::new()
+            HashMap::new()
         };
+        self.computed_unread = self.unread_counts.keys().copied().collect();
         self.cache_dirty = false;
         self.last_cache_refresh = Instant::now();
         Ok(())
@@ -5695,6 +5722,9 @@ impl App {
             self.last_marked.remove(&channel.to_string());
             self.subscribe_channel(channel).await?;
             self.spawn_backfill(channel);
+            // What was unread when the channel opened keeps its `── new ──`
+            // line while the channel stays open, though it is read now.
+            self.new_since = self.channel_read_at(channel).await?.map(|at| (channel, at));
             // Explicitly opening a channel starts at its live edge. Persist the
             // local marker now rather than waiting for a later redraw/tick.
             self.mark_current_read().await?;
@@ -7788,6 +7818,94 @@ impl App {
         }
         Ok(())
     }
+    /// The time up to which `channel` was read, for the `── new ──` line; a
+    /// channel never read counts from its latest message here, so only what
+    /// arrives from now on is new.
+    async fn channel_read_at(&self, channel: Uuid) -> Result<Option<u64>> {
+        let (Some(community), Some(identity)) = (
+            self.active_community_id(),
+            self.self_pubkey().map(str::to_owned),
+        ) else {
+            return Ok(None);
+        };
+        let contexts = self
+            .store
+            .call(move |store| store.read_contexts(community, &identity, false))
+            .await?;
+        let read_at = contexts
+            .get(&channel.to_string())
+            .copied()
+            .map_or(0, u64::from);
+        Ok(Some(if read_at == 0 {
+            self.messages
+                .iter()
+                .map(|message| message.created_at)
+                .max()
+                .unwrap_or(0)
+        } else {
+            read_at
+        }))
+    }
+
+    /// The first message after the read time the channel had when it was
+    /// opened, written by someone else: the `── new ──` line goes before it.
+    fn new_marker(&self) -> Option<String> {
+        let (channel, since) = self.new_since?;
+        if self.current_channel().map(|current| current.id) != Some(channel) {
+            return None;
+        }
+        let me = self.self_pubkey();
+        self.messages
+            .iter()
+            .find(|message| {
+                message.created_at > since
+                    && message.system.is_none()
+                    && me.is_none_or(|me| !message.pubkey.eq_ignore_ascii_case(me))
+            })
+            .map(|message| message.event_id.clone())
+    }
+
+    /// One line over the conversation when bzz is not online: what it shows
+    /// and what to do next (L5).
+    fn connection_banner(&self) -> Option<String> {
+        let saved = "showing what is saved here";
+        match self.connection {
+            ConnectionState::Offline if self.runtime.is_some() => Some(format!(
+                "offline · {saved} · bzz retries on its own · :reconnect tries now"
+            )),
+            ConnectionState::Offline => Some(format!("offline · {saved}")),
+            ConnectionState::Locked
+            | ConnectionState::IdentityMissing
+            | ConnectionState::IdentityCorrupt => Some(format!(
+                "{} · {saved} · restore or unlock the identity, then restart bzz",
+                crate::ui::status::connection_label(self.connection)
+            )),
+            ConnectionState::AccessDenied => Some(
+                "access denied · ask the community's admin for access, then :reconnect".into(),
+            ),
+            ConnectionState::ClockSkew => Some(
+                "clock skew · the relay refuses this machine's time · set the clock, then :reconnect"
+                    .into(),
+            ),
+            ConnectionState::Connecting
+            | ConnectionState::Authenticating
+            | ConnectionState::Online
+            | ConnectionState::Backfilling => None,
+        }
+    }
+
+    /// What to do in an empty conversation (L5).
+    fn empty_hint(&self) -> Option<String> {
+        let channel = self.current_channel()?;
+        Some(if let Some(reason) = channel.read_only_reason() {
+            reason.notice().to_owned()
+        } else if self.runtime.is_none() {
+            "Read-only: restore or unlock the identity to write.".to_owned()
+        } else {
+            "i writes the first one".to_owned()
+        })
+    }
+
     async fn mark_current_read(&mut self) -> Result<()> {
         let Some(community) = self.active_community_id() else {
             return Ok(());
@@ -7852,6 +7970,9 @@ impl App {
                 .await?;
             self.last_marked.insert(context, at);
             advanced = true;
+        }
+        if visible_channel {
+            self.unread_counts.remove(&channel);
         }
         if visible_channel
             && clear_visible_unread(&mut self.computed_unread, &mut self.manual_unread, channel)
@@ -10008,46 +10129,61 @@ impl App {
     }
 
     fn render_frame(&mut self, frame: &mut Frame<'_>) {
-        self.render_app(frame);
         // A command that waits for the owner is said on every screen,
-        // whatever is open, until he has seen it.
+        // whatever is open, until he has seen it. It takes its own row
+        // above the panes, so no pane loses its title to it (L5).
         let area = frame.area();
+        let banner = self
+            .waiting_banner()
+            .filter(|_| area.width >= 50 && area.height >= 13);
+        let Some(text) = banner else {
+            self.render_app(frame, area);
+            return;
+        };
+        let below = Rect::new(
+            area.x,
+            area.y.saturating_add(1),
+            area.width,
+            area.height - 1,
+        );
+        self.render_app(frame, below);
+        crate::ui::approval::render_banner(frame, area, &text, &self.theme);
+    }
+
+    /// What waits for the owner's answer, as the banner says it.
+    fn waiting_banner(&self) -> Option<String> {
         if let Some(first) = self.approvals.first()
             && self.presentation.overlay != Some(Overlay::Approval)
-            && area.width >= 50
-            && area.height >= 12
         {
-            let text = crate::ui::approval::banner_text(
+            return Some(crate::ui::approval::banner_text(
                 first,
                 &self.conversation_label(first),
                 self.approvals.len(),
                 seconds_left(first),
-            );
-            crate::ui::approval::render_banner(frame, area, &text, &self.theme);
-        } else if let Some(first) = self.apps.waiting.first()
+            ));
+        }
+        if let Some(first) = self.apps.waiting.first()
             && !matches!(
                 self.presentation.overlay,
                 Some(Overlay::Approval | Overlay::AppApproval)
             )
-            && area.width >= 50
-            && area.height >= 12
         {
             // A version of an app waits: said in the same place, the same
             // way, after an agent's command.
             #[cfg(feature = "apps")]
-            {
-                let text = crate::ui::app_approval::banner_text(first, self.apps.waiting.len());
-                crate::ui::approval::render_banner(frame, area, &text, &self.theme);
-            }
+            return Some(crate::ui::app_approval::banner_text(
+                first,
+                self.apps.waiting.len(),
+            ));
             #[cfg(not(feature = "apps"))]
             let _ = first;
         }
+        None
     }
 
-    fn render_app(&mut self, frame: &mut Frame<'_>) {
+    fn render_app(&mut self, frame: &mut Frame<'_>, area: Rect) {
         self.render_generation = self.render_generation.wrapping_add(1);
         let mut hit_map = HitMap::new(self.render_generation);
-        let area = frame.area();
         if area.width < 50 || area.height < 12 {
             // While an app has the focus `q` is the app's.
             let way_out = if self.app_has_focus() {
@@ -10160,6 +10296,7 @@ impl App {
                 &self.agents,
                 &self.channel_viewport,
                 &self.unread_channels(),
+                &self.unread_counts,
                 self.config.ui.channel_sort,
                 self.show_system_channels,
                 &self.sidebar_layout,
@@ -10205,6 +10342,9 @@ impl App {
             },
         );
         let self_pubkey = self.self_pubkey().map(str::to_owned);
+        self.timeline.banner = self.connection_banner();
+        self.timeline.empty_hint = self.empty_hint();
+        self.timeline.new_marker = self.new_marker();
         hit_map.push(panes.timeline, HitTarget::Timeline);
         let mut timeline_hits = Vec::new();
         if self.presentation.overlay.is_none() && self.presentation.composer_target.is_none() {
@@ -10260,7 +10400,8 @@ impl App {
                 1 => "1 reply".to_owned(),
                 count => format!("{count} replies"),
             };
-            let thread_title = format!(" context · {reply_label} · q close ");
+            let thread_title = format!("context · {reply_label}");
+            self.thread_timeline.hints = vec![("q", "close")];
             let no_thread_summaries = HashMap::new();
             let mut thread_hits = Vec::new();
             if self.presentation.overlay.is_none() && self.presentation.composer_target.is_none() {
@@ -10698,38 +10839,67 @@ impl App {
                 .map(sanitize::single_line)
                 .unwrap_or_default()
         });
-        let huddle_line = self.active_huddle().map(|active| {
-            let call = match self.huddle_call_state() {
-                Some(true) => " · you: muted",
-                Some(false) => " · you: LIVE",
-                None => "",
-            };
-            format!(
-                "🎧 huddle · {} in it{call} · :huddle",
-                active.participants.len()
-            )
-        });
         let activity = self
             .app_status_line()
-            .or_else(|| self.visible_agent_typing_line(area.width))
-            .or(huddle_line);
+            .or_else(|| self.visible_agent_typing_line(area.width));
         let app_focused = self.app_has_focus() && self.presentation.overlay.is_none();
-        crate::ui::status::render(
-            frame,
-            area,
-            &self.theme,
-            crate::ui::status::StatusBarView {
-                mode,
-                mode_group,
-                activity: activity.as_deref(),
-                notice: &notice,
-                connection: crate::ui::status::connection_label(self.connection),
-                media: self.media.protocol_name(),
-                app_focused,
-            },
-        );
+        let channel = self.current_channel().map(|channel| {
+            let name = sanitize::single_line(&channel.name);
+            if channel.kind.is_dm() {
+                name
+            } else {
+                format!("#{name}")
+            }
+        });
+        let mut view = crate::ui::status::StatusBarView::new(mode, self.connection);
+        view.mode_group = mode_group;
+        view.channel = channel.as_deref();
+        view.activity = activity.as_deref();
+        view.notice = &notice;
+        view.app_focused = app_focused;
+        if let Some((line, priority)) = self.status_huddle_slot() {
+            view.huddle_slot(line, priority);
+        }
+        if let Some((line, priority)) = self.status_mark_slot() {
+            view.mark_slot(line, priority);
+        }
+        crate::ui::status::render(frame, area, &self.theme, view);
+    }
+
+    /// SEAM (agent `viz`, B2): the huddle strip, left of centre in the
+    /// status line. Until the strip lands it says what v0.16.0 said.
+    fn status_huddle_slot(&self) -> Option<(Line<'static>, u8)> {
+        let active = self.active_huddle()?;
+        let call = match self.huddle_call_state() {
+            Some(true) => " · you: muted",
+            Some(false) => " · you: LIVE",
+            None => "",
+        };
+        Some((
+            Line::from(Span::styled(
+                format!(
+                    "🎧 huddle · {} in it{call} · :huddle",
+                    active.participants.len()
+                ),
+                self.theme.style(HighlightGroup::StatusAgent),
+            )),
+            crate::ui::status::priority::HUDDLE,
+        ))
+    }
+
+    /// SEAM (agent `demo`, A1): a mark at the right of the status line, such
+    /// as `DEMO · generated, offline` with `priority::ALWAYS`. None outside
+    /// the demo.
+    #[allow(clippy::unused_self)]
+    fn status_mark_slot(&self) -> Option<(Line<'static>, u8)> {
+        None
     }
     fn render_overlay(&mut self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
+        if self.presentation.overlay.is_some() {
+            // Behind an overlay the screen steps back (L4); the overlay
+            // clears and draws its own cells.
+            crate::ui::frame::dim(frame.buffer_mut(), area, &self.theme);
+        }
         match self.presentation.overlay {
             Some(Overlay::Help) => {
                 let actions = derive_actions(self.action_context());
@@ -12320,7 +12490,8 @@ mod tests {
             "{shown}"
         );
         assert!(shown.contains("Scout · pi-durable · idle"), "{shown}");
-        assert!(shown.contains("agent broker · not serving"), "{shown}");
+        assert!(shown.contains("┌ agent broker ─"), "{shown}");
+        assert!(shown.contains(" not serving ┐"), "{shown}");
 
         // Space in the panel pauses the selected agent, and resumes it.
         app.broker_toggle_paused();
@@ -12624,7 +12795,8 @@ mod tests {
         wait_for(&app, Phase::Idle).await;
         let shown = screen(&mut app);
         for expected in [
-            "local agents · j/k select · space pause/resume · x stop its turn · i add to this channel · l log",
+            "┌ local agents ─",
+            " j/k select · space pause/resume · x stop its turn · i add to this channel · l log",
             "› Scout · pi-durable · idle",
             "state:        idle",
             "doing now:    nothing",
@@ -13183,7 +13355,8 @@ mod tests {
         assert_eq!(world.app.presentation.overlay, Some(Overlay::Approval));
         let shown = world.screen().join("\n");
         for expected in [
-            "a real command waits for your answer · a allow · r refuse",
+            "┌ a real command waits for your answer ─",
+            " a allow · r refuse ",
             "agent:        Scout",
             "conversation: #general (a thread) · it is answering you",
             &format!(
@@ -13672,7 +13845,8 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(screen.contains("agent broker · not serving"), "{screen}");
+        assert!(screen.contains("┌ agent broker ─"), "{screen}");
+        assert!(screen.contains(" not serving ┐"), "{screen}");
         assert!(!screen.contains("local agents"), "{screen}");
         assert!(
             screen.contains("o owner-signed agent presence: off"),
@@ -14006,7 +14180,8 @@ mod tests {
             " {} ",
             crate::ui::status::connection_label(app.connection)
         )));
-        assert!(status.contains(&format!(" {} ", app.media.protocol_name().to_uppercase())));
+        // No protocol word: the graphics protocol is :doctor's business.
+        assert!(!status.contains(&format!(" {} ", app.media.protocol_name().to_uppercase())));
 
         let mut narrow = Terminal::new(TestBackend::new(50, 12)).unwrap();
         narrow.draw(|frame| app.render(frame)).unwrap();
@@ -14022,7 +14197,7 @@ mod tests {
             narrow_status.contains("◆ Fizz ⠋"),
             "narrow status: {narrow_status:?}"
         );
-        assert!(!narrow_status.contains("help"));
+        assert!(!narrow_status.contains("? keys"));
 
         app.typing_spinner_advanced_at = Instant::now() - super::AGENT_SPINNER_INTERVAL;
         assert!(app.on_tick().await.unwrap());
@@ -15248,10 +15423,13 @@ mod tests {
             map.hit(sidebar.x.saturating_add(1), sidebar.y.saturating_add(1)),
             Some(&HitTarget::Channel(0))
         );
+        // Offline, the first row of the conversation says so and what to
+        // do; the first message starts under it.
+        assert!(screen.contains("offline · showing what is saved here"));
         assert_eq!(
             map.hit(
                 panes.timeline.x.saturating_add(1),
-                panes.timeline.y.saturating_add(1)
+                panes.timeline.y.saturating_add(2)
             ),
             Some(&HitTarget::TimelineMessage("event-1".into()))
         );

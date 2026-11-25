@@ -1,9 +1,10 @@
 use std::{cmp::Ordering, collections::HashMap};
+use unicode_width::UnicodeWidthStr as _;
 
 use ratatui::{
     Frame,
     layout::Rect,
-    text::Line,
+    text::{Line, Span},
     widgets::{List, ListItem, ListState},
 };
 
@@ -212,6 +213,7 @@ pub fn render(
     agents: &HashMap<String, RemoteAgentView>,
     viewport: &ViewportState,
     unread: &std::collections::HashSet<uuid::Uuid>,
+    unread_counts: &HashMap<uuid::Uuid, usize>,
     sort: ChannelSort,
     show_system: bool,
     layout: &SidebarLayout,
@@ -264,11 +266,34 @@ pub fn render(
         } else {
             ""
         };
-        ListItem::new(Line::from(format!(
+        let label = format!(
             "{badge} {privacy}{}{presence}{huddle}",
             sanitize::single_line(&channel.name)
-        )))
-        .style(theme.style(if is_unread {
+        );
+        // The unread count at the right of the row (L6).
+        let line = match unread_counts
+            .get(&channel.id)
+            .copied()
+            .filter(|count| *count > 0)
+        {
+            Some(count) => {
+                let count = if count > 99 {
+                    "99+".to_owned()
+                } else {
+                    count.to_string()
+                };
+                let room = usize::from(area.width.saturating_sub(4));
+                let used = label.as_str().width().saturating_add(count.len());
+                let gap = room.saturating_sub(used).max(1);
+                Line::from(vec![
+                    Span::raw(label),
+                    Span::raw(" ".repeat(gap)),
+                    Span::styled(count, theme.style(HighlightGroup::UnreadCount)),
+                ])
+            }
+            None => Line::from(label),
+        };
+        ListItem::new(line).style(theme.style(if is_unread {
             HighlightGroup::ChannelUnread
         } else {
             HighlightGroup::SidebarText

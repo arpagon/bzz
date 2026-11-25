@@ -567,9 +567,31 @@ fn render_internal(
     if inner.is_empty() {
         return;
     }
-    let content = readable_area(inner, message_width);
+    let mut content = readable_area(inner, message_width);
     if content.is_empty() {
         return;
+    }
+    // A state over the conversation (offline, an error) with what to do
+    // next takes the first row.
+    if let Some(banner) = state.banner.as_deref()
+        && content.height > 2
+    {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" ⚠ {} ", sanitize::single_line(banner)),
+                theme.style(HighlightGroup::StateBanner),
+            ))),
+            Rect::new(content.x, content.y, content.width, 1),
+        );
+        content = Rect::new(
+            content.x,
+            content.y.saturating_add(1),
+            content.width,
+            content.height - 1,
+        );
+    }
+    if !messages.iter().any(|message| message.system.is_none()) && content.height >= 6 {
+        render_empty(frame, content, state.empty_hint.as_deref(), theme);
     }
 
     // Keep wrapped body text within the six-cell avatar/author gutter.
@@ -602,7 +624,7 @@ fn render_internal(
         .and_then(|_| state.copy_bounds(messages));
     let labels = std::mem::take(&mut state.labels);
     let role_changes = role_changes(messages);
-    let blocks = messages
+    let mut blocks = messages
         .iter()
         .enumerate()
         .map(|(index, message)| {
@@ -644,6 +666,20 @@ fn render_internal(
         })
         .collect::<Vec<_>>();
     state.labels = labels;
+    if let Some(marker) = state.new_marker.as_deref()
+        && let Some(index) = messages
+            .iter()
+            .position(|message| message.event_id == marker)
+        && let Some(block) = blocks.get_mut(index)
+    {
+        block
+            .rows
+            .insert(0, TimelineRow::Text(new_line(content.width, theme)));
+        block.selection_before_row += 1;
+        if let Some(avatar) = &mut block.avatar {
+            avatar.before_row += 1;
+        }
+    }
     let heights = blocks
         .iter()
         .map(|block| block.height(content.width))
@@ -826,6 +862,45 @@ fn render_internal(
         }
         global_y += block_height;
     }
+}
+
+/// "No messages here yet" and what to do next, in the middle of an empty
+/// conversation; the notices of its creation stay where they are drawn.
+fn render_empty(frame: &mut Frame<'_>, content: Rect, hint: Option<&str>, theme: &Theme) {
+    let mut lines = vec![Line::from(Span::styled(
+        "No messages here yet",
+        theme.style(HighlightGroup::Strong),
+    ))];
+    if let Some(hint) = hint {
+        lines.push(Line::from(Span::styled(
+            sanitize::single_line(hint),
+            theme.style(HighlightGroup::Muted),
+        )));
+    }
+    let height = u16::try_from(lines.len()).unwrap_or(2);
+    let y = content
+        .y
+        .saturating_add(content.height / 2)
+        .saturating_sub(height);
+    frame.render_widget(
+        Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center),
+        Rect::new(content.x, y, content.width, height),
+    );
+}
+
+/// The line before the first unread message: `──── new ────`, as wide as the
+/// conversation.
+fn new_line(width: u16, theme: &Theme) -> Line<'static> {
+    let width = usize::from(width.max(9));
+    let side = width.saturating_sub(5) / 2;
+    Line::styled(
+        format!(
+            "{} new {}",
+            "─".repeat(side),
+            "─".repeat(width.saturating_sub(5).saturating_sub(side))
+        ),
+        theme.style(HighlightGroup::NewMessageMarker),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

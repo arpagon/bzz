@@ -487,7 +487,8 @@ mod tests {
         state.show(short.id);
         let shown = screen(110, 20, Some(&short), &mut state).join("\n");
         for expected in [
-            "a real command waits for your answer · a allow · r refuse",
+            "┌ a real command waits for your answer ─",
+            " a allow · r refuse ",
             "agent:        Scout",
             "conversation: #general (a thread) · it is answering ann",
             "folder:       /mnt/work = /home/ann/work",

@@ -435,7 +435,7 @@ mod tests {
         assert!(first.contains("┌ Board ─"), "{first}");
         assert!(!first.contains("Ctrl-c"), "{first}");
         assert!(last.contains("Too many changes"), "{last}");
-        assert!(last.contains("Ctrl-c leave ─"), "{last}");
+        assert!(last.contains("Ctrl-c leave ┘"), "{last}");
         assert_eq!(inner, Rect::new(1, 1, 40, 18));
         let (text, _) = drawn(
             PaneView {
@@ -447,7 +447,7 @@ mod tests {
             20,
         );
         assert!(text.lines().next().unwrap().contains("┌ Board ─"));
-        assert!(text.lines().last().unwrap().contains("5 focus ─"));
+        assert!(text.lines().last().unwrap().contains("5 focus ┘"));
         assert!(!text.contains("Ctrl-c"));
     }
 

@@ -368,7 +368,8 @@ mod tests {
         state.show("tasks", 2, Ok(review(60)));
         let shown = screen(&mut state, 100, 30);
         for expected in [
-            "a version of an app waits for your answer · a approve · r refuse",
+            "┌ a version of an app waits for your answer ─",
+            " a approve · r refuse ",
             "tasks (Tasks), version 2",
             "From:     your agent Scout (e5e5",
             &format!("Hash:     {}", "58e1".repeat(16)),

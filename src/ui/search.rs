@@ -160,7 +160,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &SearchState, theme: &Th
                         ("Esc", "close"),
                     ],
                 )
-                .title(crate::ui::frame::info(theme, &status)),
+                .title(crate::ui::frame::info(theme, status)),
             ),
         area,
         &mut list_state,

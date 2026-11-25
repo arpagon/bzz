@@ -74,7 +74,7 @@ exit = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario.step]]
 keys = [":", "b", "r", "o", "k", "e", "r", "enter"]
-visible = "agent broker · not serving"
+visible = "not serving ┐"
 
 [[scenario.step]]
 keys = ["esc"]
@@ -322,7 +322,7 @@ visible = "edit me"
 [[scenario.step]]
 pause = 2000
 keys = ["esc", "3", "G", "e"]
-visible = "edit message · Enter save · Esc cancel"
+visible = "Enter save · Esc cancel"
 
 [[scenario.step]]
 keys = ["space", "p", "l", "e", "a", "s", "e", "enter"]
@@ -896,7 +896,7 @@ visible = "NORMAL"
 
 [[scenario.step]]
 keys = ["ctrl+y"]
-visible = "a real command waits for your answer · a allow · r refuse"
+visible = "a allow · r refuse"
 
 [[scenario.step]]
 keys = []
@@ -1038,7 +1038,7 @@ visible = "Generated agents channel"
 
 [[scenario.step]]
 keys = [":", "type:agent new Pilot", "enter"]
-visible = "new local agent · Tab/↑/↓ move · Enter next · Ctrl-S check and continue · Esc cancel"
+visible = "Tab/↑/↓ move · Enter next · Ctrl-S check and continue · Esc cancel"
 
 [[scenario.step]]
 keys = []
@@ -1050,7 +1050,7 @@ visible = "Instructions: Be brief."
 
 [[scenario.step]]
 keys = ["ctrl+s"]
-visible = "new local agent · Enter sign and create · e edit the answers · Esc cancel"
+visible = "Enter sign and create · e edit the answers · Esc cancel"
 timeout = 90000
 
 [[scenario.step]]
@@ -1398,7 +1398,7 @@ visible = "Generated custom emoji"
 
 [[scenario.step]]
 keys = [":", "type:app open board", "enter"]
-visible = "Board · Ctrl-c leave"
+visible = "Ctrl-c leave ┘"
 
 [[scenario.step]]
 keys = []
@@ -1446,7 +1446,7 @@ absent = "New card"
 # Ctrl+C gives the keyboard back; the app sees none of what follows.
 [[scenario.step]]
 keys = ["ctrl+c"]
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 [[scenario.step]]
 keys = []
@@ -1454,7 +1454,7 @@ visible = " NORMAL "
 
 [[scenario.step]]
 keys = ["i"]
-visible = "message #t9-general · Enter send"
+visible = "Enter send · Ctrl-v paste"
 
 [[scenario.step]]
 keys = ["type:typed in the composer q:1 n"]
@@ -1492,18 +1492,18 @@ visible = "communities"
 
 [[scenario.step]]
 keys = []
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 [[scenario.step]]
 size = "100x30"
 keys = []
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 absent = "communities"
 
 [[scenario.step]]
 size = "72x30"
 keys = []
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 [[scenario.step]]
 size = "60x30"
@@ -1512,7 +1512,7 @@ visible = "app hidden · 5"
 
 [[scenario.step]]
 keys = ["5"]
-visible = "Board · zoomed · Ctrl-c leave"
+visible = "zoomed ┐"
 
 [[scenario.step]]
 keys = ["ctrl+c"]
@@ -1521,7 +1521,7 @@ visible = "app hidden · 5"
 [[scenario.step]]
 size = "120x30"
 keys = []
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 # A thread asked for last takes the right side under 144 columns, and the
 # composer replies into it; 5 brings the app back and the thread waits.
@@ -1535,7 +1535,7 @@ visible = "app behind thread · 5"
 
 [[scenario.step]]
 keys = ["5"]
-visible = "Board · Ctrl-c leave"
+visible = "Ctrl-c leave ┘"
 
 [[scenario.step]]
 keys = ["ctrl+c"]
@@ -1548,7 +1548,7 @@ visible = "context ·"
 
 [[scenario.step]]
 keys = []
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 [[scenario.step]]
 keys = []
@@ -1581,7 +1581,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 [[scenario.step]]
 keys = []
@@ -1660,7 +1660,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 # Beside the Board, idle: a baseline.
 [[scenario.step]]
@@ -1677,7 +1677,7 @@ visible = " NORMAL "
 
 [[scenario.step]]
 keys = [":", "type:app open looper", "enter"]
-visible = "Looper · Ctrl-c leave"
+visible = "Ctrl-c leave ┘"
 
 [[scenario.step]]
 keys = []
@@ -1972,11 +1972,11 @@ visible = "Generated custom emoji"
 # The looper took #t9-general above; the Board is opened there again.
 [[scenario.step]]
 keys = [":", "type:app open board", "enter"]
-visible = "Board · Ctrl-c leave"
+visible = "Ctrl-c leave ┘"
 
 [[scenario.step]]
 keys = ["ctrl+c"]
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 # The owner's own folder, not approved, on the channel's real records.
 [[scenario.step]]
@@ -2007,7 +2007,7 @@ visible = "Backlog (2)"
 
 [[scenario.step]]
 keys = ["ctrl+c", ":", "type:app close", "enter"]
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 [[scenario.step]]
 keys = []
@@ -2017,7 +2017,7 @@ visible = "To do (2)"
 [[scenario.step]]
 keys = [":", "type:app remove board", "enter"]
 visible = "board uninstalled; 2 records of bzz.app.board.* stay in the channel"
-absent = "Board · 5 focus"
+absent = "5 focus ┘"
 
 [[scenario.step]]
 run = "\"$BZZ_BIN\" app new board --to {fixture}/board-again"

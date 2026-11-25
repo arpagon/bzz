@@ -55,6 +55,7 @@ fn sidebar_dm_rows_trail_the_other_persons_presence() {
                 &HashMap::new(),
                 &ViewportState::default(),
                 &HashSet::new(),
+                &HashMap::new(),
                 ChannelSort::Smart,
                 false,
                 &Default::default(),

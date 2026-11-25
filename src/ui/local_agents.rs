@@ -443,7 +443,8 @@ mod tests {
             render(frame, frame.area(), &rows, &state, true, &theme)
         });
         for expected in [
-            "local agents · j/k select · space pause/resume · x stop its turn · i add to this channel · l log · n new",
+            "┌ local agents ─",
+            " j/k select · space pause/resume · x stop its turn · i add to this channel · l log · n new",
             "› Scout · pi-durable · answering 1 · bash",
             "  Ranger · pi-durable · paused · paused by its owner",
             "state:        answering 1",
