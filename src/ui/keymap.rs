@@ -407,6 +407,37 @@ pub struct KeyMap {
 }
 
 impl KeyMap {
+    /// The built-in map, generated from the keys of the rows of
+    /// [`crate::ui::action_table::TABLE`] (v0.17 C8, plan rule 23): each
+    /// row's keys bind its [`ActionSpec::key_action`](crate::ui::action_table::ActionSpec::key_action).
+    pub fn generated() -> Self {
+        let mut bindings = Vec::new();
+        for spec in crate::ui::action_table::TABLE {
+            let Some(action) = spec.key_action() else {
+                continue;
+            };
+            for (scope, keys) in spec.keys {
+                bindings.push(KeyBinding {
+                    scope: *scope,
+                    sequence: KeySequence(
+                        keys.iter()
+                            .map(|key| KeyChord::parse(key).expect("builtin key chord is valid"))
+                            .collect(),
+                    ),
+                    action,
+                });
+            }
+        }
+        let keymap = Self {
+            bindings,
+            disabled: Vec::new(),
+        };
+        keymap
+            .validate()
+            .expect("builtin keymap must be internally valid");
+        keymap
+    }
+
     pub fn builtin() -> Self {
         let mut bindings = Vec::new();
         let mut add = |scope, keys: &[&str], action| {
@@ -1002,6 +1033,48 @@ mod tests {
         KeyChord, KeyLookup, KeyMap, KeyScope, UiAction, normalize_key_event,
         normalize_key_event_on,
     };
+
+    /// v0.17 C8: the map generated from the registry's rows is the
+    /// hand-written one, binding for binding in every scope, and each
+    /// action's keys come in the same order (the first is the one the
+    /// palette and the footer show).
+    #[test]
+    fn the_generated_map_is_the_hand_written_one() {
+        let generated = KeyMap::generated();
+        let written = KeyMap::builtin();
+        let mut compared = 0;
+        for scope in KeyScope::ALL {
+            let rows = |map: &KeyMap| {
+                map.effective_bindings(scope)
+                    .into_iter()
+                    .map(|binding| (binding.sequence.label(), format!("{:?}", binding.action)))
+                    .collect::<Vec<_>>()
+            };
+            let (mut left, mut right) = (rows(&generated), rows(&written));
+            // Per action, the order of its keys.
+            let order = |rows: &[(String, String)], action: &str| {
+                rows.iter()
+                    .filter(|(_, name)| name == action)
+                    .map(|(keys, _)| keys.clone())
+                    .collect::<Vec<_>>()
+            };
+            for (_, action) in &right {
+                assert_eq!(
+                    order(&left, action),
+                    order(&right, action),
+                    "{scope:?} {action}"
+                );
+            }
+            left.sort();
+            right.sort();
+            assert_eq!(left, right, "{scope:?}");
+            compared += right.len();
+        }
+        assert_eq!(generated.disabled, written.disabled);
+        // Global 46 + Workspace 48 + Inbox 51 + Composer 18 + Overlay 3.
+        assert!(compared > 150, "{compared}");
+        println!("generated == hand-written: {compared} effective bindings in 6 scopes");
+    }
 
     #[test]
     fn builtin_leader_sequences_are_typed_and_discoverable() {

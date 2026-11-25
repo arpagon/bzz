@@ -13,7 +13,11 @@
 //! order, with [`Run::Steps`] (C9): the palette asks for each [`Arg`] in a
 //! step of its own and runs the `:` command they build.
 
-use crate::ui::keymap::UiAction;
+use crate::ui::keymap::{KeyScope, UiAction};
+
+/// One default key sequence of a row, in the scope that owns it, as
+/// `keymap.toml` writes keys: `(GLOBAL, &["space", "n"])`.
+pub type DefaultKey = (KeyScope, &'static [&'static str]);
 
 /// Where a row can run. The Inbox route reduces only its own small set of
 /// actions (`action::reduce_inbox`); everything else waits for the
@@ -251,6 +255,10 @@ pub struct ActionSpec {
     pub key_of: Option<UiAction>,
     pub needs: Needs,
     pub place: Where,
+    /// The built-in keys of the row's [`ActionSpec::key_action`], scope by
+    /// scope, in the order the help names them. `KeyMap::builtin` is
+    /// generated from these (v0.17 C8); a user's `keymap.toml` goes on top.
+    pub keys: &'static [DefaultKey],
 }
 
 impl ActionSpec {
@@ -270,7 +278,13 @@ impl ActionSpec {
             key_of: None,
             needs: Needs::Nothing,
             place,
+            keys: &[],
         }
+    }
+
+    const fn keys(mut self, keys: &'static [DefaultKey]) -> Self {
+        self.keys = keys;
+        self
     }
 
     const fn words(mut self, words: &'static str) -> Self {
@@ -326,6 +340,12 @@ use Group as G;
 use Needs as N;
 use Run::{Command as Cmd, Prefill, Shell, Ui};
 use UiAction as A;
+
+const GLOBAL: KeyScope = KeyScope::Global;
+const WORKSPACE: KeyScope = KeyScope::Workspace;
+const INBOX: KeyScope = KeyScope::Inbox;
+const COMPOSER: KeyScope = KeyScope::Composer;
+const OVERLAY: KeyScope = KeyScope::Overlay;
 
 const fn steps(
     id: &'static str,
@@ -429,6 +449,7 @@ pub static TABLE: &[ActionSpec] = &[
         .needs(N::Message),
     ui("msg.compose", "Write a message", G::Message, A::Compose)
         .words("compose reply send post new message")
+        .keys(&[(GLOBAL, &["i"])])
         .needs(N::Channel),
     steps(
         "msg.react",
@@ -438,16 +459,19 @@ pub static TABLE: &[ActionSpec] = &[
         &[EMOJI],
     )
     .key_of(A::React)
+    .keys(&[(GLOBAL, &["r"])])
     .place(Where::Workspace)
     .words("emoji reaction")
     .aliases(&["react"])
     .needs(N::Message),
     ui("msg.edit", "Edit my message", G::Message, A::Edit)
         .words("change fix")
+        .keys(&[(GLOBAL, &["e"])])
         .aliases(&["edit"])
         .needs(N::Message),
     ui("msg.delete", "Delete my message", G::Message, A::Delete)
         .words("remove")
+        .keys(&[(WORKSPACE, &["d"])])
         .aliases(&["delete"])
         .needs(N::Message),
     ui(
@@ -457,9 +481,11 @@ pub static TABLE: &[ActionSpec] = &[
         A::MarkUnread,
     )
     .words("unread new")
+    .keys(&[(WORKSPACE, &["u"])])
     .needs(N::Message),
     ui("msg.copy", "Copy message", G::Message, A::CopyMessages)
         .words("clipboard yank copy messages")
+        .keys(&[(GLOBAL, &["y"])])
         .aliases(&["copy"])
         .needs(N::Message),
     ui(
@@ -469,6 +495,7 @@ pub static TABLE: &[ActionSpec] = &[
         A::ToggleCopySelection,
     )
     .words("range visual copy selection")
+    .keys(&[(GLOBAL, &["v"])])
     .needs(N::Message),
     ui("msg.preview_media", "Preview media", G::Message, A::Preview)
         .words("image picture attachment file")
@@ -480,6 +507,7 @@ pub static TABLE: &[ActionSpec] = &[
         A::ViewProfile,
     )
     .words("person who user")
+    .keys(&[(GLOBAL, &["space", "p"])])
     .command(":profile [npub|hex]")
     .needs(N::Message),
     ask(
@@ -513,15 +541,18 @@ pub static TABLE: &[ActionSpec] = &[
         A::ChannelSwitcher,
     )
     .words("find switch jump open channel")
+    .keys(&[(GLOBAL, &["space", "space"])])
     .aliases(&["go"]),
     ui("search.open", "Search messages", G::Go, A::Search)
         .words("find text from in after before")
         .command(":search")
         .key_of(A::Filter)
+        .keys(&[(GLOBAL, &["/"])])
         .aliases(&["search"]),
     ui("inbox.open", "Open Inbox", G::Go, A::OpenInbox)
         .words("mentions personal work notifications")
         .command(":inbox")
+        .keys(&[(GLOBAL, &["space", "n"])])
         .aliases(&["inbox"]),
     ask("dm.new", "Start a DM", G::Go, "dm", &[PERSON])
         .key_of(A::NewDm)
@@ -543,19 +574,28 @@ pub static TABLE: &[ActionSpec] = &[
     .words("people who user member agent")
     .command(":profile <npub|hex>"),
     ui("item.open", "Open selected", G::Go, A::ActivateFocused)
-        .words("channel thread community enter"),
-    ui("focus.channels", "Focus channels", G::Go, A::FocusChannels).words("sidebar pane"),
-    ui("focus.timeline", "Focus messages", G::Go, A::FocusTimeline).words("timeline pane"),
-    ui("focus.context", "Focus thread", G::Go, A::FocusContext).words("context pane"),
+        .words("channel thread community enter")
+        .keys(&[(GLOBAL, &["enter"])]),
+    ui("focus.channels", "Focus channels", G::Go, A::FocusChannels)
+        .words("sidebar pane")
+        .keys(&[(GLOBAL, &["2"])]),
+    ui("focus.timeline", "Focus messages", G::Go, A::FocusTimeline)
+        .words("timeline pane")
+        .keys(&[(GLOBAL, &["3"])]),
+    ui("focus.context", "Focus thread", G::Go, A::FocusContext)
+        .words("context pane")
+        .keys(&[(GLOBAL, &["4"])]),
     ui(
         "focus.communities",
         "Focus communities",
         G::Go,
         A::FocusCommunities,
     )
-    .words("rail pane"),
+    .words("rail pane")
+    .keys(&[(GLOBAL, &["1"])]),
     ui("focus.app", "Focus the app", G::Go, A::FocusApp)
         .words("app pane")
+        .keys(&[(GLOBAL, &["5"])])
         .needs(N::AppHere),
     ui(
         "community.switch",
@@ -567,21 +607,27 @@ pub static TABLE: &[ActionSpec] = &[
     .needs(N::Communities),
     ui("focus.next", "Next pane", G::Go, A::NextFocus)
         .words("focus cycle")
+        .keys(&[(GLOBAL, &["tab"]), (GLOBAL, &["l"])])
         .place(Where::Anywhere),
     ui("focus.prev", "Previous pane", G::Go, A::PreviousFocus)
         .words("focus cycle back")
+        .keys(&[(GLOBAL, &["backtab"]), (GLOBAL, &["h"])])
         .place(Where::Anywhere),
     ui("sel.next", "Next item", G::Go, A::SelectNext)
         .words("down move")
+        .keys(&[(GLOBAL, &["j"]), (GLOBAL, &["down"]), (GLOBAL, &["ctrl-n"])])
         .place(Where::Anywhere),
     ui("sel.prev", "Previous item", G::Go, A::SelectPrevious)
         .words("up move")
+        .keys(&[(GLOBAL, &["k"]), (GLOBAL, &["up"]), (GLOBAL, &["ctrl-p"])])
         .place(Where::Anywhere),
     ui("sel.first", "Jump to first", G::Go, A::JumpTop)
         .words("top start oldest")
+        .keys(&[(GLOBAL, &["g", "g"])])
         .place(Where::Anywhere),
     ui("sel.last", "Jump to last", G::Go, A::JumpBottom)
         .words("bottom end newest latest")
+        .keys(&[(GLOBAL, &["G"])])
         .place(Where::Anywhere),
     ui(
         "view.scroll_down",
@@ -589,15 +635,22 @@ pub static TABLE: &[ActionSpec] = &[
         G::Go,
         A::ScrollViewportDown,
     )
+    .keys(&[(GLOBAL, &["J"])])
     .place(Where::Anywhere),
-    ui("view.scroll_up", "Scroll up", G::Go, A::ScrollViewportUp).place(Where::Anywhere),
+    ui("view.scroll_up", "Scroll up", G::Go, A::ScrollViewportUp)
+        .keys(&[(GLOBAL, &["K"])])
+        .place(Where::Anywhere),
     ui("view.half_down", "Half page down", G::Go, A::HalfPageDown)
         .words("scroll page")
+        .keys(&[(GLOBAL, &["ctrl-d"])])
         .place(Where::Anywhere),
     ui("view.half_up", "Half page up", G::Go, A::HalfPageUp)
         .words("scroll page")
+        .keys(&[(GLOBAL, &["ctrl-u"])])
         .place(Where::Anywhere),
-    ui("cmd.open", "Command line", G::Go, A::OpenCommand).words("colon type a command"),
+    ui("cmd.open", "Command line", G::Go, A::OpenCommand)
+        .words("colon type a command")
+        .keys(&[(GLOBAL, &[":"])]),
     ui(
         "actions.menu",
         "Actions for the selected item",
@@ -605,9 +658,13 @@ pub static TABLE: &[ActionSpec] = &[
         A::OpenContextActions,
     )
     .words("context menu")
+    .keys(&[(GLOBAL, &["space", "a"])])
     .place(Where::Anywhere),
     ui("palette.open", "Find any action", G::Go, A::OpenPalette)
         .words("palette command commands")
+        // v0.17 D4. Text-owning scopes do not inherit Global keys, so
+        // Ctrl-K in the composer keeps deleting to the line end.
+        .keys(&[(GLOBAL, &["ctrl-k"]), (GLOBAL, &["space", "k"])])
         .place(Where::Anywhere),
     // View: panes, themes, help.
     steps(
@@ -618,6 +675,7 @@ pub static TABLE: &[ActionSpec] = &[
         &[Arg::new(Ask::Theme, "theme")],
     )
     .key_of(A::OpenOptions)
+    .keys(&[(GLOBAL, &["space", "o"])])
     .words("colors colours options appearance dark light")
     .aliases(&["theme", "themes"])
     .command(":theme"),
@@ -630,6 +688,7 @@ pub static TABLE: &[ActionSpec] = &[
     .words("help keys keymap bindings")
     .aliases(&["help", "keys", "?"])
     .command(":help")
+    .keys(&[(GLOBAL, &["?"])])
     .place(Where::Anywhere),
     ui(
         "view.toggle_communities",
@@ -637,23 +696,27 @@ pub static TABLE: &[ActionSpec] = &[
         G::View,
         A::ToggleCommunities,
     )
-    .words("toggle rail pane"),
+    .words("toggle rail pane")
+    .keys(&[(GLOBAL, &["space", "1"])]),
     ui(
         "view.toggle_channels",
         "Show or hide channels",
         G::View,
         A::ToggleChannels,
     )
-    .words("toggle sidebar pane"),
+    .words("toggle sidebar pane")
+    .keys(&[(GLOBAL, &["space", "2"])]),
     ui(
         "view.toggle_context",
         "Show or hide thread pane",
         G::View,
         A::ToggleContext,
     )
-    .words("toggle context pane"),
+    .words("toggle context pane")
+    .keys(&[(GLOBAL, &["space", "4"])]),
     ui("app.zoom", "Zoom the app", G::View, A::ZoomApp)
         .words("app full screen")
+        .keys(&[(GLOBAL, &["space", "5"])])
         .command(":app zoom")
         .needs(N::AppHere),
     ui(
@@ -662,16 +725,19 @@ pub static TABLE: &[ActionSpec] = &[
         G::View,
         A::ResizeFocusedNarrow,
     )
-    .words("resize width smaller"),
+    .words("resize width smaller")
+    .keys(&[(GLOBAL, &["alt-h"])]),
     ui(
         "pane.widen",
         "Widen side pane",
         G::View,
         A::ResizeFocusedWide,
     )
-    .words("resize width larger"),
+    .words("resize width larger")
+    .keys(&[(GLOBAL, &["alt-l"])]),
     ui("sync.refresh", "Refresh", G::View, A::Refresh)
         .words("reload sync update")
+        .keys(&[(GLOBAL, &["space", "r"])])
         .place(Where::Anywhere),
     ui(
         "sidebar.sort_cycle",
@@ -679,7 +745,8 @@ pub static TABLE: &[ActionSpec] = &[
         G::View,
         A::CycleChannelSort,
     )
-    .words("order sidebar alphabetical recent"),
+    .words("order sidebar alphabetical recent")
+    .keys(&[(GLOBAL, &["space", "s"])]),
     ask(
         "sidebar.sort",
         "Set channel group sort",
@@ -771,6 +838,7 @@ pub static TABLE: &[ActionSpec] = &[
         .place(Where::Inbox),
     ui("inbox.filter", "Cycle Inbox filter", G::Inbox, A::Filter)
         .words("inbox mentions unread show")
+        .keys(&[(INBOX, &["f"])])
         .place(Where::Inbox),
     ui(
         "inbox.open_source",
@@ -779,12 +847,15 @@ pub static TABLE: &[ActionSpec] = &[
         A::OpenCanonicalContext,
     )
     .words("inbox go to channel thread")
+    .keys(&[(INBOX, &["o"])])
     .place(Where::Inbox),
     ui("inbox.mark_read", "Mark read", G::Inbox, A::MarkRead)
         .words("inbox done")
+        .keys(&[(INBOX, &["m"])])
         .place(Where::Inbox),
     ui("inbox.mark_unread", "Mark unread", G::Inbox, A::MarkUnread)
         .words("inbox")
+        .keys(&[(INBOX, &["U"])])
         .place(Where::Inbox),
     ui(
         "inbox.mark_visible_read",
@@ -793,6 +864,7 @@ pub static TABLE: &[ActionSpec] = &[
         A::MarkVisibleRead,
     )
     .words("inbox all done")
+    .keys(&[(INBOX, &["a"])])
     .place(Where::Inbox),
     // Channel: what lives in a channel.
     cmd(
@@ -1140,48 +1212,69 @@ pub static TABLE: &[ActionSpec] = &[
         .key_of(A::BackOrQuit),
     ui("nav.back", "Back or close", G::Bzz, A::BackOrQuit)
         .words("escape")
+        .keys(&[
+            (GLOBAL, &["q"]),
+            (GLOBAL, &["esc"]),
+            // Overlays never inherit workspace actions: their owner
+            // decides which small set of close keys it accepts.
+            (OVERLAY, &["esc"]),
+            (OVERLAY, &["q"]),
+            (OVERLAY, &["?"]),
+            (COMPOSER, &["esc"]),
+        ])
         .place(Where::Anywhere),
     // Writing: the composer's own keys (not listed in the palette).
-    writing("composer.send", "Send", A::Submit),
-    writing("composer.newline", "New line", A::InsertNewline),
+    writing("composer.send", "Send", A::Submit).keys(&[(COMPOSER, &["enter"])]),
+    writing("composer.newline", "New line", A::InsertNewline)
+        .keys(&[(COMPOSER, &["ctrl-j"]), (COMPOSER, &["alt-enter"])]),
     writing(
         "composer.complete",
         "Complete @mention or :emoji",
         A::Complete,
-    ),
+    )
+    .keys(&[(COMPOSER, &["tab"])]),
     writing(
         "composer.del_word",
         "Delete previous word",
         A::DeletePreviousWord,
-    ),
+    )
+    .keys(&[(COMPOSER, &["ctrl-w"])]),
     writing(
         "composer.del_start",
         "Delete to line start",
         A::DeleteToStart,
-    ),
-    writing("composer.del_end", "Delete to line end", A::DeleteToEnd),
-    writing("composer.clear", "Clear draft", A::ClearComposer),
+    )
+    .keys(&[(COMPOSER, &["ctrl-u"])]),
+    writing("composer.del_end", "Delete to line end", A::DeleteToEnd)
+        .keys(&[(COMPOSER, &["ctrl-k"])]),
+    writing("composer.clear", "Clear draft", A::ClearComposer).keys(&[(COMPOSER, &["ctrl-c"])]),
     writing(
         "composer.paste",
         "Paste text or attachments",
         A::PasteClipboard,
-    ),
-    writing("composer.attach", "Choose files", A::AttachFile),
-    writing("composer.attach_path", "Attach by path", A::AttachPath),
+    )
+    .keys(&[(COMPOSER, &["ctrl-v"])]),
+    writing("composer.attach", "Choose files", A::AttachFile).keys(&[(COMPOSER, &["ctrl-o"])]),
+    writing("composer.attach_path", "Attach by path", A::AttachPath)
+        .keys(&[(COMPOSER, &["alt-o"])]),
     writing(
         "composer.remove_attachment",
         "Remove last attachment",
         A::RemoveLastAttachment,
-    ),
+    )
+    .keys(&[(COMPOSER, &["delete"])]),
     writing(
         "composer.retry",
         "Retry failed attachments",
         A::RetryAttachments,
-    ),
-    writing("composer.word_left", "Previous word", A::MoveWordLeft),
-    writing("composer.word_right", "Next word", A::MoveWordRight),
-    writing("composer.home", "Line start", A::MoveLineStart),
-    writing("composer.end", "Line end", A::MoveLineEnd),
+    )
+    .keys(&[(COMPOSER, &["ctrl-r"])]),
+    writing("composer.word_left", "Previous word", A::MoveWordLeft)
+        .keys(&[(COMPOSER, &["ctrl-left"])]),
+    writing("composer.word_right", "Next word", A::MoveWordRight)
+        .keys(&[(COMPOSER, &["ctrl-right"])]),
+    writing("composer.home", "Line start", A::MoveLineStart).keys(&[(COMPOSER, &["home"])]),
+    writing("composer.end", "Line end", A::MoveLineEnd).keys(&[(COMPOSER, &["end"])]),
     // Shell: what only the shell does today, worth knowing.
     shell("cli.identity.new", "Create an identity", "bzz identity new").words("key account nsec"),
     shell(
@@ -1769,6 +1862,12 @@ mod tests {
             for alias in spec.aliases {
                 assert_eq!(*alias, alias.to_lowercase(), "{}", spec.id);
             }
+            // A row's keys bind the action it shows a key for.
+            assert!(
+                spec.keys.is_empty() || spec.key_action().is_some(),
+                "{} has keys and no action",
+                spec.id
+            );
         }
     }
 }
