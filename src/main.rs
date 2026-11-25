@@ -214,22 +214,42 @@ enum IdentityCommand {
 
 #[derive(Debug, Subcommand)]
 enum CommunityCommand {
+    /// Add a Buzz community: its relay's address and the identity you use
+    /// there. bzz asks the relay who it is first and keeps its key.
+    ///
+    /// The community's admin must have made your key a member: give them the
+    /// npub that `bzz identity new` printed (`bzz identity list` shows your
+    /// identities and their ids). Then run `bzz`.
+    ///
+    /// Example: bzz community add my-team wss://my-team.communities.buzz.xyz <identity-id>
     Add {
+        /// A name for the community, yours only: shown in bzz's rail.
         label: String,
+        /// The relay's address, `wss://…` (what the community's admin gave you).
         relay_url: String,
+        /// The id of the identity to use there, from `bzz identity list`.
         identity_id: Uuid,
+        /// Allow a `ws://localhost` relay without TLS, for a relay on this
+        /// machine (tests, development).
         #[arg(long)]
         allow_insecure_localhost: bool,
     },
+    /// List the communities: id, name and relay; `*` marks the default.
     List,
+    /// Remove a community from bzz (the relay keeps your messages).
     Remove {
+        /// The community's id, from `bzz community list`.
         id: Uuid,
+        /// Delete its local cache and its apps' files too.
         #[arg(long)]
         purge: bool,
+        /// Required: says that you mean it.
         #[arg(long)]
         yes: bool,
     },
+    /// The community bzz opens first.
     Default {
+        /// The community's id, from `bzz community list`.
         id: Uuid,
     },
 }
@@ -549,13 +569,15 @@ fn identity_command(command: IdentityCommand, paths: &Paths, config: &mut Config
             let passphrase = matches!(backend, KeyBackend::EncryptedFile)
                 .then(|| read_passphrase("New identity passphrase: ", true))
                 .transpose()?;
-            let identity = manager.create(config, label, backend, passphrase.as_ref())?;
+            let identity = manager
+                .create(config, label.clone(), backend, passphrase.as_ref())
+                .map_err(|error| without_keychain(error, backend, "new", &label))?;
             if let Err(error) = config.save(paths) {
                 config.identities.retain(|entry| entry.id != identity.id);
                 let _ = manager.delete(&identity);
                 return Err(error);
             }
-            println!("identity: {}\npubkey:   {}", identity.id, identity.pubkey);
+            print_identity(&identity);
             Ok(())
         }
         IdentityCommand::Import { label, backend } => {
@@ -567,13 +589,15 @@ fn identity_command(command: IdentityCommand, paths: &Paths, config: &mut Config
             let passphrase = matches!(backend, KeyBackend::EncryptedFile)
                 .then(|| read_passphrase("New identity passphrase: ", true))
                 .transpose()?;
-            let identity = manager.import(config, label, backend, input, passphrase.as_ref())?;
+            let identity = manager
+                .import(config, label.clone(), backend, input, passphrase.as_ref())
+                .map_err(|error| without_keychain(error, backend, "import", &label))?;
             if let Err(error) = config.save(paths) {
                 config.identities.retain(|entry| entry.id != identity.id);
                 let _ = manager.delete(&identity);
                 return Err(error);
             }
-            println!("identity: {}\npubkey:   {}", identity.id, identity.pubkey);
+            print_identity(&identity);
             Ok(())
         }
         IdentityCommand::Backup { id, output } => {
@@ -605,10 +629,19 @@ fn identity_command(command: IdentityCommand, paths: &Paths, config: &mut Config
             let storage_passphrase = matches!(backend, KeyBackend::EncryptedFile)
                 .then(|| read_passphrase("New identity passphrase: ", true))
                 .transpose()?;
-            let identity =
-                manager.import_keys(config, label, backend, keys, storage_passphrase.as_ref())?;
+            let identity = manager
+                .import_keys(
+                    config,
+                    label.clone(),
+                    backend,
+                    keys,
+                    storage_passphrase.as_ref(),
+                )
+                .map_err(|error| {
+                    without_keychain(error, backend, "import-backup --input <file>", &label)
+                })?;
             save_new_identity(&manager, config, paths, &identity)?;
-            println!("identity: {}\npubkey:   {}", identity.id, identity.pubkey);
+            print_identity(&identity);
             Ok(())
         }
         IdentityCommand::Restore { id } => {
@@ -1938,6 +1971,48 @@ fn identity_passphrase(
         .transpose()
 }
 
+/// What a new identity prints: its id, its key as Buzz shows it (the npub,
+/// what a community's admin asks for) and as hex (v0.17 A5).
+fn print_identity(identity: &bzz::config::IdentityConfig) {
+    use nostr::ToBech32 as _;
+    println!("identity: {}", identity.id);
+    if let Some(npub) = nostr::PublicKey::from_hex(&identity.pubkey)
+        .ok()
+        .and_then(|key| key.to_bech32().ok())
+    {
+        println!("npub:     {npub}");
+    }
+    println!("pubkey:   {}", identity.pubkey);
+}
+
+/// A keychain that is not there says so, and names the other way, instead
+/// of "identity is locked" (v0.17 A5: a container, an SSH session, a
+/// desktop without a secret service).
+fn without_keychain(error: Error, backend: KeyBackend, verb: &str, label: &str) -> Error {
+    match (error, backend) {
+        (Error::Locked(_), KeyBackend::Keychain) => Error::Unsupported(format!(
+            "no keychain to keep the key in: the OS credential service is not available here \
+             (none on this machine, or it is locked). Keep the key in a file protected by a \
+             passphrase instead:\n  bzz identity {verb} --label {} --backend encrypted-file",
+            shell_word(label)
+        )),
+        (error, _) => error,
+    }
+}
+
+/// `label` as one word for a shell line: quoted when it needs to be.
+fn shell_word(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_.@".contains(character))
+    {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
 fn save_new_identity(
     manager: &IdentityManager<'_>,
     config: &mut Config,
@@ -1950,4 +2025,61 @@ fn save_new_identity(
         return Err(error);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use bzz::{config::KeyBackend, error::Error};
+    use clap::CommandFactory as _;
+
+    use super::{Cli, shell_word, without_keychain};
+
+    /// v0.17 A5: no keychain says so and names the other way; another
+    /// backend's error, or another error, is left as it was.
+    #[test]
+    fn a_missing_keychain_names_the_encrypted_file() {
+        let error = without_keychain(
+            Error::Locked("the OS credential service is unavailable; unlock it and retry".into()),
+            KeyBackend::Keychain,
+            "new",
+            "personal",
+        )
+        .to_string();
+        assert!(error.contains("no keychain"), "{error}");
+        assert!(!error.contains("identity is locked"), "{error}");
+        assert!(
+            error.contains("bzz identity new --label personal --backend encrypted-file"),
+            "{error}"
+        );
+        let other = without_keychain(
+            Error::Locked("x".into()),
+            KeyBackend::EncryptedFile,
+            "new",
+            "personal",
+        );
+        assert!(matches!(other, Error::Locked(_)));
+        assert_eq!(shell_word("my team"), "'my team'");
+        assert_eq!(shell_word("it's"), "'it'\\''s'");
+    }
+
+    /// v0.17 A5: `bzz community add --help` describes the command and each
+    /// argument.
+    #[test]
+    fn community_add_help_describes_itself() {
+        let mut command = Cli::command();
+        let add = command
+            .find_subcommand_mut("community")
+            .and_then(|community| community.find_subcommand_mut("add"))
+            .unwrap();
+        let help = add.render_long_help().to_string();
+        for wanted in [
+            "Add a Buzz community",
+            "npub",
+            "bzz identity list",
+            "wss://",
+            "allow-insecure-localhost",
+        ] {
+            assert!(help.contains(wanted), "{wanted}\n{help}");
+        }
+    }
 }
