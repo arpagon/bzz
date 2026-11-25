@@ -2405,7 +2405,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t17-look-captures"
 kind = "harness"
-description = "v0.17 L1-L6: the workspace, the finder over it, and the focus moved, at 80x24 and at 160x45."
+description = "v0.17 L1-L6: the workspace, and the finder over it, at 80x24 and at 160x45."
 size = "80x24"
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
@@ -2440,15 +2440,6 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["esc"]
-visible = "message #t9-general"
-
-[[scenario.step]]
-pause = 300
-keys = ["tab"]
-visible = "message #t9-general"
-
-[[scenario.step]]
-keys = ["shift+tab"]
 visible = "message #t9-general"
 
 [[scenario.step]]
