@@ -78,8 +78,9 @@ what you send.
 > a visible focus, a little motion you can turn off, and nothing drawn while
 > nothing changes. Panes fit any width, `z` shows the conversation alone,
 > and the mouse resizes them. On Linux bzz needs no sound library, and on
-> Windows every key works. [Release notes](docs/release-v0.17.0.md), with
-> what changes if you already use bzz.
+> Windows `?`, `:` and every shifted symbol now reach it.
+> [Release notes](docs/release-v0.17.0.md), with what changes if you
+> already use bzz.
 >
 > **Since 0.16 — apps in the channel.** A small app beside the
 > conversation: a task board, a poll, a rota. Ask your agent for one, or
