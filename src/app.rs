@@ -12,7 +12,7 @@ use futures_util::StreamExt as _;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{Block, Clear, List, ListItem, Paragraph, Wrap},
 };
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
@@ -650,6 +650,18 @@ pub struct App {
     /// status line says so, and what needs a real community says how to
     /// join one (`crate::demo`).
     demo: bool,
+    /// The first screen, while no community exists (v0.17 A4).
+    first_screen: crate::ui::first_screen::FirstScreen,
+    /// `d` on the first screen: leave, and open the demo in this process.
+    open_demo: bool,
+}
+
+/// How [`App::run_to_exit`] ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Exit {
+    Quit,
+    /// The person chose the demo on the first screen.
+    OpenDemo,
 }
 
 const LEADER_TIMEOUT: Duration = Duration::from_millis(750);
@@ -1176,18 +1188,25 @@ impl App {
             apps: pane::AppPanes::default(),
             thread_drawn: false,
             demo: false,
+            first_screen: crate::ui::first_screen::FirstScreen::default(),
+            open_demo: false,
         };
         app.sync_workspace_viewports();
         app.hydrate_cache().await?;
         Ok(app)
     }
 
-    pub async fn run(mut self) -> Result<()> {
+    pub async fn run(self) -> Result<()> {
+        self.run_to_exit().await.map(|_| ())
+    }
+
+    /// Runs bzz until the person leaves, and says how they left.
+    pub async fn run_to_exit(mut self) -> Result<Exit> {
         let shutdown = shutdown_signal();
         tokio::pin!(shutdown);
         tokio::select! {
             biased;
-            _ = &mut shutdown => return Ok(()),
+            _ = &mut shutdown => return Ok(Exit::Quit),
             _ = tokio::task::yield_now() => {},
         }
         let (mut guard, mut terminal) = TerminalGuard::enter(self.config.ui.mouse.enabled())?;
@@ -1506,7 +1525,11 @@ impl App {
             reason: "user".into(),
         });
         self.diagnostics.shutdown().await;
-        Ok(())
+        Ok(if self.open_demo {
+            Exit::OpenDemo
+        } else {
+            Exit::Quit
+        })
     }
 
     async fn start_sync(&mut self) -> Result<()> {
@@ -3382,6 +3405,18 @@ impl App {
     ) -> Result<()> {
         if self.global_key(key) {
             return Ok(());
+        }
+        // The first screen's own keys, while no community exists (v0.17).
+        if self.config.communities.is_empty() && self.presentation.overlay.is_none() {
+            match self.first_screen.key(key) {
+                crate::ui::first_screen::Outcome::OpenDemo => {
+                    self.open_demo = true;
+                    self.should_quit = true;
+                    return Ok(());
+                }
+                crate::ui::first_screen::Outcome::Handled => return Ok(()),
+                crate::ui::first_screen::Outcome::Ignored => {}
+            }
         }
         // Ctrl+Y when what waits is a version of an app (v0.16 M4).
         if self.app_review_key(key).await? {
@@ -10452,39 +10487,14 @@ impl App {
     }
 
     fn render_empty(&self, frame: &mut Frame<'_>, area: Rect) {
-        let mut lines = vec![
-            Line::styled(
-                "Welcome to bzz",
-                self.theme.style(HighlightGroup::CommunitySelected),
-            ),
-            Line::default(),
-            Line::from("No communities are configured."),
-            Line::from("Run bzz identity new, then bzz community add."),
-            Line::default(),
-            Line::from("? help · q quit"),
-        ];
         // Without a workspace there is no status bar: command feedback
         // (`:huddle`, `:presence`, ...) is shown here instead.
-        if let Some(notice) = &self.status_error {
-            lines.push(Line::default());
-            lines.push(Line::styled(
-                sanitize::single_line(notice),
-                self.theme.style(HighlightGroup::Muted),
-            ));
-        }
-        frame.render_widget(
-            Paragraph::new(Text::from(lines))
-                .style(self.theme.style(HighlightGroup::Normal))
-                .alignment(Alignment::Center)
-                .wrap(Wrap { trim: false })
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Pane))
-                        .border_style(self.theme.style(HighlightGroup::PaneBorder))
-                        .title_style(self.theme.style(HighlightGroup::PaneTitle))
-                        .title(" bzz "),
-                ),
+        crate::ui::first_screen::render(
+            frame,
             area,
+            &self.theme,
+            &self.first_screen,
+            self.status_error.as_deref(),
         );
     }
     fn render_communities(&self, frame: &mut Frame<'_>, area: Rect, focused: bool) {

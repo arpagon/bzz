@@ -543,10 +543,15 @@ async fn run() -> Result<()> {
             store.sync_config(&config)?;
             store.set_diagnostics(diagnostics.clone());
             let handle = StoreHandle::spawn(store)?;
-            App::new_with_diagnostics(config, paths, handle, diagnostics)
+            let exit = App::new_with_diagnostics(config, paths, handle, diagnostics)
                 .await?
-                .run()
-                .await
+                .run_to_exit()
+                .await?;
+            match exit {
+                // `d` on the first screen: the demo, in this process.
+                bzz::app::Exit::OpenDemo => bzz::demo::run().await,
+                bzz::app::Exit::Quit => Ok(()),
+            }
         }
     }
 }
