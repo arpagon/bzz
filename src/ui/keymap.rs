@@ -197,7 +197,8 @@ impl KeyChord {
         Self { code, modifiers }
     }
 
-    pub const fn from_event(event: KeyEvent) -> Self {
+    pub fn from_event(event: KeyEvent) -> Self {
+        let event = normalize_key_event(event);
         Self::new(event.code, event.modifiers)
     }
 
@@ -303,7 +304,34 @@ impl KeyChord {
             };
             key = Some(code);
         }
-        key.map(|code| Self { code, modifiers }).ok_or(())
+        key.map(|code| Self::written(code, modifiers)).ok_or(())
+    }
+
+    /// A chord as a key map writes it, in the form [`normalize_key_event`]
+    /// gives a key: `shift-?` is `?`, `shift-a` is `A`, `shift-tab` is
+    /// `backtab`. So a map written with or without `shift-` matches the key
+    /// every terminal sends. A chord with Ctrl is kept as written.
+    fn written(code: KeyCode, modifiers: KeyModifiers) -> Self {
+        let code = match code {
+            KeyCode::Char(character)
+                if modifiers.contains(KeyModifiers::SHIFT)
+                    && !modifiers.contains(KeyModifiers::CONTROL)
+                    && !character.is_uppercase() =>
+            {
+                let mut upper = character.to_uppercase();
+                match (upper.next(), upper.next()) {
+                    (Some(upper), None) if upper != character => KeyCode::Char(upper),
+                    _ => KeyCode::Char(character),
+                }
+            }
+            KeyCode::Tab if modifiers.contains(KeyModifiers::SHIFT) => KeyCode::BackTab,
+            other => other,
+        };
+        if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char(_)) {
+            return Self::new(code, modifiers);
+        }
+        let event = normalize_key_event_on(KeyEvent::new(code, modifiers), false);
+        Self::new(event.code, event.modifiers)
     }
 
     fn is_text_input(self) -> bool {
@@ -824,6 +852,62 @@ pub fn map_insert(key: KeyEvent) -> KeyAction {
     }
 }
 
+/// Where keys enter bzz. A terminal reports one key in different ways on
+/// different platforms; this gives it the one form the key map, the composer
+/// and the apps match, the form a Linux or macOS terminal sends:
+///
+/// - a character carries Shift exactly when it is a capital (Windows reports
+///   Shift with `?`, `:`, `!` and every shifted symbol, and no Shift with a
+///   capital typed under Caps Lock);
+/// - with Ctrl a letter is small and carries no Shift (Windows reports
+///   Ctrl+C under Caps Lock as Ctrl+`C`);
+/// - Shift+Tab is `BackTab` with no further modifier;
+/// - on Windows a character typed with AltGr, which Windows reports as
+///   Ctrl+Alt, is text (`@`, `{`, `€` on many European layouts);
+/// - on Windows Ctrl+Enter is Ctrl+J: a console fed by a terminal (ConPTY,
+///   as over SSH) reports the byte of Ctrl+J as Ctrl+Enter.
+///
+/// It changes nothing a Linux or macOS terminal sends but `BackTab`, which
+/// crossterm reports with Shift on every platform.
+pub fn normalize_key_event(event: KeyEvent) -> KeyEvent {
+    normalize_key_event_on(event, cfg!(windows))
+}
+
+/// [`normalize_key_event`] for a chosen platform, so tests on any machine
+/// can feed keys exactly as Windows delivers them.
+pub fn normalize_key_event_on(mut event: KeyEvent, windows: bool) -> KeyEvent {
+    let ctrl_alt = KeyModifiers::CONTROL | KeyModifiers::ALT;
+    match event.code {
+        KeyCode::Char(character) => {
+            if windows && event.modifiers.contains(ctrl_alt) && is_altgr_text(character) {
+                event.modifiers.remove(ctrl_alt);
+            }
+            if event.modifiers.contains(KeyModifiers::CONTROL) {
+                if character.is_ascii_uppercase() {
+                    event.code = KeyCode::Char(character.to_ascii_lowercase());
+                    event.modifiers.remove(KeyModifiers::SHIFT);
+                }
+            } else {
+                event
+                    .modifiers
+                    .set(KeyModifiers::SHIFT, character.is_uppercase());
+            }
+        }
+        KeyCode::BackTab => event.modifiers.remove(KeyModifiers::SHIFT),
+        KeyCode::Enter if windows && event.modifiers == KeyModifiers::CONTROL => {
+            event.code = KeyCode::Char('j');
+        }
+        _ => {}
+    }
+    event
+}
+
+/// A character Windows reports with Ctrl+Alt that can only be AltGr text: a
+/// real Ctrl+Alt chord reports the key's own letter or digit.
+fn is_altgr_text(character: char) -> bool {
+    !character.is_ascii_alphanumeric() && character != ' ' && !character.is_control()
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -831,7 +915,10 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tempfile::TempDir;
 
-    use super::{KeyChord, KeyLookup, KeyMap, KeyScope, UiAction};
+    use super::{
+        KeyChord, KeyLookup, KeyMap, KeyScope, UiAction, normalize_key_event,
+        normalize_key_event_on,
+    };
 
     #[test]
     fn builtin_leader_sequences_are_typed_and_discoverable() {
@@ -1038,6 +1125,222 @@ mod tests {
         let path = temporary.path().join("keymap.toml");
         fs::write(&path, "[[binding]]\nkeys = ['g']\naction = 'refresh'\n").unwrap();
         assert!(KeyMap::load_from(&path).is_err());
+    }
+
+    // Keys exactly as crossterm delivers them in a Windows console (ConPTY
+    // over SSH, Windows 11 26100) and in tmux on Linux: examples/key_probe.rs,
+    // docs/e2e-windows.md.
+    fn on_windows(code: KeyCode, modifiers: KeyModifiers) -> KeyChord {
+        KeyChord::from_event(normalize_key_event_on(KeyEvent::new(code, modifiers), true))
+    }
+
+    #[test]
+    fn windows_shifted_symbols_reach_their_bindings() {
+        let keymap = KeyMap::builtin();
+        let shift = KeyModifiers::SHIFT;
+        for (character, action) in [('?', UiAction::OpenHelp), (':', UiAction::OpenCommand)] {
+            assert_eq!(
+                keymap.lookup(
+                    KeyScope::Workspace,
+                    &[on_windows(KeyCode::Char(character), shift)]
+                ),
+                KeyLookup::Action(action),
+                "{character}"
+            );
+        }
+        assert_eq!(
+            keymap.lookup(KeyScope::Overlay, &[on_windows(KeyCode::Char('?'), shift)]),
+            KeyLookup::Action(UiAction::BackOrQuit)
+        );
+        for character in "?:@!#$%^&*()_+{}|<>\"~".chars() {
+            assert_eq!(
+                on_windows(KeyCode::Char(character), shift),
+                KeyChord::new(KeyCode::Char(character), KeyModifiers::NONE),
+                "{character}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_capitals_and_ctrl_keys_under_caps_lock() {
+        let keymap = KeyMap::builtin();
+        // Shift+J, and J under Caps Lock, which Windows reports without Shift.
+        for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
+            assert_eq!(
+                keymap.lookup(
+                    KeyScope::Workspace,
+                    &[on_windows(KeyCode::Char('J'), modifiers)]
+                ),
+                KeyLookup::Action(UiAction::ScrollViewportDown)
+            );
+        }
+        // Ctrl+C under Caps Lock arrives as Ctrl+`C`; Ctrl+Shift+C too.
+        for modifiers in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ] {
+            assert_eq!(
+                keymap.lookup(
+                    KeyScope::Composer,
+                    &[on_windows(KeyCode::Char('C'), modifiers)]
+                ),
+                KeyLookup::Action(UiAction::ClearComposer)
+            );
+        }
+        // A capital typed with Caps Lock and Shift is small on Windows.
+        assert_eq!(
+            on_windows(KeyCode::Char('a'), KeyModifiers::SHIFT),
+            KeyChord::new(KeyCode::Char('a'), KeyModifiers::NONE)
+        );
+    }
+
+    #[test]
+    fn windows_altgr_characters_are_text() {
+        let altgr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+        for character in ['@', '{', '[', '\\', '|', '~', '€', 'ą'] {
+            let key = normalize_key_event_on(KeyEvent::new(KeyCode::Char(character), altgr), true);
+            assert_eq!(
+                super::map_insert(key),
+                super::KeyAction::Character(character)
+            );
+            // Elsewhere Ctrl+Alt is never AltGr, and is left alone.
+            let key = KeyEvent::new(KeyCode::Char(character), altgr);
+            assert_eq!(normalize_key_event_on(key, false), key);
+        }
+        // A real Ctrl+Alt chord reports the key's own letter or digit.
+        for character in ['a', '2', ' '] {
+            let key = KeyEvent::new(KeyCode::Char(character), altgr);
+            assert_eq!(normalize_key_event_on(key, true), key);
+        }
+    }
+
+    #[test]
+    fn windows_ctrl_enter_is_the_composer_newline() {
+        let keymap = KeyMap::builtin();
+        assert_eq!(
+            keymap.lookup(
+                KeyScope::Composer,
+                &[on_windows(KeyCode::Enter, KeyModifiers::CONTROL)]
+            ),
+            KeyLookup::Action(UiAction::InsertNewline)
+        );
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
+        assert_eq!(normalize_key_event_on(key, false), key);
+    }
+
+    #[test]
+    fn shift_tab_reaches_previous_focus() {
+        // Every platform reports Shift+Tab as BackTab with Shift.
+        let keymap = KeyMap::builtin();
+        let back = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+        for windows in [false, true] {
+            assert_eq!(
+                keymap.lookup(
+                    KeyScope::Workspace,
+                    &[KeyChord::from_event(normalize_key_event_on(back, windows))]
+                ),
+                KeyLookup::Action(UiAction::PreviousFocus)
+            );
+        }
+    }
+
+    #[test]
+    fn keys_from_a_linux_terminal_are_unchanged() {
+        let none = KeyModifiers::NONE;
+        let mut keys = "?:@!#$%^&*()_+{}|<>\"~a/éñ😀 "
+            .chars()
+            .map(|character| KeyEvent::new(KeyCode::Char(character), none))
+            .collect::<Vec<_>>();
+        for character in "JKGU".chars() {
+            keys.push(KeyEvent::new(KeyCode::Char(character), KeyModifiers::SHIFT));
+        }
+        for character in "kypnjdu c".chars() {
+            keys.push(KeyEvent::new(
+                KeyCode::Char(character),
+                KeyModifiers::CONTROL,
+            ));
+        }
+        for character in "hlo".chars() {
+            keys.push(KeyEvent::new(KeyCode::Char(character), KeyModifiers::ALT));
+        }
+        keys.push(KeyEvent::new(
+            KeyCode::Char('J'),
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
+        ));
+        for code in [
+            KeyCode::Tab,
+            KeyCode::Enter,
+            KeyCode::Backspace,
+            KeyCode::F(1),
+            KeyCode::F(5),
+            KeyCode::Up,
+            KeyCode::Home,
+            KeyCode::PageUp,
+            KeyCode::Delete,
+            KeyCode::Esc,
+        ] {
+            keys.push(KeyEvent::new(code, none));
+        }
+        keys.push(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        keys.push(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+        for key in keys {
+            assert_eq!(normalize_key_event_on(key, false), key, "{key:?}");
+            assert_eq!(normalize_key_event(key), key, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn user_maps_match_with_or_without_shift() {
+        let temporary = TempDir::new().unwrap();
+        let path = temporary.path().join("keymap.toml");
+        for written in ["!", "shift-!"] {
+            fs::write(
+                &path,
+                format!("[[binding]]\nkeys = ['{written}']\naction = 'refresh'\n"),
+            )
+            .unwrap();
+            let keymap = KeyMap::load_from(&path).unwrap();
+            for key in [
+                KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
+                KeyEvent::new(KeyCode::Char('!'), KeyModifiers::SHIFT),
+            ] {
+                for windows in [false, true] {
+                    let chord = KeyChord::from_event(normalize_key_event_on(key, windows));
+                    assert_eq!(
+                        keymap.lookup(KeyScope::Workspace, &[chord]),
+                        KeyLookup::Action(UiAction::Refresh),
+                        "{written} {key:?}"
+                    );
+                }
+            }
+        }
+        for (written, key) in [
+            ("X", KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT)),
+            (
+                "shift-x",
+                KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT),
+            ),
+            (
+                "shift-X",
+                KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT),
+            ),
+            (
+                "shift-tab",
+                KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+            ),
+        ] {
+            fs::write(
+                &path,
+                format!("[[binding]]\nkeys = ['{written}']\naction = 'refresh'\n"),
+            )
+            .unwrap();
+            let keymap = KeyMap::load_from(&path).unwrap();
+            assert_eq!(
+                keymap.lookup(KeyScope::Workspace, &[KeyChord::from_event(key)]),
+                KeyLookup::Action(UiAction::Refresh),
+                "{written}"
+            );
+        }
     }
 
     #[test]

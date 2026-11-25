@@ -582,6 +582,7 @@ pub fn run(options: DevOptions) -> crate::Result<Vec<String>> {
         match crossterm::event::poll(Duration::from_millis(30)) {
             Ok(true) => match crossterm::event::read() {
                 Ok(TerminalEvent::Key(key)) => {
+                    let key = crate::ui::keymap::normalize_key_event(key);
                     let pressed = matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat);
                     if pressed
                         && key.modifiers.contains(KeyModifiers::CONTROL)

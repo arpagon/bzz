@@ -11501,6 +11501,10 @@ where
     S: futures_util::Stream<Item = std::io::Result<TerminalEvent>> + Unpin,
 {
     match input.next().await {
+        // Where keys enter bzz: one form for every platform's terminal.
+        Some(Ok(TerminalEvent::Key(key))) => Some(TerminalEvent::Key(
+            crate::ui::keymap::normalize_key_event(key),
+        )),
         Some(Ok(event)) => Some(event),
         Some(Err(_)) => {
             tokio::time::sleep(TERMINAL_ERROR_YIELD).await;
@@ -14307,6 +14311,20 @@ mod tests {
             futures_util::stream::iter([Err(std::io::Error::other("terminal unavailable"))]);
 
         assert!(next_terminal_event(&mut input).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn keys_enter_in_one_form_for_every_platform() {
+        // `?` as a Windows console reports it, with Shift; the key map has it
+        // without (docs/e2e-windows.md).
+        let mut input = futures_util::stream::iter([Ok(TerminalEvent::Key(KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::SHIFT,
+        )))]);
+        let Some(TerminalEvent::Key(key)) = next_terminal_event(&mut input).await else {
+            panic!("a key");
+        };
+        assert_eq!(key, KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
     }
 
     #[tokio::test]
