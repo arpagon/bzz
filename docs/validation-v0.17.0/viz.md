@@ -62,7 +62,27 @@ cargo test --locked --test config_test motion
 
 ## Relay run
 
-RELAY_RESULT_PLACEHOLDER
+```sh
+ln -s <scratch>/target target        # this worktree's target directory
+BZZ_BUZZ_SOURCE=<main checkout>/runs/buzz-pin BZZ_RELAY_TEST_FILTER=real_relay_huddle \
+  BZZ_RELAY_NOCAPTURE=1 ./scripts/test-relay.sh     # CARGO_TARGET_DIR unset
+```
+
+Both huddle tests passed (`2 passed; 0 failed`), the existing
+`real_relay_huddle_lifecycle_and_audio_round_trip` with them. Alice joined
+first and was alone; her muted microphone's level reached her own lane.
+Bob joined after her: Alice's call named him by his public key at his relay
+index, the relay's `joined` message being the only way it could. Bob sent
+1 s of silence then 1.5 s of 1 kHz at −20 dBFS, unmuted; Alice's meter,
+read every 33 ms, had him speaking from 1.06 s to 2.91 s (tone 1.00 to
+2.50 s; the rest is the jitter buffer, the hang and the relay). When he
+left, Alice's call dropped him. The harness was torn down by the script;
+`docker ps` showed no `buzz-harness` container after.
+
+Red: the engine before this change ignored every text message
+(`Some(Ok(_)) => {}`), so `others()` stayed at the roster of the join and
+the test's "names Bob" step cannot pass; this was not run as a separate
+relay run.
 
 ## Captures
 
