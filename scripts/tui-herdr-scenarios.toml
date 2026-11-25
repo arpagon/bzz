@@ -2416,7 +2416,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["type:t9-gen", "enter"]
-visible = "Generated custom emoji"
+visible = "message #t9-general"
 
 [[scenario.step]]
 pause = 300
@@ -2425,13 +2425,13 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["esc"]
-visible = "Generated custom emoji"
+visible = "message #t9-general"
 
 [[scenario.step]]
 size = "160x45"
 pause = 300
 keys = []
-visible = "Generated custom emoji"
+visible = "message #t9-general"
 
 [[scenario.step]]
 pause = 300
@@ -2440,12 +2440,12 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["esc"]
-visible = "Generated custom emoji"
+visible = "message #t9-general"
 
 [[scenario.step]]
 pause = 300
 keys = ["tab"]
-visible = "Generated custom emoji"
+visible = "message #t9-general"
 
 [[scenario.step]]
 keys = ["q"]

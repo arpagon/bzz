@@ -69,10 +69,10 @@ pub mod priority {
     pub const CONNECTION: u8 = 200;
     /// An agent typing, an app's own line.
     pub const ACTIVITY: u8 = 150;
+    /// A notice: parts below it make room for it while it is shown.
+    pub const NOTICE: u8 = 145;
     /// The default of the huddle slot.
     pub const HUDDLE: u8 = 140;
-    /// The notice keeps at least a few cells while it is shown.
-    pub const NOTICE: u8 = 120;
     pub const CHANNEL: u8 = 100;
     pub const HINT: u8 = 80;
 }
@@ -239,34 +239,46 @@ fn layout<'a>(theme: &Theme, view: StatusBarView<'a>, total: usize) -> Line<'a> 
         }
     });
 
-    // The notice keeps a few cells while it is shown; it drops like any
-    // other part below its priority.
-    let notice_minimum = if view.notice.is_empty() {
+    // A notice is shown whole while parts of lower priority can make room
+    // for it; then it is cut to what is left, down to a few cells; then it
+    // goes. Parts drop lowest priority first while the row is too wide.
+    let notice_full = if view.notice.is_empty() {
         0
     } else {
-        view.notice.width().saturating_add(1).min(16)
+        view.notice.width().saturating_add(1)
     };
     let mut notice_kept = !view.notice.is_empty();
-    loop {
-        let used = mode_width
-            .saturating_add(parts.iter().map(|part| part.line.width()).sum::<usize>())
-            .saturating_add(if notice_kept { notice_minimum } else { 0 });
-        if used <= total {
-            break;
-        }
-        let lowest = parts
+    let lowest = |parts: &[Part<'_>], below: u8| {
+        parts
             .iter()
             .enumerate()
+            .filter(|(_, part)| part.priority < below)
             .min_by_key(|(index, part)| (part.priority, usize::MAX - index))
-            .map(|(index, part)| (index, part.priority));
-        match lowest {
-            Some((_, lowest)) if notice_kept && priority::NOTICE <= lowest => notice_kept = false,
-            Some((index, _)) => {
-                parts.remove(index);
+            .map(|(index, _)| index)
+    };
+    loop {
+        let fixed =
+            mode_width.saturating_add(parts.iter().map(|part| part.line.width()).sum::<usize>());
+        if !notice_kept || fixed.saturating_add(notice_full) <= total {
+            if fixed <= total {
+                break;
             }
-            None if notice_kept => notice_kept = false,
-            None => break,
+            match lowest(&parts, u8::MAX) {
+                Some(index) => {
+                    parts.remove(index);
+                }
+                None => break,
+            }
+            continue;
         }
+        if let Some(index) = lowest(&parts, priority::NOTICE) {
+            parts.remove(index);
+            continue;
+        }
+        if fixed.saturating_add(notice_full.min(12)) <= total {
+            break;
+        }
+        notice_kept = false;
     }
 
     let fixed = mode_width.saturating_add(parts.iter().map(|part| part.line.width()).sum());
@@ -486,6 +498,23 @@ mod tests {
         assert!(row.contains("generated"));
         let wide = row_160(&view);
         assert!(wide.contains("generated notice without private content"));
+    }
+
+    /// A notice is not cut while the channel and the hint can make room.
+    #[test]
+    fn a_notice_is_shown_whole_before_the_channel_and_the_hint() {
+        let mut view = normal();
+        view.notice = "board uninstalled; 2 records of bzz.app.board.* stay in the channel";
+        let row = row(&view, 120);
+        assert!(row.contains(view.notice), "{row}");
+        assert!(row.contains("● online"), "{row}");
+        assert!(!row.contains("? keys"), "{row}");
+        let wide = row_160(&view);
+        assert!(wide.contains(view.notice), "{wide}");
+        assert!(
+            wide.contains("#general") && wide.contains("? keys"),
+            "{wide}"
+        );
     }
 
     fn row_160(view: &StatusBarView<'_>) -> String {
