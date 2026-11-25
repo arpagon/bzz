@@ -48,9 +48,43 @@ next:
 
 ## Claim: the suite is green at 200x50, three times in a row, and at 160x45 and 80x24
 
-Rung: the suite in the manifest's order, on the final commit of the branch.
-See the table at the end of this file for the counts and times
-(`fin2-*`).
+Rung: the suite in the manifest's order, on `e3367b6` (the branch with
+`v0.17.0` at `ecff610` merged in; the one commit after it only removes the
+runner's temporary folder at the end), release binary built from it.
+
+| Run | Size | Result | Time |
+|---|---|---|---|
+| `fin3-200-a` | 200x50 | 52 of 52 passed | 210 s |
+| `fin3-200-b` | 200x50 | 52 of 52 passed | 207 s |
+| `fin3-200-c` | 200x50 | 52 of 52 passed | 207 s |
+| `fin3-160` | 160x45 | 52 of 52 passed | 207 s |
+| `fin3-80` | 80x24 | 48 of 48 passed, 4 skipped | 183 s |
+| `fin3-join2` | `t17-join-open` (kind `join`) | 1 of 1 | 72 s |
+| `fin3-members` | `t17-join-members`, relay closed (`BUZZ_REQUIRE_RELAY_MEMBERSHIP=true`, a random `RELAY_OWNER_PUBKEY`, `BZZ_FIXTURE_AGENTS=0`) | 1 of 1 | 71 s |
+
+Skipped at 80x24, and why: `t15-approval-approve-refuse` (`min_size =
+"120x30"`: the waiting line is one row of 108 characters, cut under 120
+columns), `t15-agent-new-form` (`120x30`: the form's sentences wrap inside
+its frame between the words a step reads), `t15-coding-harnesses-in-panel`
+(`120x36`: the agent's record is longer than the panel under 36 rows),
+`t15-cli-agent-activity` (it needs the first, which was skipped). Each size
+was measured, below.
+
+With agents on, the fixture fails on a closed relay: `the relay did not
+confirm the agent's profile` (`examples/harness_fixture.rs`, the local
+agent; unchanged by this task). The members-only scenario needs no agent.
+
+The automated scenarios (no relay), `BZZ_TMUX_SCENARIOS=automated`:
+
+| Size | Result | Time |
+|---|---|---|
+| 200x50, three times | 17 of 17 each | 66, 66, 67 s |
+| 160x45 | 17 of 17 | 67 s |
+| 80x24 | 17 of 17 | 66 s |
+
+Every automated scenario names its size but `startup-help-quit`,
+`custom-keymap-inbox` and `v013-panels-empty-profile`, which hold at all
+three.
 
 ## Claim: `needs` and `min_size` are checked and reported
 
@@ -92,3 +126,43 @@ of automated scenarios) was read, not run.
   a DM", and Enter opened the DM picker with the typed name (`rev2-200`,
   `t17-layout-board-captures`, step 2). The runner now starts the profile
   once before the suite.
+
+## What was wrong, and what changed
+
+| Scenario | What was wrong | What changed |
+|---|---|---|
+| `t17-palette-unavailable-stays`, `t17-palette-sizes` | `#t9-general`'s newest message was the viewer's own | `#t17-palette` (fixture), newest message another person's; the row selected checked first |
+| `t17-palette2-theme-react` | `3 G k k k` reached another row | `#t17-react`: one message, `3 G` |
+| `t17-find-delete-unread-status` | wrote and deleted in `#t9-general` | `#t17-find` |
+| `t17-sound-call` | its check of `#t9-general` scrolled away | `#t17-sound`, both people members |
+| `t17-palette2-app` | needs the Board; left it open in `#t9-general`'s view of `:apps` | `needs = ["t16-cli-app-approve"]`, `#t17-app`, `:app close` at the end |
+| `t17-registry-app-footer` | needs an installed app | `needs`, `#t17-palette` |
+| `t17-palette2-find` | the profile's keys moved to its frame's foot | a pattern over the frame, the name and the keys |
+| `t17-palette2-dm`, `t17-palette2-sizes` | Scout not yet known on a fresh profile | wait for `Scout joined` at the top of `#t15-agents` |
+| `t17-layout-f7` | `k Enter` opened a join row's thread | `#t17-thread` |
+| `t17-layout-board-captures` | needs the Board | `needs` |
+| `t17-layout-mouse` | the demo's longer notices; the channels' order; the hint now follows the focus | three turns of the wheel, `#design` on row 4, the palette's key at column 70 |
+| `t17-demo2-first-minute` | Scout's answer wraps beside the conversation | a pattern across the row beside it |
+| `t17-find-commands`, `t17-join-not-there` | "Join a community" is also a row of the first screen | the form's own words |
+| `t17-join-*` | the join form is 100 columns wide, centred at 160 | the frame of that size, edge to edge or centred |
+| `t17-join-open` | the six new channels push `#t9-general` off the finder at 80x24 | narrowed first |
+| t9, t14, t15 that open a channel | a message used as "the channel is open" wraps or scrolls away | the composer's title or the status line |
+| `t15-agent-answers-mention` | `↳ 1 reply` matched an older thread | this mention's row |
+| `t15-coding-harnesses-in-panel` | the `BZZ_GROK` sentence wraps where the fixture's path puts it | any space may be a break; `min_size` |
+| `t15-approval-approve-refuse`, `t15-agent-new-form` | do not hold at 80x24 | `min_size` |
+| t15 and t16 chains | dependencies silent | `needs` (credential, show, move, receive, activity, the form; add, approve, the M3 and M4 chain, M6 after M4, M5 and the Poll after the Board is approved, since the banner names the oldest version waiting) |
+| `t16-app-pane`, `t16-m6-share-offer-approve` | `:apps` read as one exact line | the Board's row with where it is open |
+| the runner | nothing for order, needs, sizes; first starts; ~9 MB left in `/tmp` per run | `needs`, `min_size`, `BZZ_TMUX_ORDER`, a warm-up of each profile, the folder removed |
+| the Herdr runner | refused the manifest | reads it (above) |
+
+## The final head, and the gates
+
+`fin4-200`, on `74cbba6` (the runner now removes its folder): 52 of 52 at
+200x50 in 216 s; relay down, lock free, the run's folder gone.
+
+Gates on `74cbba6`: `cargo fmt --check`, `cargo clippy --locked
+--all-targets -- -D warnings`, `cargo build --locked --example
+scripted_harness`, `cargo test --locked --all-targets` (2,106 passed, 0
+failed, 44 ignored, in 72 test binaries) and `cargo test --locked
+--no-default-features --lib`: all exit 0. Cargo.toml and Cargo.lock are
+unchanged, so deny and audit were not run.
