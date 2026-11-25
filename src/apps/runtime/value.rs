@@ -539,6 +539,25 @@ mod tests {
     }
 
     #[test]
+    fn a_number_crosses_the_script_as_the_relay_holds_it() {
+        // F4: a record's content is parsed from the relay's text. The fast
+        // float parsing made this one `1795537221.199124`, one unit off in
+        // the last place; the script then wrote that back.
+        let vm = vm();
+        let text = r#"{"big":12345678901234567890,"order":1795537221.1991239,"small":5e-324}"#;
+        let read: Json = serde_json::from_str(text).expect("json");
+        assert_eq!(read.to_string(), text);
+        let Json::Object(map) = &read else { panic!() };
+        // Through Lua untouched, and back as the update writes it.
+        let table = Value::Table(map_to_lua(vm.lua(), map).expect("lua"));
+        let Value::Table(t) = &table else { panic!() };
+        let order: f64 = t.raw_get("order").expect("order");
+        assert_eq!(order.to_bits(), 1795537221.1991239_f64.to_bits());
+        let written = to_content(&table, 4096, 32).expect("content");
+        assert_eq!(Json::Object(as_read(map, written)).to_string(), text);
+    }
+
+    #[test]
     fn what_json_cannot_hold_is_refused_with_its_place() {
         let vm = vm();
         for (source, wanted) in [
