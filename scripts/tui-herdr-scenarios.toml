@@ -2740,8 +2740,11 @@ regex = true
 timeout = 8000
 
 [[scenario.step]]
+# The thread is narrower since the layout's widths: the answer may wrap,
+# and its next line follows the conversation's row beside it.
 keys = ["enter"]
-visible = 'Done: I added "Ship party" to To do'
+visible = 'Done: I added "Ship party" to To( |[^\n]*\n[^\n]*▌\s+)do on the Board'
+regex = true
 timeout = 5000
 
 [[scenario.step]]
@@ -3084,12 +3087,15 @@ keys = ["esc"]
 visible = "Welcome to bzz"
 
 [[scenario.step]]
+# The form's own words: "Join a community" is also a row of the first
+# screen behind it (v0.17 A4), which shows before the form opens.
 keys = [":", "type:community add", "enter"]
-visible = "Join a community"
+visible = "Community address, or the invite link"
 
 [[scenario.step]]
 keys = ["esc"]
 visible = "Welcome to bzz"
+absent = "Community address, or the invite link"
 
 [[scenario.step]]
 keys = [":", "type:help", "enter"]
@@ -3945,10 +3951,13 @@ exit = "__BZZ_HERDR_EXIT__:0"
 keys = [":", "type:join localhost:3030", "enter"]
 visible = "open: anyone who signs in may join"
 
+# Drawn at 160 columns: a frame from edge to edge, or the join form, 100
+# columns wide since it was built, centred 30 columns in (at the head of
+# v0.17.0 nothing behind the form spans the width).
 [[scenario.step]]
 keys = []
 size = "160x45"
-visible = '(?m)^[┌│└][^\n]{158}[┐│┘]$'
+visible = '(?m)^( {30}[┌│└][^\n]{98}|[┌│└][^\n]{158})[┐│┘]$'
 regex = true
 
 [[scenario.step]]
@@ -3963,7 +3972,7 @@ visible = "no keychain: key in a file with a passphrase"
 [[scenario.step]]
 keys = []
 size = "160x45"
-visible = '(?m)^[┌│└][^\n]{158}[┐│┘]$'
+visible = '(?m)^( {30}[┌│└][^\n]{98}|[┌│└][^\n]{158})[┐│┘]$'
 regex = true
 
 [[scenario.step]]
@@ -4025,7 +4034,7 @@ absent = "pending]"
 [[scenario.step]]
 keys = []
 size = "160x45"
-visible = '(?m)^[┌│└][^\n]{158}[┐│┘]$'
+visible = '(?m)^( {30}[┌│└][^\n]{98}|[┌│└][^\n]{158})[┐│┘]$'
 regex = true
 
 [[scenario.step]]
@@ -4083,7 +4092,7 @@ visible = "waiting for an admin · asked 1 time"
 [[scenario.step]]
 keys = []
 size = "160x45"
-visible = '(?m)^[┌│└][^\n]{158}[┐│┘]$'
+visible = '(?m)^( {30}[┌│└][^\n]{98}|[┌│└][^\n]{158})[┐│┘]$'
 regex = true
 
 [[scenario.step]]
@@ -4138,7 +4147,7 @@ visible = "✗ nothing answers at localhost:9"
 [[scenario.step]]
 keys = []
 size = "160x45"
-visible = '(?m)^[┌│└][^\n]{158}[┐│┘]$'
+visible = '(?m)^( {30}[┌│└][^\n]{98}|[┌│└][^\n]{158})[┐│┘]$'
 regex = true
 
 [[scenario.step]]
@@ -4153,7 +4162,8 @@ visible = "ws:// and http:// work only on this machine; use wss://"
 [[scenario.step]]
 keys = ["esc"]
 visible = "Welcome to bzz"
-absent = "Join a community"
+# Not "Join a community": the first screen has that row too (v0.17 A4).
+absent = "Community address, or the invite link"
 
 [[scenario.step]]
 keys = ["q"]
@@ -4172,9 +4182,11 @@ args = ["demo"]
 ready = "DEMO · generated, offline"
 exit = "__BZZ_HERDR_EXIT__:0"
 
+# Since the demo's longer notices (tidy), three turns of the wheel bring
+# the checklist to the conversation's first rows (row 2: its first line).
 [[scenario.step]]
 pause = 500
-mouse = ["wheel-up 50 10", "wheel-up 50 10"]
+mouse = ["wheel-up 50 10", "wheel-up 50 10", "wheel-up 50 10"]
 keys = []
 visible = "Release checklist for Thursday"
 
@@ -4202,18 +4214,24 @@ mouse = ["drag 27 10 35 10"]
 keys = []
 visible = "channel pane width saved as 36"
 
+# #design is the fourth row of the channels ("smart": #infra, #launch,
+# #design by their unread messages).
 [[scenario.step]]
-mouse = ["click 6 3"]
+mouse = ["click 6 4"]
 keys = []
 visible = "The new empty state"
 
+# The notice gone, the hint is back; since registry it follows the focus
+# ("Enter open · Ctrl-K actions" in the channels), so the palette's key
+# ends the line at 80 columns: columns 65 to 78.
 [[scenario.step]]
 pause = 5500
 keys = []
-visible = "Ctrl-K actions · ? keys"
+visible = "Ctrl-K actions"
+absent = "channel pane width saved"
 
 [[scenario.step]]
-mouse = ["click 62 23"]
+mouse = ["click 70 23"]
 keys = []
 visible = "Search actions, channels"
 
