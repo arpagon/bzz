@@ -11425,6 +11425,9 @@ impl App {
         }
         if let Some((line, priority)) = self.status_mark_slot() {
             view.mark_slot(line, priority);
+            // The demo's relay is this process: "online" beside "offline"
+            // would contradict the mark.
+            view.mark_is_connection = self.demo;
         }
         crate::ui::status::render(frame, area, &self.theme, view);
     }

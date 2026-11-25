@@ -106,6 +106,9 @@ pub struct StatusBarView<'a> {
     pub activity: Option<&'a str>,
     pub notice: &'a str,
     pub connection: ConnectionState,
+    /// The mark says what the connection is (the demo's `generated,
+    /// offline`): the connection is then not shown beside it.
+    pub mark_is_connection: bool,
     /// An app has the keyboard: `?` and `q` are its keys, so the hint
     /// names the one key bzz keeps, and that hint stays when the row is
     /// short.
@@ -127,6 +130,7 @@ impl<'a> StatusBarView<'a> {
             activity: None,
             notice: "",
             connection,
+            mark_is_connection: false,
             app_focused: false,
             huddle: Slot::default(),
             mark: Slot::default(),
@@ -261,15 +265,17 @@ fn layout<'a>(theme: &Theme, view: StatusBarView<'a>, total: usize) -> Line<'a> 
             shorter: Vec::new(),
         });
     }
-    parts.push(Part {
-        line: Line::from(vec![
-            Span::styled(" ● ", theme.style(connection_group(view.connection))),
-            Span::styled(format!("{} ", connection_label(view.connection)), bar),
-        ]),
-        priority: priority::CONNECTION,
-        side: Side::Right,
-        shorter: Vec::new(),
-    });
+    if !view.mark_is_connection {
+        parts.push(Part {
+            line: Line::from(vec![
+                Span::styled(" ● ", theme.style(connection_group(view.connection))),
+                Span::styled(format!("{} ", connection_label(view.connection)), bar),
+            ]),
+            priority: priority::CONNECTION,
+            side: Side::Right,
+            shorter: Vec::new(),
+        });
+    }
     parts.push(if view.app_focused {
         Part {
             line: Line::from(Span::styled(APP_LEAVE_HINT, bar)),
