@@ -200,6 +200,10 @@ actions include `select-next`, `select-previous`, `jump-top`, `jump-bottom`,
 `delete-to-start`, `delete-to-end`, `clear-composer`, `paste-clipboard`,
 `attach-file`, `attach-path`, `remove-last-attachment`, `retry-attachments`,
 `move-word-left`, `move-word-right`, `move-line-start`, and `move-line-end`.
+`open-palette` opens the palette (`Ctrl-K` and `Space k` by default; in the
+composer `Ctrl-K` stays `delete-to-end`). A terminal that keeps `Ctrl-K` for
+itself, such as VS Code's with chords on, still reaches it through `Space k`,
+or bind it elsewhere: `keys = ["ctrl-g"]`, `action = "open-palette"`.
 Use `?` inside the relevant route as
 the authoritative effective binding list; it includes local disabled bindings
 and actions unavailable for the current selection.
