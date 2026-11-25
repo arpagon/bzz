@@ -2399,3 +2399,58 @@ visible = "quit bzz?"
 [[scenario.step]]
 keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 L1–L6: the look at 80×24 and 160×45, for captures before and after
+# (BZZ_TMUX_CAPTURES, BZZ_TMUX_CAPTURES_ANSI). Its checks hold on v0.16 too.
+[[scenario]]
+id = "t17-look-captures"
+kind = "harness"
+description = "v0.17 L1-L6: the workspace, the finder over it, and the focus moved, at 80x24 and at 160x45."
+size = "80x24"
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t9-gen", "enter"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+pause = 300
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+size = "160x45"
+pause = 300
+keys = []
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+pause = 300
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+pause = 300
+keys = ["tab"]
+visible = "Generated custom emoji"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
