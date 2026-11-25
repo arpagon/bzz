@@ -745,7 +745,7 @@ mod tests {
             (
                 F::Message,
                 "NORMAL",
-                "Enter thread · r react · i reply · Ctrl-K actions",
+                "Enter thread · r react · i write · Ctrl-K actions",
             ),
             (
                 F::Timeline,
@@ -798,10 +798,10 @@ mod tests {
         }
         // At 80 columns the message hint is whole; at 60 it takes fewer.
         let view = with_footer("NORMAL", &keymap, F::Message);
-        assert!(row(&view, 80).contains("Enter thread · r react · i reply · Ctrl-K actions"));
+        assert!(row(&view, 80).contains("Enter thread · r react · i write · Ctrl-K actions"));
         let narrow = row(&view, 60);
         assert!(narrow.contains("Enter thread"), "{narrow}");
-        assert!(!narrow.contains("i reply"), "{narrow}");
+        assert!(!narrow.contains("i write"), "{narrow}");
         // Narrower still: the two keys that lead to everything else.
         let mut tight = with_footer("NORMAL", &keymap, F::Message);
         tight.activity = Some("◆ Scout is typing ⠹");
@@ -829,7 +829,7 @@ mod tests {
         );
         let shown = row(&view, 160);
         assert!(
-            shown.contains("Enter thread · x react · i reply · Space k actions"),
+            shown.contains("Enter thread · x react · i write · Space k actions"),
             "{shown}"
         );
     }
@@ -847,7 +847,7 @@ mod tests {
             keys,
             [
                 ("Enter".to_owned(), "thread"),
-                ("i".to_owned(), "reply"),
+                ("i".to_owned(), "write"),
                 ("e".to_owned(), "edit"),
             ]
         );

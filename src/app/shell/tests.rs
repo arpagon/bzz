@@ -43,7 +43,11 @@ fn message(index: u64, channel: Uuid) -> Message {
         event_id: format!("event-{index}"),
         channel_id: channel,
         pubkey: format!("{:064}", index % 3),
-        created_at: 1_700_000_000 + index * 600,
+        // Sixty messages inside five minutes that start at twenty past the
+        // hour: in no time zone (they differ by quarters of an hour) does
+        // the day change among them, so the goldens have the same date
+        // lines everywhere.
+        created_at: 1_700_000_400 + index * 5,
         content: format!("message number {index}"),
         attachments: vec![],
         root_event_id: None,
@@ -534,6 +538,9 @@ async fn goldens_of_the_main_screens_at_four_widths() {
                 .collect::<Vec<_>>()
                 .join("\n")
                 + "\n";
+            // A message's time is drawn in the machine's own time zone: the
+            // goldens hold "00:00" in its place, so they are the same in CI.
+            let text = without_clock_times(&text);
             let path = folder.join(format!("{state}-{width}x{height}.txt"));
             if std::env::var_os("BZZ_BLESS").is_some() {
                 std::fs::create_dir_all(&folder).unwrap();
@@ -587,4 +594,41 @@ fn an_owners_map_that_binds_z_something_still_loads() {
     )
     .unwrap();
     assert!(KeyMap::load_from(&path).is_err());
+}
+
+/// `text` with every `HH:MM` replaced by `00:00` and every `YYYY-MM-DD` by
+/// `0000-00-00` (the same widths).
+fn without_clock_times(text: &str) -> String {
+    let mut characters = text.chars().collect::<Vec<_>>();
+    for start in 0..characters.len().saturating_sub(9) {
+        let window = &characters[start..start + 10];
+        let is_date = window[4] == '-'
+            && window[7] == '-'
+            && [0, 1, 2, 3, 5, 6, 8, 9]
+                .iter()
+                .all(|&index| window[index].is_ascii_digit());
+        if is_date {
+            for index in [0, 1, 2, 3, 5, 6, 8, 9] {
+                characters[start + index] = '0';
+            }
+        }
+    }
+    for start in 0..characters.len().saturating_sub(4) {
+        let window = &characters[start..start + 5];
+        let is_time = window[2] == ':'
+            && [0, 1, 3, 4]
+                .iter()
+                .all(|&index| window[index].is_ascii_digit());
+        // Not part of a longer number, such as a size or a count.
+        let before = start
+            .checked_sub(1)
+            .is_some_and(|index| characters[index].is_ascii_digit());
+        let after = characters.get(start + 5).is_some_and(char::is_ascii_digit);
+        if is_time && !before && !after {
+            for index in [0, 1, 3, 4] {
+                characters[start + index] = '0';
+            }
+        }
+    }
+    characters.into_iter().collect()
 }

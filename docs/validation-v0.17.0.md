@@ -9,66 +9,247 @@ Each task that built part of v0.17.0 recorded its proofs in a file of its
 own, [`validation-v0.17.0/`](validation-v0.17.0/). This document joins them,
 one section for each track of the plan in the plan's order, each task's text
 as it wrote it (its headings two levels down, its links pointing from here).
+Before the tracks: what the principal ran and saw himself, and what went
+wrong on the way that a reader of this record should know.
 `<scratch>` is a folder outside the repository on the machine the work was
 done on. Linux x86_64 unless a section says otherwise.
 
 ## Where each item is proven
 
-| Item | Proof |
-|---|---|
-| A1 | [demo](#v0170-validation--task-demo-a1-a4-a8) |
-| A2 | [demo2](#v0170-validation--task-demo2-a2-and-the-demos-loose-ends) |
-| A3 | [demo](#v0170-validation--task-demo-a1-a4-a8) |
-| A4 | [demo](#v0170-validation--task-demo-a1-a4-a8) |
-| A5 | [find](#v0170-validation--task-find-c3-to-c7-a5-rule-19) |
-| A6 | [install](#v0170--task-install-a6-a7-f6) |
-| A7 | [install](#v0170--task-install-a6-a7-f6) |
-| A8 | [demo](#v0170-validation--task-demo-a1-a4-a8) |
-| A9 | task `join`, wave 2: not merged |
-| B1 | [viz](#v0170--viz-the-huddle-shows-who-is-speaking-b1-to-b4) |
-| B2 | [viz](#v0170--viz-the-huddle-shows-who-is-speaking-b1-to-b4) |
-| B3 | [viz](#v0170--viz-the-huddle-shows-who-is-speaking-b1-to-b4) |
-| B4 | [viz](#v0170--viz-the-huddle-shows-who-is-speaking-b1-to-b4) |
-| B5 | [viz2](#v0170--viz2-the-zoomed-huddle-its-styles-the-microphone-check-b5-to-b7) |
-| B6 | [viz2](#v0170--viz2-the-zoomed-huddle-its-styles-the-microphone-check-b5-to-b7) |
-| B7 | [viz2](#v0170--viz2-the-zoomed-huddle-its-styles-the-microphone-check-b5-to-b7) |
-| B8 | not built; `viz2` measured the frame instead (its section, "B8") |
-| C1 | [palette](#v0170-validation-the-palette-c1) |
-| C2 | [look](#v0170--task-look-l1-to-l6-c2) |
-| C3 | [find](#v0170-validation--task-find-c3-to-c7-a5-rule-19) |
-| C4 | [find](#v0170-validation--task-find-c3-to-c7-a5-rule-19) |
-| C5 | [find](#v0170-validation--task-find-c3-to-c7-a5-rule-19) |
-| C6 | [find](#v0170-validation--task-find-c3-to-c7-a5-rule-19) |
-| C7 | [find](#v0170-validation--task-find-c3-to-c7-a5-rule-19) |
-| C8 | task `registry`, wave 2: not merged |
-| C9 | [palette2](#v0170-validation-arguments-as-steps-and-more-to-find-c9-c12) |
-| C10 | task `registry`, wave 2: not merged |
-| C11 | task `registry`, wave 2: not merged |
-| C12 | [palette2](#v0170-validation-arguments-as-steps-and-more-to-find-c9-c12) |
-| L1 | [look](#v0170--task-look-l1-to-l6-c2) |
-| L2 | [look](#v0170--task-look-l1-to-l6-c2) |
-| L3 | [look](#v0170--task-look-l1-to-l6-c2) |
-| L4 | [look](#v0170--task-look-l1-to-l6-c2) |
-| L5 | [look](#v0170--task-look-l1-to-l6-c2) |
-| L6 | [look](#v0170--task-look-l1-to-l6-c2) |
-| L7 | task `motion`, wave 2: not merged |
-| L8 | task `motion`, wave 2: not merged |
-| L9 | task `motion`, wave 2: not merged |
-| L10 | task `layout`, wave 2: not merged |
-| L11 | task `layout`, wave 2: not merged |
-| L12 | task `layout`, wave 2: not merged |
-| E1 | [sound](#v0170-validation-sound-e1-decision-d3) |
-| F1 | [board](#v0170--task-board-f1-f2-f3-f4-f5) |
-| F2 | [board](#v0170--task-board-f1-f2-f3-f4-f5) |
-| F3 | [board](#v0170--task-board-f1-f2-f3-f4-f5) |
-| F4 | [board](#v0170--task-board-f1-f2-f3-f4-f5) |
-| F5 | [board](#v0170--task-board-f1-f2-f3-f4-f5) |
-| F6 | [install](#v0170--task-install-a6-a7-f6) |
-| F7 | task `layout`, wave 2: not merged |
-| F8 | [release](#v0170--task-release-the-upgrade-from-v0160-the-version-f8) |
-| W1 | [windows](#v0170-validation-windows-task-windows-plan-w1-and-w2) |
-| W2 | [windows](#v0170-validation-windows-task-windows-plan-w1-and-w2) |
-| W3 | not run: no macOS machine was used |
+| Item | Proof | Note |
+|---|---|---|
+| A1 | [demo](#v0170-validation--task-demo-a1-a4-a8) |  |
+| A2 | [demo2](#v0170-validation--task-demo2-a2-and-the-demos-loose-ends) |  |
+| A3 | [demo](#v0170-validation--task-demo-a1-a4-a8) |  |
+| A4 | [demo](#v0170-validation--task-demo-a1-a4-a8) |  |
+| A5 | [find](#v0170-validation--task-find-c3-to-c7-a5-rule-19) |  |
+| A6 | [install](#v0170--task-install-a6-a7-f6) |  |
+| A7 | [install](#v0170--task-install-a6-a7-f6) |  |
+| A8 | [demo](#v0170-validation--task-demo-a1-a4-a8) |  |
+| A9 | [join](#v0170--join-joining-a-community-without-leaving-bzz-a9) | Pairing with Buzz desktop and the browser sign-in were not run against the real thing; an invite was claimed on a scripted relay only |
+| B1 | [viz](#v0170--viz-the-huddle-shows-who-is-speaking-b1-to-b4) |  |
+| B2 | [viz](#v0170--viz-the-huddle-shows-who-is-speaking-b1-to-b4) | Proven on the engine on the pinned relay with generated frames, not with a recorded call in the interface |
+| B3 | [viz](#v0170--viz-the-huddle-shows-who-is-speaking-b1-to-b4) | As B2 |
+| B4 | [viz](#v0170--viz-the-huddle-shows-who-is-speaking-b1-to-b4) |  |
+| B5 | [viz2](#v0170--viz2-the-zoomed-huddle-its-styles-the-microphone-check-b5-to-b7) |  |
+| B6 | [viz2](#v0170--viz2-the-zoomed-huddle-its-styles-the-microphone-check-b5-to-b7) |  |
+| B7 | [viz2](#v0170--viz2-the-zoomed-huddle-its-styles-the-microphone-check-b5-to-b7) | With a fake device only |
+| B8 | not built; `viz2` measured the frame instead (its section, "B8"). Moved to v0.17.1 |  |
+| C1 | [palette](#v0170-validation-the-palette-c1) |  |
+| C2 | [look](#v0170--task-look-l1-to-l6-c2) |  |
+| C3 | [find](#v0170-validation--task-find-c3-to-c7-a5-rule-19) |  |
+| C4 | [find](#v0170-validation--task-find-c3-to-c7-a5-rule-19) |  |
+| C5 | [find](#v0170-validation--task-find-c3-to-c7-a5-rule-19) |  |
+| C6 | [find](#v0170-validation--task-find-c3-to-c7-a5-rule-19) |  |
+| C7 | [find](#v0170-validation--task-find-c3-to-c7-a5-rule-19) | `u` marks the channel unread, not "from here" (the plan's D5 wording) |
+| C8 | [registry](#v0170-validation--task-registry-c8-c10-c11-rules-19-20-and-23) |  |
+| C9 | [palette2](#v0170-validation-arguments-as-steps-and-more-to-find-c9-c12) |  |
+| C10 | [registry](#v0170-validation--task-registry-c8-c10-c11-rules-19-20-and-23) |  |
+| C11 | [registry](#v0170-validation--task-registry-c8-c10-c11-rules-19-20-and-23) |  |
+| C12 | [palette2](#v0170-validation-arguments-as-steps-and-more-to-find-c9-c12) |  |
+| L1 | [look](#v0170--task-look-l1-to-l6-c2) |  |
+| L2 | [look](#v0170--task-look-l1-to-l6-c2) |  |
+| L3 | [look](#v0170--task-look-l1-to-l6-c2) |  |
+| L4 | [look](#v0170--task-look-l1-to-l6-c2) |  |
+| L5 | [look](#v0170--task-look-l1-to-l6-c2) |  |
+| L6 | [look](#v0170--task-look-l1-to-l6-c2) |  |
+| L7 | [motion](#v0170--task-motion-l7-l8-l9-one-look) | Toasts carry bzz's own confirmations; an app's `Saved.` is the app's own text and stays (D10) |
+| L8 | [motion](#v0170--task-motion-l7-l8-l9-one-look) |  |
+| L9 | [motion](#v0170--task-motion-l7-l8-l9-one-look) | Measured on debug builds on a loaded machine |
+| L10 | [layout](#v0170--task-layout-l10-l11-l12-f7) |  |
+| L11 | [layout](#v0170--task-layout-l10-l11-l12-f7) |  |
+| L12 | [layout](#v0170--task-layout-l10-l11-l12-f7) |  |
+| E1 | [sound](#v0170-validation-sound-e1-decision-d3) | PipeWire in containers, PulseAudio in CI; no real card |
+| F1 | [board](#v0170--task-board-f1-f2-f3-f4-f5) |  |
+| F2 | [board](#v0170--task-board-f1-f2-f3-f4-f5) |  |
+| F3 | [board](#v0170--task-board-f1-f2-f3-f4-f5) |  |
+| F4 | [board](#v0170--task-board-f1-f2-f3-f4-f5) |  |
+| F5 | [board](#v0170--task-board-f1-f2-f3-f4-f5) |  |
+| F6 | [install](#v0170--task-install-a6-a7-f6) · [ci](#v0170--task-ci-ci-green-and-quick) | Two consecutive green runs on `main`: not yet, nothing is merged to `main` |
+| F7 | [layout](#v0170--task-layout-l10-l11-l12-f7) |  |
+| F8 | [release](#v0170--task-release-the-upgrade-from-v0160-the-version-f8) · [release2](#v0170--task-release2-the-documents-brought-level-with-the-code) | The version commit is held, to be placed last; the branch head still says 0.16.0 |
+| W1 | [windows](#v0170-validation-windows-task-windows-plan-w1-and-w2) |  |
+| W2 | [windows](#v0170-validation-windows-task-windows-plan-w1-and-w2) | Also walked by the principal with CI's release binary ([the principal's own checks](#windows-with-cis-release-binary)); a paste still arrives as keys |
+| W3 | not run: no macOS machine was used. CI builds and tests on macOS ([the principal's own checks](#ci-on-the-pull-request)) |  |
+
+## The principal's own checks
+
+What the principal ran and saw himself, apart from the tasks, taken from his
+log of the build. Commits are of the branch `v0.17.0`. Generated identities
+and data only; no real account.
+
+### Before the build (2026-11-24)
+
+- **v0.16.0 as published, in clean containers.** It installs in 3 to 4 s
+  on `debian:stable-slim` and `ubuntu:22.04` and then does not start:
+  `libasound.so.2` is missing. `ubuntu:20.04` and Alpine get no download.
+  `bzz app new` and `bzz app try` work there. This is the plan's "Why now".
+- **The prototype of D3** (the research's copy of bzz on the `pulseaudio`
+  crate): `readelf -d` names no `libasound`, and `bzz --version` answers in
+  `debian:stable-slim` with `--network none`.
+- **v0.16.0 as published, in a Windows 11 virtual machine**, over SSH:
+  installed with the README's PowerShell line (78 s); the command line
+  works; the interface starts in the console; `?` does nothing, `q` works.
+  This became task `windows` (W1).
+
+### Driving the merged build (2026-11-25)
+
+Each time on the merged debug build, in `bzz demo`, through tmux, with a
+scratch home and no network.
+
+- **At `9902c74`** (look, viz2 and the wave-1 tasks): the status line reads
+  `NORMAL #team … DEMO · generated, offline … Ctrl-K actions · ? keys`; the
+  sidebar shows unread counts; `Ctrl-K` lists the actions for the selected
+  message; the help scrolls, with the keys at its frame's foot. Seen then:
+  the palette's row said "Mark unread from here" while `u` marks the
+  channel. It now reads "Mark this channel unread".
+- **At `8a95a33`** (sound merged): `scripts/check-linux-linkage.sh` on the
+  merged binary: `NEEDED` is `libgcc_s`, `libm`, `libc` and the loader.
+- **At `5dd3d4c`** (motion merged): at rest in `#team`, 70 ms of CPU in
+  10 s (task `motion` measured 80 to 86 ms after and 633 ms before, its
+  section "At rest"). The palette's step "Set my status › status" shows its
+  usage line.
+- **At `006d8d1`** (registry merged): the footer follows the focus,
+  `Enter thread · r react · i reply · Ctrl-K actions` on a message and
+  `Enter send · Ctrl-J newline · Esc close` in the composer; `:hu`, Tab
+  gives `:huddle`, Tab again `start`, the usage under the line. Seen: the
+  hint said `i reply` on a message, where `i` writes in the channel (fixed
+  on 2026-11-26: it says `i write`); a space typed before Tab leaves two
+  (`:huddle  start`), not fixed.
+- **At `6fcd428`** (layout merged), at 80×24: opening a thread hides the
+  sidebar and the frame says `hidden · channels 2`; `z` shows the
+  conversation alone (`hidden · the other panes z`); `Esc` with nothing open
+  says `nothing to close · q quits`.
+
+### Windows with CI's release binary
+
+On 2026-11-25, in the Windows 11 virtual machine, over SSH in a console
+(ConPTY), with the MSVC release binary CI built at `0d96e80` (artifact
+`bzz-x86_64-pc-windows-msvc` of run 45609541408): `bzz demo` opens; `?`
+shows the help; `Ctrl-K` and `thr` put "Open thread" first; `:hu`, Tab
+gives `:huddle` and its usage; in `#launch` the Board: `5`, `n`, a card,
+`]` moves it to Doing, `Ctrl-c` leaves the Board; `:huddle zoom`, `v`, the
+bars previewed; `q`, `y` quits and gives the console back; no `bzz-demo-*`
+folder is left. Run with `BZZ_NO_MOTION=1`, so the lanes were still. Not
+done there: a relay community, a paste, a person at Windows Terminal.
+
+### Gate runs
+
+In a checkout of their own, and from `m11` on with a target directory of
+their own too ([what went wrong](#what-went-wrong-on-the-way), 1). "All
+green": `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D
+warnings`, the example, `cargo test --locked --all-targets`, `cargo test
+--locked --no-default-features --lib`, `cargo deny check`, `cargo audit`;
+from `m14` also `cargo clippy --all-targets --no-default-features`
+([what went wrong](#what-went-wrong-on-the-way), 4).
+
+| Run | Commit | Result |
+|---|---|---|
+| `m1-viz` | `bfd340f` | all green |
+| `m3-windows-demo` | `64156d3` | all green |
+| `m5-palette-find` | the palette and find merges | failed: find's usage test read the first screen behind the prompt (a test's fault, fixed) and `agent_runtime_test` under load (passes alone) |
+| `m6-look`, `m7-viz2` | `18c4eb9`, `9902c74` | all green |
+| `m8-demo2` | the demo2 merge | failed only `demo_offline_test`, which read the Board's old title (fixed in `8a95a33`) |
+| `m9-sound` | `e144e52` | reported green; **not counted** ([what went wrong](#what-went-wrong-on-the-way), 1) |
+| `m10-palette2` | `8a95a33` | failed only `an_endless_loop_is_stopped_by_time`, under load (task `tidy` made it wait for the event) |
+| `m11-board` | `60f6a8b` | died in its test stage with no output; cause unknown ([what went wrong](#what-went-wrong-on-the-way), 5) |
+| `m13-motion` | `5dd3d4c` | all green: the first full run of the merged work with a target directory of its own |
+| `m14-join` | `0d96e80` | all green, with the no-default-features clippy |
+| `m15-tidy` | `12b355b` | all green |
+| `m16-layout` | `6fcd428` | **all green, with every planned piece merged** |
+| `m17-ci` | `18ff30a` | running when this was written |
+
+### Scenario runs
+
+`m13-motion`, at `5dd3d4c`: every harness scenario of
+`scripts/tui-herdr-scenarios.toml` on the pinned relay through tmux, at
+200×50, in the gate's checkout: **43 of 49**. The six that failed are the
+ones the tasks had named: scenarios that pass alone and fail after the
+v0.16 scenarios leave the Board open or post to `#t9-general` (the order of
+the suite), one stale string (`t17-palette2-find`), and
+`t15-coding-harnesses-in-panel`, which depends on the programs installed
+on the machine. No product defect was seen. The tasks' own runs are in
+their sections (`motion` 48 of 54, `registry` 42 of 50, `layout` 42 of 44 at
+200×50 and 37 of 44 at 80×24). Task `suite`, which makes the whole suite
+pass in any order and at 80×24, had not landed when this was written.
+
+### CI on the pull request
+
+The draft pull request of D14, read on GitHub:
+
+- **`e144e52`** (through sound): green on Linux and macOS, among them the
+  macOS builds of the sound change, the upgrade and the agent host on
+  `macos-15-intel`, and the audio job on macOS. On Windows the `build` job
+  failed five tests: four goldens checked out with CRLF and the orb's
+  slow-writer test (`sleep(0)`). Fixed in `5859f29`.
+- **`24f7486`**: Windows `build` green. Job `test` failed: `cargo clippy
+  --all-targets --no-default-features` on the v0.16.0 upgrade test. Fixed
+  in `006d8d1`.
+- **`006d8d1`**: 21 jobs passed, none failed, one pending: the Linux audio
+  job, which never ended ([what went wrong](#what-went-wrong-on-the-way), 3).
+- **`agent-host` on `macos-15-intel`** failed twice in twelve runs on a
+  30 s `initialize` timeout (`64156d3`, `0d96e80`); the agent host is
+  v0.16.0's, unchanged. Task `ci` gave the client's waits a margin there.
+- **`18ff30a`** (ci merged): queued when this was written. Its audio job's
+  time, the Windows and macOS builds and the agent host on the Intel Mac
+  are still to be read.
+
+## What went wrong on the way
+
+What would mislead a reader of this record if it were left out. Each was
+found by the principal or by a task, and each is fixed or named.
+
+1. **A gate run that proved nothing.** Until `m10`, the principal's gate
+   checkout and his own cargo runs in the main checkout built into one
+   target directory. Both write `debug/bzz`, and the tests that start the
+   binary (`demo_offline_test`, the agent tests) could run the other
+   checkout's build. Evidence: `m9-sound` at `e144e52` reported
+   `demo_offline_test` green although that test's expectations cannot match
+   that commit's binary, and two local failures that were never explained.
+   `m9`'s green is not counted. `e144e52` had been pushed on it (to the
+   draft pull request, whose CI builds on its own). From `m11` every gate
+   run has a target directory of its own; one target directory per
+   checkout, as the v0.16 rules already said.
+2. **A merge that mixed scenarios.** A helper that resolved the
+   append-against-append conflicts of `scripts/tui-herdr-scenarios.toml`
+   interleaved the two sides' hunks and corrupted five `t17` scenarios in
+   the palette merge. It was never pushed. The file was rebuilt from each
+   branch's own scenarios in the find merge and checked scenario by
+   scenario. Every later merge took each scenario whole, by its id. Task
+   `palette2` was cut from the corrupted commit, so only its own scenarios
+   were taken from it.
+3. **An audio test in CI that hung.** T7 (a tone through PulseAudio in the
+   CI image, `audio (ubuntu-latest)`) took 731 s at `e144e52` and never
+   ended at `24f7486`, `006d8d1` and `0d96e80` (over two hours; the
+   principal cancelled two superseded runs). Cause, found by task `ci`: the
+   `pulseaudio` crate built without optimisation, as a debug test build
+   builds it, spends about 4 ms growing a 1 MiB buffer before every read of
+   the socket, and writes playback only when a read finds nothing waiting;
+   capture keeps arriving, so playback starves. Not bzz's device code:
+   optimised, the same read takes 0.018 ms, and release builds are not
+   affected. Fixed by building that crate optimised in every debug build
+   (`[profile.dev.package.pulseaudio] opt-level = 3`, `18ff30a`) and by a
+   bound on every wait of T7, which now ends in about 8 s in the CI image
+   (task `ci`). The "21 passed, none failed" at `006d8d1` had this job still
+   pending.
+4. **The principal's gates lacked one of CI's checks**, `cargo clippy
+   --all-targets --no-default-features`. CI found the failure at `24f7486`;
+   the check was added to the gates.
+5. **A gate run died, and a gate script was edited while it ran.** `m11`
+   stopped in its test stage with no output (cause unknown) and recorded
+   nothing. `m13`'s status shows "test ok" twice because its script was
+   edited while it ran (bash reads a script as it goes); its results stand.
+6. **Tests that depend on time failed under load** (seven or more builds
+   at once, load 20 to 50): `agent_runtime_test`, the apps' time budgets, a
+   join's wait, the layout goldens. Each passed alone. Task `tidy` made five
+   of them wait for the event instead of a fixed time, and the gates set
+   `BZZ_APPS_STOP_MARGIN_MS=3000` as CI does.
+7. **Text pasted into two task files.** In `registry`'s "Commands run" and
+   in `layout`'s row for `bzz demo` and its "Relay suite" commands, the
+   variable `BZZ_TMUX_CAPTURES=<scratch>/…` was replaced by the text of the
+   file's own "Captures" section. Read those commands as
+   `BZZ_TMUX_CAPTURES=<scratch>/…` followed by the rest of the line. The
+   task files are left as their tasks wrote them.
 
 ## A — The first minute
 
@@ -492,6 +673,160 @@ them, after the principal pushes. `build (macos-15, aarch64-apple-darwin)`
 and `audio (macos-15, false)` still ask for Apple Silicon and can still be
 cancelled the same way; neither is moved here (the first must build and
 run on that processor; the second belongs to agent `sound`).
+
+### v0.17.0 — join: joining a community without leaving bzz (A9)
+
+Linux x86_64, 2026-11-25, branch `t3/implement-join-command` cut from
+`v0.17.0` at `69fdec2`. Buzz pin `bf3bdd0eaefe39289bf9620594f254c7f68897f5`.
+Plan: [`docs/planning/2026-11-24/v0.17.0.md`](planning/2026-11-24/v0.17.0.md),
+item A9, rules 19, 20 and 22, and the privacy and key rules of v0.13 to
+v0.15 (4 and 10). Method:
+[`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
+`<scratch>` is a folder on the machine the work was done on, outside the
+repository. Every identity below was generated for the run; no keychain,
+Buzz desktop or account of this machine was used.
+
+#### What was built
+
+| Item | Where |
+|---|---|
+| The flow's logic, shared by the CLI and the form: the address and invite links read, NIP-11 probed and told apart, the AUTH answer told apart, an invite claimed, a community written with its relay key pinned | `src/join.rs` |
+| Pairing with Buzz desktop, lifted from the CLI | `src/auth/pairing.rs` |
+| `IdentityManager::save_new` (write an identity, take it back on failure), `forget` (take back one this join made), `keychain::available` (asked by reading an entry that does not exist) | `src/auth/mod.rs`, `src/auth/keychain.rs` |
+| The CLI's `community add`, `identity new`, `import`, `import-backup`, `pair-desktop` call them | `src/main.rs` |
+| The form: its state, keys and screen; secrets in `Zeroizing` buffers drawn as dots | `src/ui/join.rs` |
+| The App's half: the seam `open_join(JoinStart)`, background steps, the wait and its pace, the landing, the demo seam | `src/app/join.rs` |
+| `:join [address]`, `:community add [address]` | `src/ui/command.rs`, `src/app.rs` (`execute_command`) |
+| The switch to a runtime, shared by switching communities and joining | `src/app.rs` (`adopt_runtime`) |
+| Three tmux scenarios, and the runner's `empty` and `isolated` | `scripts/tui-herdr-scenarios.toml` (end), `scripts/test-tui-tmux.py`, `scripts/test-tui-herdr.sh` |
+
+#### Claims
+
+```sh
+cargo test --locked --lib join            # 27 tests: src/join.rs, src/ui/join.rs, src/app/join.rs
+cargo test --locked --test join_test      # 5 tests on a scripted relay
+BZZ_BIN=<release bzz> BZZ_TMUX_SCENARIOS=t17-join-not-there ./scripts/test-tui-tmux.py
+BZZ_TMUX_SCENARIOS=t17-join-open ./scripts/test-relay.sh --tmux
+BZZ_FIXTURE_AGENTS=0 BUZZ_REQUIRE_RELAY_MEMBERSHIP=true RELAY_OWNER_PUBKEY=<64 hex> \
+  BZZ_TMUX_SCENARIOS=t17-join-members ./scripts/test-relay.sh --tmux
+```
+
+| Claim | Lowest rung | Proof | Result |
+|---|---|---|---|
+| From an empty home with no keychain, a person joins the pinned relay's open community, lands, opens a channel and sends a message, with nothing typed in a shell but `bzz` | the release binary on the pinned relay, through tmux | `t17-join-open`: `:join localhost:3030` → `✓ Buzz Relay · a Buzz community at localhost:3030` / `open: anyone who signs in may join` → Enter → `A new identity, made here · no keychain: key in a file with a passphrase` → the passphrase twice, drawn as dots → `choose a channel to open` (the finder on the open channels) → `t9-gen` Enter → `i`, the message, Enter → the message in `#t9-general`, and no longer `[pending]` (acknowledged by the relay) | passed, 20 steps, 3.3 s |
+| Against a relay that lets in members only, the npub is shown; the screen is left and found again; the person is let in from the harness side; bzz gets in by itself without a restart | the same, relay with `BUZZ_REQUIRE_RELAY_MEMBERSHIP=true` (NIP-43 advertised) | `t17-join-members`: `it lets in its members only` → `Your id, to send to an admin` and a full `npub1…` (58 characters checked) → `waiting for an admin · asked 1 time` → Esc: `the join goes on; :join shows it again` → `:join`: the same wait → a row in `relay_members` for the pubkey bzz wrote in the profile's settings (`docker compose … psql`, as the fixture seeds members) → with no key pressed, `choose a channel to open` 14.7 s later (the second ask, 15 s after the first) → a message sent and acknowledged | passed, 11 steps, 18.2 s |
+| The relay's AUTH answer is told apart: in, not a member, refused (a ban), sign-in first, no answer | scripted relay | `join_test::the_relays_answer_to_auth_decides_what_comes_next`; `join::tests::a_refused_auth_is_told_apart` | pass |
+| No answer at the address; a relay with no community there (404); something that is not a Buzz relay (a plain relay with no signing key, a web page): each says what happened and what to try | scripted relay, real closed port | `join_test::each_failure_at_the_address_is_told_apart`; in the form `app::join::tests::an_address_where_nothing_answers_says_so_in_the_form`; through tmux `t17-join-not-there` (`✗ nothing answers at localhost:9` / `check the address with the person who gave it to you…`; `ws://far.example` → `ws:// and http:// work only on this machine; use wss://`) | pass |
+| An identity refused: said in the form, and the identity this join made is taken back (`k` keeps it) | App on a scripted relay that answers `blocked: you are banned` | `app::join::tests::a_refused_identity_is_said_and_nothing_half_made_stays`: the form says `My team refused this identity (blocked: you are banned)`; after Enter the settings hold no community and no identity | pass |
+| Nothing half-made: no community entry is written before the relay lets the identity in; stopping a wait asks whether to keep the identity whose id was given out, and `n` removes it and its key file | App, scripted relay | `a_members_only_community_shows_the_npub_and_lets_in_without_a_restart` (no community while waiting; one identity); `stopping_a_wait_keeps_or_drops_the_identity_as_the_person_says` (both answers; the key files counted) | pass |
+| The wait asks again on its own at a calm pace (15 s, 30 s, then every minute) and on `r`, and asks nothing before its time | App, scripted relay | `the_wait_asks_again_on_its_own`; `retry_after`; `the_members_only…` (`r`); on the pinned relay, the 14.7 s above | pass |
+| An invite link of the pinned Buzz (`https://<relay>/invite/<code>`, `buzz://join?relay=…&code=…`) is read, claimed with NIP-98 by the joining key with the code in the body only, and lets the identity in; its refusals are Buzz desktop's words | scripted relay | `join_test::an_invite_is_claimed_by_the_joining_key_with_the_code_in_the_body_only`; `app::join::tests::an_invite_link_is_claimed_and_lets_in_a_members_only_community`; `join::tests::invite_links_of_the_pinned_buzz_are_read` | pass. Not run against the pinned relay's `/api/invites/claim` (an invite needs an admin's mint) |
+| The CLI and the form write a community the same way: probe, then `add_community` (configuration, store row, relay key pinned); a relay already configured is refused and nothing changes | integration | `join_test::a_community_is_written_with_its_relay_key_pinned_and_taken_back_on_failure`; the CLI's own tests in the gates | pass |
+| `:community add` opens the form (it answered "use the CLI"); `:join` and `:join <address>`, `:community add <address>` too; a paste goes into the field as one piece of text | App | `the_community_add_command_opens_the_form_and_a_bad_address_is_said`; `ui::command` tests | pass |
+| After joining, bzz opens the first channel the person is in, or the finder on the open ones; nothing is joined for them | App; pinned relay | `after_joining_bzz_lands_in_the_first_channel_or_offers_the_open_ones`; both relay scenarios | pass |
+
+##### Secrets
+
+A passphrase and an nsec are typed only into the form's hidden fields, as
+`bzz identity new` and `import` read them only from the controlling
+terminal. They are held in `Zeroizing` buffers, wiped when the form moves
+on or goes back, passed to `IdentityManager` as a `SecretString` or as
+`Keys`, never put in a notice, a `Debug` (the form's `Debug` is written by
+hand) or a diagnostic. An invite's code is a bearer of an admin's
+permission: drawn as dots, out of `Debug`, sent only in the claim's body to
+its relay.
+
+How it was checked:
+
+- On screen: `ui::join::tests::without_a_keychain_a_new_identity_asks_a_passphrase_twice_hidden`
+  and `…an_import_takes_a_valid_secret_only_and_never_shows_it` render the
+  form at 80×24 and 160×45 and find dots and not the secret, and not in
+  `Debug`; `an_invite_code_is_drawn_as_dots`.
+- In every file bzz wrote: `app::join::tests` read every file under the
+  test's home after a join (settings, key file, database) and find neither
+  the passphrase nor the invite's code.
+- In the process and the terminal, on the pinned relay: `t17-join-open`
+  step 8 reads `/proc/<pid>/cmdline` and `/proc/<pid>/environ` of the
+  profile's bzz (found by its `BZZ_CONFIG_DIR`) while the passphrase is
+  typed; step 14 greps the profile's whole home (settings, the key file,
+  the database, diagnostics, cache) and the bytes bzz wrote to the
+  terminal (the pane's pipe). The passphrase is in none of them.
+- What is not bzz: the scenario types the generated passphrase with
+  `tmux send-keys`, one key per argument, as a person types it, and the
+  check's own `grep` has it as its pattern. Both are the harness, with a
+  passphrase generated for the run.
+
+##### The demo (rule 22)
+
+Under `bzz demo` the form opens and says that joining needs a real
+community's address, that the demo writes nothing to the person's
+settings, and to leave with `q` and start `bzz`. It writes nothing. The
+demo is agent `demo`'s branch (`t3/demo`), not this one: `open_join` asks
+`join_in_demo()`, which returns `false` here and is to return `self.demo`
+when the two are joined (`JoinForm::demo` is the screen).
+
+##### Pairing with Buzz desktop
+
+Not run with a desktop: no Buzz desktop may be started on this machine.
+The form's choice calls `auth::pairing::find_desktop` and `pair`, the
+same two functions `bzz identity pair-desktop` now calls, and the CLI's
+own tests go as far as the provider (`tests/credential_provider_test.rs`,
+`pairing_needs_no_token_and_returns_one`, a fake provider). Shown by
+tests: without a running desktop the choice says `Buzz desktop is not
+running here: start it, then come back` and stays; without a keychain it
+says pairing needs one (the paired token lives only there).
+
+What a person must check, with Buzz desktop running on the machine and a
+keychain: `:join <address>`, choose "Pair with Buzz desktop", approve the
+request in Buzz, and see bzz come in with the desktop's npub.
+
+##### Sign-in through the browser
+
+Built, not run on a NIP-FI relay: where NIP-11 says the community signs in
+through an identity provider, the form offers it, asks the address of the
+sign-in service (https, as `identity_adapter` is configured; ADR v0.13:
+bzz never derives it from relay data), makes a new identity, writes the
+community with that adapter and runs `:signin`. Tested at the form's rung
+only (`the_browser_is_offered_where_the_community_signs_in_through_it`).
+
+#### The first minute, counted
+
+The study (`r4-first-run/REPORT.md` §3) counted five commands after the
+installer and ten ideas to know before: identity, label, keychain,
+backend, passphrase, identity id, community, relay, `wss://` address,
+pubkey/npub, membership.
+
+| | Commands in a shell | Ideas the person needs |
+|---|---|---|
+| Before | 5 (`identity new`, `--backend`, `identity list`, `community add`, `bzz`) | 10 |
+| Now, an open community, with a keychain | 1 (`bzz`) | 1: the community's address |
+| Now, no keychain | 1 | 2: and a passphrase |
+| Now, members only | 1 | 3: and "your id, to send to an admin" |
+
+Keys after `bzz`: `:join` and the address (or `j` on the first screen once
+it is joined with agent `demo`'s), Enter, Enter for a new identity, the
+passphrase twice when there is no keychain, Enter on a channel.
+
+#### Captures
+
+Text captures of every step from tmux, at 80×24 and 160×45, in
+`<scratch>/captures-open/t17-join-open/`,
+`<scratch>/captures-members/t17-join-members/` and
+`<scratch>/captures-notthere/t17-join-not-there/` (one file per step; its
+first line says the keys and the size).
+
+#### Gates
+
+On `525f5a1` and after, with the machine shared (load 13 to 16):
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --check` | pass |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass |
+| `cargo build --locked --example scripted_harness` | pass |
+| `cargo test --locked --all-targets --no-fail-fast` | 4 failures in one run under that load: `apps::runtime::tests::vm::an_endless_loop_is_stopped_by_time`, `apps::runtime::tests::hostile::every_hostile_script_is_stopped_in_budget` (time budgets), `agent_runtime_test::at_startup_leftovers_are_stopped_before_recovery_and_recovery_before_any_start`, and this task's `an_invite_link_is_claimed…`, whose wait of 30 s for a join step was too short for an Argon2 key file in a debug build under that load (now 120 s). Each passed alone; then `cargo test --locked --lib` (841 passed), `--test agent_runtime_test` (54) and `--test join_test` (5) passed whole. In an earlier run `app::tests::a_command_waits_for_the_owner_on_every_screen_and_runs_only_on_his_yes` failed once and passed three times alone. None of these touch the join's code but the one named |
+| `cargo test --locked --no-default-features --lib` | pass |
+| `cargo deny check`, `cargo audit` | not run: `Cargo.toml` and `Cargo.lock` unchanged |
 
 ## B — The huddle visualizer
 
@@ -1269,6 +1604,243 @@ At `d6b80e9` (the code of `6c3c3ff`: only scenarios and this file changed after)
 | `cargo test --locked --no-default-features --lib` | ok; 586 passed |
 | `cargo deny check`, `cargo audit` | not run: `Cargo.toml` and `Cargo.lock` unchanged |
 
+### v0.17.0 validation — task `registry` (C8, C10, C11, rules 19, 20 and 23)
+
+Linux x86_64, 2026-11-25. Branch `t3/440a7815`, cut from `v0.17.0` at
+`8a95a33` ("demo2 and look together"). Plan:
+[`docs/planning/2026-11-24/v0.17.0.md`](planning/2026-11-24/v0.17.0.md),
+items C8, C10 and C11. Method:
+[`bzz-prove-it-works`](../.agents/skills/bzz-prove-it-works/SKILL.md).
+`<scratch>` is a folder outside the repository.
+
+`U:` a unit or integration test (`cargo test --locked`). `T:` a tmux
+scenario of `scripts/tui-herdr-scenarios.toml` on the release binary through
+`scripts/test-tui-tmux.py`: `automated` ones on an empty isolated profile,
+`harness` ones on the pinned relay (`scripts/test-relay.sh --tmux`).
+
+#### What was built
+
+- **The registry** is `src/ui/action_table.rs`'s `TABLE`. Each row now also
+  carries its **default keys per scope** (`keys`), the **`:` command it
+  stands for** with aliases, arguments and summary (`head`, one row per
+  first word, 32 of them) and **where it is a hint** in the status line and
+  with what rank (`hints`). Executors did not move: a row still points at a
+  `UiAction`, a `:` text, steps or a shell command.
+- `KeyMap::builtin()` is `KeyMap::generated()`, built from the rows' keys
+  (`src/ui/keymap.rs`). The hand-written list is gone. `keymap.toml` is read
+  on top as before; its validation is unchanged.
+- `command::COMMANDS` is gone: `command::commands()` lists the `head` of the
+  rows. The help, "did you mean", the usage answers and Tab on the `:` line
+  read it.
+- **The help** lists the rows that have a key, grouped as the palette groups
+  them (Message, Go, View, Inbox, Channel, …, Writing), each with every key
+  the live map gives it; a key no row lists goes under "Other keys"; then
+  disabled keys, the actions of the focused item and the commands.
+  **The leader panel** names each next key by its row's title, in the same
+  group order. **The actions menu** (`Space a`) takes its labels from the
+  rows and shows each action's live key first.
+- **`docs/keys.md`** is written by `cargo run --example keys_doc >
+  docs/keys.md` (`examples/keys_doc.rs`, `ui::help::keys_markdown`):
+  every key by group with where it works and its `:` form, every command,
+  and what only the shell does. `tests/keys_doc_test.rs` fails when the
+  file is stale. The README's key section points to it.
+- **C10, the footer** (`ui::status::footer`, `src/app/footer.rs`): where
+  the focus is (a message selected, the empty timeline, the thread pane,
+  the channels, the Inbox, the composer, the huddle panel, any other
+  overlay), up to three rows that are a hint there and can run now (judged
+  as the palette judges them), each with its key from the live map, then the
+  palette's key. Narrow, it takes fewer keys, down to `Ctrl-K actions · ?
+  keys`. The app pane keeps its own `Ctrl-c leaves the app`.
+- **C11, Tab on the `:` line** (`ui::command::{offer, Completion}`,
+  `src/app/command_line.rs`): Tab completes a command's name, then its
+  sub-commands and fixed words, then what its steps take (themes, installed
+  apps, channels, the words of `:sort`, `:presence`, `:report`, the huddle
+  verbs), all read from the rows. Repeated Tab cycles, Shift-Tab goes back;
+  a single candidate is written with a space so the next Tab goes a level
+  down. Under the line: the candidates (the one written in brackets) and the
+  usage of the command, or for a wrong word the nearest command. Enter runs
+  exactly what is typed.
+
+#### C8 — one registry generates the key map
+
+| Claim | Proof | Red without | Result |
+|---|---|---|---|
+| The map generated from the rows equals the hand-written one, binding for binding in all six scopes, each action's keys in the same order | `U: ui::keymap::tests::the_generated_map_is_the_hand_written_one` at commit `dcdb2e6`, before the hand-written list was removed. It printed `generated == hand-written: 169 effective bindings in 6 scopes` | `Tab` and `l` swapped on "Next pane" (temporary): `Global NextFocus left: ["l", "Tab"] right: ["Tab", "l"]` | pass |
+| After the swap, the actions with several keys keep v0.16.0's order (the first is what the palette and the footer show) | `U: ui::keymap::tests::several_keys_of_one_action_keep_their_order` | — | pass |
+| Every v0.16.0 key and command still does what it did; nothing is added | `U: tests/v016_pins_test.rs`, unchanged | — | pass (3 of 3) |
+| A row's keys always bind an action | `U: ui::action_table::tests::ids_are_unique_and_rows_well_formed` | — | pass |
+| One row stands for each first word, and its own usage starts with it; the parser knows every name and alias the rows list | `U: ui::command::tests::each_first_word_has_one_row_of_the_registry`, `the_table_and_the_parser_agree` | — | pass |
+| The help lists the rows grouped (Message, Go, View, …) with the live keys; an override (`x` → open-inbox, `?` disabled) shows on the row and the disabled key goes away | `U: ui::help::tests::help_is_derived_from_the_effective_scoped_map`, `help_lists_commands_after_the_keys_and_scrolls_to_the_end` | — | pass |
+| The leader panel names keys by the rows' titles, grouped, every key at 80×24 and 120×32 | `U: ui::help::tests::which_key_labels_only_valid_continuations`, `leader_panel_shows_every_key_at_80x24`, `app::find_tests::the_leader_panel_waits_300_ms_and_asks_for_one_frame` | — | pass |
+| The actions menu says what the palette says (`Delete my message: only your own message can be deleted`) | `U: app::find_tests::d_on_another_persons_message_says_why_not`, `app::tests::empty_state_renders_contextual_actions_overlay` | — | pass |
+| **A user's binding shows in the help, the leader panel, the palette and the footer**: `r` disabled, `x` and `Space x` bound to react; the help's "React to message" row reads `x, Space x`, the leader panel `x  React to message`, the palette's key column `x`, the footer `x react` | `U: app::registry_tests::a_users_binding_shows_in_the_help_the_leader_panel_the_palette_and_the_footer`; footer alone `ui::status::tests::the_hint_shows_a_users_binding` | — | pass |
+| `docs/keys.md` is what bzz writes | `U: tests/keys_doc_test.rs` | the file with one line removed (temporary): `docs/keys.md is stale: run cargo run --example keys_doc > docs/keys.md` | pass |
+| The help scenarios on the release binary: `?` on an empty profile; a custom `z i` sequence shows on "Open Inbox"; the help at 80×24; the leader panel at 80×24 and 120×32 | `T: startup-help-quit`, `custom-keymap-inbox`, `t17-find-help-80x24`, `t17-find-leader` | — | pass |
+
+#### C10 — the footer follows the focus
+
+| Claim | Proof | Result |
+|---|---|---|
+| At 160 columns: a message `Enter thread · r react · i reply · Ctrl-K actions`; the empty timeline `i write · Space Space find · Ctrl-K actions`; the thread pane `i reply · r react · Space 4 hide · Ctrl-K actions`; the channels `Enter open · Space Space find · i write · Ctrl-K actions`; the Inbox `o open · i reply · m read · Ctrl-K actions`; the composer `Enter send · Ctrl-J newline · Esc close`; the huddle panel `s start · j join · m mute` (the App offers only those that apply); an overlay `Esc close`. At 80 the message hint is whole; at 60 it takes fewer keys, and the palette's key is always the last | `U: ui::status::tests::the_hint_follows_the_focus_at_60_80_and_160_columns` | pass |
+| Only what can run is offered | `U: ui::status::tests::the_hint_offers_only_what_can_run` | pass |
+| In the App the hint changes with the focus (channels, timeline, Inbox, the `:` line) | `U: app::registry_tests::the_status_line_hint_follows_the_focus` | pass |
+| On the release binary on the pinned relay: a message, the channels, the composer, the huddle panel, then 80×24 | `T: t17-registry-app-footer` | see "Relay run" |
+
+Rule 20: the hint is computed while the status line is drawn, from state
+the frame already reads; it requests no frame and arms no timer. The
+existing frame-count tests (`app::tests::idle_tick_does_not_request_a_redraw_without_visible_work`
+and the at-rest tests) pass unchanged.
+
+#### C11 — the `:` line completes
+
+| Claim | Proof | Result |
+|---|---|---|
+| `:hu`, Tab → `:huddle `; Tab → `:huddle start`; Tab → `:huddle join`; Shift-Tab back; the verbs start, join, leave, mute, end, devices, react, input, output are offered; under the line `Tab: [start]  join …` and `usage: :huddle [start | …]`; typing after a completion parses as typed | `U: ui::command::tests::tab_completes_a_command_then_its_verbs_and_cycles` | pass |
+| `:theme n`, Tab → a theme id bzz has; `:theme ` offers the themes then `reload`; `:app open `, Tab, Tab cycles the installed apps with `usage: :app open <name>`; `:sort ` → alpha, recent, default; `:presence ` → on, off; `:app ` lists its verbs | `U: ui::command::tests::tab_completes_themes_apps_and_fixed_words` | pass |
+| A wrong word completes nothing and says `no command starts with hudle · did you mean :huddle?`; `:huddle xyz` says nothing after `:huddle` starts with `xyz`, with the usage | `U: ui::command::tests::a_wrong_word_completes_nothing_and_says_so` | pass |
+| The same through the App at 80×24, and Esc forgets the cycle | `U: app::registry_tests::tab_completes_the_command_line_and_shows_what_it_offers`, `tab_completes_theme_names_and_a_wrong_word_says_so` | pass |
+| On the release binary at 80×24: `:hu`, Tab, Tab, Tab; `:theme n`, Tab; `:hudle`, Tab; `:sort `, Tab | `T: t17-registry-complete` | pass |
+| On the pinned relay: `:app open `, Tab completes an installed app | `T: t17-registry-app-footer` | see "Relay run" |
+
+#### Commands run
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo build --locked --example scripted_harness
+cargo test --locked --all-targets
+cargo test --locked --no-default-features --lib
+cargo run --locked --example keys_doc > docs/keys.md
+BZZ_BIN=<target>/release/bzz BZZ_TMUX_SCENARIOS=automated BZZ_TMUX_Text captures from tmux, read as a newcomer would:
+
+- 80×24, `:hu`, Tab, Tab: `<scratch>/captures-complete/t17-registry-complete/03.txt`
+  — the line `:huddle start`, under it `Tab: [start]  join  leave  mute
+  end  devices  react  input  output` and the usage whole on three rows
+  with its summary. A first capture cut the usage at two rows; the usage
+  now takes up to four.
+- 80×24, a wrong word: `…/t17-registry-complete/08.txt` — `no command
+  starts with hudle · did you mean :huddle?`.
+- 160×45 on the relay: `<scratch>/captures-harness/t17-registry-app-footer/`
+  `02.txt` (a message: `Enter thread · r react · i reply · Ctrl-K
+  actions`), `03.txt` (`:app open `, Tab), `05.txt` (the channels),
+  `06.txt` (the composer: `Enter send · Ctrl-J newline · Esc close`, under
+  the composer's own foot), `08.txt` (the huddle panel with no huddle:
+  `s start · Esc close`), `10.txt` (80×24: `Enter thread · r react · Ctrl-K
+  actions`).
+- 160×45, the help with a custom sequence:
+  `<scratch>/captures-complete/custom-keymap-inbox/02.txt`.
+
+What a newcomer may trip on: in the composer the hint repeats two keys the
+composer's frame already shows in its foot.=<scratch>/captures-auto3 python3 scripts/test-tui-tmux.py
+BZZ_BUZZ_SOURCE=<main checkout>/runs/buzz-pin BZZ_TMUX_Text captures from tmux, read as a newcomer would:
+
+- 80×24, `:hu`, Tab, Tab: `<scratch>/captures-complete/t17-registry-complete/03.txt`
+  — the line `:huddle start`, under it `Tab: [start]  join  leave  mute
+  end  devices  react  input  output` and the usage whole on three rows
+  with its summary. A first capture cut the usage at two rows; the usage
+  now takes up to four.
+- 80×24, a wrong word: `…/t17-registry-complete/08.txt` — `no command
+  starts with hudle · did you mean :huddle?`.
+- 160×45 on the relay: `<scratch>/captures-harness/t17-registry-app-footer/`
+  `02.txt` (a message: `Enter thread · r react · i reply · Ctrl-K
+  actions`), `03.txt` (`:app open `, Tab), `05.txt` (the channels),
+  `06.txt` (the composer: `Enter send · Ctrl-J newline · Esc close`, under
+  the composer's own foot), `08.txt` (the huddle panel with no huddle:
+  `s start · Esc close`), `10.txt` (80×24: `Enter thread · r react · Ctrl-K
+  actions`).
+- 160×45, the help with a custom sequence:
+  `<scratch>/captures-complete/custom-keymap-inbox/02.txt`.
+
+What a newcomer may trip on: in the composer the hint repeats two keys the
+composer's frame already shows in its foot.=<scratch>/captures-harness ./scripts/test-relay.sh --tmux
+```
+
+`cargo test --locked --all-targets`: 1288 passed, 0 failed (3 ignored).
+`--no-default-features --lib`: 656 passed. fmt and clippy clean.
+`automated`: 11 of 11 passed (`<scratch>/captures-auto3`); after the last
+change `t17-registry-complete`, `custom-keymap-inbox` and
+`startup-help-quit` again, 3 of 3.
+
+#### Relay run
+
+`./scripts/test-relay.sh --tmux` (every harness scenario, v0.13 to v0.17,
+in manifest order, one fixture, pinned relay): **42 of 50 passed**, among
+them `t17-registry-app-footer` (`:app open `, Tab wrote
+`:app open approvals` with `Tab: [approvals]  board  looper  poll  tasks`
+and `usage: :app open <name>` under it; the hint in each context).
+
+The 8 that failed do not reach anything this branch changed:
+
+- `t17-palette-unavailable-stays`, `t17-find-delete-unread-status`,
+  `t17-sound-call`, `t17-palette2-theme-react`, `t17-palette2-app` stop at
+  their second step, `type:t9-gen, enter` → `Generated custom emoji`: the
+  channel opens, but in the whole suite the t16 scenarios have posted the
+  Board's long brief to `#t9-general` and the fixture's message is above the
+  fold. `t17-palette-sizes` expects `can't now` on the last message, which
+  in the whole suite is my own (the brief). Run apart on a fresh fixture
+  (`BZZ_TMUX_SCENARIOS=` those, `<scratch>/subset.log`), the first four
+  pass; `t17-palette2-theme-react` then counts three rows up to a message
+  that another scenario's rows moved, and `t17-palette2-app` and
+  `t17-registry-app-footer` need the apps the t16 scenarios install.
+- `t17-palette2-find` waits for `profile · r refresh · Esc close`; since
+  `8a95a33` (look) the profile's frame has `profile` in its title and
+  `r refresh · Esc close` in its foot, so the string never shows. Not
+  changed here: it is palette2's scenario.
+- `t15-coding-harnesses-in-panel` waits for a sentence about `BZZ_GROK`
+  that depends on the coding programs installed on the machine.
+
+Two scenarios that were stale in the same way and touch what this branch
+changed were brought up to date: `custom-keymap-inbox` (the help's Inbox
+rows are no longer on the first page; it now looks for its `z i` sequence
+on "Open Inbox"), and `t17-demo-first-minute` (`reaction · Enter toggle`,
+the reaction picker's title before look moved its keys to the foot; it now
+looks for `Enter toggle · : custom`). `t17-find-leader` and
+`t17-find-delete-unread-status` read the registry's titles
+(`Cycle channel sort`, `Delete my message: …`).
+
+Harness log: `<scratch>/harness.log`; captures `<scratch>/captures-harness`.
+
+#### Captures
+
+Text captures from tmux, read as a newcomer would:
+
+- 80×24, `:hu`, Tab, Tab: `<scratch>/captures-complete/t17-registry-complete/03.txt`
+  — the line `:huddle start`, under it `Tab: [start]  join  leave  mute
+  end  devices  react  input  output` and the usage whole on three rows
+  with its summary. A first capture cut the usage at two rows; the usage
+  now takes up to four.
+- 80×24, a wrong word: `…/t17-registry-complete/08.txt` — `no command
+  starts with hudle · did you mean :huddle?`.
+- 160×45 on the relay: `<scratch>/captures-harness/t17-registry-app-footer/`
+  `02.txt` (a message: `Enter thread · r react · i reply · Ctrl-K
+  actions`), `03.txt` (`:app open `, Tab), `05.txt` (the channels),
+  `06.txt` (the composer: `Enter send · Ctrl-J newline · Esc close`, under
+  the composer's own foot), `08.txt` (the huddle panel with no huddle:
+  `s start · Esc close`), `10.txt` (80×24: `Enter thread · r react · Ctrl-K
+  actions`).
+- 160×45, the help with a custom sequence:
+  `<scratch>/captures-complete/custom-keymap-inbox/02.txt`.
+
+What a newcomer may trip on: in the composer the hint repeats two keys the
+composer's frame already shows in its foot.
+
+#### Changed on purpose, not keys or commands
+
+Rule 19 holds for every key and command (the pins pass unchanged). What a
+person reads changed:
+
+- The help is grouped by the palette's groups and names actions by the
+  registry's titles ("Open Inbox", not "open Inbox"; "Go to channel or DM",
+  not "channel / DM switcher"); the leader panel and the actions menu too.
+  The actions menu's "reply" is "Write a message", "delete own message" is
+  "Delete my message", "open context" is "Open thread".
+- The commands in the help are in the registry's order, not find's
+  hand-picked one.
+- The `:` prompt is taller: under the line it lists what Tab offers and
+  the usage.
+- The status line's hint names the keys of the focus instead of always
+  `Ctrl-K actions · ? keys`.
+
 ## L — The look
 
 ### v0.17.0 — task `look` (L1 to L6, C2)
@@ -1376,6 +1948,472 @@ bold), `HintText` (Muted), `StatusChannel` (Muted), `StatusOnline` (Success),
 `Muted` (were `Border`, `Title`); `ComposerBorder` links to `PaneBorder`;
 bzz's own `FocusBorder` is cyan (was the terminal's colour); bzz's
 `StatusBar` has no background and its mode labels are cyan, yellow, yellow.
+
+### v0.17.0 — task `motion` (L7, L8, L9, one look)
+
+Branch `t3/motion`, cut from `v0.17.0` at `9902c74` ("viz2 and demo
+together"). Linux x86_64, 2026-11-25, on a machine shared with six other
+builds (load 20 to 25). Buzz pin `bf3bdd0eaefe39289bf9620594f254c7f68897f5`.
+`<scratch>` is a folder outside the repository. Debug builds unless said.
+
+#### What was built
+
+- `src/ui/motion.rs`: the timing scale (`FAST` 80 ms, `BASE` 150 ms, `SLOW`
+  250 ms, `HOLD` 3 s, `LOOP` 1.2 s, `LOADING` 10 s, `FRAME` 33 ms), `Anim`
+  (a value from 0 to 1 between two instants of `tokio::time::Instant`, with
+  `wake(now)`), `Role` (`Informs` / `Decorates`: `calm` keeps the first),
+  `blend` (only between two true colours), and the cell passes: the focus
+  `sweep`, `unfolded`, `changed_rect`, `copy_cells`/`paste_cells`,
+  `restore_outside`, `tint`, `flash_count`, `shimmer`.
+- `src/ui/toast.rs`: `Toasts`, one shown and three waiting.
+- `src/app/stage.rs`: what moves in the App (noticed while a frame is drawn,
+  laid over it after the panes), the loop's `Pacing`, and when the loop's
+  housekeeping is busy.
+- The run loop in `src/app.rs`: no fixed tick. It sleeps until the earliest
+  of a frame asked for (at once, at most one per 33 ms), an animation's next
+  frame, the huddle's levels (every 33 ms while a call, the generated huddle
+  or the microphone check is on), a notice's end, and the housekeeping.
+- One look: the palette (frame, title, keys), the first screen (frame and
+  keys), the zoomed huddle's picker (frame) and keys, and the microphone
+  check (frame and keys) draw through `frame::block` and `frame::hints`. The
+  leader panel already did (`frame::modal`).
+
+#### Claims and proofs
+
+| Claim | Rung | Command | Seen |
+|---|---|---|---|
+| **L7.** An animation asks for a frame every 33 ms while it runs and its end, then none; the scale's lengths give 3 (80 ms), 5 (150 ms) and 8 (250 ms) frames | paused-time unit | `cargo test --lib ui::motion` | pass: `[33, 66, 80]`, `[33, 66, 99, 132, 150]`, 8 ending at 250 |
+| L7. With motion off every animation is at its end at once and asks for no frame; `calm` drops what decorates and keeps what informs | paused-time unit | `ui::motion::tests::with_motion_off_…`, `…calm_keeps_what_informs…` | pass |
+| **L7. A toast asks for frames for 150 ms, none for 3 s, then for 250 ms**; with motion off it is there at once and gone at 3 s, with no frame between | paused-time unit | `ui::toast::tests::a_toast_asks_for_frames_for_150_ms_none_for_3_s_then_for_250_ms`, `…with_motion_off_a_toast_is_there_and_gone_with_no_frame_between` | pass: frames at 33, 66, 99, 132, 150, then 3150 … 3400 (9); off: one frame, at 3000 (the one that removes it) |
+| L7. The same at the level of the App, and the toast sits above the composer, never over it | paused-time App test | `app::stage::tests::a_toast_moves_150_ms_rests_3_s_moves_250_ms_and_never_covers_the_composer` | pass: 5 frames; the next wake exactly 3 s later; 9 frames out; the toast's row is above `message #general` |
+| L7. One toast at a time; three wait, the oldest waiting gives way; the same text is not said twice | unit | `ui::toast::tests::one_toast_at_a_time_with_a_short_queue` | pass |
+| **L7. An arriving message is tinted 250 ms**: blended towards the theme's own background where it has one (8 frames, `dark`), one step where it has none (1 frame, `bzz`, whose background is the terminal's); `calm` keeps it, `off` none; my own message and one written over 60 s ago take none | paused-time App test | `app::stage::tests::an_arriving_message_takes_a_tint_for_250_ms` | pass |
+| **L7. A rising unread count flashes once** (reversed, 250 ms, one step: 1 frame); a count seen first or that falls does not | paused-time App test | `app::stage::tests::a_rising_unread_count_flashes_once` | pass |
+| **L8. The focus colour runs round the pane** that takes the focus in 150 ms (5 frames); none with `calm` or `off` | paused-time App test | `app::stage::tests::the_focus_sweep_takes_150_ms_and_only_with_full_motion` | pass |
+| **L8. An overlay unfolds in 150 ms and folds in 80 ms**; while it unfolds only its own cells change (the screen behind is dimmed once); folded away the screen is as before it opened; with motion off it is whole at once and asks for nothing | paused-time App tests | `app::stage::tests::an_overlay_unfolds_in_150_ms_and_folds_in_80_ms`, `…with_motion_off_an_overlay_shows_whole_at_once` | pass: `[33, 66, 99, 132, 150]` and `[33, 66, 80]`; every cell outside the finder equal between its first and last opening frame |
+| **L8. Placeholder rows shimmer while history loads**, from 80 ms after the fetch starts (no flash on a quick one), for 10 s at most, then the plain `loading history…` line and no frame; with motion off the plain line at once and no frame | paused-time App test | `app::stage::tests::a_loading_shimmer_asks_for_frames_for_10_s_at_most` | pass: first frame at 80, last at 10 000, ≤ 304 frames; off: none |
+| Rule 20: at rest nothing asks for a frame, under `full`, `calm` and `off` | App test | `app::stage::tests::at_rest_nothing_asks_for_a_frame` | pass |
+| **Rule 20: a waiting key is handled before a frame of an animation** | model of the loop | `app::stage::tests::a_waiting_key_is_handled_before_a_frame_of_an_animation` | pass: two keys, then the frame. The test models the loop's `select!` (biased, the input branch before the frame branch); that the real loop has this order is read, `src/app.rs` `run_to_exit` |
+| **L9. The loop sleeps until its next deadline**: housekeeping once a second at rest, within 100 ms after any event or while something it polls is busy; frames asked for in a burst one interval apart; the huddle's levels every 33 ms only while polled | paused-time unit | `app::stage::tests::the_loop_sleeps_until_its_next_deadline` | pass |
+| **L9. Wake-ups at rest, before and after**, `bzz demo` in `#team`, 160×45, 10 s after 4 s of start | real binary, `/proc/<pid>/task/*/schedstat` (switch-ins, summed over threads) | `<scratch>/rest.sh <binary> <label>` and `<scratch>/threads.sh` | see "At rest" |
+| Rule 20 over SSH: the bytes of each transition through a real backend at 160×45 | crossterm backend into a counting writer, paused time | `app::stage::tests::the_bytes_of_each_transition_are_bounded_and_none_at_rest -- --nocapture` | see "Bytes" |
+| The same, from a recording of the real bzz | `record-tape.py` (PTY, byte-for-byte with times) of `bzz demo` | `<scratch>/film/timeline.json`, tape analysed by mark | see "Bytes" |
+| **One look**: the palette's keys are in the hint colour and its title a label; the first screen's keys in the hint colour | App buffer test | `app::stage::tests::the_palette_and_the_first_screen_look_like_the_rest` | pass |
+| One look: the zoom's picker has the frame every picker has; its keys and the zoom's keys in the hint colour; without colour (`Depth::None`) no colour | goldens | `cargo test --lib huddle_zoom` (13 goldens rewritten with `BZZ_UPDATE_GOLDENS=1`: only the keys' colour, and the picker's frame) | pass; the diff read: text unchanged but the picker's frame `╭─ huddle style ─╮` → `┌ huddle style ─┐` |
+| One look: the microphone check's frame and keys | buffer test | `ui::huddle_mic::tests::*` (no colour inside the frame under `Depth::None` still holds) | pass |
+| Rule 19: no key or `:` command moved | read + scenarios | no change to `src/ui/keymap.rs`, `src/ui/command.rs`; the relay suite | — |
+| Scenarios run with motion off unless they test motion | read + scenarios | `scripts/test-tui-tmux.py` adds `BZZ_NO_MOTION=1` unless the scenario has `motion = true`; `scripts/test-tui-herdr.sh` adds it always | `t17-motion-toast`, `t17-motion-overlay-and-focus`, `t17-motion-off-toast` pass on the debug binary |
+| The whole scenario suite through tmux on the pinned relay | scenarios | `BZZ_TMUX_SCENARIOS=all BZZ_TMUX_CAPTURES=<scratch>/captures-relay ./scripts/test-relay.sh --tmux` | see "Relay suite" |
+
+The tests of `motion`, `toast` and `stage` test what did not exist and do
+not compile against the base. Seen red during the work: twelve App tests
+that read a frame right after opening an overlay (the overlay was mid-
+unfold), until App tests see motion off unless they set it
+(`stage::TEST_MOTION`); the overlay test's own first form (a timeline cell
+is `DIM` by design); the bytes test's first bound (a frame with nothing
+changed still writes the cursor's 25 bytes; the loop draws none at rest).
+
+#### At rest (L9)
+
+`bzz demo`, 160×45, `TERM=xterm-256color COLORTERM=truecolor`, a scratch
+home, 10 s of nothing after 4 s of start. Switch-ins of every thread of the
+process (`/proc/<pid>/task/*/schedstat`, third field); CPU from the first
+field; bytes from `tmux pipe-pane`.
+
+| Binary | Wake-ups / s (process) | main thread / s | CPU in 10 s | Bytes in 10 s |
+|---|---|---|---|---|
+| before (`9902c74`) | 226.6 | 104 | 633 ms | 50 |
+| after (`71645bb`) | 45.8 | 12.4 | 80 ms | 25 |
+| before, again | 192.3 | | 638 ms | 50 |
+| after, final (the rest deadline is the store refresh's own) | 54.9 | 17.7 | 86 ms | 50 |
+| before, in `#infra` with the generated huddle speaking (strip on) | 268.8 | | 1611 ms | 24 116 |
+| after, the same | 274.8 | | 1579 ms | 21 405 |
+
+The loop itself: a debug counter (not committed) showed 10 loop wakes in
+10 s at rest, all the once-a-second housekeeping, none busy. What is left
+on the main thread (12 to 18/s) is that housekeeping's store round trips
+(`hydrate_cache` and the subscriptions each second; `bzz-sqlite` 12 to
+16/s), and the rest is tokio's workers and the demo's in-process relay.
+The first measurement's 11.7/s on `bzz-sqlite` was low for a reason found
+after it: a rest tick exactly 1 s after the last could miss the store's
+refresh ("more than a second" since a refresh that ended after the tick
+began) and put it off to 2 s; the rest deadline is now the refresh's own
+(`Pacing::tick_at`, `App::refresh_due`). With a
+huddle the visualizer keeps its own pace (plan B4), as before.
+
+The bytes in 10 s at rest are the 25 to 50 bytes the terminal answers or
+the cursor, before and after; no frame is drawn.
+
+#### Every user of the old ticks
+
+The 33 ms tick and the 100 ms tick are gone. Each user and what wakes it now:
+
+| Old tick | User | Now |
+|---|---|---|
+| 33 ms | `tick_huddle_viz` (the call's meter, the generated huddle, the microphone check) | every 33 ms while `huddle_polled()`: a call, the demo's huddle where it plays, or the check is on |
+| 33 ms | draw a frame asked for (`RedrawGate`), apps polled first | at once when asked, at most one per 33 ms |
+| 33 ms | `huddle_frame_drawn` (the orb's throttle) | after every frame, as before |
+| 100 ms | `media.poll` (images decoded) | 100 ms while an image is in flight (`MediaRuntime::busy`) |
+| 100 ms | rate-limit countdown | 100 ms while limited |
+| 100 ms | agent typing expiry and spinner (200 ms) | 100 ms while anyone is typing |
+| 100 ms | leader panel (300 ms) and its 750 ms timeout | 100 ms while a sequence is on |
+| 100 ms | search and DM search debounce (300 ms) | 100 ms while one waits |
+| 100 ms | approvals of local agents and their countdown | 100 ms while local agents run or one waits |
+| 100 ms | `:agents` panel refresh (1 s) | 100 ms while it is open |
+| 100 ms | read-state publish 5 s after reading | 100 ms in the last second before it |
+| 100 ms | app sessions: timers, records, offers (`tick_apps`) | 100 ms while an app session runs; once a second otherwise |
+| 100 ms | store refresh `hydrate_cache` (when dirty, else each 1 s) and subscriptions | 100 ms while dirty; once a second |
+| 100 ms | mark the visible conversation read, the agent-typing subscription | within 100 ms of any event (input, relay, task), as before; once a second otherwise |
+| 100 ms | presence snapshot (60 s), own presence (away at 300 s, heartbeat 60 s), inbox refresh (30 s) | the once-a-second housekeeping: at most 1 s later than the deadline |
+| — | a notice's end (5 s) | its own deadline, unchanged |
+
+#### Bytes (rule 20)
+
+Through a crossterm backend into a counting writer, 160×45, `dark`-less
+default theme, paused time (`--nocapture` output):
+
+| Transition | Bytes | Frames |
+|---|---|---|
+| ten frames drawn with nothing changed | 250 (the cursor's codes; the loop draws none) | 10 |
+| toast in, held 3 s, out | 1 555 | 15 |
+| focus sweep | 2 791 | 6 |
+| an arriving message's tint (one step) | 624 | 2 |
+| overlay (finder) opens, with the dimming | 12 036 | 6 |
+| overlay closes, the screen back | 12 291 | 4 |
+| the same overlay with motion off | 9 448 and 12 027 | 1 and 1 |
+
+The unfolding adds about 2.6 KB to the dimming's 9.4 KB, and the folding
+about 0.3 KB: the backdrop is dimmed once and only the overlay's cells
+change between frames.
+
+From the recording of the real `bzz demo` (`record-tape.py`, 160×45, the
+tape's output chunks summed between its marks):
+
+| Window | Bytes | Writes |
+|---|---|---|
+| focus to the channels / back (each) | 2 850 to 2 876 | 5 to 7 |
+| toast in (0.5 s from `y`) | 990 | 6 |
+| **toast holding, 2.55 s** | **0** | **0** |
+| toast out | 1 099 | 8 |
+| palette opens (with the dimming and its rows) | 13 366 | 16 |
+| palette closes | 12 782 | 13 |
+| typing, sending and the teammate's answer with its tint | 5 467 | 41 |
+| the last 2 s, nothing happening | 0 | 0 |
+
+#### The film
+
+`<scratch>/film/motion.mp4`: 30 s, 1920×1080, 30 fps, H.264, from the tape
+above through the promo skill's tape player (`mountTape`, xterm.js) and
+`hyperframes@0.9.13 render` (`HYPERFRAMES_NO_TELEMETRY=1 DO_NOT_TRACK=1`):
+the focus moving between the channels and the conversation, a copy's toast
+in, held, out, the palette unfolding and folding, and a message written and
+answered. Stills read at 5.55 s, 10.72 s, 12 s, 15.36 s, 16.5 s and 24 s.
+Not shown: the shimmer (the demo's history loads in under 80 ms, so it never
+shows) and the unread flash (no message arrives in another channel in this
+take).
+
+#### Captures
+
+`<scratch>/look/`: at 80×24 and 160×45, the toast settled (`toast-*.txt`),
+the palette mid-unfold (`palette-opening-*.txt`) and open (`palette-*`), the
+focus sweep mid-way (`sweep-mid-*.ansi`). Read as a newcomer: the toast sits
+at the bottom right of the conversation, inside its frame, above the
+composer, and says what happened; the palette's keys are coloured like every
+other footer. The palette's mid-unfold frame shows the dimmed conversation
+around its middle for one or two frames of 150 ms.
+
+#### Relay suite
+
+Release binary, `BZZ_TMUX_SCENARIOS=all` (harness and automated), 160×45,
+every scenario but the three `t17-motion-*` with `BZZ_NO_MOTION=1`.
+
+- **Run 1** (`11cdc3d`; `ad3caa3` was committed while its release build ran, so its build may hold that small change or not; all of L7 to L9 in
+  it): **48 of 54**. Failed:
+  - `t17-demo-first-minute`: waits for `reaction · Enter toggle`, but the
+    reaction picker's keys are now at its foot (task `look`). It fails the
+    same with the base binary (`9902c74`, debug, alone): not this task's.
+  - `t17-palette-unavailable-stays`, `t17-palette-sizes`,
+    `t17-find-delete-unread-status`: in the whole run the Board that the
+    v0.16 scenarios open in `#t9-general` is still open and covers what
+    they look for. Run 2 below: all three pass alone.
+  - `t15-coding-harnesses-in-panel`: its sentence wraps at 160 columns; the
+    v0.16 record says it passes at 200×50 (run 3).
+  - `t14-search-older`: `Ctrl-o` before the debounced search has answered,
+    whose answer then clears the "older results" notice; the v0.16 record
+    names it a flake, once in two runs.
+- **Run 2** (`714d026`): the five above that are not the
+  demo's, and the three `t17-motion-*`: **6 of 8**; the three order-bound
+  palette and find scenarios and the three motion scenarios pass;
+  `t14-search-older` and `t15-coding-harnesses-in-panel` as above.
+- **Run 3** (`714d026`, 200×50): `t15-coding-harnesses-in-panel` passes;
+  `t14-search-older` fails a third time. Read: the search answers twice,
+  the local answer with "searching the relay…" and then the relay's; the
+  scenario presses `Ctrl-o` when it sees `local + relay`, which the local
+  answer already shows, and the relay's answer, coming after the older
+  page, replaces that page's notice. In v0.16 it lost this race once in
+  two; frames now come as soon as asked (before: up to 33 ms later), so
+  the local answer is on screen sooner and the race is lost every time.
+  Inferred, not measured against the base on the relay. The scenario now
+  waits for `searching the relay` to be gone before `Ctrl-o` (the only
+  change to an existing scenario). The product race (a later search
+  answer clears the older page's notice) is left as it was: not this
+  task's file.
+- **Run 4** (`714d026` and the scenario's wait, 200×50):
+  `t14-search-older` passes (Ctrl-o's notice 80 ms after the key);
+  `t17-demo-first-minute` fails as on the base, for the reason above.
+
+Every v0.13 to v0.16 scenario and every `t17-*` scenario of the other
+tasks passed in run 1 or alone in runs 2 to 4, except
+`t17-demo-first-minute`, which fails the same on the base binary.
+
+### v0.17.0 — task `layout` (L10, L11, L12, F7)
+
+Branch `t3/layout`, cut from `v0.17.0` at `9902c74`. Linux x86_64,
+2026-11-25, on a machine shared with six other builds. Buzz pin as in
+`runs/buzz-pin`. `<scratch>` is a folder outside the repository.
+
+#### The table (L10)
+
+Pinned by `ui::layout::tests::the_table_of_breakpoints` (24 rows, a writing
+dock of 3, the default widths: sidebar 28, thread 44, app 42, rail 22). `R`
+rail, `S` sidebar, `C` conversation, `T` thread, `A` app, each with its
+width; after `|` the keys of what is hidden, which the conversation's frame
+names (`hidden · channels 2 · thread 4`). "focus back" is the focus on the
+conversation; "thread" has the focus on the thread; "thread and app" has
+the app asked for last, "app and thread" the thread.
+
+| Open panes | 60 | 72 | 80 | 100 | 120 | 160 | 200 |
+|---|---|---|---|---|---|---|---|
+| sidebar (2 communities) | C60 \| 12 | S28 C44 \| 1 | S28 C52 \| 1 | R22 S28 C50 | R22 S28 C70 | R22 S28 C110 | R22 S28 C150 |
+| sidebar, one community | C60 \| 2 | S28 C44 | S28 C52 | R22 S28 C50 | R22 S28 C70 | R22 S28 C110 | R22 S28 C150 |
+| thread (focused) | T60 \| 123 | C38 T34 \| 12 | C38 T42 \| 12 | C56 T44 \| 12 | S28 C48 T44 \| 1 | R22 S28 C66 T44 | R22 S28 C106 T44 |
+| thread, focus back | C60 \| 124 | C38 T34 \| 12 | C38 T42 \| 12 | C56 T44 \| 12 | S28 C48 T44 \| 1 | R22 S28 C66 T44 | R22 S28 C106 T44 |
+| thread, focus on channels | S22 C38 \| 14 | S28 C44 \| 14 | S28 C52 \| 14 | S28 C72 \| 14 | S28 C48 T44 \| 1 | R22 S28 C66 T44 | R22 S28 C106 T44 |
+| app (not focused) | C60 \| 12 | S28 C44 \| 1 | C38 A42 \| 12 | C58 A42 \| 12 | S28 C50 A42 \| 1 | R22 S28 C68 A42 | R22 S28 C108 A42 |
+| app focused | zoomed | zoomed | C38 A42 \| 12 | C58 A42 \| 12 | S28 C50 A42 \| 1 | R22 S28 C68 A42 | R22 S28 C108 A42 |
+| thread and app | C60 \| 124 | C38 T34 \| 12 | C38 A42 \| 124 | C58 A42 \| 124 | S28 C50 A42 \| 14 | S28 C46 T44 A42 \| 1 | R22 S28 C64 T44 A42 |
+| app and thread | T60 \| 123 | C38 T34 \| 12 | C38 T42 \| 12 | C56 T44 \| 12 | S28 C48 T44 \| 1 | S28 C46 T44 A42 \| 1 | R22 S28 C64 T44 A42 |
+| `z` (thread and app open) | C60 \| z | C72 \| z | C80 \| z | C100 \| z | C120 \| z | C160 \| z | C200 \| z |
+
+The rules behind it (`src/ui/layout.rs`, module documentation):
+
+- While anything is beside it the conversation keeps **38** columns
+  (`MIN_CONVERSATION`; v0.16: 30). 38 and not 40 so that v0.16's trial at
+  80×24 holds: the conversation 38 and the app 40×18 inside.
+- Panes are admitted in order: the pane with the focus, the right pane asked
+  for last, the sidebar, the other right pane, the rail. The rail only when
+  every pane before it that is asked for is drawn.
+- The focused pane and the right pane asked for last narrow to their least
+  width (sidebar 18, thread 30) before they drop; the others keep theirs.
+- A focused pane that cannot sit beside the conversation takes its place
+  (`T60` above); `3` gives the conversation back. A focused app that cannot
+  dock still takes the whole window, as in v0.16.
+- With one community the rail shows from 100 columns, for everyone (the demo
+  had its own rule of never; it is gone). `1` shows it at any width.
+
+**What changed from v0.16.** The app docks from 80 columns (v0.16: 72; at
+72 a focused app is now zoomed, an unfocused one hidden with `app hidden ·
+5`); app and sidebar from 108 (100); thread and app together from 124 (116),
+with the sidebar from 152 (144), with the rail from 174 (166); a thread is
+drawn from 68 columns at 30 wide (v0.16: from 74 at its own width) and beside
+the sidebar from 110 (102). Below 70 columns v0.16 drew the conversation
+alone whatever was asked; now the table applies at every width. v0.16 drew
+the rail where a thread did not fit or where the sidebar would not fit even
+alone; it no longer does. `scripts/tui-herdr-scenarios.toml` `t16-app-pane`
+follows these widths (its 72-column step is now 80, and 72 says `app hidden ·
+5`).
+
+#### Claims and proofs
+
+| Claim | Rung | Command | Seen |
+|---|---|---|---|
+| **L10.** The table above, at 60, 72, 80, 100, 120, 160 and 200 columns | unit | `cargo test --locked --lib ui::layout::tests::the_table_of_breakpoints` | pass |
+| L10. At every width from 50 to 220, for 32 sets of open panes × 5 focuses × 1 or 3 communities × 3 width settings: the columns are adjacent and fill the body; the conversation keeps 38 while anything is beside it; the focused pane is drawn; what is asked and not drawn is in `Hidden` (the rail of a single community under 100 is the one exception, by rule); no rail beside a sidebar that gave way; a docked app is 42 wide | unit | `…::at_every_width_the_panes_fill_the_body_and_the_conversation_keeps_its_columns` | pass |
+| L10. What drops comes back as the window widens: widening never draws fewer panes, a pane drops only for one before it in the order, and at 220 nothing is hidden | unit | `…::what_drops_comes_back_when_the_window_widens` | pass; red first (the rail came in where a thread did not fit, and left when it did): the rule "the rail only when every pane before it is drawn" came from it |
+| L10. The thread from 68 columns, narrowed; at its width from 82; with the sidebar from 110; in the conversation's place below 68 while focused | unit | `…::a_thread_asked_for_is_drawn_from_68_columns_and_takes_the_place_below` | pass |
+| L10. The rail of one community from 100, and at any width on `1` | unit | `…::the_rail_of_one_community_waits_for_100_columns_and_for_its_key` | pass |
+| L10. v0.16's app rules at their new widths; zoom while focused where it cannot dock; 16 rows | unit | `…::the_thresholds_of_the_default_widths`, `…::a_focused_app_that_cannot_dock_takes_the_window_and_leaves_it_with_the_focus`, `…::the_widths_of_the_exit_gate`; `app::pane::tests::*` | pass (`the_thread_and_the_app_share_the_right_side` moved from 144 to 152) |
+| L10. The frame names what is hidden with its key and shortens: `hidden · channels 2 · thread 4`, then without `hidden ·`, then keys only, then fewer keys | unit | `ui::shell::tests::what_is_hidden_is_named_at_the_right_of_the_frame_and_shortens` | pass. A first wording (`2 channels`) read as a count; the name now goes first |
+| L10. `z`: only the conversation and the writing dock, the frame says `hidden · the other panes z`, `z` again restores; the focus goes to the conversation | unit, app buffer | `ui::layout::tests::conversation_only_draws_the_conversation_and_the_dock`; `app::shell::tests::the_frame_names_what_is_hidden_and_z_draws_the_conversation_alone` | pass |
+| L10. Text wraps to the pane's real width and loses no character: every kind of timeline line (a system notice about a 64-character name, a header with an agent mark, an edited body with a long word, a grouped line, a thread reply also sent to the channel with an unknown delivery, a message sent from a thread, a deleted one, a pending one, a thread summary, reactions, the offline banner), every message marked, at every width from 20 to 200, shows the same characters as at 400 | buffer test | `cargo test --locked --lib ui::timeline::tests::every_kind_of_line_wraps_at_every_width_and_loses_no_character` | **red without the fix**: at 20 columns `…3333oined·…`, `lin17:15deliveryunknown]`, `sam17:28deleted]`, `me17:30pending]` (the wrapped row went back to column 0, under the selection mark). Pass after `4a0cd1d`; the banner (cut at narrow widths) wraps since `f9d02a9` |
+| L10. Goldens of the main screens: the sidebar, a thread, an app and both, at 60×24, 80×24, 120×32 and 160×45 | golden | `cargo test --locked --lib app::shell::tests::goldens_of_the_main_screens_at_four_widths` (`tests/fixtures/layout/*.txt`, `BZZ_BLESS=1` writes them) | pass; 16 goldens, read one by one |
+| L10. On `bzz demo`, one window from 60 to 200 columns: `hidden · channels 2` at 60; Enter on the checklist puts its thread in the conversation's place with `conversation 3`; `3` brings the conversation back with `thread 4`; at 80 the thread beside it; `z` and `z`; at 160 `┌ communities`; at 200 nothing hidden | tmux | `BZZ_BIN=<scratch>/bzz BZZ_TMUX_SCENARIOS=t17-layout-mouse,t17-layout-widths BZZ_TMUX_Text from tmux, in `<scratch>`, read as a newcomer would:
+
+- `captures/t17-layout-widths/` (`bzz demo`): `02.txt` 60×20, the
+  checklist's thread in the conversation's place, `channels 2 ·
+  conversation 3` on its frame; `04.txt` 60×20, the conversation back with
+  `hidden · channels 2 · thread 4`; `06.txt` 80×24, the thread at 42 beside a
+  conversation of 38; `08.txt` `z`; `10.txt` 160×45, rail, sidebar,
+  conversation and thread.
+- `captures/t17-layout-mouse/` (`bzz demo`, 80×24): each gesture's screen.
+- `mine-200x50/t17-layout-board-captures/` (`#t9-general` on the relay):
+  `05.txt` 160×45 with a thread and the Board, `07.txt` 120×32 (the Board
+  behind the thread, `app behind thread · 5`), `08.txt` 80×24, `09.txt`
+  60×20 (the thread in the conversation's place), `10.txt` 60×20 the Board
+  zoomed, `11.txt` 80×24 the Board docked beside 38 columns, `13.txt` 160×45
+  sidebar, conversation, thread and Board. `12.txt`, named 120×32, was taken
+  before the resize reached the pane and shows 80 columns.
+- `mine-80x24/…`: the same at 80×24.
+
+What a newcomer reads: at 80×24 and 60 columns the conversation is never
+narrower than 38, and its top edge says what is hidden and which key brings
+it (`hidden · channels 2`); at 160×45 everything fits and nothing is said.
+The thread of the demo's code block wraps its long command outside the
+code fence (`--version 2.4.0` under `│ harbor deploy`): markdown's own
+wrapping, no character lost, left as it is.=<scratch>/captures python3 scripts/test-tui-tmux.py` | `2 of 2 scenarios passed` |
+| **L11.** Each gesture on the hit map: the borders of the sidebar and the thread are `Splitter` targets (the two columns where the frames meet); a drag sets the width inside 18–60 / 30–80 and the conversation's 38, and the release saves it and says so; a press elsewhere is not a drag | unit, app buffer | `ui::shell::tests::the_borders_between_panes_are_where_the_frames_meet`; `app::shell::tests::a_border_dragged_resizes_its_pane_within_the_limits_and_is_saved` | pass |
+| L11. The wheel scrolls the pane under the pointer and leaves the focus where it is, also while writing; over the composer it does nothing | app buffer | `app::shell::tests::the_wheel_scrolls_the_pane_under_it_and_leaves_the_focus` | pass |
+| L11. A double click on a message opens that message's thread, and keeps it open if it is the one open (v0.16 toggled it, and closed another message's thread) | app + tmux | `app::shell::tests::a_double_click_opens_the_thread_of_the_message_clicked`; `t17-layout-mouse` step 2 | pass |
+| L11. A click on the status line's `Ctrl-K actions · ? keys` opens the palette (the hint's place is read back from the frame) | app buffer + tmux | `ui::shell::tests::the_hint_is_found_where_the_status_line_drew_it`; `app::shell::tests::a_click_on_the_status_lines_hint_opens_the_palette`; `t17-layout-mouse` step 9 | pass |
+| L11. Through a terminal, SGR mouse reports sent by tmux at 80×24: two wheel-ups show the checklist, a double click opens its thread, a drag from column 27 to 35 says `channel pane width saved as 36`, a click on `#design` opens it, a click on the hint opens the palette | tmux | `t17-layout-mouse` (the step field `mouse` of `scripts/test-tui-tmux.py`) | pass |
+| L11. Nothing the keyboard does needs the mouse | read | every gesture above has its key: Tab/1–5, Enter, J/K and Ctrl-d/u, Alt-h/Alt-l (resize), Space Space, Ctrl-K | — |
+| **L12.** `Esc` in the workspace and the Inbox is `Back`: it closes an overlay, the composer, the thread, the Inbox as before, and with nothing open says `nothing to close · q quits`; `q` still asks; overlays and the composer keep their own Esc | unit + tmux | `app::shell::tests::esc_with_nothing_open_does_not_ask_to_quit_and_q_does`; `t17-layout-mouse` steps 4–5 (`absent = "quit bzz?"`) | pass |
+| L12. Rule 19: an owner's v0.16 key map that binds a sequence starting with a key v0.17 added (`z i` in `custom-keymap-inbox`) still loads, and its binding wins in that scope; with v0.16's own keys an ambiguity is still refused | unit + tmux | `app::shell::tests::an_owners_map_that_binds_z_something_still_loads`; `ui::keymap::tests::action_prefix_ambiguity_is_rejected`; scenario `custom-keymap-inbox` | **red first**: with `z` added the scenario's bzz refused to start (`keymap has an action/prefix sequence ambiguity`); pass after the fix in `KeyMap::load_from` |
+| L12. Rule 19: the two moved bindings (`Workspace Esc`, `Inbox Esc`: `BackOrQuit` → `Back`) and the new `Workspace z` are named | integration | `cargo test --locked --test v016_pins_test` (`MOVED_KEYS`, `ADDED_KEYS`, a fourth `DELIBERATE_CHANGES`) | pass |
+| **F7.** A huddle's backing channel (a private stream `huddle-` and eight hex digits) is not in the sidebar, the finder or the palette; `:system` shows it in the sidebar | app buffer | `app::shell::tests::a_dm_composer_names_the_person_and_the_backing_channel_is_not_listed` | pass |
+| F7. A DM's composer says `message @Scout` (it said `message #Scout`) | app buffer + tmux | same test; `t17-layout-mouse` capture of `@Lin` | pass |
+| F7. `:tochannel` says `sent to #x as a new message · the thread's draft is cleared` and clears the draft (in memory at once, in the store once the relay took it; on a failure the stored draft stays and the notice says so) | relay scenario | `t17-layout-f7` | see "Relay suite" |
+| F7. `:huddle end` with no huddle says `no huddle is running here`, not "only the huddle's creator can end it" | relay scenario | `t17-layout-f7` | see "Relay suite" |
+| Rule 20: nothing is drawn while nothing changes | read | no new timer or frame request: the notices are the status line's (C2 expires them); a drag redraws on its input events only | — |
+
+#### Relay suite
+
+The whole `harness` set on the pinned relay, through tmux, with the release
+binary of this branch (checked: it holds `nothing to close`), then the same
+on the release binary of the base `9902c74` (an export of the commit built in
+`<scratch>`; its run lacks `t17-layout-*` and fails `t16-m5-…` at its first
+step only because the export has no `.git`).
+
+```sh
+BZZ_BUZZ_SOURCE=<pin> BZZ_TMUX_SIZE=200x50 BZZ_TMUX_Text from tmux, in `<scratch>`, read as a newcomer would:
+
+- `captures/t17-layout-widths/` (`bzz demo`): `02.txt` 60×20, the
+  checklist's thread in the conversation's place, `channels 2 ·
+  conversation 3` on its frame; `04.txt` 60×20, the conversation back with
+  `hidden · channels 2 · thread 4`; `06.txt` 80×24, the thread at 42 beside a
+  conversation of 38; `08.txt` `z`; `10.txt` 160×45, rail, sidebar,
+  conversation and thread.
+- `captures/t17-layout-mouse/` (`bzz demo`, 80×24): each gesture's screen.
+- `mine-200x50/t17-layout-board-captures/` (`#t9-general` on the relay):
+  `05.txt` 160×45 with a thread and the Board, `07.txt` 120×32 (the Board
+  behind the thread, `app behind thread · 5`), `08.txt` 80×24, `09.txt`
+  60×20 (the thread in the conversation's place), `10.txt` 60×20 the Board
+  zoomed, `11.txt` 80×24 the Board docked beside 38 columns, `13.txt` 160×45
+  sidebar, conversation, thread and Board. `12.txt`, named 120×32, was taken
+  before the resize reached the pane and shows 80 columns.
+- `mine-80x24/…`: the same at 80×24.
+
+What a newcomer reads: at 80×24 and 60 columns the conversation is never
+narrower than 38, and its top edge says what is hidden and which key brings
+it (`hidden · channels 2`); at 160×45 everything fits and nothing is said.
+The thread of the demo's code block wraps its long command outside the
+code fence (`--version 2.4.0` under `│ harbor deploy`): markdown's own
+wrapping, no character lost, left as it is.=<scratch>/mine-200x50 ./scripts/test-relay.sh --tmux
+BZZ_BUZZ_SOURCE=<pin> BZZ_TMUX_SIZE=80x24  BZZ_TMUX_Text from tmux, in `<scratch>`, read as a newcomer would:
+
+- `captures/t17-layout-widths/` (`bzz demo`): `02.txt` 60×20, the
+  checklist's thread in the conversation's place, `channels 2 ·
+  conversation 3` on its frame; `04.txt` 60×20, the conversation back with
+  `hidden · channels 2 · thread 4`; `06.txt` 80×24, the thread at 42 beside a
+  conversation of 38; `08.txt` `z`; `10.txt` 160×45, rail, sidebar,
+  conversation and thread.
+- `captures/t17-layout-mouse/` (`bzz demo`, 80×24): each gesture's screen.
+- `mine-200x50/t17-layout-board-captures/` (`#t9-general` on the relay):
+  `05.txt` 160×45 with a thread and the Board, `07.txt` 120×32 (the Board
+  behind the thread, `app behind thread · 5`), `08.txt` 80×24, `09.txt`
+  60×20 (the thread in the conversation's place), `10.txt` 60×20 the Board
+  zoomed, `11.txt` 80×24 the Board docked beside 38 columns, `13.txt` 160×45
+  sidebar, conversation, thread and Board. `12.txt`, named 120×32, was taken
+  before the resize reached the pane and shows 80 columns.
+- `mine-80x24/…`: the same at 80×24.
+
+What a newcomer reads: at 80×24 and 60 columns the conversation is never
+narrower than 38, and its top edge says what is hidden and which key brings
+it (`hidden · channels 2`); at 160×45 everything fits and nothing is said.
+The thread of the demo's code block wraps its long command outside the
+code fence (`--version 2.4.0` under `│ harbor deploy`): markdown's own
+wrapping, no character lost, left as it is.=<scratch>/mine-80x24  ./scripts/test-relay.sh --tmux
+```
+
+| Size | This branch | The base | Failing on this branch |
+|---|---|---|---|
+| 200×50 | **42 of 44** | 39 of 42 | `t17-palette-unavailable-stays`, `t17-palette-sizes`: both fail on the base too, the same way (the last message of `#t9-general` is by then the viewer's own share of the Board, so "Delete my message" is enabled) |
+| 80×24 | **37 of 44** | 27 of 42 | `t15-approval-approve-refuse`, `t15-cli-agent-activity`, `t15-agent-new-form`, `t15-coding-harnesses-in-panel`, `t17-palette-unavailable-stays`, `t17-palette-sizes`, `t17-find-delete-unread-status`: every one fails on the base at 80×24 too (lines they look for are wrapped or cut at 80 columns, or the message they look for is off screen) |
+
+So the suite is not green at 80×24 on the base, and this branch fails no
+scenario the base passes, at either size. Seven that fail on the base at
+80×24 pass here (`t9-artifacts-emoji-report`, `t9-presence-broker-huddle`,
+`t14-edit-own-message`, `t14-mention-namesakes`, `t14-sections-and-solo`,
+`t15-agent-answers-mention`, `t15-agents-panel-turn-stop-pause`): the base
+drew rail 22 + sidebar 28 + a conversation of 30 at 80 columns (its capture:
+`Generated fixture message 024:` wrapped over three rows of 28) and the line
+they wait for was off screen; this branch draws sidebar 28 and a
+conversation of 52 and names the rail as hidden.
+
+This branch's own: `t17-layout-f7` (`sent to #t9-general as a new message ·
+the thread's draft is cleared`; the message `↪ sent from thread` at the
+bottom; `no huddle is running here`, never "only the huddle's creator"; no
+`huddle-` in the sidebar after `t9-presence-broker-huddle` started and ended
+one) and `t17-layout-board-captures` pass at both sizes; `t16-app-pane`
+passes with its new widths. Two earlier runs of the 200×50 suite stopped
+before any scenario: the harness fixture was refused (`rate-limited: shared
+admission unavailable`, Redis timing out under the machine's load). One run
+named "mine" ran the base's binary (cargo found this branch's release
+"fresh" after the base was built into the same target); it is not counted.
+Every run tore its harness down (`docker compose … down -v` in the log, no
+`buzz-harness` container after).
+
+#### The automated scenarios
+
+`PYTHONDONTWRITEBYTECODE=1 BZZ_BIN=<scratch>/bzz BZZ_TMUX_SCENARIOS=automated python3 scripts/test-tui-tmux.py`
+(debug build of the last commit): 10 of 11. `t17-demo-first-minute` waits
+for `reaction · Enter toggle`, a title the base no longer draws either (task
+`look` moved the keys to the footer: `┌ reaction ─`, `└ Enter toggle · :
+custom · Esc close ─`); not this task's, left for its owner.
+
+#### Captures
+
+Text from tmux, in `<scratch>`, read as a newcomer would:
+
+- `captures/t17-layout-widths/` (`bzz demo`): `02.txt` 60×20, the
+  checklist's thread in the conversation's place, `channels 2 ·
+  conversation 3` on its frame; `04.txt` 60×20, the conversation back with
+  `hidden · channels 2 · thread 4`; `06.txt` 80×24, the thread at 42 beside a
+  conversation of 38; `08.txt` `z`; `10.txt` 160×45, rail, sidebar,
+  conversation and thread.
+- `captures/t17-layout-mouse/` (`bzz demo`, 80×24): each gesture's screen.
+- `mine-200x50/t17-layout-board-captures/` (`#t9-general` on the relay):
+  `05.txt` 160×45 with a thread and the Board, `07.txt` 120×32 (the Board
+  behind the thread, `app behind thread · 5`), `08.txt` 80×24, `09.txt`
+  60×20 (the thread in the conversation's place), `10.txt` 60×20 the Board
+  zoomed, `11.txt` 80×24 the Board docked beside 38 columns, `13.txt` 160×45
+  sidebar, conversation, thread and Board. `12.txt`, named 120×32, was taken
+  before the resize reached the pane and shows 80 columns.
+- `mine-80x24/…`: the same at 80×24.
+
+What a newcomer reads: at 80×24 and 60 columns the conversation is never
+narrower than 38, and its top edge says what is hidden and which key brings
+it (`hidden · channels 2`); at 160×45 everything fits and nothing is said.
+The thread of the demo's code block wraps its long command outside the
+code fence (`--version 2.4.0` under `│ harbor deploy`): markdown's own
+wrapping, no character lost, left as it is.
+
+#### Gates
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --check` | pass |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass |
+| `cargo build --locked --example scripted_harness` | pass |
+| `cargo test --locked --all-targets --no-fail-fast` | pass on the last commit (every target). Two earlier runs, at load 17–24, failed `apps::runtime::tests::vm::an_endless_loop_is_stopped_by_time` and `apps::runtime::tests::drawing::the_largest_screen_a_script_can_return_is_drawn_in_good_time` on their time limits; both pass alone and neither touches what this task changed |
+| `cargo test --locked --no-default-features --lib` | pass |
+| `cargo deny check`, `cargo audit` | not run: `Cargo.toml` and `Cargo.lock` unchanged |
+
+The first full run also failed `app::shell::tests::goldens_of_the_main_screens_at_four_widths`:
+under load the comparison caught the app's view of the previous size
+(`room 40x16` in a pane of 40×18). The test now waits for the view of the
+pane's own size, and the goldens were written again from it (`room 40x18`,
+`40x26`, `40x39`); three runs in a row pass.
 
 ## E — Sound without a library (D3)
 
@@ -1835,6 +2873,249 @@ three cards in the columns, one with `"gone": null` and `"meta": {}`, and
 one in a column the Board does not show: both say `Loaded 3 cards.`
 (`<scratch>/capture-board-80x24.txt`, `capture-board-160x45.txt`).
 
+### v0.17.0 — task `tidy` (loose ends of the reviews)
+
+Branch `t3/v017-tidy`, cut from `v0.17.0` at `24f7486`. Linux x86_64,
+2026-11-25, on a machine shared with other builds (16 cores, load 9 to 32
+during the runs). `<scratch>` is a folder outside the repository.
+
+#### Claims and proofs
+
+| Claim | Rung | Command | Seen |
+|---|---|---|---|
+| **1.** In `bzz demo`, when the Board closes on its own `q` (`host.quit()`), the status line says `Demo: :app open board`; outside the demo an app of that name closes with no such word | app buffer test | `cargo test --lib app::pane::tests::the_demo_says_how_to_bring_back_a_board_that_closed_itself` | red without the notice (`left: None`), green with it |
+| 1. The notice fits the demo's 24 columns beside the mark and the hint at 80 columns | unit | `cargo test --lib demo::tests::every_notice_of_the_demo_fits_an_80_column_status_line` | pass |
+| 1. Ada's line beside the Board says `Ctrl-c` steps out of it and `q` closes it | unit | `cargo test --lib demo::tests::board::the_welcome_names_the_board_its_keys_and_the_words_for_scout` | pass |
+| 1. On the real binary: `#launch`, `5`, `q`: the Board closes, the status line reads ` NORMAL  #launch  Demo: :app open board … DEMO · generated, offline`; `:app open board` brings it back; `q`, `y` leaves the demo and no `bzz-demo-*` folder is left | tmux, debug build | by hand on a private tmux socket, 80×24 then 160×45 | `<scratch>/captures/demo-80x24-launch.txt`, `…-board-closed.txt`, `…-board-reopened.txt`, `demo-160x45-board-closed.txt` |
+| **2.** `:huddle devices` with two empty lists says why: on Linux the join's line, elsewhere "no microphone or speaker found"; with devices it lists them and says nothing of the kind | buffer test | `cargo test --lib ui::huddle::tests::devices_with_none_found_say_why` | red without the line, green with it |
+| 2. Two empty lists mean no sound server answered: a server with no card still lists an output | container | `pactl list short sinks` in `bzz-audio-pipewire-debian`, `…-pipewire-el9` (PipeWire 1.4.2, 1.4.11) and `bzz-audio-pulseaudio` | `auto_null` in all three, and its monitor as the only source |
+| **3.** The join's answer with no sound server is shown whole in the status line at 80 columns, with the mode, `#general`, a huddle strip of 12 people, and the connection as `online`, `authenticating` or `identity missing` | buffer test | `cargo test --lib huddle::audio::pulse_devices::tests::no_sound_server_fits_an_80_column_status_line` | red with the old 76-column sentence, green with `huddle audio needs PipeWire or PulseAudio running` (49) |
+| **4.** Five tests no longer fail under load for reasons outside bzz, and prove what they proved | 30 runs in a row each, before and after, while a `cargo build --release` of bzz (own target directory, 8 jobs) loads the machine | `<scratch>/runs.sh` | see "Item 4" |
+| **5.** `docs/themes.md` names every highlight group and no other; a group added to the code and not to the document fails | unit | `cargo test --lib ui::theme::tests::the_themes_document_names_every_group` | red on the document as it was (lacks the 9 groups of v0.17.0 and the 5 `Media*` groups), green after |
+| **6.** What `site/public/styles.css` would need | read | `src/ui/theme/builtin.rs`, `src/ui/theme/mod.rs`, `site/public/styles.css` | see "Item 6"; nothing under `site/` changed |
+| **7.** `bzz help` and `bzz --help` list `demo` first; `bzz demo --help` says in two lines, each under 80 columns, what it is, that nothing is read or saved, and how to leave (`q`, then `y`) | binary test | `cargo test --test newcomer_help_test` | red at the base (demo last, no way to leave), green after; `q`, `y` seen to leave the demo (above) |
+| **8.** The completion scripts of bash, elvish, fish, PowerShell and zsh offer `demo` | binary test + script | `cargo test --test newcomer_help_test every_shells_completion_offers_the_demo`; `rustc scripts/generate-completions.rs` then `BZZ_BIN=…/debug/bzz <scratch>/gen-completions <scratch>/completions` | pass (was already true: a check, not a fix); `demo` in all five files |
+
+#### Item 4
+
+Each test was run thirty times in a row as its own process, the binary of
+the base and the changed one taking turns, while a release build of bzz in
+a target directory of its own (8 jobs, rebuilt from scratch in a loop) and
+the other agents' builds loaded the machine. The load average at each run
+was 9.4 to 32.0, 15 to 16 on average.
+
+| Test | Why it was timing-sensitive | Change | Failures before | After |
+|---|---|---|---|---|
+| `apps::runtime::tests::vm::an_endless_loop_is_stopped_by_time` | The script that must end in time (`for i = 1, 100000`) had the 50 ms budget meant for the endless ones; its thread can wait past 50 ms for a core | It runs on an interpreter given the budget and `hostile::margin()` (`BZZ_APPS_STOP_MARGIN_MS`, 800 ms by default). The stop and the endless scripts are unchanged | 0 of 30; **9 of 30** with 32 busy loops beside it (load 18), the failure the gates saw: `Err(Stopped { at: Some("test.lua:1") })` | 0 of 30; 0 of 30 with the busy loops (load 25) |
+| `agent_runtime_test::the_owner_stops_a_running_turn_and_it_ends_once` | A harness that honours the cancel had the test's 400 ms `cancel_grace` to answer; a loaded one did not, and bzz stopped it as deaf (`its process stays: Idle`) | `cancel_grace` 3 s for this test, and the test now looks once that grace is over that the process is still there (before, it looked at once, before the grace could end). The deaf harness is still stopped after the grace | **1 of 30** (`left: Idle`, the failure the gates saw); 0 of 8 with busy loops | 0 of 30; 0 of 8 with busy loops (load 49) |
+| `agent_runtime_test::a_pause_in_another_process_stops_a_running_agent_and_a_resume_runs_it_again` | bzz writes the reason (`paused by its owner, with bzz agent pause`) after the process is stopped; the test saw the process gone and read the status before the reason was there | The test waits for the reason | 0 of 30; **2 of 8** with busy loops (`Scout · pi-durable · paused`, no reason) | 0 of 30; 0 of 8 with busy loops (load 51) |
+| `agent_host_test::the_real_host_is_installed_started_and_answers_once_across_kills_and_restarts` | The host was killed 1.5 s after the turn was listed, inside a 4 s sleep of the stand-in model: a loaded machine could stretch the wait past the sleep | The turn runs `echo before the kill` first, and the kill comes when the status shows that tool call of this turn. (A first try that waited for any tool call of a listed turn failed 2 of 3 with `(Replied, 1)`: the kill came before this request was handed over. The likeliest reading, not traced: the turn before was still listed a moment, with its own tool call) | 0 of 30 | 0 of 30 |
+| `agent_host_test::the_real_host_checkpoints_its_files_when_it_has_been_idle` | "Not before the time": looked at after a fixed 2 s, which a loaded machine can make later than the 4 s idle time. "Nothing while a turn runs": looked at once after 6 s of an 8 s turn, which a loaded machine can stretch past the turn's end | The first check counts from when the test looked (with the 1 s the test already allows); the second is looked at every 50 ms for as long as the turn runs, and the turn must have run past the idle time | 0 of 30 | 0 of 30 |
+
+The two `agent_host_test` tests that failed once on 2026-11-25 are not
+named in the gates' logs; these two are the ones with fixed waits. The
+other five of that file wait for events already.
+
+Seen in the gates of this branch, not changed: `apps::runtime::tests::
+hostile::every_hostile_script_is_stopped_in_budget` failed once at load 24
+(`scale-rep` ended after 1.31 s against 1 s, three tries). It already reads
+`BZZ_APPS_STOP_MARGIN_MS`; a loaded machine needs it set, as CI's build job
+does (3000).
+
+#### Item 6
+
+`site/public/styles.css` mirrors the palettes of `src/ui/theme/builtin.rs`
+as eleven tokens per theme. Agent `look` did not change `builtin.rs` (its
+last change is `15f7aca`); it changed the default groups in
+`src/ui/theme/mod.rs` (`0fff6c1`), which the `bzz` theme uses as they are
+(`from_palette` applies no palette to `bzz`):
+
+- `FocusBorder` went from no colour to ANSI cyan; `FocusedPaneTitle` is
+  that colour reversed and bold. `PaneBorder` and `PaneTitle` link to
+  `Muted` (dark grey) instead of `Border` and `Title`.
+- `StatusBar` lost its dark grey background and white text (terminal
+  default now); `StatusMode` is black on cyan, `StatusModeInsert` and
+  `StatusModeCommand` black on yellow (all three were white on dark grey).
+- New: `HintKey` cyan bold, `HintText` dark grey, `StatusChannel` dark grey,
+  `StatusOnline` green, `StatusOffline` yellow, `StateBanner` black on
+  yellow bold, `NewMessageMarker` yellow, `UnreadCount` yellow bold.
+
+So the site's eleven tokens need no change: none of them is a highlight
+group, and the palettes they copy did not move. If the site is to show the
+new look too, it would need, for `[data-theme="bzz"]` (and the same rule for
+the others, from each palette): a focus token equal to `--primary`
+(`#5ec8d8`), used where the site now marks the active or hovered element
+with `--accent` (`.install-line button:hover`, `.hero .cta a.primary`,
+`.hero .cta a:hover`, `.card:hover`, `.card.feature`); frames at rest in
+`--muted` (`#8a8272`) rather than `--border` where they stand for panes;
+and a status-bar look of mode label `--bg` on `--primary`. None of this is
+a token the TUI defines; it is a choice for the owner.
+
+Found while comparing, older than v0.17.0: three site themes use a yellow
+`--accent` where the palette's `accent` is green: `gruvbox-dark` (`#fabd2f`
+against `#B8BB26`), `catppuccin-mocha` (`#f9e2af` against `#A6E3A1`) and
+`tokyo-night` (`#e0af68` against `#9ECE6A`). Every `--selection` is a
+colour where the palette leaves `selection_background` empty (the TUI then
+uses `primary`). The `bzz` tokens are hex values for ANSI names
+(`cyan` → `#5ec8d8`, `yellow` → `#ffb000`), as before.
+
+#### Gates
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --check` | pass |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass |
+| `cargo build --locked --example scripted_harness` | pass |
+| `cargo test --locked --all-targets` | first run: 1 failure, `hostile::every_hostile_script_is_stopped_in_budget` at load 24 (see "Item 4"); second run (`--no-fail-fast`): pass, 0 failed in 68 targets |
+| `cargo test --locked --no-default-features --lib` | pass, 646 tests |
+
+`Cargo.toml` and `Cargo.lock` did not change: deny and audit were not run.
+
+### v0.17.0 — task `ci` (CI green and quick)
+
+Branch `t3/ci-pipeline`, cut from `v0.17.0` at `12b355b`. Linux x86_64,
+2026-11-25, on a machine shared with other builds (16 cores). `<scratch>` is
+a folder outside the repository. Every sound server below ran inside a
+container (`--network none`, no host sound socket, no `/dev/snd`); this
+machine's own sound was never used. CI was only read (`gh run view`,
+`gh api …/logs`); nothing was started, re-run or cancelled.
+
+"The CI image" is `ghcr.io/arpagon/bzz-build@sha256:e708b63b…`, the digest
+in `.github/workflows/ci.yml`, pulled and run here. Test binaries were built
+inside it (Rust 1.98.1 of this machine mounted read-only, `cargo test`'s
+debug profile as CI builds it) and the T7 step was run in it as the job
+runs it: as root, `HOME=/github/home`, `scripts/test-audio-loopback.sh`
+starting its private PulseAudio (15.99.1).
+
+#### Claims and proofs
+
+| Claim | Rung | Command | Seen |
+|---|---|---|---|
+| **1.** The defect reproduces in the CI image: T7 prints its round trip, then does not end | the CI image, T7 as CI runs it | `<scratch>/run-t7-ci.sh <scratch>/t7-debug-before` (the test binary of `12b355b`) | `T7 round trip: first tone frame after 1342 ms`, then nothing; still running when killed at 960 s (`<scratch>/repro-before-1.txt`). In CI: 731 s at `e144e52`, over two hours at `24f7486`, `006d8d1`, `0d96e80` |
+| 1. Where it waits: the playback device stops asking for audio because the `pulseaudio` crate's reader never lets its writer run | stack samples | the same binary under `gdb` on this machine, as its parent, against a PulseAudio in a container (`scripts/test-audio-containers.sh serve`), 8 interrupts 2 s apart | the reactor thread in `Vec<u8>::resize` / `extend_with` (from `Reactor::recv`) in 7 of 8 samples; the test's feeder parked on the full playback channel (`<scratch>/gdb2.txt`) |
+| 1. Why that is slow: before every read of the socket the crate grows its buffer by 1 MiB of zeros; unoptimised that is a loop of a million steps | measured | `<scratch>/resize.rs` built at `-C opt-level=0` and `3` | **3.924 ms** a read at opt-level 0, **0.018 ms** at 3. Its `run` loop reads until a read finds nothing waiting and only then writes playback; capture arrives every few milliseconds, so that moment almost never comes |
+| 1. The crate optimised alone ends the hang | the CI image | test binary of `12b355b` built with `--config 'profile.dev.package.pulseaudio.opt-level=3'` | 7.48 s, `0 holes in 2999 ms of tone`, streams 0 / 2 / 0 (round trip still 1381 ms: claim 3) |
+| **2.** Every wait in T7 has a bound and says what it waited for; the old defect now fails in seconds | the CI image | this branch's test, built *without* the optimised crate | fails after 10.0 s: `T7 waited more than 8s for the playback device to take 2 s of tone (it stopped asking for audio)` |
+| **3.** The 1.4 s round trip in CI (2 s is its bound) was PulseAudio's idle null sink, not bzz: the sink sleeps up to 2 s, its latency while no stream asks for less, and gives its monitor nothing until it wakes | the CI image | this branch's settle step prints what the capture gave while it waited | `capture live after 2226 ms (260 ms of audio in that time)`; PipeWire: `live after 303 ms (300 ms of audio)`. Also tried: a `parec` kept on the monitor 2.5 s before T7 gave 20 ms (`<scratch>/scripts-keep/`); a minimal server config (`-n`) and a suspended sink did not (1383 ms, 1404 ms) |
+| 3. With the settle step the round trip reads what bzz does | the CI image | as below | 19 to 20 ms |
+| **4.** T7 takes well under a minute in the CI image, ten times in a row | the CI image | `for i in $(seq 10); do <scratch>/run-t7-ci.sh <scratch>/t7-after-paO3; done` | 10 of 10 pass; see "T7, ten runs" |
+| 4. The script's own path (cargo inside the image, the `--config` line) builds that same binary and passes | the CI image | `./scripts/test-audio-loopback.sh` in the image as uid 1000, toolchain mounted | `T7 took 6878 ms`, same test binary hash as the runs above |
+| 4. With two cores, as a hosted runner has about | the CI image, `docker run --cpus 2` | the same, three times | 8.09 to 8.21 s, round trip 20 ms, 0 holes |
+| **5.** T7 on PipeWire (Debian, EL9) and PulseAudio in containers, and the one line with no server | containers | `scripts/test-audio-containers.sh t7 <scratch>/t7-after-paO3`, three times | see "T7 in containers" |
+| **6.** The audio job and its T7 step have bounds | read + lint | `.github/workflows/ci.yml`; `actionlint` (`rhysd/actionlint` image, with shellcheck) | `timeout-minutes: 30` on the job, `15` on the step; actionlint: no findings |
+| **7.** The agent-host test client gives a slow runner room, from an environment variable CI sets, and a hung host still fails | node, this machine (Node 26.5) | `BZZ_AGENT_HOST_WAIT_MARGIN_MS=60000 node --test test/packages.test.mjs`; a scratch test whose host logs a line and never answers, with the margin at 2000 | 7 of 7 pass; the hung host fails after **32003 ms** with `timed out after 32000 ms: initialize (the host's log so far follows)\nhost started, then hangs` |
+| 7. A timeout shows the host's log at the time it ran out; before, the log as it was when the request was sent | read | `agent-host/test/support/client.mjs` at `12b355b`: the message was a template string built when `rpc` was called | in both CI failures the message ends right after `initialize`: the log was read at 0 s, empty |
+| 7. The whole suite still passes with no margin | node, this machine | `npm test` in `agent-host/` (the main checkout's `node_modules`, same lock file, linked for the run and removed) | 100 of 100 pass, 66 s |
+| **8.** A pull request's superseded run is cancelled; a run on `main`, a tag or by hand is not | read + lint | `concurrency` in `ci.yml` and `integration.yml`; `actionlint`; `cargo test --test build_environment_test` (in the gates) | the group is `ci-pr-<number>` / `relay-pr-<number>` on a pull request, with `cancel-in-progress` true only there; any other event's group is its own run id, so it is neither cancelled nor queued behind another. Not proven on GitHub (see "Not verified") |
+| **9.** The gates | gates | the five commands of the rules | see "Gates" |
+
+#### T7, ten runs in the CI image
+
+This branch, `<scratch>/t7-ci-image-10x.txt`:
+
+| Run | Capture live after | Round trip | Holes in 3 s paced | Streams | T7 took |
+|---|---|---|---|---|---|
+| 1 | 2226 ms | 20 ms | 0 | 0 / 2 / 0 | 8.07 s |
+| 2 | 2225 ms | 20 ms | 0 | 0 / 2 / 0 | 8.08 s |
+| 3 | 2225 ms | 19 ms | 0 | 0 / 2 / 0 | 8.08 s |
+| 4 | 2326 ms | 20 ms | 0 | 0 / 2 / 0 | 8.19 s |
+| 5 | 2327 ms | 20 ms | 0 | 0 / 2 / 0 | 8.16 s |
+| 6 | 2326 ms | 20 ms | 0 | 0 / 2 / 0 | 8.17 s |
+| 7 | 2325 ms | 20 ms | 0 | 0 / 2 / 0 | 8.18 s |
+| 8 | 2225 ms | 20 ms | 0 | 0 / 2 / 0 | 8.06 s |
+| 9 | 2325 ms | 20 ms | 0 | 0 / 2 / 0 | 8.19 s |
+| 10 | 2325 ms | 20 ms | 0 | 0 / 2 / 0 | 8.15 s |
+
+Before and after, the same step in the same image:
+
+| | T7 | Round trip | Paced holes |
+|---|---|---|---|
+| `12b355b` (CI, `e144e52`) | 731 s, or never ends | 1342 to 1400 ms | 3 |
+| `12b355b`, crate optimised only | 7.5 s | 1381 ms | 0 |
+| this branch | 8.1 s | 20 ms | 0 |
+
+#### T7 in containers
+
+`scripts/test-audio-containers.sh t7`, three times (`<scratch>/t7-containers-3x.txt`):
+
+| Server | Live after | Round trip | Holes | Streams | T7 took |
+|---|---|---|---|---|---|
+| PipeWire 1.4.2, Debian | 302–303 ms | 21, 21, 21 ms | 0, 1, 0 | 0 / 2 / 0 | 6.18–6.22 s |
+| PipeWire 1.4.11, EL9 | 302–303 ms | 21, 26, 21 ms | 0, 0, 0 | 0 / 2 / 0 | 6.18–6.22 s |
+| PulseAudio, Debian (as CI starts it) | 2224–2328 ms | 20, 20, 20 ms | 0, 0, 0 | 0 / 2 / 0 | 8.06–8.18 s |
+| none | `huddle audio needs PipeWire or PulseAudio running`, 0.00 s | | | | |
+
+#### The agent host on the Intel Macs
+
+CI keeps no time for `initialize` alone. The failing test ("what a package
+leaves uncaught…", test 54) is one `initialize` that loads two packages,
+then a wait of at most 5 s for a line of the log, so its time is an upper
+bound of that `initialize`. Every run of the job on this branch:
+
+| Commit (run) | macos-15-intel: test 54 | its `--check-model` test | suite | ubuntu: test 54 | windows: test 54 |
+|---|---|---|---|---|---|
+| `543dbd1` (45530273900), macos-15 Apple | 0.8 s | 2.8 s | 80.8 s | 0.9 s | 1.1 s |
+| `2ff8301` (45540182641) | 2.5 s | 9.5 s | 101.6 s | 0.9 s | 1.7 s |
+| `bfd340f` (45555775783) | 2.2 s | 12.8 s | 111.1 s | 1.5 s | 1.9 s |
+| `64156d3` (45560292857) | 31.9 s **failed** | 8.1 s | 110.1 s | 1.1 s | 1.7 s |
+| `18c4eb9` (45571201773) | 2.3 s | 8.6 s | 88.9 s | 1.1 s | 1.5 s |
+| `9902c74` (45571866191) | 2.1 s | 9.8 s | 97.6 s | 1.0 s | 1.9 s |
+| `e144e52` (45577698807) | 5.9 s | 16.6 s | 133.3 s | 1.4 s | 1.8 s |
+| `5859f29` (45593677292) | 3.2 s | 10.9 s | 102.4 s | 1.5 s | 1.7 s |
+| `24f7486` (45593885608) | 3.9 s | 16.7 s | 119.8 s | 1.3 s | 2.1 s |
+| `006d8d1` (45601454766) | 1.4 s | 6.8 s | 80.7 s | 1.3 s | 2.0 s |
+| `0d96e80` (45609541408) | 32.7 s **failed** | 14.9 s | 139.8 s | 1.4 s | 1.8 s |
+| `12b355b` (45614530167) | 6.5 s | 31.0 s | 170.0 s | 1.0 s | 1.9 s |
+| `6fcd428` (45617462153) | 2.6 s | 10.5 s | 104.6 s | 1.1 s | 1.5 s |
+
+So on the Intel Macs the same test takes 2 to 6 times as long as on Linux,
+the slowest passing runs are several times the usual (`--check-model`, about
+a dozen starts of the host, took 31 s once against 5 s on Linux), and twice in twelve
+`initialize` passed 30 s. Whether those two would have answered at 35 s or
+never cannot be read from the logs: the message carried the log as it was
+at 0 s. From now on it carries the log at the timeout, and an `initialize`
+of 5 s or more is written to the test's output.
+
+The bound chosen: `BZZ_AGENT_HOST_WAIT_MARGIN_MS`, added to the client's own
+waits (a request's answer, 30 s; the host's exit, 5 s; `--check-model`,
+30 s). CI sets 60000 on `macos-15-intel` (so 90 s for `initialize`, three
+times the Linux bound, against a worst seen pass of about 6 s for this
+test), 30000 on Windows (its one failure, `6fcd428`, was the 5 s wait for
+the host's exit in a run where another test took 21 s), 0 on Linux. Bounds
+a test states as claims (`stop(2_000)`: "the host leaves within 2 s") get
+no margin.
+
+#### Gates
+
+| Command | Result |
+|---|---|
+| `cargo fmt --check` | pass |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass |
+| `cargo build --locked --example scripted_harness` | pass |
+| `cargo test --locked --all-targets` | pass (562 s), `build_environment_test` 2 of 2 |
+| `cargo test --locked --no-default-features --lib` | pass (710 tests) |
+
+`Cargo.toml` and `Cargo.lock` did not change: `cargo deny` and `cargo audit`
+were not needed.
+
+#### Not verified
+
+- The fixes on GitHub's runners: nothing here pushes. The audio job's time
+  in CI after the push, the agent-host job on `macos-15-intel`, and the
+  `concurrency` groups (a pull request's earlier run cancelled, `main`
+  untouched) are shown only once the principal pushes.
+- T7 on macOS (BlackHole) and Windows with the settle step: the step only
+  waits for audio at the pace of the clock, which BlackHole and WASAPI give
+  from the start; not run here.
+- Whether the two `initialize` timeouts on the Intel Macs were slowness or
+  a hang: the logs of those runs cannot tell (above).
+- `cargo run` of bzz itself in a debug build still uses the unoptimised
+  crate: a developer's debug huddle on PulseAudio or PipeWire can starve
+  its playback as T7 did. Only `Cargo.toml` (`[profile.dev.package.pulseaudio]
+  opt-level = 3`) fixes that for every debug build; it is not this task's
+  file. Release builds, which people install, read in 0.018 ms and are not
+  affected.
+
 ### v0.17.0 — task `release`: the upgrade from v0.16.0, the version (F8)
 
 Linux x86_64, 2026-11-25, branch `t3/release` cut from `v0.17.0` at
@@ -1945,6 +3226,77 @@ built into a target folder of its own on the hard disk: 5 min 4 s in all.
 - The TUI drawn on the upgraded profile: the test reads what the TUI reads
   (store, apps, theme, key map), and `bzz check`; it does not start the
   interface.
+
+### v0.17.0 — task `release2`: the documents brought level with the code
+
+Linux x86_64, 2026-11-25, branch `t3/02fbdc8c` cut from `v0.17.0` at
+`18ff30a` ("dev builds: the pulseaudio crate is built optimised…"). Plan:
+[`docs/planning/2026-11-24/v0.17.0.md`](planning/2026-11-24/v0.17.0.md),
+F8. `<scratch>` is a folder outside the repository. Documents only: no file
+under `src/`, `tests/`, `scripts/` or `site/` changed, nor `Cargo.toml`.
+
+#### What was written
+
+- `docs/release-v0.17.0.md`: what landed after task `release` wrote it
+  (A9, C8, C10, C11, L7 to L12, F7, and tidy's and ci's changes), every
+  change of behaviour in three tables, the known limits, "Not in this
+  version" brought up to date.
+- `docs/validation-v0.17.0.md`, regenerated by `<scratch>/join-validation.py`
+  from every task file that landed, with an index that maps every plan item
+  to its proof or says why there is none, a note where the proof departs
+  from the plan's, and two sections of the principal's
+  (`<scratch>/principal-checks.md`, `<scratch>/went-wrong.md`, which the
+  script puts after the index; task `suite` stays a commented line in it).
+- The plan's status line and its last section, "How it closed".
+- `README.md`: the "New in 0.17" block, "Get started" (`bzz demo`, `:join`,
+  `Ctrl-K`, `docs/keys.md`), two rows of the keys table (`u`, `q`/`Esc`,
+  `z`). `docs/README.md`: `keys.md` in the index, the plan's closing.
+  `docs/e2e-manual.md` section 15: joining against the real thing, the
+  mouse in a real terminal, motion by eye, the look under `NO_COLOR`.
+- Out of the repository: `<scratch>/site-new-in-v0.17.0.patch` and
+  `<scratch>/SITE-PROPOSAL.md`, the site's section as a proposal.
+
+#### Claims checked against the code
+
+Each change of behaviour the release notes name was read in the code at
+`18ff30a`, not only in a task's notes:
+
+| Claim | Where it was read |
+|---|---|
+| `Esc` with nothing open says `nothing to close · q quits`; `q` is still `BackOrQuit` | `src/app/shell.rs`, `src/ui/action_table.rs` (`nav.back`), `tests/v016_pins_test.rs` (`MOVED_KEYS`, `DELIBERATE_CHANGES`) |
+| `u` is "Mark this channel unread" | `src/ui/action_table.rs` (`msg.mark_unread`), `docs/keys.md` |
+| `z` is new in the workspace | `tests/v016_pins_test.rs` (`ADDED_KEYS`) |
+| v0.16.0's `:community add` answered `use the CLI to add/remove communities` | `git show v0.16.0:src/app.rs` |
+| v0.16.0's `:tochannel` kept the thread's draft | `git show v0.16.0:src/app.rs` (`send_draft_to_channel`) |
+| v0.16.0 had `ui.sidebar_width` and `ui.thread_width` (a dragged width is the old setting) | `git show v0.16.0:src/config.rs` |
+| The widths (38, 80, 108, 124, 152, 174, 68, 110, 100) | `src/ui/layout.rs` (constants, module documentation, tests) |
+| Toasts: attachment saved and removed, messages copied, sidebar updated | `grep toast( src` |
+| The no-sound-server sentence | `src/huddle/audio.rs` (`NO_SOUND_SERVER`) |
+| The first screen's `j`, `p`, `k` open the join form | `src/app.rs` (`take_shown`), `src/ui/first_screen.rs` |
+| The footer's `i reply` on a message | `src/ui/action_table.rs` (hints of the "Write a message" row) |
+| What CI runs on macOS | `.github/workflows/ci.yml` (`build`, `upgrade`, `audio`, `agent-host`) |
+| `install.sh` already assumes v0.17.0 (`BZZ_SOUND=server`) | `site/public/install.sh` |
+| The version is still 0.16.0 at the head; the version commit is `8184d9c` on another branch | `Cargo.toml`, `git show --stat 8184d9c` |
+
+#### Proofs
+
+| Claim | Command | Seen |
+|---|---|---|
+| Every relative link and anchor of the documents touched, and of every task file, resolves | `python3 <scratch>/linkcheck.py docs/release-v0.17.0.md docs/validation-v0.17.0.md README.md docs/README.md docs/e2e-manual.md docs/planning/2026-11-24/v0.17.0.md docs/validation-v0.17.0/*.md` | `299 links, 0 broken` |
+| The validation document is the join of every task file that landed | `python3 <scratch>/join-validation.py` | `joined: [demo, demo2, install, join, viz, viz2, palette, find, palette2, registry, look, motion, layout, sound, board, tidy, ci, release, release2, windows] not joined: []` |
+| Nothing in the diff names a machine path, an address, the owner's user names, the virtual machines or another project | `<scratch>/scan.sh`: every added line of `git diff --cached 18ff30a` against 22 patterns in `<scratch>/scan-patterns.txt` (the five top folders of this machine's paths, any IPv4 address, the owner's user names, the two virtual machines' names, Windows paths, the folders of the scratch and build caches, the principal's notes, the other projects on the machine), less the repository's own GitHub and image names | empty |
+| The site patch applies to the head and changes only `site/public/index.html` | `git apply --check -p1 --directory=site <scratch>/site-new-in-v0.17.0.patch` | applies; not applied |
+| The documents some tests read are still right | `cargo fmt --check`; `cargo test --locked --test keys_doc_test --test build_environment_test` | fmt clean; 1 and 2 passed |
+
+The full gates were not run: nothing but documents changed.
+
+#### Not verified
+
+- The CI run at `18ff30a`: queued when this was written. The release
+  notes and the plan say so.
+- The numbers the documents quote were not measured again here; each names
+  the task or the principal who measured it.
+- The site section was not drawn in a browser.
 
 ## W — Windows and macOS (D15)
 
