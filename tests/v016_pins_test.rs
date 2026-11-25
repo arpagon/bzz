@@ -254,7 +254,13 @@ const ADDED_KEYS: &[(&str, &str, &str)] = &[];
 
 /// Commands v0.16.0 answered with "unknown command" and v0.17.0 knows
 /// (plan C4); they move nothing that worked.
-const ADDED_COMMANDS: &[(&str, &str)] = &[];
+const ADDED_COMMANDS: &[(&str, &str)] = &[
+    (":q", "Quit"),
+    (":quit", "Quit"),
+    (":help", "Help"),
+    (":theme", "Theme(\"\")"),
+    (":theme nord", "Theme(\"nord\")"),
+];
 
 const SCOPES: [KeyScope; 6] = [
     KeyScope::Global,

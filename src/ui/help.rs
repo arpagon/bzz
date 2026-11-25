@@ -4,10 +4,61 @@
 //! duplicate of defaults, so scoped user overrides and disabled bindings stay
 //! truthful without exposing the contents of `keymap.toml`.
 
+use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
+
 use crate::ui::{
     actions::ContextAction,
     keymap::{KeyChord, KeyMap, KeyScope},
 };
+
+/// Word-wrap a line of prose to `width` cells, continuation rows indented
+/// by two (the `:` prompt's answer, v0.17 C4).
+pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    wrap(text, width, 2)
+}
+
+/// Word-wrap one line to `width` cells; continuation rows start `hang`
+/// cells in. A word longer than a row is cut.
+fn wrap(text: &str, width: usize, hang: usize) -> Vec<String> {
+    let width = width.max(1);
+    if text.width() <= width {
+        return vec![text.to_owned()];
+    }
+    let hang = if hang * 2 >= width { 0 } else { hang };
+    let mut rows = Vec::new();
+    let indent = text.len() - text.trim_start().len();
+    let mut row = text[..indent].to_owned();
+    let mut row_width = row.width();
+    let mut row_has_word = false;
+    for word in text[indent..].split(' ') {
+        let word_width = word.width();
+        let needed = word_width + usize::from(row_has_word);
+        if row_has_word && row_width + needed > width {
+            rows.push(std::mem::take(&mut row));
+            row = " ".repeat(hang);
+            row_width = hang;
+            row_has_word = false;
+        }
+        if row_has_word {
+            row.push(' ');
+            row_width += 1;
+        }
+        // A word wider than a whole row: cut it.
+        for character in word.chars() {
+            let cells = character.width().unwrap_or(0);
+            if row_width + cells > width && row_width > hang {
+                rows.push(std::mem::take(&mut row));
+                row = " ".repeat(hang);
+                row_width = hang;
+            }
+            row.push(character);
+            row_width += cells;
+        }
+        row_has_word = true;
+    }
+    rows.push(row);
+    rows
+}
 
 pub fn effective_keymap(keymap: &KeyMap, scope: KeyScope) -> String {
     effective_keymap_with_actions(keymap, scope, &[])

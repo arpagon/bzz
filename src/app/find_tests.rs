@@ -12,7 +12,7 @@ use crate::{
     domain::{Channel, ChannelFacts, ChannelKind, Visibility},
     paths::Paths,
     store::{Store, writer::StoreHandle},
-    ui::state::Overlay,
+    ui::state::{ConfirmationKind, Overlay},
 };
 
 async fn app(temporary: &TempDir) -> super::App {
@@ -59,6 +59,110 @@ fn rows(app: &mut super::App, width: u16, height: u16) -> Vec<String> {
                 .collect::<String>()
         })
         .collect()
+}
+
+async fn command(app: &mut super::App, text: &str) {
+    app.command = text.into();
+    app.presentation.open_overlay(Overlay::Command);
+    app.text_overlay_key(key(KeyCode::Enter), false)
+        .await
+        .unwrap();
+}
+
+/// C4: a mistyped command keeps its prompt, and the nearest command is
+/// named under it.
+#[tokio::test]
+async fn a_mistyped_command_names_the_nearest_under_its_prompt() {
+    let temporary = TempDir::new().unwrap();
+    let mut app = app(&temporary).await;
+    command(&mut app, "hudle").await;
+    assert_eq!(app.presentation.overlay, Some(Overlay::Command));
+    assert_eq!(app.command, "hudle");
+    let screen = rows(&mut app, 80, 24).join("\n");
+    assert!(screen.contains(":hudle"), "{screen}");
+    assert!(screen.contains("did you mean :huddle?"), "{screen}");
+    assert!(!screen.contains("unknown command:"), "{screen}");
+    // Typing clears the answer; Esc leaves.
+    app.text_overlay_key(key(KeyCode::Backspace), false)
+        .await
+        .unwrap();
+    assert!(app.command_answer.is_none());
+    app.text_overlay_key(key(KeyCode::Esc), false)
+        .await
+        .unwrap();
+    assert_eq!(app.presentation.overlay, None);
+}
+
+/// C4: a usage line longer than the window wraps under the prompt, whole.
+#[tokio::test]
+async fn a_long_usage_wraps_and_is_not_cut() {
+    let temporary = TempDir::new().unwrap();
+    let mut app = app(&temporary).await;
+    command(&mut app, "agents nowhere").await;
+    let answer = app.command_answer.clone().unwrap();
+    assert!(answer.starts_with("usage: :agents"), "{answer}");
+    let screen = rows(&mut app, 80, 24);
+    assert!(
+        squeeze(&screen).contains(&answer),
+        "{answer}\n{}",
+        screen.join("\n")
+    );
+    // :community add names the shell command, also whole.
+    app.presentation.close_overlay();
+    app.command_answer = None;
+    command(&mut app, "community add").await;
+    assert_eq!(
+        app.command_answer.as_deref(),
+        Some(crate::ui::command::COMMUNITY_ANSWER)
+    );
+    let screen = rows(&mut app, 80, 24);
+    assert!(
+        squeeze(&screen).contains(crate::ui::command::COMMUNITY_ANSWER),
+        "{}",
+        screen.join("\n")
+    );
+}
+
+/// The rows' words, frames and line breaks taken out.
+fn squeeze(screen: &[String]) -> String {
+    screen
+        .iter()
+        .map(|row| row.trim_matches(|c: char| c == '│' || c == ' '))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// C4: `:q` asks as `q` does; `:theme` opens the picker; `:theme <name>`
+/// sets it; a theme that does not exist is named.
+#[tokio::test]
+async fn quit_and_theme_commands() {
+    let temporary = TempDir::new().unwrap();
+    let mut app = app(&temporary).await;
+    command(&mut app, "q").await;
+    assert_eq!(app.presentation.overlay, Some(Overlay::Confirmation));
+    assert_eq!(app.presentation.confirmation, Some(ConfirmationKind::Quit));
+    app.presentation.close_overlay();
+    command(&mut app, "quit").await;
+    assert_eq!(app.presentation.confirmation, Some(ConfirmationKind::Quit));
+    app.presentation.close_overlay();
+    command(&mut app, "theme").await;
+    assert_eq!(app.presentation.overlay, Some(Overlay::Theme));
+    app.theme_picker_key(key(KeyCode::Esc));
+    command(&mut app, "theme nord").await;
+    assert_eq!(app.presentation.overlay, None);
+    assert_eq!(app.config.ui.theme, "nord");
+    assert_eq!(app.theme.id(), "nord");
+    command(&mut app, "theme plaid").await;
+    assert_eq!(app.presentation.overlay, Some(Overlay::Command));
+    assert!(
+        app.command_answer
+            .as_deref()
+            .is_some_and(|answer| answer.starts_with("no theme named plaid"))
+    );
+    assert_eq!(app.theme.id(), "nord");
 }
 
 /// C5: ↓, Tab, Ctrl-n move the finder's selection, ↑, Shift-Tab, Ctrl-p

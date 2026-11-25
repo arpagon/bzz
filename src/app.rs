@@ -537,6 +537,10 @@ pub struct App {
     /// Explicit mention selections per channel, most recent highest.
     mention_history: MentionHistory,
     finder: crate::ui::finder::FinderState,
+    /// What the last `:` command answered when it was mistyped or missing
+    /// its arguments: shown, wrapped, under the prompt it keeps open
+    /// (v0.17 C4).
+    command_answer: Option<String>,
     reaction_index: usize,
     /// `Some(query)` while the reaction picker searches custom emoji.
     reaction_query: Option<String>,
@@ -1031,6 +1035,7 @@ impl App {
             mention_choices: None,
             mention_history: MentionHistory::default(),
             finder: crate::ui::finder::FinderState::default(),
+            command_answer: None,
             reaction_index: 0,
             reaction_query: None,
             reaction_candidates: Vec::new(),
@@ -9299,11 +9304,15 @@ impl App {
             }
         }
         match key.code {
-            KeyCode::Esc => self.presentation.close_overlay(),
+            KeyCode::Esc => {
+                self.command_answer = None;
+                self.presentation.close_overlay();
+            }
             KeyCode::Backspace => {
                 if finder {
                     self.finder.pop();
                 } else {
+                    self.command_answer = None;
                     self.command.pop();
                 }
             }
@@ -9311,6 +9320,7 @@ impl App {
                 if finder {
                     self.finder.push(character)
                 } else {
+                    self.command_answer = None;
                     self.command.push(character)
                 }
             }
@@ -9360,12 +9370,34 @@ impl App {
                     // such as :search, :dm, and :agents may deliberately open
                     // their own overlay, which must survive this dispatch.
                     self.presentation.close_overlay();
+                    self.command_answer = None;
+                    let before = self.status_error.clone();
                     self.execute_command().await?;
+                    self.keep_prompt_for_answer(before);
                 }
             }
             _ => {}
         }
         Ok(())
+    }
+
+    /// A `:` command that was mistyped, or lacks what it needs, keeps its
+    /// prompt open with the text as typed and the answer under it, wrapped,
+    /// instead of one status line cut at the window's edge (v0.17 C4).
+    fn keep_prompt_for_answer(&mut self, before: Option<String>) {
+        if self.presentation.overlay.is_some() || self.status_error == before {
+            return;
+        }
+        let is_answer = self.status_error.as_deref().is_some_and(|answer| {
+            answer.starts_with("usage:")
+                || answer.starts_with("unknown command")
+                || answer == crate::ui::command::COMMUNITY_ANSWER
+                || answer.starts_with("no theme named")
+        });
+        if is_answer {
+            self.command_answer = self.status_error.take();
+            self.presentation.open_overlay(Overlay::Command);
+        }
     }
     fn open_theme_picker(&mut self) {
         let scope = if self.config.communities.is_empty() {
@@ -9702,11 +9734,62 @@ impl App {
                 return self.app_command(&arguments).await;
             }
             crate::ui::command::Command::Unknown(value) => {
-                self.status_error = Some(format!("unknown command: {value}"))
+                self.status_error = Some(crate::ui::command::unknown_answer(&value));
             }
-            _ => self.status_error = Some("use the CLI to add/remove communities".into()),
+            crate::ui::command::Command::AddCommunity
+            | crate::ui::command::Command::RemoveCommunity => {
+                self.status_error = Some(crate::ui::command::COMMUNITY_ANSWER.into());
+            }
+            crate::ui::command::Command::Quit => {
+                self.presentation.open_confirmation(ConfirmationKind::Quit);
+            }
+            crate::ui::command::Command::Help => {
+                self.presentation.open_overlay(Overlay::Help);
+            }
+            crate::ui::command::Command::Theme(name) => self.theme_command(&name),
         }
         Ok(())
+    }
+
+    /// `:theme` opens the picker; `:theme <name>` sets that theme as the
+    /// picker's Enter would (v0.17 C4).
+    fn theme_command(&mut self, name: &str) {
+        self.open_theme_picker();
+        if name.is_empty() {
+            return;
+        }
+        let wanted = name.to_lowercase().replace([' ', '_'], "-");
+        let found = crate::ui::theme::ThemeRegistry::canonical_id(&wanted).or_else(|| {
+            crate::ui::theme::ThemeRegistry::entries()
+                .find(|entry| entry.name.to_lowercase().replace([' ', '_'], "-") == wanted)
+                .map(|entry| entry.id)
+        });
+        match found {
+            Some(id)
+                if self
+                    .theme_picker
+                    .as_mut()
+                    .is_some_and(|picker| picker.select_id(id)) =>
+            {
+                self.confirm_theme_selection();
+            }
+            _ => {
+                // Put back what the picker previewed, and say what exists.
+                if let Some(theme) = self.theme_before_preview.take() {
+                    self.theme = theme;
+                }
+                self.theme_picker = None;
+                self.presentation.close_overlay();
+                let names = crate::ui::theme::ThemeRegistry::entries()
+                    .map(|entry| entry.id)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.status_error = Some(format!(
+                    "no theme named {} · :theme opens the picker · themes: {names}",
+                    sanitize::single_line(name)
+                ));
+            }
+        }
     }
 
     async fn switch_community(
@@ -10899,9 +10982,37 @@ impl App {
                 None => {}
             },
             Some(Overlay::Finder) => self.render_finder(frame, area, hit_map),
-            Some(Overlay::Command) => {
-                self.render_prompt(frame, area, " command ", &format!(":{}", self.command))
-            }
+            Some(Overlay::Command) => match &self.command_answer {
+                None => {
+                    self.render_prompt(frame, area, " command ", &format!(":{}", self.command))
+                }
+                // The answer to the last Enter, wrapped under the text as
+                // typed, never cut (v0.17 C4).
+                Some(answer) => {
+                    let inner = usize::from((area.width * 70 / 100).saturating_sub(3)).max(10);
+                    let mut lines = vec![sanitize::single_line(&format!(":{}", self.command))];
+                    lines.push(String::new());
+                    lines.extend(crate::ui::help::wrap_text(
+                        &sanitize::single_line(answer),
+                        inner,
+                    ));
+                    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
+                    let popup = centered(area, 70, height);
+                    frame.render_widget(Clear, popup);
+                    frame.render_widget(
+                        Paragraph::new(lines.join("\n"))
+                            .style(self.theme.style(HighlightGroup::Normal))
+                            .block(
+                                Block::bordered()
+                                    .border_type(self.theme.border_type(BorderSurface::Modal))
+                                    .border_style(self.theme.style(HighlightGroup::ModalBorder))
+                                    .title_style(self.theme.style(HighlightGroup::ModalTitle))
+                                    .title(" command · edit and Enter, or Esc "),
+                            ),
+                        popup,
+                    );
+                }
+            },
             Some(Overlay::Theme) => self.render_theme_picker(frame, area, hit_map),
             Some(Overlay::Reaction) => {
                 let popup = centered(area, 70, 5);
