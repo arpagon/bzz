@@ -62,6 +62,18 @@ jobs:
       - name: Smoke-test release binary
         shell: bash
         run: ${{ matrix.binary }} --version
+      # The release binary of each system, kept three days: what a person or
+      # a virtual machine opens in a real terminal before a release
+      # (docs/e2e-windows.md, docs/e2e-manual.md). Not a release artifact:
+      # those come from the Release workflow, signed and attested.
+      - name: Keep the binary for hands-on checks
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzz-${{ matrix.target }}
+          path: ${{ matrix.binary }}
+          retention-days: 3
+          if-no-files-found: error
       # v0.17: on Linux bzz speaks the sound server's protocol itself, so the
       # binary names no sound library and starts where none is installed.
       - name: The Linux release binary names no sound library
