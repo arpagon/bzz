@@ -1182,6 +1182,10 @@ impl App {
         self.media.initialize_terminal();
         self.start_sync().await?;
         let mut input = EventStream::new();
+        // Where keys enter: Windows' Alt codes as presses, and the events
+        // read ahead of an Enter to see whether a paste goes on behind it.
+        let mut door = crate::ui::keymap::KeyDoor::default();
+        let mut read_ahead = std::collections::VecDeque::new();
         let mut tick = tokio::time::interval(Duration::from_millis(100));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut frame_tick = tokio::time::interval(FRAME_INTERVAL);
@@ -1195,12 +1199,21 @@ impl App {
                     self.handle_attachment_background(event).await?;
                     redraw.request();
                 },
-                maybe=next_terminal_event(&mut input)=>{
+                maybe=next_read_ahead_event(&mut read_ahead, &mut input)=>{
                     if let Some(event)=maybe {
                         match event {
-                            TerminalEvent::Key(key) if key.kind==KeyEventKind::Press => {
-                                self.last_input_at=Instant::now();
-                                self.handle_key(key,&mut guard,&mut terminal).await?
+                            TerminalEvent::Key(key) => {
+                                let key = door.admit(key);
+                                if key.kind==KeyEventKind::Press {
+                                    self.last_input_at=Instant::now();
+                                    let key = if cfg!(windows) && self.composer_takes_enter(key) {
+                                        let more = presses_wait(&mut read_ahead, &mut input);
+                                        crate::ui::keymap::paste_line_break(key, more, true)
+                                    } else {
+                                        key
+                                    };
+                                    self.handle_key(key,&mut guard,&mut terminal).await?
+                                }
                             },
                             TerminalEvent::Paste(text) => self.handle_terminal_paste(text).await?,
                             TerminalEvent::Mouse(mouse) => self.handle_mouse(mouse,&mut guard,&mut terminal).await?,
@@ -8434,6 +8447,16 @@ impl App {
         )
     }
 
+    /// An Enter that the composer takes to send: nothing above it (an
+    /// overlay, the mention list) takes it first.
+    fn composer_takes_enter(&self, key: KeyEvent) -> bool {
+        key.code == KeyCode::Enter
+            && key.modifiers.is_empty()
+            && self.presentation.overlay.is_none()
+            && self.presentation.composer_target.is_some()
+            && self.mention_picker.is_none()
+    }
+
     /// The key that works on every screen: Ctrl-Y opens the dialog of the
     /// command that waits. `true`: the key was taken.
     fn global_key(&mut self, key: KeyEvent) -> bool {
@@ -11723,6 +11746,10 @@ where
     S: futures_util::Stream<Item = std::io::Result<TerminalEvent>> + Unpin,
 {
     match input.next().await {
+        // Where keys enter bzz: one form for every platform's terminal.
+        Some(Ok(TerminalEvent::Key(key))) => Some(TerminalEvent::Key(
+            crate::ui::keymap::normalize_key_event(key),
+        )),
         Some(Ok(event)) => Some(event),
         Some(Err(_)) => {
             tokio::time::sleep(TERMINAL_ERROR_YIELD).await;
@@ -11730,6 +11757,57 @@ where
         }
         None => std::future::pending().await,
     }
+}
+
+/// The next terminal event: first what was read ahead, then the stream.
+async fn next_read_ahead_event<S>(
+    read_ahead: &mut std::collections::VecDeque<TerminalEvent>,
+    input: &mut S,
+) -> Option<TerminalEvent>
+where
+    S: futures_util::Stream<Item = std::io::Result<TerminalEvent>> + Unpin,
+{
+    match read_ahead.pop_front() {
+        Some(event) => Some(event),
+        None => next_terminal_event(input).await,
+    }
+}
+
+/// Whether a key press already waits behind the one being handled: the
+/// events ready now are read ahead (at most a few, never waiting for one)
+/// and kept for the loop. A release is not a press, but a release of a
+/// character outside ASCII may be an Alt code, which is (`KeyDoor`).
+fn presses_wait<S>(
+    read_ahead: &mut std::collections::VecDeque<TerminalEvent>,
+    input: &mut S,
+) -> bool
+where
+    S: futures_util::Stream<Item = std::io::Result<TerminalEvent>> + Unpin,
+{
+    const READ_AHEAD: usize = 8;
+    let is_press = |event: &TerminalEvent| match event {
+        TerminalEvent::Key(key) => {
+            key.kind != KeyEventKind::Release
+                || matches!(key.code, KeyCode::Char(character) if !character.is_ascii())
+        }
+        TerminalEvent::Paste(_) => true,
+        _ => false,
+    };
+    if read_ahead.iter().any(is_press) {
+        return true;
+    }
+    while read_ahead.len() < READ_AHEAD {
+        let Some(Some(event)) = futures_util::FutureExt::now_or_never(next_terminal_event(input))
+        else {
+            return false;
+        };
+        let press = is_press(&event);
+        read_ahead.push_back(event);
+        if press {
+            return true;
+        }
+    }
+    false
 }
 
 /// Receives at most one relay event per turn. A flood can overrun the bounded
@@ -14654,6 +14732,80 @@ mod tests {
             futures_util::stream::iter([Err(std::io::Error::other("terminal unavailable"))]);
 
         assert!(next_terminal_event(&mut input).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn keys_enter_in_one_form_for_every_platform() {
+        // `?` as a Windows console reports it, with Shift; the key map has it
+        // without (docs/e2e-windows.md).
+        let mut input = futures_util::stream::iter([Ok(TerminalEvent::Key(KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::SHIFT,
+        )))]);
+        let Some(TerminalEvent::Key(key)) = next_terminal_event(&mut input).await else {
+            panic!("a key");
+        };
+        assert_eq!(key, KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+    }
+
+    #[tokio::test]
+    async fn a_paste_on_windows_is_seen_behind_its_line_break() {
+        use super::{next_read_ahead_event, presses_wait};
+        use crossterm::event::KeyEventKind;
+        // A paste in a Windows console, as crossterm gives it: a press and a
+        // release for each key; `¿` as an Alt code, a release alone.
+        let key = |code, kind| {
+            Ok(TerminalEvent::Key(KeyEvent::new_with_kind(
+                code,
+                KeyModifiers::NONE,
+                kind,
+            )))
+        };
+        let mut input = futures_util::stream::iter([
+            key(KeyCode::Enter, KeyEventKind::Press),
+            key(KeyCode::Enter, KeyEventKind::Release),
+            key(KeyCode::Char('p'), KeyEventKind::Press),
+            key(KeyCode::Char('p'), KeyEventKind::Release),
+        ]);
+        let mut read_ahead = std::collections::VecDeque::new();
+        let first = next_read_ahead_event(&mut read_ahead, &mut input).await;
+        assert!(matches!(first, Some(TerminalEvent::Key(key)) if key.code == KeyCode::Enter));
+        assert!(presses_wait(&mut read_ahead, &mut input));
+        // What was read ahead comes next, in order, and nothing is lost.
+        let mut rest = Vec::new();
+        for _ in 0..3 {
+            if let Some(TerminalEvent::Key(key)) =
+                next_read_ahead_event(&mut read_ahead, &mut input).await
+            {
+                rest.push((key.code, key.kind));
+            }
+        }
+        assert_eq!(
+            rest,
+            [
+                (KeyCode::Enter, KeyEventKind::Release),
+                (KeyCode::Char('p'), KeyEventKind::Press),
+                (KeyCode::Char('p'), KeyEventKind::Release),
+            ]
+        );
+
+        // A typed Enter: only its own release waits behind it.
+        let mut input = futures_util::stream::iter([
+            key(KeyCode::Enter, KeyEventKind::Press),
+            key(KeyCode::Enter, KeyEventKind::Release),
+        ]);
+        let mut read_ahead = std::collections::VecDeque::new();
+        next_read_ahead_event(&mut read_ahead, &mut input).await;
+        assert!(!presses_wait(&mut read_ahead, &mut input));
+
+        // An Alt code behind the Enter is a press.
+        let mut input = futures_util::stream::iter([
+            key(KeyCode::Enter, KeyEventKind::Press),
+            key(KeyCode::Char('¿'), KeyEventKind::Release),
+        ]);
+        let mut read_ahead = std::collections::VecDeque::new();
+        next_read_ahead_event(&mut read_ahead, &mut input).await;
+        assert!(presses_wait(&mut read_ahead, &mut input));
     }
 
     #[tokio::test]
