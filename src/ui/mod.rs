@@ -16,6 +16,7 @@ pub mod first_screen;
 pub mod help;
 pub mod hit_map;
 pub mod huddle;
+pub mod huddle_lanes;
 pub mod inbox;
 pub mod input;
 pub mod keymap;

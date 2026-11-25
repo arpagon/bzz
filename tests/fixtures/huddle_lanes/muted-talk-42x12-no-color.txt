@@ -1,0 +1,22 @@
+ 4 in the call · nobody is speaking
+  A  Ada       ▆▆▅▅▅▅▄▁▁ ▁ ▁ ▁ ▃▅▄▅▅▆▅▃▁
+     1s ago    ▀▀▀▀▀▀▀▔        ▔▀▀▀▀▀▀▔▔
+  L  Lin       ▁ ▁ ▁ ▁ ▅▅▅▅▅▅▅▅▅▄▅▅▅▂▁ ▁
+     1s ago            ▀▀▀▀▀▀▀▀▀▀▀▀▀▔
+  S  Sam       ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁
+     quiet
+ ▐Y▌ You       ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁▄▄▄
+ ▐ ▌ muted!                           ▀▀▀
+ you're muted · nobody hears you
+
+
+--- styles ---
+1: 2-2 Reset/Reset/BOLD 15-30 Reset/Reset/DIM 40-40 Reset/Reset/DIM
+2: 2-2 Reset/Reset/BOLD 15-22 Reset/Reset/DIM
+3: 2-2 Reset/Reset/BOLD 15-26 Reset/Reset/DIM 37-40 Reset/Reset/DIM
+4: 2-2 Reset/Reset/BOLD 23-26 Reset/Reset/DIM
+5: 2-2 Reset/Reset/BOLD 15-40 Reset/Reset/DIM
+6: 2-2 Reset/Reset/BOLD
+7: 2-2 Reset/Reset/BOLD 5-7 Reset/Reset/BOLD 15-37 Reset/Reset/DIM
+8: 2-2 Reset/Reset/BOLD 5-10 Reset/Reset/BOLD | REVERSED
+9: 1-31 Reset/Reset/BOLD

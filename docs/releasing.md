@@ -14,6 +14,34 @@
    Smoke-test both the OS credential backend and encrypted fallback before
    publishing package-manager manifests.
 
+## What cargo-dist generates
+
+`dist-workspace.toml` is the source; `.github/workflows/release.yml` and the
+installers (`bzz-installer.sh`, `bzz-installer.ps1`, `bzz.rb`) are made from
+it. Never edit the generated workflow by hand beyond the two fixes that
+`allow-dirty = ["ci"]` keeps (named in `dist-workspace.toml`). After a change
+to `dist-workspace.toml`, with the pinned `cargo-dist` (0.30.2):
+
+```sh
+dist generate --check    # must say nothing: the workflow did not change
+dist plan                # the archives and installers of the release
+dist build --artifacts=global --output-format=json   # the installers, in target/distrib/
+```
+
+The shell installer refuses a Linux machine whose glibc is older than
+`[dist.min-glibc-version]` (2.34 since v0.17.0; without it dist takes 2.35
+from the Ubuntu 22.04 build image and refuses RHEL 9 and its rebuilds, where
+the binary runs). Check it in the generated installer:
+`grep 'check_glibc' target/distrib/bzz-installer.sh` shows `"2" "34"`. The
+global build has no checksums of local archives, so that installer says "no
+checksums to verify"; the published one checks them.
+
+`getbzz.dev/install.sh` is not generated: it is `site/public/install.sh`,
+which checks the machine and then runs the release's `bzz-installer.sh`. Its
+`BZZ_SOUND` must match the release it serves (`site/README.md`, "The
+installer"). After a release, run it on clean images with `BZZ_CHECK_ONLY=1`
+and once in full (`docs/validation-v0.17.0/install.md` has the commands).
+
 ## Linux build image
 
 Linux release, CI, upgrade, audio and relay tests use a reviewed Ubuntu 22.04

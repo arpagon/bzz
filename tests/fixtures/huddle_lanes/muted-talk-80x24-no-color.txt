@@ -1,0 +1,34 @@
+ 4 in the call · nobody is speaking                               10s ago … now
+  A  Ada                    ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▅▅▅▅▅▆▅▅▅▅▅▅▂ ▁ ▁ ▁ ▁ ▁ ▅▅▅▅▅▆▅▅▂ ▁
+     1s ago                                 ▀▀▀▀▀▀▀▀▀▀▀▀▔           ▀▀▀▀▀▀▀▀▔
+  L  Lin                    ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▅▅▄▅▅▅▅▅▅▅▅▄▅▅▅▂▁ ▁ ▁
+     1s ago                                               ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▔
+  S  Sam                    ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁
+     quiet
+ ▐Y▌ You · your microphone  ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁▂▄▄▄
+ ▐ ▌ muted!                                                                ▔▀▀▀
+ you're muted · nobody hears you · m unmutes
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+--- styles ---
+1: 2-2 Reset/Reset/BOLD 28-52 Reset/Reset/DIM 57-67 Reset/Reset/DIM 77-78 Reset/Reset/DIM
+2: 2-2 Reset/Reset/BOLD 44-52 Reset/Reset/DIM
+3: 2-2 Reset/Reset/BOLD 28-57 Reset/Reset/DIM 74-78 Reset/Reset/DIM
+4: 2-2 Reset/Reset/BOLD
+5: 2-2 Reset/Reset/BOLD 28-78 Reset/Reset/DIM
+6: 2-2 Reset/Reset/BOLD
+7: 2-2 Reset/Reset/BOLD 5-25 Reset/Reset/BOLD 28-74 Reset/Reset/DIM
+8: 2-2 Reset/Reset/BOLD 5-10 Reset/Reset/BOLD | REVERSED
+9: 1-43 Reset/Reset/BOLD

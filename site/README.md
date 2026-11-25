@@ -12,7 +12,9 @@ public/
   index.html      one-pager (hero, features, security, keys, install)
   styles.css      theme tokens mirroring src/ui/theme/builtin.rs palettes
   app.js          theme switcher, install tabs, copy button
-  _redirects      /install.sh + /install.ps1 -> latest GitHub release installer
+  install.sh      getbzz.dev/install.sh: checks this machine, then runs the release's installer
+  _headers        install.sh as text/plain, so a browser shows it
+  _redirects      /install.ps1 -> latest GitHub release installer
   assets/         logo.svg, favicon.svg, logo-terminal.txt, mdi-attribution.txt, og.png
 ```
 
@@ -33,6 +35,34 @@ Pictogrammers Material Design Icons 7.4.47 under Apache-2.0; attribution is
 recorded in `public/assets/mdi-attribution.txt` and the license text is at
 [`LICENSE-APACHE`](../LICENSE-APACHE). Usage rules live in the short
 [`docs/brand` manual](../docs/brand/README.md).
+
+## The installer
+
+`public/install.sh` is what `curl -fsSL https://getbzz.dev/install.sh | sh`
+runs. It is POSIX `sh` (keep it `shellcheck` clean). On Linux it checks, in
+this order, the architecture, musl, the glibc version (2.34, as
+`[dist.min-glibc-version]` in `dist-workspace.toml`), and that `tar` and
+`xz` are there to unpack the archive; each refusal is one line that says
+what is the matter and what to do. Then it downloads the latest release's
+`bzz-installer.sh` (made by cargo-dist, with the archive's checksums) and
+runs it with the same arguments. macOS and Windows shells go straight to
+that installer. `BZZ_CHECK_ONLY=1` stops after the checks; `BZZ_VERSION`
+picks a release.
+
+The variable `BZZ_SOUND` at its top says what the Linux binary of the
+release it serves needs to make sound:
+
+- `server` (the default, from v0.17.0): bzz speaks to PipeWire or
+  PulseAudio itself and starts without any sound library. The installer
+  adds one note if it finds neither.
+- `alsa` (v0.16.0 and earlier, or a release whose binary links
+  `libasound.so.2` again): bzz does not start without ALSA's library. The
+  installer names the package for the distribution (`libasound2t64` on
+  Ubuntu 24.04 and Debian 13, `libasound2` before them, `alsa-lib` on
+  Fedora and RHEL).
+
+Deploy the site with the value that matches the latest release:
+`readelf -d bzz | grep libasound` on its Linux archive says which.
 
 ## Agent harnesses
 

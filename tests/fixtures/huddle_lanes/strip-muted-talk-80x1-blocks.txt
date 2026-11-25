@@ -1,0 +1,3 @@
+ NORMAL  🎧  ▆▆▆▆▆▆▆▆▆▄▂▁ quiet · you're muted    online  SIXEL  ? help · q quit
+--- styles ---
+0: 0-7 White/DarkGray/NONE 8-9 Black/Yellow/BOLD 11-11 Black/Yellow/BOLD 12-15 Indexed(243)/Yellow/BOLD 16-18 Indexed(66)/Yellow/BOLD 19-22 Indexed(73)/Yellow/BOLD 23-23 Indexed(242)/Yellow/BOLD | DIM 24-24 Black/Yellow/BOLD 25-32 Indexed(242)/Yellow/BOLD 33-44 Indexed(178)/Yellow/BOLD | REVERSED 45-45 Black/Yellow/BOLD 46-47 White/DarkGray/NONE 48-55 Black/Cyan/NONE 56-62 White/Black/NONE 63-79 White/DarkGray/NONE
