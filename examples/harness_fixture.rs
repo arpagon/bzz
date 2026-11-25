@@ -8,7 +8,11 @@
 //! (encrypted file; its passphrase in `passphrase`, mode 0600) and fills the
 //! relay with generated content: `t9-general` (history, a thread, a reaction,
 //! a task artifact and custom emoji), `t9-announcements` where the viewer is a
-//! guest, and the viewer's own `t9-agent-config` system channel.
+//! guest, and the viewer's own `t9-agent-config` system channel. For v0.17,
+//! channels no earlier scenario talks in, one for each scenario that needs
+//! that: `t17-palette`, `t17-react`, `t17-find`, `t17-sound` (the other
+//! person is a member too) and `t17-app`, each with messages by the owner
+//! only.
 //!
 //! For v0.15 it also gives the viewer a **local agent**, `Scout`, on bzz's
 //! real Pi Durable host with the host's stand-in model, as a member of the
@@ -168,6 +172,7 @@ async fn main() {
         return;
     }
     println!("fixture ready: #t9-general, #t9-announcements (guest), #t9-agent-config (system)");
+    println!("fixture ready: #t17-palette, #t17-react, #t17-find, #t17-sound, #t17-app");
     looper_app(&root.join("looper"));
     // BZZ_FIXTURE_AGENTS=0: no local agent (a capture that needs none).
     if !fi {
@@ -624,8 +629,88 @@ async fn publish_content(
         .unwrap(),
     )
     .await;
+    // v0.17: a channel of its own for each scenario that needs a channel
+    // nobody else talks in (docs/e2e-herdr.md, "A scenario that stands
+    // alone"). The owner writes every message. The relay dates the rows it
+    // makes itself (a channel created, a person joined) now, so these
+    // messages are dated now too, a second after those rows and a second
+    // apart: the newest row of each channel is the owner's last message.
+    let quiet: [(&str, &[&str], bool); 5] = [
+        (
+            "t17-palette",
+            &[
+                "Generated t17-palette message 1, by another person.",
+                "Generated t17-palette message 2, by another person.",
+                "Generated t17-palette message 3, by another person.",
+            ],
+            false,
+        ),
+        (
+            "t17-react",
+            &["Generated custom emoji :bzzwave: t17-react"],
+            false,
+        ),
+        (
+            "t17-find",
+            &[
+                "Generated t17-find message 1, by another person.",
+                "Generated t17-find message 2, by another person.",
+            ],
+            false,
+        ),
+        // Both people of the call are members.
+        ("t17-sound", &["Generated t17-sound channel"], true),
+        ("t17-app", &["Generated t17-app channel"], false),
+    ];
+    let mut channels = Vec::new();
+    for (name, _, other_joins) in quiet {
+        let channel = Uuid::new_v4();
+        publish(
+            &owner_session,
+            &owner_signer,
+            create(channel, name, Visibility::Open, ChannelKind::Stream),
+        )
+        .await;
+        publish(
+            &viewer_session,
+            &viewer_signer,
+            buzz_sdk::build_join(channel).unwrap(),
+        )
+        .await;
+        if other_joins {
+            publish(
+                &other_session,
+                &other_signer,
+                buzz_sdk::build_join(channel).unwrap(),
+            )
+            .await;
+        }
+        channels.push(channel);
+    }
+    for round in 0..3 {
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        for ((_, messages, _), channel) in quiet.iter().zip(&channels) {
+            let Some(text) = messages.get(round) else {
+                continue;
+            };
+            let tags = if text.contains(":bzzwave:") {
+                vec![vec!["emoji".into(), "bzzwave".into(), emoji_url.clone()]]
+            } else {
+                Vec::new()
+            };
+            let event = owner_signer
+                .sign(
+                    buzz_sdk::build_message(*channel, text, None, &[], false, &[], &tags).unwrap(),
+                )
+                .await
+                .unwrap();
+            let ack = owner_session.publish(event).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+        }
+    }
     owner_session.shutdown().await;
     viewer_session.shutdown().await;
+    other_session.shutdown().await;
 }
 
 /// An isolated bzz profile of the viewer under `root`; its passphrase is in
