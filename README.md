@@ -336,8 +336,10 @@ every supported surface are listed in
 [`docs/protocol-compatibility.md`](docs/protocol-compatibility.md). Pairing
 with the Buzz app was proven with Buzz desktop 1.0.1. It runs on Linux
 (x86_64 and arm64, glibc 2.34 or newer), macOS (Intel and Apple Silicon) and
-Windows. Huddle audio on Windows
-is experimental. Agents need Node.js 22.19 or newer and were proven on Linux;
+Windows. On Linux bzz needs no sound library; huddle audio needs PipeWire or
+PulseAudio running in your session, as every current desktop has (a machine
+with ALSA alone has no huddle audio, and joining says so). Huddle audio on
+Windows is experimental. Agents need Node.js 22.19 or newer and were proven on Linux;
 on macOS and Windows no agent has been run, only its tests in CI. Apps need
 nothing installed; they were run on Linux, and on macOS and Windows only
 their tests run, in CI. On Windows a paste reaches an app (and the writing

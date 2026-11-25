@@ -1,0 +1,7 @@
+# A disposable PulseAudio for the huddle audio tests (Debian stable), and
+# the sound server the TUI harness gives bzz (no sound card). See README.md.
+FROM debian:stable-slim
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      pulseaudio pulseaudio-utils procps \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd -u 1000 -m bzz

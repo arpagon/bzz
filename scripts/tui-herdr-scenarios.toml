@@ -3181,3 +3181,139 @@ visible = "quit bzz?"
 [[scenario.step]]
 keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
+
+
+# v0.17 sound (E1): a call between two clients. On Linux each bzz speaks to
+# the sound server PULSE_SERVER names; the runner gives it one in a
+# container, never this machine's own. With BZZ_TEST_PULSE_SERVER a sine
+# source and BZZ_TEST_PULSE_SERVER_OTHER a null sink, what the other
+# person's client plays is the first one's tone
+# (docs/validation-v0.17.0/sound.md). Another person, not the viewer's
+# second profile: that is the same person, whose leaving ends the huddle.
+[[scenario]]
+id = "t17-sound-call"
+kind = "harness"
+description = "v0.17 E1: the viewer saves an ALSA microphone name as v0.16.0 did, starts a huddle in #t9-general (the default device opens and the join says once which name was not found) and unmutes; another person joins it; both hold the call for a few seconds, then leave, and the saved name is cleared."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "160x45"
+beside = "other"
+
+# The sidebar has the channel before the finder looks for it.
+[[scenario.step]]
+keys = []
+visible = "#t9-general"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Generated custom emoji"
+
+# A name from ALSA's own list, as v0.16.0 saved it; no such card here.
+[[scenario.step]]
+keys = [":", "type:huddle input hw:CARD=PCH,DEV=0", "enter"]
+visible = "huddle input device saved; it applies on the next join"
+
+[[scenario.step]]
+keys = [":", "h", "u", "d", "d", "l", "e", "space", "s", "t", "a", "r", "t", "enter"]
+visible = "start a huddle?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "you are in the call · muted"
+timeout = 20000
+
+[[scenario.step]]
+keys = []
+visible = 'saved input "hw:CARD=PCH,DEV=0" not found; using the default'
+
+[[scenario.step]]
+keys = ["m"]
+visible = "LIVE (others hear you)"
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "online"
+timeout = 30000
+
+[[scenario.step]]
+pane = "second"
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+pane = "second"
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "Generated custom emoji"
+
+# The other client has the huddle before it joins.
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "1 in it"
+timeout = 30000
+
+[[scenario.step]]
+pane = "second"
+pause = 2000
+keys = [":", "h", "u", "d", "d", "l", "e", "space", "j", "o", "i", "n", "enter"]
+visible = "join the huddle?"
+timeout = 20000
+
+[[scenario.step]]
+pane = "second"
+keys = ["y"]
+visible = "joined the huddle"
+timeout = 20000
+
+# The call holds: the viewer speaks (its tone), the other hears.
+[[scenario.step]]
+pause = 6000
+keys = []
+visible = "LIVE (others hear you)"
+
+# The huddle panel is open after joining: l leaves.
+[[scenario.step]]
+pane = "second"
+keys = ["l"]
+visible = "you are not in the call"
+
+[[scenario.step]]
+pane = "second"
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+pane = "second"
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+pane = "second"
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["l"]
+visible = "you are not in the call"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = [":", "type:huddle input", "enter"]
+visible = "huddle input device saved"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"

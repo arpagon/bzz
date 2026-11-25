@@ -16,7 +16,7 @@ default = ["huddles-audio", "apps"]
 # (ADR v0.16 apps). Builds without it have no interpreter and no C of Lua.
 apps = ["dep:mlua", "dep:memchr"]
 # Live huddle audio: microphone capture, playback and Opus (ADR v0.13 huddle audio).
-huddles-audio = ["dep:buzz-audio-client", "dep:cpal"]
+huddles-audio = ["dep:buzz-audio-client", "dep:cpal", "dep:pulseaudio"]
 
 [[bin]]
 name = "bzz"
@@ -30,7 +30,6 @@ base64 = "0.22"
 buzz-core = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "bf3bdd0eaefe39289bf9620594f254c7f68897f5" }
 buzz-sdk = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "bf3bdd0eaefe39289bf9620594f254c7f68897f5" }
 buzz-audio-client = { version = "=0.1.0", git = "https://github.com/block/buzz", rev = "bf3bdd0eaefe39289bf9620594f254c7f68897f5", default-features = false, features = ["webpki-roots"], optional = true }
-cpal = { version = "0.16", optional = true }
 chacha20poly1305 = "0.10"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
@@ -86,10 +85,21 @@ zeroize = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "=0.13.13", default-features = false, features = ["file_chooser", "tokio"] }
+# Huddle devices on Linux (feature `huddles-audio`): the PulseAudio protocol
+# in pure Rust, spoken to PulseAudio or to PipeWire's pipewire-pulse. No C
+# library, so the binary does not name libasound.so.2 and starts on a
+# machine without sound (plan v0.17.0 D3; ADR v0.13 huddle audio).
+pulseaudio = { version = "=0.3.2", optional = true }
 
-# ALSA writes plugin errors straight to fd 2; huddle device setup silences
-# it so the full-screen TUI is never corrupted (safe `dup2`). The agent
-# runtime signals a harness's process group through it (safe `kill`).
+# Huddle devices on macOS and Windows (CoreAudio, WASAPI).
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+cpal = { version = "0.16", optional = true }
+
+# Huddle device setup through cpal (macOS) runs with fd 2 silenced, so a
+# sound library writing errors there cannot corrupt the full-screen TUI
+# (safe `dup2`; written for ALSA, which Linux no longer uses). Linux huddle devices read the user id through it
+# (the default socket path). The agent runtime signals a harness's process
+# group through it (safe `kill`).
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "stdio", "process"] }
 # Before bzz starts an agent's harness it marks every descriptor it holds

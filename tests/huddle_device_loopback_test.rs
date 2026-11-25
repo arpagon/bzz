@@ -23,6 +23,36 @@ fn streams() -> Option<usize> {
     String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
+/// Runs of 1 ms or more of near silence inside the captured tone (its first
+/// and last 100 ms left out), and how long that tone lasted. A 440 Hz sine at
+/// 0.5 is near zero for a sample at a time, never for 48.
+fn holes(samples: &[f32]) -> (usize, usize) {
+    let loud = |sample: &&f32| sample.abs() > 0.25;
+    let (Some(first), Some(last)) = (
+        samples.iter().position(|sample| loud(&sample)),
+        samples.iter().rposition(|sample| loud(&sample)),
+    ) else {
+        return (0, 0);
+    };
+    let margin = 4_800;
+    if last <= first + 2 * margin {
+        return (0, (last - first) / 48);
+    }
+    let mut holes = 0;
+    let mut quiet = 0;
+    for sample in &samples[first + margin..last - margin] {
+        if sample.abs() < 0.01 {
+            quiet += 1;
+            if quiet == 48 {
+                holes += 1;
+            }
+        } else {
+            quiet = 0;
+        }
+    }
+    (holes, (last - first) / 48)
+}
+
 fn peak(frame: &[f32]) -> f32 {
     frame
         .iter()
@@ -42,6 +72,8 @@ async fn tone_round_trips_through_a_virtual_device_and_drop_releases_it() {
     let (devices, mut capture, playback) =
         bzz::huddle::audio::open_devices(input.as_deref(), output.as_deref())
             .expect("the virtual devices open");
+    // A named device must be the one opened, not the default in its place.
+    assert_eq!(devices.notice(), None, "a configured device was not found");
     // Let the streams settle, then drop whatever was captured meanwhile.
     tokio::time::sleep(Duration::from_millis(300)).await;
     while capture.try_recv().is_ok() {}
@@ -101,6 +133,45 @@ async fn tone_round_trips_through_a_virtual_device_and_drop_releases_it() {
     );
     assert!(latency < Duration::from_secs(2), "round trip {latency:?}");
     let playback = feeder.await.unwrap();
+
+    // Paced: 10 ms chunks on a 10 ms clock with `try_send`, as the engine
+    // plays out, from an empty queue. Where the device buffer is too small
+    // for that pace, the tone comes back with holes of silence (an underrun
+    // each).
+    let drained = Instant::now() + Duration::from_secs(3);
+    while playback.capacity() < playback.max_capacity() && Instant::now() < drained {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    while capture.try_recv().is_ok() {}
+    let paced = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(10));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut phase = 0_u64;
+        for _ in 0..300 {
+            tick.tick().await;
+            let chunk = (0..480)
+                .map(|_| {
+                    phase += 1;
+                    0.5 * (2.0 * std::f32::consts::PI * 440.0 * phase as f32 / RATE).sin()
+                })
+                .collect::<Vec<_>>();
+            let _ = playback.try_send(chunk);
+        }
+        playback
+    });
+    let mut heard_paced = Vec::new();
+    let until = Instant::now() + Duration::from_millis(3300);
+    while Instant::now() < until {
+        if let Ok(Some(frame)) =
+            tokio::time::timeout(Duration::from_millis(100), capture.recv()).await
+        {
+            heard_paced.extend(frame);
+        }
+    }
+    let playback = paced.await.unwrap();
+    let (holes, tone_ms) = holes(&heard_paced);
+    println!("T7 paced playout: {holes} holes in {tone_ms} ms of tone");
 
     // Dropping the devices stops both streams: the capture side closes and
     // the sound server no longer lists the process's streams.

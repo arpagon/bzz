@@ -15,6 +15,15 @@ Environment:
   BZZ_TMUX_CAPTURES     a folder to keep a text capture of every step in
   BZZ_TMUX_SIZE         the window's size when a scenario names none (160x45)
   BZZ_TMUX_CAPTURES_ANSI  set: each capture also kept with its colours (.ansi)
+  BZZ_TEST_PULSE_SERVER the sound server bzz's huddles join (PULSE_SERVER
+                        form). Unset: a PulseAudio with a null sink in a
+                        disposable container (scripts/test-audio-containers.sh
+                        serve), else none, and a huddle says so. Never this
+                        machine's own sound server.
+  BZZ_TEST_PULSE_SERVER_SECOND, _OTHER
+                        the same for the second and other profiles' TUIs
+                        (a call between two clients, each with its own
+                        server); unset, they share the first's
 
 What the manifest may say besides what test-tui-herdr.sh documents:
   scenario `size = "WxH"`     the window's size for the scenario
@@ -34,6 +43,7 @@ What the manifest may say besides what test-tui-herdr.sh documents:
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,6 +55,8 @@ MANIFEST = os.environ.get("BZZ_HERDR_MANIFEST", os.path.join(ROOT, "scripts/tui-
 EXIT = "__BZZ_HERDR_EXIT__:"
 MAIN = "bzz:main"
 SECOND = "bzz:second"
+# PULSE_SERVER for every bzz the harness starts (see sound_server).
+PULSE_SERVER = None
 
 # Herdr's key names as tmux's.
 NAMED = {
@@ -118,6 +130,8 @@ def main():
     tmux("set-option", "-g", "history-limit", "5000")
     with open(os.path.join(work, "null-asound.conf"), "w") as handle:
         handle.write("pcm.!default { type null }\n")
+    global PULSE_SERVER
+    PULSE_SERVER, sound = sound_server(work)
     failures = 0
     try:
         for scenario in scenarios:
@@ -137,12 +151,38 @@ def main():
     finally:
         tmux("kill-server", check=False)
         print(f"tmux server on {tmux.socket} killed", flush=True)
+        if sound:
+            subprocess.run([os.path.join(ROOT, "scripts/test-audio-containers.sh"), "stop", sound],
+                           check=False)
+            print("sound server container removed", flush=True)
     print(f"{len(scenarios) - failures} of {len(scenarios)} scenarios passed", flush=True)
     return 1 if failures else 0
 
 
 class Failure(Exception):
     pass
+
+
+def sound_server(work):
+    """The sound server bzz's huddles join, and the folder of the container
+    that serves it (None when the harness started none).
+
+    On Linux bzz speaks the PulseAudio protocol, to the socket PULSE_SERVER
+    names or else to the session's: without this, a harness huddle would open
+    this machine's own microphone. PULSE_SERVER is always set, and only ever
+    to a server in a container or to nothing."""
+    given = os.environ.get("BZZ_TEST_PULSE_SERVER")
+    if given:
+        return given, None
+    folder = os.path.join(work, "sound")
+    if shutil.which("docker"):
+        result = subprocess.run([os.path.join(ROOT, "scripts/test-audio-containers.sh"), "serve", folder],
+                                capture_output=True, text=True, check=False)
+        if result.returncode == 0:
+            print(f"sound server: a container with a null sink ({result.stdout.strip()})", flush=True)
+            return result.stdout.strip(), folder
+        print(f"no sound server container ({result.stderr.strip()[:200]}): a huddle will say so", flush=True)
+    return f"unix:{work}/no-sound-server/native", None
 
 
 def command_for(scenario, binary, fixture, work, profile):
@@ -155,7 +195,8 @@ def command_for(scenario, binary, fixture, work, profile):
                 handle.write(scenario["keymap"])
         words = [f"BZZ_CONFIG_DIR={shlex.quote(home + '/config')}",
                  f"BZZ_DATA_DIR={shlex.quote(home + '/data')}",
-                 f"BZZ_CACHE_DIR={shlex.quote(home + '/cache')}", shlex.quote(binary)]
+                 f"BZZ_CACHE_DIR={shlex.quote(home + '/cache')}",
+                 f"PULSE_SERVER={shlex.quote(PULSE_SERVER)}", shlex.quote(binary)]
         # An automated scenario may name a sub-command (`bzz demo`, v0.17).
         words.extend(shlex.quote(argument) for argument in scenario.get("args", []))
         return "env " + " ".join(words) + '; printf "__BZZ_HERDR_EXIT__:%s\\n" "$?"'
@@ -168,7 +209,8 @@ def command_for(scenario, binary, fixture, work, profile):
              f"BZZ_DATA_DIR={shlex.quote(home + '/data')}",
              f"BZZ_CACHE_DIR={shlex.quote(home + '/cache')}",
              "BZZ_PASSPHRASE_FD=3",
-             f"ALSA_CONFIG_PATH={shlex.quote(work + '/null-asound.conf')}"]
+             f"ALSA_CONFIG_PATH={shlex.quote(work + '/null-asound.conf')}",
+             f"PULSE_SERVER={shlex.quote(os.environ.get(f'BZZ_TEST_PULSE_SERVER_{profile.upper()}') or PULSE_SERVER)}"]
     env_file = os.path.join(fixture, "env")
     if os.path.isfile(env_file):
         for line in open(env_file):

@@ -347,12 +347,34 @@ pub fn apply_control(
 pub const MICROPHONE_DENIED: &str = "microphone unavailable: allow microphone access for your terminal app (macOS: System Settings › Privacy & Security › Microphone), check the input device, then join again";
 pub const SPEAKER_UNAVAILABLE: &str =
     "speaker unavailable: check the output device, then join again";
+/// Linux: no PipeWire or PulseAudio in the session to speak to (a server, a
+/// container, a machine with ALSA alone).
+pub const NO_SOUND_SERVER: &str =
+    "huddle audio on Linux needs PipeWire or PulseAudio running in your session";
 
-/// Owns cpal streams on a dedicated thread (they are not `Send`). Dropping it
-/// stops both streams and releases the devices.
+// Linux devices speak the PulseAudio protocol in pure Rust (PipeWire answers
+// it too), so the binary names no sound library. macOS and Windows use cpal.
+#[cfg(target_os = "linux")]
+#[path = "pulse_devices.rs"]
+mod pulse_devices;
+#[cfg(target_os = "linux")]
+pub use pulse_devices::{device_names, open_devices};
+
+/// Owns the device streams on a dedicated thread (cpal's are not `Send`).
+/// Dropping it stops both streams and releases the devices.
 pub struct Devices {
     stop: std::sync::mpsc::Sender<()>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Said once when the devices open: a saved device that was not found.
+    notice: Option<String>,
+}
+
+impl Devices {
+    /// What the user should hear about the devices just opened, if anything
+    /// (a saved device not found, so the default opened instead).
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
 }
 
 impl Drop for Devices {
@@ -364,6 +386,7 @@ impl Drop for Devices {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 /// ALSA reports plugin and configuration errors (for example a `pulse`
 /// default whose plugin is not installed) by writing to fd 2, on top of the
 /// full-screen TUI. Device enumeration and opening run with fd 2 pointed at
@@ -402,11 +425,13 @@ fn quiet_stderr<T>(operation: impl FnOnce() -> T) -> T {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 /// Device names for the pickers (local UI only; never logged).
 pub fn device_names() -> (Vec<String>, Vec<String>) {
     quiet_stderr(device_names_inner)
 }
 
+#[cfg(not(target_os = "linux"))]
 fn device_names_inner() -> (Vec<String>, Vec<String>) {
     use cpal::traits::{DeviceTrait as _, HostTrait as _};
     let host = cpal::default_host();
@@ -426,6 +451,7 @@ fn device_names_inner() -> (Vec<String>, Vec<String>) {
 /// Open devices plus the engine's capture receiver and playback sender.
 pub type DeviceBridge = (Devices, mpsc::Receiver<Vec<f32>>, mpsc::Sender<Vec<f32>>);
 
+#[cfg(not(target_os = "linux"))]
 /// Opens input and output (by name, else the defaults) and bridges them to
 /// the engine's channels, converting to 48 kHz mono f32.
 pub fn open_devices(input: Option<&str>, output: Option<&str>) -> Result<DeviceBridge> {
@@ -457,6 +483,7 @@ pub fn open_devices(input: Option<&str>, output: Option<&str>) -> Result<DeviceB
             Devices {
                 stop: stop_tx,
                 thread: Some(thread),
+                notice: None,
             },
             capture_rx,
             playback_tx,
@@ -469,6 +496,7 @@ pub fn open_devices(input: Option<&str>, output: Option<&str>) -> Result<DeviceB
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 fn device_streams(
     input: Option<&str>,
     output: Option<&str>,
