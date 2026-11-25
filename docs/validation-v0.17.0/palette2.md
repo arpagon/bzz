@@ -88,9 +88,9 @@ repository.
 | On the release binary and the pinned relay: "Start a DM", "Scout" (the footer shows `:dm npub1…`), Enter opens the DM | tmux | `t17-palette2-dm` | passed, 6 steps |
 | Same: "status", the usage under the field, "In a meeting" (`:status In a meeting`), Enter, Backspace back to the text as typed, `2x` refused, `2h` (`:status --expires 2h In a meeting`), Enter: "status updated" | tmux | `t17-palette2-status` | passed, 9 steps |
 | Same: "theme" opens on `bzz`, "nord" selects Nord, Esc closes, and the step opens again on `bzz` (the theme was put back); a message selected, "react to", "party", Enter: `🎉 1` under it | tmux | `t17-palette2-theme-react` | passed, 14 steps |
-| Same: "Honey" finds the person (`↵ profile · Ctrl+D DM`), Enter opens the profile; "fixture" ends with `/ Search messages for «fixture»`, Up reaches it, Enter opens the search (`local + relay`) | tmux | `t17-palette2-find` | passed |
-| Same, after the Board is installed (`t16-cli-app-new`, `-add`, `-approve`): "board" finds `▣ Open board here`, Enter opens it beside `#t9-general` | tmux | `t17-palette2-app` | passed |
-| Same at 80×24 and 160×45: a person step with its `:dm` line, a text step with its usage, an expiry step | tmux | `t17-palette2-sizes` | passed |
+| Same: "Honey" finds the person (`↵ profile · Ctrl+D DM`), Enter opens the profile; "fixture" ends with `/ Search messages for «fixture»`, Up reaches it, Enter opens the search (`local + relay`) | tmux | `t17-palette2-find` | passed, 9 steps |
+| Same, after the Board is installed (`t16-cli-app-new`, `-add`, `-approve`): "board" finds `▣ Open board here`, Enter opens it beside `#t9-general` | tmux | `t17-palette2-app` | passed, 7 steps |
+| Same at 80×24 and 160×45: a person step with its `:dm` line, a text step with its usage, an expiry step | tmux | `t17-palette2-sizes` | passed, 10 steps |
 | C1's four scenarios still pass; `t17-palette-theme-status-channel` now expects the steps where C1 opened the theme picker and the `:` line | tmux | `t17-palette-*` | passed |
 
 The scenarios ran on `./scripts/test-relay.sh --tmux` with
@@ -107,11 +107,30 @@ volumes and network removed).
   reacted to the newest row, a person joining, which takes no reaction; it
   now selects the custom emoji's message three rows up.
 - `<scratch>/relay3.log`: `-theme-react` passed.
-- `<scratch>/relay4.log`: all of them together, see "Final run" below.
+- `<scratch>/relay4.log`, at `6c3c3ff`: the six `t17-palette2-*`, the three
+  `t16-cli-app-*` and C1's four `t17-palette-*` passed together in one run
+  (96 steps): `BZZ_TMUX_SCENARIOS=t17-palette2-dm,t17-palette2-status,t17-palette2-theme-react,t17-palette2-find,t16-cli-app-new,t16-cli-app-add,t16-cli-app-approve,t17-palette2-app,t17-palette2-sizes,t17-palette-open-thr-quit,t17-palette-unavailable-stays,t17-palette-theme-status-channel,t17-palette-sizes`.
 
 ### Red runs
 
-See below, "Red runs (made)".
+One build with three temporary edits, then `git checkout` of both files:
+"Set channel group sort" made a bare prefill again (no steps), the bonus of
+this session's choices removed from `palette::rank`, and Backspace on an
+empty field no longer going back. `cargo test --locked --lib -- palette
+action_table command::`: 5 failed, 45 passed.
+
+| Test | Failure |
+|---|---|
+| `every_command_with_an_argument_has_its_steps` | `:sort takes an argument and no row of src/ui/action_table.rs asks for it in steps` |
+| `a_choice_and_an_optional_step` | Enter on the row ran it: `["Set channel group sort", "Search messages for"]` listed instead of `["alpha", "recent", "default"]` |
+| `recent_choices_rank_first` | first row `"Open thread"`, not the recent `"t14-names"` |
+| `backspace_on_an_empty_field_goes_back_a_step` | stayed at `Set my status › lunch › expires` |
+| `the_theme_step_previews_as_it_moves_and_backspace_puts_back` | `Stay` instead of `Restore` |
+
+`no_row_leaves_a_required_argument_to_be_typed` stayed green in that run:
+`:sort alpha|recent|default` has no `<`. The exhaustive `match` of
+`forms_with_an_argument` (a command added and not named does not compile)
+was read, not run red.
 
 ### Captures
 
@@ -170,4 +189,14 @@ its kind's glyph (`◆` for an agent) rather than `@`.
 
 ## Gates
 
-See below.
+At `d6b80e9` (the code of `6c3c3ff`: only scenarios and this file changed after),
+`<scratch>/gates1.log` and `<scratch>/gates2.log`:
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --check` | ok |
+| `cargo clippy --locked --all-targets -- -D warnings` | ok |
+| `cargo build --locked --example scripted_harness` | ok |
+| `cargo test --locked --all-targets` | first run: the library 877 passed, 1 failed, `apps::runtime::tests::vm::an_endless_loop_is_stopped_by_time` (a Lua loop of 100,000 steps took over its 50 ms budget, load about 21; the test is not this task's and no code it runs changed); run again with `--no-fail-fast`: every target ok, the library 878 passed, 2 ignored |
+| `cargo test --locked --no-default-features --lib` | ok; 586 passed |
+| `cargo deny check`, `cargo audit` | not run: `Cargo.toml` and `Cargo.lock` unchanged |
