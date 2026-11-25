@@ -262,6 +262,16 @@ header.hero {
   overflow-x: auto;
 }
 
+.hero p.then {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-top: 0.8rem;
+}
+
+.hero p.then code {
+  color: var(--accent);
+}
+
 .install-line .prompt {
   color: var(--accent);
   user-select: none;

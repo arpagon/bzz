@@ -17,20 +17,45 @@
 </p>
 
 <p align="center">
-  <a href="https://getbzz.dev/assets/promo-v015.mp4" title="Watch the launch film, with sound">
-    <img src="docs/assets/bzz-preview.webp" alt="bzz in action: channels, threads and reactions from the keyboard, offline search, creating an agent that bzz runs, its reply in a thread, approving a command it asks to run, moving it with its memory, a huddle, images and themes" width="860">
+  <a href="https://getbzz.dev/assets/promo-v016.mp4" title="Watch the launch film, with sound">
+    <img src="site/public/assets/poster-promo-v016.png" alt="bzz with the Board app beside the chat, changed in place by the agent's approved version, the same card still selected" width="860">
   </a>
   <br>
-  <sub>The real bzz binary, recorded in a terminal. <a href="https://getbzz.dev/assets/promo-v015.mp4">Watch the 55-second film with sound</a>.</sub>
+  <sub>The real bzz 0.16.0 binary, recorded in a terminal. <a href="https://getbzz.dev/assets/promo-v016.mp4">Watch the 55-second film with sound</a>.</sub>
 </p>
 
+<p align="center"><sub>An independent open-source project, not affiliated with, endorsed by, or sponsored by Block, Inc.</sub></p>
+
 <p align="center">
+  <a href="#try-it-in-60-seconds">Try it</a> ·
   <a href="#install">Install</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="#keys">Keys</a> ·
   <a href="docs/release-v0.16.0.md">What's new in 0.16</a> ·
   <a href="docs/README.md">Docs</a>
 </p>
+
+## Try it in 60 seconds
+
+```sh
+curl -fsSL https://getbzz.dev/install.sh | sh
+bzz demo
+```
+
+`bzz demo` opens a generated team in your terminal: channels, a thread, a
+DM, an agent that answers when you mention it, a huddle in progress. It runs
+offline, asks for no account and no key, and leaves nothing behind when you
+quit. On Windows, install with the [PowerShell line](#install), then run
+`bzz demo`.
+
+**Requirements:** Linux (x86_64 and arm64) with glibc 2.34 or newer (Ubuntu
+22.04, Debian 12, Fedora 35, RHEL 9 or newer); macOS (Apple Silicon and
+Intel); Windows (x86_64). Huddle audio on Linux needs PipeWire or
+PulseAudio. No build for Alpine or other musl systems yet.
+
+**Compatibility:** tested against the Buzz relay at `block/buzz` revision
+[`bf3bdd0e`](docs/protocol-compatibility.md), and paired with Buzz desktop
+1.0.1.
 
 ## Who it's for
 
@@ -90,6 +115,15 @@ macOS and Linux:
 
 ```sh
 curl -fsSL https://getbzz.dev/install.sh | sh
+```
+
+It checks this machine first (on Linux: the C library, and `tar` and `xz`
+to unpack) and says in one line what is missing, then runs the release's own
+installer. The script is [`site/public/install.sh`](site/public/install.sh).
+To run only the checks:
+
+```sh
+curl -fsSL https://getbzz.dev/install.sh | BZZ_CHECK_ONLY=1 sh
 ```
 
 Windows (PowerShell):
@@ -293,9 +327,12 @@ Details: [`docs/security.md`](docs/security.md).
 ## Compatibility
 
 bzz follows the Buzz protocol and is tested against a pinned `block/buzz`
-relay revision; the revision and every supported surface are listed in
-[`docs/protocol-compatibility.md`](docs/protocol-compatibility.md). It runs on
-Linux, macOS (Intel and Apple Silicon) and Windows. Huddle audio on Windows
+relay revision (`bf3bdd0eaefe39289bf9620594f254c7f68897f5`); the revision and
+every supported surface are listed in
+[`docs/protocol-compatibility.md`](docs/protocol-compatibility.md). Pairing
+with the Buzz app was proven with Buzz desktop 1.0.1. It runs on Linux
+(x86_64 and arm64, glibc 2.34 or newer), macOS (Intel and Apple Silicon) and
+Windows. Huddle audio on Windows
 is experimental. Agents need Node.js 22.19 or newer and were proven on Linux;
 on macOS and Windows no agent has been run, only its tests in CI. Apps need
 nothing installed; they were run on Linux, and on macOS and Windows only
