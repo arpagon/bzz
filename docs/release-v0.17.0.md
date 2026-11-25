@@ -419,7 +419,14 @@ What v0.17.0 does not do, and what was not seen. Each is in
 
 **Where it ran**
 
-- **No one has opened this version in a terminal on macOS.** CI builds the
+- **macOS was opened once, over SSH** (W3, [principal]): the Intel release
+  binary CI built for the candidate, on macOS 14 in a virtual machine,
+  driven through tmux in a terminal session of that system: the demo, the
+  help, the palette, Tab on the `:` line, a message with an accent and
+  Scout's answer, the Board, the huddle's lanes moving and the orb, leaving
+  with nothing left behind, the first screen and the join form. Not Apple
+  Silicon, not Terminal.app or another terminal program at the machine, no
+  keychain, no relay, no sound. Beyond that, CI builds the
   release binary for Apple Silicon and Intel and runs `--version`, the
   library tests and the integration tests of identity, configuration, the
   Inbox, DMs, search, the store, the terminal's restore and apps there, the
@@ -475,8 +482,8 @@ What v0.17.0 does not do, and what was not seen. Each is in
   (rule 19); `q` then `y` does ([demo]).
 - After `kill -9` the demo's folder stays until the next `bzz demo`; on
   macOS and Windows that one removes only folders older than a day. The
-  demo was not run on macOS; on Windows only in the console over SSH
-  ([demo], [principal]).
+  demo was run on macOS and on Windows only over SSH ([demo],
+  [principal]).
 
 **The palette and the hints**
 
@@ -505,7 +512,8 @@ What v0.17.0 does not do, and what was not seen. Each is in
 **Not in this version**
 
 - Frames that redraw only the visualizer (B8), for v0.17.1 ([viz2]).
-- macOS checked by a person (W3).
+- macOS at the machine, in a terminal program, by a person (W3 was done
+  over SSH).
 - A paste that arrives as a paste on Windows (W2's last part).
 - Use of the palette remembered between sessions, an interface inside the
   conversation (D10), a build for Alpine and older systems: as the plan's
@@ -519,8 +527,8 @@ of an app but its brief; one app shown in a channel at a time
 
 **Pending acceptance**
 
-- The version commit (0.17.0 in `Cargo.toml`) is placed last, on the
-  candidate; until then the branch says 0.16.0 ([release]).
+- The version (0.17.0 in `Cargo.toml`) is on the candidate since
+  2026-11-26 ([release], [principal]).
 - The installer on clean machines with this release published: until then
   the full install was seen with v0.16.0's archives only ([install]).
 - CI green at the candidate on the four platforms, and two consecutive green

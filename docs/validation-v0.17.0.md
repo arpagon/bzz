@@ -70,7 +70,7 @@ done on. Linux x86_64 unless a section says otherwise.
 | F8 | [release](#v0170--task-release-the-upgrade-from-v0160-the-version-f8) · [release2](#v0170--task-release2-the-documents-brought-level-with-the-code) | The version commit is held, to be placed last; the branch head still says 0.16.0 |
 | W1 | [windows](#v0170-validation-windows-task-windows-plan-w1-and-w2) |  |
 | W2 | [windows](#v0170-validation-windows-task-windows-plan-w1-and-w2) | Also walked by the principal with CI's release binary ([the principal's own checks](#windows-with-cis-release-binary)); a paste still arrives as keys |
-| W3 | not run: no macOS machine was used. CI builds and tests on macOS ([the principal's own checks](#ci-on-the-pull-request)) |  |
+| W3 | Done by the principal on 2026-11-26 over SSH in a macOS 14 virtual machine, with CI's Intel release binary ([the principal's own checks](#the-principals-own-checks)); not at a terminal program, not Apple Silicon |  |
 
 ## The principal's own checks
 
@@ -225,6 +225,31 @@ The draft pull request of D14, read on GitHub:
   avatars, the join form's probe, the agents' tool server and the sign-in
   service; `tests/demo_offline_test.rs` now runs the demo with no store,
   seen failing without the fix and passing with it.
+- **Windows again, with the candidate's binary** (CI's MSVC release build
+  at `c79f827`, `bzz 0.17.0`, 2026-11-26), in the console over SSH: the
+  demo; the Board (a card added and moved); `z` shows the conversation
+  alone; Esc with nothing open says "nothing to close · q quits"; `:join`
+  in the demo says it needs a real community; the first screen without a
+  community; leaving leaves no folder and no process.
+- **macOS, for the first time** (W3, 2026-11-26): CI's Intel release binary
+  at `c79f827` on macOS 14.8 in a virtual machine (an emulated Intel
+  processor), over SSH through tmux, with a scratch home. `bzz --version`
+  and `bzz paths`; the demo's first screen; `?`; `Ctrl-K` with "thr" puts
+  Open thread first; `:hu`, Tab; a message with an accented letter and
+  Scout's answer in its thread; the Board (a card added and moved); the
+  huddle zoomed, its lanes moving between two captures two seconds apart,
+  and the orb; `q`, `y` leaves the shell clean, no process and no demo
+  folder; the first screen without a community and `j` opening the join
+  form. Not done there: a keychain, a relay, sound, a terminal program at
+  the machine, Apple Silicon.
+- **The candidate, whole** (`c79f827`, the version commit, 2026-11-26), in
+  a checkout and a build directory of its own, in UTC: format, both lints,
+  the tests, the build without default features, licences and the security
+  audit; the apps bench in release; the upgrade from v0.16.0 and from
+  v0.15.0; the release build and its linkage; the pinned relay's suite (30
+  tests) and the federated-identity suite; every scenario at 200×50 (52 of
+  52) and at 80×24 (48 of 48, four skipped for their size); the own-quota
+  test. All green, the relay down after.
 
 ## What went wrong on the way
 
