@@ -444,6 +444,87 @@ pub struct UiConfig {
     pub huddle_input_device: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub huddle_output_device: Option<String>,
+    /// How much the interface moves: `full`, `calm` or `off` (plan v0.17.0
+    /// D9). Read it through [`UiConfig::motion`], which honours
+    /// `BZZ_NO_MOTION`.
+    /// Written only when it is not the default, so that the settings of a
+    /// person who never chose stay readable by v0.16.0, which refuses a
+    /// setting it does not know.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub motion: Motion,
+    /// The huddle's zoomed visualizer: `lanes`, `bars` or `orb` (plan
+    /// v0.17.0 B5, B6). Chosen in its picker, which saves it here; written
+    /// only when it is not the default, as `motion`.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub huddle_style: HuddleStyle,
+}
+
+/// For `skip_serializing_if`: a setting left at its default is not written.
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}
+
+/// A look of the huddle's zoomed visualizer.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HuddleStyle {
+    /// One lane per person, your microphone last.
+    #[default]
+    Lanes,
+    /// A spectrum of the call's mix, with peak marks.
+    Bars,
+    /// A sphere of liquid in the colour of whoever speaks.
+    Orb,
+}
+
+impl HuddleStyle {
+    pub const ALL: [Self; 3] = [Self::Lanes, Self::Bars, Self::Orb];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Lanes => "lanes",
+            Self::Bars => "bars",
+            Self::Orb => "orb",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|style| style.name().eq_ignore_ascii_case(name.trim()))
+    }
+}
+
+/// How much the interface moves. One setting for every animation in bzz.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Motion {
+    #[default]
+    Full,
+    /// Fewer frames, no flourishes.
+    Calm,
+    /// Nothing animates; the end state shows at once.
+    Off,
+}
+
+impl Motion {
+    /// `BZZ_NO_MOTION` set to anything but empty or `0` turns motion off,
+    /// whatever the configuration says.
+    pub fn resolve(self, no_motion: Option<&str>) -> Self {
+        match no_motion {
+            Some(value) if !value.is_empty() && value != "0" => Self::Off,
+            _ => self,
+        }
+    }
+}
+
+impl UiConfig {
+    /// The motion setting in effect: the configuration, unless
+    /// `BZZ_NO_MOTION` turns it off.
+    pub fn motion(&self) -> Motion {
+        self.motion
+            .resolve(std::env::var("BZZ_NO_MOTION").ok().as_deref())
+    }
 }
 
 impl Default for UiConfig {
@@ -461,6 +542,8 @@ impl Default for UiConfig {
             broker_agent_presence: false,
             huddle_input_device: None,
             huddle_output_device: None,
+            motion: Motion::Full,
+            huddle_style: HuddleStyle::Lanes,
         }
     }
 }

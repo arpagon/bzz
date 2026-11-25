@@ -4,7 +4,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::Line,
-    widgets::{Block, Borders, Clear, List, ListItem, ListState},
+    widgets::{Clear, List, ListItem, ListState},
 };
 
 use crate::{
@@ -98,14 +98,16 @@ pub fn render(
             .highlight_symbol("› ")
             .highlight_style(theme.style(HighlightGroup::SelectedRow))
             .style(theme.style(HighlightGroup::Normal))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(theme.border_type(BorderSurface::Picker))
-                    .border_style(theme.style(HighlightGroup::ModalBorder))
-                    .title_style(theme.style(HighlightGroup::ModalTitle))
-                    .title(" mention · Up/Down select · Tab/Enter accept · Esc close "),
-            ),
+            .block(crate::ui::frame::modal(
+                theme,
+                BorderSurface::Picker,
+                "mention",
+                &[
+                    ("Up/Down", "select"),
+                    ("Tab/Enter", "accept"),
+                    ("Esc", "close"),
+                ],
+            )),
         area,
         &mut state,
     );

@@ -17,3 +17,10 @@ tests/apps-bench/** text eol=lf
 migrations/0021_apps.sql text eol=lf
 migrations/0022_app_sharing.sql text eol=lf
 migrations/0023_app_agent_proposals.sql text eol=lf
+
+# v0.17: screens kept as text and compared cell for cell (the first screen,
+# the huddle's lanes and its zoomed styles). None shipped before v0.17.
+tests/fixtures/first-screen/** text eol=lf
+tests/fixtures/huddle_lanes/** text eol=lf
+tests/fixtures/huddle_zoom/** text eol=lf
+tests/fixtures/layout/** text eol=lf

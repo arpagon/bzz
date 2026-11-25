@@ -638,3 +638,38 @@ fn two_saves_at_once_both_land() {
         );
     }
 }
+
+/// v0.17 B4 (plan D9): one motion setting for the whole interface, and
+/// `BZZ_NO_MOTION` turns it off whatever the file says.
+#[test]
+fn motion_parses_strictly_and_bzz_no_motion_turns_it_off() {
+    use bzz::config::Motion;
+    assert_eq!(Config::default().ui.motion, Motion::Full);
+    for (value, expected) in [
+        ("full", Motion::Full),
+        ("calm", Motion::Calm),
+        ("off", Motion::Off),
+    ] {
+        let config = toml::from_str::<Config>(&format!("[ui]\nmotion='{value}'\n")).unwrap();
+        assert_eq!(config.ui.motion, expected);
+    }
+    assert!(toml::from_str::<Config>("[ui]\nmotion='fast'\n").is_err());
+    assert_eq!(Motion::Full.resolve(Some("1")), Motion::Off);
+    assert_eq!(Motion::Calm.resolve(Some("yes")), Motion::Off);
+    assert_eq!(Motion::Calm.resolve(Some("")), Motion::Calm);
+    assert_eq!(Motion::Calm.resolve(Some("0")), Motion::Calm);
+    assert_eq!(Motion::Full.resolve(None), Motion::Full);
+    // The default is not written at all, so that settings nobody changed
+    // stay readable by v0.16.0, which refuses a setting it does not know
+    // (tests/upgrade_from_v0160_test.rs); a value chosen is written.
+    let written = toml::to_string(&Config::default()).unwrap();
+    assert!(!written.contains("motion"), "{written}");
+    assert!(!written.contains("huddle_style"), "{written}");
+    let mut chosen = Config::default();
+    chosen.ui.motion = Motion::Calm;
+    chosen.ui.huddle_style = bzz::config::HuddleStyle::Orb;
+    let written = toml::to_string(&chosen).unwrap();
+    assert!(written.contains("motion = \"calm\""), "{written}");
+    assert!(written.contains("huddle_style = \"orb\""), "{written}");
+    assert_eq!(toml::from_str::<Config>(&written).unwrap(), chosen);
+}

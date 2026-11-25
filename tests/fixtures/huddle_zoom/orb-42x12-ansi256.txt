@@ -1,0 +1,24 @@
+ 4 in the call · Ada and Lin at once
+                 ▄▄▄▄▄▄▄▄
+               ▄▀▀▀▀▀▀▀▀▀▀▄
+             ▄▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄
+             ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+             ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+             ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+             ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+               ▀▀▀▀▀▀▀▀▀▀▀▀
+                 ▀▀▀▀▀▀▀▀
+
+ ● Ada  ● Lin  · Sam  You · muted
+--- styles ---
+0: 1-35 Indexed(44)/Reset/BOLD
+1: 17-17 Indexed(245)/Reset/NONE 18-19 Indexed(247)/Reset/NONE 20-21 Indexed(248)/Reset/NONE 22-23 Indexed(247)/Reset/NONE 24-24 Indexed(245)/Reset/NONE
+2: 15-15 Indexed(247)/Reset/NONE 16-16 Indexed(247)/Indexed(249)/NONE 17-17 Indexed(248)/Indexed(251)/NONE 18-18 Indexed(250)/Indexed(253)/NONE 19-22 Indexed(251)/Indexed(253)/NONE 23-23 Indexed(250)/Indexed(253)/NONE 24-24 Indexed(248)/Indexed(251)/NONE 25-25 Indexed(247)/Indexed(249)/NONE 26-26 Indexed(247)/Reset/NONE
+3: 13-13 Indexed(245)/Reset/NONE 14-14 Indexed(247)/Indexed(248)/NONE 15-15 Indexed(249)/Indexed(251)/NONE 16-16 Indexed(252)/Indexed(253)/NONE 17-21 Indexed(253)/Indexed(253)/NONE 22-22 Indexed(253)/Indexed(251)/NONE 23-24 Indexed(253)/Indexed(253)/NONE 25-25 Indexed(252)/Indexed(253)/NONE 26-26 Indexed(249)/Indexed(251)/NONE 27-27 Indexed(247)/Indexed(248)/NONE 28-28 Indexed(245)/Reset/NONE
+4: 13-13 Indexed(247)/Indexed(246)/NONE 14-14 Indexed(250)/Indexed(109)/NONE 15-15 Indexed(253)/Indexed(152)/NONE 16-16 Indexed(188)/Indexed(116)/NONE 17-17 Indexed(188)/Indexed(152)/NONE 18-18 Indexed(252)/Indexed(110)/NONE 19-19 Indexed(253)/Indexed(152)/NONE 20-20 Indexed(251)/Indexed(110)/NONE 21-21 Indexed(253)/Indexed(146)/NONE 22-22 Indexed(146)/Indexed(104)/NONE 23-23 Indexed(253)/Indexed(252)/NONE 24-24 Indexed(253)/Indexed(253)/NONE 25-25 Indexed(182)/Indexed(176)/NONE 26-26 Indexed(253)/Indexed(182)/NONE 27-27 Indexed(250)/Indexed(140)/NONE 28-28 Indexed(247)/Indexed(139)/NONE
+5: 13-13 Indexed(66)/Indexed(66)/NONE 14-14 Indexed(73)/Indexed(73)/NONE 15-15 Indexed(80)/Indexed(74)/NONE 16-18 Indexed(74)/Indexed(74)/NONE 19-20 Indexed(110)/Indexed(74)/NONE 21-21 Indexed(110)/Indexed(110)/NONE 22-22 Indexed(104)/Indexed(104)/NONE 23-23 Indexed(146)/Indexed(140)/NONE 24-24 Indexed(253)/Indexed(253)/NONE 25-25 Indexed(140)/Indexed(140)/NONE 26-26 Indexed(176)/Indexed(176)/NONE 27-27 Indexed(140)/Indexed(134)/NONE 28-28 Indexed(133)/Indexed(133)/NONE
+6: 13-13 Indexed(30)/Indexed(30)/NONE 14-15 Indexed(37)/Indexed(37)/NONE 16-16 Indexed(73)/Indexed(73)/NONE 17-20 Indexed(74)/Indexed(74)/NONE 21-22 Indexed(104)/Indexed(104)/NONE 23-23 Indexed(140)/Indexed(140)/NONE 24-24 Indexed(188)/Indexed(182)/NONE 25-25 Indexed(140)/Indexed(140)/NONE 26-26 Indexed(176)/Indexed(176)/NONE 27-27 Indexed(134)/Indexed(133)/NONE 28-28 Indexed(97)/Indexed(96)/NONE
+7: 13-13 Indexed(30)/Reset/NONE 14-14 Indexed(30)/Indexed(30)/NONE 15-15 Indexed(37)/Indexed(37)/NONE 16-16 Indexed(73)/Indexed(73)/NONE 17-20 Indexed(74)/Indexed(74)/NONE 21-22 Indexed(104)/Indexed(104)/NONE 23-25 Indexed(140)/Indexed(140)/NONE 26-26 Indexed(134)/Indexed(133)/NONE 27-27 Indexed(133)/Indexed(96)/NONE 28-28 Indexed(96)/Reset/NONE
+8: 15-15 Indexed(30)/Reset/NONE 16-16 Indexed(73)/Indexed(66)/NONE 17-17 Indexed(73)/Indexed(67)/NONE 18-20 Indexed(74)/Indexed(67)/NONE 21-22 Indexed(104)/Indexed(103)/NONE 23-23 Indexed(140)/Indexed(103)/NONE 24-24 Indexed(140)/Indexed(97)/NONE 25-25 Indexed(133)/Indexed(96)/NONE 26-26 Indexed(97)/Reset/NONE
+9: 17-19 Indexed(66)/Reset/NONE 20-21 Indexed(67)/Reset/NONE 22-22 Indexed(61)/Reset/NONE 23-24 Indexed(96)/Reset/NONE
+11: 1-5 Indexed(44)/Reset/BOLD 8-12 Indexed(176)/Reset/BOLD 15-19 Indexed(242)/Reset/NONE 22-32 Indexed(242)/Reset/NONE

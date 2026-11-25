@@ -20,8 +20,13 @@ normal network access; this is not a fully hermetic build.
 Current bzz also enables `keyring/vendored`: libdbus is compiled from its
 locked crate source without pkg-config's `dbus-1` dependency. This does not
 change the Secret Service API or the identity store. The image keeps DBus
-headers for the *unmodified* v0.12.1 upgrade fixture. ALSA is dynamically
-linked; release users still need the system's `libasound.so.2`.
+headers for the *unmodified* v0.12.1 upgrade fixture. Since v0.17.0 bzz
+links no sound library on Linux: huddle audio speaks the PulseAudio protocol
+in pure Rust (PipeWire answers it too), and the release binary is checked to
+name none (`scripts/check-linux-linkage.sh`). The image keeps the ALSA
+headers because the upgrade job builds earlier releases (v0.14.0, v0.15.0)
+from source, and those link ALSA through `cpal`; PulseAudio stays for the
+virtual-audio job.
 
 The image contains compilers, CMake, pkg-config, ALSA, PulseAudio and its ALSA
 plugin, DBus headers, Docker/Compose clients, PostgreSQL client, tmux and

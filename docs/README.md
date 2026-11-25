@@ -7,6 +7,7 @@ Start with the [README](../README.md). Everything here is plain Markdown.
 | Guide | What it covers |
 |---|---|
 | [configuration.md](configuration.md) | `config.toml`, identities, communities and every setting |
+| [keys.md](keys.md) | Every key, where it works and its `:` form, every command, and what only the shell does; generated from bzz's own table of actions |
 | [themes.md](themes.md) | The 60 built-in themes and `theme.toml` |
 | [media.md](media.md) | Images, avatars, attachments, terminal graphics and the media cache |
 | [inbox-dms-search.md](inbox-dms-search.md) | Inbox, direct messages and search |
@@ -20,6 +21,7 @@ Start with the [README](../README.md). Everything here is plain Markdown.
 
 | Version | Notes | Validation | Plan |
 |---|---|---|---|
+| v0.17.0 (candidate) | [notes](release-v0.17.0.md) | [validation](validation-v0.17.0.md) (per task: [validation-v0.17.0/](validation-v0.17.0/)) | [plan](planning/2026-11-24/v0.17.0.md), [how it closed](planning/2026-11-24/v0.17.0.md#how-it-closed-2026-11-25) |
 | v0.16.0 | [notes](release-v0.16.0.md) | [validation](validation-v0.16.0.md) | [plan](planning/2026-11-17/v0.16.0.md) |
 | v0.15.0 | [notes](release-v0.15.0.md) | [validation](validation-v0.15.0.md) | [plan](planning/2026-11-13/v0.15.0.md) |
 | v0.14.0 | [notes](release-v0.14.0.md) | [validation](validation-v0.14.0.md) | [plan](planning/2026-11-12/v0.14.0.md) |
@@ -41,7 +43,7 @@ Start with the [README](../README.md). Everything here is plain Markdown.
 | v0.3.0 | [notes](release-v0.3.0.md) |  | [plan](planning/2026-08-15/v0.3.0.md) |
 | v0.2.0 | [notes](release-v0.2.0.md) |  | [MVP plan](planning/2026-07-31/mvp.md) |
 
-Releasing: [releasing.md](releasing.md). End-to-end checks: [e2e-manual.md](e2e-manual.md) (manual) and [e2e-herdr.md](e2e-herdr.md) (automated in Herdr).
+Releasing: [releasing.md](releasing.md). End-to-end checks: [e2e-manual.md](e2e-manual.md) (manual), [e2e-herdr.md](e2e-herdr.md) (automated in Herdr) and [e2e-windows.md](e2e-windows.md) (Windows over SSH).
 
 ## Design records
 

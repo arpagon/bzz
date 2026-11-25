@@ -72,20 +72,22 @@ pub fn render(
     hit_map: &mut HitMap,
 ) {
     frame.render_widget(Clear, area);
-    let title = format!(
-        " verified agents · ↑/↓ select · m mention · r refresh · Tab yours · Esc close{} ",
-        if state.loading {
-            " · refreshing…"
-        } else {
-            ""
-        }
-    );
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(theme.border_type(BorderSurface::Picker))
-        .border_style(theme.style(HighlightGroup::ModalBorder))
-        .title_style(theme.style(HighlightGroup::ModalTitle))
-        .title(title);
+    let block = crate::ui::frame::modal(
+        theme,
+        BorderSurface::Picker,
+        "verified agents",
+        &[
+            ("↑/↓", "select"),
+            ("m", "mention"),
+            ("r", "refresh"),
+            ("Tab", "yours"),
+            ("Esc", "close"),
+        ],
+    )
+    .title(crate::ui::frame::info(
+        theme,
+        if state.loading { "refreshing…" } else { "" },
+    ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

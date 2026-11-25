@@ -21,6 +21,30 @@ fn rendered_text(input: &str) -> String {
         .collect()
 }
 
+/// Code inside a sentence is drawn in the theme's accent, not muted and dim
+/// as a block of code is: it is often the key to press.
+#[test]
+fn code_in_a_sentence_is_not_dimmed() {
+    use bzz::ui::theme::{HighlightGroup, Theme};
+    use ratatui::style::Modifier;
+    let theme = Theme::default();
+    let text = markdown::render("press `k` then\n\n```sh\nharbor status\n```", &theme);
+    let span = |content: &str| {
+        text.lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref() == content)
+            .unwrap_or_else(|| panic!("no span {content:?} in {text:?}"))
+            .style
+    };
+    let key = span("k");
+    assert_eq!(key.fg, theme.style(HighlightGroup::MarkdownInlineCode).fg);
+    assert!(key.fg.is_some());
+    assert!(!key.add_modifier.contains(Modifier::DIM));
+    let block = span("harbor status");
+    assert!(block.add_modifier.contains(Modifier::DIM));
+}
+
 #[test]
 fn links_are_inert_visible_text() {
     let rendered = rendered_text("[click](https://example.test/x)");

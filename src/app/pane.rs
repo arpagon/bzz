@@ -112,6 +112,10 @@ pub struct AppPanes {
     pub offers: Option<(Uuid, crate::service::offers::OffersService)>,
     /// What came of offers lately, for `:apps`.
     pub offer_notes: Vec<String>,
+    /// `bzz demo`'s Board: its records in memory, and the teammates who
+    /// move its cards (`crate::demo::board`).
+    #[cfg(feature = "apps")]
+    pub demo: Option<crate::demo::board::DemoBoard>,
 }
 
 /// How often the store is asked again: an answer given at the shell, or by
@@ -222,6 +226,9 @@ impl App {
         let Some((channel, _)) = self.shown_app() else {
             return;
         };
+        if let Some(board) = &mut self.apps.demo {
+            board.typed(std::time::Instant::now());
+        }
         if let Some(key) = crate::apps::runtime::Key::from_crossterm(key)
             && let Some(session) = self.apps.session_mut(channel)
         {
@@ -246,6 +253,10 @@ impl App {
         let Some(text) = app_pane::app_paste_text(text) else {
             return;
         };
+        #[cfg(feature = "apps")]
+        if let Some(board) = &mut self.apps.demo {
+            board.typed(std::time::Instant::now());
+        }
         #[cfg(feature = "apps")]
         if let Some((channel, _)) = self.shown_app()
             && let Some(session) = self.apps.session_mut(channel)
@@ -363,6 +374,19 @@ impl App {
         }
     }
 
+    /// Whether an app session runs: its timers and records are looked at
+    /// on the loop's busy housekeeping (v0.17 L9).
+    pub(super) fn apps_running(&self) -> bool {
+        #[cfg(feature = "apps")]
+        {
+            !self.apps.live.is_empty()
+        }
+        #[cfg(not(feature = "apps"))]
+        {
+            false
+        }
+    }
+
     /// The loop took the wake message.
     pub(super) fn app_woken(&mut self) {
         self.apps.wake.store(false, Ordering::SeqCst);
@@ -402,6 +426,15 @@ impl App {
             for live in &mut self.apps.live {
                 changed |= live.watch();
             }
+            // The demo's teammates move a card now and then, while the
+            // Board is on screen; its session hears of it as it is polled.
+            let board_shown = self.apps.placement.is_drawn()
+                && self
+                    .shown_app()
+                    .is_some_and(|(_, name)| name == crate::demo::board::NAME);
+            if let Some(board) = &mut self.apps.demo {
+                board.tick(board_shown, std::time::Instant::now());
+            }
             let shown = self.shown_app().map(|(channel, _)| channel);
             let profiles = &self.profiles;
             changed |= self
@@ -433,11 +466,7 @@ impl App {
                 .apps
                 .unnamed()
                 .into_iter()
-                .filter(|id| {
-                    is_key(id)
-                        && !self.profiles.contains_key(id)
-                        && !self.profile_requested.contains(id)
-                })
+                .filter(|id| is_key(id) && !self.profile_requested.contains(id))
                 .take(AT_ONCE)
                 .collect();
             if unknown.is_empty() {
@@ -693,6 +722,10 @@ impl App {
         #[cfg(test)]
         if let Some(memory) = &self.apps.memory {
             return Some(live::Where::Memory(memory));
+        }
+        // `bzz demo`: the Board's cards are held in memory.
+        if let Some(board) = &self.apps.demo {
+            return Some(live::Where::Memory(board.store()));
         }
         self.runtime
             .as_ref()
@@ -966,7 +999,17 @@ impl App {
                         "{name}: version {version} runs in place of {from}, its state kept"
                     ));
                 }
-                live::Pending::Closed { channel } => self.forget_app(channel).await?,
+                live::Pending::Closed { channel } => {
+                    // The demo's Board closes on its own `q`, as anywhere;
+                    // a newcomer is told the way back.
+                    let demo_board = self.apps.demo.is_some()
+                        && self.apps.open.get(&channel).map(String::as_str)
+                            == Some(crate::demo::board::NAME);
+                    self.forget_app(channel).await?;
+                    if demo_board {
+                        self.status_error = Some(crate::demo::BOARD_CLOSED.into());
+                    }
+                }
             }
         }
         Ok(true)
@@ -1268,7 +1311,9 @@ impl App {
                 }
             })
             .collect::<Vec<_>>();
-        let note = if rows.is_empty() {
+        let note = if self.demo {
+            "Enter opens it in this channel · Esc closes this list.\nIn the demo the Board is installed and approved."
+        } else if rows.is_empty() {
             "No app is installed in this community. At the shell: bzz app new <name>, then bzz app add <folder>."
         } else {
             "Enter opens the selected app in this channel · a shows its waiting version for your answer · :app share offers the open one here · :app close closes it · Esc closes this list. Only an approved app runs."
@@ -1288,6 +1333,12 @@ impl App {
         });
         self.presentation.open_overlay(Overlay::Apps);
         Ok(())
+    }
+
+    /// `bzz demo`'s Board: its cards in memory, where the approved Board
+    /// runs (`crate::demo::board`).
+    pub fn set_demo_board(&mut self, board: crate::demo::board::DemoBoard) {
+        self.apps.demo = Some(board);
     }
 
     /// Tests open an app on records in memory, with no store behind it.
@@ -1361,13 +1412,14 @@ impl AppPanes {
         redraw
     }
 
-    /// The ids the open apps have no name for.
+    /// The ids the open apps show, named or not: each is looked up once a
+    /// run, as the timeline's authors are (v0.17 F5).
     fn unnamed(&self) -> Vec<String> {
         let mut ids: Vec<String> = self
             .live
             .iter()
             .filter_map(live::Live::session_ref)
-            .flat_map(crate::apps::session::AppSession::unnamed)
+            .flat_map(crate::apps::session::AppSession::people)
             .collect();
         ids.sort();
         ids.dedup();
@@ -1498,7 +1550,7 @@ mod live {
     /// Where a session's records are.
     pub enum Where<'a> {
         Relay(&'a RecordsService),
-        #[cfg(test)]
+        /// A test's records, or `bzz demo`'s.
         Memory(&'a crate::apps::session::SharedStore),
     }
 
@@ -1511,7 +1563,6 @@ mod live {
         ) -> std::io::Result<AppSession> {
             match self {
                 Self::Relay(service) => AppSession::on_relay(script, options, service, channel),
-                #[cfg(test)]
                 Self::Memory(store) => {
                     let _ = channel;
                     AppSession::in_memory(script, options, store)
@@ -1617,6 +1668,10 @@ mod live {
                 #[cfg(test)]
                 Run::Tested { session } => {
                     for output in session.poll() {
+                        if matches!(output, Output::Close) {
+                            pending.push(Pending::Closed { channel });
+                            return true;
+                        }
                         redraw |= matches!(output, Output::Redraw | Output::Loaded { .. });
                     }
                     return redraw;
@@ -1803,8 +1858,9 @@ mod live {
             let Some(session) = self.session_mut() else {
                 return false;
             };
+            // Everyone it shows: a name bzz learns, or one that changed.
             let names: Vec<(String, String)> = session
-                .unnamed()
+                .people()
                 .into_iter()
                 .filter_map(|id| name_of(&id).map(|name| (id, name)))
                 .collect();

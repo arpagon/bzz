@@ -45,11 +45,12 @@ All text below is exact (ASCII, case-sensitive).
 | When | Status line contains |
 | --- | --- |
 | A load (`list`) is pending | `Loading...` |
-| A load succeeded | `Loaded N cards.` (N = records returned) |
+| A load succeeded | `Loaded N cards.` (N = cards shown in the three columns) |
 | A load failed | `Load failed. Press r to retry.` |
 | A write is pending | `Saving...` |
 | A write succeeded | `Saved.` |
 | A write failed (not a conflict) | `Save failed.` |
+| A move failed: the card was deleted meanwhile | `This card was deleted by NAME.`, or `This card was deleted meanwhile.` until bzz says who; the card leaves the board |
 | A conflict was merged and saved | `Conflict: merged with a newer change.` |
 
 - Nothing may be written outside the screen: no line wider than the terminal

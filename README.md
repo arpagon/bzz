@@ -17,20 +17,45 @@
 </p>
 
 <p align="center">
-  <a href="https://getbzz.dev/assets/promo-v015.mp4" title="Watch the launch film, with sound">
-    <img src="docs/assets/bzz-preview.webp" alt="bzz in action: channels, threads and reactions from the keyboard, offline search, creating an agent that bzz runs, its reply in a thread, approving a command it asks to run, moving it with its memory, a huddle, images and themes" width="860">
+  <a href="https://getbzz.dev/assets/promo-v016.mp4" title="Watch the launch film, with sound">
+    <img src="site/public/assets/poster-promo-v016.png" alt="bzz with the Board app beside the chat, changed in place by the agent's approved version, the same card still selected" width="860">
   </a>
   <br>
-  <sub>The real bzz binary, recorded in a terminal. <a href="https://getbzz.dev/assets/promo-v015.mp4">Watch the 55-second film with sound</a>.</sub>
+  <sub>The real bzz 0.16.0 binary, recorded in a terminal. <a href="https://getbzz.dev/assets/promo-v016.mp4">Watch the 55-second film with sound</a>.</sub>
 </p>
 
+<p align="center"><sub>An independent open-source project, not affiliated with, endorsed by, or sponsored by Block, Inc.</sub></p>
+
 <p align="center">
+  <a href="#try-it-in-60-seconds">Try it</a> ·
   <a href="#install">Install</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="#keys">Keys</a> ·
-  <a href="docs/release-v0.16.0.md">What's new in 0.16</a> ·
+  <a href="docs/release-v0.17.0.md">What's new in 0.17</a> ·
   <a href="docs/README.md">Docs</a>
 </p>
+
+## Try it in 60 seconds
+
+```sh
+curl -fsSL https://getbzz.dev/install.sh | sh
+bzz demo
+```
+
+`bzz demo` opens a generated team in your terminal: channels, a thread, a
+DM, an agent that answers when you mention it, a huddle in progress. It runs
+offline, asks for no account and no key, and leaves nothing behind when you
+quit. On Windows, install with the [PowerShell line](#install), then run
+`bzz demo`.
+
+**Requirements:** Linux (x86_64 and arm64) with glibc 2.34 or newer (Ubuntu
+22.04, Debian 12, Fedora 35, RHEL 9 or newer); macOS (Apple Silicon and
+Intel); Windows (x86_64). Huddle audio on Linux needs PipeWire or
+PulseAudio. No build for Alpine or other musl systems yet.
+
+**Compatibility:** tested against the Buzz relay at `block/buzz` revision
+[`bf3bdd0e`](docs/protocol-compatibility.md), and paired with Buzz desktop
+1.0.1.
 
 ## Who it's for
 
@@ -44,7 +69,20 @@ the keyboard. It speaks the Buzz protocol directly and is tested against
 the real Buzz relay, so your teammates on Buzz desktop and mobile see exactly
 what you send.
 
-> **New in 0.16 — apps in the channel.** A small app beside the
+> **New in 0.17 — the first minute.** `bzz demo` opens a generated team in
+> your terminal, offline. `:join` takes your community's address and lets
+> you in without a shell command. `Ctrl+K` finds and runs any action,
+> channel, person or theme, and shows its key; the status line shows the
+> keys of where you are, and Tab completes a `:` command. The huddle shows
+> who is speaking, and your own microphone, muted or not. Quiet frames with
+> a visible focus, a little motion you can turn off, and nothing drawn while
+> nothing changes. Panes fit any width, `z` shows the conversation alone,
+> and the mouse resizes them. On Linux bzz needs no sound library, and on
+> Windows `?`, `:` and every shifted symbol now reach it.
+> [Release notes](docs/release-v0.17.0.md), with what changes if you
+> already use bzz.
+>
+> **Since 0.16 — apps in the channel.** A small app beside the
 > conversation: a task board, a poll, a rota. Ask your agent for one, or
 > for a change to the one that is open ("add a priority and a filter to the
 > board"); you read and approve its exact bytes, and the board changes in
@@ -92,6 +130,15 @@ macOS and Linux:
 curl -fsSL https://getbzz.dev/install.sh | sh
 ```
 
+It checks this machine first (on Linux: the C library, and `tar` and `xz`
+to unpack) and says in one line what is missing, then runs the release's own
+installer. The script is [`site/public/install.sh`](site/public/install.sh).
+To run only the checks:
+
+```sh
+curl -fsSL https://getbzz.dev/install.sh | BZZ_CHECK_ONLY=1 sh
+```
+
 Windows (PowerShell):
 
 ```powershell
@@ -112,7 +159,24 @@ cargo install --git https://github.com/arpagon/bzz --locked
 
 ## Get started
 
-Create an identity, add your community and open bzz:
+To look around first, run `bzz demo`: a generated team, offline, that
+leaves nothing behind.
+
+Start `bzz` and type `:join`, then the address of your team's community
+(or the invite link an admin sent you); with no community yet, the first
+screen offers the same with `j`. bzz checks the address, makes you
+an identity (its key goes in the system's keychain, or in a file locked
+with a passphrase when there is none), and lets you in; when the
+community lets in members only, it shows the id to send to an admin and
+comes in by itself once they add you. You can also pair with Buzz
+desktop or import a key there.
+
+Inside bzz, `Ctrl-K` finds any action, channel, person, app or theme by
+name and shows its key, and the status line shows the keys that matter
+where the focus is. `?` lists every key; [docs/keys.md](docs/keys.md) is
+the same list.
+
+The same from the command line:
 
 ```sh
 bzz identity new --label personal
@@ -206,17 +270,21 @@ see none of this but the brief, which bzz posts as a message
 
 ## Keys
 
-Press `?` in bzz for the complete, current list.
+Press `?` in bzz for the complete, current list, and the commands after it
+(`j`, `PageDown` and `G` scroll it). Every key, command and shell-only
+action is in [docs/keys.md](docs/keys.md), generated from bzz's own table.
+The tables below are the ones to start with.
 
 | Key | Action |
 |---|---|
 | `j` `k` · `gg` `G` | Move down, up · jump to top, bottom |
 | `1`–`4` · `Tab` · `h` `l` | Focus communities, channels, conversation, context |
-| `Space` `Space` | Jump to any channel or DM |
+| `Space` `Space` | Jump to any channel or DM (`↓` `↑` or `Tab` choose, `Enter` opens) |
 | `Enter` | Open the selected thread |
 | `i` | Write (`Enter` sends, `Ctrl-j` adds a line) |
 | `@` | Mention someone; `Space` completes a unique name, `Tab` picks |
-| `r` · `e` | React · edit your own message |
+| `r` · `e` · `d` | React · edit your own message · delete it (asks) |
+| `u` | Mark the channel unread |
 | `/` | Search (`from:` `in:` `after:` `before:`; `Ctrl-o` loads older) |
 | `Space n` | Inbox: mentions, threads, DMs and drafts |
 | `Space a` | Every action for the selected item |
@@ -226,7 +294,9 @@ Press `?` in bzz for the complete, current list.
 | `5` · `Space 5` | Give the app the keyboard · zoom it (`Ctrl-c` gives the keyboard back) |
 | `Ctrl-y` | Read and answer a command an agent asks to run, or a version of an app |
 | `:` | Commands (below) |
-| `q` | Back, then quit |
+| `q` · `Esc` | Back, then quit · back (with nothing open, it does not quit) |
+| `z` | The conversation alone; `z` again brings the other panes back |
+| `Ctrl-K` · `Space k` | Find and run any action, channel, person, app or theme |
 
 In `:agents`: `Space` pauses or resumes an agent, `x` stops the turn it is
 running, `i` adds it to the open channel, `l` shows its log, `n` creates
@@ -239,7 +309,7 @@ another, `Tab` shows the agents other people run.
 | `:solo <name>` | Start a Solo chat |
 | `:section new <name>` | Put the selected channel in a new sidebar section; also `rename`, `delete`, `move <name>`, `remove`, `up`, `down` |
 | `:sort alpha\|recent\|default` | Sort the selected channel's sidebar group |
-| `:dm` · `:dm add` · `:dm hide` | New direct message · add someone · hide it |
+| `:dm` · `:dm add` · `:dm hide` | New direct message · add someone · hide it; also `:dm <npub>…`, `:dm add <npub>` |
 | `:inbox` · `:search` | Inbox · search |
 | `:agents` · `:agents directory` | Your agents: state, turns, pause, stop · the agents other people run |
 | `:agent new [name]` | Create an agent, in a form that asks what `bzz agent new` asks |
@@ -248,8 +318,9 @@ another, `Tab` shows the agents other people run.
 | `:app add <folder>` · `:app new <name>` · `:app dev <folder>` | Propose your folder · write one from a template · run your folder on the channel's records |
 | `:app pending\|approve\|refuse\|rollback\|enable\|disable\|remove <name>` | Answer and manage apps |
 | `:app share\|unshare\|brief [name]` | Offer the open app to the channel · withdraw it · post its brief |
-| `:huddle start\|join\|leave\|end\|mute` | Huddles with audio |
-| `:status <text>` · `:presence on\|off` | Your status · publish your presence (off by default) |
+| `:huddle start\|join\|leave\|end\|mute` | Huddles with audio; `:huddle zoom`, `:huddle style` for the visualizer |
+| `:status` · `:status <text>` · `:status clear` | Show your status · set it · clear it |
+| `:presence on\|off` | Publish your presence (off by default) |
 | `:profile` | The selected author's profile and verified identity |
 | `:artifacts` · `:tasks` | Channel artifacts · tasks assigned to you |
 | `:report <reason>` · `:tochannel` | Report a message · send a thread reply to the channel |
@@ -257,6 +328,7 @@ another, `Tab` shows the agents other people run.
 | `:signin` | Sign in to a community that requires federated identity |
 | `:system` | Show or hide System channels |
 | `:reconnect` · `:resync` · `:lock` | Recover the connection · reload history · lock the identity |
+| `:theme [name]` · `:help` · `:q` | Pick or set a theme · the keys and commands · quit |
 
 Outside the TUI, `bzz --help` lists everything: identities, communities,
 themes, media cache, your agents (`bzz agent`: `new`, `list`, `show`, `add`,
@@ -293,10 +365,15 @@ Details: [`docs/security.md`](docs/security.md).
 ## Compatibility
 
 bzz follows the Buzz protocol and is tested against a pinned `block/buzz`
-relay revision; the revision and every supported surface are listed in
-[`docs/protocol-compatibility.md`](docs/protocol-compatibility.md). It runs on
-Linux, macOS (Intel and Apple Silicon) and Windows. Huddle audio on Windows
-is experimental. Agents need Node.js 22.19 or newer and were proven on Linux;
+relay revision (`bf3bdd0eaefe39289bf9620594f254c7f68897f5`); the revision and
+every supported surface are listed in
+[`docs/protocol-compatibility.md`](docs/protocol-compatibility.md). Pairing
+with the Buzz app was proven with Buzz desktop 1.0.1. It runs on Linux
+(x86_64 and arm64, glibc 2.34 or newer), macOS (Intel and Apple Silicon) and
+Windows. On Linux bzz needs no sound library; huddle audio needs PipeWire or
+PulseAudio running in your session, as every current desktop has (a machine
+with ALSA alone has no huddle audio, and joining says so). Huddle audio on
+Windows is experimental. Agents need Node.js 22.19 or newer and were proven on Linux;
 on macOS and Windows no agent has been run, only its tests in CI. Apps need
 nothing installed; they were run on Linux, and on macOS and Windows only
 their tests run, in CI. On Windows a paste reaches an app (and the writing

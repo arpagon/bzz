@@ -5,7 +5,7 @@
 //! corresponding typed effect only after the user activates an enabled entry.
 
 use crate::ui::{
-    keymap::{KeyScope, UiAction},
+    keymap::{KeyMap, KeyScope, UiAction},
     state::{FocusSurface, Route},
 };
 
@@ -123,35 +123,35 @@ pub fn derive(context: ActionContext) -> Vec<ContextAction> {
             add(inbox_action(
                 context,
                 UiAction::Compose,
-                "reply in place",
+                title("inbox.reply"),
                 context.inbox_can_reply,
                 "selected Inbox work has no reply target",
             ));
             add(inbox_action(
                 context,
                 UiAction::OpenCanonicalContext,
-                "open source context",
+                title("inbox.open_source"),
                 context.inbox_has_context,
                 "selected Inbox work has no source context",
             ));
             add(inbox_action(
                 context,
                 UiAction::MarkRead,
-                "mark read",
+                title("inbox.mark_read"),
                 context.has_inbox_selection,
                 "select Inbox work first",
             ));
             add(inbox_action(
                 context,
                 UiAction::MarkUnread,
-                "mark unread",
+                title("inbox.mark_unread"),
                 context.has_inbox_selection,
                 "select Inbox work first",
             ));
             add(inbox_action(
                 context,
                 UiAction::MarkVisibleRead,
-                "mark visible rows read",
+                title("inbox.mark_visible_read"),
                 context.inbox_visible_count > 0,
                 "no Inbox rows are visible",
             ));
@@ -159,65 +159,69 @@ pub fn derive(context: ActionContext) -> Vec<ContextAction> {
         (Route::Workspace, FocusSurface::Communities) => {
             add(ContextAction::enabled(
                 UiAction::ActivateFocused,
-                "open community",
+                title("item.open"),
             ));
             add(ContextAction::enabled(
                 UiAction::OpenOptions,
-                "workspace options",
+                title("theme.pick"),
             ));
         }
         (Route::Workspace, FocusSurface::Channels) => {
             add(ContextAction::enabled(
                 UiAction::ActivateFocused,
-                "open channel",
+                title("item.open"),
             ));
             add(channel_action(
                 context,
                 UiAction::Compose,
-                "compose message",
+                title("msg.compose"),
             ));
             add(ContextAction::enabled(
                 UiAction::ChannelSwitcher,
-                "find channel or DM",
+                title("finder.open"),
             ));
         }
         (Route::Workspace, FocusSurface::Timeline | FocusSurface::Context) => {
-            add(channel_action(context, UiAction::Compose, "reply"));
+            add(channel_action(
+                context,
+                UiAction::Compose,
+                title("msg.compose"),
+            ));
             add(event_action(
                 context,
                 UiAction::ToggleThread,
                 if context.context_open {
-                    "close context"
+                    "Close thread"
                 } else {
-                    "open context"
+                    title("msg.thread")
                 },
             ));
             add(event_action(
                 context,
                 UiAction::CopyMessages,
-                "copy message",
+                title("msg.copy"),
             ));
-            add(event_publish_action(context, UiAction::React, "react"));
-            add(own_event_action(
+            add(event_publish_action(
                 context,
-                UiAction::Edit,
-                "edit own message",
+                UiAction::React,
+                title("msg.react"),
             ));
+            add(own_event_action(context, UiAction::Edit, title("msg.edit")));
             add(own_event_action(
                 context,
                 UiAction::Delete,
-                "delete own message",
+                title("msg.delete"),
             ));
             add(event_publish_action(
                 context,
                 UiAction::MarkUnread,
-                "mark unread",
+                title("msg.mark_unread"),
             ));
             add(media_action(context));
             add(event_action(
                 context,
                 UiAction::ViewProfile,
-                "view author profile",
+                title("msg.profile"),
             ));
         }
         _ => {}
@@ -311,18 +315,34 @@ const fn own_event_action(
     }
 }
 
-const fn media_action(context: ActionContext) -> ContextAction {
+fn media_action(context: ActionContext) -> ContextAction {
+    let label = title("msg.preview_media");
     if !context.has_selected_event {
-        ContextAction::unavailable(UiAction::Preview, "preview media", "select a message first")
+        ContextAction::unavailable(UiAction::Preview, label, "select a message first")
     } else if !context.selected_event_has_media {
-        ContextAction::unavailable(
-            UiAction::Preview,
-            "preview media",
-            "selected message has no media",
-        )
+        ContextAction::unavailable(UiAction::Preview, label, "selected message has no media")
     } else {
-        ContextAction::enabled(UiAction::Preview, "preview media")
+        ContextAction::enabled(UiAction::Preview, label)
     }
+}
+
+/// The title of the registry's row `id`: the menu says what the palette and
+/// the help say (v0.17 C8).
+fn title(id: &str) -> &'static str {
+    crate::ui::action_table::by_id(id).map_or("", |(_, row)| row.title)
+}
+
+/// One line of the actions menu: the key the live key map gives the action
+/// where the menu opened, the row's title, and why it cannot run.
+pub fn menu_line(entry: &ContextAction, keymap: &KeyMap, scope: KeyScope) -> String {
+    let key = crate::ui::palette::key_label(keymap, scope, entry.action);
+    // The key first, as the help and the leader panel write it.
+    let mut line = format!("{key:<6} {}", entry.label);
+    if let Some(reason) = entry.reason {
+        line.push_str(" \u{2014} ");
+        line.push_str(reason);
+    }
+    line
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

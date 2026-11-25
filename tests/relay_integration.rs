@@ -2938,6 +2938,177 @@ async fn real_relay_huddle_lifecycle_and_audio_round_trip() {
     alice_supervisor.shutdown().await;
 }
 
+/// v0.17 B1: a person who joins the call after you has a name, and their
+/// own level reaches your visualizer while their generated tone plays (and
+/// not before). Alice joins first; Bob joins later and speaks.
+#[cfg(feature = "huddles-audio")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_huddle_names_a_late_joiner_and_shows_their_level() {
+    use bzz::{
+        huddle::{audio, meter::Meter, synth},
+        protocol::huddle,
+    };
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let alice_keys = Keys::generate();
+    let bob_keys = Keys::generate();
+    let _ = seed_member(&source, &alice_keys.public_key().to_hex());
+    let _ = seed_member(&source, &bob_keys.public_key().to_hex());
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let alice = SignerHandle::spawn(alice_keys.clone());
+    let bob = SignerHandle::spawn(bob_keys.clone());
+    let ws = url::Url::parse("ws://localhost:3030/").unwrap();
+    let supervisor = SupervisorHandle::spawn(ws.clone(), alice.clone());
+    let publish = |builder: EventBuilder| {
+        let alice = alice.clone();
+        let supervisor = supervisor.clone();
+        async move {
+            let event = alice.sign(builder).await.unwrap();
+            let ack = supervisor.publish(event).await.unwrap();
+            assert!(ack.accepted, "{}", ack.message);
+        }
+    };
+    let parent = uuid::Uuid::new_v4();
+    publish(
+        buzz_sdk::build_create_channel(
+            parent,
+            &format!("viz-{}", &parent.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Open),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    publish(buzz_sdk::build_add_member(parent, &bob_keys.public_key().to_hex(), None).unwrap())
+        .await;
+    let backing = uuid::Uuid::new_v4();
+    publish(huddle::backing_channel(backing).unwrap()).await;
+    publish(huddle::started(parent, backing).unwrap()).await;
+
+    // Alice is alone in the call: nobody else has a name or a lane.
+    let alice_joined = audio::join(&ws, backing, parent, &alice).await.unwrap();
+    let (alice_capture, alice_capture_rx) = tokio::sync::mpsc::channel(64);
+    let (alice_playback, _alice_playback_rx) = tokio::sync::mpsc::channel(256);
+    let alice_call = audio::start(alice_joined, alice_capture_rx, alice_playback).unwrap();
+    assert!(alice_call.others().is_empty());
+    // Muted, her microphone's level still reaches her own lane.
+    assert!(alice_call.is_muted());
+    let _ = alice_call.levels.take_mic();
+    for frame in 0..10_u64 {
+        alice_capture
+            .send(synth::tone(1000.0, -20.0, frame * 960, 960))
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mic = alice_call
+        .levels
+        .take_mic()
+        .expect("a muted microphone's level");
+    assert!(mic > -25.0, "{mic}");
+
+    // Bob joins after her.
+    let bob_joined = audio::join(&ws, backing, parent, &bob).await.unwrap();
+    let (bob_capture, bob_capture_rx) = tokio::sync::mpsc::channel(64);
+    let (bob_playback, _bob_playback_rx) = tokio::sync::mpsc::channel(256);
+    let bob_call = audio::start(bob_joined, bob_capture_rx, bob_playback).unwrap();
+    let bob_hex = bob_keys.public_key().to_hex();
+    let mut named = None;
+    for _ in 0..50 {
+        named = alice_call
+            .others()
+            .into_iter()
+            .find(|(_, pubkey)| *pubkey == bob_hex);
+        if named.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (bob_index, _) = named.expect("Alice's call names Bob, who joined after her");
+    assert_eq!(bob_index, bob_call.index);
+
+    // Alice's meter, read every 33 ms as the interface does, while Bob sends
+    // 1 s of silence and then 1.5 s of 1 kHz at -20 dBFS, unmuted.
+    let started = std::time::Instant::now();
+    let meter = std::sync::Arc::new(std::sync::Mutex::new(Meter::default()));
+    let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let reader = {
+        let meter = meter.clone();
+        let levels = alice_call.levels.clone();
+        tokio::spawn(async move {
+            let mut speaking_at = Vec::new();
+            let mut tick = tokio::time::interval(Duration::from_millis(33));
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => break,
+                    _ = tick.tick() => {
+                        let now = started.elapsed().as_secs_f64();
+                        let mut meter = meter.lock().unwrap();
+                        meter.update(levels.as_ref(), &[bob_index], now);
+                        if meter.peer(bob_index).is_some_and(|track| track.speaking()) {
+                            speaking_at.push(now);
+                        }
+                    }
+                }
+            }
+            speaking_at
+        })
+    };
+    bob_call.set_muted(false);
+    let tone_from = 1.0;
+    let tone_to = 2.5;
+    let mut sample = 0_u64;
+    let mut frame_at = tokio::time::Instant::now();
+    for frame in 0..175_u64 {
+        let t = frame as f64 * 0.02;
+        let chunk = if (tone_from..tone_to).contains(&t) {
+            synth::tone(1000.0, -20.0, sample, 960)
+        } else {
+            vec![0.0; 960]
+        };
+        sample += 960;
+        bob_capture.send(chunk).await.unwrap();
+        frame_at += Duration::from_millis(20);
+        tokio::time::sleep_until(frame_at).await;
+    }
+    let _ = stop_tx.send(());
+    let speaking_at = reader.await.unwrap();
+    let first = *speaking_at
+        .first()
+        .expect("Bob's lane lit while his tone played");
+    let last = *speaking_at.last().unwrap();
+    println!(
+        "B1 relay: Bob (joined second) speaking on Alice's meter from {first:.2} s to {last:.2} s; tone 1.00 to 2.50 s"
+    );
+    assert!(first >= tone_from, "not before the tone: {first}");
+    assert!(
+        first < tone_from + 0.5,
+        "soon after the tone starts: {first}"
+    );
+    assert!(
+        last > tone_to - 0.1 && last < tone_to + 1.0,
+        "until about its end: {last}"
+    );
+
+    // Bob leaves: Alice's call forgets him.
+    bob_call.stop().await;
+    let mut gone = false;
+    for _ in 0..50 {
+        if alice_call.others().is_empty() {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(gone, "Alice's call drops Bob when he leaves");
+    alice_call.stop().await;
+    publish(huddle::ended(parent, backing).unwrap()).await;
+    supervisor.shutdown().await;
+}
+
 /// v0.13 M2.2: NIP-CL public membership lookup (kind 39009), the spec's
 /// normative example on the pinned relay.
 #[tokio::test]
@@ -9233,11 +9404,13 @@ async fn real_relay_app_session_two_profiles_share_a_board() {
             ana_pane.screen();
             ben_pane.screen();
         } else {
-            // Ben's a moment sooner: Ana's bzz may know the new head by
-            // the time her write would be sent. To her script the answer
-            // is the same conflict.
-            ben_pane.screen();
-            tokio::time::sleep(Duration::from_millis(60)).await;
+            // Ben's first, and stored before Ana's is carried: her bzz may
+            // know the new head by the time her write would be sent. To
+            // her script the answer is the same conflict. (A head start of
+            // 60 ms was not enough to say whose write the relay takes
+            // first: once in CI Ana's was stored first in both of these
+            // rounds, and nobody was left to be told in her place.)
+            ben_pane.settled(SAVED).await;
             ana_pane.screen();
         }
         let mut ends = Vec::new();
@@ -11027,4 +11200,297 @@ async fn real_relay_an_agent_changes_the_open_board_and_is_told_it_was_applied()
     drop(cards);
     owner_supervisor.shutdown().await;
     owner.lock().await;
+}
+
+/// v0.17 F1 to F5, on the pinned relay, with two clients: what the films of
+/// v0.16 found with Buzz desktop and bzz on one Board. Ana runs the Board
+/// fixture; Ben is the other client, writing records and his profile
+/// through bzz's records service and supervisor, not through Lua.
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[ignore = "requires scripts/test-relay.sh"]
+async fn real_relay_v017_the_board_keeps_fields_its_own_burst_deletions_and_new_names() {
+    use bzz::apps::session::SessionOptions;
+    use bzz::protocol::artifact;
+    use bzz::service::records::{RecordEvent, SyncState};
+    use serde_json::json;
+    use support::app_pane::{Pane, board_cards, last_row};
+
+    const BOARD: &str = include_str!("fixtures/apps/board/app.lua");
+    let source = std::env::var("BZZ_BUZZ_SOURCE").expect("relay wrapper sets source");
+    let folder = tempfile::tempdir().unwrap();
+    let ana = RecordsProfile::person(&source, folder.path(), "ana", "member").await;
+    let ben = RecordsProfile::person(&source, folder.path(), "ben", "member").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let channel = uuid::Uuid::new_v4();
+    ana.send(
+        buzz_sdk::build_create_channel(
+            channel,
+            &format!("v017-{}", &channel.simple().to_string()[..8]),
+            Some(buzz_sdk::Visibility::Private),
+            Some(buzz_sdk::ChannelKind::Stream),
+            None,
+            None,
+            false,
+        )
+        .unwrap(),
+    )
+    .await;
+    ana.send(buzz_sdk::build_add_member(channel, &ben.pubkey(), None).unwrap())
+        .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let names: std::collections::HashMap<String, String> = [
+        (ana.pubkey(), "ana".to_owned()),
+        (ben.pubkey(), "ben".to_owned()),
+    ]
+    .into();
+    let (ben_app, mut ben_events) = ben.service.open(channel, "board", &["card"]).await.unwrap();
+    while !matches!(
+        tokio::time::timeout(Duration::from_secs(20), ben_events.recv()).await,
+        Ok(Some(RecordEvent::State(SyncState::Live)))
+    ) {}
+    // The head of a record, as the relay holds it.
+    let head = |id: uuid::Uuid| {
+        let http = ana.http.clone();
+        async move {
+            http.query_raw(&[artifact::head_filter(id)])
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|event| artifact::parse(event).is_ok_and(|head| head.id == id))
+                .expect("a head")
+        }
+    };
+
+    // F1 and F4. Ben writes a card with what Lua has no form for, and an
+    // `order` of seventeen digits.
+    let odd = json!({
+        "title": "Odd", "column": "todo", "order": 1_795_537_221.199_123_9_f64,
+        "gone": null, "nested": {"a": 1, "b": null}, "meta": {}, "list": [1, null, 3],
+        "big": 12_345_678_901_234_567_890_u64,
+    });
+    let card = ben_app
+        .create("card", odd.as_object().unwrap().clone())
+        .await
+        .unwrap();
+    let written = head(card.id).await.content;
+    assert!(written.contains("1795537221.1991239"), "{written}");
+    // The app's budget of writes, on a clock the test reads too: it counts
+    // every write sent, refused or not.
+    let clock = bzz::apps::runtime::SystemClock::shared();
+    let budget = std::sync::Arc::new(std::sync::Mutex::new(
+        bzz::protocol::record::WriteBudget::default(),
+    ));
+    let mut pane = Pane::open_with(
+        &ana.service,
+        channel,
+        BOARD,
+        SessionOptions::new("board")
+            .names(names.clone())
+            .clock(clock.clone())
+            .budget(budget.clone()),
+    );
+    pane.settled("Loaded 1 cards.").await;
+    pane.key("]");
+    pane.settled("Saved.").await;
+    let moved = head(card.id).await;
+    assert_eq!(moved.pubkey.to_hex(), ana.pubkey());
+    // Byte for byte, but the column.
+    assert_eq!(
+        moved.content,
+        written.replace("\"column\":\"todo\"", "\"column\":\"doing\""),
+        "as Ben wrote it:\n{written}"
+    );
+    eprintln!(
+        "F1: Ben's card after Ana's Board moved it: {}",
+        moved.content
+    );
+
+    // F2. Twenty-five moves while no reply has come: none refused, each
+    // sent on the revision the one before made, within the app's budget.
+    pane.key("[");
+    pane.until("the card back in To do", |screen, _| {
+        last_row(screen) == "Saved." && board_cards(screen)["todo"] == ["Odd"]
+    })
+    .await;
+    let started = std::time::Instant::now();
+    for n in 0..25 {
+        pane.key(if n % 2 == 0 { "]" } else { "[" });
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let screen = pane
+        .until("the burst answered", |screen, status| {
+            seen.insert(last_row(screen).to_owned());
+            // The Board says "Saving..." while a move of its own is on its
+            // way; the screen before the keys said "Saved." already.
+            seen.contains("Saving...") && last_row(screen) == "Saved." && status.wait.is_none()
+        })
+        .await;
+    // Let any late answer arrive, and look again.
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        seen.insert(last_row(&pane.screen()).to_owned());
+    }
+    eprintln!(
+        "F2: 25 moves answered in {} ms; status lines seen: {seen:?}",
+        started.elapsed().as_millis()
+    );
+    assert!(
+        seen.iter()
+            .all(|row| ["Saving...", "Saved."].contains(&row.as_str())),
+        "{seen:?}"
+    );
+    assert_eq!(board_cards(&screen)["doing"], ["Odd"], "{screen}");
+    // What was sent: the first move, its way back and the twenty-five,
+    // and nothing more. A refused move would have cost a write and its
+    // merge another.
+    let mut left = 0;
+    while budget.lock().unwrap().spend(clock.elapsed()).is_ok() && left < 40 {
+        left += 1;
+    }
+    let sent = 30 - left;
+    let history = ana
+        .http
+        .query_raw(&[json!({"artifact": "history", "#d": [card.id.to_string()]})])
+        .await
+        .unwrap();
+    let ours = history
+        .iter()
+        .filter(|event| event.pubkey.to_hex() == ana.pubkey())
+        .count();
+    eprintln!(
+        "F2: Ana's Board sent {sent} writes in all; the relay's history holds {} revisions, {ours} of Ana's",
+        history.len()
+    );
+    assert_eq!(sent, 27);
+    let last = head(card.id).await;
+    assert_eq!(
+        last.content,
+        written.replace("\"column\":\"todo\"", "\"column\":\"doing\"")
+    );
+
+    // F3. Ben deletes a card while Ana moves it. A pane of its own: the
+    // budget above is spent.
+    drop(pane);
+    let mut pane = Pane::open_with(
+        &ana.service,
+        channel,
+        BOARD,
+        SessionOptions::new("board").names(names.clone()),
+    );
+    pane.settled("Loaded 1 cards.").await;
+    let doomed = ben_app
+        .create(
+            "card",
+            json!({"title": "Doomed", "column": "todo", "order": 0})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .await
+        .unwrap();
+    pane.until("the doomed card", |screen, _| screen.contains("Doomed"))
+        .await;
+    pane.key("h");
+    pane.until("the doomed card selected", |screen, _| {
+        screen.contains("> Doomed")
+    })
+    .await;
+    ben_app.delete(doomed.id, &doomed.revision).await.unwrap();
+    pane.key("]");
+    let screen = pane.settled("This card was deleted by ben.").await;
+    assert!(!screen.contains("Doomed"), "{screen}");
+    // The count is of what is shown.
+    pane.key("r");
+    let screen = pane.settled("Loaded 1 cards.").await;
+    assert_eq!(
+        board_cards(&screen).values().map(Vec::len).sum::<usize>(),
+        1
+    );
+    drop(pane);
+    drop(ben_app);
+
+    // F5. Ana holds Ben's profile; Ben renames himself while Ana's bzz
+    // runs. The global stream brings the new one, which replaces it.
+    let profile = |name: &str| {
+        EventBuilder::new(
+            Kind::Metadata,
+            json!({"name": name, "display_name": name}).to_string(),
+        )
+    };
+    ben.send(profile("Watcher")).await;
+    let community = ana.community;
+    let ben_key = ben.pubkey();
+    bzz::sync::directory::hydrate_profiles(community, [ben_key.clone()], &ana.http, &ana.handle)
+        .await
+        .unwrap();
+    assert_eq!(
+        label_of(&ana.handle, community, &ben_key).await.as_deref(),
+        Some("Watcher")
+    );
+    let mut events = ana.supervisor.subscribe_events();
+    ana.supervisor
+        .subscribe(
+            "global-stream",
+            bzz::realtime::subscriptions::global_stream(Timestamp::now().as_secs()),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // A second apart: a profile is replaced by a newer one.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let started = std::time::Instant::now();
+    let renamed = ben.send(profile("Cy")).await;
+    let arrived = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(bzz::realtime::supervisor::SupervisorEvent::Session(SessionEvent::Event {
+                event,
+                ..
+            })) = events.recv().await
+                && event.id == renamed.id
+            {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("the new profile on the global stream");
+    eprintln!(
+        "F5: Ben's new profile reached Ana's global stream {} ms after it was sent",
+        started.elapsed().as_millis()
+    );
+    let event = arrived.clone();
+    ana.handle
+        .call(move |store| store.apply_event(community, &event))
+        .await
+        .unwrap();
+    assert_eq!(
+        label_of(&ana.handle, community, &ben_key).await.as_deref(),
+        Some("Cy")
+    );
+    // And after a restart, where nothing live is heard: a held profile is
+    // asked for again once a run.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    ben.send(profile("Cy 2")).await;
+    bzz::sync::directory::hydrate_profiles(community, [ben_key.clone()], &ana.http, &ana.handle)
+        .await
+        .unwrap();
+    assert_eq!(
+        label_of(&ana.handle, community, &ben_key).await.as_deref(),
+        Some("Cy 2")
+    );
+    for profile in [ana, ben] {
+        profile.stop().await;
+    }
+}
+
+/// The name `store` shows for `pubkey`.
+#[cfg(feature = "apps")]
+async fn label_of(store: &StoreHandle, community: uuid::Uuid, pubkey: &str) -> Option<String> {
+    let pubkey = pubkey.to_owned();
+    store
+        .call(move |store| store.profile(community, &pubkey))
+        .await
+        .unwrap()
+        .map(|profile| profile.label())
 }

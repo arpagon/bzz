@@ -2310,7 +2310,18 @@ async fn the_owner_stops_a_running_turn_and_it_ends_once() {
             {"match": "after", "steps": [send("back again", true)]},
         ]),
     );
-    let host = world.host(Harness::PiDurable).await;
+    // A harness that honours the cancel answers within the grace; one on a
+    // loaded machine took more than 400 ms, and was stopped as if deaf.
+    const GRACE: Duration = Duration::from_secs(3);
+    let host = world
+        .host_with(
+            world.settings(Harness::PiDurable),
+            Limits {
+                cancel_grace: GRACE,
+                ..limits()
+            },
+        )
+        .await;
     assert_eq!(host.stop_turns(world.agent).await, 0, "nothing runs yet");
     let running_turn = |host: &AgentHost| {
         let host = host.clone();
@@ -2327,6 +2338,8 @@ async fn the_owner_stops_a_running_turn_and_it_ends_once() {
         (!world.script.received("session/prompt").is_empty()).then_some(())
     })
     .await;
+    let first_pid = world.script.starts()[0];
+    let stopped_at = tokio::time::Instant::now();
     assert_eq!(host.stop_turns(world.agent).await, 1);
     let row = world.settled(&long).await;
     assert_eq!(
@@ -2339,7 +2352,10 @@ async fn the_owner_stops_a_running_turn_and_it_ends_once() {
         "neither the text so far nor what the harness would have sent"
     );
     assert_eq!(world.script.received("session/cancel").len(), 1);
+    // Its process stays, also once the grace is over.
+    tokio::time::sleep_until(stopped_at + GRACE + Duration::from_millis(200)).await;
     assert_eq!(host.status()[0].phase, Phase::Running, "its process stays");
+    assert!(running(first_pid), "its process stays");
 
     // A harness deaf to the cancel is stopped; the turn is not run again.
     let deaf = world.ask(&host, "a deaf question").await;
@@ -2354,7 +2370,6 @@ async fn the_owner_stops_a_running_turn_and_it_ends_once() {
         (row.state, row.failure.as_deref(), row.attempts),
         (RequestState::Failed, Some("stopped"), 1)
     );
-    let first_pid = world.script.starts()[0];
     until("the deaf harness to be stopped", WAIT, || {
         (!running(first_pid)).then_some(())
     })
@@ -4275,14 +4290,16 @@ async fn a_pause_in_another_process_stops_a_running_agent_and_a_resume_runs_it_a
     })
     .await;
     assert_eq!(world.presence().as_deref(), Some("offline"));
-    let status = host.status().remove(0);
-    assert!(
-        status
+    // The reason is written once the process is stopped, a moment after
+    // it is gone: waited for, not looked at once.
+    until("the status to say why", WAIT, || {
+        host.status()
+            .remove(0)
             .line()
-            .contains("paused by its owner, with `bzz agent pause`"),
-        "{}",
-        status.line()
-    );
+            .contains("paused by its owner, with `bzz agent pause`")
+            .then_some(())
+    })
+    .await;
     // What is said while it is paused is not answered later.
     let second = world.mention("second, while it is paused");
     assert_eq!(world.offer(&host, &second).await, Offer::NotRunning);

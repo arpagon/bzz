@@ -55,6 +55,17 @@ pub fn load(reference: &str) -> Result<String> {
         .map_err(|error| classify_load_error(reference, error))
 }
 
+/// Whether this system has a credential service bzz can use, asked by
+/// reading an entry that does not exist: nothing is written. A machine with
+/// no keychain (a container, a session over SSH) answers `false`, and a key
+/// goes in an encrypted file with a passphrase instead.
+pub fn available() -> bool {
+    match load("probe:availability") {
+        Ok(_) | Err(Error::IdentityMissing(_) | Error::IdentityCorrupt(_)) => true,
+        Err(_) => false,
+    }
+}
+
 pub fn delete(reference: &str) -> Result<()> {
     match entry(reference)?.delete_credential() {
         Ok(()) | Err(KeyringError::NoEntry) => Ok(()),

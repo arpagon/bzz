@@ -139,14 +139,15 @@ async fn client_for(url: &Url) -> Result<Client> {
             "profile avatar host resolved to a prohibited address".into(),
         ));
     }
-    Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(8))
-        .timeout(Duration::from_secs(20))
-        .resolve_to_addrs(host, &addresses)
-        .build()
-        .map_err(|_| Error::Network("profile avatar client could not start".into()))
+    crate::protocol::http::build_client(|| {
+        Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(8))
+            .timeout(Duration::from_secs(20))
+            .resolve_to_addrs(host, &addresses)
+    })
+    .map_err(|_| Error::Network("profile avatar client could not start".into()))
 }
 
 fn public_ip(ip: IpAddr) -> bool {

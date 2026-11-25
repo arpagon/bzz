@@ -1,0 +1,3 @@
+ NORMAL  🎧  ▄▂▆▄▄▆▆▆▆▆▆▆ Ada and Lin · mic muted                       ● online
+--- styles ---
+0: 0-7 Black/Cyan/NONE 12-16 Indexed(243)/Reset/NONE 17-17 Indexed(96)/Reset/NONE 18-18 Indexed(103)/Reset/NONE 19-20 Indexed(139)/Reset/NONE 21-21 Indexed(140)/Reset/NONE 22-22 Indexed(73)/Reset/NONE 23-23 Indexed(176)/Reset/NONE 25-35 Indexed(44)/Reset/BOLD 36-47 Indexed(242)/Reset/NONE 70-72 Green/Reset/NONE

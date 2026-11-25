@@ -33,10 +33,21 @@ export function bareEnv(home, extra = {}) {
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Resolves with `promise`, or fails with what was being waited for. A hung host fails a test instead of the run. */
+/**
+ * Room added to this client's own waits (a request's answer, the host's exit) on a runner known to be slow: CI sets
+ * `BZZ_AGENT_HOST_WAIT_MARGIN_MS` where the hosted machines start Node and load packages several times slower than
+ * Linux does (macOS on Intel). A bound a test states itself is a claim about the host and gets no margin.
+ */
+export const WAIT_MARGIN_MS = Math.max(0, Number(process.env.BZZ_AGENT_HOST_WAIT_MARGIN_MS) || 0);
+
+/**
+ * Resolves with `promise`, or fails with what was being waited for. A hung host fails a test instead of the run.
+ * `what` may be a function, read when the time is up (the host's log as it is then, not as it was at the start).
+ */
 export function within(ms, promise, what) {
 	let timer;
-	return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms: ${what}`)), ms); })]).finally(() => clearTimeout(timer));
+	const said = () => (typeof what === "function" ? what() : what);
+	return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms: ${said()}`)), ms); })]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -73,12 +84,21 @@ export function startHost(t, folder, { env, onTool, command = [process.execPath,
 		exited: new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal }))),
 		onTool: onTool ?? ((params) => ({ text: `sent as ${host.tools.length}`, final: params.arguments?.final === true })),
 		write: (message) => child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`),
-		rpc(method, params, ms = 30_000) {
+		rpc(method, params, ms = 30_000 + WAIT_MARGIN_MS) {
 			const id = ++next;
-			return within(ms, new Promise((resolve, reject) => {
+			const started = performance.now();
+			const answered = within(ms, new Promise((resolve, reject) => {
 				pending.set(id, { resolve, reject });
 				host.write({ id, method, params });
-			}), `${method}\n${stderr.slice(-2000)}`);
+			}), () => `${method} (the host's log so far follows)\n${stderr.slice(-2000)}`);
+			// A slow start is said in the test's output, so a runner's times can be read from its log.
+			if (method === "initialize") {
+				answered.then(() => {
+					const took = Math.round(performance.now() - started);
+					if (took >= 5_000) t.diagnostic(`initialize took ${took} ms`);
+				}, () => {});
+			}
+			return answered;
 		},
 		notify: (method, params) => host.write({ method, params }),
 		async initialize(bzz = {}) {
@@ -89,7 +109,7 @@ export function startHost(t, folder, { env, onTool, command = [process.execPath,
 		},
 		prompt: (sessionId, request, text = "ann: hello") => host.rpc("session/prompt", { sessionId, prompt: [{ type: "text", text }], _meta: { "bzz/request": request } }),
 		/** Closes the host's input, as bzz does to stop it, and waits for it to leave. */
-		async stop(ms = 5_000) {
+		async stop(ms = 5_000 + WAIT_MARGIN_MS) {
 			child.stdin.end();
 			return within(ms, host.exited, "the host to exit after its input ended");
 		},

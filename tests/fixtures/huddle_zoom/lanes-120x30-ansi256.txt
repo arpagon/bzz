@@ -1,0 +1,48 @@
+ huddle in #team · 4 in the call · Ada and Lin at once                                      lanes · one lane per person
+                              12s ago                                                                              now
+                                                                                      ▁▁
+                                                                                ▆▆▅▆▆▇██▆▇▇▇▇▆▇▇▅                 ▆▆▅▂
+ ▐A▌ Ada                      ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁██████████████████▅▁▁▁ ▁ ▁ ▁ ▁ ▁ ▁▁████
+ ▐ ▌ ● live                                                                    ██████████████████▀▔▔             ▔████
+                                                                                ▀▀▀▀▀▀██▀▀▀▀▀▀▀▀▀                 ▀▀▀▔
+                                                                                      ▔▔
+
+                                                                                                    ▇▆▄▅▆▇▆██▆▅▇▇▇▆▅▆▆
+ ▐L▌ Lin                      ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁▇██████████████████
+ ▐ ▌ ● live                                                                                        ▀██████████████████
+                                                                                                    ▀▀▀▀▀▀▀██▀▀▀▀▀▀▀▀▀
+
+
+
+  S  Sam                      ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁
+     quiet
+
+
+
+
+  Y  You · your microphone    ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁ ▁
+     muted
+
+
+
+
+
+ mic muted · nobody hears you                                                                 v style · z back · m mute
+--- styles ---
+0: 1-53 Indexed(44)/Reset/BOLD 92-118 Indexed(242)/Reset/NONE
+1: 30-36 Indexed(242)/Reset/NONE 115-117 Indexed(242)/Reset/NONE
+2: 86-87 Indexed(66)/Reset/NONE
+3: 80-87 Indexed(66)/Reset/NONE 88-96 Indexed(73)/Reset/NONE 114-115 Indexed(73)/Reset/NONE 116-117 Indexed(44)/Reset/NONE
+4: 1-1 Indexed(44)/Reset/NONE 2-2 Indexed(233)/Indexed(44)/BOLD 3-3 Indexed(44)/Reset/NONE 5-7 Indexed(44)/Reset/BOLD 30-78 Indexed(242)/Reset/DIM 79-87 Indexed(66)/Reset/NONE 88-99 Indexed(73)/Reset/NONE 100-112 Indexed(242)/Reset/DIM 113-115 Indexed(73)/Reset/NONE 116-117 Indexed(44)/Reset/NONE
+5: 1-1 Indexed(44)/Reset/NONE 2-2 Indexed(233)/Indexed(44)/BOLD 3-3 Indexed(44)/Reset/NONE 5-10 Indexed(44)/Reset/NONE 79-87 Indexed(66)/Reset/NONE 88-99 Indexed(73)/Reset/NONE 113-115 Indexed(73)/Reset/NONE 116-117 Indexed(44)/Reset/NONE
+6: 80-87 Indexed(66)/Reset/NONE 88-96 Indexed(73)/Reset/NONE 114-115 Indexed(73)/Reset/NONE 116-117 Indexed(44)/Reset/NONE
+7: 86-87 Indexed(66)/Reset/NONE
+9: 100-101 Indexed(139)/Reset/NONE 102-108 Indexed(140)/Reset/NONE 109-117 Indexed(176)/Reset/NONE
+10: 1-1 Indexed(176)/Reset/NONE 2-2 Indexed(233)/Indexed(176)/BOLD 3-3 Indexed(176)/Reset/NONE 5-7 Indexed(176)/Reset/BOLD 30-98 Indexed(242)/Reset/DIM 99-101 Indexed(139)/Reset/NONE 102-108 Indexed(140)/Reset/NONE 109-117 Indexed(176)/Reset/NONE
+11: 1-1 Indexed(176)/Reset/NONE 2-2 Indexed(233)/Indexed(176)/BOLD 3-3 Indexed(176)/Reset/NONE 5-10 Indexed(176)/Reset/NONE 99-101 Indexed(139)/Reset/NONE 102-108 Indexed(140)/Reset/NONE 109-117 Indexed(176)/Reset/NONE
+12: 100-101 Indexed(139)/Reset/NONE 102-108 Indexed(140)/Reset/NONE 109-117 Indexed(176)/Reset/NONE
+16: 2-2 Indexed(233)/Indexed(107)/BOLD 30-117 Indexed(242)/Reset/DIM
+17: 2-2 Indexed(233)/Indexed(107)/BOLD 5-9 Indexed(242)/Reset/NONE
+22: 2-2 Indexed(231)/Indexed(242)/BOLD 30-117 Indexed(242)/Reset/DIM
+23: 2-2 Indexed(231)/Indexed(242)/BOLD 5-9 Indexed(242)/Reset/NONE
+29: 1-28 Indexed(242)/Reset/NONE 94-94 Cyan/Reset/BOLD 95-103 DarkGray/Reset/NONE 104-104 Cyan/Reset/BOLD 105-112 DarkGray/Reset/NONE 113-113 Cyan/Reset/BOLD 114-118 DarkGray/Reset/NONE

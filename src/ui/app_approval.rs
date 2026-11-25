@@ -20,7 +20,7 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph, Wrap},
 };
 
 use crate::{
@@ -178,14 +178,13 @@ pub fn render(
     } else {
         "a approve · r refuse · j/k PgUp/PgDn scroll · Tab the next one · Esc decide later"
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(theme.border_type(BorderSurface::Modal))
-        .border_style(theme.style(HighlightGroup::ModalBorder))
-        .title_style(theme.style(HighlightGroup::ModalTitle))
-        .title(format!(
-            " a version of an app waits for your answer · {keys} "
-        ));
+    let block = crate::ui::frame::block(
+        theme,
+        BorderSurface::Modal,
+        "a version of an app waits for your answer",
+        true,
+    )
+    .title_bottom(crate::ui::frame::hint_line(theme, keys));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let Some(review) = &state.review else {
@@ -369,7 +368,8 @@ mod tests {
         state.show("tasks", 2, Ok(review(60)));
         let shown = screen(&mut state, 100, 30);
         for expected in [
-            "a version of an app waits for your answer · a approve · r refuse",
+            "┌ a version of an app waits for your answer ─",
+            " a approve · r refuse ",
             "tasks (Tasks), version 2",
             "From:     your agent Scout (e5e5",
             &format!("Hash:     {}", "58e1".repeat(16)),

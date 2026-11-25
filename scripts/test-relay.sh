@@ -155,7 +155,13 @@ elif [[ "$PROFILE" == herdr || "$PROFILE" == tmux ]]; then
     BZZ_BIN="$PWD/target/release/bzz" BZZ_HERDR_FIXTURE="$fixture/profile" BZZ_HERDR_SCENARIOS=harness \
       ./scripts/test-tui-herdr.sh || status=$?
   fi
-  rm -rf -- "$fixture"
+  # BZZ_TMUX_KEEP also keeps the fixture's profiles (their stores and
+  # diagnostics journals), to read after a scenario that failed.
+  if [[ -n "${BZZ_TMUX_KEEP:-}" ]]; then
+    echo "kept: $fixture"
+  else
+    rm -rf -- "$fixture"
+  fi
   exit "$status"
 else
   # The `buzz` CLI at the pin, for sidebar interop (v0.14 M4), and Buzz's

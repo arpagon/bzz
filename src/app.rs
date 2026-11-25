@@ -12,17 +12,34 @@ use futures_util::StreamExt as _;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{Block, Clear, List, ListItem, Paragraph, Wrap},
 };
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
+// v0.17 C11: Tab on the `:` line (task `registry`).
+mod command_line;
+// v0.17 C10: the status line's hint follows the focus (task `registry`).
+mod footer;
+mod join;
 mod manage;
+mod palette;
 mod pane;
 #[cfg(feature = "apps")]
 mod share;
+// v0.17 L7 to L9: what moves, and when the loop wakes (task `motion`).
+mod stage;
+// v0.17 C3 to C7: the help, the `:` line, the finder, the leader panel
+// and two keys (task `find`).
+#[cfg(test)]
+mod find_tests;
+// v0.17 C8, C10, C11 (task `registry`).
+#[cfg(test)]
+mod registry_tests;
+// v0.17 L10 to L12: the layout by breakpoints, the mouse, Esc (task `layout`).
+mod shell;
 
 use crate::clock::WallClock as _;
 use crate::{
@@ -122,6 +139,20 @@ impl Runtime {
         signer: Option<SignerHandle>,
         diagnostics: DiagnosticHandle,
     ) -> Result<Self> {
+        Self::build_at(config, index, paths, store, signer, diagnostics, None)
+    }
+
+    /// As [`Self::build`], with the relay reached under `relay_path`
+    /// (`bzz demo`'s token) instead of the origin's root.
+    fn build_at(
+        config: &Config,
+        index: usize,
+        paths: &Paths,
+        store: StoreHandle,
+        signer: Option<SignerHandle>,
+        diagnostics: DiagnosticHandle,
+        relay_path: Option<&str>,
+    ) -> Result<Self> {
         let community = config
             .communities
             .get(index)
@@ -139,8 +170,12 @@ impl Runtime {
                 .transpose()?;
             IdentityManager::new(paths).signer(identity, passphrase.as_ref())?
         };
-        let endpoint =
+        let mut endpoint =
             validate_relay_url(&community.relay_url, community.allow_insecure_localhost)?;
+        if let Some(path) = relay_path {
+            endpoint.websocket.set_path(path);
+            endpoint.http_base.set_path(path);
+        }
         let evidence = crate::auth::federated::EvidenceSlot::default();
         if identity.backend == KeyBackend::BuzzDesktop {
             // Buzz Desktop owns the enterprise login; it supplies evidence.
@@ -431,6 +466,8 @@ enum Background {
         new: Box<crate::agents::manage::NewAgent>,
         result: std::result::Result<Vec<String>, String>,
     },
+    /// A step of the join form finished (v0.17 A9, `app::join`).
+    Join(Box<join::JoinEvent>),
 }
 
 pub struct App {
@@ -485,6 +522,11 @@ pub struct App {
     huddle_ptt_until: Option<Instant>,
     #[cfg(feature = "huddles-audio")]
     huddle_call: Option<HuddleCall>,
+    /// The visualizer (plan v0.17.0 B): levels read each frame, drawn and
+    /// forgotten; cleared when the call stops.
+    huddle_viz: HuddleViz,
+    /// What moves on screen: toasts, the focus sweep, tints (v0.17 L7, L8).
+    stage: stage::Stage,
     broker_attempted: Option<Uuid>,
     artifact_caps_requested: Option<Uuid>,
     artifact_sync: Option<ArtifactSync>,
@@ -532,7 +574,13 @@ pub struct App {
     mention_choices: Option<(Uuid, Uuid, crate::domain::MentionChoices)>,
     /// Explicit mention selections per channel, most recent highest.
     mention_history: MentionHistory,
-    finder: String,
+    finder: crate::ui::finder::FinderState,
+    /// Where the help is scrolled to (v0.17 C3).
+    help_scroll: crate::ui::help::HelpScroll,
+    /// What the last `:` command answered when it was mistyped or missing
+    /// its arguments: shown, wrapped, under the prompt it keeps open
+    /// (v0.17 C4).
+    command_answer: Option<String>,
     reaction_index: usize,
     /// `Some(query)` while the reaction picker searches custom emoji.
     reaction_query: Option<String>,
@@ -594,9 +642,15 @@ pub struct App {
     theme_picker: Option<ThemePicker>,
     theme_before_preview: Option<Theme>,
     action_menu: Option<ActionMenu>,
+    /// The palette while it is open (v0.17 C1).
+    palette: Option<crate::ui::palette::Palette>,
+    /// Actions run from the palette in this session, newest first.
+    palette_recent: Vec<crate::ui::palette::Recent>,
     keymap: KeyMap,
     input_router: InputRouter,
-    leader_started_at: Option<Instant>,
+    /// When the pending key sequence started, on Tokio's clock so a test
+    /// can move it: its panel appears 300 ms later (v0.17 C6).
+    leader_started_at: Option<tokio::time::Instant>,
     presentation: PresentationState,
     community_cursor: usize,
     connection: ConnectionState,
@@ -623,17 +677,47 @@ pub struct App {
     render_generation: u64,
     last_hit_map: Option<HitMap>,
     last_primary_click: Option<(HitTarget, Instant)>,
+    /// `z` and a border being dragged (v0.17 L10, L11).
+    shell: shell::ShellState,
     /// The apps open in the community's channels, and their pane (v0.16).
     apps: pane::AppPanes,
     /// The last layout drew the open thread. A reply goes into a thread
     /// only while it is drawn.
     thread_drawn: bool,
+    /// `bzz demo` (v0.17): a generated world on a loopback relay. The
+    /// status line says so, and what needs a real community says how to
+    /// join one (`crate::demo`).
+    demo: bool,
+    /// The first screen, while no community exists (v0.17 A4).
+    first_screen: crate::ui::first_screen::FirstScreen,
+    /// `d` on the first screen: leave, and open the demo in this process.
+    open_demo: bool,
+    /// When the transient notice (`status_error`) expires (C2).
+    notice_timer: crate::ui::status::NoticeTimer,
+    /// The channel in view and the read time it had when it was opened:
+    /// the `── new ──` line goes before its first later message (L6).
+    new_since: Option<(Uuid, u64)>,
+    /// Unread messages per channel, for the count in the sidebar (L6).
+    unread_counts: HashMap<Uuid, usize>,
+    /// Tab on the `:` line, and the installed apps it completes `:app`
+    /// verbs with, read once while the line is open (v0.17 C11).
+    command_completion: crate::ui::command::Completion,
+    command_apps: Option<Vec<String>>,
+    /// The join form and the join it drives (v0.17 A9).
+    join: join::JoinState,
+}
+
+/// How [`App::run_to_exit`] ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Exit {
+    Quit,
+    /// The person chose the demo on the first screen.
+    OpenDemo,
 }
 
 const LEADER_TIMEOUT: Duration = Duration::from_millis(750);
 const TERMINAL_ERROR_YIELD: Duration = Duration::from_millis(50);
 const RELAY_LAG_YIELD: Duration = Duration::from_millis(5);
-const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const AGENT_SPINNER_INTERVAL: Duration = Duration::from_millis(200);
 const RELAY_EVENT_DEDUP_CAPACITY: usize = 16_384;
 const AGENT_TYPING_SUBSCRIPTION: &str = "agent-typing-selected";
@@ -662,6 +746,94 @@ impl BrokerRuntime {
             signer.lock().await;
         }
     }
+}
+
+/// What the huddle visualizer keeps between frames.
+struct HuddleViz {
+    meter: crate::huddle::meter::Meter,
+    pacer: crate::huddle::meter::Pacer,
+    epoch: Instant,
+    look: crate::ui::huddle_lanes::Look,
+    /// The other people of the call, named, in roster order.
+    people: Vec<crate::ui::huddle_lanes::Person>,
+    muted: bool,
+    on: bool,
+    /// A generated huddle (the demo's, and tests'): levels with no sound
+    /// device, relay or voice behind them.
+    generated: Option<GeneratedHuddle>,
+    /// The zoomed view is on (plan v0.17.0 B5); it shows while the panel is
+    /// open and a call is on.
+    zoomed: bool,
+    /// The style picker's selected row, while it is open. The style it
+    /// selects is drawn live; Esc puts the saved one back.
+    picker: Option<usize>,
+    /// The call's spectrum, analysed only while bars or the orb are seen.
+    spectrum: crate::huddle::spectrum::Spectrum,
+    /// Steps the orb's rate down when writing to the terminal is slow.
+    throttle: crate::huddle::meter::Throttle,
+    /// The microphone check of the join confirmation (plan B7).
+    mic_check: Option<MicCheckRun>,
+    mic_pacer: crate::huddle::meter::Pacer,
+    /// After a check, the join waits for its devices to be let go.
+    mic_released: Option<tokio::sync::oneshot::Receiver<()>>,
+    /// With motion off: who spoke when the spectrum was last read.
+    still: Option<(Vec<u8>, bool)>,
+}
+
+/// A microphone check in progress: the check, and the device task that
+/// feeds it (none in tests, which feed it themselves).
+struct MicCheckRun {
+    check: crate::huddle::mic_check::MicCheck,
+    /// Dropping it stops the device task.
+    _stop: Option<tokio::sync::oneshot::Sender<()>>,
+    failed: Option<tokio::sync::oneshot::Receiver<String>>,
+    /// Fires once the device task let the devices go.
+    released: Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
+/// Generated levels and the names they speak as.
+struct GeneratedHuddle {
+    source: crate::huddle::synth::Synthetic,
+    /// Relay-style index and public key of each generated person.
+    people: Vec<(u8, String)>,
+    muted: bool,
+}
+
+impl Default for HuddleViz {
+    fn default() -> Self {
+        Self {
+            meter: crate::huddle::meter::Meter::default(),
+            pacer: crate::huddle::meter::Pacer::default(),
+            epoch: Instant::now(),
+            look: crate::ui::huddle_lanes::Look::from_env(),
+            people: Vec::new(),
+            muted: true,
+            on: false,
+            generated: None,
+            zoomed: false,
+            picker: None,
+            spectrum: crate::huddle::spectrum::Spectrum::default(),
+            throttle: crate::huddle::meter::Throttle::default(),
+            mic_check: None,
+            mic_pacer: crate::huddle::meter::Pacer::default(),
+            mic_released: None,
+            still: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for HuddleViz {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("HuddleViz { .. }")
+    }
+}
+
+/// What feeds the visualizer: a source of levels and the people it names.
+struct HuddleFeed {
+    levels: std::sync::Arc<crate::huddle::levels::Levels>,
+    /// Relay index and public key of everyone else in the call.
+    people: Vec<(u8, String)>,
+    muted: bool,
 }
 
 /// A joined huddle call: audio engine plus the devices it owns. Dropping it
@@ -883,6 +1055,51 @@ impl App {
         store: StoreHandle,
         diagnostics: DiagnosticHandle,
     ) -> Result<Self> {
+        Self::new_with(config, paths, store, diagnostics, None).await
+    }
+
+    /// `bzz demo` (`crate::demo`): the generated viewer's key is handed in
+    /// memory, nothing is unlocked or asked for, the relay is reached under
+    /// `relay_path`, and `#team` (`opening`) is open on the first frame.
+    pub async fn new_demo(
+        config: Config,
+        paths: Paths,
+        store: StoreHandle,
+        signer: SignerHandle,
+        relay_path: &str,
+        opening: Uuid,
+    ) -> Result<Self> {
+        let mut app = Self::new_with(
+            config,
+            paths,
+            store,
+            DiagnosticHandle::disabled(),
+            Some((signer, relay_path)),
+        )
+        .await?;
+        app.demo = true;
+        let (voices, people) = crate::demo::huddle();
+        app.set_generated_huddle(voices, people, true);
+        // One community: its rail waits for 100 columns, as for anyone with
+        // one community (`ui::layout::SINGLE_COMMUNITY_RAIL_FROM`).
+        if let Some(index) = app
+            .channels
+            .iter()
+            .position(|channel| channel.id == opening)
+        {
+            app.select_channel_index(index);
+            app.hydrate_cache().await?;
+        }
+        Ok(app)
+    }
+
+    async fn new_with(
+        config: Config,
+        paths: Paths,
+        store: StoreHandle,
+        diagnostics: DiagnosticHandle,
+        demo: Option<(SignerHandle, &str)>,
+    ) -> Result<Self> {
         diagnostics.emit(DiagnosticEvent::ClientStarted {
             version: env!("CARGO_PKG_VERSION").into(),
             os: crate::diagnostics::event::normalized_os().into(),
@@ -902,13 +1119,15 @@ impl App {
         let (runtime, connection, status_error) = if config.communities.is_empty() {
             (None, ConnectionState::Offline, None)
         } else {
-            match Runtime::build(
+            let (signer, relay_path) = demo.unzip();
+            match Runtime::build_at(
                 &config,
                 selected_community,
                 &paths,
                 store.clone(),
-                None,
+                signer,
                 diagnostics.clone(),
+                relay_path,
             ) {
                 Ok(runtime) => (Some(runtime), ConnectionState::Connecting, None),
                 Err(error) => {
@@ -997,6 +1216,8 @@ impl App {
             huddle_ptt_until: None,
             #[cfg(feature = "huddles-audio")]
             huddle_call: None,
+            huddle_viz: HuddleViz::default(),
+            stage: stage::Stage::default(),
             broker_attempted: None,
             local_agents: None,
             local_agents_attempted: None,
@@ -1026,7 +1247,9 @@ impl App {
             mention_picker: None,
             mention_choices: None,
             mention_history: MentionHistory::default(),
-            finder: String::new(),
+            finder: crate::ui::finder::FinderState::default(),
+            help_scroll: crate::ui::help::HelpScroll::default(),
+            command_answer: None,
             reaction_index: 0,
             reaction_query: None,
             reaction_candidates: Vec::new(),
@@ -1077,6 +1300,8 @@ impl App {
             theme_picker: None,
             theme_before_preview: None,
             action_menu: None,
+            palette: None,
+            palette_recent: Vec::new(),
             keymap,
             input_router: InputRouter::default(),
             leader_started_at: None,
@@ -1106,45 +1331,99 @@ impl App {
             render_generation: 0,
             last_hit_map: None,
             last_primary_click: None,
+            shell: shell::ShellState::default(),
             apps: pane::AppPanes::default(),
             thread_drawn: false,
+            demo: false,
+            first_screen: crate::ui::first_screen::FirstScreen::default(),
+            open_demo: false,
+            notice_timer: crate::ui::status::NoticeTimer::default(),
+            new_since: None,
+            unread_counts: HashMap::new(),
+            command_completion: crate::ui::command::Completion::default(),
+            command_apps: None,
+            join: join::JoinState::default(),
         };
         app.sync_workspace_viewports();
         app.hydrate_cache().await?;
         Ok(app)
     }
 
-    pub async fn run(mut self) -> Result<()> {
+    pub async fn run(self) -> Result<()> {
+        self.run_to_exit().await.map(|_| ())
+    }
+
+    /// Runs bzz until the person leaves, and says how they left.
+    pub async fn run_to_exit(mut self) -> Result<Exit> {
         let shutdown = shutdown_signal();
         tokio::pin!(shutdown);
         tokio::select! {
             biased;
-            _ = &mut shutdown => return Ok(()),
+            _ = &mut shutdown => return Ok(Exit::Quit),
             _ = tokio::task::yield_now() => {},
         }
         let (mut guard, mut terminal) = TerminalGuard::enter(self.config.ui.mouse.enabled())?;
         self.media.initialize_terminal();
+        // For development and the film only: a generated huddle (Ada, Lin
+        // and Sam, and you muted) feeds the visualizer, with no call, sound
+        // device or relay; `:huddle zoom` shows it. Not a user feature.
+        if std::env::var_os("BZZ_DEV_GENERATED_HUDDLE").is_some()
+            && self.huddle_viz.generated.is_none()
+        {
+            self.set_generated_huddle(
+                crate::huddle::synth::Synthetic::demo(),
+                vec![(1, "Ada".into()), (2, "Lin".into()), (3, "Sam".into())],
+                true,
+            );
+        }
         self.start_sync().await?;
         let mut input = EventStream::new();
-        let mut tick = tokio::time::interval(Duration::from_millis(100));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut frame_tick = tokio::time::interval(FRAME_INTERVAL);
-        frame_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Where keys enter: Windows' Alt codes as presses, and the events
+        // read ahead of an Enter to see whether a paste goes on behind it.
+        let mut door = crate::ui::keymap::KeyDoor::default();
+        let mut read_ahead = std::collections::VecDeque::new();
+        // No fixed tick: the loop sleeps until the next thing that is due, a
+        // frame asked for, an animation's next frame, the huddle's levels,
+        // a notice's end or the housekeeping (v0.17 L9, rule 20).
+        let mut pacing = stage::Pacing::new();
         let mut redraw = RedrawGate::default();
         while !self.should_quit {
+            let now = tokio::time::Instant::now();
+            // A notice lives about five seconds; the loop sleeps until then
+            // and draws one frame when it goes (rule 20).
+            self.notice_timer.observe(self.status_error.as_deref(), now);
+            let notice_deadline = self.notice_timer.deadline();
+            let motion_at = self.motion_wake(now);
+            let huddle_polled = self.huddle_polled();
+            let draw_at = crate::ui::motion::earliest([
+                pacing.frame_at(redraw.pending(), now),
+                motion_at,
+                pacing.huddle_at(huddle_polled, now),
+            ]);
+            let tick_at = pacing.tick_at(self.housekeeping_busy(), self.refresh_due(), now);
             tokio::select! {
                 biased;
                 _=&mut shutdown=>self.should_quit=true,
                 attachment=self.attachment_rx.recv()=>if let Some(event)=attachment{
                     self.handle_attachment_background(event).await?;
                     redraw.request();
+                    pacing.poke();
                 },
-                maybe=next_terminal_event(&mut input)=>{
+                maybe=next_read_ahead_event(&mut read_ahead, &mut input)=>{
                     if let Some(event)=maybe {
                         match event {
-                            TerminalEvent::Key(key) if key.kind==KeyEventKind::Press => {
-                                self.last_input_at=Instant::now();
-                                self.handle_key(key,&mut guard,&mut terminal).await?
+                            TerminalEvent::Key(key) => {
+                                let key = door.admit(key);
+                                if key.kind==KeyEventKind::Press {
+                                    self.last_input_at=Instant::now();
+                                    let key = if cfg!(windows) && self.composer_takes_enter(key) {
+                                        let more = presses_wait(&mut read_ahead, &mut input);
+                                        crate::ui::keymap::paste_line_break(key, more, true)
+                                    } else {
+                                        key
+                                    };
+                                    self.handle_key(key,&mut guard,&mut terminal).await?
+                                }
                             },
                             TerminalEvent::Paste(text) => self.handle_terminal_paste(text).await?,
                             TerminalEvent::Mouse(mouse) => self.handle_mouse(mouse,&mut guard,&mut terminal).await?,
@@ -1152,19 +1431,36 @@ impl App {
                             _ => {}
                         }
                         redraw.request();
+                        pacing.poke();
                     }
                 },
-                _=frame_tick.tick()=>{
-                    if redraw.take() {
+                // After the input: a waiting key is handled before a frame
+                // is drawn (rule 20).
+                () = stage::sleep_until(draw_at) => {
+                    let now = tokio::time::Instant::now();
+                    if pacing.huddle_due(huddle_polled, now) {
+                        pacing.huddle_read(now);
+                        redraw.request_if(self.tick_huddle_viz());
+                    }
+                    if motion_at.is_some_and(|at| at <= now) {
+                        self.stage.advance(now);
+                        redraw.request();
+                    }
+                    if pacing.frame_due(now) && redraw.take() {
                         // What the apps produced is taken before the frame
                         // that shows them.
                         self.poll_apps();
+                        let drawing = Instant::now();
                         terminal
                             .draw(|frame| self.render(frame))
                             .map_err(|error| Error::io("terminal", error))?;
+                        pacing.drawn(tokio::time::Instant::now());
+                        self.huddle_frame_drawn(drawing.elapsed().as_secs_f64());
                     }
                 },
-                background=self.background_rx.recv()=>if let Some(event)=background{match event{
+                background=self.background_rx.recv()=>if let Some(event)=background{
+                pacing.poke();
+                match event{
                     Background::AppWake=>{
                         self.app_woken();
                         redraw.request_if(self.poll_apps());
@@ -1182,13 +1478,14 @@ impl App {
                         }
                     },
                     Background::Failed(message)=>{
+                        self.stage.loaded();
                         self.status_error=Some(message);
                         self.dm_picker.submitting=false;
                         self.inbox_loading=false;
                         self.inbox_detail_loading=false;
                         self.agent_directory.loading=false;
                     },
-                    Background::Saved=>self.status_error=Some("attachment saved".into()),
+                    Background::Saved=>self.toast("attachment saved"),
                     Background::FederatedReady=>{
                         self.status_error=Some("federated sign-in complete; reconnecting".into());
                         if let Some(runtime)=&self.runtime {
@@ -1201,6 +1498,7 @@ impl App {
                     },
                     Background::Notice(message)=>self.status_error=Some(message),
                     Background::HistoryLoaded { community, summaries }=>{
+                        self.stage.loaded();
                         self.cache_dirty=true;
                         if self.active_community_id()==Some(community) {
                             self.hydrate_cache().await?;
@@ -1245,10 +1543,16 @@ impl App {
                         self.huddle_joining=false;
                         match result {
                             Ok(call) => {
+                                // A saved device not found comes first (the status
+                                // line is cut at its end) and takes the hint's place.
+                                let status = match call._devices.notice() {
+                                    Some(notice) => format!("{notice} · joined the huddle · muted"),
+                                    None => "joined the huddle · muted · m to unmute, space to talk".into(),
+                                };
                                 if let Some(previous) = self.huddle_call.replace(*call) {
                                     previous.stop().await;
                                 }
-                                self.status_error=Some("joined the huddle · muted · m to unmute, space to talk".into());
+                                self.status_error=Some(status);
                             }
                             Err(error) => self.status_error=Some(error),
                         }
@@ -1402,15 +1706,30 @@ impl App {
                         }
                     }
                     Background::AgentPreflight { new, result }=>self.agent_preflight_done(*new, result),
+                    Background::Join(event)=>self.join_event(*event).await?,
                     }
                     redraw.request();
                 },
-                _=tick.tick()=>{
+                () = async {
+                    match notice_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if self.notice_timer.expire(self.status_error.as_deref(), tokio::time::Instant::now()) {
+                        self.status_error = None;
+                        redraw.request();
+                    }
+                },
+                () = tokio::time::sleep_until(tick_at) => {
+                    pacing.ticked(tokio::time::Instant::now());
                     let changed=self.on_tick().await?;
                     let apps=self.tick_apps().await?;
-                    redraw.request_if(changed || apps);
+                    let joining=self.join_tick().await?;
+                    redraw.request_if(changed || apps || joining);
                 },
                 network=next_network(&mut self.runtime)=>{
+                    pacing.poke();
                     if let Some(event)=network {
                         let visible_changed = self.handle_network(event).await?;
                         redraw.request_if(visible_changed);
@@ -1438,7 +1757,11 @@ impl App {
             reason: "user".into(),
         });
         self.diagnostics.shutdown().await;
-        Ok(())
+        Ok(if self.open_demo {
+            Exit::OpenDemo
+        } else {
+            Exit::Quit
+        })
     }
 
     async fn start_sync(&mut self) -> Result<()> {
@@ -2249,11 +2572,12 @@ impl App {
             profile_subjects.extend(system.target.iter().cloned());
             profile_subjects.extend(system.participants.iter().cloned());
         }
+        // Each person once a run, also one whose profile bzz holds: a
+        // profile changed while bzz was closed is asked for here, and one
+        // changed while it runs arrives on the global stream (v0.17 F5).
         let unknown_authors = profile_subjects
             .into_iter()
-            .filter(|pubkey| {
-                !self.profiles.contains_key(pubkey) && !self.profile_requested.contains(pubkey)
-            })
+            .filter(|pubkey| !self.profile_requested.contains(pubkey))
             .collect::<HashSet<_>>();
         self.profile_requested
             .extend(unknown_authors.iter().cloned());
@@ -2277,14 +2601,15 @@ impl App {
             .call(move |store| store.ui_state(community, "manual_unread"))
             .await?
             .unwrap_or_default();
-        self.computed_unread = if let Some(runtime) = &self.runtime {
+        self.unread_counts = if let Some(runtime) = &self.runtime {
             let pubkey = runtime.signer.public_key().to_hex();
             self.store
-                .call(move |store| store.unread_channels(community, &pubkey))
+                .call(move |store| store.unread_channel_counts(community, &pubkey))
                 .await?
         } else {
-            HashSet::new()
+            HashMap::new()
         };
+        self.computed_unread = self.unread_counts.keys().copied().collect();
         self.cache_dirty = false;
         self.last_cache_refresh = Instant::now();
         Ok(())
@@ -2819,16 +3144,27 @@ impl App {
             self.typing_spinner_frame = 0;
             self.typing_spinner_advanced_at = Instant::now();
         }
-        if self
-            .leader_started_at
-            .is_some_and(|started| started.elapsed() >= LEADER_TIMEOUT)
-        {
-            self.input_router.cancel_sequence();
-            self.leader_started_at = None;
-            if self.presentation.overlay == Some(Overlay::WhichKey) {
-                self.presentation.overlay = None;
+        if let Some(started) = self.leader_started_at {
+            let elapsed = started.elapsed();
+            if !self.input_router.sequence_active() {
+                self.leader_started_at = None;
+            } else if self.presentation.overlay.is_none()
+                && crate::ui::help::leader_panel_due(elapsed)
+            {
+                // Who knows the next key never sees the panel; once shown it
+                // waits for that key, or Esc (v0.17 C6).
+                self.presentation.open_overlay(Overlay::WhichKey);
+                changed = true;
+            } else if self.presentation.overlay.is_some()
+                && self.presentation.overlay != Some(Overlay::WhichKey)
+                && elapsed >= LEADER_TIMEOUT
+            {
+                // Something else took the screen: the panel cannot show, and
+                // the sequence ends as in v0.16.
+                self.input_router.cancel_sequence();
+                self.leader_started_at = None;
+                changed = true;
             }
-            changed = true;
         }
         if self
             .search_dirty_since
@@ -2961,24 +3297,26 @@ impl App {
             }
             return Ok(());
         }
-        let Some(target) = self
+        let target = self
             .last_hit_map
             .as_ref()
             .and_then(|map| map.hit(mouse.column, mouse.row))
-            .cloned()
-        else {
+            .cloned();
+        // A border pressed, dragged or let go (v0.17 L11).
+        if self.drag_border(mouse, target.as_ref())? {
+            return Ok(());
+        }
+        let Some(target) = target else {
             return Ok(());
         };
         match mouse.kind {
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                if self.presentation.composer_target.is_none() =>
-            {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let delta = if matches!(mouse.kind, MouseEventKind::ScrollUp) {
                     -3
                 } else {
                     3
                 };
-                self.wheel_over(target, delta);
+                self.wheel_without_focus(target, delta);
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.activate_mouse_target(target, mouse, guard, terminal)
@@ -3089,7 +3427,7 @@ impl App {
                 });
                 self.timeline.keep_selection_visible = true;
                 if double_click {
-                    self.toggle_thread().await?;
+                    self.open_thread_of_selected().await?;
                 }
             }
             HitTarget::Thread
@@ -3222,6 +3560,7 @@ impl App {
             {
                 self.dm_picker.selected_pubkey = Some(pubkey);
             }
+            HitTarget::StatusHint => self.click_status_hint().await,
             _ => {}
         }
         Ok(())
@@ -3290,6 +3629,14 @@ impl App {
                 self.paste_to_app(&text);
                 return Ok(());
             }
+            // The join form: its address, or a hidden field (an nsec).
+            crate::ui::app_pane::PasteTarget::Join => {
+                let text = zeroize::Zeroizing::new(text);
+                if let Some(form) = &mut self.join.form {
+                    form.paste(&text);
+                }
+                return Ok(());
+            }
             crate::ui::app_pane::PasteTarget::Dropped => return Ok(()),
             crate::ui::app_pane::PasteTarget::Composer => {}
         }
@@ -3314,6 +3661,29 @@ impl App {
     ) -> Result<()> {
         if self.global_key(key) {
             return Ok(());
+        }
+        // The first screen's own keys, while no community exists (v0.17).
+        if self.config.communities.is_empty() && self.presentation.overlay.is_none() {
+            match self.first_screen.key(key) {
+                crate::ui::first_screen::Outcome::OpenDemo => {
+                    self.open_demo = true;
+                    self.should_quit = true;
+                    return Ok(());
+                }
+                crate::ui::first_screen::Outcome::Handled => {
+                    // Joining, pairing and importing open the join form
+                    // (v0.17 A9) where they once showed a command to copy.
+                    use crate::ui::{first_screen::Choice, join::JoinStart};
+                    match self.first_screen.take_shown() {
+                        Some(Choice::Join) => self.open_join(JoinStart::Join),
+                        Some(Choice::Pair) => self.open_join(JoinStart::Pair),
+                        Some(Choice::Import) => self.open_join(JoinStart::Import),
+                        Some(Choice::Demo) | None => {}
+                    }
+                    return Ok(());
+                }
+                crate::ui::first_screen::Outcome::Ignored => {}
+            }
         }
         // Ctrl+Y when what waits is a version of an app (v0.16 M4).
         if self.app_review_key(key).await? {
@@ -3360,6 +3730,7 @@ impl App {
                         match kind {
                             ConfirmationKind::HuddleStart => self.spawn_huddle_start(),
                             ConfirmationKind::HuddleJoin => {
+                                self.stop_mic_check();
                                 if let Some(active) = self.active_huddle().cloned()
                                     && let Some(parent) =
                                         self.current_channel().map(|channel| channel.id)
@@ -3371,6 +3742,7 @@ impl App {
                         }
                     }
                     KeyCode::Esc | KeyCode::Char('n' | 'N' | 'q') => {
+                        self.stop_mic_check();
                         self.presentation.return_to_overlay(Overlay::Huddle);
                     }
                     _ => {}
@@ -3517,6 +3889,7 @@ impl App {
             Some(Overlay::Huddle) => self.huddle_key(key).await?,
             Some(Overlay::Profile) => self.profile_key(key),
             Some(Overlay::Apps) => self.apps_panel_key(key).await?,
+            Some(Overlay::Join) => self.join_key(key).await?,
             Some(Overlay::Broker) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
                 // The owner's one-key pause for every hosted agent.
@@ -3540,6 +3913,7 @@ impl App {
                 }
                 _ => {}
             },
+            Some(Overlay::Palette) => self.palette_key(key, guard, terminal).await?,
             None if self.presentation.composer_target.is_some() => {
                 self.handle_composer_key(key).await?
             }
@@ -3640,8 +4014,8 @@ impl App {
                     .await?;
             }
             InputDispatch::Pending { .. } => {
-                self.leader_started_at.get_or_insert_with(Instant::now);
-                self.presentation.open_overlay(Overlay::WhichKey);
+                self.leader_started_at
+                    .get_or_insert_with(tokio::time::Instant::now);
             }
             InputDispatch::Owned(InputOwner::Overlay) => {
                 self.handle_presentation_overlay_key(key, guard, terminal)
@@ -3683,8 +4057,8 @@ impl App {
                 self.dispatch_inbox_action(action, guard, terminal).await?;
             }
             InputDispatch::Pending { .. } => {
-                self.leader_started_at.get_or_insert_with(Instant::now);
-                self.presentation.open_overlay(Overlay::WhichKey);
+                self.leader_started_at
+                    .get_or_insert_with(tokio::time::Instant::now);
             }
             InputDispatch::Owned(InputOwner::Overlay) => {
                 self.handle_presentation_overlay_key(key, guard, terminal)
@@ -3704,6 +4078,24 @@ impl App {
         Ok(())
     }
 
+    /// The keys of the help: it scrolls (v0.17 C3).
+    fn help_key(&mut self, key: KeyEvent) {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down if !control => self.help_scroll.by(1),
+            KeyCode::Char('k') | KeyCode::Up if !control => self.help_scroll.by(-1),
+            KeyCode::Char('n') if control => self.help_scroll.by(1),
+            KeyCode::Char('p') if control => self.help_scroll.by(-1),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.help_scroll.page_by(1),
+            KeyCode::Char('d') if control => self.help_scroll.page_by(1),
+            KeyCode::PageUp => self.help_scroll.page_by(-1),
+            KeyCode::Char('u') if control => self.help_scroll.page_by(-1),
+            KeyCode::Char('g') | KeyCode::Home => self.help_scroll.top(),
+            KeyCode::Char('G') | KeyCode::End => self.help_scroll.bottom(),
+            _ => {}
+        }
+    }
+
     async fn handle_presentation_overlay_key(
         &mut self,
         key: KeyEvent,
@@ -3714,6 +4106,8 @@ impl App {
             Some(Overlay::Help) if matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'q')) => {
                 self.presentation.overlay = None;
             }
+            // v0.17 C3: the help scrolls.
+            Some(Overlay::Help) => self.help_key(key),
             Some(Overlay::Actions) => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.presentation.overlay = None;
@@ -3776,6 +4170,9 @@ impl App {
             detail_available: self.inbox_state.selected(&self.inbox_items).is_some(),
         };
         let effect = reduce_inbox(&mut state, action);
+        if action == UiAction::OpenHelp {
+            self.help_scroll = crate::ui::help::HelpScroll::default();
+        }
         self.presentation = state.presentation;
         self.inbox_state.narrow_detail = state.narrow_detail;
         match effect {
@@ -3820,6 +4217,8 @@ impl App {
             InboxEffect::Unavailable(action) => {
                 self.status_error = Some(format!("{} is not available in Inbox", action.label()));
             }
+            InboxEffect::OpenPalette => self.open_palette().await,
+            InboxEffect::NothingToClose => self.say_nothing_to_close(),
         }
         Ok(())
     }
@@ -3868,6 +4267,9 @@ impl App {
             self.apps.front = false;
         }
         let effect = reduce_workspace(&mut state, action);
+        if action == UiAction::OpenHelp {
+            self.help_scroll = crate::ui::help::HelpScroll::default();
+        }
         self.presentation = state.presentation;
         self.community_cursor = state.community_cursor;
         self.select_community_index(self.community_cursor);
@@ -3950,6 +4352,10 @@ impl App {
                         "cached read-only mode: restore or unlock the identity, then restart bzz"
                             .into(),
                     );
+                } else if let Some(refusal) = self.context_refusal(UiAction::Delete) {
+                    // `d` on another person's message says why not, as the
+                    // actions menu does (v0.17 D5).
+                    self.status_error = Some(refusal);
                 } else if self.selected_message().is_some_and(|message| {
                     self.runtime.as_ref().is_some_and(|runtime| {
                         message.pubkey == runtime.signer.public_key().to_hex()
@@ -3966,8 +4372,20 @@ impl App {
                         "cached read-only mode: restore or unlock the identity, then restart bzz"
                             .into(),
                     );
+                } else if let Some(refusal) = self.context_refusal(UiAction::MarkUnread) {
+                    self.status_error = Some(refusal);
                 } else {
                     self.mark_unread().await?;
+                    let marked = self.current_channel().map(|channel| {
+                        format!(
+                            "marked {}{} unread",
+                            crate::ui::finder::marker(channel),
+                            sanitize::single_line(&channel.name)
+                        )
+                    });
+                    if marked.is_some() {
+                        self.status_error = marked;
+                    }
                 }
             }
             WorkspaceEffect::FocusApp => self.focus_app(),
@@ -3987,8 +4405,31 @@ impl App {
                     action.label()
                 ));
             }
+            WorkspaceEffect::OpenPalette => self.open_palette().await,
+            WorkspaceEffect::NothingToClose => self.say_nothing_to_close(),
+            WorkspaceEffect::ToggleConversationOnly => {
+                self.shell.conversation_only = !self.shell.conversation_only;
+            }
         }
         Ok(())
+    }
+
+    /// Why the actions menu would not offer `action` here, in its words: the
+    /// keys `d` and `u` and the menu answer alike (v0.17 D5).
+    fn context_refusal(&self, action: UiAction) -> Option<String> {
+        let actions = derive_actions(self.action_context());
+        match actions.iter().find(|entry| entry.action == action) {
+            Some(entry) if entry.enabled => None,
+            Some(entry) => Some(format!(
+                "{}: {}",
+                entry.label,
+                entry.reason.unwrap_or("not available here")
+            )),
+            None => Some(format!(
+                "{}: select a message in the conversation first (3 focuses it)",
+                action.label()
+            )),
+        }
     }
 
     fn scroll_focused_viewport(&mut self, scroll: ViewportScroll) {
@@ -4097,7 +4538,7 @@ impl App {
                         _ => {}
                     }
                 }
-                self.status_error = Some(format!(
+                self.toast(format!(
                     "copied {} message(s), {} bytes to clipboard",
                     selected.len(),
                     bytes
@@ -4207,6 +4648,323 @@ impl App {
         {
             None
         }
+    }
+
+    /// SEAM (agent `demo`, plan A3): the demo's generated huddle feeds the
+    /// visualizer here, with `crate::huddle::synth::Synthetic` behind the same
+    /// levels: `set_generated_huddle`. A joined call comes first.
+    fn huddle_feed(&self) -> Option<HuddleFeed> {
+        let generated = self
+            .huddle_viz
+            .generated
+            .as_ref()
+            .map(|generated| HuddleFeed {
+                levels: generated.source.levels(),
+                people: generated.people.clone(),
+                muted: generated.muted,
+            })
+            // The demo's recording plays only where its huddle is running
+            // (`#infra`): nowhere else does the panel or the strip show it.
+            .filter(|_| !self.demo || self.active_huddle().is_some());
+        #[cfg(feature = "huddles-audio")]
+        {
+            self.huddle_call
+                .as_ref()
+                .map(|call| HuddleFeed {
+                    levels: call.call.levels.clone(),
+                    people: call.call.others(),
+                    muted: call.call.is_muted(),
+                })
+                .or(generated)
+        }
+        #[cfg(not(feature = "huddles-audio"))]
+        {
+            generated
+        }
+    }
+
+    /// Feeds the visualizer from generated voices (`people`: index and
+    /// public key of each generated person). For `bzz demo` and tests.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn set_generated_huddle(
+        &mut self,
+        source: crate::huddle::synth::Synthetic,
+        people: Vec<(u8, String)>,
+        muted: bool,
+    ) {
+        self.huddle_viz.generated = Some(GeneratedHuddle {
+            source,
+            people,
+            muted,
+        });
+    }
+
+    /// Whether the status line shows the strip now: a call is on, the panel
+    /// is closed, and no app or agent line takes the activity slot.
+    fn huddle_strip_shown(&self) -> bool {
+        self.huddle_viz.on
+            && self.presentation.overlay != Some(Overlay::Huddle)
+            && self.app_status_line().is_none()
+            && self.visible_agent_typing_line(u16::MAX).is_none()
+    }
+
+    /// Reads the call's levels into the meter, once a frame tick, and says
+    /// whether the visualizer needs a frame (plan rule 20: none while hidden,
+    /// none after 2 s of silence, none with motion off unless the speaker
+    /// changed).
+    fn tick_huddle_viz(&mut self) -> bool {
+        let now = self.huddle_viz.epoch.elapsed().as_secs_f64();
+        self.tick_huddle_viz_at(now)
+    }
+
+    fn tick_huddle_viz_at(&mut self, now: f64) -> bool {
+        let mic_check = self.tick_mic_check(now);
+        mic_check | self.tick_call_viz(now)
+    }
+
+    fn tick_call_viz(&mut self, now: f64) -> bool {
+        if let Some(generated) = &mut self.huddle_viz.generated {
+            generated.source.advance_to(now);
+        }
+        let Some(feed) = self.huddle_feed() else {
+            if self.huddle_viz.on {
+                self.huddle_viz.meter.clear();
+                self.huddle_viz.people.clear();
+                self.huddle_viz.on = false;
+                self.huddle_viz.zoomed = false;
+                self.huddle_viz.picker = None;
+                self.huddle_viz.spectrum.clear();
+                self.huddle_viz.throttle.reset();
+            }
+            return false;
+        };
+        let indices = feed
+            .people
+            .iter()
+            .map(|(index, _)| *index)
+            .collect::<Vec<_>>();
+        if !self.huddle_viz.on {
+            // The levels hold the loudest chunk since they were last read,
+            // which may be long ago: a person who has not spoken since the
+            // lanes appeared is quiet, not "2s ago".
+            for index in &indices {
+                let _ = feed.levels.take_peer(*index);
+            }
+            let _ = feed.levels.take_mic();
+        }
+        self.huddle_viz
+            .meter
+            .update(feed.levels.as_ref(), &indices, now);
+        let people = feed
+            .people
+            .iter()
+            .map(|(index, pubkey)| crate::ui::huddle_lanes::Person {
+                index: *index,
+                name: self.huddle_person_name(pubkey),
+            })
+            .collect::<Vec<_>>();
+        let people_changed = people.len() != self.huddle_viz.people.len()
+            || people
+                .iter()
+                .zip(&self.huddle_viz.people)
+                .any(|(new, old)| new.index != old.index || new.name != old.name);
+        self.huddle_viz.people = people;
+        let muted_changed = self.huddle_viz.muted != feed.muted;
+        self.huddle_viz.muted = feed.muted;
+        let started = !self.huddle_viz.on;
+        self.huddle_viz.on = true;
+        let visible =
+            self.presentation.overlay == Some(Overlay::Huddle) || self.huddle_strip_shown();
+        let motion = self.config.ui.motion();
+        // The spectrum: the audio side hands samples over only while bars or
+        // the orb are on screen, and only then are they analysed.
+        let style = self.huddle_style();
+        let zoomed = self.huddle_zoomed();
+        let spectral = zoomed
+            && matches!(
+                style,
+                crate::config::HuddleStyle::Bars | crate::config::HuddleStyle::Orb
+            );
+        let mix = feed.levels.mix();
+        if mix.is_wanted() != spectral {
+            mix.want(spectral);
+            self.huddle_viz.spectrum.clear();
+        }
+        // With motion off the picture holds: the spectrum moves only when
+        // the speaker changes, with the frame that shows it.
+        if spectral {
+            let still =
+                (motion == crate::config::Motion::Off).then(|| self.huddle_viz.meter.signature());
+            if still.is_none() || still != self.huddle_viz.still {
+                self.huddle_viz.spectrum.update(mix, now);
+                self.huddle_viz.still = still;
+            }
+        }
+        let interval = self.huddle_interval(motion);
+        let wants =
+            self.huddle_viz
+                .pacer
+                .wants_frame_every(&self.huddle_viz.meter, visible, interval, now);
+        let falling = spectral
+            && motion != crate::config::Motion::Off
+            && !self.huddle_viz.spectrum.is_still()
+            && self.huddle_viz.meter.is_silent();
+        wants || falling || (visible && (started || muted_changed || people_changed))
+    }
+
+    /// The zoomed view's style: the picker's selection while it is open,
+    /// else the saved one.
+    fn huddle_style(&self) -> crate::config::HuddleStyle {
+        self.huddle_viz
+            .picker
+            .and_then(|row| crate::config::HuddleStyle::ALL.get(row).copied())
+            .unwrap_or(self.config.ui.huddle_style)
+    }
+
+    /// Whether the zoomed view is on screen.
+    fn huddle_zoomed(&self) -> bool {
+        self.huddle_viz.zoomed
+            && self.huddle_viz.on
+            && self.presentation.overlay == Some(Overlay::Huddle)
+    }
+
+    /// The shortest time between two frames of the visualizer: the orb, the
+    /// costliest to write, at 20 a second and slower on a slow terminal.
+    fn huddle_interval(&self, motion: crate::config::Motion) -> Option<f64> {
+        let base = crate::huddle::meter::Pacer::interval(motion)?;
+        if self.huddle_zoomed() && self.huddle_style() == crate::config::HuddleStyle::Orb {
+            Some(self.huddle_viz.throttle.interval(base.max(1.0 / 20.0)))
+        } else {
+            Some(base)
+        }
+    }
+
+    /// How long the last frame took to draw and write; the orb's rate
+    /// follows it.
+    fn huddle_frame_drawn(&mut self, seconds: f64) {
+        if self.huddle_zoomed() && self.huddle_style() == crate::config::HuddleStyle::Orb {
+            if let Some(base) = crate::huddle::meter::Pacer::interval(self.config.ui.motion()) {
+                self.huddle_viz
+                    .throttle
+                    .record(seconds, base.max(1.0 / 20.0));
+            }
+        } else {
+            self.huddle_viz.throttle.reset();
+        }
+    }
+
+    /// The microphone check of the join confirmation: reads its level and
+    /// says whether it needs a frame.
+    fn tick_mic_check(&mut self, now: f64) -> bool {
+        let shown = self.presentation.overlay == Some(Overlay::Confirmation)
+            && self.presentation.confirmation == Some(ConfirmationKind::HuddleJoin);
+        let motion = self.config.ui.motion();
+        if !shown && self.huddle_viz.mic_check.is_some() {
+            // The confirmation went away another way: let the devices go.
+            self.stop_mic_check();
+        }
+        let Some(run) = &mut self.huddle_viz.mic_check else {
+            return false;
+        };
+        if let Some(failed) = &mut run.failed
+            && let Ok(message) = failed.try_recv()
+        {
+            run.check.fail(message);
+            run.failed = None;
+        }
+        let changed = run.check.update(now);
+        let wants = self
+            .huddle_viz
+            .mic_pacer
+            .wants_frame(run.check.meter(), shown, motion, now);
+        shown && (changed || wants)
+    }
+
+    /// Opens your microphone for the check, without the call: nothing is
+    /// encoded or sent. In tests nothing is opened; they feed the check.
+    fn start_mic_check(&mut self) {
+        let check =
+            crate::huddle::mic_check::MicCheck::new(self.config.ui.huddle_input_device.clone());
+        #[cfg_attr(not(all(feature = "huddles-audio", not(test))), allow(unused_mut))]
+        let mut run = MicCheckRun {
+            check,
+            _stop: None,
+            failed: None,
+            released: None,
+        };
+        #[cfg(all(feature = "huddles-audio", not(test)))]
+        {
+            let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
+            let (failed_tx, failed_rx) = tokio::sync::oneshot::channel::<String>();
+            let (released_tx, released_rx) = tokio::sync::oneshot::channel::<()>();
+            let levels = run.check.levels();
+            let input = self.config.ui.huddle_input_device.clone();
+            let output = self.config.ui.huddle_output_device.clone();
+            tokio::spawn(async move {
+                let opened = tokio::task::spawn_blocking(move || {
+                    crate::huddle::audio::open_devices(input.as_deref(), output.as_deref())
+                })
+                .await;
+                match opened {
+                    Ok(Ok((devices, mut capture, _playback))) => {
+                        loop {
+                            tokio::select! {
+                                _ = &mut stop_rx => break,
+                                frame = capture.recv() => match frame {
+                                    Some(frame) => levels.publish_mic(&frame),
+                                    None => break,
+                                },
+                            }
+                        }
+                        drop(devices);
+                    }
+                    Ok(Err(error)) => {
+                        let _ = failed_tx.send(error.to_string());
+                    }
+                    Err(_) => {
+                        let _ = failed_tx.send(crate::huddle::audio::MICROPHONE_DENIED.into());
+                    }
+                }
+                let _ = released_tx.send(());
+            });
+            run._stop = Some(stop_tx);
+            run.failed = Some(failed_rx);
+            run.released = Some(released_rx);
+        }
+        self.huddle_viz.mic_pacer = crate::huddle::meter::Pacer::default();
+        self.huddle_viz.mic_check = Some(run);
+    }
+
+    /// Ends the check and lets its devices go; a join that follows waits
+    /// for them.
+    fn stop_mic_check(&mut self) {
+        if let Some(run) = self.huddle_viz.mic_check.take() {
+            self.huddle_viz.mic_released = run.released;
+        }
+    }
+
+    fn huddle_person_name(&self, pubkey: &str) -> String {
+        self.profiles
+            .get(pubkey)
+            .and_then(|profile| {
+                profile
+                    .display_name
+                    .clone()
+                    .or_else(|| profile.name.clone())
+            })
+            .map(|name| crate::protocol::artifact::display(&name, 32))
+            .unwrap_or_else(|| pubkey.chars().take(8).collect())
+    }
+
+    fn huddle_lanes(&self) -> Option<crate::ui::huddle_lanes::Lanes<'_>> {
+        self.huddle_viz.on.then(|| crate::ui::huddle_lanes::Lanes {
+            meter: &self.huddle_viz.meter,
+            people: &self.huddle_viz.people,
+            muted: self.huddle_viz.muted,
+            motion: self.config.ui.motion(),
+            look: self.huddle_viz.look,
+            recording: self.demo,
+        })
     }
 
     async fn stop_huddle_call(&mut self) {
@@ -4415,11 +5173,51 @@ impl App {
             devices: self.huddle_devices.clone(),
             you_created: active
                 .is_some_and(|active| Some(active.creator.as_str()) == self.self_pubkey()),
+            recording: self.demo && active.is_some(),
         }
     }
 
     async fn huddle_key(&mut self, key: KeyEvent) -> Result<()> {
+        // The style picker: moving previews, Enter keeps, Esc puts back.
+        if let Some(row) = self.huddle_viz.picker {
+            let count = crate::config::HuddleStyle::ALL.len();
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.huddle_viz.picker = Some((row + count - 1) % count);
+                }
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
+                    self.huddle_viz.picker = Some((row + 1) % count);
+                }
+                KeyCode::Enter => {
+                    let style = self.huddle_style();
+                    self.huddle_viz.picker = None;
+                    self.save_huddle_style(style);
+                }
+                KeyCode::Esc | KeyCode::Char('q' | 'v') => self.huddle_viz.picker = None,
+                _ => {}
+            }
+            return Ok(());
+        }
+        if self.huddle_zoomed() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q' | 'z') => {
+                    self.huddle_viz.zoomed = false;
+                    return Ok(());
+                }
+                KeyCode::Char('v') => {
+                    self.open_huddle_picker();
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         match key.code {
+            KeyCode::Char('z') | KeyCode::Char('v') if self.huddle_viz.on => {
+                self.huddle_viz.zoomed = true;
+                if key.code == KeyCode::Char('v') {
+                    self.open_huddle_picker();
+                }
+            }
             KeyCode::Esc | KeyCode::Char('q') => self.presentation.close_overlay(),
             KeyCode::Char('s') => return self.huddle_command("start").await,
             KeyCode::Char('j') => return self.huddle_command("join").await,
@@ -4439,9 +5237,82 @@ impl App {
         Ok(())
     }
 
+    /// Opens the zoomed view's style picker on the style in use.
+    fn open_huddle_picker(&mut self) {
+        let current = self.huddle_style();
+        self.huddle_viz.picker = crate::config::HuddleStyle::ALL
+            .iter()
+            .position(|style| *style == current);
+    }
+
+    fn save_huddle_style(&mut self, style: crate::config::HuddleStyle) {
+        self.config.ui.huddle_style = style;
+        self.status_error = Some(match self.config.save(&self.paths) {
+            Ok(()) => format!("huddle style: {}", style.name()),
+            Err(error) => error.to_string(),
+        });
+    }
+
+    /// `:huddle zoom` and `:huddle style [name]` (plan v0.17.0 B5). They
+    /// need no channel: a generated huddle has none.
+    fn huddle_view_command(&mut self, verb: &str, rest: &str) {
+        match (verb, rest) {
+            ("zoom", _) if !self.huddle_viz.on => {
+                self.status_error =
+                    Some("the zoomed view shows a call: join the huddle first".into());
+            }
+            ("zoom", _) => {
+                let zoomed = self.huddle_zoomed();
+                self.huddle_viz.picker = None;
+                self.huddle_viz.zoomed = !zoomed;
+                self.presentation.open_overlay(Overlay::Huddle);
+            }
+            (_, "") if self.huddle_viz.on => {
+                self.huddle_viz.zoomed = true;
+                self.presentation.open_overlay(Overlay::Huddle);
+                self.open_huddle_picker();
+            }
+            (_, "") => {
+                self.status_error = Some(format!(
+                    "huddle style: {} (lanes, bars or orb: :huddle style <name>)",
+                    self.config.ui.huddle_style.name()
+                ));
+            }
+            (_, name) => match crate::config::HuddleStyle::from_name(name) {
+                Some(style) => {
+                    self.huddle_viz.picker = None;
+                    self.save_huddle_style(style);
+                    if self.huddle_viz.on {
+                        self.huddle_viz.zoomed = true;
+                        self.presentation.open_overlay(Overlay::Huddle);
+                    }
+                }
+                None => {
+                    self.status_error = Some(format!(
+                        "unknown huddle style {:?}: lanes, bars or orb",
+                        crate::protocol::artifact::display(name, 24)
+                    ));
+                }
+            },
+        }
+    }
+
     async fn huddle_command(&mut self, arguments: &str) -> Result<()> {
+        // The panel's keys come here too: the demo answers before any
+        // confirmation that would lead to a device.
+        if self.demo
+            && let Some(answer) =
+                crate::demo::refuses(&crate::ui::command::Command::Huddle(arguments.into()))
+        {
+            self.status_error = Some(answer.into());
+            return Ok(());
+        }
         let (verb, rest) = arguments.split_once(' ').unwrap_or((arguments, ""));
         let rest = rest.trim();
+        if matches!(verb, "zoom" | "style") {
+            self.huddle_view_command(verb, rest);
+            return Ok(());
+        }
         if self.runtime.is_none() || self.current_channel().is_none() {
             self.status_error = Some("select a channel in a connected community".into());
             return Ok(());
@@ -4481,6 +5352,7 @@ impl App {
                 self.presentation.open_overlay(Overlay::Huddle);
                 self.presentation
                     .open_confirmation(ConfirmationKind::HuddleJoin);
+                self.start_mic_check();
             }
             "leave" => self.leave_huddle().await,
             "end"
@@ -4496,6 +5368,9 @@ impl App {
                 self.presentation.open_overlay(Overlay::Huddle);
                 self.presentation
                     .open_confirmation(ConfirmationKind::HuddleEnd);
+            }
+            "end" if active.is_none() => {
+                self.status_error = Some("no huddle is running here".into())
             }
             "end" => self.status_error = Some("only the huddle's creator can end it".into()),
             "react"
@@ -4563,7 +5438,7 @@ impl App {
             }
             _ => {
                 self.status_error = Some(
-                    "usage: :huddle [start|join|leave|end|mute|react <emoji>|devices|input <name>|output <name>]".into(),
+                    "usage: :huddle [start|join|leave|end|mute|react <emoji>|devices|input <name>|output <name>|zoom|style [lanes|bars|orb]]".into(),
                 );
             }
         }
@@ -4572,6 +5447,10 @@ impl App {
 
     /// Start (after confirmation): backing channel, then 48100; then join.
     fn spawn_huddle_start(&mut self) {
+        if self.demo {
+            self.status_error = Some(crate::demo::HUDDLE_IS_A_RECORDING.into());
+            return;
+        }
         let (Some(runtime), Some(parent)) = (
             &self.runtime,
             self.current_channel().map(|channel| channel.id),
@@ -4616,6 +5495,10 @@ impl App {
 
     #[cfg_attr(not(feature = "huddles-audio"), allow(unused_variables))]
     fn spawn_huddle_join(&mut self, parent: Uuid, backing: Uuid) {
+        if self.demo {
+            self.status_error = Some(crate::demo::HUDDLE_IS_A_RECORDING.into());
+            return;
+        }
         #[cfg(not(feature = "huddles-audio"))]
         {
             self.status_error = Some(crate::huddle::VIEW_ONLY.into());
@@ -4640,7 +5523,12 @@ impl App {
             let input = self.config.ui.huddle_input_device.clone();
             let output = self.config.ui.huddle_output_device.clone();
             let tx = self.background_tx.clone();
+            let released = self.huddle_viz.mic_released.take();
             tokio::spawn(async move {
+                // The microphone check lets its devices go first.
+                if let Some(released) = released {
+                    let _ = tokio::time::timeout(Duration::from_secs(2), released).await;
+                }
                 let joined = async {
                     let (devices, capture, playback) = tokio::task::spawn_blocking(move || {
                         crate::huddle::audio::open_devices(input.as_deref(), output.as_deref())
@@ -4660,10 +5548,15 @@ impl App {
                         parent,
                     }))
                 };
+                // Device errors are whole sentences that say what to do:
+                // shown as they are, in one line.
                 let _ = tx
-                    .send(Background::HuddleJoined(
-                        joined.await.map_err(|error| error.to_string()),
-                    ))
+                    .send(Background::HuddleJoined(joined.await.map_err(
+                        |error| match error {
+                            Error::Unsupported(message) => message,
+                            error => error.to_string(),
+                        },
+                    )))
                     .await;
             });
         }
@@ -5695,6 +6588,13 @@ impl App {
             self.last_marked.remove(&channel.to_string());
             self.subscribe_channel(channel).await?;
             self.spawn_backfill(channel);
+            if self.runtime.is_some() {
+                // Placeholder rows shimmer while nothing is cached (L8).
+                self.stage.loading(channel, tokio::time::Instant::now());
+            }
+            // What was unread when the channel opened keeps its `── new ──`
+            // line while the channel stays open, though it is read now.
+            self.new_since = self.channel_read_at(channel).await?.map(|at| (channel, at));
             // Explicitly opening a channel starts at its live edge. Persist the
             // local marker now rather than waiting for a later redraw/tick.
             self.mark_current_read().await?;
@@ -6114,7 +7014,7 @@ impl App {
     async fn remove_last_attachment(&mut self) -> Result<()> {
         if let Some(staging) = self.staging_attachments.pop() {
             self.staging_media.remove(&staging.id);
-            self.status_error = Some("attachment removed".into());
+            self.toast("attachment removed");
             return Ok(());
         }
         let Some(attachment) = self.composer.attachments.pop() else {
@@ -6127,7 +7027,7 @@ impl App {
         {
             self.discard_pending_attachment(target.community_id, pending);
         }
-        self.status_error = Some("attachment removed".into());
+        self.toast("attachment removed");
         self.persist_draft().await
     }
 
@@ -6890,6 +7790,14 @@ impl App {
         self.cache_dirty = true;
     }
     fn send_reaction(&mut self) {
+        let emoji = crate::ui::reaction_picker::REACTIONS[self.reaction_index].to_owned();
+        self.send_reaction_emoji(emoji);
+    }
+
+    /// React to the selected message with `emoji`, or take my reaction back
+    /// when I already reacted with it: the reaction picker's Enter, and the
+    /// palette's "React to message" step (v0.17 C9).
+    fn send_reaction_emoji(&mut self, emoji: String) {
         if let Some(reason) = self.current_channel().and_then(Channel::read_only_reason) {
             self.status_error = Some(reason.notice().into());
             self.presentation.close_overlay();
@@ -6901,7 +7809,6 @@ impl App {
         };
         let service = runtime.messages.clone();
         let target = message.event_id.clone();
-        let emoji = crate::ui::reaction_picker::REACTIONS[self.reaction_index].to_owned();
         let self_pubkey = runtime.signer.public_key().to_hex();
         let own_reaction = self.reactions.get(&target).and_then(|reactions| {
             reactions
@@ -7050,6 +7957,25 @@ impl App {
         Ok(())
     }
 
+    /// `:status`: your status as the community holds it, and how to change
+    /// it (v0.17 D6).
+    async fn show_status(&mut self) -> Result<()> {
+        let (Some(community), Some(pubkey)) = (
+            self.active_community_id(),
+            self.self_pubkey().map(str::to_owned),
+        ) else {
+            self.status_error = Some("no identity here, so no status".into());
+            return Ok(());
+        };
+        let status = self
+            .store
+            .call(move |store| store.user_status(community, &pubkey))
+            .await?;
+        let now = crate::clock::SystemClock.now_unix();
+        self.status_error = Some(status_notice(status.as_ref(), now));
+        Ok(())
+    }
+
     fn set_status(&mut self, arguments: &str) {
         let Some(runtime) = &self.runtime else {
             self.status_error = Some(
@@ -7166,18 +8092,46 @@ impl App {
             .collect::<Vec<_>>();
         let service = runtime.messages.clone();
         let tx = self.background_tx.clone();
-        // The thread draft stays until the user clears it; the channel copy
-        // goes through the same acknowledgement-aware outbox as any send.
+        let store = self.store.clone();
+        let community = self.active_community_id();
+        let name = self
+            .current_channel()
+            .map(|channel| {
+                format!(
+                    "{}{}",
+                    crate::ui::finder::marker(channel),
+                    sanitize::single_line(&channel.name)
+                )
+            })
+            .unwrap_or_else(|| "the channel".into());
+        // The draft is sent as a new message of the channel, through the
+        // same acknowledgement-aware outbox as any send, and the thread's
+        // draft is cleared (v0.17 F7): here at once, in the store once the
+        // relay took it. If it fails the stored draft is still there.
+        self.composer.clear();
+        self.status_error = Some(format!("sending the thread's draft to {name}…"));
         tokio::spawn(async move {
             let result = service
                 .send_to_channel(channel, &root, &root_message.content, &content, &mentions)
                 .await;
-            let _ = tx
-                .send(match result {
-                    Ok(_) => Background::Notice("sent to the channel".into()),
-                    Err(error) => Background::Failed(error.to_string()),
-                })
-                .await;
+            let notice = match result {
+                Ok(_) => {
+                    if let Some(community) = community {
+                        let _ = store
+                            .call(move |store| {
+                                store.save_draft(community, channel, Some(&root), "")
+                            })
+                            .await;
+                    }
+                    Background::Notice(format!(
+                        "sent to {name} as a new message · the thread's draft is cleared"
+                    ))
+                }
+                Err(error) => Background::Failed(format!(
+                    "not sent to {name}, the thread's draft is kept: {error}"
+                )),
+            };
+            let _ = tx.send(notice).await;
         });
     }
 
@@ -7228,7 +8182,7 @@ impl App {
                     })
                     .await?;
                 self.cache_dirty = true;
-                self.status_error = Some("sidebar updated".into());
+                self.toast("sidebar updated");
             }
             Ok(None) => self.status_error = Some("sidebar unchanged".into()),
             Err(error) => self.status_error = Some(format!("sidebar not changed: {error}")),
@@ -7788,6 +8742,94 @@ impl App {
         }
         Ok(())
     }
+    /// The time up to which `channel` was read, for the `── new ──` line; a
+    /// channel never read counts from its latest message here, so only what
+    /// arrives from now on is new.
+    async fn channel_read_at(&self, channel: Uuid) -> Result<Option<u64>> {
+        let (Some(community), Some(identity)) = (
+            self.active_community_id(),
+            self.self_pubkey().map(str::to_owned),
+        ) else {
+            return Ok(None);
+        };
+        let contexts = self
+            .store
+            .call(move |store| store.read_contexts(community, &identity, false))
+            .await?;
+        let read_at = contexts
+            .get(&channel.to_string())
+            .copied()
+            .map_or(0, u64::from);
+        Ok(Some(if read_at == 0 {
+            self.messages
+                .iter()
+                .map(|message| message.created_at)
+                .max()
+                .unwrap_or(0)
+        } else {
+            read_at
+        }))
+    }
+
+    /// The first message after the read time the channel had when it was
+    /// opened, written by someone else: the `── new ──` line goes before it.
+    fn new_marker(&self) -> Option<String> {
+        let (channel, since) = self.new_since?;
+        if self.current_channel().map(|current| current.id) != Some(channel) {
+            return None;
+        }
+        let me = self.self_pubkey();
+        self.messages
+            .iter()
+            .find(|message| {
+                message.created_at > since
+                    && message.system.is_none()
+                    && me.is_none_or(|me| !message.pubkey.eq_ignore_ascii_case(me))
+            })
+            .map(|message| message.event_id.clone())
+    }
+
+    /// One line over the conversation when bzz is not online: what it shows
+    /// and what to do next (L5).
+    fn connection_banner(&self) -> Option<String> {
+        let saved = "showing what is saved here";
+        match self.connection {
+            ConnectionState::Offline if self.runtime.is_some() => Some(format!(
+                "offline · {saved} · bzz retries on its own · :reconnect tries now"
+            )),
+            ConnectionState::Offline => Some(format!("offline · {saved}")),
+            ConnectionState::Locked
+            | ConnectionState::IdentityMissing
+            | ConnectionState::IdentityCorrupt => Some(format!(
+                "{} · {saved} · restore or unlock the identity, then restart bzz",
+                crate::ui::status::connection_label(self.connection)
+            )),
+            ConnectionState::AccessDenied => Some(
+                "access denied · ask the community's admin for access, then :reconnect".into(),
+            ),
+            ConnectionState::ClockSkew => Some(
+                "clock skew · the relay refuses this machine's time · set the clock, then :reconnect"
+                    .into(),
+            ),
+            ConnectionState::Connecting
+            | ConnectionState::Authenticating
+            | ConnectionState::Online
+            | ConnectionState::Backfilling => None,
+        }
+    }
+
+    /// What to do in an empty conversation (L5).
+    fn empty_hint(&self) -> Option<String> {
+        let channel = self.current_channel()?;
+        Some(if let Some(reason) = channel.read_only_reason() {
+            reason.notice().to_owned()
+        } else if self.runtime.is_none() {
+            "Read-only: restore or unlock the identity to write.".to_owned()
+        } else {
+            "i writes the first one".to_owned()
+        })
+    }
+
     async fn mark_current_read(&mut self) -> Result<()> {
         let Some(community) = self.active_community_id() else {
             return Ok(());
@@ -7852,6 +8894,9 @@ impl App {
                 .await?;
             self.last_marked.insert(context, at);
             advanced = true;
+        }
+        if visible_channel {
+            self.unread_counts.remove(&channel);
         }
         if visible_channel
             && clear_visible_unread(&mut self.computed_unread, &mut self.manual_unread, channel)
@@ -8240,6 +9285,16 @@ impl App {
             || crate::domain::abbreviated_pubkey(&asked.requester),
             crate::domain::Profile::label,
         )
+    }
+
+    /// An Enter that the composer takes to send: nothing above it (an
+    /// overlay, the mention list) takes it first.
+    fn composer_takes_enter(&self, key: KeyEvent) -> bool {
+        key.code == KeyCode::Enter
+            && key.modifiers.is_empty()
+            && self.presentation.overlay.is_none()
+            && self.presentation.composer_target.is_some()
+            && self.mention_picker.is_none()
     }
 
     /// The key that works on every screen: Ctrl-Y opens the dialog of the
@@ -9278,50 +10333,125 @@ impl App {
     }
 
     async fn text_overlay_key(&mut self, key: KeyEvent, finder: bool) -> Result<()> {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        // v0.17 C5: the finder's selection moves; Enter opens that row.
+        if finder {
+            let delta = match key.code {
+                KeyCode::Down | KeyCode::Tab => Some(1),
+                KeyCode::Up | KeyCode::BackTab => Some(-1),
+                KeyCode::Char('n') if control => Some(1),
+                KeyCode::Char('p') if control => Some(-1),
+                _ => None,
+            };
+            if let Some(delta) = delta {
+                let len = crate::ui::finder::rows(&self.finder.query, &self.channels).len();
+                self.finder.move_by(delta, len);
+                return Ok(());
+            }
+        }
+        // v0.17 C11: Tab completes the `:` line and cycles.
+        if !finder && matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            self.command_answer = None;
+            self.complete_command(key.code == KeyCode::Tab).await;
+            return Ok(());
+        }
         match key.code {
-            KeyCode::Esc => self.presentation.close_overlay(),
+            KeyCode::Esc => {
+                self.command_answer = None;
+                self.command_line_closed();
+                self.presentation.close_overlay();
+            }
             KeyCode::Backspace => {
                 if finder {
                     self.finder.pop();
                 } else {
+                    self.command_answer = None;
                     self.command.pop();
                 }
             }
-            KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(character) if !control => {
                 if finder {
                     self.finder.push(character)
                 } else {
+                    self.command_answer = None;
                     self.command.push(character)
                 }
             }
             KeyCode::Enter => {
                 if finder {
-                    if let Some(found) =
-                        crate::ui::finder::rank(&self.finder, &self.channels).first()
-                        && let Some(index) = self
-                            .channels
-                            .iter()
-                            .position(|channel| channel.id == found.id)
-                    {
-                        let found_is_member = found.is_member;
-                        self.select_channel_index(index);
-                        self.showing_open_channel = !found_is_member;
-                        self.load_selected_channel().await?;
-                        self.presentation
-                            .set_workspace_focus(FocusSurface::Timeline);
+                    let selected = crate::ui::finder::rows(&self.finder.query, &self.channels)
+                        .get(self.finder.selected)
+                        .map(|row| match row {
+                            crate::ui::finder::FinderRow::Channel(channel) => {
+                                Some((channel.id, channel.is_member))
+                            }
+                            crate::ui::finder::FinderRow::NewDm => None,
+                        });
+                    match selected {
+                        Some(Some((id, is_member))) => {
+                            if let Some(index) =
+                                self.channels.iter().position(|channel| channel.id == id)
+                            {
+                                self.select_channel_index(index);
+                                self.showing_open_channel = !is_member;
+                                self.load_selected_channel().await?;
+                                self.presentation
+                                    .set_workspace_focus(FocusSurface::Timeline);
+                            }
+                            self.presentation.close_overlay();
+                        }
+                        // The last row: a DM with someone, the query as
+                        // the search for the person.
+                        Some(None) => {
+                            let query = std::mem::take(&mut self.finder.query);
+                            self.presentation.close_overlay();
+                            self.open_dm_picker(None);
+                            if self.presentation.overlay == Some(Overlay::DmPicker)
+                                && !query.is_empty()
+                            {
+                                self.dm_picker.query = query;
+                                if let Some(pubkey) = self.self_pubkey().map(str::to_owned) {
+                                    self.dm_picker.reconcile(&self.profiles, &pubkey);
+                                }
+                                self.dm_dirty_since = Some(Instant::now());
+                            }
+                        }
+                        None => self.presentation.close_overlay(),
                     }
-                    self.presentation.close_overlay();
                 } else {
                     // Close only the command prompt before executing. Commands
                     // such as :search, :dm, and :agents may deliberately open
                     // their own overlay, which must survive this dispatch.
                     self.presentation.close_overlay();
+                    self.command_answer = None;
+                    self.command_line_closed();
+                    let before = self.status_error.clone();
                     self.execute_command().await?;
+                    self.keep_prompt_for_answer(before);
                 }
             }
             _ => {}
         }
         Ok(())
+    }
+
+    /// A `:` command that was mistyped, or lacks what it needs, keeps its
+    /// prompt open with the text as typed and the answer under it, wrapped,
+    /// instead of one status line cut at the window's edge (v0.17 C4).
+    fn keep_prompt_for_answer(&mut self, before: Option<String>) {
+        if self.presentation.overlay.is_some() || self.status_error == before {
+            return;
+        }
+        let is_answer = self.status_error.as_deref().is_some_and(|answer| {
+            answer.starts_with("usage:")
+                || answer.starts_with("unknown command")
+                || answer == crate::ui::command::COMMUNITY_ANSWER
+                || answer.starts_with("no theme named")
+        });
+        if is_answer {
+            self.command_answer = self.status_error.take();
+            self.presentation.open_overlay(Overlay::Command);
+        }
     }
     fn open_theme_picker(&mut self) {
         let scope = if self.config.communities.is_empty() {
@@ -9451,7 +10581,14 @@ impl App {
     }
 
     async fn execute_command(&mut self) -> Result<()> {
-        match crate::ui::command::parse(&self.command) {
+        let command = crate::ui::command::parse(&self.command);
+        if self.demo
+            && let Some(answer) = crate::demo::refuses(&command)
+        {
+            self.status_error = Some(answer.into());
+            return Ok(());
+        }
+        match command {
             crate::ui::command::Command::Lock => {
                 // Nothing is served while bzz is locked.
                 if let Some(broker) = self.broker.take() {
@@ -9510,6 +10647,10 @@ impl App {
             }
             crate::ui::command::Command::SignIn => self.begin_federated_sign_in().await,
             crate::ui::command::Command::ToChannel => self.send_draft_to_channel(),
+            // v0.17 D6: a bare `:status` shows the status; v0.16 cleared it.
+            crate::ui::command::Command::Status(arguments) if arguments.is_empty() => {
+                return self.show_status().await;
+            }
             crate::ui::command::Command::Status(arguments) => self.set_status(&arguments),
             crate::ui::command::Command::Presence(argument) => {
                 return self.presence_command(&argument).await;
@@ -9657,12 +10798,75 @@ impl App {
             crate::ui::command::Command::App(arguments) => {
                 return self.app_command(&arguments).await;
             }
-            crate::ui::command::Command::Unknown(value) => {
-                self.status_error = Some(format!("unknown command: {value}"))
+            crate::ui::command::Command::AddCommunity => {
+                self.open_join(crate::ui::join::JoinStart::Join);
             }
-            _ => self.status_error = Some("use the CLI to add/remove communities".into()),
+            crate::ui::command::Command::Join(address) => {
+                self.open_join(if address.is_empty() {
+                    crate::ui::join::JoinStart::Join
+                } else {
+                    crate::ui::join::JoinStart::Address(address)
+                });
+            }
+            crate::ui::command::Command::Unknown(value) => {
+                self.status_error = Some(crate::ui::command::unknown_answer(&value));
+            }
+            crate::ui::command::Command::RemoveCommunity => {
+                self.status_error = Some(crate::ui::command::COMMUNITY_ANSWER.into());
+            }
+            crate::ui::command::Command::Quit => {
+                self.presentation.open_confirmation(ConfirmationKind::Quit);
+            }
+            crate::ui::command::Command::Help => {
+                self.help_scroll = crate::ui::help::HelpScroll::default();
+                self.presentation.open_overlay(Overlay::Help);
+            }
+            crate::ui::command::Command::Theme(name) => self.theme_command(&name),
+            crate::ui::command::Command::DmWith(people) => self.dm_command(&people, false),
+            crate::ui::command::Command::DmAddPerson(person) => self.dm_command(&person, true),
         }
         Ok(())
+    }
+
+    /// `:theme` opens the picker; `:theme <name>` sets that theme as the
+    /// picker's Enter would (v0.17 C4).
+    fn theme_command(&mut self, name: &str) {
+        self.open_theme_picker();
+        if name.is_empty() {
+            return;
+        }
+        let wanted = name.to_lowercase().replace([' ', '_'], "-");
+        let found = crate::ui::theme::ThemeRegistry::canonical_id(&wanted).or_else(|| {
+            crate::ui::theme::ThemeRegistry::entries()
+                .find(|entry| entry.name.to_lowercase().replace([' ', '_'], "-") == wanted)
+                .map(|entry| entry.id)
+        });
+        match found {
+            Some(id)
+                if self
+                    .theme_picker
+                    .as_mut()
+                    .is_some_and(|picker| picker.select_id(id)) =>
+            {
+                self.confirm_theme_selection();
+            }
+            _ => {
+                // Put back what the picker previewed, and say what exists.
+                if let Some(theme) = self.theme_before_preview.take() {
+                    self.theme = theme;
+                }
+                self.theme_picker = None;
+                self.presentation.close_overlay();
+                let names = crate::ui::theme::ThemeRegistry::entries()
+                    .map(|entry| entry.id)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.status_error = Some(format!(
+                    "no theme named {} · :theme opens the picker · themes: {names}",
+                    sanitize::single_line(name)
+                ));
+            }
+        }
     }
 
     async fn switch_community(
@@ -9705,49 +10909,7 @@ impl App {
             *terminal = new_terminal;
         }
         match built {
-            Ok(runtime) => {
-                self.close_all_apps();
-                if let Some(old) = self.runtime.take() {
-                    old.supervisor.shutdown().await;
-                    if old.identity_id != runtime.identity_id {
-                        old.signer.lock().await;
-                    }
-                }
-                self.media.bind(
-                    runtime.community_id,
-                    runtime.identity_id,
-                    runtime.media.clone(),
-                );
-                self.runtime = Some(runtime);
-                self.selected_community = index;
-                self.select_community_index(index);
-                self.config.default_community = Some(target_id);
-                self.config.save(&self.paths)?;
-                self.reload_theme();
-                self.selected_channel = 0;
-                self.channel_viewport = ViewportState::default();
-                self.showing_open_channel = false;
-                self.thread_root = None;
-                self.last_marked.clear();
-                self.profile_requested.clear();
-                self.subscribed_channels.clear();
-                self.closed_channel_subscriptions.clear();
-                self.agent_typing.clear();
-                self.typing_subscription_channel = None;
-                self.closed_typing_channel = None;
-                self.inbox_items.clear();
-                self.inbox_messages.clear();
-                self.inbox_state = InboxState::default();
-                self.search_state = SearchState::default();
-                self.dm_picker = DmPickerState::default();
-                self.dm_dirty_since = None;
-                self.clear_agent_directory_state();
-                self.presentation.close_overlay();
-                self.connection = ConnectionState::Connecting;
-                self.last_inbox_refresh = Instant::now();
-                self.hydrate_cache().await?;
-                self.start_sync().await?;
-            }
+            Ok(runtime) => self.adopt_runtime(index, runtime).await?,
             Err(error) => {
                 let recovery = identity_recovery_connection(&error);
                 if let Some(connection) = recovery {
@@ -9790,6 +10952,55 @@ impl App {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Makes `runtime`, built for the community at `index`, the open one:
+    /// the old runtime stops, and the new one syncs. `switch_community` and
+    /// the join form (`app::join`) both end here.
+    async fn adopt_runtime(&mut self, index: usize, runtime: Runtime) -> Result<()> {
+        let target_id = runtime.community_id;
+        self.close_all_apps();
+        if let Some(old) = self.runtime.take() {
+            old.supervisor.shutdown().await;
+            if old.identity_id != runtime.identity_id {
+                old.signer.lock().await;
+            }
+        }
+        self.media.bind(
+            runtime.community_id,
+            runtime.identity_id,
+            runtime.media.clone(),
+        );
+        self.runtime = Some(runtime);
+        self.selected_community = index;
+        self.select_community_index(index);
+        self.config.default_community = Some(target_id);
+        self.config.save(&self.paths)?;
+        self.reload_theme();
+        self.selected_channel = 0;
+        self.channel_viewport = ViewportState::default();
+        self.showing_open_channel = false;
+        self.thread_root = None;
+        self.last_marked.clear();
+        self.profile_requested.clear();
+        self.subscribed_channels.clear();
+        self.closed_channel_subscriptions.clear();
+        self.agent_typing.clear();
+        self.typing_subscription_channel = None;
+        self.closed_typing_channel = None;
+        self.inbox_items.clear();
+        self.inbox_messages.clear();
+        self.inbox_state = InboxState::default();
+        self.search_state = SearchState::default();
+        self.dm_picker = DmPickerState::default();
+        self.dm_dirty_since = None;
+        self.clear_agent_directory_state();
+        self.presentation.close_overlay();
+        self.connection = ConnectionState::Connecting;
+        self.last_inbox_refresh = Instant::now();
+        self.hydrate_cache().await?;
+        self.start_sync().await?;
         Ok(())
     }
 
@@ -10000,46 +11211,69 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) {
-        self.render_app(frame);
+        let color_mode = crate::ui::frame::ColorMode::detected();
+        self.theme.set_color_mode(color_mode);
+        self.render_frame(frame);
+        // The last pass: no colour under NO_COLOR, fewer without true colour.
+        crate::ui::frame::finish(frame.buffer_mut(), color_mode);
+    }
+
+    fn render_frame(&mut self, frame: &mut Frame<'_>) {
         // A command that waits for the owner is said on every screen,
-        // whatever is open, until he has seen it.
+        // whatever is open, until he has seen it. It takes its own row
+        // above the panes, so no pane loses its title to it (L5).
         let area = frame.area();
+        let banner = self
+            .waiting_banner()
+            .filter(|_| area.width >= 50 && area.height >= 13);
+        let Some(text) = banner else {
+            self.render_app(frame, area);
+            return;
+        };
+        let below = Rect::new(
+            area.x,
+            area.y.saturating_add(1),
+            area.width,
+            area.height - 1,
+        );
+        self.render_app(frame, below);
+        crate::ui::approval::render_banner(frame, area, &text, &self.theme);
+    }
+
+    /// What waits for the owner's answer, as the banner says it.
+    fn waiting_banner(&self) -> Option<String> {
         if let Some(first) = self.approvals.first()
             && self.presentation.overlay != Some(Overlay::Approval)
-            && area.width >= 50
-            && area.height >= 12
         {
-            let text = crate::ui::approval::banner_text(
+            return Some(crate::ui::approval::banner_text(
                 first,
                 &self.conversation_label(first),
                 self.approvals.len(),
                 seconds_left(first),
-            );
-            crate::ui::approval::render_banner(frame, area, &text, &self.theme);
-        } else if let Some(first) = self.apps.waiting.first()
+            ));
+        }
+        if let Some(first) = self.apps.waiting.first()
             && !matches!(
                 self.presentation.overlay,
                 Some(Overlay::Approval | Overlay::AppApproval)
             )
-            && area.width >= 50
-            && area.height >= 12
         {
             // A version of an app waits: said in the same place, the same
             // way, after an agent's command.
             #[cfg(feature = "apps")]
-            {
-                let text = crate::ui::app_approval::banner_text(first, self.apps.waiting.len());
-                crate::ui::approval::render_banner(frame, area, &text, &self.theme);
-            }
+            return Some(crate::ui::app_approval::banner_text(
+                first,
+                self.apps.waiting.len(),
+            ));
             #[cfg(not(feature = "apps"))]
             let _ = first;
         }
+        None
     }
 
-    fn render_app(&mut self, frame: &mut Frame<'_>) {
+    fn render_app(&mut self, frame: &mut Frame<'_>, area: Rect) {
         self.render_generation = self.render_generation.wrapping_add(1);
         let mut hit_map = HitMap::new(self.render_generation);
-        let area = frame.area();
         if area.width < 50 || area.height < 12 {
             // While an app has the focus `q` is the app's.
             let way_out = if self.app_has_focus() {
@@ -10051,15 +11285,27 @@ impl App {
                 Paragraph::new(format!("bzz needs at least 50×12\n{way_out}"))
                     .style(self.theme.style(HighlightGroup::Normal))
                     .alignment(Alignment::Center)
-                    .block(
-                        Block::bordered()
-                            .border_type(self.theme.border_type(BorderSurface::Pane))
-                            .border_style(self.theme.style(HighlightGroup::PaneBorder))
-                            .title_style(self.theme.style(HighlightGroup::PaneTitle))
-                            .title(" terminal too small "),
-                    ),
+                    .block(crate::ui::frame::block(
+                        &self.theme,
+                        BorderSurface::Pane,
+                        "terminal too small",
+                        true,
+                    )),
                 area,
             );
+            self.last_hit_map = Some(hit_map);
+            return;
+        }
+        if self.huddle_zoomed() {
+            // The huddle's zoomed view and the status line; nothing under
+            // them is laid out, so its frames stay cheap.
+            let status = Rect {
+                y: area.bottom() - 1,
+                height: 1,
+                ..area
+            };
+            self.render_status(frame, status);
+            self.render_overlay(frame, area, &mut hit_map);
             self.last_hit_map = Some(hit_map);
             return;
         }
@@ -10071,6 +11317,7 @@ impl App {
         }
         if self.presentation.route == Route::Inbox {
             self.render_inbox_workspace(frame, area, &mut hit_map);
+            self.stage_toast(frame, area);
             self.render_overlay(frame, area, &mut hit_map);
             self.last_hit_map = Some(hit_map);
             return;
@@ -10080,16 +11327,8 @@ impl App {
         if self.presentation.focus == FocusSurface::App && self.shown_app().is_none() {
             self.leave_app();
         }
-        let panes = layout::panes_with_app(
-            area,
-            self.community_rail,
-            self.sidebar,
-            self.thread_root.is_some(),
-            self.config.ui.sidebar_width,
-            self.config.ui.thread_width,
-            self.composer_dock_height(),
-            self.app_request(),
-        );
+        let panes = self.workspace_panes(area);
+        self.shell.last_panes = Some(panes);
         self.apps.placement = panes.app_placement;
         self.thread_drawn = panes.thread.is_some();
         if (self.presentation.focus == FocusSurface::Communities && panes.community.is_none())
@@ -10106,6 +11345,8 @@ impl App {
                 self.render_app_pane(frame, app, true, &mut hit_map);
             }
             self.render_status(frame, panes.status);
+            self.push_shell_targets(frame, &panes, &mut hit_map);
+            self.stage_toast(frame, area);
             self.render_overlay(frame, area, &mut hit_map);
             self.last_hit_map = Some(hit_map);
             return;
@@ -10153,6 +11394,7 @@ impl App {
                 &self.agents,
                 &self.channel_viewport,
                 &self.unread_channels(),
+                &self.unread_counts,
                 self.config.ui.channel_sort,
                 self.show_system_channels,
                 &self.sidebar_layout,
@@ -10198,6 +11440,9 @@ impl App {
             },
         );
         let self_pubkey = self.self_pubkey().map(str::to_owned);
+        self.timeline.banner = self.connection_banner();
+        self.timeline.empty_hint = self.empty_hint();
+        self.timeline.new_marker = self.new_marker();
         hit_map.push(panes.timeline, HitTarget::Timeline);
         let mut timeline_hits = Vec::new();
         if self.presentation.overlay.is_none() && self.presentation.composer_target.is_none() {
@@ -10253,7 +11498,8 @@ impl App {
                 1 => "1 reply".to_owned(),
                 count => format!("{count} replies"),
             };
-            let thread_title = format!(" context · {reply_label} · q close ");
+            let thread_title = format!("context · {reply_label}");
+            self.thread_timeline.hints = vec![("q", "close")];
             let no_thread_summaries = HashMap::new();
             let mut thread_hits = Vec::new();
             if self.presentation.overlay.is_none() && self.presentation.composer_target.is_none() {
@@ -10298,10 +11544,13 @@ impl App {
         if let Some(app) = panes.app {
             self.render_app_pane(frame, app, false, &mut hit_map);
         }
+        self.draw_hidden_panes(frame, &panes, &title);
         if let Some(composer) = panes.composer {
             self.render_composer_dock(frame, composer, &mut hit_map);
         }
         self.render_status(frame, panes.status);
+        self.push_shell_targets(frame, &panes, &mut hit_map);
+        self.stage_workspace(frame, &panes, &hit_map);
         self.render_overlay(frame, area, &mut hit_map);
         self.last_hit_map = Some(hit_map);
     }
@@ -10360,39 +11609,14 @@ impl App {
     }
 
     fn render_empty(&self, frame: &mut Frame<'_>, area: Rect) {
-        let mut lines = vec![
-            Line::styled(
-                "Welcome to bzz",
-                self.theme.style(HighlightGroup::CommunitySelected),
-            ),
-            Line::default(),
-            Line::from("No communities are configured."),
-            Line::from("Run bzz identity new, then bzz community add."),
-            Line::default(),
-            Line::from("? help · q quit"),
-        ];
         // Without a workspace there is no status bar: command feedback
         // (`:huddle`, `:presence`, ...) is shown here instead.
-        if let Some(notice) = &self.status_error {
-            lines.push(Line::default());
-            lines.push(Line::styled(
-                sanitize::single_line(notice),
-                self.theme.style(HighlightGroup::Muted),
-            ));
-        }
-        frame.render_widget(
-            Paragraph::new(Text::from(lines))
-                .style(self.theme.style(HighlightGroup::Normal))
-                .alignment(Alignment::Center)
-                .wrap(Wrap { trim: false })
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Pane))
-                        .border_style(self.theme.style(HighlightGroup::PaneBorder))
-                        .title_style(self.theme.style(HighlightGroup::PaneTitle))
-                        .title(" bzz "),
-                ),
+        crate::ui::first_screen::render(
+            frame,
             area,
+            &self.theme,
+            &self.first_screen,
+            self.status_error.as_deref(),
         );
     }
     fn render_communities(&self, frame: &mut Frame<'_>, area: Rect, focused: bool) {
@@ -10429,17 +11653,12 @@ impl App {
         frame.render_stateful_widget(
             List::new(items)
                 .style(self.theme.style(HighlightGroup::CommunityRail))
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Pane))
-                        .border_style(self.theme.style(if focused {
-                            HighlightGroup::FocusedPaneBorder
-                        } else {
-                            HighlightGroup::PaneBorder
-                        }))
-                        .title_style(self.theme.style(HighlightGroup::PaneTitle))
-                        .title(" communities "),
-                )
+                .block(crate::ui::frame::block(
+                    &self.theme,
+                    BorderSurface::Pane,
+                    "communities",
+                    focused,
+                ))
                 .highlight_style(self.theme.style(HighlightGroup::Selection))
                 .highlight_symbol("› "),
             area,
@@ -10480,12 +11699,16 @@ impl App {
             Some(target) => target.thread_root_id.is_some(),
             None => self.thread_root.is_some() && self.thread_drawn,
         };
+        // A DM names the person (v0.17 F7), as the sidebar does.
+        let marker = self
+            .current_channel()
+            .map_or("#", |channel| if channel.kind.is_dm() { "@" } else { "#" });
         let target = if into_thread {
-            format!("reply in #{channel}")
+            format!("reply in {marker}{channel}")
         } else {
-            format!("message #{channel}")
+            format!("message {marker}{channel}")
         };
-        let (title, content, border, content_group) = if active {
+        let (title, content, _border, content_group) = if active {
             let mut attachment_lines = self
                 .composer
                 .attachments
@@ -10533,13 +11756,11 @@ impl App {
             let content = format!("{}{}", sanitize::text(&self.composer.body), attachments);
             let title = match self.active_edit() {
                 Some(editing) if editing.kept_attachments > 0 => format!(
-                    " edit message · keeps {} attachment(s) · Enter save · Esc cancel ",
+                    " edit message · keeps {} attachment(s) ",
                     editing.kept_attachments
                 ),
-                Some(_) => " edit message · Enter save · Esc cancel ".into(),
-                None => format!(
-                    " {target} · Enter send · Ctrl-v paste · Ctrl-o choose · Alt-o path · Del remove · Ctrl-c clear · Esc close "
-                ),
+                Some(_) => " edit message ".into(),
+                None => format!(" {target} "),
             };
             (
                 title,
@@ -10576,11 +11797,25 @@ impl App {
                 HighlightGroup::ComposerHint,
             )
         };
-        let block = Block::bordered()
-            .border_type(self.theme.border_type(BorderSurface::Composer))
-            .border_style(self.theme.style(border))
-            .title_style(self.theme.style(HighlightGroup::ComposerTitle))
-            .title(title);
+        // What to press lives at the foot of the frame, not in its title.
+        let keys: &[(&str, &str)] = match (active, self.active_edit().is_some()) {
+            (false, _) => &[],
+            (true, true) => &[("Enter", "save"), ("Esc", "cancel")],
+            (true, false) => &[
+                ("Enter", "send"),
+                ("Ctrl-v", "paste"),
+                ("Ctrl-o", "choose"),
+                ("Alt-o", "path"),
+                ("Del", "remove"),
+                ("Ctrl-c", "clear"),
+                ("Esc", "close"),
+            ],
+        };
+        let mut block =
+            crate::ui::frame::block(&self.theme, BorderSurface::Composer, &title, active);
+        if !keys.is_empty() {
+            block = block.title_bottom(crate::ui::frame::hints(&self.theme, keys));
+        }
         let inner = block.inner(area);
         if !inner.is_empty() {
             hit_map.push(inner, HitTarget::Composer);
@@ -10655,8 +11890,10 @@ impl App {
             Some(Overlay::Artifacts) => "ARTIFACTS",
             Some(Overlay::Broker) => "BROKER",
             Some(Overlay::Profile) => "PROFILE",
+            Some(Overlay::Palette) => "PALETTE",
             Some(Overlay::Huddle) => "HUDDLE",
             Some(Overlay::Apps) => "APPS",
+            Some(Overlay::Join) => "JOIN",
             Some(Overlay::Help | Overlay::WhichKey | Overlay::Actions) | None
                 if self.presentation.composer_target.is_some() =>
             {
@@ -10685,85 +11922,157 @@ impl App {
                 .map(sanitize::single_line)
                 .unwrap_or_default()
         });
-        let huddle_line = self.active_huddle().map(|active| {
-            let call = match self.huddle_call_state() {
-                Some(true) => " · you: muted",
-                Some(false) => " · you: LIVE",
-                None => "",
-            };
-            format!(
-                "🎧 huddle · {} in it{call} · :huddle",
-                active.participants.len()
-            )
-        });
         let activity = self
             .app_status_line()
-            .or_else(|| self.visible_agent_typing_line(area.width))
-            .or(huddle_line);
+            .or_else(|| self.visible_agent_typing_line(area.width));
         let app_focused = self.app_has_focus() && self.presentation.overlay.is_none();
-        crate::ui::status::render(
-            frame,
-            area,
-            &self.theme,
-            crate::ui::status::StatusBarView {
-                mode,
-                mode_group,
-                activity: activity.as_deref(),
-                notice: &notice,
-                connection: crate::ui::status::connection_label(self.connection),
-                media: self.media.protocol_name(),
-                app_focused,
-            },
-        );
+        let channel = self.current_channel().map(|channel| {
+            let name = sanitize::single_line(&channel.name);
+            if channel.kind.is_dm() {
+                name
+            } else {
+                format!("#{name}")
+            }
+        });
+        let mut view = crate::ui::status::StatusBarView::new(mode, self.connection);
+        view.mode_group = mode_group;
+        view.channel = channel.as_deref();
+        view.activity = activity.as_deref();
+        view.notice = &notice;
+        view.app_focused = app_focused;
+        // v0.17 C10: the keys that matter where the focus is.
+        view.hint = self.footer_slot();
+        if let Some((lines, priority)) = self.status_huddle_slot() {
+            view.huddle_slot_shortening(lines, priority);
+        }
+        if let Some((line, priority)) = self.status_mark_slot() {
+            view.mark_slot(line, priority);
+            // The demo's relay is this process: "online" beside "offline"
+            // would contradict the mark.
+            view.mark_is_connection = self.demo;
+        }
+        crate::ui::status::render(frame, area, &self.theme, view);
+    }
+
+    /// The huddle strip, left of centre in the status line, longest first:
+    /// the status line takes a shorter one before it drops it. While a call
+    /// is on it is the strip of `huddle_lanes`; with only a huddle in the
+    /// channel, what v0.16.0 said.
+    fn status_huddle_slot(&self) -> Option<(Vec<Line<'static>>, u8)> {
+        if let Some(lanes) = self
+            .huddle_strip_shown()
+            .then(|| self.huddle_lanes())
+            .flatten()
+        {
+            return Some((
+                crate::ui::huddle_lanes::strips(&lanes, &self.theme).to_vec(),
+                crate::ui::status::priority::HUDDLE,
+            ));
+        }
+        let active = self.active_huddle()?;
+        let call = match self.huddle_call_state() {
+            Some(true) => " · you: muted",
+            Some(false) => " · you: LIVE",
+            None => "",
+        };
+        Some((
+            vec![Line::from(Span::styled(
+                format!(
+                    "🎧 huddle · {} in it{call} · :huddle",
+                    active.participants.len()
+                ),
+                self.theme.style(HighlightGroup::StatusAgent),
+            ))],
+            crate::ui::status::priority::HUDDLE,
+        ))
+    }
+
+    /// SEAM (agent `demo`, A1): a mark at the right of the status line, such
+    /// as `DEMO · generated, offline` with `priority::ALWAYS`. None outside
+    /// the demo.
+    fn status_mark_slot(&self) -> Option<(Line<'static>, u8)> {
+        self.demo.then(|| {
+            (
+                Line::from(Span::styled(
+                    crate::demo::STATUS_MARK,
+                    self.theme.style(HighlightGroup::StatusOnline),
+                )),
+                crate::ui::status::priority::ALWAYS,
+            )
+        })
     }
     fn render_overlay(&mut self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
+        if self.presentation.overlay.is_some() {
+            // Behind an overlay the screen steps back (L4); the overlay
+            // clears and draws its own cells.
+            crate::ui::frame::dim(frame.buffer_mut(), area, &self.theme);
+        }
+        // An overlay unfolds as it opens and folds as it closes (L8).
+        let backdrop = self.stage_overlay_begin(frame.buffer_mut());
+        self.render_overlay_body(frame, area, hit_map);
+        self.stage_overlay_end(frame.buffer_mut(), area, backdrop);
+    }
+
+    fn render_overlay_body(&mut self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
         match self.presentation.overlay {
             Some(Overlay::Help) => {
                 let actions = derive_actions(self.action_context());
                 frame.render_widget(Clear, area);
+                // Wrapped here to the frame's inside, so the scroll knows
+                // exactly how many rows there are (v0.17 C3).
+                let lines = crate::ui::help::help_lines(
+                    &self.keymap,
+                    if self.presentation.route == Route::Inbox {
+                        KeyScope::Inbox
+                    } else {
+                        KeyScope::Workspace
+                    },
+                    &actions,
+                    usize::from(area.width.saturating_sub(2)),
+                );
+                self.help_scroll
+                    .set_view(lines.len(), usize::from(area.height.saturating_sub(2)));
+                let shown = lines
+                    .iter()
+                    .skip(self.help_scroll.offset)
+                    .take(self.help_scroll.page)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 frame.render_widget(
-                    Paragraph::new(crate::ui::help::effective_keymap_with_actions(
-                        &self.keymap,
-                        if self.presentation.route == Route::Inbox {
-                            KeyScope::Inbox
-                        } else {
-                            KeyScope::Workspace
-                        },
-                        &actions,
-                    ))
-                    .style(self.theme.style(HighlightGroup::Normal))
-                    .block(
-                        Block::bordered()
-                            .border_type(self.theme.border_type(BorderSurface::Modal))
-                            .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                            .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                            .title(" effective keymap "),
-                    )
-                    .wrap(Wrap { trim: false }),
+                    Paragraph::new(shown)
+                        .style(self.theme.style(HighlightGroup::Normal))
+                        .block(crate::ui::frame::modal(
+                            &self.theme,
+                            BorderSurface::Modal,
+                            self.help_scroll.title().trim(),
+                            &[("Esc", "close")],
+                        )),
                     area,
                 );
             }
             Some(Overlay::WhichKey) => {
-                let popup = centered(area, 48, 14);
+                // Sized to show every key (v0.17 C6).
+                let (popup, lines) = crate::ui::help::leader_panel(
+                    &self.keymap,
+                    if self.presentation.route == Route::Inbox {
+                        KeyScope::Inbox
+                    } else {
+                        KeyScope::Workspace
+                    },
+                    self.input_router.sequence(),
+                    area,
+                );
                 frame.render_widget(Clear, popup);
                 frame.render_widget(
-                    Paragraph::new(crate::ui::help::which_key(
-                        &self.keymap,
-                        if self.presentation.route == Route::Inbox {
-                            KeyScope::Inbox
-                        } else {
-                            KeyScope::Workspace
-                        },
-                        self.input_router.sequence(),
-                    ))
+                    Paragraph::new(lines.join("\n"))
                     .style(self.theme.style(HighlightGroup::Normal))
-                    .block(
-                        Block::bordered()
-                            .border_type(self.theme.border_type(BorderSurface::Modal))
-                            .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                            .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                            .title(" leader "),
-                    )
+                    .block(crate::ui::frame::modal(
+                        &self.theme,
+                        BorderSurface::Modal,
+                        "leader",
+                        &[],
+                    ))
                     .wrap(Wrap { trim: false }),
                     popup,
                 );
@@ -10830,12 +12139,23 @@ impl App {
                     " start a huddle? ",
                     "Everyone in this channel can see it and join · you join muted · y start · n/Esc cancel",
                 ),
-                Some(ConfirmationKind::HuddleJoin) => self.render_prompt(
-                    frame,
-                    area,
-                    " join the huddle? ",
-                    "bzz opens your microphone and speaker; you start muted · y join · n/Esc cancel",
-                ),
+                Some(ConfirmationKind::HuddleJoin) => match &self.huddle_viz.mic_check {
+                    // Your lane, live before anything is sent (plan B7).
+                    Some(run) => crate::ui::huddle_mic::render(
+                        frame.buffer_mut(),
+                        centered(area, 74, crate::ui::huddle_mic::HEIGHT),
+                        &run.check,
+                        self.huddle_viz.look,
+                        self.config.ui.motion(),
+                        &self.theme,
+                    ),
+                    None => self.render_prompt(
+                        frame,
+                        area,
+                        " join the huddle? ",
+                        "bzz opens your microphone and speaker; you start muted · y join · n/Esc cancel",
+                    ),
+                },
                 Some(ConfirmationKind::HuddleEnd) => self.render_prompt(
                     frame,
                     area,
@@ -10855,9 +12175,37 @@ impl App {
                 None => {}
             },
             Some(Overlay::Finder) => self.render_finder(frame, area, hit_map),
-            Some(Overlay::Command) => {
-                self.render_prompt(frame, area, " command ", &format!(":{}", self.command))
-            }
+            Some(Overlay::Command) => match &self.command_answer {
+                // The line, and under it what Tab offers and the usage
+                // (v0.17 C11).
+                None => self.render_command_line(frame, area),
+                // The answer to the last Enter, wrapped under the text as
+                // typed, never cut (v0.17 C4).
+                Some(answer) => {
+                    let inner = usize::from((area.width * 70 / 100).saturating_sub(3)).max(10);
+                    let mut lines = vec![sanitize::single_line(&format!(":{}", self.command))];
+                    lines.push(String::new());
+                    lines.extend(crate::ui::help::wrap_text(
+                        &sanitize::single_line(answer),
+                        inner,
+                    ));
+                    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
+                    let popup = centered(area, 70, height);
+                    frame.render_widget(Clear, popup);
+                    frame.render_widget(
+                        Paragraph::new(lines.join("\n"))
+                            .style(self.theme.style(HighlightGroup::Normal))
+                            .block(
+                                Block::bordered()
+                                    .border_type(self.theme.border_type(BorderSurface::Modal))
+                                    .border_style(self.theme.style(HighlightGroup::ModalBorder))
+                                    .title_style(self.theme.style(HighlightGroup::ModalTitle))
+                                    .title(" command · edit and Enter, or Esc "),
+                            ),
+                        popup,
+                    );
+                }
+            },
             Some(Overlay::Theme) => self.render_theme_picker(frame, area, hit_map),
             Some(Overlay::Reaction) => {
                 let popup = centered(area, 70, 5);
@@ -10893,18 +12241,20 @@ impl App {
                             .collect::<Vec<_>>()
                             .join("  ")
                     };
-                    self.render_prompt(
+                    self.render_prompt_with_keys(
                         frame,
                         area,
-                        " custom emoji · Tab next · Enter react · Esc back ",
+                        "custom emoji",
+                        &[("Tab", "next"), ("Enter", "react"), ("Esc", "back")],
                         &sanitize::single_line(&format!(":{query}  {list}")),
                     );
                     return;
                 }
-                self.render_prompt(
+                self.render_prompt_with_keys(
                     frame,
                     area,
-                    " reaction · Enter toggle · : custom ",
+                    "reaction",
+                    &[("Enter", "toggle"), (":", "custom"), ("Esc", "close")],
                     crate::ui::reaction_picker::REACTIONS
                         .iter()
                         .enumerate()
@@ -10921,13 +12271,18 @@ impl App {
                 )
             }
             Some(Overlay::MediaPreview) => self.render_media_preview(frame, area),
-            Some(Overlay::Attachment) => self.render_prompt(
+            Some(Overlay::Attachment) => self.render_prompt_with_keys(
                 frame,
                 area,
                 if self.presentation.attachment_prompt == Some(AttachmentPrompt::Save) {
-                    " save attachment · no overwrite · Esc cancel "
+                    "save attachment · no overwrite"
                 } else {
-                    " attach by local path · Enter upload · Esc cancel "
+                    "attach by local path"
+                },
+                if self.presentation.attachment_prompt == Some(AttachmentPrompt::Save) {
+                    &[("Enter", "save"), ("Esc", "cancel")]
+                } else {
+                    &[("Enter", "upload"), ("Esc", "cancel")]
                 },
                 &self.attachment_input,
             ),
@@ -10985,20 +12340,52 @@ impl App {
                     Paragraph::new(text)
                         .style(self.theme.style(HighlightGroup::Normal))
                         .wrap(Wrap { trim: false })
-                        .block(
-                            Block::bordered()
-                                .border_type(self.theme.border_type(BorderSurface::Modal))
-                                .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                                .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                                .title(" apps · Enter open here · Esc close "),
-                        ),
+                        .block(crate::ui::frame::modal(
+                            &self.theme,
+                            BorderSurface::Modal,
+                            "apps",
+                            &[("Enter", "open here"), ("Esc", "close")],
+                        )),
                     popup,
                 );
+            }
+            Some(Overlay::Huddle) if self.huddle_zoomed() => {
+                // The zoomed view: the whole window but the status line.
+                let zoom_area = Rect {
+                    height: area.height.saturating_sub(1),
+                    ..area
+                };
+                if let Some(lanes) = self.huddle_lanes() {
+                    let channel = self
+                        .current_channel()
+                        .map(|channel| channel.name.clone())
+                        .unwrap_or_default();
+                    let zoom = crate::ui::huddle_zoom::Zoom {
+                        lanes,
+                        spectrum: &self.huddle_viz.spectrum,
+                        style: self.huddle_style(),
+                        channel: &channel,
+                        picker: self.huddle_viz.picker,
+                    };
+                    crate::ui::huddle_zoom::render(
+                        frame.buffer_mut(),
+                        zoom_area,
+                        &zoom,
+                        &self.theme,
+                    );
+                }
             }
             Some(Overlay::Huddle) => {
                 let popup = centered(area, 90, area.height.saturating_sub(2).min(30));
                 let view = self.huddle_panel_view();
-                crate::ui::huddle::render(frame, popup, &view, &self.theme);
+                let lanes = self.huddle_lanes();
+                crate::ui::huddle::render_with_lanes(
+                    frame,
+                    popup,
+                    &view,
+                    &self.theme,
+                    lanes.as_ref(),
+                );
             }
             Some(Overlay::Broker) => {
                 let popup = centered(area, 100, area.height.saturating_sub(2).min(30));
@@ -11145,6 +12532,7 @@ impl App {
                     hit_map,
                 );
             }
+            Some(Overlay::Join) => self.render_join(frame, area),
             Some(Overlay::DmPicker) => {
                 let popup = centered(area, 86, area.height.saturating_sub(4).min(28));
                 let self_pubkey = self.self_pubkey().unwrap_or_default();
@@ -11168,6 +12556,12 @@ impl App {
                     &self.theme,
                 );
             }
+            Some(Overlay::Palette) => {
+                self.refresh_palette();
+                if let Some(palette) = &self.palette {
+                    crate::ui::palette::render(frame, area, palette, &self.theme);
+                }
+            }
             None => {}
         }
     }
@@ -11183,11 +12577,14 @@ impl App {
                 hit_map.push(row, HitTarget::ActionMenu(entry.action));
             }
         }
+        // v0.17 C8: the registry's titles, with the live key of each.
+        let scope = if self.presentation.route == Route::Inbox {
+            KeyScope::Inbox
+        } else {
+            KeyScope::Workspace
+        };
         let items = entries.iter().map(|entry| {
-            let text = match entry.reason {
-                Some(reason) => format!("{} — {reason}", entry.label),
-                None => entry.label.to_owned(),
-            };
+            let text = crate::ui::actions::menu_line(entry, &self.keymap, scope);
             ListItem::new(text).style(self.theme.style(if entry.enabled {
                 HighlightGroup::Normal
             } else {
@@ -11203,13 +12600,12 @@ impl App {
             List::new(items)
                 .highlight_symbol("› ")
                 .highlight_style(self.theme.style(HighlightGroup::SelectedRow))
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Modal))
-                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                        .title(" actions · Enter run · Esc close "),
-                ),
+                .block(crate::ui::frame::modal(
+                    &self.theme,
+                    BorderSurface::Modal,
+                    "actions",
+                    &[("Enter", "run"), ("Esc", "close")],
+                )),
             popup,
             &mut state,
         );
@@ -11222,16 +12618,17 @@ impl App {
             self.presentation.close_overlay();
             return;
         };
-        let block = Block::bordered()
-            .border_type(self.theme.border_type(BorderSurface::Modal))
-            .border_style(self.theme.style(HighlightGroup::ModalBorder))
-            .title_style(self.theme.style(HighlightGroup::ModalTitle))
-            .title(format!(
-                " attachment {}/{} · [/] navigate · s save · Esc close ",
+        let block = crate::ui::frame::modal(
+            &self.theme,
+            BorderSurface::Modal,
+            &format!(
+                "attachment {}/{}",
                 self.preview_index + 1,
                 self.selected_message()
                     .map_or(0, |message| message.attachments.len())
-            ));
+            ),
+            &[("[ ]", "navigate"), ("s", "save"), ("Esc", "close")],
+        );
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
         let details = format!(
@@ -11281,42 +12678,63 @@ impl App {
     }
 
     fn render_finder(&self, frame: &mut Frame<'_>, area: Rect, hit_map: &mut HitMap) {
+        const SHOWN: usize = 8;
         let popup = centered(area, 70, 12);
         frame.render_widget(Clear, popup);
-        let ranked = crate::ui::finder::rank(&self.finder, &self.channels);
-        for (index, channel) in ranked.iter().take(8).enumerate() {
-            if let Some(row) = list_row(popup, index.saturating_add(1), 1) {
+        let rows = crate::ui::finder::rows(&self.finder.query, &self.channels);
+        let start = self.finder.window_start(SHOWN);
+        for (index, row) in rows.iter().skip(start).take(SHOWN).enumerate() {
+            if let crate::ui::finder::FinderRow::Channel(channel) = row
+                && let Some(row) = list_row(popup, index.saturating_add(1), 1)
+            {
                 hit_map.push(row, HitTarget::FinderChannel(channel.id.to_string()));
             }
         }
         let mut items = vec![ListItem::new(format!(
             "> {}",
-            sanitize::single_line(&self.finder)
+            sanitize::single_line(&self.finder.query)
         ))];
         items.extend(
-            ranked
-                .into_iter()
-                .take(8)
+            rows.into_iter()
                 .enumerate()
-                .map(|(index, channel)| {
-                    let membership = if channel.is_member { "#" } else { "+" };
-                    ListItem::new(format!(
-                        "{} {membership}{}",
-                        if index == 0 { "›" } else { " " },
-                        sanitize::single_line(&channel.name)
-                    ))
+                .skip(start)
+                .take(SHOWN)
+                .map(|(index, row)| {
+                    let mark = if index == self.finder.selected {
+                        "›"
+                    } else {
+                        " "
+                    };
+                    let text = match row {
+                        crate::ui::finder::FinderRow::Channel(channel) => format!(
+                            "{mark} {}{}",
+                            crate::ui::finder::marker(channel),
+                            sanitize::single_line(&channel.name)
+                        ),
+                        crate::ui::finder::FinderRow::NewDm if self.finder.query.is_empty() => {
+                            format!("{mark} → start a DM with someone")
+                        }
+                        crate::ui::finder::FinderRow::NewDm => format!(
+                            "{mark} → start a DM: find people named \"{}\"",
+                            sanitize::single_line(&self.finder.query)
+                        ),
+                    };
+                    ListItem::new(text)
                 }),
         );
         frame.render_widget(
             List::new(items)
                 .style(self.theme.style(HighlightGroup::Normal))
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Picker))
-                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                        .title(" channel finder · Enter open "),
-                ),
+                .block(crate::ui::frame::modal(
+                    &self.theme,
+                    BorderSurface::Picker,
+                    "channel finder \u{b7} channels and DMs",
+                    &[
+                        ("\u{2191}\u{2193} Tab", "move"),
+                        ("Enter", "open"),
+                        ("Esc", "close"),
+                    ],
+                )),
             popup,
         );
     }
@@ -11359,30 +12777,39 @@ impl App {
             List::new(items)
                 .style(self.theme.style(HighlightGroup::Normal))
                 .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Picker))
-                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                        .title(format!(
-                            " themes · {scope} · Tab scope · Enter save · Esc cancel "
-                        )),
+                    crate::ui::frame::modal(
+                        &self.theme,
+                        BorderSurface::Picker,
+                        "themes",
+                        &[("Tab", "scope"), ("Enter", "save"), ("Esc", "cancel")],
+                    )
+                    .title(crate::ui::frame::info(&self.theme, scope)),
                 ),
             popup,
         );
     }
     fn render_prompt(&self, frame: &mut Frame<'_>, area: Rect, title: &str, value: &str) {
+        self.render_prompt_with_keys(frame, area, title, &[], value);
+    }
+    fn render_prompt_with_keys(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        title: &str,
+        keys: &[(&str, &str)],
+        value: &str,
+    ) {
         let popup = centered(area, 70, 5);
         frame.render_widget(Clear, popup);
         frame.render_widget(
             Paragraph::new(sanitize::text(value))
                 .style(self.theme.style(HighlightGroup::Normal))
-                .block(
-                    Block::bordered()
-                        .border_type(self.theme.border_type(BorderSurface::Modal))
-                        .border_style(self.theme.style(HighlightGroup::ModalBorder))
-                        .title_style(self.theme.style(HighlightGroup::ModalTitle))
-                        .title(title),
-                ),
+                .block(crate::ui::frame::modal(
+                    &self.theme,
+                    BorderSurface::Modal,
+                    title,
+                    keys,
+                )),
             popup,
         );
     }
@@ -11501,6 +12928,10 @@ where
     S: futures_util::Stream<Item = std::io::Result<TerminalEvent>> + Unpin,
 {
     match input.next().await {
+        // Where keys enter bzz: one form for every platform's terminal.
+        Some(Ok(TerminalEvent::Key(key))) => Some(TerminalEvent::Key(
+            crate::ui::keymap::normalize_key_event(key),
+        )),
         Some(Ok(event)) => Some(event),
         Some(Err(_)) => {
             tokio::time::sleep(TERMINAL_ERROR_YIELD).await;
@@ -11508,6 +12939,57 @@ where
         }
         None => std::future::pending().await,
     }
+}
+
+/// The next terminal event: first what was read ahead, then the stream.
+async fn next_read_ahead_event<S>(
+    read_ahead: &mut std::collections::VecDeque<TerminalEvent>,
+    input: &mut S,
+) -> Option<TerminalEvent>
+where
+    S: futures_util::Stream<Item = std::io::Result<TerminalEvent>> + Unpin,
+{
+    match read_ahead.pop_front() {
+        Some(event) => Some(event),
+        None => next_terminal_event(input).await,
+    }
+}
+
+/// Whether a key press already waits behind the one being handled: the
+/// events ready now are read ahead (at most a few, never waiting for one)
+/// and kept for the loop. A release is not a press, but a release of a
+/// character outside ASCII may be an Alt code, which is (`KeyDoor`).
+fn presses_wait<S>(
+    read_ahead: &mut std::collections::VecDeque<TerminalEvent>,
+    input: &mut S,
+) -> bool
+where
+    S: futures_util::Stream<Item = std::io::Result<TerminalEvent>> + Unpin,
+{
+    const READ_AHEAD: usize = 8;
+    let is_press = |event: &TerminalEvent| match event {
+        TerminalEvent::Key(key) => {
+            key.kind != KeyEventKind::Release
+                || matches!(key.code, KeyCode::Char(character) if !character.is_ascii())
+        }
+        TerminalEvent::Paste(_) => true,
+        _ => false,
+    };
+    if read_ahead.iter().any(is_press) {
+        return true;
+    }
+    while read_ahead.len() < READ_AHEAD {
+        let Some(Some(event)) = futures_util::FutureExt::now_or_never(next_terminal_event(input))
+        else {
+            return false;
+        };
+        let press = is_press(&event);
+        read_ahead.push_back(event);
+        if press {
+            return true;
+        }
+    }
+    false
 }
 
 /// Receives at most one relay event per turn. A flood can overrun the bounded
@@ -11548,6 +13030,36 @@ async fn next_network(runtime: &mut Option<Runtime>) -> Option<SupervisorEvent> 
         None => std::future::pending().await,
     }
 }
+/// What a bare `:status` says (v0.17 D6).
+fn status_notice(status: Option<&crate::protocol::presence::UserStatus>, now: u64) -> String {
+    match status.filter(|status| status.visible(now)) {
+        Some(status) => {
+            let text = [status.emoji.as_str(), status.text.as_str()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .map(sanitize::single_line)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let until = status
+                .expires_at
+                .and_then(|at| u64::try_from(at).ok())
+                .map(|at| {
+                    let left = at.saturating_sub(now);
+                    let (amount, unit) = match left {
+                        0..=59 => (left, "s"),
+                        60..=3_599 => (left / 60, "m"),
+                        3_600..=86_399 => (left / 3_600, "h"),
+                        _ => (left / 86_400, "d"),
+                    };
+                    format!(" · ends in {amount}{unit}")
+                })
+                .unwrap_or_default();
+            format!("your status: {text}{until} · :status clear clears it")
+        }
+        None => "you have no status · :status <text> sets one".into(),
+    }
+}
+
 fn dm_label(
     participants: &[String],
     self_pubkey: &str,
@@ -12295,7 +13807,8 @@ mod tests {
             "{shown}"
         );
         assert!(shown.contains("Scout · pi-durable · idle"), "{shown}");
-        assert!(shown.contains("agent broker · not serving"), "{shown}");
+        assert!(shown.contains("┌ agent broker ─"), "{shown}");
+        assert!(shown.contains(" not serving ┐"), "{shown}");
 
         // Space in the panel pauses the selected agent, and resumes it.
         app.broker_toggle_paused();
@@ -12599,7 +14112,8 @@ mod tests {
         wait_for(&app, Phase::Idle).await;
         let shown = screen(&mut app);
         for expected in [
-            "local agents · j/k select · space pause/resume · x stop its turn · i add to this channel · l log",
+            "┌ local agents ─",
+            " j/k select · space pause/resume · x stop its turn · i add to this channel · l log",
             "› Scout · pi-durable · idle",
             "state:        idle",
             "doing now:    nothing",
@@ -13095,6 +14609,11 @@ mod tests {
         let top = world.screen()[0].clone();
         assert!(top.contains(banner), "the workspace: {top}");
         assert!(top.contains("refused in "), "{top}");
+        // The banner has its own row: the panes' titles are whole under it
+        // (L5).
+        let titles = world.screen()[1].clone();
+        assert!(titles.contains("┌ channels ─"), "{titles}");
+        assert!(titles.contains("┌ general ─"), "{titles}");
         // Not only in the agents panel: with the directory of other
         // people's agents open, with the help, a search, the Inbox, and
         // while a message is being written.
@@ -13120,6 +14639,10 @@ mod tests {
         // Under the help, which fills the screen; and in the Inbox.
         world.app.presentation.open_overlay(Overlay::Help);
         assert!(world.screen()[0].contains(banner), "the help");
+        assert!(
+            world.screen()[1].contains("effective keymap"),
+            "the help starts under the banner"
+        );
         world.app.presentation.close_overlay();
         world.app.open_inbox();
         assert!(world.screen()[0].contains(banner), "the Inbox");
@@ -13158,7 +14681,8 @@ mod tests {
         assert_eq!(world.app.presentation.overlay, Some(Overlay::Approval));
         let shown = world.screen().join("\n");
         for expected in [
-            "a real command waits for your answer · a allow · r refuse",
+            "┌ a real command waits for your answer ─",
+            " a allow · r refuse ",
             "agent:        Scout",
             "conversation: #general (a thread) · it is answering you",
             &format!(
@@ -13618,6 +15142,46 @@ mod tests {
         assert!(screen.contains("recent activity (no content)"), "{screen}");
     }
 
+    /// L4: behind an overlay every cell steps back (the DIM attribute, so
+    /// it holds without colour); the overlay's own cells do not.
+    #[tokio::test]
+    async fn behind_an_overlay_every_cell_is_dim() {
+        use ratatui::style::Modifier;
+
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .all(|cell| !cell.modifier.contains(Modifier::DIM)),
+            "nothing is dim without an overlay"
+        );
+        app.presentation.open_overlay(Overlay::Finder);
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let popup = super::centered(Rect::new(0, 0, 100, 30), 70, 12);
+        let buffer = terminal.backend().buffer();
+        for y in 0..30 {
+            for x in 0..100 {
+                let inside = popup.contains(ratatui::layout::Position { x, y });
+                assert_eq!(
+                    buffer[(x, y)].modifier.contains(Modifier::DIM),
+                    !inside,
+                    "({x}, {y}) inside the finder: {inside}"
+                );
+            }
+        }
+        // Its keys are in the footer, the key in the hint colour.
+        let footer = (popup.x..popup.right())
+            .map(|x| buffer[(x, popup.bottom() - 1)].symbol())
+            .collect::<String>();
+        assert!(footer.contains("Enter open · Esc close"), "{footer}");
+    }
+
     /// The deterministic twin of the `v013-panels-empty-profile` Herdr scenario.
     #[tokio::test]
     async fn v013_commands_on_an_empty_profile_explain_or_open_their_panels() {
@@ -13647,7 +15211,8 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(screen.contains("agent broker · not serving"), "{screen}");
+        assert!(screen.contains("┌ agent broker ─"), "{screen}");
+        assert!(screen.contains(" not serving ┐"), "{screen}");
         assert!(!screen.contains("local agents"), "{screen}");
         assert!(
             screen.contains("o owner-signed agent presence: off"),
@@ -13841,6 +15406,212 @@ mod tests {
         );
     }
 
+    /// Rule 20: with no huddle call the visualizer asks for no frame, and
+    /// the redraw gate admits only the screen's first frame.
+    #[tokio::test]
+    async fn the_huddle_visualizer_asks_for_no_frame_without_a_call() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        let mut gate = crate::ui::redraw_gate::RedrawGate::default();
+        assert!(gate.take());
+        for _ in 0..300 {
+            gate.request_if(app.tick_huddle_viz());
+            assert!(!gate.take());
+        }
+        assert!(app.huddle_lanes().is_none());
+        assert!(!app.huddle_strip_shown());
+    }
+
+    /// The whole screen with a generated huddle: the strip in the status
+    /// line while the panel is closed, the lanes in `:huddle`. Captures go to
+    /// `BZZ_VIZ_CAPTURES` when set.
+    #[tokio::test]
+    async fn a_generated_huddle_shows_its_strip_and_its_lanes() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.channels = vec![Channel {
+            id: Uuid::new_v4(),
+            name: "team".into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 4,
+            last_event_at: None,
+            facts: Default::default(),
+        }];
+        app.selected_channel = 0;
+        let mut people = Vec::new();
+        for (index, (name, key)) in [("Ada", 'a'), ("Lin", 'b'), ("Sam", 'c')]
+            .into_iter()
+            .enumerate()
+        {
+            let pubkey = key.to_string().repeat(63) + "1";
+            app.profiles.insert(
+                pubkey.clone(),
+                crate::domain::Profile {
+                    pubkey: pubkey.clone(),
+                    display_name: Some(name.into()),
+                    name: None,
+                    picture: None,
+                    nip05: None,
+                    about: None,
+                    event_id: "e".repeat(64),
+                    created_at: 1,
+                    verified: None,
+                    status: None,
+                    presence: None,
+                    in_huddle: true,
+                },
+            );
+            people.push((index as u8 + 1, pubkey));
+        }
+        app.set_generated_huddle(
+            crate::huddle::synth::Synthetic::new(&crate::huddle::synth::DEMO_SCRIPT, None),
+            people,
+            true,
+        );
+        app.huddle_viz.look = crate::ui::huddle_lanes::Look::default();
+        let mut frames = 0;
+        let mut t = 0.0;
+        while t <= 5.5 {
+            frames += u32::from(app.tick_huddle_viz_at(t));
+            t += 0.033;
+        }
+        assert!(frames > 100, "the strip moves while people speak: {frames}");
+        let draw = |app: &mut super::App, width: u16, height: u16| {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            (0..height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut captures = Vec::new();
+        for (width, height) in [(80, 24), (160, 45)] {
+            let screen = draw(&mut app, width, height);
+            let status = screen.lines().last().unwrap();
+            assert!(status.contains("🎧"), "{status}");
+            assert!(status.contains("Ada and Lin"), "{status}");
+            captures.push((format!("strip-{width}x{height}"), screen));
+        }
+        app.presentation.open_overlay(Overlay::Huddle);
+        assert!(!app.huddle_strip_shown());
+        for (width, height) in [(80, 24), (160, 45)] {
+            let screen = draw(&mut app, width, height);
+            assert!(screen.contains("Ada and Lin at once"), "{screen}");
+            assert!(screen.contains("You · your microphone"), "{screen}");
+            assert!(!screen.lines().last().unwrap().contains("🎧"));
+            captures.push((format!("panel-{width}x{height}"), screen));
+        }
+        // Silence after the passage: the frames stop.
+        let mut late = 0;
+        let mut t = 12.0;
+        while t <= 20.0 {
+            late += u32::from(app.tick_huddle_viz_at(t));
+            t += 0.033;
+        }
+        assert!(late <= 1, "no frames after 2 s of silence: {late}");
+        if let Some(directory) = std::env::var_os("BZZ_VIZ_CAPTURES") {
+            for (name, screen) in captures {
+                std::fs::write(
+                    std::path::Path::new(&directory).join(format!("{name}.txt")),
+                    screen,
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    /// `bzz demo`'s huddle: the generated voices play only in the channel
+    /// whose huddle runs, and the panel says it is a recording, with no key
+    /// to join or unmute and nothing that contradicts the lanes.
+    #[tokio::test]
+    async fn the_demo_huddle_is_a_recording_only_where_it_runs() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.demo = true;
+        let channel = |name: &str| Channel {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 4,
+            last_event_at: None,
+            facts: Default::default(),
+        };
+        app.channels = vec![channel("team"), channel("infra")];
+        let infra = app.channels[1].id;
+        let (voices, people) = crate::demo::huddle();
+        app.huddle_view = Some((
+            infra,
+            Some(crate::protocol::huddle::ActiveHuddle {
+                backing: Uuid::new_v4(),
+                creator: people[2].1.clone(),
+                started_at: nostr::Timestamp::now().as_secs(),
+                participants: people.iter().map(|(_, pubkey)| pubkey.clone()).collect(),
+            }),
+        ));
+        app.set_generated_huddle(voices, people, true);
+        app.huddle_viz.look = crate::ui::huddle_lanes::Look::default();
+        let draw = |app: &mut super::App| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            (0..24)
+                .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        // #team: no huddle runs there, so nothing of it shows.
+        app.selected_channel = 0;
+        for step in 0..60 {
+            app.tick_huddle_viz_at(f64::from(step) * 0.05);
+        }
+        assert!(app.huddle_lanes().is_none());
+        app.presentation.open_overlay(Overlay::Huddle);
+        let team = draw(&mut app);
+        assert!(!team.contains("You · your microphone"), "{team}");
+        app.presentation.close_overlay();
+        // #infra: the lanes move, and the panel agrees with them.
+        app.selected_channel = 1;
+        for step in 0..60 {
+            app.tick_huddle_viz_at(3.0 + f64::from(step) * 0.05);
+        }
+        assert!(app.huddle_lanes().is_some());
+        app.presentation.open_overlay(Overlay::Huddle);
+        let panel = draw(&mut app);
+        for said in [
+            "a generated recording",
+            "4 in the call",
+            "You · your microphone",
+            "nothing is sent",
+        ] {
+            assert!(panel.contains(said), "{said}: {panel}");
+        }
+        for contradiction in [
+            "No huddle is running here",
+            "you are not in the call",
+            "j join",
+            "m unmutes",
+            "s start",
+        ] {
+            assert!(!panel.contains(contradiction), "{contradiction}: {panel}");
+        }
+        assert!(app.huddle_panel_view().recording);
+    }
+
     #[tokio::test]
     async fn live_thread_summaries_are_visible_root_scoped_and_deterministic() {
         let temporary = TempDir::new().unwrap();
@@ -13981,7 +15752,8 @@ mod tests {
             " {} ",
             crate::ui::status::connection_label(app.connection)
         )));
-        assert!(status.contains(&format!(" {} ", app.media.protocol_name().to_uppercase())));
+        // No protocol word: the graphics protocol is :doctor's business.
+        assert!(!status.contains(&format!(" {} ", app.media.protocol_name().to_uppercase())));
 
         let mut narrow = Terminal::new(TestBackend::new(50, 12)).unwrap();
         narrow.draw(|frame| app.render(frame)).unwrap();
@@ -13997,7 +15769,7 @@ mod tests {
             narrow_status.contains("◆ Fizz ⠋"),
             "narrow status: {narrow_status:?}"
         );
-        assert!(!narrow_status.contains("help"));
+        assert!(!narrow_status.contains("? keys"));
 
         app.typing_spinner_advanced_at = Instant::now() - super::AGENT_SPINNER_INTERVAL;
         assert!(app.on_tick().await.unwrap());
@@ -14307,6 +16079,80 @@ mod tests {
             futures_util::stream::iter([Err(std::io::Error::other("terminal unavailable"))]);
 
         assert!(next_terminal_event(&mut input).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn keys_enter_in_one_form_for_every_platform() {
+        // `?` as a Windows console reports it, with Shift; the key map has it
+        // without (docs/e2e-windows.md).
+        let mut input = futures_util::stream::iter([Ok(TerminalEvent::Key(KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::SHIFT,
+        )))]);
+        let Some(TerminalEvent::Key(key)) = next_terminal_event(&mut input).await else {
+            panic!("a key");
+        };
+        assert_eq!(key, KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+    }
+
+    #[tokio::test]
+    async fn a_paste_on_windows_is_seen_behind_its_line_break() {
+        use super::{next_read_ahead_event, presses_wait};
+        use crossterm::event::KeyEventKind;
+        // A paste in a Windows console, as crossterm gives it: a press and a
+        // release for each key; `¿` as an Alt code, a release alone.
+        let key = |code, kind| {
+            Ok(TerminalEvent::Key(KeyEvent::new_with_kind(
+                code,
+                KeyModifiers::NONE,
+                kind,
+            )))
+        };
+        let mut input = futures_util::stream::iter([
+            key(KeyCode::Enter, KeyEventKind::Press),
+            key(KeyCode::Enter, KeyEventKind::Release),
+            key(KeyCode::Char('p'), KeyEventKind::Press),
+            key(KeyCode::Char('p'), KeyEventKind::Release),
+        ]);
+        let mut read_ahead = std::collections::VecDeque::new();
+        let first = next_read_ahead_event(&mut read_ahead, &mut input).await;
+        assert!(matches!(first, Some(TerminalEvent::Key(key)) if key.code == KeyCode::Enter));
+        assert!(presses_wait(&mut read_ahead, &mut input));
+        // What was read ahead comes next, in order, and nothing is lost.
+        let mut rest = Vec::new();
+        for _ in 0..3 {
+            if let Some(TerminalEvent::Key(key)) =
+                next_read_ahead_event(&mut read_ahead, &mut input).await
+            {
+                rest.push((key.code, key.kind));
+            }
+        }
+        assert_eq!(
+            rest,
+            [
+                (KeyCode::Enter, KeyEventKind::Release),
+                (KeyCode::Char('p'), KeyEventKind::Press),
+                (KeyCode::Char('p'), KeyEventKind::Release),
+            ]
+        );
+
+        // A typed Enter: only its own release waits behind it.
+        let mut input = futures_util::stream::iter([
+            key(KeyCode::Enter, KeyEventKind::Press),
+            key(KeyCode::Enter, KeyEventKind::Release),
+        ]);
+        let mut read_ahead = std::collections::VecDeque::new();
+        next_read_ahead_event(&mut read_ahead, &mut input).await;
+        assert!(!presses_wait(&mut read_ahead, &mut input));
+
+        // An Alt code behind the Enter is a press.
+        let mut input = futures_util::stream::iter([
+            key(KeyCode::Enter, KeyEventKind::Press),
+            key(KeyCode::Char('¿'), KeyEventKind::Release),
+        ]);
+        let mut read_ahead = std::collections::VecDeque::new();
+        next_read_ahead_event(&mut read_ahead, &mut input).await;
+        assert!(presses_wait(&mut read_ahead, &mut input));
     }
 
     #[tokio::test]
@@ -14959,38 +16805,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_leader_prefix_is_cancelled_without_an_action() {
-        let temporary = TempDir::new().unwrap();
-        let paths = Paths {
-            config_dir: temporary.path().join("config"),
-            data_dir: temporary.path().join("data"),
-            cache_dir: temporary.path().join("cache"),
-        };
-        paths.ensure().unwrap();
-        let config = Config::default();
-        let mut store = Store::open(paths.database_file()).unwrap();
-        store.sync_config(&config).unwrap();
-        let handle = StoreHandle::spawn(store).unwrap();
-        let mut app = super::App::new(config, paths, handle).await.unwrap();
-        let _ = app.input_router.dispatch(
-            &app.keymap,
-            crate::ui::input::InputContext::workspace(),
-            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
-        );
-        app.leader_started_at = Some(std::time::Instant::now() - super::LEADER_TIMEOUT);
-        app.presentation
-            .open_overlay(crate::ui::state::Overlay::WhichKey);
-
-        app.on_tick().await.unwrap();
-
-        assert!(!app.input_router.sequence_active());
-        assert_ne!(
-            app.presentation.overlay,
-            Some(crate::ui::state::Overlay::WhichKey)
-        );
-    }
-
-    #[tokio::test]
     async fn invalid_theme_toml_falls_back_without_blocking_startup() {
         let temporary = TempDir::new().unwrap();
         let paths = Paths {
@@ -15223,10 +17037,13 @@ mod tests {
             map.hit(sidebar.x.saturating_add(1), sidebar.y.saturating_add(1)),
             Some(&HitTarget::Channel(0))
         );
+        // Offline, the first row of the conversation says so and what to
+        // do; the first message starts under it.
+        assert!(screen.contains("offline · showing what is saved here"));
         assert_eq!(
             map.hit(
                 panes.timeline.x.saturating_add(1),
-                panes.timeline.y.saturating_add(1)
+                panes.timeline.y.saturating_add(2)
             ),
             Some(&HitTarget::TimelineMessage("event-1".into()))
         );
@@ -15333,7 +17150,8 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(text.contains("leader"));
-        assert!(text.contains("open Inbox"));
+        // v0.17 C8: the registry's title.
+        assert!(text.contains("Open Inbox"));
     }
 
     #[tokio::test]
@@ -15759,5 +17577,474 @@ mod tests {
         app.profile_key(KeyEvent::from(KeyCode::Esc));
         assert!(app.profile_card.is_none());
         assert_eq!(app.presentation.overlay, None);
+    }
+
+    /// An app with a generated huddle in `#team`: Ada (1), Lin (2) and Sam
+    /// (3), you muted, the passage played once (`looped: None`) or looping.
+    async fn zoom_test_app(
+        temporary: &TempDir,
+        script: &[crate::huddle::synth::Line],
+    ) -> super::App {
+        let mut app = attachment_test_app(temporary).await;
+        app.channels = vec![Channel {
+            id: Uuid::new_v4(),
+            name: "team".into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 4,
+            last_event_at: None,
+            facts: Default::default(),
+        }];
+        app.selected_channel = 0;
+        app.set_generated_huddle(
+            crate::huddle::synth::Synthetic::new(script, None),
+            vec![(1, "Ada".into()), (2, "Lin".into()), (3, "Sam".into())],
+            true,
+        );
+        app.huddle_viz.look = crate::ui::huddle_lanes::Look::default();
+        app
+    }
+
+    fn zoom_screen(app: &mut super::App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Plan B5: `z` in the panel and `:huddle zoom` zoom the visualizer to
+    /// the window and back; `v` opens the picker, which draws the selected
+    /// style live; Esc puts the saved one back, Enter keeps and saves it.
+    #[tokio::test]
+    async fn the_zoomed_view_and_its_picker_preview_keep_and_restore() {
+        use crate::config::HuddleStyle;
+        let temporary = TempDir::new().unwrap();
+        let mut app = zoom_test_app(&temporary, &crate::huddle::synth::DEMO_SCRIPT).await;
+        let mut t = 0.0;
+        while t <= 5.5 {
+            app.tick_huddle_viz_at(t);
+            t += 1.0 / 30.0;
+        }
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        // Not zoomed until asked; then the whole window but the status line.
+        app.presentation.open_overlay(Overlay::Huddle);
+        assert!(!app.huddle_zoomed());
+        app.huddle_key(key(KeyCode::Char('z'))).await.unwrap();
+        assert!(app.huddle_zoomed());
+        let screen = zoom_screen(&mut app, 120, 30);
+        assert!(
+            screen.contains("huddle in #team · 4 in the call · Ada and Lin at once"),
+            "{screen}"
+        );
+        assert!(screen.contains("You · your microphone"), "{screen}");
+        assert!(
+            screen.lines().last().unwrap().contains("HUDDLE"),
+            "{screen}"
+        );
+        app.huddle_key(key(KeyCode::Char('z'))).await.unwrap();
+        assert!(!app.huddle_zoomed());
+        assert_eq!(app.presentation.overlay, Some(Overlay::Huddle));
+        app.huddle_command("zoom").await.unwrap();
+        assert!(app.huddle_zoomed());
+        // The picker: Down previews bars, Down again the orb; Esc restores.
+        app.huddle_key(key(KeyCode::Char('v'))).await.unwrap();
+        assert_eq!(app.huddle_viz.picker, Some(0));
+        app.huddle_key(key(KeyCode::Down)).await.unwrap();
+        assert_eq!(app.huddle_style(), HuddleStyle::Bars);
+        app.tick_huddle_viz_at(t);
+        let screen = zoom_screen(&mut app, 120, 30);
+        assert!(screen.contains("bars · the call's spectrum"), "{screen}");
+        assert!(screen.contains("▶ bars"), "{screen}");
+        assert!(screen.contains("Enter keep"), "{screen}");
+        app.huddle_key(key(KeyCode::Down)).await.unwrap();
+        assert_eq!(app.huddle_style(), HuddleStyle::Orb);
+        app.huddle_key(key(KeyCode::Esc)).await.unwrap();
+        assert_eq!(app.huddle_viz.picker, None);
+        assert_eq!(app.huddle_style(), HuddleStyle::Lanes);
+        assert_eq!(app.config.ui.huddle_style, HuddleStyle::Lanes);
+        assert!(app.huddle_zoomed(), "Esc closes the picker, not the view");
+        let screen = zoom_screen(&mut app, 120, 30);
+        assert!(screen.contains("lanes · one lane per person"), "{screen}");
+        // Enter keeps the selection and saves it.
+        app.huddle_key(key(KeyCode::Char('v'))).await.unwrap();
+        app.huddle_key(key(KeyCode::Up)).await.unwrap();
+        app.huddle_key(key(KeyCode::Enter)).await.unwrap();
+        assert_eq!(app.config.ui.huddle_style, HuddleStyle::Orb);
+        let saved = std::fs::read_to_string(app.paths.config_file()).unwrap();
+        assert!(saved.contains("huddle_style = \"orb\""), "{saved}");
+        assert_eq!(app.status_error.as_deref(), Some("huddle style: orb"));
+        // `:huddle style <name>` and a wrong name.
+        app.huddle_command("style bars").await.unwrap();
+        assert_eq!(app.config.ui.huddle_style, HuddleStyle::Bars);
+        app.huddle_command("style disco").await.unwrap();
+        assert_eq!(app.config.ui.huddle_style, HuddleStyle::Bars);
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap()
+                .contains("lanes, bars or orb")
+        );
+        // Esc leaves the zoom, then the panel; the keys of v0.16 still work.
+        app.huddle_key(key(KeyCode::Esc)).await.unwrap();
+        assert!(!app.huddle_zoomed());
+        assert_eq!(app.presentation.overlay, Some(Overlay::Huddle));
+        app.huddle_key(key(KeyCode::Esc)).await.unwrap();
+        assert_eq!(app.presentation.overlay, None);
+    }
+
+    /// With no call the zoom says what it needs and changes nothing.
+    #[tokio::test]
+    async fn zoom_without_a_call_says_so() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.huddle_command("zoom").await.unwrap();
+        assert!(!app.huddle_zoomed());
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap()
+                .contains("join the huddle first")
+        );
+        app.huddle_command("style").await.unwrap();
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap()
+                .starts_with("huddle style: lanes")
+        );
+    }
+
+    /// Rule 20 for the zoomed view: the spectrum is asked of the audio side
+    /// only while bars or the orb are seen; frames stop in silence; with
+    /// motion off, only a change of speaker draws.
+    #[tokio::test]
+    async fn the_zoomed_view_counts_its_frames() {
+        use crate::huddle::synth::DEMO_SCRIPT;
+        let count = |app: &mut super::App, from: f64, to: f64| {
+            let mut frames = 0;
+            let mut t = from;
+            while t < to {
+                frames += u32::from(app.tick_huddle_viz_at(t));
+                t += 0.033;
+            }
+            frames
+        };
+        // Bars, zoomed: about 30 a second while people speak (0.35 to 9.6 s,
+        // and the bars' fall), none once the call is quiet.
+        let mut app = zoom_test_app(&TempDir::new().unwrap(), &DEMO_SCRIPT).await;
+        app.config.ui.huddle_style = crate::config::HuddleStyle::Bars;
+        app.tick_huddle_viz_at(0.0);
+        app.huddle_command("zoom").await.unwrap();
+        let speaking = count(&mut app, 0.0, 13.0);
+        let mix = app.huddle_feed().unwrap().levels;
+        assert!(mix.mix().is_wanted(), "the bars ask for the mix");
+        // Two seconds after the meters fall quiet, nothing more.
+        let quiet = count(&mut app, 13.0, 20.0);
+        assert!((250..=370).contains(&speaking), "{speaking}");
+        assert_eq!(quiet, 0, "no frame in silence");
+        // The zoom hidden: the mix is no longer asked for, nor analysed.
+        app.huddle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE))
+            .await
+            .unwrap();
+        app.tick_huddle_viz_at(20.1);
+        assert!(!mix.mix().is_wanted());
+        // A call that never speaks: the first frame only.
+        let mut app = zoom_test_app(&TempDir::new().unwrap(), &[]).await;
+        app.config.ui.huddle_style = crate::config::HuddleStyle::Orb;
+        assert!(
+            app.tick_huddle_viz_at(0.0),
+            "the first frame shows the call"
+        );
+        app.huddle_command("zoom").await.unwrap();
+        assert_eq!(count(&mut app, 0.0, 10.0), 0);
+        // Motion off: a still picture, a frame when the speaker changes.
+        for style in crate::config::HuddleStyle::ALL {
+            let mut app = zoom_test_app(&TempDir::new().unwrap(), &DEMO_SCRIPT).await;
+            app.config.ui.motion = crate::config::Motion::Off;
+            app.config.ui.huddle_style = style;
+            app.tick_huddle_viz_at(0.0);
+            app.huddle_command("zoom").await.unwrap();
+            let off = count(&mut app, 0.0, 12.0);
+            // Start, Ada, quiet, Lin, Lin and Ada, Ada, quiet, your mic,
+            // quiet, Sam, quiet: about eleven.
+            assert!((5..=14).contains(&off), "{style:?}: {off}");
+        }
+        // The orb drops its rate when frames are slow to write.
+        let mut app = zoom_test_app(&TempDir::new().unwrap(), &DEMO_SCRIPT).await;
+        app.config.ui.huddle_style = crate::config::HuddleStyle::Orb;
+        app.tick_huddle_viz_at(0.0);
+        app.huddle_command("zoom").await.unwrap();
+        assert_eq!(app.huddle_interval(crate::config::Motion::Full), Some(0.05));
+        for _ in 0..3 {
+            app.huddle_frame_drawn(0.04);
+        }
+        assert_eq!(app.huddle_interval(crate::config::Motion::Full), Some(0.1));
+        let full = count(&mut app, 1.0, 2.0);
+        assert!((8..=11).contains(&full), "ten frames a second: {full}");
+    }
+
+    /// Plan B7: the join confirmation shows your lane before anything is
+    /// sent, from a fake device; three seconds of nothing names the device.
+    #[tokio::test]
+    async fn the_join_confirmation_checks_the_microphone() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.huddle_viz.look = crate::ui::huddle_lanes::Look::default();
+        app.presentation.open_overlay(Overlay::Huddle);
+        app.presentation
+            .open_confirmation(crate::ui::state::ConfirmationKind::HuddleJoin);
+        app.start_mic_check();
+        let levels = app.huddle_viz.mic_check.as_ref().unwrap().check.levels();
+        let mut frames = 0;
+        let mut t = 0.0;
+        while t < 1.0 {
+            levels.publish_mic(&crate::huddle::synth::tone(220.0, -22.0, 0, 960));
+            frames += u32::from(app.tick_huddle_viz_at(t));
+            t += 0.033;
+        }
+        assert!(frames > 20, "your lane moves: {frames}");
+        let screen = zoom_screen(&mut app, 80, 24);
+        assert!(screen.contains("join the huddle?"), "{screen}");
+        assert!(
+            screen.contains("nothing is sent until you join"),
+            "{screen}"
+        );
+        assert!(screen.contains("your microphone works"), "{screen}");
+        assert!(screen.contains("y join"), "{screen}");
+        assert_eq!(app.huddle_call_state(), None, "nothing joined");
+        app.stop_mic_check();
+        // A device that gives nothing.
+        app.config.ui.huddle_input_device = Some("USB Mic".into());
+        app.start_mic_check();
+        let mut t = 10.0;
+        while t < 13.2 {
+            app.tick_huddle_viz_at(t);
+            t += 0.033;
+        }
+        let screen = zoom_screen(&mut app, 80, 24);
+        assert!(screen.contains("no sound from “USB Mic”"), "{screen}");
+        if let Some(directory) = std::env::var_os("BZZ_VIZ_CAPTURES") {
+            std::fs::write(
+                std::path::Path::new(&directory).join("mic-check-80x24.txt"),
+                &screen,
+            )
+            .unwrap();
+        }
+        app.stop_mic_check();
+        assert!(app.huddle_viz.mic_check.is_none());
+        // A confirmation closed any other way ends the check too.
+        app.start_mic_check();
+        app.presentation.close_overlay();
+        assert!(!app.tick_huddle_viz_at(14.0));
+        assert!(app.huddle_viz.mic_check.is_none());
+    }
+
+    /// Captures of the zoomed view in the real `App::render`, with the
+    /// generated huddle, to `BZZ_VIZ_CAPTURES` when set.
+    #[tokio::test]
+    async fn zoomed_view_captures() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = zoom_test_app(&temporary, &crate::huddle::synth::DEMO_SCRIPT).await;
+        app.tick_huddle_viz_at(0.0);
+        app.huddle_command("zoom").await.unwrap();
+        for style in crate::config::HuddleStyle::ALL {
+            app.config.ui.huddle_style = style;
+            app.huddle_viz.spectrum.clear();
+            let mut t = 0.0;
+            while t <= 5.5 {
+                app.tick_huddle_viz_at(t);
+                t += 1.0 / 30.0;
+            }
+            for (width, height) in [(80, 24), (160, 45)] {
+                let screen = zoom_screen(&mut app, width, height);
+                assert!(screen.contains("Ada and Lin at once"), "{screen}");
+                if let Some(directory) = std::env::var_os("BZZ_VIZ_CAPTURES") {
+                    std::fs::write(
+                        std::path::Path::new(&directory)
+                            .join(format!("zoom-{}-{width}x{height}.txt", style.name())),
+                        &screen,
+                    )
+                    .unwrap();
+                }
+            }
+            app.huddle_viz.generated.as_mut().unwrap().source =
+                crate::huddle::synth::Synthetic::new(&crate::huddle::synth::DEMO_SCRIPT, None);
+            app.huddle_viz.meter.clear();
+        }
+    }
+
+    /// Counts what a frame writes to the terminal.
+    #[derive(Clone, Default)]
+    struct CountingWriter(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl std::io::Write for CountingWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .fetch_add(data.len(), std::sync::atomic::Ordering::Relaxed);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The cost of each zoomed style in bzz: the real `App`, the generated
+    /// huddle looping, the frame tick every 33 ms, a frame drawn through the
+    /// crossterm backend whenever the visualizer asks for one; 12 s after
+    /// a 1 s warm-up. Prints a table; `--ignored` to run (B6, B8).
+    #[tokio::test]
+    #[ignore = "a measurement; run with --ignored --nocapture"]
+    async fn measure_the_zoomed_styles() {
+        use crate::config::HuddleStyle;
+        println!("| style | size | frames/s | KiB/s | ms a frame | CPU % of a core |");
+        println!("|---|---|---|---|---|---|");
+        for (size, zoomed) in [
+            ((120_u16, 30_u16), true),
+            ((50, 12), true),
+            ((120, 30), false),
+        ] {
+            for style in HuddleStyle::ALL {
+                if !zoomed && style != HuddleStyle::Lanes {
+                    continue;
+                }
+                let temporary = TempDir::new().unwrap();
+                let mut app = zoom_test_app(&temporary, &[]).await;
+                app.set_generated_huddle(
+                    crate::huddle::synth::Synthetic::demo(),
+                    vec![(1, "Ada".into()), (2, "Lin".into()), (3, "Sam".into())],
+                    true,
+                );
+                app.config.ui.huddle_style = style;
+                app.tick_huddle_viz_at(0.0);
+                app.presentation.open_overlay(Overlay::Huddle);
+                app.huddle_viz.zoomed = zoomed;
+                let counter = CountingWriter::default();
+                let mut terminal = Terminal::with_options(
+                    ratatui::backend::CrosstermBackend::new(counter.clone()),
+                    ratatui::TerminalOptions {
+                        viewport: ratatui::Viewport::Fixed(Rect::new(0, 0, size.0, size.1)),
+                    },
+                )
+                .unwrap();
+                let (mut frames, mut busy, mut drawing) = (0_u32, 0.0_f64, 0.0_f64);
+                let mut bytes_at_start = 0;
+                let mut t = 0.0;
+                while t < 13.0 {
+                    let started = Instant::now();
+                    let wants = app.tick_huddle_viz_at(t);
+                    if wants || t == 0.0 {
+                        let drawn = Instant::now();
+                        terminal.draw(|frame| app.render(frame)).unwrap();
+                        let seconds = drawn.elapsed().as_secs_f64();
+                        app.huddle_frame_drawn(seconds);
+                        if t >= 1.0 {
+                            frames += 1;
+                            drawing += seconds;
+                        }
+                    }
+                    if t >= 1.0 {
+                        busy += started.elapsed().as_secs_f64();
+                    } else {
+                        bytes_at_start = counter.0.load(std::sync::atomic::Ordering::Relaxed);
+                    }
+                    t += 0.033;
+                }
+                let bytes = counter.0.load(std::sync::atomic::Ordering::Relaxed) - bytes_at_start;
+                println!(
+                    "| {}{} | {}×{} | {:.1} | {:.1} | {:.2} | {:.2} |",
+                    style.name(),
+                    if zoomed { "" } else { " (panel, not zoomed)" },
+                    size.0,
+                    size.1,
+                    f64::from(frames) / 12.0,
+                    bytes as f64 / 12.0 / 1024.0,
+                    drawing * 1000.0 / f64::from(frames.max(1)),
+                    busy / 12.0 * 100.0,
+                );
+            }
+        }
+    }
+
+    /// `bzz demo` (v0.17, demo2): the huddle's lanes appear when the person
+    /// comes to `#infra`, long after the recording began. Who has not
+    /// spoken since says "quiet", not "2s ago": the levels the voices left
+    /// while nobody looked are not taken for speech.
+    #[tokio::test]
+    async fn in_the_demo_huddle_who_has_not_spoken_yet_is_quiet() {
+        let temporary = TempDir::new().unwrap();
+        let mut app = attachment_test_app(&temporary).await;
+        app.demo = true;
+        let channel = |name: &str| Channel {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            about: String::new(),
+            kind: ChannelKind::Stream,
+            visibility: Visibility::Public,
+            is_member: true,
+            is_hidden: false,
+            member_count: 4,
+            last_event_at: None,
+            facts: Default::default(),
+        };
+        app.channels = vec![channel("team"), channel("infra")];
+        let infra = app.channels[1].id;
+        let (voices, people) = crate::demo::huddle();
+        app.huddle_view = Some((
+            infra,
+            Some(crate::protocol::huddle::ActiveHuddle {
+                backing: Uuid::new_v4(),
+                creator: people[2].1.clone(),
+                started_at: nostr::Timestamp::now().as_secs(),
+                participants: people.iter().map(|(_, pubkey)| pubkey.clone()).collect(),
+            }),
+        ));
+        app.set_generated_huddle(voices, people, true);
+        app.huddle_viz.look = crate::ui::huddle_lanes::Look::default();
+        // Thirty seconds in #team, where the recording plays unseen.
+        app.selected_channel = 0;
+        for step in 0..600 {
+            app.tick_huddle_viz_at(f64::from(step) * 0.05);
+        }
+        // #infra at 36 s: the loop's first 0.35 s, when nobody speaks.
+        app.selected_channel = 1;
+        for step in 0..6 {
+            app.tick_huddle_viz_at(36.0 + f64::from(step) * 0.05);
+        }
+        let now = app.huddle_viz.meter.now();
+        for index in [1, 2, 3] {
+            let track = app.huddle_viz.meter.peer(index).unwrap();
+            assert!(!track.speaking(), "{index}");
+            assert_eq!(track.since_spoke(now), None, "{index}");
+        }
+        app.presentation.open_overlay(Overlay::Huddle);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let panel = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert_eq!(panel.matches("quiet").count(), 3, "{panel}");
+        // Only the scale says "ago": "10s ago … now".
+        assert_eq!(panel.matches("s ago").count(), 1, "{panel}");
+        // Then Ada speaks, and is live.
+        for step in 0..20 {
+            app.tick_huddle_viz_at(36.3 + f64::from(step) * 0.05);
+        }
+        assert!(app.huddle_viz.meter.peer(1).unwrap().speaking());
     }
 }

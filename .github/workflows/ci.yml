@@ -5,6 +5,12 @@ on:
   pull_request:
 permissions:
   contents: read
+# A push to a pull request cancels that pull request's run still in progress:
+# only the newest commit is judged. A run on `main` has a group of its own
+# (its run id), so it is never cancelled nor held behind another.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 defaults:
   run:
     shell: bash
@@ -62,6 +68,23 @@ jobs:
       - name: Smoke-test release binary
         shell: bash
         run: ${{ matrix.binary }} --version
+      # The release binary of each system, kept three days: what a person or
+      # a virtual machine opens in a real terminal before a release
+      # (docs/e2e-windows.md, docs/e2e-manual.md). Not a release artifact:
+      # those come from the Release workflow, signed and attested.
+      - name: Keep the binary for hands-on checks
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bzz-${{ matrix.target }}
+          path: ${{ matrix.binary }}
+          retention-days: 3
+          if-no-files-found: error
+      # v0.17: on Linux bzz speaks the sound server's protocol itself, so the
+      # binary names no sound library and starts where none is installed.
+      - name: The Linux release binary names no sound library
+        if: runner.os == 'Linux'
+        run: ./scripts/check-linux-linkage.sh ${{ matrix.binary }}
       # `--lib` holds the app runtime, the six apps' cases, the session, the
       # store of apps and the pane (v0.16); the three `app_*` tests are the
       # command line and the records on a scripted relay, with real sockets.
@@ -96,16 +119,20 @@ jobs:
           ${{ matrix.binary }} identity verify "$identity_id"
           ${{ matrix.binary }} identity remove "$identity_id" --yes
   upgrade:
-    # Release acceptance: a real profile of the last release (v0.15.0) opened
-    # by this build on three systems; the one before it (v0.14.0) on Linux.
+    # Release acceptance: a real profile of the last release (v0.16.0) opened
+    # by this build on three systems; the one before it (v0.15.0) on Linux.
+    # macOS on Intel: hosted Apple Silicon runners are scarce, and on
+    # 2026-11-24 jobs waiting for `macos-15` were cancelled after 15 minutes
+    # ("not acquired by Runner of type hosted"). The profile does not depend
+    # on the processor; the `build` job still tests on Apple Silicon.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
-        from: ['0150']
+        os: [ubuntu-latest, macos-15-intel, windows-latest]
+        from: ['0160']
         include:
           - os: ubuntu-latest
-            from: '0140'
+            from: '0150'
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.os == 'ubuntu-latest' && 'ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d' || null }}
     steps:
@@ -136,6 +163,10 @@ jobs:
       - run: ./scripts/test-apps-bench.sh --release
   audio:
     # T7: huddle audio through a virtual device (tests/huddle_device_loopback_test.rs).
+    # Linux: bzz speaks the PulseAudio protocol; the job's image has
+    # PulseAudio. PipeWire (pipewire-pulse) is not in it and no product
+    # workflow installs packages, so PipeWire on Debian and EL9 is proven in
+    # containers by scripts/test-audio-containers.sh (docs/validation-v0.17.0).
     strategy:
       fail-fast: false
       matrix:
@@ -151,6 +182,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.os == 'ubuntu-latest' && 'ghcr.io/arpagon/bzz-build@sha256:e708b63bb48e56a1c790b2dae3cfa1d878df419fa78ac01dc2b4b2544a80c94d' || null }}
     continue-on-error: ${{ matrix.experimental }}
+    # T7 itself takes under 10 s (docs/validation-v0.17.0/ci.md); the rest is
+    # the build. Until v0.17.0 it could hang for hours (a debug build of the
+    # `pulseaudio` crate starved playback).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install BlackHole
@@ -163,14 +198,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Tone round trip and device release through a virtual device
         shell: bash
+        # An experimental row reports its result in this step and passes the
+        # job: with `continue-on-error` on the job alone, the run passes but
+        # the job and the pull request's check still show as failed.
+        continue-on-error: ${{ matrix.experimental }}
+        # Compiling the test is part of this step (2 to 3 minutes on Linux).
+        timeout-minutes: 15
         run: ./scripts/test-audio-loopback.sh
   agent-host:
     # v0.15.0 M2 and M3: the Pi Durable agent host (agent-host/). Node only:
     # no Rust, no relay, no model and no network beyond this machine.
+    # macOS on Intel: Node does not care which processor, and hosted Apple
+    # Silicon runners are scarce (see `upgrade`).
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15, windows-latest]
+        os: [ubuntu-latest, macos-15-intel, windows-latest]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -184,7 +227,15 @@ jobs:
       - run: node --version && git --version
       # As bzz installs it on first use: from the lock file, with install scripts off.
       - run: npm ci --ignore-scripts
+      # The hosted Intel Macs start Node and load packages several times
+      # slower than Linux (a test that takes 1 s there took 2 to 6 s, and
+      # twice in 12 runs `initialize` passed the client's 30 s); Windows once
+      # passed its 5 s wait for the host's exit. The test client's own waits
+      # get this margin; bounds a test states as claims do not
+      # (agent-host/test/support/client.mjs, docs/validation-v0.17.0/ci.md).
       - run: npm test
+        env:
+          BZZ_AGENT_HOST_WAIT_MARGIN_MS: ${{ matrix.os == 'macos-15-intel' && '60000' || matrix.os == 'windows-latest' && '30000' || '0' }}
       - name: Audit the packages an agent runs with
         if: runner.os == 'Linux'
         run: npm audit --omit=dev

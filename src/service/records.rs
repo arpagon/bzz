@@ -371,6 +371,31 @@ impl State {
         self.own.iter().any(|write| write.revision == revision)
     }
 
+    /// Is `revision` of record `id` one that the caller's own later writes
+    /// already replaced? Its echo can arrive after two or more of them
+    /// were stored (a burst of an app's writes, v0.17 F2), and must not
+    /// take the set back.
+    fn replaced_by_own(&self, id: Uuid, revision: &str) -> bool {
+        let Some(mut at) = self.heads.get(&id).map(|known| known.head.clone()) else {
+            return false;
+        };
+        for _ in 0..self.own.len() {
+            let Some(write) = self
+                .own
+                .iter()
+                .find(|write| write.record == id && write.revision == at)
+            else {
+                return false;
+            };
+            match &write.prev {
+                Some(prev) if prev == revision => return true,
+                Some(prev) => at = prev.clone(),
+                None => return false,
+            }
+        }
+        false
+    }
+
     /// A live head, from the sync or from the HTTP head view. Returns the
     /// change it makes to the set, if any.
     fn apply(&mut self, fence: &Fence, head: Artifact) -> Option<Change> {
@@ -381,6 +406,10 @@ impl State {
         }
         // The revision the held head was built on: it arrived late.
         if known.is_some_and(|known| known.tag("prev").as_deref() == Some(head.head.as_str())) {
+            return None;
+        }
+        // Older still, and the caller's own writes replaced it since.
+        if self.replaced_by_own(id, &head.head) {
             return None;
         }
         if head.is_deleted() || head.home != fence.channel() {
@@ -1277,6 +1306,58 @@ impl SyncTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_echo_of_a_revision_the_callers_own_writes_replaced_is_no_change() {
+        // v0.17 F2: in a burst the sync's echo of the caller's revision k
+        // can arrive after k + 2 was stored. It took the set back to k,
+        // and an app was then told of its own old revision as a change.
+        let keys = nostr::Keys::generate();
+        let fence = Fence::new("board", Uuid::new_v4(), &["card"]).unwrap();
+        let sign = |builder: EventBuilder| {
+            artifact::parse(&builder.sign_with_keys(&keys).unwrap()).unwrap()
+        };
+        let content = |column: &str| {
+            serde_json::json!({ "title": "Odd", "column": column })
+                .as_object()
+                .unwrap()
+                .clone()
+        };
+        let first = sign(
+            fence
+                .create("card", Uuid::new_v4(), &content("todo"))
+                .unwrap(),
+        );
+        let second = sign(fence.update(&first, &content("doing")).unwrap());
+        let third = sign(fence.update(&second, &content("todo")).unwrap());
+        let mut state = State::default();
+        assert!(state.admit(&fence, first.clone()));
+        for (write, prev) in [(&second, &first), (&third, &second)] {
+            state.remember(OwnWrite {
+                revision: write.head.clone(),
+                record: write.id,
+                prev: Some(prev.head.clone()),
+                deletion: false,
+                accepted: None,
+            });
+            assert!(state.admit(&fence, write.clone()));
+        }
+        // The echoes, late: neither takes the set back.
+        assert_eq!(state.apply(&fence, second.clone()), None);
+        assert_eq!(state.apply(&fence, first.clone()), None);
+        assert_eq!(state.heads[&first.id].head, third.head);
+        // Someone else's older revision is not the caller's to ignore: it is
+        // still told, as before.
+        let theirs = artifact::parse(
+            &fence
+                .update(&first, &content("done"))
+                .unwrap()
+                .sign_with_keys(&nostr::Keys::generate())
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(state.apply(&fence, theirs).is_some());
+    }
 
     #[test]
     fn a_write_without_an_acknowledgement_says_whether_it_was_sent() {

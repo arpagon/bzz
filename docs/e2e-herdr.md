@@ -64,9 +64,13 @@ disposable viewer profile and content with `examples/harness_fixture.rs`
 `#t9-announcements` where the viewer is a guest; the viewer's own
 `#t9-agent-config` system channel), runs every `harness` scenario, then
 removes the profile and tears the relay down. The viewer's passphrase stays
-in an owner-only file passed through a descriptor (`BZZ_PASSPHRASE_FD`), and
-ALSA's default device is the null device, so the huddle scenario never opens
-a real microphone. The scenarios cover the System group, the read-only
+in an owner-only file passed through a descriptor (`BZZ_PASSPHRASE_FD`).
+On Linux bzz's huddles speak to the sound server `PULSE_SERVER` names (v0.17),
+so the runner always sets it: to a PulseAudio with a null sink in a
+disposable container (`scripts/test-audio-containers.sh serve`, needs Docker),
+or to `BZZ_TEST_PULSE_SERVER`, or else to nothing, and then the huddle
+scenario fails with "huddle audio needs PipeWire or PulseAudio running". The huddle scenario never opens a
+real microphone. The scenarios cover the System group, the read-only
 announce composer, the artifacts panel, custom emoji in the reaction picker,
 the report confirmation, `:presence`, the broker panel and a huddle (start,
 join muted, unmute, mute, leave). The runner refuses to start a scenario
@@ -219,6 +223,56 @@ v0.16 build on one another (the M3 scenarios install the Board the later
 ones use), and must not depend on what the scenarios of earlier releases
 leave in the fixture: those run first and talk in its channels. The runner prints how long each step took to
 show what it waits for.
+
+### A scenario that stands alone (v0.17.0)
+
+The whole suite runs in one fixture, so a scenario meets whatever the
+scenarios before it left: messages in a channel, an app open there, the
+channel bzz selected last, a huddle. A scenario must pass whichever ran
+before it. `BZZ_TMUX_ORDER=reverse` or `shuffle[:SEED]` runs the suite in
+another order (each scenario still after what it `needs`) to show that it
+does.
+
+- **Open the channel you are about.** Never count on the channel selected at
+  start; open it with the finder or the palette.
+- **The profile has started before.** The tmux runner starts the fixture's
+  profile once before the suite and waits for its channels: on a profile's
+  very first start bzz says `online` before the relay has sent the channel
+  list, and a finder typed into at once finds nothing.
+- **Look for your own row.** `↳ 1 reply` or `Scout joined` may be a row an
+  earlier scenario left; match the row with what you wrote in it
+  (`are you there\?[^\n]*\n[^\n]*↳ 1 reply`, `regex = true`), or go where
+  only yours can be (`3 g g` for the top of a channel).
+- **A channel of its own** when the scenario counts on what is in it: the
+  newest message is another person's, nobody has reacted, no app is open.
+  `examples/harness_fixture.rs` makes one for each such scenario
+  (`#t17-palette`, `#t17-react`, `#t17-find`, `#t17-sound`, `#t17-app`,
+  `#t17-thread`),
+  with messages by another person, dated after the rows the relay adds
+  itself, so that `G` selects the newest message. Add one there rather than
+  reorder the manifest, and write in no channel another scenario reads.
+- **Check that a channel is open by what names it**: the composer's title
+  (`message #t9-general`) or the status line (` NORMAL  #t9-general`), not a
+  message that a later post or a narrow window can push away or wrap.
+- **Check what the scenario is about, not the whole screen.** Which panes
+  show depends on the width; match the text of the pane or overlay you
+  drive, and match a frame's keys where the frame draws them (an overlay
+  draws them on its foot: `┌ profile ─[\s\S]*r refresh · Esc close` with
+  `regex = true`).
+- **Say what you need.** When a scenario truly needs what another makes (an
+  agent, an installed app), name it: `needs = ["t16-cli-app-approve"]`. The
+  tmux runner checks that each need is an earlier scenario, runs the needs
+  of a scenario chosen by id first, and reports a scenario whose need did
+  not pass as `SKIPPED: needs …` instead of failing it at its second step.
+  The Herdr runner runs in the manifest's order and stops at the first
+  failure, and says when a selection leaves a need out.
+- **Say the smallest window it holds at.** A scenario with no `size` runs
+  at `BZZ_TMUX_SIZE`. If its checks cannot hold below some size, mark it:
+  `min_size = "120x30"`; the tmux runner reports it skipped, not failed, in
+  a smaller run. Run the suite at 200x50, 160x45 and 80x24 before you call a
+  scenario done.
+- Leave what you changed as you found it where another scenario looks: a
+  status cleared, a huddle left, a device name reset.
 
 ### Manual disposable-fixture journey
 

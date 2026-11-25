@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { openModels } from "../src/model.mjs";
 import { loadPackages, NO_ENTRY, packagesNaming } from "../src/packages.mjs";
-import { bareEnv, MAIN, MODEL, script, sleep, startHost, tempDir, within } from "./support/client.mjs";
+import { bareEnv, MAIN, MODEL, script, sleep, startHost, tempDir, WAIT_MARGIN_MS, within } from "./support/client.mjs";
 
 const THREAD = "5b1e0c9e-7a34-4c53-9d0e-0f6c1a2b3c4d/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -252,7 +252,7 @@ setTimeout(() => { throw new Error("thrown from a timer of the package"); }, 40)
 	const host = startHost(t, join(root, "agent"), { home: root });
 	const answer = await host.initialize({ piDir: pi });
 	assert.deepEqual(answer._meta.bzz.packages, [{ source: stray, loaded: true, extensions: ["stray"], providers: [] }, { source: fine, loaded: true, extensions: ["fine"], providers: [] }]);
-	await within(5_000, (async () => { while (!host.stderr().includes("thrown from a timer")) await sleep(20); })(), `the timer's exception in the log\n${host.stderr()}`);
+	await within(5_000, (async () => { while (!host.stderr().includes("thrown from a timer")) await sleep(20); })(), () => `the timer's exception in the log\n${host.stderr()}`);
 	// Each is in the log, with the package where the stack names it, and the host is still there.
 	assert.match(host.stderr(), / a promise failed with nobody waiting for it in package \S+stray, and the host goes on: rejected at import, with nobody waiting\n/);
 	assert.match(host.stderr(), / a promise failed with nobody waiting for it, and the host goes on: ENOENT: no such file or directory, open \S+no-such-file'\n/);
@@ -268,8 +268,11 @@ setTimeout(() => { throw new Error("thrown from a timer of the package"); }, 40)
 	// The limit, shown as it is: an exception that no stack traces to a package is taken for the host's own, and ends it.
 	const silent = pkg("throws-a-string", `setTimeout(() => { throw "a string, which names no file"; }, 40);\nexport default () => ({});`);
 	const ended = startHost(t, join(tempDir(t, "ended"), "agent"), { home: root });
-	await ended.initialize({ piDir: writeSettings(tempDir(t, "pi"), [silent]) });
-	assert.deepEqual(await within(5_000, ended.exited, "the host to end"), { code: 1, signal: null });
+	// The package's timer runs from its import, inside `initialize`: on a slow machine it fires before the host has
+	// answered, and the host ends with the request unanswered (it did in CI, on macOS on Intel). Both orders are
+	// the same end, so the answer is not waited for; the time allowed covers the host's start, hence the margin.
+	ended.initialize({ piDir: writeSettings(tempDir(t, "pi"), [silent]) }).catch(() => {});
+	assert.deepEqual(await within(5_000 + WAIT_MARGIN_MS, ended.exited, () => `the host to end\n${ended.stderr()}`), { code: 1, signal: null });
 	assert.match(ended.stderr(), /a string, which names no file\n$/);
 });
 
@@ -310,7 +313,7 @@ test("bzz can switch package loading off for an agent, and a moved agent keeps t
  * exists. Its arguments and the one line it prints are the contract with bzz, which imports nothing of `src/`.
  */
 function checkModel(env, ...args) {
-	return within(30_000, new Promise((resolve, reject) => {
+	return within(30_000 + WAIT_MARGIN_MS, new Promise((resolve, reject) => {
 		execFile(process.execPath, [MAIN, "--check-model", ...args], { env }, (error, stdout, stderr) => {
 			if (error) return reject(new Error(`--check-model ended with ${error.code ?? error.signal}: ${stderr}`));
 			const lines = stdout.split("\n").filter(Boolean);

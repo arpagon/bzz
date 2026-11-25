@@ -152,7 +152,8 @@ async fn keys_and_a_paste_reach_the_focused_app_and_nothing_else() {
     app.open_app_in_memory(channel, "recorder", RECORDER);
     app.focus_app();
     let shown = until(&mut app, 120, 30, "keys").await;
-    assert!(shown.contains("recorder · Ctrl-c leave"), "{shown}");
+    assert!(shown.contains("┌ recorder ─"), "{shown}");
+    assert!(shown.contains("Ctrl-c leave ┘"), "{shown}");
     assert!(shown.contains(" APP "), "{shown}");
     assert!(shown.contains("Ctrl-c leaves the app"), "{shown}");
     for code in [
@@ -185,9 +186,11 @@ async fn keys_and_a_paste_reach_the_focused_app_and_nothing_else() {
     assert_eq!(app.presentation.focus, FocusSurface::Timeline);
     assert!(!app.app_has_focus());
     let shown = screen(&mut app, 120, 30);
-    assert!(shown.contains("recorder · 5 focus"), "{shown}");
+    assert!(shown.contains("┌ recorder ─"), "{shown}");
+    assert!(shown.contains("5 focus ┘"), "{shown}");
     assert!(!shown.contains("Ctrl-c leaves the app"), "{shown}");
-    assert!(shown.contains("? help · q quit"), "{shown}");
+    // v0.17 C10: the hint follows the focus and ends in the palette's key.
+    assert!(shown.contains("Ctrl-K actions"), "{shown}");
     // Now keys are bzz's again, and the app is given none.
     assert!(!app.app_key(key(KeyCode::Char('x'))));
     // The writing dock owns the keyboard before the app, even focused.
@@ -236,7 +239,7 @@ async fn the_pane_follows_the_window_and_its_channel() {
     // 60 columns: the app takes the window while it has the focus.
     let shown = until(&mut app, 60, 24, "size 58x21").await;
     assert_eq!(app.apps.placement, AppPlacement::Zoomed);
-    assert!(!shown.contains("general"), "{shown}");
+    assert!(!shown.contains("┌ general"), "{shown}");
     // Without the focus it is hidden, and the status line says so.
     app.leave_app();
     let shown = screen(&mut app, 60, 24);
@@ -263,7 +266,7 @@ async fn the_pane_follows_the_window_and_its_channel() {
     assert!(!shown.contains("recorder"), "{shown}");
     // And the session kept its state for when the owner comes back.
     app.selected_channel = 0;
-    until(&mut app, 120, 30, "recorder · 5 focus").await;
+    until(&mut app, 120, 30, "5 focus ┘").await;
 }
 
 #[tokio::test]
@@ -273,7 +276,7 @@ async fn the_thread_and_the_app_share_the_right_side() {
     app.open_app_in_memory(channel, "recorder", RECORDER);
     app.thread_root = Some("e".repeat(64));
     app.apps.front = false;
-    // Asked for last, the thread has the right side under 144 columns, and
+    // Asked for last, the thread has the right side under 152 columns, and
     // a reply goes into it.
     let shown = screen(&mut app, 120, 30);
     assert_eq!(app.apps.placement, AppPlacement::HiddenBehindThread);
@@ -289,8 +292,9 @@ async fn the_thread_and_the_app_share_the_right_side() {
     assert!(!app.thread_drawn);
     assert_eq!(app.reply_root(), None);
     assert!(shown.contains("message #general"), "{shown}");
-    // From 144 both show.
-    screen(&mut app, 144, 30);
+    // From 152 both show (v0.16: 144; v0.17 L10 keeps 38 columns for the
+    // conversation instead of 30).
+    screen(&mut app, 152, 30);
     assert!(app.thread_drawn);
     assert_eq!(app.apps.placement, AppPlacement::Docked);
 }
@@ -495,7 +499,8 @@ return app
         assert_eq!(app.presentation.overlay, Some(Overlay::AppApproval));
         let shown = screen(&mut app, 120, 40);
         for expected in [
-            "a version of an app waits for your answer · a approve · r refuse",
+            "┌ a version of an app waits for your answer ─",
+            " a approve · r refuse ",
             "counter (Counter), version 1",
             "From:     you",
             &format!("Hash:     {hash}"),
@@ -521,7 +526,8 @@ return app
         // Approved: it opens, and runs exactly those bytes.
         command(&mut app, "open counter").await;
         let shown = turn(&mut app, "v1 count 0").await;
-        assert!(shown.contains("Counter · Ctrl-c leave"), "{shown}");
+        assert!(shown.contains("┌ Counter ─"), "{shown}");
+        assert!(shown.contains("Ctrl-c leave ┘"), "{shown}");
         for _ in 0..3 {
             assert!(app.app_key(key(KeyCode::Char('j'))));
         }
@@ -1053,7 +1059,7 @@ return app
             .iter()
             .enumerate()
             .find_map(|(row, line)| {
-                line.find("┌ Board · ")
+                line.find("┌ Board ─")
                     .map(|byte| (row, line[..byte].chars().count()))
             })
             .unwrap_or_else(|| panic!("the pane's border:\n{window}"));
@@ -1244,4 +1250,104 @@ return app
         assert!(message.ends_with(BOARD_BRIEF.trim_end()), "{message}");
         assert!(message.len() < crate::agents::runtime::tools::MAX_TEXT_BYTES);
     }
+}
+
+/// v0.17 F5: an app shows a person by the name bzz holds, and a newer
+/// profile replaces it there too. bzz gave an open app only the names it
+/// had none of, so a renamed person kept the old name.
+#[tokio::test]
+async fn a_renamed_profile_reaches_an_open_app() {
+    const WHO: &str = r#"
+local app = { api = 1, types = { "note" } }
+function app.init(ctx) return {} end
+function app.view(s, ctx) return ui.text { "me " .. ctx.user.name } end
+return app
+"#;
+    fn profile(name: &str, created_at: u64) -> crate::domain::Profile {
+        crate::domain::Profile {
+            pubkey: "a".repeat(64),
+            display_name: None,
+            name: Some(name.into()),
+            picture: None,
+            nip05: None,
+            about: None,
+            event_id: format!("{created_at:064}"),
+            created_at,
+            verified: None,
+            status: None,
+            presence: None,
+            in_huddle: false,
+        }
+    }
+    // The names of bzz's profiles, as the pane's tick gives them.
+    fn names(app: &mut App, channel: Uuid) {
+        let profiles = app.profiles.clone();
+        app.apps
+            .tick(Some(channel), |id| profiles.get(id).map(|p| p.label()));
+    }
+    let temporary = TempDir::new().unwrap();
+    let (mut app, channel) = fixture(&temporary).await;
+    app.profiles.insert("a".repeat(64), profile("Watcher", 1));
+    app.open_app_in_memory(channel, "who", WHO);
+    names(&mut app, channel);
+    until(&mut app, 120, 30, "me Watcher").await;
+    app.profiles.insert("a".repeat(64), profile("Cy", 2));
+    names(&mut app, channel);
+    let shown = until(&mut app, 120, 30, "me Cy").await;
+    assert!(!shown.contains("Watcher"), "{shown}");
+}
+
+/// The demo's Board closes on its own `q`, as in any community (the key is
+/// the script's), and the demo then says how to bring it back. An app of
+/// that name outside the demo closes with no such word.
+#[tokio::test]
+async fn the_demo_says_how_to_bring_back_a_board_that_closed_itself() {
+    const QUITS: &str = r#"
+local app = { api = 1, types = { "card" } }
+function app.init(ctx) return {} end
+function app.view(s, ctx) return ui.text { "cards" } end
+function app.key(s, key, ctx) if key.name == "q" then host.quit() end end
+return app
+"#;
+    async fn closed_by_q(demo: bool) -> (App, TempDir) {
+        let temporary = TempDir::new().unwrap();
+        let (mut app, channel) = fixture(&temporary).await;
+        if demo {
+            let who = |name: &str| crate::apps::runtime::Who::new(name.repeat(64), name);
+            let people = crate::demo::board::People {
+                viewer: who("a"),
+                ada: who("b"),
+                lin: who("c"),
+                sam: who("d"),
+                scout: who("e"),
+            };
+            let store =
+                crate::apps::session::SharedStore::new(crate::apps::session::MemoryStore::new(
+                    people.viewer.clone(),
+                    crate::apps::runtime::SystemClock::shared(),
+                ));
+            app.set_demo_board(crate::demo::board::DemoBoard::new(store, people));
+        }
+        app.open_app_in_memory(channel, crate::demo::board::NAME, QUITS);
+        app.focus_app();
+        until(&mut app, 120, 30, "cards").await;
+        assert!(app.app_key(key(KeyCode::Char('q'))));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.apps.open.contains_key(&channel) {
+            assert!(Instant::now() < deadline, "the app never closed");
+            // What the session asked is read and settled, as the tick
+            // does; the store of apps is not consulted.
+            app.poll_apps();
+            app.settle_apps().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(app.presentation.focus, FocusSurface::Timeline);
+        (app, temporary)
+    }
+    let (mut app, _kept) = closed_by_q(true).await;
+    assert_eq!(app.status_error.as_deref(), Some(crate::demo::BOARD_CLOSED));
+    let shown = screen(&mut app, 80, 24);
+    assert!(shown.contains(crate::demo::BOARD_CLOSED), "{shown}");
+    let (app, _kept) = closed_by_q(false).await;
+    assert_ne!(app.status_error.as_deref(), Some(crate::demo::BOARD_CLOSED));
 }

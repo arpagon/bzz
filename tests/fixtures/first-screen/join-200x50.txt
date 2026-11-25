@@ -1,0 +1,50 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                          ┌ bzz ─────────────────────────────────────────────────────────────────────────────┐
+                                                          │                                                                                  │
+                                                          │  Welcome to bzz · Buzz in your terminal                                          │
+                                                          │  Your team's chat, threads, huddles and agents, from the keyboard.               │
+                                                          │                                                                                  │
+                                                          │  There is no community on this machine yet. Start with one of these:             │
+                                                          │                                                                                  │
+                                                          │   d  Try the demo       a generated team, offline; nothing is saved              │
+                                                          │ › j  Join a community   its address, then who you are there                      │
+                                                          │   p  Pair with Buzz     use the account of Buzz desktop on this machine          │
+                                                          │   k  Import a key       a Buzz key or a backup file you already have             │
+                                                          │                                                                                  │
+                                                          │  Join a community: run                                                           │
+                                                          │    bzz identity new --label me                                                   │
+                                                          │    bzz community add my-team wss://<community address> <identity id>             │
+                                                          │  The first prints your identity id and its pubkey. Give the pubkey               │
+                                                          │  to the community's admin, and once you are added, start bzz again.              │
+                                                          │                                                                                  │
+                                                          │  Enter choose · ↑↓ move · Esc back · ? keys · q quit                             │
+                                                          │                                                                                  │
+                                                          │                                                                                  │
+                                                          │                                                                                  │
+                                                          │                                                                                  │
+                                                          └ bzz ###### ──────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+

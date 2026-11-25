@@ -743,3 +743,61 @@ async fn an_agents_record_writes_stop_at_its_own_budget() {
     assert_eq!(world.chat.replies_to(&request).len(), 1);
     world.stop(host).await;
 }
+
+/// v0.17 F4: a number reaches the agent as the relay holds it and goes back
+/// unchanged. The film's `order` (seventeen significant digits) came back
+/// one unit off in the last place: bzz parsed the record's content with
+/// serde_json's fast float parsing, which is off by one unit for some
+/// numbers of seventeen digits, and printed the parsed number again.
+#[tokio::test]
+async fn a_number_reaches_the_agent_and_the_relay_as_the_relay_holds_it() {
+    const ORDER: &str = "1795537221.1991239";
+    let world = World::new().await;
+    world.install("rota", ROTA).await;
+    world.open_in("rota", world.channel).await;
+    // Written by another client: a Rust literal is parsed exactly, and its
+    // shortest text is the one above.
+    let fence = Fence::new("rota", world.channel, &["day"]).unwrap();
+    let content = json!({"day": "Exact", "holder": null, "order": 1_795_537_221.199_123_9_f64});
+    let seeded = fence
+        .create("day", Uuid::new_v4(), content.as_object().unwrap())
+        .unwrap()
+        .sign_with_keys(&world.owner)
+        .unwrap();
+    assert!(seeded.content.contains(ORDER), "{}", seeded.content);
+    world.records.seed(&seeded);
+    world.script.write(
+        json!({"own_host": true}),
+        json!([{"match": "take the exact day", "steps": [
+            {"tool": "records", "arguments": {"app": "rota", "type": "day"},
+             "keep": {"as": "day", "find": "/records", "where": {"/content/day": "Exact"}}},
+            {"tool": "update_record", "arguments": {
+                "app": "rota", "id": "$day/id", "rev": "$day/rev",
+                "content": {"day": "Exact", "holder": "Scout", "order": "$day/content/order"}}},
+            {"tool": "send", "arguments": {"text": "Taken.", "final": true}},
+        ]}]),
+    );
+    let host = world.host(true).await;
+    let request = world.ask(&host, world.channel, "take the exact day").await;
+    let row = world.settled(&request).await;
+    assert_eq!(
+        row.state,
+        RequestState::Replied,
+        "{:#?}",
+        world.script.log()
+    );
+    // What the agent read: the number as the relay holds it.
+    let (failed, listed) = world.answers("records").remove(0);
+    assert!(!failed, "{listed}");
+    assert!(listed.contains(ORDER), "{listed}");
+    // What went back to the relay: the same number.
+    let writes = world.records.writes_by(&world.agent_pubkey());
+    assert_eq!(writes.len(), 1);
+    assert!(writes[0].1, "{}", writes[0].2);
+    assert!(
+        writes[0].0.content.contains(ORDER),
+        "{}",
+        writes[0].0.content
+    );
+    world.stop(host).await;
+}

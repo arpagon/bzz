@@ -1462,6 +1462,43 @@ impl Store {
         Ok(values)
     }
 
+    /// Unread messages per channel, counted as [`Self::unread_channels`]
+    /// decides what is unread: the count beside a channel in the sidebar.
+    pub fn unread_channel_counts(
+        &self,
+        community_id: Uuid,
+        identity_pubkey: &str,
+    ) -> Result<std::collections::HashMap<Uuid, usize>> {
+        let mut statement = self.connection.prepare(
+            "SELECT e.channel_id, COUNT(DISTINCT e.event_id)
+             FROM events e
+             LEFT JOIN read_contexts channel_read ON channel_read.community_id=e.community_id
+               AND channel_read.identity_pubkey=?2 AND channel_read.context_id=e.channel_id
+             LEFT JOIN read_contexts thread_read ON thread_read.community_id=e.community_id
+               AND thread_read.identity_pubkey=?2
+               AND thread_read.context_id='thread:' || e.root_event_id
+             LEFT JOIN read_contexts message_read ON message_read.community_id=e.community_id
+               AND message_read.identity_pubkey=?2
+               AND message_read.context_id='msg:' || e.event_id
+             WHERE e.community_id=?1 AND e.channel_id IS NOT NULL
+               AND e.kind IN (9,40002) AND e.pubkey<>?2
+               AND e.deleted_by_event_id IS NULL
+               AND e.created_at>max(COALESCE(channel_read.read_at,0),COALESCE(thread_read.read_at,0),COALESCE(message_read.read_at,0))
+             GROUP BY e.channel_id",
+        )?;
+        let values = statement
+            .query_map(params![community_id.to_string(), identity_pubkey], |row| {
+                let value: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok(Uuid::parse_str(&value)
+                    .ok()
+                    .map(|id| (id, usize::try_from(count).unwrap_or(0))))
+            })?
+            .filter_map(std::result::Result::transpose)
+            .collect::<std::result::Result<std::collections::HashMap<_, _>, _>>()?;
+        Ok(values)
+    }
+
     pub fn profiles(
         &self,
         community_id: Uuid,
@@ -1507,6 +1544,18 @@ impl Store {
             }
         }
         Ok(profiles)
+    }
+
+    /// The newest NIP-38 status of one person, whether or not a profile of
+    /// theirs is stored (`:status`, v0.17 D6).
+    pub fn user_status(
+        &self,
+        community_id: Uuid,
+        pubkey: &str,
+    ) -> Result<Option<crate::protocol::presence::UserStatus>> {
+        Ok(self
+            .user_statuses(community_id, Some(pubkey))?
+            .remove(pubkey))
     }
 
     fn user_statuses(

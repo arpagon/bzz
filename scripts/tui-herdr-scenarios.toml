@@ -43,11 +43,12 @@ action = "open-inbox"
 keys = ["z", "i"]
 visible = "Welcome to bzz"
 
-# `U` (mark unread) is bound only in the Inbox scope, and it fits a 40-row
-# pane; the longer Inbox list continues below the fold.
+# `z i` opened the Inbox. The help lists the registry's rows with the live
+# keys: the custom workspace sequence shows beside the default on "Open
+# Inbox" (v0.17 C8).
 [[scenario.step]]
 keys = ["shift+?"]
-visible = "mark unread"
+visible = "Space n, z i"
 
 [[scenario.step]]
 keys = ["esc"]
@@ -74,7 +75,7 @@ exit = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario.step]]
 keys = [":", "b", "r", "o", "k", "e", "r", "enter"]
-visible = "agent broker · not serving"
+visible = "not serving ┐"
 
 [[scenario.step]]
 keys = ["esc"]
@@ -190,9 +191,12 @@ exit = "__BZZ_HERDR_EXIT__:0"
 keys = ["space", "space"]
 visible = "channel finder"
 
+# The channel is open, whatever earlier scenarios posted in it (v0.17:
+# the newest messages of #t9-general depend on what ran before). A message
+# is selected; any message can be reacted to and reported.
 [[scenario.step]]
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
-visible = "Generated custom emoji"
+visible = "message #t9-general"
 
 [[scenario.step]]
 keys = [":", "a", "r", "t", "i", "f", "a", "c", "t", "s", "enter"]
@@ -200,11 +204,11 @@ visible = "Generated fixture task"
 
 [[scenario.step]]
 keys = ["esc"]
-visible = "Generated custom emoji"
+visible = " NORMAL  #t9-general"
 
 [[scenario.step]]
 keys = ["3", "k"]
-visible = "Generated custom emoji"
+visible = "▌"
 
 [[scenario.step]]
 keys = ["r"]
@@ -220,7 +224,7 @@ visible = ": custom"
 
 [[scenario.step]]
 keys = ["esc"]
-visible = "Generated custom emoji"
+visible = " NORMAL  #t9-general"
 
 [[scenario.step]]
 keys = [":", "r", "e", "p", "o", "r", "t", "space", "s", "p", "a", "m", "enter"]
@@ -228,7 +232,7 @@ visible = "report message to moderators?"
 
 [[scenario.step]]
 keys = ["n"]
-visible = "Generated custom emoji"
+visible = " NORMAL  #t9-general"
 
 [[scenario.step]]
 keys = ["q"]
@@ -263,7 +267,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
-visible = "Generated custom emoji"
+visible = "message #t9-general"
 
 [[scenario.step]]
 keys = [":", "h", "u", "d", "d", "l", "e", "space", "s", "t", "a", "r", "t", "enter"]
@@ -310,7 +314,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
-visible = "Generated custom emoji"
+visible = "message #t9-general"
 
 [[scenario.step]]
 keys = ["i", "e", "d", "i", "t", "space", "m", "e", "enter"]
@@ -322,7 +326,7 @@ visible = "edit me"
 [[scenario.step]]
 pause = 2000
 keys = ["esc", "3", "G", "e"]
-visible = "edit message · Enter save · Esc cancel"
+visible = "Enter save · Esc cancel"
 
 [[scenario.step]]
 keys = ["space", "p", "l", "e", "a", "s", "e", "enter"]
@@ -349,7 +353,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["t", "1", "4", "-", "n", "a", "m", "e", "s", "enter"]
-visible = "Generated namesakes channel"
+visible = "message #t14-names"
 
 [[scenario.step]]
 keys = ["i", "@", "H", "o", "n"]
@@ -384,7 +388,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
-visible = "Generated custom emoji"
+visible = "message #t9-general"
 
 [[scenario.step]]
 keys = [":", "s", "e", "c", "t", "i", "o", "n", "space", "n", "e", "w", "space", "O", "p", "s", "space", "T", "e", "a", "m", "enter"]
@@ -409,9 +413,13 @@ description = "v0.14 M5: in search, Ctrl-o loads messages older than the oldest 
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
 
+# Ctrl-o only once the relay's answer is in: an answer that comes after
+# the older page replaces its notice (v0.17: frames now come as soon as
+# asked, so the local answer shows sooner and the race was lost 3 in 3).
 [[scenario.step]]
 keys = ["/", "f", "i", "x", "t", "u", "r", "e"]
 visible = "local + relay"
+absent = "searching the relay"
 
 [[scenario.step]]
 keys = ["ctrl+o"]
@@ -555,6 +563,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t15-cli-agent-credential"
 kind = "harness"
+needs = ["t15-cli-agent-new"]
 description = "v0.15 M3: agent credential set asks for the user name and the token on a terminal and shows neither."
 args = ["agent", "credential", "set", "Rover", "github.com"]
 ready = "User name for github.com (not shown):"
@@ -578,6 +587,7 @@ absent = "rover-bot"
 [[scenario]]
 id = "t15-cli-agent-show"
 kind = "harness"
+needs = ["t15-cli-agent-new", "t15-cli-agent-credential"]
 description = "v0.15 M3 and M4: agent show lists the granted folder with its real path and rights, the hosts, the host a git credential is stored for, and the capability record."
 args = ["agent", "show", "Rover"]
 ready = "name:        Rover"
@@ -607,6 +617,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t15-cli-agent-move-mismatch"
 kind = "harness"
+needs = ["t15-cli-agent-new"]
 description = "v0.15 M5: agent move asks for the file's passphrase twice on a terminal; a second one that differs writes nothing."
 args = ["agent", "move", "Rover", "--to", "{fixture}/out/rover.bzzagent"]
 ready = "Passphrase for the file (at least 12 characters"
@@ -629,6 +640,7 @@ visible = "__BZZ_HERDR_EXIT__:1"
 [[scenario]]
 id = "t15-cli-agent-move"
 kind = "harness"
+needs = ["t15-cli-agent-new", "t15-cli-agent-move-mismatch"]
 description = "v0.15 M5: agent move, with the passphrase typed twice and never shown, seals the agent in one file and marks it moved away."
 args = ["agent", "move", "Rover", "--to", "{fixture}/out/rover.bzzagent"]
 ready = "Passphrase for the file (at least 12 characters"
@@ -660,6 +672,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t15-cli-agent-receive"
 kind = "harness"
+needs = ["t15-cli-agent-move"]
 description = "v0.15 M5: a second profile of the same owner receives the agent from the file, with the passphrase typed and never shown."
 profile = "second"
 args = ["agent", "receive", "{fixture}/out/rover.bzzagent"]
@@ -700,15 +713,17 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["type:t15-ag", "enter"]
-visible = "Generated agents channel"
+visible = "message #t15-agents"
 
 [[scenario.step]]
 keys = ["i", "type:@Sco"]
 visible = "@Scout"
 
 [[scenario.step]]
+# The reply under this mention, not under one an earlier scenario made.
 keys = ["tab", "space", "type:are you there?", "enter"]
-visible = "↳ 1 reply"
+visible = 'are you there\?[^\n]*\n[^\n]*↳ 1 reply'
+regex = true
 timeout = 90000
 
 [[scenario.step]]
@@ -733,7 +748,8 @@ timeout = 60000
 
 [[scenario.step]]
 keys = ["q"]
-visible = "↳ 3 replies"
+visible = 'are you there\?[^\n]*\n[^\n]*↳ 3 replies'
+regex = true
 absent = "q close"
 
 [[scenario.step]]
@@ -757,7 +773,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["type:t15-ag", "enter"]
-visible = "Generated agents channel"
+visible = "message #t15-agents"
 
 [[scenario.step]]
 keys = ["i", "type:@Sco", "tab", "space", "ctrl+j", 'type:do: [["bash", {"command": "sleep 120; echo slept"}], ["report"]]']
@@ -841,6 +857,9 @@ kind = "harness"
 description = "v0.15 M7: a real command an agent asks to run waits for the owner: a line at the top of every screen, the dialog with the whole command, a yes after which the command's output arrives in the chat, and a no with a reason, which the agent passes on."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
+# The waiting line is one row of 108 characters; under 120 columns it is
+# cut (v0.17: measured at 80x24 and 100x30).
+min_size = "120x30"
 
 [[scenario.step]]
 keys = ["space", "space"]
@@ -848,7 +867,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["type:t15-ag", "enter"]
-visible = "Generated agents channel"
+visible = "message #t15-agents"
 
 [[scenario.step]]
 keys = ["i", "type:@Sco", "tab", "space", "ctrl+j", 'type:do: [["run", {"folder": "work", "command": "tr a-z A-Z < README.txt > made.txt; cat made.txt"}], ["report"]]']
@@ -896,7 +915,7 @@ visible = "NORMAL"
 
 [[scenario.step]]
 keys = ["ctrl+y"]
-visible = "a real command waits for your answer · a allow · r refuse"
+visible = "a allow · r refuse"
 
 [[scenario.step]]
 keys = []
@@ -1004,6 +1023,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t15-cli-agent-activity"
 kind = "harness"
+needs = ["t15-approval-approve-refuse"]
 description = "v0.15 M7: agent show lists each command the agent asked to run, with the owner's answer."
 args = ["agent", "show", "Scout"]
 ready = "name:        Scout"
@@ -1024,9 +1044,13 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t15-agent-new-form"
 kind = "harness"
+needs = ["t15-cli-agent-move"]
 description = "v0.15 M4: :agent new, from its form to an answer: the checks, the owner's confirmation, the creation with its capability record, the agent started without a restart, added to the open channel from the panel, mentioned and answered. A moved-away agent is shown as that in the same panel."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
+# The form's sentences wrap inside its frame under 120 columns, between
+# the words a step looks for (v0.17: measured at 80x24 and 100x30).
+min_size = "120x30"
 
 [[scenario.step]]
 keys = ["space", "space"]
@@ -1034,11 +1058,11 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["type:t15-ag", "enter"]
-visible = "Generated agents channel"
+visible = "message #t15-agents"
 
 [[scenario.step]]
 keys = [":", "type:agent new Pilot", "enter"]
-visible = "new local agent · Tab/↑/↓ move · Enter next · Ctrl-S check and continue · Esc cancel"
+visible = "Tab/↑/↓ move · Enter next · Ctrl-S check and continue · Esc cancel"
 
 [[scenario.step]]
 keys = []
@@ -1050,7 +1074,7 @@ visible = "Instructions: Be brief."
 
 [[scenario.step]]
 keys = ["ctrl+s"]
-visible = "new local agent · Enter sign and create · e edit the answers · Esc cancel"
+visible = "Enter sign and create · e edit the answers · Esc cancel"
 timeout = 90000
 
 [[scenario.step]]
@@ -1159,6 +1183,10 @@ kind = "harness"
 description = "v0.15 M6: the agents panel lists an agent on each coding harness with its name of the promise (supported, experimental) and its capability record, Claude Code's with no sandbox of its own. Their programs are not on this profile: mentioned, one says so in the thread once, and the panel says what is missing and what to set. No program of the user's own is started."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
+# The agents panel shows an agent's whole record only from 120 columns and
+# 36 rows; below, the lines a step looks for wrap or fall under the frame
+# (v0.17: measured at 80x24, 120x30 and 100x40).
+min_size = "120x36"
 
 [[scenario.step]]
 keys = ["space", "space"]
@@ -1166,7 +1194,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["type:t15-ag", "enter"]
-visible = "Generated agents channel"
+visible = "message #t15-agents"
 
 [[scenario.step]]
 keys = [":", "type:agents", "enter"]
@@ -1234,9 +1262,12 @@ keys = [":", "type:agents", "enter"]
 visible = "Garnet · grok · unavailable"
 timeout = 60000
 
+# The sentence follows the fixture's path, so where it wraps depends on
+# the folder's name and the window: any space may be a line break.
 [[scenario.step]]
 keys = []
-visible = "Set BZZ_GROK to the path of `grok`, or unset it to use the one on PATH"
+visible = 'Set[\s│]+BZZ_GROK[\s│]+to[\s│]+the[\s│]+path[\s│]+of[\s│]+`grok`,[\s│]+or[\s│]+unset[\s│]+it[\s│]+to[\s│]+use[\s│]+the[\s│]+one[\s│]+on[\s│]+PATH'
+regex = true
 
 [[scenario.step]]
 keys = []
@@ -1285,9 +1316,9 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t16-cli-version"
 kind = "harness"
-description = "v0.16 M0 and M8: the release binary says it is 0.16.0."
+description = "v0.16 M0 and M8: the release binary says which version it is (t17-release-version checks the number of this release)."
 args = ["--version"]
-ready = "bzz 0.16.0"
+ready = "bzz 0."
 exit = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario.step]]
@@ -1309,6 +1340,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t16-cli-app-add"
 kind = "harness"
+needs = ["t16-cli-app-new"]
 description = "v0.16 M3: bzz app add proposes the folder and shows it; answered no, it waits and nothing runs."
 args = ["app", "add", "{fixture}/board-app"]
 ready = "Approve these exact bytes as version 1 of board"
@@ -1325,6 +1357,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t16-cli-app-approve"
 kind = "harness"
+needs = ["t16-cli-app-add"]
 description = "v0.16 M3: bzz app approve shows the waiting version and approves its exact bytes."
 args = ["app", "approve", "board"]
 ready = "Approve these exact bytes as version 1 of board"
@@ -1341,6 +1374,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t16-cli-app-add-second"
 kind = "harness"
+needs = ["t16-cli-app-new"]
 description = "v0.16 M3: the second profile installs and approves the same Board."
 args = ["app", "add", "{fixture}/board-app"]
 profile = "second"
@@ -1374,6 +1408,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t16-app-pane"
 kind = "harness"
+needs = ["t16-cli-app-approve"]
 description = "v0.16 M3 exit gate: open the Board beside #t9-general; type in it and in the composer without one reaching the other (letters, digits, q, :, Esc, Tab, Enter, a paste of two lines); narrow the window through 144, 100, 72 and 60 columns and back; open a thread beside it; quit with the terminal restored."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
@@ -1382,7 +1417,9 @@ restored = true
 
 [[scenario.step]]
 keys = [":", "type:apps", "enter"]
-visible = "board (Board) · version 1 · open nowhere"
+# Listed, approved; open nowhere yet, or where another scenario left it.
+visible = 'board \(Board\) · version 1 · open (nowhere|in )'
+regex = true
 
 [[scenario.step]]
 keys = ["esc"]
@@ -1394,11 +1431,11 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
-visible = "Generated custom emoji"
+visible = "message #t9-general"
 
 [[scenario.step]]
 keys = [":", "type:app open board", "enter"]
-visible = "Board · Ctrl-c leave"
+visible = "Ctrl-c leave ┘"
 
 [[scenario.step]]
 keys = []
@@ -1446,7 +1483,7 @@ absent = "New card"
 # Ctrl+C gives the keyboard back; the app sees none of what follows.
 [[scenario.step]]
 keys = ["ctrl+c"]
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 [[scenario.step]]
 keys = []
@@ -1454,7 +1491,7 @@ visible = " NORMAL "
 
 [[scenario.step]]
 keys = ["i"]
-visible = "message #t9-general · Enter send"
+visible = "Enter send · Ctrl-v paste"
 
 [[scenario.step]]
 keys = ["type:typed in the composer q:1 n"]
@@ -1492,18 +1529,26 @@ visible = "communities"
 
 [[scenario.step]]
 keys = []
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
+# v0.17 L10: the conversation keeps 38 columns, so at 100 the app and the
+# conversation leave no room for the sidebar (the frame names what is
+# hidden), and the app docks from 80 columns (it was 72).
 [[scenario.step]]
 size = "100x30"
 keys = []
-visible = "Board · 5 focus"
-absent = "communities"
+visible = "5 focus ┘"
+absent = "┌ communities"
+
+[[scenario.step]]
+size = "80x30"
+keys = []
+visible = "5 focus ┘"
 
 [[scenario.step]]
 size = "72x30"
 keys = []
-visible = "Board · 5 focus"
+visible = "app hidden · 5"
 
 [[scenario.step]]
 size = "60x30"
@@ -1512,7 +1557,7 @@ visible = "app hidden · 5"
 
 [[scenario.step]]
 keys = ["5"]
-visible = "Board · zoomed · Ctrl-c leave"
+visible = "zoomed ┐"
 
 [[scenario.step]]
 keys = ["ctrl+c"]
@@ -1521,7 +1566,7 @@ visible = "app hidden · 5"
 [[scenario.step]]
 size = "120x30"
 keys = []
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 # A thread asked for last takes the right side under 144 columns, and the
 # composer replies into it; 5 brings the app back and the thread waits.
@@ -1535,7 +1580,7 @@ visible = "app behind thread · 5"
 
 [[scenario.step]]
 keys = ["5"]
-visible = "Board · Ctrl-c leave"
+visible = "Ctrl-c leave ┘"
 
 [[scenario.step]]
 keys = ["ctrl+c"]
@@ -1548,7 +1593,7 @@ visible = "context ·"
 
 [[scenario.step]]
 keys = []
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 [[scenario.step]]
 keys = []
@@ -1569,6 +1614,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t16-app-live-second-profile"
 kind = "harness"
+needs = ["t16-app-pane", "t16-cli-app-add-second"]
 description = "v0.16 M3: the Board is open in #t9-general in two profiles at once; a card the second adds shows in the first one's pane."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
@@ -1581,7 +1627,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 [[scenario.step]]
 keys = []
@@ -1607,7 +1653,7 @@ visible = "channel finder"
 [[scenario.step]]
 pane = "second"
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
-visible = "Generated custom emoji"
+visible = "message #t9-general"
 
 [[scenario.step]]
 pane = "second"
@@ -1648,6 +1694,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t16-app-looper-composer"
 kind = "harness"
+needs = ["t16-app-pane", "t16-cli-app-add-looper"]
 description = "v0.16 M3: a script that keeps its thread busy is open in the pane; the composer still types a long line at once, and a key that loops forever is stopped with the error in the pane and the status line."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
@@ -1660,7 +1707,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 # Beside the Board, idle: a baseline.
 [[scenario.step]]
@@ -1677,7 +1724,7 @@ visible = " NORMAL "
 
 [[scenario.step]]
 keys = [":", "type:app open looper", "enter"]
-visible = "Looper · Ctrl-c leave"
+visible = "Ctrl-c leave ┘"
 
 [[scenario.step]]
 keys = []
@@ -1725,9 +1772,13 @@ visible = "__BZZ_HERDR_EXIT__:0"
 # fixture's folder and `$BZZ_BIN` the binary under test: what the owner
 # does outside bzz, such as saving the script of a folder.
 
+# The approval banner names the oldest version waiting: no other may wait
+# when this one is proposed, so the Board that t16-cli-app-add leaves
+# waiting is approved first.
 [[scenario]]
 id = "t16-m4-poll-approve-update-rollback"
 kind = "harness"
+needs = ["t16-cli-app-approve"]
 description = "v0.16 M4 exit gate: the Poll, written from its template, is added in the TUI and runs only after its approval there; a version that does not load is never offered; one that loads and fails as it is put to run leaves the old one running; an approved change replaces it in place with its state, and a rollback brings the old one back, with the state."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
@@ -1956,6 +2007,7 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t16-m4-dev-remove-reinstall"
 kind = "harness"
+needs = ["t16-app-live-second-profile", "t16-app-looper-composer"]
 description = "v0.16 M4 exit gate: :app dev runs the Board's folder in #t9-general on the channel's records, with the card the second profile made, reloads it on save and keeps the old version on a broken save; uninstalling the Board leaves the cards in the channel, and installed again it finds them; a version with another record type is shown as a change and refused with a reason."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
@@ -1967,16 +2019,16 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
-visible = "Generated custom emoji"
+visible = "message #t9-general"
 
 # The looper took #t9-general above; the Board is opened there again.
 [[scenario.step]]
 keys = [":", "type:app open board", "enter"]
-visible = "Board · Ctrl-c leave"
+visible = "Ctrl-c leave ┘"
 
 [[scenario.step]]
 keys = ["ctrl+c"]
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 # The owner's own folder, not approved, on the channel's real records.
 [[scenario.step]]
@@ -2007,7 +2059,7 @@ visible = "Backlog (2)"
 
 [[scenario.step]]
 keys = ["ctrl+c", ":", "type:app close", "enter"]
-visible = "Board · 5 focus"
+visible = "5 focus ┘"
 
 [[scenario.step]]
 keys = []
@@ -2017,7 +2069,7 @@ visible = "To do (2)"
 [[scenario.step]]
 keys = [":", "type:app remove board", "enter"]
 visible = "board uninstalled; 2 records of bzz.app.board.* stay in the channel"
-absent = "Board · 5 focus"
+absent = "5 focus ┘"
 
 [[scenario.step]]
 run = "\"$BZZ_BIN\" app new board --to {fixture}/board-again"
@@ -2072,7 +2124,8 @@ visible = "__BZZ_HERDR_EXIT__:0"
 [[scenario]]
 id = "t16-m6-share-offer-approve"
 kind = "harness"
-description = "v0.16 M6 exit gate: the viewer shares the Board in #t9-general; another person's bzz shows the offer with the brief posted as a message and who signed it, nothing of it runs, the approval opens it there, and a card by each shows for the other; withdrawing leaves the installed copy. Needs t16-cli-app-new, -add and -approve first."
+needs = ["t16-m4-dev-remove-reinstall"]
+description = "v0.16 M6 exit gate: the viewer shares the Board in #t9-general; another person's bzz shows the offer with the brief posted as a message and who signed it, nothing of it runs, the approval opens it there, and a card by each shows for the other; withdrawing leaves the installed copy. It follows the M3 and M4 scenarios (needs)."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
 size = "160x40"
@@ -2084,7 +2137,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["t", "9", "-", "g", "e", "n", "enter"]
-visible = "Generated custom emoji"
+visible = "message #t9-general"
 
 # The channel may hold cards of earlier scenarios: any count shows the Board.
 [[scenario.step]]
@@ -2233,7 +2286,8 @@ visible = "__BZZ_HERDR_EXIT__:0"
 
 [[scenario.step]]
 keys = [":", "type:apps", "enter"]
-visible = "open in #t9-general"
+visible = 'board \(Board\) · version 1 · open in [^\n]*#t9-general'
+regex = true
 
 [[scenario.step]]
 keys = ["esc"]
@@ -2253,9 +2307,13 @@ visible = "__BZZ_HERDR_EXIT__:0"
 # filter of tests/fixtures/apps/board-priority, proposed as a version of
 # the owner's Board, here named `tasks`.
 
+# The approval banner names the oldest version waiting: no other may wait
+# when this one is proposed, so the Board that t16-cli-app-add leaves
+# waiting is approved first.
 [[scenario]]
 id = "t16-m5-agent-changes-the-open-board"
 kind = "harness"
+needs = ["t16-cli-app-approve"]
 description = "v0.16 M5 exit gate: the owner's Board is open in #t15-agents with a card selected; Scout, mentioned, proposes the Board with priority and filter through propose_app; the approval says it comes from the agent and who asked; approved in the overlay, the open Board changes in place with the card still selected and its new keys work; :app brief posts the brief; at its next turn Scout is told the version was applied."
 ready = "online"
 exit = "__BZZ_HERDR_EXIT__:0"
@@ -2268,7 +2326,7 @@ visible = "channel finder"
 
 [[scenario.step]]
 keys = ["type:t15-ag", "enter"]
-visible = "Generated agents channel"
+visible = "message #t15-agents"
 
 [[scenario.step]]
 keys = [":", "type:app add {fixture}/m5-tasks", "enter"]
@@ -2398,4 +2456,2045 @@ visible = "quit bzz?"
 
 [[scenario.step]]
 keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 L1–L6: the look at 80×24 and 160×45, for captures before and after
+# (BZZ_TMUX_CAPTURES, BZZ_TMUX_CAPTURES_ANSI). Its checks hold on v0.16 too.
+[[scenario]]
+id = "t17-look-captures"
+kind = "harness"
+description = "v0.17 L1-L6: the workspace, and the finder over it, at 80x24 and at 160x45."
+size = "80x24"
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+pause = 500
+keys = ["t", "9", "-", "g", "e", "n"]
+visible = "#t9-general"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "message #t9-general"
+
+[[scenario.step]]
+pause = 300
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "message #t9-general"
+
+[[scenario.step]]
+size = "160x45"
+pause = 300
+keys = []
+visible = "message #t9-general"
+
+[[scenario.step]]
+pause = 300
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "message #t9-general"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+
+# v0.17 A4: with no community, the first screen offers the demo; `j` shows
+# the commands to join one, and `d` opens the demo in the same process.
+[[scenario]]
+id = "t17-demo-first-screen"
+kind = "automated"
+description = "The first screen shows what bzz is and four ways on; j shows the commands to join a community; d opens the demo in the same process."
+size = "80x24"
+ready = "Try the demo"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["j"]
+visible = "Community address, or the invite link"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Try the demo"
+absent = "Community address, or the invite link"
+
+[[scenario.step]]
+keys = ["d"]
+visible = "DEMO · generated, offline"
+timeout = 5000
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 A1 and A8: the demo's first minute, at 80×24. Move, open the
+# thread, react, search, write (a teammate answers), mention Scout (it
+# types, then answers in a thread) and read its answer.
+[[scenario]]
+id = "t17-demo-first-minute"
+kind = "automated"
+description = "bzz demo: move to the checklist, open its thread, react, search, write and get an answer, mention Scout and read its answer in the thread."
+size = "80x24"
+args = ["demo"]
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+keys = ["k", "k", "k"]
+visible = "Release checklist for Thursday"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "context · 4 replies"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "DEMO · generated, offline"
+absent = "context · 4 replies"
+
+[[scenario.step]]
+keys = ["G", "r"]
+visible = "Enter toggle · : custom"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = 'add Ship party[^\n]*\n[^\n]*👍 1'
+regex = true
+
+[[scenario.step]]
+keys = ["/", "type:rollback"]
+visible = "rollback plan is step 7"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "Search ·"
+
+[[scenario.step]]
+keys = ["i", "type:hello team", "enter"]
+visible = "Welcome aboard"
+timeout = 5000
+
+# The mention picker knows Scout as an agent; after the message, Scout
+# shows as typing, then answers in the thread of the mention. A second
+# after Ada's answer, so that the mention is the newest message (the
+# timeline orders by second).
+[[scenario.step]]
+pause = 1100
+keys = ["i", "type:@Sco"]
+visible = "◆ remote agent · eligible"
+
+[[scenario.step]]
+keys = ["tab", "type:what do you do?", "enter"]
+visible = "◆ Scout ⠋|◆ Scout ⠙|◆ Scout ⠹|◆ Scout ⠸|◆ Scout ⠼|◆ Scout ⠴|◆ Scout ⠦|◆ Scout ⠧|◆ Scout ⠇|◆ Scout ⠏"
+regex = true
+timeout = 5000
+
+[[scenario.step]]
+keys = []
+visible = 'what do you do\?[^\n]*\n[^\n]*↳ 1 reply'
+regex = true
+timeout = 8000
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Hi, I'm Scout, Ada's agent"
+timeout = 5000
+
+[[scenario.step]]
+keys = ["q"]
+visible = "DEMO · generated, offline"
+absent = "context · 1 reply"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 A1 with viz's lanes: the huddle of #infra is a generated recording.
+# Its strip shows in #infra's status line, the panel's lanes move, and
+# joining answers that it is a recording; no device is opened.
+[[scenario]]
+id = "t17-demo-huddle"
+kind = "automated"
+description = "bzz demo: in #infra the huddle's strip and lanes move from generated voices; the panel says it is a recording, and j answers so."
+size = "160x45"
+args = ["demo"]
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+keys = ["2", "k", "k", "k", "k", "enter"]
+visible = "┌ infra "
+
+[[scenario.step]]
+keys = []
+visible = "🎧 [⣀⣄⣤⣦⣶⣷⣿ ]+"
+regex = true
+
+[[scenario.step]]
+keys = [":", "type:huddle", "enter"]
+visible = "a generated recording · Esc"
+
+[[scenario.step]]
+keys = []
+visible = "a recording · no microphone is open, nothing is sent"
+absent = "you are not in the call"
+
+[[scenario.step]]
+keys = ["j"]
+visible = "Demo: a recorded huddle."
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "a generated recording · Esc"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 A2 and the demo's loose ends: the whole first minute at 80×24.
+# The three things Ada names (the checklist's thread, a search, a message
+# and Scout), then the Board of #launch (a card added and moved; Scout adds
+# one when asked; a teammate moves one with no key pressed; a refused :app
+# notice shown whole), then the huddle of #infra. No pause between a
+# teammate's answer and the next message: an answer is dated before it.
+[[scenario]]
+id = "t17-demo2-first-minute"
+kind = "automated"
+description = "bzz demo at 80x24: the three things Ada names, the Board in #launch (add, move, Scout, a teammate's move), a notice shown whole, the huddle."
+size = "80x24"
+args = ["demo"]
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+keys = []
+visible = 'Then our Board in #launch: 5 opens it, n'
+
+[[scenario.step]]
+keys = ["k", "k", "k"]
+visible = "Release checklist for Thursday"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "context · 4 replies"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "DEMO · generated, offline"
+absent = "context · 4 replies"
+
+[[scenario.step]]
+keys = ["/", "type:rollback"]
+visible = "rollback plan is step 7"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "Search ·"
+
+[[scenario.step]]
+keys = ["G", "i", "type:hello team", "enter"]
+visible = "Welcome aboard"
+timeout = 5000
+
+[[scenario.step]]
+keys = ["i", "type:@Sco"]
+visible = "◆ remote agent · eligible"
+
+[[scenario.step]]
+keys = ["tab", "type:add Ship party", "enter"]
+visible = 'add Ship party[^\n]*\n[^\n]*↳ 1 reply'
+regex = true
+timeout = 8000
+
+[[scenario.step]]
+# The thread is narrower since the layout's widths: the answer may wrap,
+# and its next line follows the conversation's row beside it.
+keys = ["enter"]
+visible = 'Done: I added "Ship party" to To( |[^\n]*\n[^\n]*▌\s+)do on the Board'
+regex = true
+timeout = 5000
+
+[[scenario.step]]
+keys = ["q"]
+visible = "DEMO · generated, offline"
+absent = "context · 1 reply"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:launch", "enter"]
+visible = '┌ Board [\s\S]*To do \(4\)[\s\S]*Ship party'
+regex = true
+
+[[scenario.step]]
+keys = ["5"]
+visible = "Ctrl-c leave ┘"
+
+[[scenario.step]]
+keys = ["n"]
+visible = "New card"
+
+[[scenario.step]]
+keys = ["type:Press kit", "enter"]
+visible = "> Press kit"
+
+[[scenario.step]]
+keys = ["]"]
+visible = 'Doing \(3\)[^\n]*\n[^\n]*Blog post review[^\n]*\n[^\n]*Status page migration[^\n]*\n[^\n]*> Press kit'
+regex = true
+
+[[scenario.step]]
+keys = ["ctrl+c", ":", "type:app share", "enter"]
+visible = "Demo: only the Board."
+
+# No key: a teammate moves a card on the Board and says so in #launch,
+# ten seconds after the last key in it and fifteen after it was shown.
+[[scenario.step]]
+keys = []
+visible = 'Moved "Blog post review" to'
+timeout = 30000
+
+[[scenario.step]]
+keys = []
+visible = 'Done \(4\)[^\n]*\n[^\n]*Blog post review'
+regex = true
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:infra", "enter"]
+visible = "┌ infra "
+
+[[scenario.step]]
+pause = 1000
+keys = [":", "type:huddle", "enter"]
+visible = "a generated recording · Esc"
+
+[[scenario.step]]
+keys = []
+visible = "a recording · no microphone is open, nothing is sent"
+absent = "you are not in the call"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "a generated recording · Esc"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+
+# v0.17 C1: the palette. Ctrl-K and Space k open it from any pane that is
+# not a text field; typing ranks actions, channels and DMs in one list.
+
+[[scenario]]
+id = "t17-palette-open-thr-quit"
+kind = "harness"
+description = "v0.17 C1: Ctrl-K and Space k open the palette and Esc closes it; \"thr\" puts Open thread first; \"q\" puts Quit bzz first and Enter asks to quit."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["ctrl+k"]
+visible = "Type to search"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+absent = "Type to search"
+
+[[scenario.step]]
+keys = ["space", "k"]
+visible = "Type to search"
+
+[[scenario.step]]
+keys = ["type:thr"]
+visible = "▌· Open thread"
+
+[[scenario.step]]
+keys = ["ctrl+u", "q"]
+visible = "▌· Quit bzz"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette-unavailable-stays"
+kind = "harness"
+description = "v0.17 C1: over another person's message, Enter on Delete my message runs nothing, says why and leaves the palette open; Esc gives the focus back."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+# A channel of its own (the fixture's #t17-palette): its newest message is
+# another person's, whatever earlier scenarios wrote elsewhere.
+[[scenario.step]]
+keys = ["type:t17-palette", "enter"]
+visible = "message #t17-palette"
+
+[[scenario.step]]
+keys = ["3", "G"]
+visible = "▌[^\\n]*Generated"
+regex = true
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:delete"]
+visible = "▌· Delete my message"
+
+# The palette stays open: the row is still there, the reason below it.
+[[scenario.step]]
+keys = ["enter"]
+visible = "▌· Delete my message(.|\\n)*can't now: only your own message can be deleted"
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+absent = "can't now"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette-theme-status-channel"
+kind = "harness"
+description = "v0.17 C1, C9: \"theme\" asks for a theme and \"status\" for the status, each in a step of the palette (until C9 the first opened the theme picker and the second the : line); # and a channel's name opens that channel."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:theme", "enter"]
+visible = "Change theme › theme"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:status", "enter"]
+visible = "Set my status › status"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:#t14-names"]
+visible = "▌# t14-names"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "message #t14-names"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette-sizes"
+kind = "harness"
+description = "v0.17 C1: the palette reads at 80x24, 160x45 and 200x50: empty, \"thr\", and a row that cannot run."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "80x24"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:#t17-palette"]
+visible = "▌# t17-palette"
+
+# The fixture's #t17-palette: its newest message is another person's.
+[[scenario.step]]
+keys = ["enter"]
+visible = "┌ t17-palette"
+
+[[scenario.step]]
+keys = ["3", "G", "ctrl+k"]
+visible = "Type to search"
+
+[[scenario.step]]
+keys = ["type:thr"]
+visible = "▌· Open thread"
+
+[[scenario.step]]
+keys = ["ctrl+u", "type:delete"]
+visible = "can't now"
+
+[[scenario.step]]
+size = "160x45"
+keys = ["ctrl+u"]
+visible = "Type to search"
+
+[[scenario.step]]
+keys = ["type:thr"]
+visible = "▌· Open thread"
+
+[[scenario.step]]
+keys = ["ctrl+u", "type:delete"]
+visible = "✕ only your own message can be deleted"
+
+[[scenario.step]]
+size = "200x50"
+keys = ["ctrl+u"]
+visible = "Type to search"
+
+[[scenario.step]]
+keys = ["type:thr"]
+visible = "▌· Open thread"
+
+[[scenario.step]]
+keys = ["ctrl+u", "type:community add"]
+visible = "only in the shell: bzz community add"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+absent = "Type to search"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+
+# ---- v0.17.0: task find (C3 to C7) -----------------------------------------
+
+[[scenario]]
+id = "t17-find-help-80x24"
+kind = "automated"
+size = "80x24"
+description = "v0.17 C3: at 80x24 the help says which rows show; j moves a row, PageDown a page, G reaches its last row (the last : command), g the top."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["shift+?"]
+visible = "effective keymap · rows 1-22"
+
+[[scenario.step]]
+keys = ["j"]
+visible = "rows 2-23"
+
+[[scenario.step]]
+keys = ["pagedown"]
+visible = "rows 23-44"
+
+[[scenario.step]]
+keys = ["G"]
+visible = "delete this community's local cache"
+
+[[scenario.step]]
+keys = ["g"]
+visible = "rows 1-22"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-find-commands"
+kind = "automated"
+size = "80x24"
+description = "v0.17 C4: :hudle names :huddle under the prompt it keeps; a usage wraps whole; :community add names the shell command; :help opens the help; :theme the picker; :q asks to quit."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "type:hudle", "enter"]
+visible = "did you mean :huddle?"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+absent = "did you mean"
+
+[[scenario.step]]
+keys = [":", "type:agents nowhere", "enter"]
+visible = 'usage: :agents \(yours,(.|\n)*:agents directory'
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+# The form's own words: "Join a community" is also a row of the first
+# screen behind it (v0.17 A4), which shows before the form opens.
+keys = [":", "type:community add", "enter"]
+visible = "Community address, or the invite link"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+absent = "Community address, or the invite link"
+
+[[scenario.step]]
+keys = [":", "type:help", "enter"]
+visible = "effective keymap"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = [":", "type:theme", "enter"]
+visible = "Enter save · Esc cancel"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = [":", "type:q", "enter"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-find-leader"
+kind = "automated"
+size = "80x24"
+description = "v0.17 C6: the leader panel shows every key at 80x24 and at 120x32, sort included, and stays until Esc."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space"]
+visible = 'Space · next key(.|\n)*Cycle channel sort(.|\n)*Esc cancels'
+regex = true
+
+[[scenario.step]]
+pause = 1500
+keys = []
+visible = "Cycle channel sort"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+absent = "Cycle channel sort"
+
+[[scenario.step]]
+size = "120x32"
+keys = ["space"]
+visible = 'Space · next key(.|\n)*Cycle channel sort(.|\n)*Esc cancels'
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-find-finder"
+kind = "harness"
+size = "120x32"
+description = "v0.17 C5: in the channel finder \"gen\", Down and Enter open the second result, not the first."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+# The fixture's "gen" ranks +general (open, not joined) first and
+# #t9-general second.
+[[scenario.step]]
+keys = ["space", "space", "g", "e", "n"]
+visible = "› +general"
+
+[[scenario.step]]
+keys = ["down"]
+visible = "› #t9-general"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "message #t9-general"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-find-delete-unread-status"
+kind = "harness"
+description = "v0.17 C7: d on another person's message says why not; d and y delete my own; u marks the channel unread; a bare :status shows the status, :status clear clears it."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space", "type:t17-find", "enter"]
+visible = "message #t17-find"
+
+[[scenario.step]]
+keys = ["i", "type:t17 delete me", "enter"]
+visible = "t17 delete me"
+
+# A message can be deleted once the relay has taken it. Sending closed
+# the composer. The first message of the channel (the fixture's
+# #t17-find, which no other scenario writes in) is another person's.
+[[scenario.step]]
+pause = 2000
+keys = ["3", "g", "g", "d"]
+visible = "Delete my message: only your own message can be deleted"
+
+[[scenario.step]]
+keys = ["G", "d"]
+visible = "delete message?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "online"
+absent = "t17 delete me"
+
+[[scenario.step]]
+keys = ["k", "u"]
+visible = "marked #t17-find unread"
+
+[[scenario.step]]
+keys = [":", "type:status t17 lunch", "enter"]
+visible = "status updated"
+
+[[scenario.step]]
+pause = 1500
+keys = [":", "type:status", "enter"]
+visible = "your status: t17 lunch · :status clear clears it"
+
+[[scenario.step]]
+keys = [":", "type:status clear", "enter"]
+visible = "status cleared"
+
+[[scenario.step]]
+pause = 1500
+keys = [":", "type:status", "enter"]
+visible = "you have no status"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+
+# v0.17 sound (E1): a call between two clients. On Linux each bzz speaks to
+# the sound server PULSE_SERVER names; the runner gives it one in a
+# container, never this machine's own. With BZZ_TEST_PULSE_SERVER a sine
+# source and BZZ_TEST_PULSE_SERVER_OTHER a null sink, what the other
+# person's client plays is the first one's tone
+# (docs/validation-v0.17.0/sound.md). Another person, not the viewer's
+# second profile: that is the same person, whose leaving ends the huddle.
+[[scenario]]
+id = "t17-sound-call"
+kind = "harness"
+description = "v0.17 E1: the viewer saves an ALSA microphone name as v0.16.0 did, starts a huddle in #t17-sound (the default device opens and the join says once which name was not found) and unmutes; another person joins it; both hold the call for a few seconds, then leave, and the saved name is cleared."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "160x45"
+beside = "other"
+
+# The sidebar has the channel before the finder looks for it: the
+# fixture's #t17-sound, which both people are in and nobody else uses.
+[[scenario.step]]
+keys = []
+visible = "#t17-sound"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t17-sound", "enter"]
+visible = "message #t17-sound"
+
+# A name from ALSA's own list, as v0.16.0 saved it; no such card here.
+[[scenario.step]]
+keys = [":", "type:huddle input hw:CARD=PCH,DEV=0", "enter"]
+visible = "huddle input device saved; it applies on the next join"
+
+[[scenario.step]]
+keys = [":", "h", "u", "d", "d", "l", "e", "space", "s", "t", "a", "r", "t", "enter"]
+visible = "start a huddle?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "you are in the call · muted"
+timeout = 20000
+
+[[scenario.step]]
+keys = []
+visible = 'saved input "hw:CARD=PCH,DEV=0" not found; using the default'
+
+[[scenario.step]]
+keys = ["m"]
+visible = "LIVE (others hear you)"
+
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "online"
+timeout = 30000
+
+[[scenario.step]]
+pane = "second"
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+pane = "second"
+keys = ["type:t17-sound", "enter"]
+visible = "message #t17-sound"
+
+# The other client has the huddle before it joins.
+[[scenario.step]]
+pane = "second"
+keys = []
+visible = "1 in it"
+timeout = 30000
+
+[[scenario.step]]
+pane = "second"
+pause = 2000
+keys = [":", "h", "u", "d", "d", "l", "e", "space", "j", "o", "i", "n", "enter"]
+visible = "join the huddle?"
+timeout = 20000
+
+[[scenario.step]]
+pane = "second"
+keys = ["y"]
+visible = "joined the huddle"
+timeout = 20000
+
+# The call holds: the viewer speaks (its tone), the other hears.
+[[scenario.step]]
+pause = 6000
+keys = []
+visible = "LIVE (others hear you)"
+
+# The huddle panel is open after joining: l leaves.
+[[scenario.step]]
+pane = "second"
+keys = ["l"]
+visible = "you are not in the call"
+
+[[scenario.step]]
+pane = "second"
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+pane = "second"
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+pane = "second"
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["l"]
+visible = "you are not in the call"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = [":", "type:huddle input", "enter"]
+visible = "huddle input device saved"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette2-dm"
+kind = "harness"
+description = "v0.17 C9: \"Start a DM\" asks for a person; Scout is found by name, the footer shows the :dm line, and Enter opens the DM."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+# bzz knows Scout once it has his profile: on a profile no earlier
+# scenario started, not yet when it is online. His join row, at the top
+# of #t15-agents, shows his name when it has.
+[[scenario.step]]
+keys = ["space", "space", "type:t15-ag", "enter"]
+visible = "message #t15-agents"
+
+[[scenario.step]]
+keys = ["3", "g", "g"]
+visible = "Scout joined"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:start a dm"]
+visible = "▌· Start a DM"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Start a DM › person"
+
+[[scenario.step]]
+keys = ["type:Scout"]
+visible = "▌◆ Scout(.|\\n)*:dm npub1"
+regex = true
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "DM opened"
+absent = "Start a DM › person"
+timeout = 10000
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette2-status"
+kind = "harness"
+description = "v0.17 C9: \"status\" asks for the text, then the expiry; the footer shows :status --expires 2h In a meeting; Backspace on an empty field goes back a step; Enter sets the status."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:status", "enter"]
+visible = "Set my status › status(.|\\n)*usage: :status \\[--expires N\\[smhdw\\]\\] <text>"
+regex = true
+
+[[scenario.step]]
+keys = ["type:In a meeting"]
+visible = ":status In a meeting"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Set my status › In a meeting › expires"
+
+# Backspace on the empty expiry goes back to the text, as it was typed.
+[[scenario.step]]
+keys = ["backspace"]
+visible = "❯ In a meeting"
+absent = "› expires"
+
+[[scenario.step]]
+keys = ["enter", "type:2x"]
+visible = "«2x» is not a duration"
+
+[[scenario.step]]
+keys = ["backspace", "type:h"]
+visible = ":status --expires 2h In a meeting"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "status updated"
+absent = "Set my status"
+timeout = 8000
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette2-theme-react"
+kind = "harness"
+description = "v0.17 C9: the theme step previews as it moves and Esc puts the theme back (the step opens again on the theme in use); \"react\" asks for an emoji and Enter reacts to the selected message."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:theme", "enter"]
+visible = "Change theme › theme(.|\\n)*▌◑ bzz"
+regex = true
+
+[[scenario.step]]
+keys = ["type:nord"]
+visible = "▌◑ Nord"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+absent = "Change theme"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:theme", "enter"]
+visible = "▌◑ bzz"
+
+# Esc alone: Esc and a key at once read as Alt and that key.
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+absent = "Change theme"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+# The fixture's #t17-react: its one message, the newest row, is another
+# person's, with a custom emoji, and nobody else reacts there.
+[[scenario.step]]
+keys = ["type:t17-react", "enter"]
+visible = "message #t17-react"
+
+[[scenario.step]]
+keys = ["3", "G"]
+visible = "▌[^\\n]*Generated custom emoji :bzzwave:"
+regex = true
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:react to"]
+visible = "▌· React to message"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "React to message › emoji"
+
+[[scenario.step]]
+keys = ["type:party"]
+visible = "▌  🎉"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "bzzwave:[^\\n]*\\n[^\\n]*🎉 1"
+regex = true
+absent = "React to message ›"
+timeout = 8000
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette2-find"
+kind = "harness"
+description = "v0.17 C12: a person is found by name and Enter opens their profile; the last row searches messages for what was typed."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:Honey"]
+visible = "▌@ Honey(.|\\n)*↵ profile · Ctrl\\+D DM"
+regex = true
+
+# The profile's keys are at the foot of its frame (v0.17 L4).
+[[scenario.step]]
+keys = ["enter"]
+visible = "┌ profile ─[\\s\\S]*name: Honey[\\s\\S]*r refresh · Esc close"
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+absent = "profile · r refresh"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:fixture"]
+visible = "/ Search messages for «fixture»"
+
+# Up from the first row wraps to the last: the search row.
+[[scenario.step]]
+keys = ["up"]
+visible = "▌/ Search messages for «fixture»"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "local \\+ relay"
+regex = true
+timeout = 8000
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# The Board is installed by t16-cli-app-new, t16-cli-app-add and
+# t16-cli-app-approve (`needs`); it is opened in the fixture's #t17-app,
+# where no other scenario has an app open.
+[[scenario]]
+id = "t17-palette2-app"
+kind = "harness"
+description = "v0.17 C12: an installed app is found by name and Enter opens it beside the selected channel."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x30"
+needs = ["t16-cli-app-approve"]
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t17-app", "enter"]
+visible = "message #t17-app"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:board"]
+visible = "▌▣ Open board here"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "Ctrl-c leave ┘"
+timeout = 8000
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "NORMAL"
+
+# Left as it was found: the Board open nowhere it was not (t16-app-pane
+# and t16-m6-share-offer-approve read where it is open).
+[[scenario.step]]
+keys = [":", "type:app close", "enter"]
+visible = "board is closed here"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-palette2-sizes"
+kind = "harness"
+description = "v0.17 C9: the steps read at 80x24 and 160x45: a person step with its :dm line, a text step with its usage, an expiry step."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "80x24"
+
+# bzz knows Scout once it has his profile: on a profile no earlier
+# scenario started, not yet when it is online. His join row, at the top
+# of #t15-agents, shows his name when it has.
+[[scenario.step]]
+keys = ["space", "space", "type:t15-ag", "enter"]
+visible = "message #t15-agents"
+
+[[scenario.step]]
+keys = ["3", "g", "g"]
+visible = "Scout joined"
+timeout = 30000
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:start a dm", "enter", "type:sc"]
+visible = "Start a DM › person(.|\\n)*:dm npub1"
+regex = true
+
+[[scenario.step]]
+keys = ["ctrl+u", "backspace", "ctrl+u", "type:status", "enter"]
+visible = "usage: :status"
+
+[[scenario.step]]
+keys = ["type:In a meeting", "enter", "type:2"]
+visible = "— no expiry|2h"
+regex = true
+
+[[scenario.step]]
+size = "160x45"
+keys = ["esc"]
+visible = "online"
+absent = "Set my status"
+
+[[scenario.step]]
+keys = ["ctrl+k", "type:start a dm", "enter", "type:sc"]
+visible = "Start a DM › person(.|\\n)*:dm npub1"
+regex = true
+
+[[scenario.step]]
+keys = ["ctrl+u", "backspace", "ctrl+u", "type:status", "enter"]
+visible = "usage: :status"
+
+[[scenario.step]]
+keys = ["type:In a meeting", "enter", "type:2"]
+visible = "2h"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "online"
+absent = "Set my status"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-motion-toast"
+kind = "automated"
+description = "v0.17 L7: in bzz demo, y copies the selected message and a toast says so at the bottom right; it slides out by itself after about 3.4 s."
+size = "80x24"
+args = ["demo"]
+motion = true
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+keys = ["k", "y"]
+visible = "│ copied 1 message(s), "
+
+[[scenario.step]]
+pause = 4000
+keys = []
+visible = "DEMO · generated, offline"
+absent = "copied 1 message(s)"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-motion-overlay-and-focus"
+kind = "automated"
+description = "v0.17 L8: with motion, the palette unfolds and is whole within a moment, Esc folds it away; 2 moves the focus to the channels and the screen settles."
+size = "160x45"
+args = ["demo"]
+motion = true
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+keys = ["ctrl+k"]
+visible = "Type to search"
+
+[[scenario.step]]
+pause = 300
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "Type to search"
+
+[[scenario.step]]
+keys = ["2"]
+visible = "NORMAL"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-motion-off-toast"
+kind = "automated"
+description = "v0.17 L7 with motion off (as every scenario but these): the toast is there at once and gone after 3 s."
+size = "80x24"
+args = ["demo"]
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+keys = ["k", "y"]
+visible = "│ copied 1 message(s), "
+
+[[scenario.step]]
+pause = 3500
+keys = []
+visible = "DEMO · generated, offline"
+absent = "copied 1 message(s)"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-registry-complete"
+kind = "automated"
+size = "80x24"
+description = "v0.17 C11: the : line completes with Tab from the registry: :hu, Tab, Tab gives :huddle start with its verbs and usage under the line; :theme n, Tab a theme; a wrong word says what is near. Enter still runs what is typed."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "type:hu"]
+visible = "Tab: huddle"
+
+[[scenario.step]]
+keys = ["tab"]
+visible = 'Tab: start  join(.|\n)*usage: :huddle \[start'
+regex = true
+
+[[scenario.step]]
+keys = ["tab"]
+visible = ':huddle start(.|\n)*Tab: \[start\]  join'
+regex = true
+
+[[scenario.step]]
+keys = ["tab"]
+visible = ':huddle join(.|\n)*Tab: start  \[join\]'
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+absent = "Tab: "
+
+[[scenario.step]]
+keys = [":", "type:theme n", "tab"]
+visible = ':theme n[a-z-]+ (.|\n)*usage: :theme'
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = [":", "type:hudle", "tab"]
+visible = "no command starts with hudle · did you mean :huddle?"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = [":", "type:sort", "space", "tab"]
+visible = ':sort alpha(.|\n)*Tab: \[alpha\]  recent  default'
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-registry-app-footer"
+kind = "harness"
+size = "160x45"
+needs = ["t16-cli-app-approve"]
+description = "v0.17 C11 and C10: :app open, Tab completes an installed app; the status line's hint follows the focus (a message, the channels, the composer, the huddle panel) at 160x45 and 80x24, ending in the palette's key."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:t17-palette", "enter"]
+visible = "Enter thread · r react · i write · Ctrl-K actions"
+
+[[scenario.step]]
+keys = [":", "type:app open", "space", "tab"]
+visible = ':app open [a-z]+(.|\n)*usage: :app open <name>'
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Enter thread · r react"
+
+[[scenario.step]]
+keys = ["2"]
+visible = "Enter open · Space Space find · i write · Ctrl-K actions"
+
+[[scenario.step]]
+keys = ["3", "i"]
+visible = "Enter send · Ctrl-J newline · Esc close"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Enter thread · r react"
+
+[[scenario.step]]
+keys = [":", "type:huddle", "enter"]
+visible = '(s start|j join|m mute)(.|\n)*Esc close'
+regex = true
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Enter thread · r react"
+
+[[scenario.step]]
+size = "80x24"
+keys = []
+visible = "Ctrl-K actions"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-join-open"
+kind = "join"
+empty = true
+isolated = true
+size = "80x24"
+description = "A newcomer with no keychain joins an open community from the first screen: :join and the address, a new identity with a passphrase typed hidden, the open channels offered, one opened, a message sent."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "type:join localhost:3030", "enter"]
+visible = "open: anyone who signs in may join"
+
+# Drawn at 160 columns: a frame from edge to edge, or the join form, 100
+# columns wide since it was built, centred 30 columns in (at the head of
+# v0.17.0 nothing behind the form spans the width).
+[[scenario.step]]
+keys = []
+size = "160x45"
+visible = '(?m)^( {30}[┌│└][^\n]{98}|[┌│└][^\n]{158})[┐│┘]$'
+regex = true
+
+[[scenario.step]]
+keys = []
+visible = "✓ Buzz Relay · a Buzz community at localhost:3030"
+
+[[scenario.step]]
+keys = ["enter"]
+size = "80x24"
+visible = "no keychain: key in a file with a passphrase"
+
+[[scenario.step]]
+keys = []
+size = "160x45"
+visible = '(?m)^( {30}[┌│└][^\n]{98}|[┌│└][^\n]{158})[┐│┘]$'
+regex = true
+
+[[scenario.step]]
+keys = []
+visible = "A new identity, made here"
+
+[[scenario.step]]
+keys = ["enter"]
+size = "80x24"
+visible = "A passphrase for the file that keeps the key"
+
+[[scenario.step]]
+keys = ["type:t17 join passphrase", "enter"]
+visible = "The same passphrase again"
+absent = "t17 join passphrase"
+
+[[scenario.step]]
+keys = ["type:t17 join passphrase"]
+size = "160x45"
+visible = "› •••••••••••••••••••▏"
+absent = "t17 join passphrase"
+
+# The passphrase is in bzz's memory only: not in the arguments or the
+# environment of this profile's bzz (found by its BZZ_CONFIG_DIR). The
+# pattern is the scenario's generated passphrase, in this check's own
+# arguments only.
+[[scenario.step]]
+run = '''found=; for p in $(pgrep -x bzz); do if tr '\0' '\n' < /proc/$p/environ 2>/dev/null | grep -qxF "BZZ_CONFIG_DIR={home}/config"; then found=1; if grep -aqF 't17 join passphrase' /proc/$p/cmdline /proc/$p/environ; then exit 1; fi; fi; done; test -n "$found"'''
+keys = []
+visible = "The same passphrase again"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "choose a channel to open"
+timeout = 60000
+
+[[scenario.step]]
+keys = []
+size = "80x24"
+visible = '(?m)^[┌│└][^\n]{78}[┐│┘]$'
+regex = true
+
+# The fixture's open channels outnumber the finder's rows at 80x24 (v0.17
+# suite added six): narrowed, #t9-general is the first offered.
+[[scenario.step]]
+keys = ["type:t9-gen"]
+visible = "› +t9-general"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "message #t9-general"
+
+[[scenario.step]]
+keys = ["i", "type:hi from t17 join", "enter"]
+visible = "hi from t17 join"
+timeout = 30000
+# Sent and acknowledged by the relay: no longer pending ("[pending]" may
+# wrap at 80 columns).
+absent = "pending]"
+
+[[scenario.step]]
+keys = []
+size = "160x45"
+visible = '(?m)^( {30}[┌│└][^\n]{98}|[┌│└][^\n]{158})[┐│┘]$'
+regex = true
+
+[[scenario.step]]
+keys = []
+visible = "hi from t17 join"
+
+# Nothing bzz wrote holds the passphrase: its settings, its key file (an
+# encrypted envelope), its database, its diagnostics, its cache, and the
+# bytes it wrote to the terminal ({home}.raw, the pane's pipe).
+[[scenario.step]]
+run = '''test -s {home}.raw && test -n "$(ls {home}/data/keys)" && ! grep -raqF 't17 join passphrase' {home} {home}.raw'''
+keys = []
+visible = "hi from t17 join"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 A9, task join: a community that lets in its members only. Run with
+# the relay closed: `BUZZ_REQUIRE_RELAY_MEMBERSHIP=true
+# RELAY_OWNER_PUBKEY=<64 hex> BZZ_TMUX_SCENARIOS=t17-join-members
+# ./scripts/test-relay.sh --tmux`. The id is shown; the screen is left and
+# found again; an admin adds the person from the harness side (a row in
+# relay_members, as the fixture seeds them); bzz asks again on its own and
+# goes in without a restart.
+
+[[scenario]]
+id = "t17-join-members"
+kind = "join"
+empty = true
+isolated = true
+size = "80x24"
+description = "A newcomer joins a members-only community: the npub to send to an admin, the wait left and found again, the admin adds them, bzz gets in by itself and a message is sent."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "type:join localhost:3030", "enter"]
+visible = "it lets in its members only"
+
+[[scenario.step]]
+keys = ["enter", "enter", "type:t17 members passphrase", "enter", "type:t17 members passphrase", "enter"]
+visible = 'Your id, to send to an admin[\s│]+npub1[02-9ac-hj-np-z]{58}'
+regex = true
+timeout = 60000
+
+[[scenario.step]]
+keys = []
+visible = "waiting for an admin · asked 1 time"
+
+[[scenario.step]]
+keys = []
+size = "160x45"
+visible = '(?m)^( {30}[┌│└][^\n]{98}|[┌│└][^\n]{158})[┐│┘]$'
+regex = true
+
+[[scenario.step]]
+keys = []
+visible = "c copy your id · r ask now"
+
+[[scenario.step]]
+keys = ["esc"]
+size = "80x24"
+visible = "the join goes on; :join shows it again"
+
+[[scenario.step]]
+keys = [":", "type:join", "enter"]
+visible = "waiting for an admin"
+
+[[scenario.step]]
+run = '''pk=$(sed -n 's/^pubkey = "\([0-9a-f]\{64\}\)"$/\1/p' {home}/config/config.toml | head -n 1); test -n "$pk"; docker compose -p buzz-harness -f "$BZZ_BUZZ_SOURCE/docker-compose.harness.yml" exec -T postgres psql -U buzz -d buzz -v ON_ERROR_STOP=1 -c "INSERT INTO relay_members (community_id,pubkey,role,added_by) SELECT id,'$pk','member',NULL FROM communities WHERE lower(host)='localhost:3030' ON CONFLICT (community_id,pubkey) DO NOTHING;"'''
+keys = []
+visible = "choose a channel to open"
+timeout = 90000
+
+[[scenario.step]]
+keys = ["type:t9-gen", "enter", "i", "type:admitted t17 join", "enter"]
+visible = "admitted t17 join"
+timeout = 30000
+absent = "pending]"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 A9, task join: what the form says where nothing usable answers,
+# in the form's own screen, with nothing written. No relay needed.
+
+[[scenario]]
+id = "t17-join-not-there"
+kind = "automated"
+isolated = true
+size = "80x24"
+description = "The join form at an address where nothing answers, and at one bzz refuses to use, says what happened and what to try, and leaves nothing behind."
+ready = "Welcome to bzz"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = [":", "type:join localhost:9", "enter"]
+visible = "✗ nothing answers at localhost:9"
+
+[[scenario.step]]
+keys = []
+size = "160x45"
+visible = '(?m)^( {30}[┌│└][^\n]{98}|[┌│└][^\n]{158})[┐│┘]$'
+regex = true
+
+[[scenario.step]]
+keys = []
+visible = "check the address with the person who gave it to you"
+
+[[scenario.step]]
+keys = ["ctrl+u", "type:ws://far.example", "enter"]
+size = "80x24"
+visible = "ws:// and http:// work only on this machine; use wss://"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "Welcome to bzz"
+# Not "Join a community": the first screen has that row too (v0.17 A4).
+absent = "Community address, or the invite link"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-layout-mouse"
+kind = "automated"
+description = "The mouse at 80x24: the wheel scrolls the conversation, a double click opens a message's thread, Esc closes it and then says there is nothing to close, a drag widens the sidebar, a click opens a channel, a click on the status line's hint opens the palette."
+size = "80x24"
+args = ["demo"]
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+# Since the demo's longer notices (tidy), three turns of the wheel bring
+# the checklist to the conversation's first rows (row 2: its first line).
+[[scenario.step]]
+pause = 500
+mouse = ["wheel-up 50 10", "wheel-up 50 10", "wheel-up 50 10"]
+keys = []
+visible = "Release checklist for Thursday"
+
+[[scenario.step]]
+mouse = ["double 40 2"]
+keys = []
+visible = "context · 4 replies"
+
+[[scenario.step]]
+keys = []
+visible = "hidden · channels 2"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "context · 4 replies"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "nothing to close · q quits"
+absent = "quit bzz?"
+
+[[scenario.step]]
+mouse = ["drag 27 10 35 10"]
+keys = []
+visible = "channel pane width saved as 36"
+
+# #design is the fourth row of the channels ("smart": #infra, #launch,
+# #design by their unread messages).
+[[scenario.step]]
+mouse = ["click 6 4"]
+keys = []
+visible = "The new empty state"
+
+# The notice gone, the hint is back; since registry it follows the focus
+# ("Enter open · Ctrl-K actions" in the channels), so the palette's key
+# ends the line at 80 columns: columns 65 to 78.
+[[scenario.step]]
+pause = 5500
+keys = []
+visible = "Ctrl-K actions"
+absent = "channel pane width saved"
+
+[[scenario.step]]
+mouse = ["click 70 23"]
+keys = []
+visible = "Search actions, channels"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "Search actions"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-layout-widths"
+kind = "automated"
+description = "One window from 60 to 200 columns: what does not fit is hidden and named with its key on the conversation's frame; a thread with the focus takes the conversation's place at 60 and 3 brings it back; z draws the conversation alone and z restores; widening brings every pane back."
+size = "60x20"
+args = ["demo"]
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+keys = []
+visible = "hidden · channels 2"
+
+[[scenario.step]]
+keys = ["k", "k", "k", "enter"]
+visible = "context · 4 replies"
+
+[[scenario.step]]
+keys = []
+visible = "conversation 3"
+
+[[scenario.step]]
+keys = ["3"]
+visible = "Release checklist for Thursday"
+absent = "context · 4 replies"
+
+[[scenario.step]]
+keys = []
+visible = "thread 4"
+
+[[scenario.step]]
+size = "80x24"
+keys = []
+visible = "context · 4 replies"
+
+[[scenario.step]]
+size = "120x32"
+keys = []
+visible = "channels ──"
+
+[[scenario.step]]
+keys = ["z"]
+visible = "hidden · the other panes z"
+absent = "context · 4 replies"
+
+[[scenario.step]]
+keys = ["z"]
+visible = "context · 4 replies"
+absent = "the other panes"
+
+[[scenario.step]]
+size = "160x45"
+keys = []
+visible = "┌ communities"
+
+[[scenario.step]]
+size = "200x50"
+keys = []
+visible = "context · 4 replies"
+absent = "hidden ·"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "context · 4 replies"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 F7 on the pinned relay: :tochannel says what it did and clears the
+# thread's draft; with no huddle, :huddle end says there is none; the
+# backing channel of the huddle t9-presence-broker-huddle started is not in
+# the sidebar.
+
+[[scenario]]
+id = "t17-layout-f7"
+kind = "harness"
+description = "F7: :tochannel sends the thread's draft as a new message, says so and clears the draft; :huddle end with no huddle says there is none; no huddle backing channel in the sidebar."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "120x32"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+# The fixture's #t17-thread: its newest rows are another person's
+# messages, not people joining, whatever ran before.
+keys = ["type:t17-thread", "enter"]
+visible = "NORMAL  #t17-thread"
+absent = "huddle-"
+
+[[scenario.step]]
+keys = ["k", "enter"]
+visible = "context ·"
+
+[[scenario.step]]
+keys = ["i", "type:t17 layout to the channel"]
+visible = "t17 layout to the channel"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = " NORMAL "
+
+[[scenario.step]]
+keys = [":", "type:tochannel", "enter"]
+visible = "as a new message · the thread's draft is cleared"
+
+[[scenario.step]]
+keys = ["i"]
+visible = "INSERT"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = " NORMAL "
+
+[[scenario.step]]
+keys = ["esc"]
+visible = " NORMAL "
+absent = "context ·"
+
+[[scenario.step]]
+keys = ["G"]
+visible = "↪ sent from thread"
+
+[[scenario.step]]
+keys = [":", "type:huddle end", "enter"]
+visible = "no huddle is running here"
+absent = "only the huddle's creator"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 L10 captures on the pinned relay: #t9-general with a thread, then
+# with the Board in front, at 60x20, 80x24, 120x32 and 160x45.
+
+[[scenario]]
+id = "t17-layout-board-captures"
+kind = "harness"
+description = "#t9-general with a thread and with the Board open, at 60x20, 80x24, 120x32 and 160x45: what does not fit is hidden and named, the Board docks from 80 columns."
+ready = "online"
+exit = "__BZZ_HERDR_EXIT__:0"
+size = "160x45"
+needs = ["t16-cli-app-approve"]
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["t", "9", "-", "g", "e", "n", "enter"]
+visible = "NORMAL  #t9-general"
+
+[[scenario.step]]
+keys = [":", "type:app open board", "enter"]
+visible = "Ctrl-c leave ┘"
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = "5 focus ┘"
+
+[[scenario.step]]
+keys = ["3", "k", "enter"]
+visible = "context ·"
+
+[[scenario.step]]
+keys = []
+visible = "5 focus ┘"
+
+[[scenario.step]]
+size = "120x32"
+keys = []
+visible = "app behind thread · 5"
+
+[[scenario.step]]
+size = "80x24"
+keys = []
+visible = "2 ┐┌ context"
+regex = true
+
+[[scenario.step]]
+size = "60x20"
+keys = []
+visible = "(conversation )?3 ┐"
+regex = true
+
+[[scenario.step]]
+keys = ["5"]
+visible = "zoomed ┐"
+
+[[scenario.step]]
+size = "80x24"
+keys = []
+visible = "Ctrl-c leave ┘"
+absent = "zoomed ┐"
+
+[[scenario.step]]
+size = "120x32"
+keys = []
+visible = "Ctrl-c leave ┘"
+absent = "zoomed ┐"
+
+[[scenario.step]]
+size = "160x45"
+keys = []
+visible = "context ·"
+
+[[scenario.step]]
+keys = ["ctrl+c"]
+visible = " NORMAL "
+
+# q closes the thread first, then asks.
+[[scenario.step]]
+keys = ["q"]
+visible = " NORMAL "
+absent = "context ·"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario]]
+id = "t17-release-version"
+kind = "automated"
+description = "v0.17 F8: the release binary says it is 0.17.0."
+args = ["--version"]
+ready = "bzz 0.17.0"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+keys = []
 visible = "__BZZ_HERDR_EXIT__:0"

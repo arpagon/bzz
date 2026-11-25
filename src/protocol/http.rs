@@ -46,15 +46,33 @@ pub fn relay_signing_pubkey(info: &Value) -> Option<&str> {
         .filter(|key| key.len() == 64 && key.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
+/// Builds an HTTP client as `configure` describes it.
+///
+/// reqwest verifies HTTPS against the system's certificate store and cannot
+/// be built at all on a machine that has none (a minimal container): every
+/// client then failed with "builder error", `bzz demo` included, which
+/// speaks plain HTTP to a relay inside this process. On such a machine the
+/// client is built with no trusted certificate instead: plain HTTP on this
+/// machine works, and an HTTPS request fails saying the certificate cannot
+/// be verified, which is the truth there.
+pub fn build_client(configure: impl Fn() -> reqwest::ClientBuilder) -> reqwest::Result<Client> {
+    configure().build().or_else(|_| {
+        configure()
+            .tls_certs_only(std::iter::empty::<reqwest::Certificate>())
+            .build()
+    })
+}
+
 impl HttpClient {
     pub fn new(base: Url, signer: SignerHandle) -> Result<Self> {
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
-            .user_agent(crate::realtime::session::USER_AGENT)
-            .build()
-            .map_err(|error| Error::Network(error.to_string()))?;
+        let client = build_client(|| {
+            Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(30))
+                .user_agent(crate::realtime::session::USER_AGENT)
+        })
+        .map_err(|error| Error::Network(error.to_string()))?;
         Ok(Self {
             base,
             client,

@@ -14,7 +14,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use uuid::Uuid;
 
@@ -132,15 +132,20 @@ pub fn render(
         .map(|note| format!(" · {note}"))
         .unwrap_or_default();
     let loading = if state.loading { " · loading…" } else { "" };
-    let title = format!(
-        " {scope}{note}{loading} · ↑/↓ · Enter open · d delete · u restore · :artifact rename|move · Esc "
+    let title = format!("{scope}{note}{loading}");
+    let block = crate::ui::frame::modal(
+        theme,
+        BorderSurface::Picker,
+        &title,
+        &[
+            ("↑/↓", ""),
+            ("Enter", "open"),
+            ("d", "delete"),
+            ("u", "restore"),
+            (":artifact", "rename|move"),
+            ("Esc", "close"),
+        ],
     );
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(theme.border_type(BorderSurface::Picker))
-        .border_style(theme.style(HighlightGroup::ModalBorder))
-        .title_style(theme.style(HighlightGroup::ModalTitle))
-        .title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if state.items.is_empty() {

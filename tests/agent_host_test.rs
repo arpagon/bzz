@@ -296,19 +296,26 @@ async fn the_real_host_is_installed_started_and_answers_once_across_kills_and_re
         "the agent's file is on its disk, not on the machine"
     );
 
-    // Killed in the middle of a turn: the turn ends with one reply.
+    // Killed in the middle of a turn: the turn ends with one reply. The
+    // host reports this turn's first tool call (by its own words: the turn
+    // before may still be listed a moment), and is then in the turn's
+    // sleep: the kill comes then, not after a fixed time that a loaded
+    // machine can stretch past the sleep.
     let cut = world
         .ask(
             &host,
-            r#"do: [["sleep", 4000], ["buzz_send", {"text": "answered after the host was killed", "final": true}]]"#,
+            r#"do: [["bash", {"command": "echo before the kill"}], ["sleep", 4000], ["buzz_send", {"text": "answered after the host was killed", "final": true}]]"#,
             None,
         )
         .await;
-    until("the turn to be running", WAIT, || {
-        (host.status()[0].turns == 1).then_some(())
+    until("the turn to be past its first tool", WAIT, || {
+        host.status()[0]
+            .activity
+            .as_deref()
+            .is_some_and(|activity| activity.contains("echo before the kill"))
+            .then_some(())
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(world.replies(&cut).is_empty());
     kill(first_pid);
     let row = world.settled(&host, &cut).await;
@@ -616,9 +623,14 @@ async fn the_real_host_checkpoints_its_files_when_it_has_been_idle() {
         ],
         "a host that runs keeps its newest writes beside its files"
     );
-    // Not before the time is up.
+    // Not before the time is up: looked at half way, and counted from when
+    // the test looked, which a loaded machine can make later than planned.
     tokio::time::sleep(IDLE / 2).await;
-    assert!(!write_ahead_files(&folder).is_empty(), "checkpointed early");
+    let looked = answered.elapsed();
+    assert!(
+        !write_ahead_files(&folder).is_empty() || looked + Duration::from_secs(1) >= IDLE,
+        "checkpointed early, {looked:?} after the answer"
+    );
     until("the idle host to checkpoint its files", WAIT, || {
         write_ahead_files(&folder).is_empty().then_some(())
     })
@@ -671,11 +683,21 @@ async fn the_real_host_checkpoints_its_files_when_it_has_been_idle() {
         (host.status()[0].turns == 1).then_some(())
     })
     .await;
-    tokio::time::sleep(IDLE + IDLE / 2).await;
-    assert_eq!(host.status()[0].turns, 1, "the turn is still running");
+    // Looked at for as long as the turn runs, rather than once after a
+    // fixed time that a loaded machine can stretch past the turn's end.
+    let running_since = tokio::time::Instant::now();
+    while host.status()[0].turns == 1 {
+        assert!(
+            !write_ahead_files(&folder).is_empty(),
+            "checkpointed while a turn ran, {:?} into it",
+            running_since.elapsed()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert!(
-        !write_ahead_files(&folder).is_empty(),
-        "nothing is checkpointed while a turn runs"
+        running_since.elapsed() + Duration::from_secs(1) >= IDLE + IDLE / 2,
+        "the turn ran {:?}, not past the idle time",
+        running_since.elapsed()
     );
     world.settled(&host, &long).await;
     assert_eq!(world.replies(&long), ["after a long turn"]);

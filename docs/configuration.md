@@ -118,7 +118,13 @@ enables mouse capture only on an interactive, non-`dumb` terminal; set it to
 `"on"` to force it or `"off"` to retain terminal text selection and avoid
 mouse-capture sequences. `ui.message_width` caps only the rendered text
 measure in a wider conversation pane; it never truncates, stores, or changes
-message content. The workspace uses labelled local community rows,
+message content. `ui.sidebar_width` (18–60) and `ui.thread_width` (30–80) are
+the widths the sidebar and the thread take when there is room; with the mouse
+on, dragging the border of either pane sets and saves them. While anything
+is beside it the conversation keeps 38 columns: a pane that does not fit is
+hidden, not closed, and the conversation's frame names it with the key that
+shows it (`hidden · channels 2`). With one community its rail shows from 100
+columns. `z` shows the conversation alone, and `z` again restores. The workspace uses labelled local community rows,
 deterministic textual author markers, a compact selected-message gutter,
 optional profile photographs, a segmented status bar, and a visible writing
 dock. `ui.profile_avatars = "trusted"` (the default) may fetch
@@ -178,8 +184,10 @@ limited to documented composer editing/completion actions; they cannot become
 workspace shortcuts. Overlay bindings likewise do not inherit background
 workspace actions.
 
-Defaults use `Space` as leader. Its popup shows valid continuations and expires
-after 750 ms without triggering a partial action. `?` opens generated help for
+Defaults use `Space` as leader. Its popup shows every valid continuation
+300 ms after the key and stays until the next key; a sequence whose popup
+cannot show (another overlay holds the screen) still ends after 750 ms
+without triggering a partial action. `?` opens generated help for
 the effective workspace keymap, including scoped overrides, disabled bindings,
 and contextual availability. `Alt-h`/`Alt-l` resize the focused channel or
 context pane in bounded two-cell steps; the width is saved locally. `q` closes
@@ -200,6 +208,10 @@ actions include `select-next`, `select-previous`, `jump-top`, `jump-bottom`,
 `delete-to-start`, `delete-to-end`, `clear-composer`, `paste-clipboard`,
 `attach-file`, `attach-path`, `remove-last-attachment`, `retry-attachments`,
 `move-word-left`, `move-word-right`, `move-line-start`, and `move-line-end`.
+`open-palette` opens the palette (`Ctrl-K` and `Space k` by default; in the
+composer `Ctrl-K` stays `delete-to-end`). A terminal that keeps `Ctrl-K` for
+itself, such as VS Code's with chords on, still reaches it through `Space k`,
+or bind it elsewhere: `keys = ["ctrl-g"]`, `action = "open-palette"`.
 Use `?` inside the relevant route as
 the authoritative effective binding list; it includes local disabled bindings
 and actions unavailable for the current selection.
@@ -260,6 +272,35 @@ Cache/concurrency settings are validated against hard safety ceilings. See
   speaker names for huddles; unset means the system defaults. Set them with
   `:huddle input <name>` / `:huddle output <name>`; `:huddle devices` lists
   them. Device names are stored here and nowhere else.
+- **`[ui] huddle_style`** (default `lanes`): the huddle's zoomed view,
+  `lanes` (one lane per person), `bars` (the call's spectrum) or `orb` (a
+  sphere in the speaker's colour). `z` in the huddle panel zooms; `v` or
+  `:huddle style` opens a picker that previews each style live, and Enter
+  saves it here; `:huddle style <name>` saves it directly. Written to the
+  file only when it is not `lanes` (since v0.17.0).
+- **`[ui] motion`** (v0.17.0, default `full`): how much the interface moves,
+  one setting for every animation. `full`: a toast slides in and out, an
+  arriving message is tinted for a moment, a rising unread count flashes, the
+  focus colour runs round the pane that takes the focus, an overlay unfolds,
+  placeholder rows shimmer while a channel's history loads, and the huddle's
+  visualizer runs at its full rate. `calm` keeps what informs (the toast, the
+  tint, the flash; the huddle's meter at five frames a second) and drops the
+  rest. `off` shows the end of every one at once (the huddle's meter is
+  still, and changes only when who speaks changes). The environment variable
+  `BZZ_NO_MOTION` (any value but empty or `0`) turns motion off whatever this
+  says. Nothing moves, and nothing is drawn, while nothing changes. Written
+  to the file only when it is not `full`.
+- **Colour** (v0.17.0) follows the terminal, decided once at start:
+  `NO_COLOR` set to anything non-empty draws no colour at all (bold, dim,
+  reverse and underline stay; the focused pane gets a heavy frame and a
+  reversed title); otherwise `COLORTERM=truecolor` or `24bit` gives true
+  colour; `TERM=dumb` none; a `TERM` with `direct` or `truecolor` true
+  colour; one with `256` (`tmux-256color`, `xterm-256color`) the 256-colour
+  palette, every theme colour taken to the nearest; any other `TERM` 16
+  colours; no `TERM` at all keeps the theme's colours. Inside tmux, set
+  `COLORTERM=truecolor` (and tmux's `RGB` feature) for true colour.
+- **Settings v0.16.0 does not know.** v0.16.0 refuses a `config.toml` with
+  `motion` or `huddle_style`: to go back to it, delete those lines.
 - **`[[hosted_agents]]`**: written by `bzz broker create`; do not hand-edit.
   Change an agent's allowed actions with `bzz broker allow` or in `:broker`
   (`j`/`k` select, `1`–`6` toggle an action, `Space` pause that agent).

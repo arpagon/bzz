@@ -13,7 +13,7 @@ use ratatui::{
     Frame,
     layout::{Alignment, Rect},
     text::Line,
-    widgets::{Block, Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph, Wrap},
 };
 
 use crate::ui::{
@@ -115,12 +115,15 @@ pub enum PasteTarget {
     App,
     /// Nowhere: another overlay is open, or nothing takes text.
     Dropped,
+    /// The field of the join form being typed (v0.17).
+    Join,
 }
 
 pub fn paste_target(context: PasteContext) -> PasteTarget {
     match context.overlay {
         Some(Overlay::AgentNew) => PasteTarget::AgentForm,
         Some(Overlay::Approval | Overlay::AppApproval) => PasteTarget::ApprovalReason,
+        Some(Overlay::Join) => PasteTarget::Join,
         Some(_) => PasteTarget::Dropped,
         None if context.composer_open => PasteTarget::Composer,
         None if context.app_focused => PasteTarget::App,
@@ -156,24 +159,32 @@ pub struct PaneView<'a> {
 pub fn render_frame(frame: &mut Frame<'_>, area: Rect, view: PaneView<'_>, theme: &Theme) -> Rect {
     frame.render_widget(Clear, area);
     let width = usize::from(area.width.saturating_sub(4));
-    let title = match (view.focused, view.zoomed) {
-        (true, true) => format!(" {} · zoomed · {LEAVE_KEY_LABEL} leave ", view.title),
-        (true, false) => format!(" {} · {LEAVE_KEY_LABEL} leave ", view.title),
-        (false, _) => format!(" {} · 5 focus ", view.title),
+    // The title names the app; how to leave or reach it is a hint at the
+    // foot of the frame.
+    let hint = if view.focused {
+        (LEAVE_KEY_LABEL, "leave")
+    } else {
+        ("5", "focus")
     };
-    let mut block = Block::bordered()
-        .border_type(theme.border_type(BorderSurface::Pane))
-        .border_style(theme.style(if view.focused {
-            HighlightGroup::FocusedPaneBorder
-        } else {
-            HighlightGroup::PaneBorder
-        }))
-        .title_style(theme.style(HighlightGroup::PaneTitle))
-        .title(truncate_cells(&title, width));
+    let hint = crate::ui::frame::hints(theme, &[hint]).right_aligned();
+    let hint_width = hint.width();
+    let mut block = crate::ui::frame::block(
+        theme,
+        BorderSurface::Pane,
+        &truncate_cells(view.title, width),
+        view.focused,
+    )
+    .title_bottom(hint);
+    if view.zoomed {
+        block = block.title(crate::ui::frame::info(theme, "zoomed"));
+    }
     if let Some(notice) = view.notice {
         block = block.title_bottom(
             Line::styled(
-                truncate_cells(&format!(" {notice} "), width),
+                truncate_cells(
+                    &format!(" {notice} "),
+                    width.saturating_sub(hint_width.saturating_add(1)),
+                ),
                 theme.style(HighlightGroup::Warning),
             )
             .alignment(Alignment::Left),
@@ -424,8 +435,10 @@ mod tests {
         let (text, inner) = drawn(view, 42, 20);
         let first = text.lines().next().unwrap();
         let last = text.lines().last().unwrap();
-        assert!(first.contains("Board · Ctrl-c leave"), "{first}");
+        assert!(first.contains("┌ Board ─"), "{first}");
+        assert!(!first.contains("Ctrl-c"), "{first}");
         assert!(last.contains("Too many changes"), "{last}");
+        assert!(last.contains("Ctrl-c leave ┘"), "{last}");
         assert_eq!(inner, Rect::new(1, 1, 40, 18));
         let (text, _) = drawn(
             PaneView {
@@ -436,7 +449,8 @@ mod tests {
             42,
             20,
         );
-        assert!(text.lines().next().unwrap().contains("Board · 5 focus"));
+        assert!(text.lines().next().unwrap().contains("┌ Board ─"));
+        assert!(text.lines().last().unwrap().contains("5 focus ┘"));
         assert!(!text.contains("Ctrl-c"));
     }
 

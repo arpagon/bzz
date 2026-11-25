@@ -244,7 +244,7 @@ pub fn render_with_width(input: &str, theme: &Theme, content_width: u16) -> Text
                     &mut lines,
                     &sanitize::text(&value),
                     theme.apply(
-                        HighlightGroup::MarkdownCode,
+                        HighlightGroup::MarkdownInlineCode,
                         theme.apply(HighlightGroup::MessageBody, markup),
                     ),
                 )

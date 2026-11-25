@@ -12,7 +12,9 @@ public/
   index.html      one-pager (hero, features, security, keys, install)
   styles.css      theme tokens mirroring src/ui/theme/builtin.rs palettes
   app.js          theme switcher, install tabs, copy button
-  _redirects      /install.sh + /install.ps1 -> latest GitHub release installer
+  install.sh      getbzz.dev/install.sh: checks this machine, then runs the release's installer
+  _headers        install.sh as text/plain, so a browser shows it
+  _redirects      /install.ps1 -> latest GitHub release installer
   assets/         logo.svg, favicon.svg, logo-terminal.txt, mdi-attribution.txt, og.png
 ```
 
@@ -33,6 +35,34 @@ Pictogrammers Material Design Icons 7.4.47 under Apache-2.0; attribution is
 recorded in `public/assets/mdi-attribution.txt` and the license text is at
 [`LICENSE-APACHE`](../LICENSE-APACHE). Usage rules live in the short
 [`docs/brand` manual](../docs/brand/README.md).
+
+## The installer
+
+`public/install.sh` is what `curl -fsSL https://getbzz.dev/install.sh | sh`
+runs. It is POSIX `sh` (keep it `shellcheck` clean). On Linux it checks, in
+this order, the architecture, musl, the glibc version (2.34, as
+`[dist.min-glibc-version]` in `dist-workspace.toml`), and that `tar` and
+`xz` are there to unpack the archive; each refusal is one line that says
+what is the matter and what to do. Then it downloads the latest release's
+`bzz-installer.sh` (made by cargo-dist, with the archive's checksums) and
+runs it with the same arguments. macOS and Windows shells go straight to
+that installer. `BZZ_CHECK_ONLY=1` stops after the checks; `BZZ_VERSION`
+picks a release.
+
+The variable `BZZ_SOUND` at its top says what the Linux binary of the
+release it serves needs to make sound:
+
+- `server` (the default, from v0.17.0): bzz speaks to PipeWire or
+  PulseAudio itself and starts without any sound library. The installer
+  adds one note if it finds neither.
+- `alsa` (v0.16.0 and earlier, or a release whose binary links
+  `libasound.so.2` again): bzz does not start without ALSA's library. The
+  installer names the package for the distribution (`libasound2t64` on
+  Ubuntu 24.04 and Debian 13, `libasound2` before them, `alsa-lib` on
+  Fedora and RHEL).
+
+Deploy the site with the value that matches the latest release:
+`readelf -d bzz | grep libasound` on its Linux archive says which.
 
 ## Agent harnesses
 
@@ -71,6 +101,43 @@ badge on each card) with the same card still selected. Two cuts inside the
 one take: the 135 s the model took, and the reading of the overlay. Its
 project is `runs/experiments/promo-video/film-v016/heavy/loop-final`.
 Encodes: H.264 CRF 28; VP9 CRF 36; no audio.
+
+## New in v0.17.0
+
+The "new in v0.17.0" section (`#new`) may say only what
+[`docs/release-v0.17.0.md`](../docs/release-v0.17.0.md) says and proves. Its
+cards do not say that the join form pairs with Buzz desktop or signs in
+through a browser (built, not run against the real thing), give no time for
+the demo's start (the measures are of one machine), say "shifted keys" on
+Windows and not "every key" (nobody has used it at Windows Terminal), and say
+that huddle audio needs PipeWire or PulseAudio running. The v0.16.0 section
+stays below it as `#new-016`.
+
+Its three captures are all of `bzz demo`, which shows generated data only:
+the people, their messages and the huddle's voices, offline, with no account.
+They are the `bzz 0.17.0` Linux release build with the `bzz` theme and motion
+at its default, recorded as terminal tapes with the promo kit's
+`record-tape.py` and drawn by its player (xterm.js) in HyperFrames, as the
+site's other captures are: bzz's real output, not a screenshot of a graphics
+terminal. Each exists at 120×32 cells (1920×1080) and, for screens of 640 px
+or less, at 60×30 cells (1080×1170, `*-narrow.*`), where bzz shows the
+conversation alone.
+
+- `demo-v017.png`: the first screen, four seconds after the start, with
+  nothing typed and the screen at rest.
+- `palette-v017.png`: `Ctrl+K`, `thr`, five times down to a row that cannot
+  run, whose reason is at the palette's foot.
+- `huddle-styles-v017.webm`, `.mp4` and `poster-huddle-styles-v017.png`: a
+  13.8 s silent loop, 30 fps, one take trimmed at both ends: in `#infra`,
+  `:huddle` (the panel, which says the voices are generated), `z`, `v`, `j`
+  (bars), `j` (the orb), `Esc`, `z`. Encodes: H.264 CRF 28; VP9 CRF 36.
+
+Before they were placed, the tapes' bytes, the text of every distinct screen
+and an OCR of every image and of the loop at two frames a second were
+searched for paths, addresses and names of the machine and its owner: none.
+Their project is `runs/experiments/bzz/v017-site-captures` (`record.sh`,
+`render.sh`, `scan.sh`); remake them with it if a later build changes these
+screens.
 
 ## Demo media
 

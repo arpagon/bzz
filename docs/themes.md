@@ -172,13 +172,21 @@ Panels and navigation:
 - `ModalTitle`, `ModalBorder`;
 - `CommunityRail`, `CommunitySelected`;
 - `Sidebar`, `SidebarText`, `SidebarMuted`, `ChannelUnread`;
-- `SelectedRow`, `SelectionMarker`, `UnreadNotice`, `Placeholder`.
+- `SelectedRow`, `SelectionMarker`, `UnreadNotice`, `Placeholder`;
+- `FocusedPaneTitle`: the title of the focused pane, drawn as a label;
+- `UnreadCount`: the count of unread messages beside a channel;
+- `StateBanner`: the row over the conversation that says what state it is
+  in (offline, an error) and what to do next.
 
 Conversation and composer:
 
 - `MessageAuthor`, `MessageAvatar`, `MessageTimestamp`,
   `MessageDateSeparator`, `MessageSelected`, `MessageBody`, `MessageDeleted`;
+- `NewMessageMarker`: the `── new ──` line before the first unread
+  message;
 - `Reaction`, `SelfReaction`;
+- `MediaBorder`, `MediaMetadata`, `MediaLoading`, `MediaWarning`,
+  `MediaError`;
 - `Composer`, `ComposerHint`, `ComposerDisabled`, `ComposerTitle`,
   `ComposerBorder`, `ActiveComposerBorder`.
 
@@ -186,16 +194,31 @@ Status and Markdown:
 
 - `StatusBar`, `StatusMode`, `StatusModeInsert`, `StatusModeCommand`,
   `StatusAgent`, `StatusConnection`, `StatusMedia`;
-- `MarkdownLink`, `MarkdownCode`, `MarkdownMarker`.
+- `StatusChannel` (the conversation in view), `StatusOnline` and
+  `StatusOffline` (the dot before the connection);
+- `HintKey`, `HintText`: a key and its words in the hints of frames and
+  the status line;
+- `MarkdownLink`, `MarkdownMarker`;
+- `MarkdownCode`: a block of code;
+- `MarkdownInlineCode`: code inside a sentence, such as a key or a
+  command to type. Since v0.17.0 it takes the theme's accent; before, it was
+  drawn as `MarkdownCode` is, muted and dim. A `theme.toml` that sets
+  `MarkdownCode` and not `MarkdownInlineCode` keeps both alike.
 
 Component groups link to semantic parents. For example,
 `MessageAuthor -> Info`, `MessageAvatar -> MessageAuthor`,
 `MessageDateSeparator -> Muted`, `MessageSelected -> SelectionBorder`,
 `ComposerHint -> Muted`,
 `ComposerDisabled -> Warning`, `Pending -> Warning`,
-`FocusedPaneBorder -> FocusBorder`, and `MessageDeleted -> Muted`. Changing a
-parent updates children that remain linked; overriding a child changes only
-that component.
+`FocusedPaneBorder -> FocusBorder`, and `MessageDeleted -> Muted`. Since
+v0.17.0 the frames are quiet: `PaneBorder -> Muted` and `PaneTitle -> Muted`,
+while `FocusedPaneTitle -> FocusBorder` (reversed and bold) marks the focused
+pane. The other groups of v0.17.0 link too: `HintKey -> Info` (bold),
+`HintText -> Muted`, `StatusChannel -> Muted`, `StatusOnline -> Success`,
+`StatusOffline -> Warning`, `NewMessageMarker -> Warning` and
+`UnreadCount -> Warning` (bold); `StateBanner` has colours of its own, black
+on yellow. Changing a parent updates children that remain linked; overriding
+a child changes only that component.
 
 Unknown highlight groups produce a warning and are ignored. Theme files are
 bzz-owned presentation configuration; they do not import another application's

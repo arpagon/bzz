@@ -117,6 +117,7 @@ fn timeline_and_sidebar_render_deterministically_without_control_bytes() {
                     ..ViewportState::default()
                 },
                 &HashSet::from([channel]),
+                &HashMap::new(),
                 ChannelSort::Smart,
                 false,
                 &Default::default(),

@@ -168,6 +168,13 @@ the newest `data.list` and ignore a reply with another id.
   A request for a type that is not in `app.types` is an error, pushes of
   other types never arrive, and only a record the app has received in a
   reply or a push can be updated or deleted.
+- **The app's own writes to one record do not conflict.** bzz sends them
+  one after the other: a `data.update` or `data.delete` made before the
+  reply to the app's previous write of the same record waits for that
+  reply, and if it names a `rev` that one of the app's own writes
+  replaced, it is sent on the revision the last of them made. Every
+  request still gets its reply, in order. Another client's revision is
+  never put in its place: a change by someone else is still a `conflict`.
 
 | Code | Means |
 |---|---|
@@ -241,6 +248,16 @@ object; an empty table inside content is a list. A nil field is left out;
 `data.null`, so `data.null` belongs only in content that is sent. A whole
 number arrives as a Lua integer, any other as a float. Text must be valid
 UTF-8: cut a string with `ui.truncate` or `utf8.offset`, not by bytes.
+
+**An update keeps what Lua cannot show.** A script sees exactly the above,
+also of records other clients wrote. When it sends `data.update`, bzz
+writes back, as they were in the revision named by `rev`, the values the
+script could not tell apart: a `null` it left out (it saw nil), an empty
+table where the record held `{}`, a list whose `null` places it saw as
+holes, and a number it left equal to the one it read (a whole number past
+what a Lua integer holds arrives as a float). What the script changed is
+written as it wrote it. So a field another client set to `null` stays
+`null`; to make it something else, set it.
 
 **The title.** Other clients list a record by its title. bzz takes
 `content.title` when it is a string with something to show: control

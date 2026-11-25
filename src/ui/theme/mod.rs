@@ -16,6 +16,7 @@ use ratatui::{
 use crate::{
     error::{Error, Result},
     paths::{Paths, set_private_permissions},
+    ui::frame::ColorMode,
 };
 
 pub const DEFAULT_THEME_ID: &str = "bzz";
@@ -110,6 +111,16 @@ define_groups! {
     MarkdownCode => "MarkdownCode",
     MarkdownMarker => "MarkdownMarker",
     Placeholder => "Placeholder",
+    FocusedPaneTitle => "FocusedPaneTitle",
+    HintKey => "HintKey",
+    HintText => "HintText",
+    StatusChannel => "StatusChannel",
+    StatusOnline => "StatusOnline",
+    StatusOffline => "StatusOffline",
+    StateBanner => "StateBanner",
+    NewMessageMarker => "NewMessageMarker",
+    UnreadCount => "UnreadCount",
+    MarkdownInlineCode => "MarkdownInlineCode",
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,9 +160,26 @@ pub struct Theme {
     name: String,
     highlights: [ResolvedHighlight; HighlightGroup::COUNT],
     borders: [BorderType; BorderSurface::COUNT],
+    color_mode: ColorMode,
 }
 
 impl Theme {
+    /// How much colour the terminal shows; the frame function draws focus
+    /// without colour when there is none.
+    pub const fn color_mode(&self) -> ColorMode {
+        self.color_mode
+    }
+
+    pub const fn set_color_mode(&mut self, mode: ColorMode) {
+        self.color_mode = mode;
+    }
+
+    #[must_use]
+    pub const fn with_color_mode(mut self, mode: ColorMode) -> Self {
+        self.color_mode = mode;
+        self
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -204,6 +232,7 @@ impl Theme {
             name: palette.name.to_owned(),
             highlights: resolve_definitions(&definitions, warnings),
             borders: resolve_borders(&options.borders),
+            color_mode: ColorMode::True,
         }
     }
 }
@@ -436,7 +465,7 @@ fn default_definitions() -> [HighlightDefinition; HighlightGroup::COUNT] {
     set(H::Muted, None, Style::default().fg(Color::DarkGray));
     set(H::Title, Some(H::Strong), Style::default());
     set(H::Border, None, Style::default());
-    set(H::FocusBorder, None, Style::default());
+    set(H::FocusBorder, None, Style::default().fg(Color::Cyan));
     set(
         H::Selection,
         None,
@@ -457,8 +486,10 @@ fn default_definitions() -> [HighlightDefinition; HighlightGroup::COUNT] {
     set(H::Info, None, Style::default().fg(Color::Cyan));
     set(H::Pending, Some(H::Warning), Style::default());
     set(H::Rejected, Some(H::Error), Style::default());
-    set(H::PaneTitle, Some(H::Title), Style::default());
-    set(H::PaneBorder, Some(H::Border), Style::default());
+    // Quiet frames: an unfocused pane's frame and title are muted; the
+    // focused one carries the primary colour (`FocusedPaneTitle`).
+    set(H::PaneTitle, Some(H::Muted), Style::default());
+    set(H::PaneBorder, Some(H::Muted), Style::default());
     set(H::FocusedPaneBorder, Some(H::FocusBorder), Style::default());
     set(H::ModalTitle, Some(H::Title), Style::default());
     set(H::ModalBorder, Some(H::FocusBorder), Style::default());
@@ -525,31 +556,27 @@ fn default_definitions() -> [HighlightDefinition; HighlightGroup::COUNT] {
     );
     set(H::ComposerDisabled, Some(H::Warning), Style::default());
     set(H::ComposerTitle, Some(H::Title), Style::default());
-    set(H::ComposerBorder, Some(H::Border), Style::default());
+    set(H::ComposerBorder, Some(H::PaneBorder), Style::default());
     set(
         H::ActiveComposerBorder,
         Some(H::FocusBorder),
         Style::default(),
     );
-    set(
-        H::StatusBar,
-        None,
-        Style::default().bg(Color::DarkGray).fg(Color::White),
-    );
+    set(H::StatusBar, None, Style::default());
     set(
         H::StatusMode,
         None,
-        Style::default().bg(Color::DarkGray).fg(Color::White),
+        Style::default().bg(Color::Cyan).fg(Color::Black),
     );
     set(
         H::StatusModeInsert,
         None,
-        Style::default().bg(Color::DarkGray).fg(Color::White),
+        Style::default().bg(Color::Yellow).fg(Color::Black),
     );
     set(
         H::StatusModeCommand,
         None,
-        Style::default().bg(Color::DarkGray).fg(Color::White),
+        Style::default().bg(Color::Yellow).fg(Color::Black),
     );
     set(
         H::StatusAgent,
@@ -581,6 +608,43 @@ fn default_definitions() -> [HighlightDefinition; HighlightGroup::COUNT] {
     );
     set(H::MarkdownMarker, Some(H::Muted), Style::default());
     set(H::Placeholder, Some(H::Muted), Style::default());
+    set(
+        H::FocusedPaneTitle,
+        Some(H::FocusBorder),
+        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+    );
+    set(
+        H::HintKey,
+        Some(H::Info),
+        Style::default().add_modifier(Modifier::BOLD),
+    );
+    set(H::HintText, Some(H::Muted), Style::default());
+    set(H::StatusChannel, Some(H::Muted), Style::default());
+    set(H::StatusOnline, Some(H::Success), Style::default());
+    set(H::StatusOffline, Some(H::Warning), Style::default());
+    set(
+        H::StateBanner,
+        None,
+        Style::default()
+            .bg(Color::Yellow)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+    );
+    set(H::NewMessageMarker, Some(H::Warning), Style::default());
+    set(
+        H::UnreadCount,
+        Some(H::Warning),
+        Style::default().add_modifier(Modifier::BOLD),
+    );
+    // Code inside a sentence is often the very thing to type or press (the
+    // demo's welcome names its keys this way), so it takes the theme's
+    // accent. Until v0.17.0 it was drawn as a code block is, muted and dim,
+    // and was the hardest text of a message to read.
+    set(
+        H::MarkdownInlineCode,
+        None,
+        Style::default().fg(Color::Yellow),
+    );
 
     definitions
 }
@@ -602,6 +666,7 @@ fn apply_palette(
         value_or(palette.selection_background, palette.primary),
     );
     set_foreground(definitions, H::SelectionBorder, palette.accent);
+    set_foreground(definitions, H::MarkdownInlineCode, palette.accent);
     set_foreground(definitions, H::Error, palette.error);
     set_foreground(definitions, H::Warning, palette.warning);
     set_foreground(definitions, H::Success, palette.accent);
@@ -673,6 +738,12 @@ fn apply_palette(
         palette.primary,
     );
     set_colors(definitions, H::StatusMedia, palette.text, palette.surface);
+    set_colors(
+        definitions,
+        H::StateBanner,
+        palette.background,
+        palette.warning,
+    );
 }
 
 fn value_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
@@ -708,6 +779,22 @@ fn apply_overrides(
     options: &ThemeOptions,
     warnings: &mut Vec<String>,
 ) {
+    // A theme written before v0.17.0 styled code in a sentence through
+    // `MarkdownCode`, the only group there was. It keeps what it chose:
+    // where a theme sets `MarkdownCode` and not the new group, the new
+    // group follows the old one.
+    if options
+        .highlights
+        .contains_key(&HighlightGroup::MarkdownCode)
+        && !options
+            .highlights
+            .contains_key(&HighlightGroup::MarkdownInlineCode)
+    {
+        definitions[HighlightGroup::MarkdownInlineCode as usize] = HighlightDefinition {
+            link: Some(HighlightGroup::MarkdownCode),
+            ..HighlightDefinition::default()
+        };
+    }
     for (&group, options) in &options.highlights {
         let definition = &mut definitions[group as usize];
         if let Some(link) = options.link {
@@ -1026,7 +1113,7 @@ mod tests {
     }
 
     #[test]
-    fn bzz_default_keeps_plain_borders_and_original_focus_color() {
+    fn bzz_default_keeps_plain_borders_with_quiet_frames_and_a_primary_focus() {
         let theme = Theme::default();
         for surface in [
             BorderSurface::Pane,
@@ -1040,8 +1127,29 @@ mod tests {
                 ratatui::widgets::BorderType::Plain
             );
         }
-        assert_eq!(theme.style(HighlightGroup::FocusedPaneBorder).fg, None);
         assert_eq!(
+            theme.style(HighlightGroup::FocusedPaneBorder).fg,
+            Some(Color::Cyan)
+        );
+        assert_eq!(
+            theme.style(HighlightGroup::PaneBorder).fg,
+            Some(Color::DarkGray)
+        );
+        assert_eq!(
+            theme.style(HighlightGroup::PaneTitle).fg,
+            Some(Color::DarkGray)
+        );
+        assert!(
+            theme
+                .style(HighlightGroup::FocusedPaneTitle)
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
+        assert_eq!(
+            theme.style(HighlightGroup::StatusMode).bg,
+            Some(Color::Cyan)
+        );
+        assert_ne!(
             theme.style(HighlightGroup::StatusBar),
             theme.style(HighlightGroup::StatusMode)
         );
@@ -1089,6 +1197,55 @@ bold = true
                 .style(HighlightGroup::MessageSelected)
                 .add_modifier
                 .contains(Modifier::BOLD)
+        );
+    }
+
+    /// Code inside a sentence takes the theme's accent and is not dimmed; a
+    /// block of code stays as it was. A theme written for v0.16.0, which
+    /// had one group for both, keeps both alike.
+    #[test]
+    fn code_in_a_sentence_takes_the_accent_and_an_older_theme_keeps_its_own() {
+        let body = Style::default().fg(Color::White);
+        let theme = Theme::default();
+        let inline = theme.apply(HighlightGroup::MarkdownInlineCode, body);
+        assert_eq!(inline.fg, Some(Color::Yellow));
+        assert!(!inline.add_modifier.contains(Modifier::DIM));
+        let block = theme.style(HighlightGroup::MarkdownCode);
+        assert_eq!(block.fg, Some(Color::DarkGray));
+        assert!(block.add_modifier.contains(Modifier::DIM));
+
+        for palette in super::builtin::PALETTES {
+            let theme =
+                Theme::from_palette(palette, &super::ThemeOptions::default(), &mut Vec::new());
+            assert_eq!(
+                theme.style(HighlightGroup::MarkdownInlineCode).fg,
+                theme.style(HighlightGroup::SelectionBorder).fg,
+                "{}: the accent",
+                palette.id
+            );
+        }
+
+        let (options, _) =
+            parse("[highlight.MarkdownCode]\nforeground = \"#112233\"\ndim = false\n").unwrap();
+        let palette = super::builtin::lookup("bzz").unwrap();
+        let theme = Theme::from_palette(palette, &options, &mut Vec::new());
+        assert_eq!(
+            theme.style(HighlightGroup::MarkdownInlineCode),
+            theme.style(HighlightGroup::MarkdownCode)
+        );
+        assert_eq!(
+            theme.style(HighlightGroup::MarkdownInlineCode).fg,
+            Some(Color::Rgb(0x11, 0x22, 0x33))
+        );
+
+        let (options, _) = parse(
+            "[highlight.MarkdownCode]\nforeground = \"#112233\"\n[highlight.MarkdownInlineCode]\nforeground = \"#445566\"\n",
+        )
+        .unwrap();
+        let theme = Theme::from_palette(palette, &options, &mut Vec::new());
+        assert_eq!(
+            theme.style(HighlightGroup::MarkdownInlineCode).fg,
+            Some(Color::Rgb(0x44, 0x55, 0x66))
         );
     }
 
@@ -1194,5 +1351,38 @@ foreground = "yellow"
                 0o600
             );
         }
+    }
+
+    /// `docs/themes.md` names every highlight group a `theme.toml` can set,
+    /// and no group that does not exist: a group added to the code and not
+    /// to the document fails here.
+    #[test]
+    fn the_themes_document_names_every_group() {
+        let document = include_str!("../../../docs/themes.md");
+        let section = document
+            .split_once("### Semantic groups")
+            .and_then(|(_, rest)| rest.split_once("### Border shapes"))
+            .map(|(section, _)| section)
+            .expect("the document has its section of groups");
+        let named = section
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|word| {
+                word.chars().next().is_some_and(char::is_uppercase)
+                    && word.chars().all(char::is_alphanumeric)
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let missing = HighlightGroup::ALL
+            .iter()
+            .map(|group| group.name())
+            .filter(|name| !named.contains(name))
+            .collect::<Vec<_>>();
+        assert!(missing.is_empty(), "docs/themes.md lacks {missing:?}");
+        let unknown = named
+            .iter()
+            .filter(|name| HighlightGroup::from_name(name).is_none())
+            .collect::<Vec<_>>();
+        assert!(unknown.is_empty(), "docs/themes.md names {unknown:?}");
     }
 }

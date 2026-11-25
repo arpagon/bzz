@@ -1,0 +1,3 @@
+ NORMAL  🎧  ▁▄▆▆▆▆▆▆▆▆▆▂ quiet · mic muted    ● online  Ctrl-K actions · ? keys
+--- styles ---
+0: 0-7 Black/Cyan/NONE 12-12 Reset/Reset/DIM 45-47 Green/Reset/NONE 56-61 Cyan/Reset/BOLD 62-72 DarkGray/Reset/NONE 73-73 Cyan/Reset/BOLD 74-78 DarkGray/Reset/NONE

@@ -1,4 +1,5 @@
 pub mod action;
+pub mod action_table;
 pub mod actions;
 pub mod agents;
 #[cfg(feature = "apps")]
@@ -12,15 +13,24 @@ pub mod composer;
 pub mod confirm;
 pub mod dm_picker;
 pub mod finder;
+pub mod first_screen;
+
+pub mod frame;
 pub mod help;
 pub mod hit_map;
 pub mod huddle;
+pub mod huddle_lanes;
+pub mod huddle_mic;
+pub mod huddle_zoom;
 pub mod inbox;
 pub mod input;
+pub mod join;
 pub mod keymap;
 pub mod layout;
 pub mod local_agents;
 pub mod mention_picker;
+pub mod motion;
+pub mod palette;
 pub mod profile;
 pub mod reaction_picker;
 pub mod redraw_gate;
@@ -34,5 +44,6 @@ pub mod theme;
 pub mod theme_picker;
 pub mod thread;
 pub mod timeline;
+pub mod toast;
 pub mod typing;
 pub mod unread;

@@ -213,7 +213,20 @@ impl Channel {
     /// Whether browse and finder may list this channel. Unlisted open channels
     /// are named-only for non-members (NIP-CL); they stay reachable by link.
     pub fn listed_for_viewer(&self) -> bool {
-        self.is_member || !self.facts.unlisted
+        (self.is_member || !self.facts.unlisted) && !self.is_huddle_backing()
+    }
+
+    /// The private channel a huddle is carried in (`protocol::huddle::
+    /// backing_channel`: a private stream named `huddle-` and eight hex
+    /// digits). It holds the huddle's guidelines and reactions, not a
+    /// conversation, so it is not listed as a channel (v0.17 F7); `:system`
+    /// shows it in the sidebar.
+    pub fn is_huddle_backing(&self) -> bool {
+        matches!(self.visibility, Visibility::Private)
+            && matches!(self.kind, ChannelKind::Stream)
+            && self.name.strip_prefix("huddle-").is_some_and(|short| {
+                short.len() == 8 && short.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
     }
 }
 

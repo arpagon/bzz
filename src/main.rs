@@ -33,6 +33,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Try bzz offline with a generated team: no account, no key needed.
+    ///
+    /// Nothing of yours is read or saved. Leave with q, then y.
+    // First in `bzz help`: it is what the README asks a newcomer to run.
+    Demo,
     /// Manage signing identities without exposing secrets in arguments.
     Identity {
         #[command(subcommand)]
@@ -214,22 +219,42 @@ enum IdentityCommand {
 
 #[derive(Debug, Subcommand)]
 enum CommunityCommand {
+    /// Add a Buzz community: its relay's address and the identity you use
+    /// there. bzz asks the relay who it is first and keeps its key.
+    ///
+    /// The community's admin must have made your key a member: give them the
+    /// npub that `bzz identity new` printed (`bzz identity list` shows your
+    /// identities and their ids). Then run `bzz`.
+    ///
+    /// Example: bzz community add my-team wss://my-team.communities.buzz.xyz <identity-id>
     Add {
+        /// A name for the community, yours only: shown in bzz's rail.
         label: String,
+        /// The relay's address, `wss://…` (what the community's admin gave you).
         relay_url: String,
+        /// The id of the identity to use there, from `bzz identity list`.
         identity_id: Uuid,
+        /// Allow a `ws://localhost` relay without TLS, for a relay on this
+        /// machine (tests, development).
         #[arg(long)]
         allow_insecure_localhost: bool,
     },
+    /// List the communities: id, name and relay; `*` marks the default.
     List,
+    /// Remove a community from bzz (the relay keeps your messages).
     Remove {
+        /// The community's id, from `bzz community list`.
         id: Uuid,
+        /// Delete its local cache and its apps' files too.
         #[arg(long)]
         purge: bool,
+        /// Required: says that you mean it.
         #[arg(long)]
         yes: bool,
     },
+    /// The community bzz opens first.
     Default {
+        /// The community's id, from `bzz community list`.
         id: Uuid,
     },
 }
@@ -424,6 +449,8 @@ fn main() {
         Ok(work) => work.join(),
         Err(error) => Ok(Err(Error::io("main thread", error))),
     };
+    // The runtime has stopped: nothing writes into a demo's folder now.
+    bzz::demo::clean_up_after_exit();
     match outcome {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
@@ -456,6 +483,11 @@ async fn run() -> Result<()> {
     // environment and only passes tool calls to the bzz that started it.
     if matches!(cli.command, Some(Command::AgentTools)) {
         return bzz::agents::runtime::mcp::run_stdio().await;
+    }
+    // Before bzz looks for its own paths: the demo reads and writes none
+    // of them.
+    if matches!(cli.command, Some(Command::Demo)) {
+        return bzz::demo::run().await;
     }
     let paths = Paths::discover()?;
     paths.ensure()?;
@@ -516,7 +548,7 @@ async fn run() -> Result<()> {
             println!("cache:  {}", paths.cache_dir.display());
             Ok(())
         }
-        Some(Command::Completions { .. }) => Ok(()),
+        Some(Command::Completions { .. } | Command::Demo) => Ok(()),
         None => {
             // Validate keymap.toml before entering raw mode. The M1 router
             // consumes this typed map during its vertical-slice cutover; this
@@ -533,10 +565,15 @@ async fn run() -> Result<()> {
             store.sync_config(&config)?;
             store.set_diagnostics(diagnostics.clone());
             let handle = StoreHandle::spawn(store)?;
-            App::new_with_diagnostics(config, paths, handle, diagnostics)
+            let exit = App::new_with_diagnostics(config, paths, handle, diagnostics)
                 .await?
-                .run()
-                .await
+                .run_to_exit()
+                .await?;
+            match exit {
+                // `d` on the first screen: the demo, in this process.
+                bzz::app::Exit::OpenDemo => bzz::demo::run().await,
+                bzz::app::Exit::Quit => Ok(()),
+            }
         }
     }
 }
@@ -549,13 +586,11 @@ fn identity_command(command: IdentityCommand, paths: &Paths, config: &mut Config
             let passphrase = matches!(backend, KeyBackend::EncryptedFile)
                 .then(|| read_passphrase("New identity passphrase: ", true))
                 .transpose()?;
-            let identity = manager.create(config, label, backend, passphrase.as_ref())?;
-            if let Err(error) = config.save(paths) {
-                config.identities.retain(|entry| entry.id != identity.id);
-                let _ = manager.delete(&identity);
-                return Err(error);
-            }
-            println!("identity: {}\npubkey:   {}", identity.id, identity.pubkey);
+            let identity = manager
+                .create(config, label.clone(), backend, passphrase.as_ref())
+                .map_err(|error| without_keychain(error, backend, "new", &label))?;
+            manager.save_new(config, &identity)?;
+            print_identity(&identity);
             Ok(())
         }
         IdentityCommand::Import { label, backend } => {
@@ -567,13 +602,11 @@ fn identity_command(command: IdentityCommand, paths: &Paths, config: &mut Config
             let passphrase = matches!(backend, KeyBackend::EncryptedFile)
                 .then(|| read_passphrase("New identity passphrase: ", true))
                 .transpose()?;
-            let identity = manager.import(config, label, backend, input, passphrase.as_ref())?;
-            if let Err(error) = config.save(paths) {
-                config.identities.retain(|entry| entry.id != identity.id);
-                let _ = manager.delete(&identity);
-                return Err(error);
-            }
-            println!("identity: {}\npubkey:   {}", identity.id, identity.pubkey);
+            let identity = manager
+                .import(config, label.clone(), backend, input, passphrase.as_ref())
+                .map_err(|error| without_keychain(error, backend, "import", &label))?;
+            manager.save_new(config, &identity)?;
+            print_identity(&identity);
             Ok(())
         }
         IdentityCommand::Backup { id, output } => {
@@ -605,10 +638,19 @@ fn identity_command(command: IdentityCommand, paths: &Paths, config: &mut Config
             let storage_passphrase = matches!(backend, KeyBackend::EncryptedFile)
                 .then(|| read_passphrase("New identity passphrase: ", true))
                 .transpose()?;
-            let identity =
-                manager.import_keys(config, label, backend, keys, storage_passphrase.as_ref())?;
-            save_new_identity(&manager, config, paths, &identity)?;
-            println!("identity: {}\npubkey:   {}", identity.id, identity.pubkey);
+            let identity = manager
+                .import_keys(
+                    config,
+                    label.clone(),
+                    backend,
+                    keys,
+                    storage_passphrase.as_ref(),
+                )
+                .map_err(|error| {
+                    without_keychain(error, backend, "import-backup --input <file>", &label)
+                })?;
+            manager.save_new(config, &identity)?;
+            print_identity(&identity);
             Ok(())
         }
         IdentityCommand::Restore { id } => {
@@ -706,42 +748,39 @@ async fn community_command(
             identity_id,
             allow_insecure_localhost,
         } => {
+            // The join form's path (`bzz::join`): the address is read,
+            // its NIP-11 document probed, and only then is it written.
             let endpoint = bzz::config::validate_relay_url(&relay_url, allow_insecure_localhost)?;
-            let client = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .map_err(|error| Error::Network(error.to_string()))?;
-            let response = client
-                .get(endpoint.http_base)
-                .header("Accept", "application/nostr+json")
-                .send()
-                .await
-                .map_err(|error| Error::Network(format!("NIP-11 probe failed: {error}")))?;
-            if !response.status().is_success() {
-                return Err(Error::Network(format!(
-                    "NIP-11 probe returned {}",
-                    response.status()
-                )));
-            }
-            let info: serde_json::Value = response
-                .json()
-                .await
-                .map_err(|error| Error::Protocol(format!("invalid NIP-11 document: {error}")))?;
-            let relay_pubkey = bzz::protocol::http::relay_signing_pubkey(&info)
-                .ok_or_else(|| Error::Protocol("NIP-11 document has no relay signing key".into()))?
-                .to_owned();
-            for required in bzz::protocol::http::missing_required_nips(&info) {
+            find_identity(config, identity_id)?;
+            let relay = bzz::join::RelayAddress {
+                url: endpoint.websocket.to_string(),
+                insecure: allow_insecure_localhost,
+            };
+            let facts = bzz::join::probe(&relay).await.map_err(|failure| {
+                let (what, next) = failure.explain(&relay);
+                match failure {
+                    bzz::join::ProbeFailure::NoAnswer => {
+                        Error::Network(format!("NIP-11 probe failed: {what}; {next}"))
+                    }
+                    bzz::join::ProbeFailure::NoCommunity => Error::Access(what),
+                    bzz::join::ProbeFailure::NotBuzz => {
+                        Error::Protocol(format!("NIP-11 document has no relay signing key: {what}"))
+                    }
+                }
+            })?;
+            for required in &facts.missing_nips {
                 eprintln!(
                     "warning: relay does not advertise NIP-{required}; compatibility may be degraded"
                 );
             }
-            let id =
-                config.add_community(label, relay_url, identity_id, allow_insecure_localhost)?;
-            config.save(paths)?;
-            let mut store = Store::open(paths.database_file())?;
-            store.sync_config(config)?;
-            store.pin_relay_pubkey(id, &relay_pubkey)?;
+            let id = bzz::join::add_community(
+                paths,
+                config,
+                label,
+                &relay,
+                identity_id,
+                &facts.relay_pubkey,
+            )?;
             println!("community: {id}");
             Ok(())
         }
@@ -1843,63 +1882,10 @@ async fn pair_desktop(
     relay: String,
     instance: Option<String>,
 ) -> Result<()> {
-    use bzz::auth::provider;
-    if !provider::supported_platform() {
-        return Err(Error::Unsupported(
-            "Buzz Desktop pairing has no Windows transport in provider version 1".into(),
-        ));
-    }
-    let directory = provider::advertisement_dir()
-        .ok_or_else(|| Error::Config("home directory is unavailable".into()))?;
-    let advertised = provider::advertisements(&directory);
-    let (instance, url) = match instance {
-        Some(wanted) => advertised
-            .into_iter()
-            .find(|(name, _)| *name == wanted)
-            .ok_or_else(|| {
-                Error::Config(format!("Buzz Desktop instance {wanted} is not running"))
-            })?,
-        None => match advertised.len() {
-            0 => return Err(Error::Config("no running Buzz Desktop was found".into())),
-            1 => advertised.into_iter().next().expect("one advertisement"),
-            _ => {
-                return Err(Error::Config(
-                    "several Buzz Desktop instances are running; pass --instance".into(),
-                ));
-            }
-        },
-    };
+    // The join form pairs through the same two calls (`bzz::auth::pairing`).
+    let (instance, url) = bzz::auth::pairing::find_desktop(instance.as_deref())?;
     eprintln!("Approve the pairing request in Buzz Desktop ({instance})...");
-    let client = provider::ProviderClient::new(provider::Endpoint::Advertised(url), None)?;
-    let pairing = client.pair("bzz", &relay).await.map_err(Error::from)?;
-    if pairing.instance != instance {
-        return Err(Error::Auth(
-            "Buzz Desktop answered for another instance".into(),
-        ));
-    }
-    if config
-        .identities
-        .iter()
-        .any(|identity| identity.pubkey == pairing.pubkey)
-    {
-        return Err(Error::Config("that identity is already configured".into()));
-    }
-    let reference = bzz::auth::desktop_reference(&instance);
-    // Paired tokens live only in the OS keychain, never in a file.
-    bzz::auth::keychain::store(&reference, &pairing.token)?;
-    let identity = bzz::config::IdentityConfig {
-        id: Uuid::new_v4(),
-        label,
-        pubkey: pairing.pubkey.clone(),
-        backend: KeyBackend::BuzzDesktop,
-        key_ref: reference.clone(),
-    };
-    config.identities.push(identity.clone());
-    if let Err(error) = config.save(paths) {
-        config.identities.retain(|entry| entry.id != identity.id);
-        let _ = bzz::auth::keychain::delete(&reference);
-        return Err(error);
-    }
+    let identity = bzz::auth::pairing::pair(paths, config, label, &relay, &instance, url).await?;
     println!(
         "paired Buzz Desktop identity {}
 pubkey: {}",
@@ -1938,16 +1924,101 @@ fn identity_passphrase(
         .transpose()
 }
 
-fn save_new_identity(
-    manager: &IdentityManager<'_>,
-    config: &mut Config,
-    paths: &Paths,
-    identity: &bzz::config::IdentityConfig,
-) -> Result<()> {
-    if let Err(error) = config.save(paths) {
-        config.identities.retain(|entry| entry.id != identity.id);
-        let _ = manager.delete(identity);
-        return Err(error);
+/// What a new identity prints: its id, its key as Buzz shows it (the npub,
+/// what a community's admin asks for) and as hex (v0.17 A5).
+fn print_identity(identity: &bzz::config::IdentityConfig) {
+    use nostr::ToBech32 as _;
+    println!("identity: {}", identity.id);
+    if let Some(npub) = nostr::PublicKey::from_hex(&identity.pubkey)
+        .ok()
+        .and_then(|key| key.to_bech32().ok())
+    {
+        println!("npub:     {npub}");
     }
-    Ok(())
+    println!("pubkey:   {}", identity.pubkey);
+}
+
+/// A keychain that is not there says so, and names the other way, instead
+/// of "identity is locked" (v0.17 A5: a container, an SSH session, a
+/// desktop without a secret service).
+fn without_keychain(error: Error, backend: KeyBackend, verb: &str, label: &str) -> Error {
+    match (error, backend) {
+        (Error::Locked(_), KeyBackend::Keychain) => Error::Unsupported(format!(
+            "no keychain to keep the key in: the OS credential service is not available here \
+             (none on this machine, or it is locked). Keep the key in a file protected by a \
+             passphrase instead:\n  bzz identity {verb} --label {} --backend encrypted-file",
+            shell_word(label)
+        )),
+        (error, _) => error,
+    }
+}
+
+/// `label` as one word for a shell line: quoted when it needs to be.
+fn shell_word(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_.@".contains(character))
+    {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bzz::{config::KeyBackend, error::Error};
+    use clap::CommandFactory as _;
+
+    use super::{Cli, shell_word, without_keychain};
+
+    /// v0.17 A5: no keychain says so and names the other way; another
+    /// backend's error, or another error, is left as it was.
+    #[test]
+    fn a_missing_keychain_names_the_encrypted_file() {
+        let error = without_keychain(
+            Error::Locked("the OS credential service is unavailable; unlock it and retry".into()),
+            KeyBackend::Keychain,
+            "new",
+            "personal",
+        )
+        .to_string();
+        assert!(error.contains("no keychain"), "{error}");
+        assert!(!error.contains("identity is locked"), "{error}");
+        assert!(
+            error.contains("bzz identity new --label personal --backend encrypted-file"),
+            "{error}"
+        );
+        let other = without_keychain(
+            Error::Locked("x".into()),
+            KeyBackend::EncryptedFile,
+            "new",
+            "personal",
+        );
+        assert!(matches!(other, Error::Locked(_)));
+        assert_eq!(shell_word("my team"), "'my team'");
+        assert_eq!(shell_word("it's"), "'it'\\''s'");
+    }
+
+    /// v0.17 A5: `bzz community add --help` describes the command and each
+    /// argument.
+    #[test]
+    fn community_add_help_describes_itself() {
+        let mut command = Cli::command();
+        let add = command
+            .find_subcommand_mut("community")
+            .and_then(|community| community.find_subcommand_mut("add"))
+            .unwrap();
+        let help = add.render_long_help().to_string();
+        for wanted in [
+            "Add a Buzz community",
+            "npub",
+            "bzz identity list",
+            "wss://",
+            "allow-insecure-localhost",
+        ] {
+            assert!(help.contains(wanted), "{wanted}\n{help}");
+        }
+    }
 }

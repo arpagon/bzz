@@ -137,12 +137,13 @@ pub async fn run_stdio() -> Result<()> {
                 "`bzz agent-tools` is started by an agent's harness with {TARGET_VARIABLE} set; it is not run by hand"
             ))
         })?;
-    let client = reqwest::Client::builder()
-        // Loopback only: no proxy of the harness's environment is used.
-        .no_proxy()
-        .timeout(std::time::Duration::from_secs(90))
-        .build()
-        .map_err(|error| Error::Network(error.to_string()))?;
+    let client = crate::protocol::http::build_client(|| {
+        reqwest::Client::builder()
+            // Loopback only: no proxy of the harness's environment is used.
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(90))
+    })
+    .map_err(|error| Error::Network(error.to_string()))?;
     let (address, credential) = target;
     serve(
         tokio::io::stdin(),

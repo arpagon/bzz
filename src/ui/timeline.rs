@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 use ratatui_image::sliced::{SignedPosition, SlicedImage, SlicedProtocol};
 
@@ -42,6 +42,16 @@ pub struct TimelineState {
     /// Contextual author labels for this view (identity names v1), by key.
     /// Authors absent here keep their profile label.
     pub labels: HashMap<String, String>,
+    /// Keys shown at the foot of the frame while it has the focus.
+    pub hints: Vec<(&'static str, &'static str)>,
+    /// The message before which the `── new ──` line is drawn: the first
+    /// one that was unread when the channel was opened or arrived since.
+    pub new_marker: Option<String>,
+    /// What to do next, said under "No messages … yet" in an empty view.
+    pub empty_hint: Option<String>,
+    /// A one-line state over the conversation (offline, an error) with what
+    /// to do next.
+    pub banner: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -190,6 +200,8 @@ const AVATAR_WIDTH: u16 = 4;
 /// Body text shares this alignment whether a photograph is ready or the
 /// textual author marker is the fallback.
 const MESSAGE_TEXT_INDENT: u16 = 6;
+/// Where a system notice starts: past the selection gutter, as before.
+const SYSTEM_LINE_INDENT: u16 = 3;
 
 enum TimelineRow {
     Text(Line<'static>),
@@ -548,25 +560,46 @@ fn render_internal(
     mut hits: Option<&mut Vec<MessageHit>>,
     message_width: Option<u16>,
 ) {
-    let border_group = if focused {
-        HighlightGroup::FocusedPaneBorder
-    } else {
-        HighlightGroup::PaneBorder
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(theme.border_type(BorderSurface::Pane))
-        .border_style(theme.style(border_group))
-        .title_style(theme.style(HighlightGroup::PaneTitle))
-        .title(format!(" {} ", sanitize::single_line(title)));
+    let mut block = crate::ui::frame::block(theme, BorderSurface::Pane, title, focused);
+    if focused && !state.hints.is_empty() {
+        block = block.title_bottom(crate::ui::frame::hints(theme, &state.hints));
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.is_empty() {
         return;
     }
-    let content = readable_area(inner, message_width);
+    let mut content = readable_area(inner, message_width);
     if content.is_empty() {
         return;
+    }
+    // A state over the conversation (offline, an error) with what to do
+    // next takes the first row.
+    if let Some(banner) = state.banner.as_deref()
+        && content.height > 2
+    {
+        // Wrapped to the pane's width, so a narrow pane keeps all of it
+        // (L10), in at most half the conversation.
+        let line = Line::from(Span::styled(
+            format!(" ⚠ {} ", sanitize::single_line(banner)),
+            theme.style(HighlightGroup::StateBanner),
+        ));
+        let rows = text_height(&line, content.width)
+            .min(content.height / 2)
+            .max(1);
+        frame.render_widget(
+            Paragraph::new(line).wrap(Wrap { trim: false }),
+            Rect::new(content.x, content.y, content.width, rows),
+        );
+        content = Rect::new(
+            content.x,
+            content.y.saturating_add(rows),
+            content.width,
+            content.height - rows,
+        );
+    }
+    if !messages.iter().any(|message| message.system.is_none()) && content.height >= 6 {
+        render_empty(frame, content, state.empty_hint.as_deref(), theme);
     }
 
     // Keep wrapped body text within the six-cell avatar/author gutter.
@@ -599,7 +632,7 @@ fn render_internal(
         .and_then(|_| state.copy_bounds(messages));
     let labels = std::mem::take(&mut state.labels);
     let role_changes = role_changes(messages);
-    let blocks = messages
+    let mut blocks = messages
         .iter()
         .enumerate()
         .map(|(index, message)| {
@@ -641,6 +674,20 @@ fn render_internal(
         })
         .collect::<Vec<_>>();
     state.labels = labels;
+    if let Some(marker) = state.new_marker.as_deref()
+        && let Some(index) = messages
+            .iter()
+            .position(|message| message.event_id == marker)
+        && let Some(block) = blocks.get_mut(index)
+    {
+        block
+            .rows
+            .insert(0, TimelineRow::Text(new_line(content.width, theme)));
+        block.selection_before_row += 1;
+        if let Some(avatar) = &mut block.avatar {
+            avatar.before_row += 1;
+        }
+    }
     let heights = blocks
         .iter()
         .map(|block| block.height(content.width))
@@ -825,6 +872,45 @@ fn render_internal(
     }
 }
 
+/// "No messages here yet" and what to do next, in the middle of an empty
+/// conversation; the notices of its creation stay where they are drawn.
+fn render_empty(frame: &mut Frame<'_>, content: Rect, hint: Option<&str>, theme: &Theme) {
+    let mut lines = vec![Line::from(Span::styled(
+        "No messages here yet",
+        theme.style(HighlightGroup::Strong),
+    ))];
+    if let Some(hint) = hint {
+        lines.push(Line::from(Span::styled(
+            sanitize::single_line(hint),
+            theme.style(HighlightGroup::Muted),
+        )));
+    }
+    let height = u16::try_from(lines.len()).unwrap_or(2);
+    let y = content
+        .y
+        .saturating_add(content.height / 2)
+        .saturating_sub(height);
+    frame.render_widget(
+        Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center),
+        Rect::new(content.x, y, content.width, height),
+    );
+}
+
+/// The line before the first unread message: `──── new ────`, as wide as the
+/// conversation.
+fn new_line(width: u16, theme: &Theme) -> Line<'static> {
+    let width = usize::from(width.max(9));
+    let side = width.saturating_sub(5) / 2;
+    Line::styled(
+        format!(
+            "{} new {}",
+            "─".repeat(side),
+            "─".repeat(width.saturating_sub(5).saturating_sub(side))
+        ),
+        theme.style(HighlightGroup::NewMessageMarker),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn message_block(
     message: &Message,
@@ -958,17 +1044,16 @@ fn message_block(
             format_time(message.created_at),
             theme.style(HighlightGroup::MessageTimestamp),
         ));
-    } else {
-        // The first cell is reserved for the message-scoped selection gutter.
-        header.push(Span::raw(" "));
-        if avatar.is_some() {
-            header.push(Span::raw("     "));
-        } else {
-            header.push(Span::styled(
-                format!("{} ", avatar_marker(&message.pubkey, &author)),
-                theme.style(HighlightGroup::MessageAvatar),
-            ));
-        }
+    } else if avatar.is_none() {
+        // The first cell is the message-scoped selection gutter: the header
+        // is indented past it (below), so a wrapped header never starts
+        // under the mark (L10).
+        header.push(Span::styled(
+            format!("{} ", avatar_marker(&message.pubkey, &author)),
+            theme.style(HighlightGroup::MessageAvatar),
+        ));
+    }
+    if !grouped {
         if let Some(marker) = agent_marker {
             header.push(Span::styled(
                 marker,
@@ -1035,14 +1120,17 @@ fn message_block(
         header.extend(line.spans);
     }
     let header = Line::from(header);
-    if grouped {
-        rows.push(TimelineRow::Indented {
-            line: header,
-            indent: MESSAGE_TEXT_INDENT,
-        });
+    // The header starts past the selection gutter, and past the avatar when
+    // there is one, so its wrapped rows stay clear of both.
+    let header_indent = if grouped || avatar.is_some() {
+        MESSAGE_TEXT_INDENT
     } else {
-        rows.push(TimelineRow::Text(header));
-    }
+        1
+    };
+    rows.push(TimelineRow::Indented {
+        line: header,
+        indent: header_indent,
+    });
     if !message.deleted && message.delivery == crate::domain::DeliveryState::Unknown {
         rows.push(TimelineRow::Indented {
             line: Line::styled(
@@ -1179,17 +1267,21 @@ fn system_message_block(
     } else {
         system_summary(system, profiles, self_pubkey)
     };
-    rows.push(TimelineRow::Text(Line::from(vec![
-        Span::raw(" "),
-        Span::styled(
-            format!("  · {summary} · "),
-            theme.style(HighlightGroup::MessageTimestamp),
-        ),
-        Span::styled(
-            format_time(message.created_at),
-            theme.style(HighlightGroup::MessageTimestamp),
-        ),
-    ])));
+    // Indented past the selection gutter, so a wrapped notice keeps its
+    // first character (L10).
+    rows.push(TimelineRow::Indented {
+        line: Line::from(vec![
+            Span::styled(
+                format!("· {summary} · "),
+                theme.style(HighlightGroup::MessageTimestamp),
+            ),
+            Span::styled(
+                format_time(message.created_at),
+                theme.style(HighlightGroup::MessageTimestamp),
+            ),
+        ]),
+        indent: SYSTEM_LINE_INDENT,
+    });
     MessageBlock {
         rows,
         avatar: None,
@@ -1555,7 +1647,9 @@ fn reaction_line(
 /// URL or starts I/O. The visible initial is merely a readable supplement; the
 /// author label remains the identity-bearing text.
 pub fn avatar_marker(pubkey: &str, author: &str) -> String {
-    const SHAPES: [char; 4] = ['●', '◆', '■', '▲'];
+    // No diamond: `◆` beside a name says "agent" everywhere in bzz, and a
+    // person whose key drew it (one in four, until v0.17.0) read as one.
+    const SHAPES: [char; 4] = ['●', '▼', '■', '▲'];
     let hash = pubkey.bytes().fold(0_u8, |value, byte| {
         value.wrapping_mul(33).wrapping_add(byte)
     });
@@ -1626,6 +1720,17 @@ mod tests {
     use crate::{domain::Message, ui::theme::Theme};
     use ratatui::layout::Rect;
     use ratatui_image::sliced::SlicedProtocol;
+
+    /// No person's badge carries the agent's mark.
+    #[test]
+    fn a_badge_never_draws_the_agent_mark() {
+        for seed in 0..=u8::MAX {
+            let pubkey = format!("{seed:02x}{}", "ab".repeat(31));
+            let badge = super::avatar_marker(&pubkey, "Ada");
+            assert!(!badge.contains('◆') && !badge.contains('◇'), "{badge}");
+            assert!(badge.ends_with("A]"), "{badge}");
+        }
+    }
     use uuid::Uuid;
 
     fn message(pubkey: &str, created_at: u64) -> Message {
@@ -1646,6 +1751,95 @@ mod tests {
             emoji: Vec::new(),
             edited: false,
         }
+    }
+
+    fn drawn(messages: &[Message], state: &mut TimelineState, width: u16) -> Vec<String> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 16)).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render(
+                    frame,
+                    frame.area(),
+                    messages,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    state,
+                    "general",
+                    &Theme::default(),
+                    true,
+                    Some("me"),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// L6: the line goes right before the first unread message, as wide
+    /// as the conversation, and nowhere without a marker.
+    #[test]
+    fn a_new_line_is_drawn_before_the_first_unread_message() {
+        let mut read = message("ada", 1_700_000_000);
+        read.content = "seen already".into();
+        let mut unread = message("lin", 1_700_000_060);
+        unread.content = "fresh news".into();
+        let messages = vec![read, unread.clone()];
+        let mut state = TimelineState {
+            at_live_bottom: true,
+            ..TimelineState::default()
+        };
+        let rows = drawn(&messages, &mut state, 40);
+        assert!(!rows.iter().any(|row| row.contains(" new ")), "{rows:#?}");
+        state.new_marker = Some(unread.event_id.clone());
+        let rows = drawn(&messages, &mut state, 40);
+        let line = rows
+            .iter()
+            .position(|row| row.contains("─ new ─"))
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        let fresh = rows
+            .iter()
+            .position(|row| row.contains("fresh news"))
+            .unwrap();
+        let seen = rows
+            .iter()
+            .position(|row| row.contains("seen already"))
+            .unwrap();
+        assert!(seen < line && line < fresh, "{rows:#?}");
+    }
+
+    /// L5: an empty conversation says so and what to do next; a banner
+    /// takes the first row with what to do when bzz is offline.
+    #[test]
+    fn an_empty_conversation_and_an_offline_one_say_what_to_do_next() {
+        let mut state = TimelineState {
+            at_live_bottom: true,
+            empty_hint: Some("i writes the first one".into()),
+            ..TimelineState::default()
+        };
+        let rows = drawn(&[], &mut state, 60);
+        let text = rows.join("\n");
+        assert!(text.contains("No messages here yet"), "{text}");
+        assert!(text.contains("i writes the first one"), "{text}");
+        state.banner = Some("offline · showing what is saved here · :reconnect tries now".into());
+        let mut hello = message("ada", 1_700_000_000);
+        hello.content = "hello".into();
+        let rows = drawn(&[hello], &mut state, 80);
+        assert!(
+            rows[1].contains("⚠ offline · showing what is saved here · :reconnect tries now"),
+            "{rows:#?}"
+        );
+        let text = rows.join("\n");
+        assert!(!text.contains("No messages here yet"), "{text}");
+        assert!(text.contains("hello"), "{text}");
     }
 
     #[test]
@@ -1809,7 +2003,7 @@ mod tests {
                 .rows
                 .iter()
                 .filter_map(|row| match row {
-                    TimelineRow::Text(line) => Some(
+                    TimelineRow::Text(line) | TimelineRow::Indented { line, .. } => Some(
                         line.spans
                             .iter()
                             .map(|span| span.content.as_ref())
@@ -1851,11 +2045,22 @@ mod tests {
         let body = block
             .rows
             .iter()
+            .filter(|row| matches!(row, TimelineRow::Indented { indent, .. } if *indent > 1))
             .find_map(|row| match row {
                 TimelineRow::Indented { line, indent } if line.width() > 0 => Some((line, *indent)),
                 _ => None,
             })
             .expect("indented message body");
+        // The header is indented past the selection gutter (L10).
+        let header = block
+            .rows
+            .iter()
+            .position(|row| matches!(row, TimelineRow::Indented { .. }))
+            .unwrap();
+        assert!(matches!(
+            block.rows[header],
+            TimelineRow::Indented { indent: 1, .. }
+        ));
         assert_eq!(body.1, MESSAGE_TEXT_INDENT);
         assert!(text_height(body.0, 18 - MESSAGE_TEXT_INDENT) > 1);
         assert_eq!(
@@ -1881,5 +2086,150 @@ mod tests {
         assert!(same_message_group(&first, &message("a", 1_700_000_299)));
         assert!(!same_message_group(&first, &message("a", 1_700_000_301)));
         assert!(!same_message_group(&first, &message("b", 1_700_000_100)));
+    }
+
+    /// Every kind of line of the conversation, as one timeline: each kind
+    /// of message row, and a system line about someone with a long name.
+    type Summaries = HashMap<String, crate::domain::ThreadSummary>;
+    type Reactions = HashMap<String, Vec<crate::domain::Reaction>>;
+
+    fn every_kind_of_line() -> (Vec<Message>, Summaries, Reactions) {
+        let long = "3".repeat(64);
+        let mut joined = message(&long, 1_700_000_000);
+        joined.system = Some(crate::domain::SystemEvent {
+            kind: crate::domain::SystemEventKind::MemberJoined,
+            actor: Some(long.clone()),
+            target: Some(long.clone()),
+            participants: Vec::new(),
+            detail: None,
+        });
+        let mut first = message("ada", 1_700_000_060);
+        first.content = "Deploy window opens at nine; supercalifragilisticexpialidocious-sized words still wrap".into();
+        first.edited = true;
+        let mut grouped = message("ada", 1_700_000_090);
+        grouped.content =
+            "a grouped line that follows its author's header and wraps under it".into();
+        let mut broadcast = message("lin", 1_700_000_120);
+        broadcast.content = "also to the channel".into();
+        broadcast.broadcast = true;
+        broadcast.delivery = crate::domain::DeliveryState::Unknown;
+        let mut sent = message("sam", 1_700_000_180);
+        sent.content = "from a thread".into();
+        sent.sent_from_thread = Some(crate::protocol::sent_from_thread::SentFromThread {
+            root_event_id: "root".into(),
+            excerpt: Some("the rollback plan, step by step, with every name in it".into()),
+        });
+        let mut deleted = message("sam", 1_700_000_900);
+        deleted.deleted = true;
+        let mut pending = message("me", 1_700_001_000);
+        pending.content = "mine, waiting for the relay".into();
+        pending.delivery = crate::domain::DeliveryState::Pending;
+        let summaries = HashMap::from([(
+            first.event_id.clone(),
+            crate::domain::ThreadSummary {
+                descendant_count: 12,
+                last_reply_at: Some(1_700_000_100),
+            },
+        )]);
+        let reactions = HashMap::from([(
+            first.event_id.clone(),
+            ["👍", "🎉", "eyes"]
+                .iter()
+                .enumerate()
+                .map(|(index, emoji)| crate::domain::Reaction {
+                    event_id: format!("reaction-{index}"),
+                    target_event_id: first.event_id.clone(),
+                    pubkey: format!("person-{index}"),
+                    emoji: (*emoji).into(),
+                    created_at: 1_700_000_070,
+                    deleted: false,
+                    emoji_url: None,
+                })
+                .collect(),
+        )]);
+        (
+            vec![joined, first, grouped, broadcast, sent, deleted, pending],
+            summaries,
+            reactions,
+        )
+    }
+
+    /// The characters a conversation shows inside its frame, in reading
+    /// order, without the spaces and the selection marks a narrow width
+    /// moves or adds.
+    fn shown_characters(
+        messages: &[Message],
+        summaries: &HashMap<String, crate::domain::ThreadSummary>,
+        reactions: &HashMap<String, Vec<crate::domain::Reaction>>,
+        width: u16,
+    ) -> String {
+        let height = 400;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        // Every message is marked, so the marks are drawn over each row.
+        let mut state = TimelineState {
+            at_live_bottom: true,
+            selected_event: messages.last().map(|message| message.event_id.clone()),
+            copy_anchor: messages.first().map(|message| message.event_id.clone()),
+            banner: Some("offline · showing what is saved here · :reconnect tries now".into()),
+            ..TimelineState::default()
+        };
+        terminal
+            .draw(|frame| {
+                super::render(
+                    frame,
+                    frame.area(),
+                    messages,
+                    summaries,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    reactions,
+                    &mut state,
+                    "general",
+                    &Theme::default(),
+                    true,
+                    Some("me"),
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut shown = String::new();
+        for y in 1..height - 1 {
+            for x in 1..width - 1 {
+                shown.push_str(buffer[(x, y)].symbol());
+            }
+        }
+        shown
+            .chars()
+            .filter(|character| !character.is_whitespace() && !"▌│─".contains(*character))
+            .collect()
+    }
+
+    /// L10: text wraps to the pane's real width and no line loses a
+    /// character at any width (a wrapped system line lost its first one at
+    /// 80×24 under the selection mark).
+    #[test]
+    fn every_kind_of_line_wraps_at_every_width_and_loses_no_character() {
+        let (messages, summaries, reactions) = every_kind_of_line();
+        let wide = shown_characters(&messages, &summaries, &reactions, 400);
+        for needle in [
+            "3333",
+            "joined",
+            "Deployw",
+            "(edited)",
+            "12replies",
+            "👍",
+            "alsotothechannel",
+            "sentfromthread",
+            "messagedeleted",
+            "[pending]",
+            ":reconnect",
+        ] {
+            assert!(wide.contains(needle), "{needle}: {wide}");
+        }
+        for width in 20..=200 {
+            let shown = shown_characters(&messages, &summaries, &reactions, width);
+            assert_eq!(shown, wide, "at {width} columns");
+        }
     }
 }
