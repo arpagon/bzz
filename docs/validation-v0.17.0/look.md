@@ -64,14 +64,32 @@ the finder over it, the focus moved). `scripts/test-tui-tmux.py` gained
   board left), `t17-look-captures` (its own check wrapped at 80 columns).
 - Run 2 (`89acba5`): 35 of 36; `t17-look-captures` quit with the focus moved
   (fixed in the scenario, `eb4d27a`).
-- Run 3 (after the merge of viz): RESULT_RUN3
+- Run 3 (`9f8ac04`, after the merge of viz): 35 of 36; every v0.13 to v0.16
+  scenario passed; `t17-look-captures` again, its `Tab` went into the Board
+  open in `#t9-general` and `q` was the app's. Its focus steps were removed
+  (`255bed9`) and it was run alone, with a pause before typing in the finder
+  (a fresh fixture typed into it too early): 1 of 1, after and before.
 
 ## Captures
 
-`<scratch>/captures-after/t17-look-captures/NN.{txt,ansi}` (after) and
-`<scratch>/captures-before/t17-look-captures/` (before: the v0.16.0 release
-binary on the same fixture and scenario). Steps 01–04 are 80×24, 05–08
-160×45. BEFORE_NOTE
+`<scratch>/captures-after2/t17-look-captures/NN.{txt,ansi}` (after, at
+`255bed9`+pause) and `<scratch>/captures-before/t17-look-captures/` (before).
+Steps 03–05 are 80×24 (workspace, finder, workspace), 06–08 160×45. Every
+scenario of run 3 is captured in `<scratch>/captures-after/`, at 200×50
+unless the scenario names a size, with colours (`.ansi`).
+
+"Before" is the v0.16.0 release binary (`bzz 0.16.0`, built 2026-11-20),
+not a build of `543dbd1`: the look did not change between them. It ran on
+the same fixture through a wrapper that removes `motion = …` from the
+fixture's `config.toml` (v0.16.0 refuses the key viz added), and the
+runner's `cargo` was a no-op so nothing was rebuilt. Read as a newcomer:
+before, the status line says `online  HALFBLOCKS  ? help · q quit` and
+the finder's title carries its keys; after, `NORMAL  #t9-general  ● online
+Ctrl-K actions · ? keys`, the unread counts `1` stand at the right of
+`#t14-names` and `#t9-announcements`, the finder's keys are its footer, and
+the `.ansi` captures show the focused title as a bold reversed label
+(`1;7m`) in a cyan frame, the other frames in grey, and everything behind
+the finder dim (`2m`).
 
 ## Theme tokens added (the site mirrors `builtin.rs`)
 

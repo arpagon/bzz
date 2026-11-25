@@ -2415,7 +2415,12 @@ keys = ["space", "space"]
 visible = "channel finder"
 
 [[scenario.step]]
-keys = ["type:t9-gen", "enter"]
+pause = 500
+keys = ["t", "9", "-", "g", "e", "n"]
+visible = "#t9-general"
+
+[[scenario.step]]
+keys = ["enter"]
 visible = "message #t9-general"
 
 [[scenario.step]]
