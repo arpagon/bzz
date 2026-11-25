@@ -4,7 +4,8 @@
 //! (`unshare -rn`) whose only interface is loopback, the way
 //! `docker --network none` gives it. The test sees the full first screen,
 //! quits, and checks that no demo folder is left and that the home it ran
-//! with is byte for byte what it was.
+//! with is byte for byte what it was. A second run adds a card on the
+//! Board of `#launch` and moves it (plan A2), with the same checks.
 //!
 //! The time limit is 1 s for the binary named by `BZZ_DEMO_BIN` (the release
 //! build the proof uses), and 10 s for the debug build `cargo test` makes.
@@ -163,6 +164,114 @@ fn the_demo_fills_its_first_screen_offline_and_leaves_nothing() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(tmux.screen().contains("DEMO-ENDED 0"), "{}", tmux.screen());
+    let leftovers = std::fs::read_dir(temporary.path()).unwrap().count();
+    assert_eq!(leftovers, 0, "no demo folder is left");
+    assert_eq!(tree(home.path()), before, "the home is untouched");
+}
+
+/// Waits until `wanted` holds of the screen, or panics with the screen.
+fn wait_for(tmux: &Tmux, what: &str, wanted: impl Fn(&str) -> bool) -> String {
+    let started = Instant::now();
+    loop {
+        let screen = tmux.screen();
+        if wanted(&screen) {
+            return screen;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "{what} never showed:\n{screen}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The Board (v0.17 A2): in `#launch`, offline, `5` focuses it, `n`, a
+/// title and Enter add a card, `]` moves it to Doing. Leaving takes the
+/// card with the demo: no folder is left, the home is untouched.
+#[test]
+fn the_board_takes_a_card_offline_and_the_demo_leaves_nothing() {
+    if !works("tmux", &["-V"]) || !works("unshare", &["-rn", "ip", "link", "set", "lo", "up"]) {
+        eprintln!("skipped: needs tmux, and unshare -rn with ip (user namespaces)");
+        return;
+    }
+    let binary =
+        std::env::var("BZZ_DEMO_BIN").unwrap_or_else(|_| env!("CARGO_BIN_EXE_bzz").to_owned());
+    let home = tempfile::TempDir::new().unwrap();
+    let temporary = tempfile::TempDir::new().unwrap();
+    let sockets = tempfile::TempDir::new().unwrap();
+    let config = home.path().join(".config/bzz");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("config.toml"), "# the person's own\n").unwrap();
+    let before = tree(home.path());
+    let tmux = Tmux {
+        socket: sockets.path().join("tmux"),
+    };
+    let home_dir = home.path().display().to_string();
+    let inner = format!(
+        "ip link set lo up && exec env -u DBUS_SESSION_BUS_ADDRESS HOME={home_dir} \
+         XDG_CONFIG_HOME={home_dir}/.config XDG_DATA_HOME={home_dir}/.local/share \
+         XDG_CACHE_HOME={home_dir}/.cache XDG_STATE_HOME={home_dir}/.local/state \
+         TMPDIR={} {binary} demo",
+        temporary.path().display()
+    );
+    let command = format!("unshare -rn sh -c '{inner}'; echo DEMO-ENDED $?; sleep 30");
+    tmux.run(&[
+        "new-session",
+        "-d",
+        "-s",
+        "demo",
+        "-x",
+        "80",
+        "-y",
+        "24",
+        &command,
+    ]);
+    let keys = |keys: &[&str]| {
+        let mut arguments = vec!["send-keys", "-t", "demo"];
+        arguments.extend(keys);
+        tmux.run(&arguments);
+    };
+    wait_for(&tmux, "the first screen", full);
+    std::thread::sleep(Duration::from_millis(300));
+    keys(&["Space", "Space"]);
+    wait_for(&tmux, "the channel finder", |screen| {
+        screen.contains("channel finder")
+    });
+    keys(&["-l", "launch"]);
+    keys(&["Enter"]);
+    wait_for(&tmux, "the Board in #launch", |screen| {
+        screen.contains("┌ launch ")
+            && screen.contains("Board · 5 focus")
+            && screen.contains("To do (3)")
+    });
+    keys(&["5"]);
+    wait_for(&tmux, "the Board's focus", |screen| {
+        screen.contains("Board · Ctrl-c leave")
+    });
+    keys(&["n"]);
+    wait_for(&tmux, "the form", |screen| screen.contains("New card"));
+    keys(&["-l", "Press kit"]);
+    keys(&["Enter"]);
+    wait_for(&tmux, "the new card", |screen| {
+        screen.contains("To do (4)") && screen.contains("> Press kit")
+    });
+    keys(&["]"]);
+    let screen = wait_for(&tmux, "the card in Doing", |screen| {
+        screen.contains("Doing (3)") && screen.contains("To do (3)")
+    });
+    // In the next column: after "Doing" and before "Done".
+    let doing = screen.find("Doing (3)").unwrap();
+    let card = screen.find("> Press kit").unwrap();
+    let done = screen.find("Done (3)").unwrap();
+    assert!(doing < card && card < done, "{screen}");
+
+    keys(&["C-c"]);
+    std::thread::sleep(Duration::from_millis(300));
+    keys(&["q"]);
+    wait_for(&tmux, "the question", |screen| screen.contains("quit bzz?"));
+    keys(&["y"]);
+    let screen = wait_for(&tmux, "the end", |screen| screen.contains("DEMO-ENDED"));
+    assert!(screen.contains("DEMO-ENDED 0"), "{screen}");
     let leftovers = std::fs::read_dir(temporary.path()).unwrap().count();
     assert_eq!(leftovers, 0, "no demo folder is left");
     assert_eq!(tree(home.path()), before, "the home is untouched");

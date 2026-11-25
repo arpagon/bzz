@@ -2567,3 +2567,143 @@ visible = "quit bzz?"
 [[scenario.step]]
 keys = ["y"]
 visible = "__BZZ_HERDR_EXIT__:0"
+
+# v0.17 A2 and the demo's loose ends: the whole first minute at 80×24.
+# The three things Ada names (the checklist's thread, a search, a message
+# and Scout), then the Board of #launch (a card added and moved; Scout adds
+# one when asked; a teammate moves one with no key pressed; a refused :app
+# notice shown whole), then the huddle of #infra. No pause between a
+# teammate's answer and the next message: an answer is dated before it.
+[[scenario]]
+id = "t17-demo2-first-minute"
+kind = "automated"
+description = "bzz demo at 80x24: the three things Ada names, the Board in #launch (add, move, Scout, a teammate's move), a notice shown whole, the huddle."
+size = "80x24"
+args = ["demo"]
+ready = "DEMO · generated, offline"
+exit = "__BZZ_HERDR_EXIT__:0"
+
+[[scenario.step]]
+pause = 500
+keys = []
+visible = 'Then our Board in #launch: 5 opens it, n'
+
+[[scenario.step]]
+keys = ["k", "k", "k"]
+visible = "Release checklist for Thursday"
+
+[[scenario.step]]
+keys = ["enter"]
+visible = "context · 4 replies"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "DEMO · generated, offline"
+absent = "context · 4 replies"
+
+[[scenario.step]]
+keys = ["/", "type:rollback"]
+visible = "rollback plan is step 7"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "Search ·"
+
+[[scenario.step]]
+keys = ["G", "i", "type:hello team", "enter"]
+visible = "Welcome aboard"
+timeout = 5000
+
+[[scenario.step]]
+keys = ["i", "type:@Sco"]
+visible = "◆ remote agent · eligible"
+
+[[scenario.step]]
+keys = ["tab", "type:add Ship party", "enter"]
+visible = 'add Ship party[^\n]*\n[^\n]*↳ 1 reply'
+regex = true
+timeout = 8000
+
+[[scenario.step]]
+keys = ["enter"]
+visible = 'Done: I added "Ship party" to To do'
+timeout = 5000
+
+[[scenario.step]]
+keys = ["q"]
+visible = "DEMO · generated, offline"
+absent = "context · 1 reply"
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:launch", "enter"]
+visible = 'Board · 5 focus[\s\S]*To do \(4\)[\s\S]*Ship party'
+regex = true
+
+[[scenario.step]]
+keys = ["5"]
+visible = "Board · Ctrl-c leave"
+
+[[scenario.step]]
+keys = ["n"]
+visible = "New card"
+
+[[scenario.step]]
+keys = ["type:Press kit", "enter"]
+visible = "> Press kit"
+
+[[scenario.step]]
+keys = ["]"]
+visible = 'Doing \(3\)[^\n]*\n[^\n]*Blog post review[^\n]*\n[^\n]*Status page migration[^\n]*\n[^\n]*> Press kit'
+regex = true
+
+[[scenario.step]]
+keys = ["ctrl+c", ":", "type:app share", "enter"]
+visible = "Demo: only the Board."
+
+# No key: a teammate moves a card on the Board and says so in #launch,
+# ten seconds after the last key in it and fifteen after it was shown.
+[[scenario.step]]
+keys = []
+visible = 'Moved "Blog post review" to'
+timeout = 30000
+
+[[scenario.step]]
+keys = []
+visible = 'Done \(4\)[^\n]*\n[^\n]*Blog post review'
+regex = true
+
+[[scenario.step]]
+keys = ["space", "space"]
+visible = "channel finder"
+
+[[scenario.step]]
+keys = ["type:infra", "enter"]
+visible = "┌ infra "
+
+[[scenario.step]]
+pause = 1000
+keys = [":", "type:huddle", "enter"]
+visible = "a generated recording · Esc"
+
+[[scenario.step]]
+keys = []
+visible = "a recording · no microphone is open, nothing is sent"
+absent = "you are not in the call"
+
+[[scenario.step]]
+keys = ["esc"]
+visible = "DEMO · generated, offline"
+absent = "a generated recording · Esc"
+
+[[scenario.step]]
+keys = ["q"]
+visible = "quit bzz?"
+
+[[scenario.step]]
+keys = ["y"]
+visible = "__BZZ_HERDR_EXIT__:0"
