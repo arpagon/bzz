@@ -468,6 +468,10 @@ pub struct Palette {
     matcher: Matcher,
     /// Where the focus was; Esc puts it back.
     pub return_to: (Route, FocusSurface),
+    /// What the candidates were built from (the App's channel count and
+    /// unread count): when it changes while the palette is open, the App
+    /// hands it new candidates (`replace_candidates`).
+    pub source: (usize, usize),
     offset: Cell<usize>,
     page: Cell<usize>,
 }
@@ -491,11 +495,36 @@ impl Palette {
             notice: None,
             matcher: Matcher::new(Config::DEFAULT),
             return_to,
+            source: (0, 0),
             offset: Cell::new(0),
             page: Cell::new(10),
         };
         palette.refilter();
         palette
+    }
+
+    /// New candidates while open (channels arrived after it opened): the
+    /// query stays, and the selection stays on the same row if it is still
+    /// listed.
+    pub fn replace_candidates(
+        &mut self,
+        candidates: Vec<Candidate>,
+        facts: &Facts,
+        recent: &[&'static str],
+    ) {
+        let selected = self.selected_candidate().map(|candidate| candidate.target);
+        self.empty = empty_rows(&candidates, facts, recent);
+        self.candidates = candidates;
+        let notice = self.notice.take();
+        self.refilter();
+        self.notice = notice;
+        if let Some(target) = selected
+            && let Some(row) = self.rows.iter().position(
+                |row| matches!(row, Row::Item(index) if self.candidates[*index].target == target),
+            )
+        {
+            self.selected = row;
+        }
     }
 
     pub fn query(&self) -> &str {
@@ -1136,6 +1165,23 @@ mod tests {
         let titles = palette.item_titles();
         assert!(!titles.contains(&"Widen side pane"), "{titles:?}");
         assert!(titles.contains(&"Focus thread"), "{titles:?}");
+    }
+
+    #[test]
+    fn channels_that_arrive_while_it_is_open_are_listed() {
+        let keymap = KeyMap::builtin();
+        let facts = facts();
+        let mut palette = Palette::open(
+            candidates(&keymap, &facts, &[]),
+            &facts,
+            &[],
+            (Route::Workspace, FocusSurface::Timeline),
+        );
+        typed(&mut palette, "#t9");
+        assert!(palette.item_titles().is_empty());
+        palette.replace_candidates(candidates(&keymap, &facts, &channels()), &facts, &[]);
+        assert_eq!(palette.query(), "#t9");
+        assert_eq!(palette.item_titles(), vec!["t9-general"]);
     }
 
     #[test]

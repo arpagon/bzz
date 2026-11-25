@@ -11180,6 +11180,7 @@ impl App {
                 );
             }
             Some(Overlay::Palette) => {
+                self.refresh_palette();
                 if let Some(palette) = &self.palette {
                     crate::ui::palette::render(frame, area, palette, &self.theme);
                 }

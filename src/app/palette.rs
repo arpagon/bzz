@@ -55,16 +55,44 @@ impl App {
         channels
     }
 
+    /// What the palette's channel rows are built from.
+    fn palette_source(&self) -> (usize, usize) {
+        (self.channels.len(), self.unread_channels().len())
+    }
+
     pub(super) fn open_palette(&mut self) {
         let facts = self.palette_facts();
         let candidates = palette::candidates(&self.keymap, &facts, &self.palette_channels());
-        self.palette = Some(Palette::open(
+        let mut opened = Palette::open(
             candidates,
             &facts,
             &self.palette_recent,
             (self.presentation.route, self.presentation.focus),
-        ));
+        );
+        opened.source = self.palette_source();
+        self.palette = Some(opened);
         self.presentation.open_overlay(Overlay::Palette);
+    }
+
+    /// Channels that arrive while the palette is open (it was opened while
+    /// bzz was still syncing) are listed: the palette gets new candidates
+    /// before a key and before it is drawn.
+    pub(super) fn refresh_palette(&mut self) {
+        let source = self.palette_source();
+        if self
+            .palette
+            .as_ref()
+            .is_none_or(|palette| palette.source == source)
+        {
+            return;
+        }
+        let facts = self.palette_facts();
+        let candidates = palette::candidates(&self.keymap, &facts, &self.palette_channels());
+        let recent = self.palette_recent.clone();
+        if let Some(palette) = self.palette.as_mut() {
+            palette.replace_candidates(candidates, &facts, &recent);
+            palette.source = source;
+        }
     }
 
     /// Esc: the palette goes and the focus is where it was.
@@ -82,6 +110,7 @@ impl App {
     /// A key while the palette is open. What does not run a row is the
     /// palette's own (`ui::palette::Palette::key`).
     pub(super) fn palette_input(&mut self, key: KeyEvent) -> Option<Target> {
+        self.refresh_palette();
         let Some(palette) = self.palette.as_mut() else {
             self.presentation.close_overlay();
             return None;
