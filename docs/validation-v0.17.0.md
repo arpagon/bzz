@@ -70,7 +70,7 @@ done on. Linux x86_64 unless a section says otherwise.
 | F8 | [release](#v0170--task-release-the-upgrade-from-v0160-the-version-f8) · [release2](#v0170--task-release2-the-documents-brought-level-with-the-code) | The version commit is held, to be placed last; the branch head still says 0.16.0 |
 | W1 | [windows](#v0170-validation-windows-task-windows-plan-w1-and-w2) |  |
 | W2 | [windows](#v0170-validation-windows-task-windows-plan-w1-and-w2) | Also walked by the principal with CI's release binary ([the principal's own checks](#windows-with-cis-release-binary)); a paste still arrives as keys |
-| W3 | Done by the principal on 2026-11-26 over SSH in a macOS 14 virtual machine, with CI's Intel release binary ([the principal's own checks](#the-principals-own-checks)); not at a terminal program, not Apple Silicon |  |
+| W3 | Done by the principal on 2026-11-25 over SSH in a macOS 14 virtual machine, with CI's Intel release binary ([the principal's own checks](#the-principals-own-checks)); not at a terminal program, not Apple Silicon |  |
 
 ## The principal's own checks
 
@@ -114,7 +114,7 @@ scratch home and no network.
   `Enter send · Ctrl-J newline · Esc close` in the composer; `:hu`, Tab
   gives `:huddle`, Tab again `start`, the usage under the line. Seen: the
   hint said `i reply` on a message, where `i` writes in the channel (fixed
-  on 2026-11-26: it says `i write`); a space typed before Tab leaves two
+  on 2026-11-25: it says `i write`); a space typed before Tab leaves two
   (`:huddle  start`), not fixed.
 - **At `6fcd428`** (layout merged), at 80×24: opening a thread hides the
   sidebar and the frame says `hidden · channels 2`; `z` shows the
@@ -193,7 +193,7 @@ The draft pull request of D14, read on GitHub:
 - **`18ff30a`** (ci merged): queued when this was written. Its audio job's
   time, the Windows and macOS builds and the agent host on the Intel Mac
   are still to be read.
-- **At `18ff30a`, CI on the pull request (2026-11-26):** four jobs failed,
+- **At `18ff30a`, CI on the pull request (2026-11-25):** four jobs failed,
   from two causes, neither a defect of bzz. The layout's goldens held
   message times and date lines as this machine draws them (it is not in
   UTC; CI is), and failed on Linux and Windows; the audio test passed on
@@ -210,7 +210,7 @@ The draft pull request of D14, read on GitHub:
   cancelled by GitHub for lack of a runner ("not acquired by Runner of type
   hosted"), as on `main` before this version; not a result.
 - **The candidate's own Linux binary** (built by CI at `c79f827`, version
-  0.17.0, 2026-11-26), with nothing installed and no network:
+  0.17.0, 2026-11-25), with nothing installed and no network:
   `bzz --version`, `bzz paths` and `bzz demo --help` answer on
   `debian:stable-slim`, `ubuntu:22.04`, `ubuntu:24.04`,
   `almalinux:9-minimal` and `fedora:latest`; on `ubuntu:20.04` the loader
@@ -226,12 +226,12 @@ The draft pull request of D14, read on GitHub:
   service; `tests/demo_offline_test.rs` now runs the demo with no store,
   seen failing without the fix and passing with it.
 - **Windows again, with the candidate's binary** (CI's MSVC release build
-  at `c79f827`, `bzz 0.17.0`, 2026-11-26), in the console over SSH: the
+  at `c79f827`, `bzz 0.17.0`, 2026-11-25), in the console over SSH: the
   demo; the Board (a card added and moved); `z` shows the conversation
   alone; Esc with nothing open says "nothing to close · q quits"; `:join`
   in the demo says it needs a real community; the first screen without a
   community; leaving leaves no folder and no process.
-- **macOS, for the first time** (W3, 2026-11-26): CI's Intel release binary
+- **macOS, for the first time** (W3, 2026-11-25): CI's Intel release binary
   at `c79f827` on macOS 14.8 in a virtual machine (an emulated Intel
   processor), over SSH through tmux, with a scratch home. `bzz --version`
   and `bzz paths`; the demo's first screen; `?`; `Ctrl-K` with "thr" puts
@@ -242,7 +242,7 @@ The draft pull request of D14, read on GitHub:
   folder; the first screen without a community and `j` opening the join
   form. Not done there: a keychain, a relay, sound, a terminal program at
   the machine, Apple Silicon.
-- **The candidate, whole** (`c79f827`, the version commit, 2026-11-26), in
+- **The candidate, whole** (`c79f827`, the version commit, 2026-11-25), in
   a checkout and a build directory of its own, in UTC: format, both lints,
   the tests, the build without default features, licences and the security
   audit; the apps bench in release; the upgrade from v0.16.0 and from
@@ -251,7 +251,7 @@ The draft pull request of D14, read on GitHub:
   52) and at 80×24 (48 of 48, four skipped for their size); the own-quota
   test. All green, the relay down after.
 - **Two things the site's preview showed, fixed on the candidate**
-  (2026-11-26, the owner chose both). In the capture of `bzz demo`'s first
+  (2026-11-25, the owner chose both). In the capture of `bzz demo`'s first
   screen the keys Ada's welcome asks for were the hardest text to read:
   code in a sentence was muted and dim. It now takes the theme's accent
   (`MarkdownInlineCode`; a theme that sets only `MarkdownCode` keeps both
@@ -260,7 +260,7 @@ The draft pull request of D14, read on GitHub:
   the badge's four shapes no longer include it (`▼`), with a test over 256
   keys; sixteen layout goldens changed in that one character and nothing
   else.
-- **The site's section, looked at before it was placed** (2026-11-26). A
+- **The site's section, looked at before it was placed** (2026-11-25). A
   task made the three captures from `bzz demo` and a preview of the page;
   its review found the first proposal's palette and huddle captures too
   small to read and its loop without a way to play, and cards that said
@@ -271,7 +271,7 @@ The draft pull request of D14, read on GitHub:
   looked at the page served from `site/public` at 1280 and 390 wide in a
   headless browser: no request failed, the terminal's text reads at both.
   Not looked at in a real browser or on a phone; nothing deployed.
-- **The candidate again, after those two fixes** (`fdfa004`, 2026-11-26):
+- **The candidate again, after those two fixes** (`fdfa004`, 2026-11-25):
   the same pass as above, green in everything but one scenario at 80×24:
   `t15-agent-answers-mention` saw no reply from the scripted agent within
   90 s (47 of 48). The same scenario passed at 200×50 in that pass, and at
@@ -284,7 +284,7 @@ The draft pull request of D14, read on GitHub:
   longer scratch path wrapped a line of the agents panel at 80×24 and
   pushed the text the scenario waits for off the screen.
 - **CI at `23756ed` failed in two tests, and both were the tests**
-  (2026-11-26; the commit before it, with the same code, was green in all
+  (2026-11-25; the commit before it, with the same code, was green in all
   22 jobs). On macOS on Apple Silicon a test of the demo's relay read its
   answer with one read and got only the head, which the relay writes apart
   from the body; it now reads the whole answer. On macOS on Intel a test of
@@ -294,11 +294,11 @@ The draft pull request of D14, read on GitHub:
   that answer. The principal ran the second with the timer at zero, which
   forces that order: it passes. Neither changes bzz or the agent host.
 - **The head's own Linux binary where the certificate defect was found**
-  (CI's release build at `481ac5a`, 2026-11-26): in `debian:stable-slim`
+  (CI's release build at `481ac5a`, 2026-11-25): in `debian:stable-slim`
   with no network, which has no `/etc/ssl` at all, `bzz demo` opens; the
   palette finds "Join a community…"; a mention of Scout is answered; `q`,
   `y` ends with status 0.
-- **A real model on this version, once** (2026-11-26, the owner allowed
+- **A real model on this version, once** (2026-11-25, the owner allowed
   this run): `BZZ_AUTHOR_ALLOWED=yes BZZ_AUTHOR_MODEL=openai-codex/gpt-6.1-sol
   scripts/test-agent-authors-app.sh pi-durable` at `481ac5a`, on the pinned
   relay with a generated identity, through the owner's own Pi sign-in, the
@@ -325,6 +325,9 @@ The draft pull request of D14, read on GitHub:
   is stored before it carries the first's. Run by the principal four times
   before the change and three after, alone on the pinned relay: passed
   each time.
+- **Merged** (2026-11-25): CI on the pull request was green in all 22 jobs
+  at `59b5ea2`, on Linux, macOS (Apple Silicon and Intel) and Windows; the
+  branch went to `main` as `1e8fe8d`.
 
 ## What went wrong on the way
 

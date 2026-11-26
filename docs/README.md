@@ -21,7 +21,7 @@ Start with the [README](../README.md). Everything here is plain Markdown.
 
 | Version | Notes | Validation | Plan |
 |---|---|---|---|
-| v0.17.0 (candidate) | [notes](release-v0.17.0.md) | [validation](validation-v0.17.0.md) (per task: [validation-v0.17.0/](validation-v0.17.0/)) | [plan](planning/2026-11-24/v0.17.0.md), [how it closed](planning/2026-11-24/v0.17.0.md#how-it-closed-2026-11-25) |
+| v0.17.0 | [notes](release-v0.17.0.md) | [validation](validation-v0.17.0.md) (per task: [validation-v0.17.0/](validation-v0.17.0/)) | [plan](planning/2026-11-24/v0.17.0.md), [how it closed](planning/2026-11-24/v0.17.0.md#how-it-closed-2026-11-25) |
 | v0.16.0 | [notes](release-v0.16.0.md) | [validation](validation-v0.16.0.md) | [plan](planning/2026-11-17/v0.16.0.md) |
 | v0.15.0 | [notes](release-v0.15.0.md) | [validation](validation-v0.15.0.md) | [plan](planning/2026-11-13/v0.15.0.md) |
 | v0.14.0 | [notes](release-v0.14.0.md) | [validation](validation-v0.14.0.md) | [plan](planning/2026-11-12/v0.14.0.md) |
