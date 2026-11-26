@@ -328,6 +328,47 @@ The draft pull request of D14, read on GitHub:
 - **Merged** (2026-11-25): CI on the pull request was green in all 22 jobs
   at `59b5ea2`, on Linux, macOS (Apple Silicon and Intel) and Windows; the
   branch went to `main` as `1e8fe8d`.
+- **Tagged and published** (2026-11-25, evening; 2026-11-26 01:21 UTC).
+  CI on `main` was green twice in a row, at `1e8fe8d` (with the pinned
+  relay's three jobs) and at `caaf69f`; the annotated tag `v0.17.0` is on
+  `caaf69f`. The Release workflow built the five targets and published 17
+  files. **One file of earlier releases is missing: `dist-manifest.json`.**
+  The workflow uploaded it as a build artifact and listed the run's
+  artifacts half a second later, before GitHub showed it; nothing bzz
+  ships reads it, and it was not added by hand, since a file added outside
+  the workflow would be the only one without an attestation.
+- **The downloads** (the principal, on the published files):
+  `sha256sum -c sha256.sum` and each archive's own `.sha256`: all OK.
+  `gh attestation verify --repo arpagon/bzz`: OK for the five archives,
+  the source archive, the SBOM, both installers, the Homebrew formula and
+  a checksum file, signed by `release.yml` at `refs/tags/v0.17.0`
+  (`caaf69f`); `sha256.sum` itself has none, as before. The Linux binaries
+  for x86_64 and arm64 name `libgcc_s`, `libm`, `libc` and the loader, and
+  no symbol newer than glibc 2.34. The installer the release ships checks
+  for glibc 2.34.
+- **Both things of the cut line, on the published binary.** With
+  `site/public/install.sh` as merged, on clean images: with nothing
+  installed it names what is missing (`xz` on Debian and Ubuntu, `tar` and
+  `xz` on AlmaLinux 9 minimal), refuses Ubuntu 20.04 for its glibc and
+  Alpine for musl, each in one line; with those packages it installed
+  `bzz 0.17.0` in 9 to 26 s on `debian:stable-slim`, `ubuntu:22.04`,
+  `ubuntu:24.04`, `almalinux:9-minimal` and `fedora:latest`. On each, with
+  the container's network then cut, `bzz demo` opened, Scout answered a
+  mention, and `q`, `y` ended with status 0.
+- **macOS and Windows from the published installers.** macOS 14.8 (Intel,
+  a virtual machine, over SSH, a scratch home): the shell installer in 4 s,
+  `bzz 0.17.0`, the demo's first screen with its keys, the palette, Scout's
+  answer, a clean exit. Windows 11 (a virtual machine, a console over SSH):
+  the PowerShell line of the README in 6 s, over the v0.16.0 that was
+  there, `bzz 0.17.0`; the demo, `?`, the palette, Scout's answer, a clean
+  exit with no folder left.
+- **The site, live** (deployed after the release was published). The page
+  at getbzz.dev says "new in v0.17.0" and `everything in v0.17.0`; its ten
+  new files and `install.sh` are byte for byte those of the repository; a
+  headless browser at 1280 and 390 wide found nothing overflowing and all
+  three captures loaded. `curl -fsSL https://getbzz.dev/install.sh | sh` in
+  a clean `debian:stable-slim` installed `bzz 0.17.0`. Not opened in a real
+  browser or on a phone.
 
 ## What went wrong on the way
 
