@@ -2691,7 +2691,7 @@ Everything else in those lists is still as written there.
 | 1 | All CI gates on Linux, macOS Intel, macOS Apple Silicon and Windows; both relay jobs; benchmarks as in M8 | **On this machine (Linux x86_64): every gate passes** (above); the benchmarks show no regression for a profile with no app but `sanitize 64KiB`, explained and accepted; one app open is measured. **CI: pending.** The branch was never pushed: no CI run has seen any of v0.16 |
 | 2 | Upgrade test from a v0.15.0 data directory | **Proven on Linux** (above). Pending in CI on macOS and Windows |
 | 3 | `docs/e2e-manual.md` updated and run with a disposable identity | **Updated:** section 14. **Run in part:** the shell by hand, the TUI by the scenarios on the release binary through tmux, all with disposable identities; see "Manual E2E" for what no run covered |
-| 4 | Production acceptance by the owner: in one of his channels, an agent changes an app at his request and he approves it | **Pending: the owner's.** Nothing here touched a real community, a real model or a real account |
+| 4 | Production acceptance by the owner: in one of his channels, an agent changes an app at his request and he approves it | **Accepted by the owner on 2026-11-26**, by his word, two days after the release; no capture of it is in this record. Nothing the build's own tasks ran touched a real community or a real account |
 
 ### The definition of done
 
