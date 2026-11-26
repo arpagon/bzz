@@ -558,10 +558,11 @@ of an app but its brief; one app shown in a channel at a time
 
 **Pending acceptance**
 
-- The installer on clean machines with this release published: before the
-  release the full install was seen with v0.16.0's archives only
-  ([install]). It is run once the archives exist, and what it showed is
-  added to the validation document after this text.
+- Done after publication: the installer on clean machines with this
+  release's archives (five Linux images, macOS on Intel, Windows 11), then
+  `bzz demo` on each; the checksums and attestations of the downloads
+  ([principal]). The release has no `dist-manifest.json`, which earlier
+  releases had; nothing bzz ships reads it.
 - The checks only a person can do ([`e2e-manual.md`](e2e-manual.md), section
   15), and the owner's release acceptance: `bzz demo` from the published
   installer; `Ctrl+K` to do three things he did not know the key for; a
