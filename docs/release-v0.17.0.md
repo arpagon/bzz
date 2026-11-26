@@ -556,15 +556,21 @@ on Unix only; Grok was not seen to write an app; Buzz desktop shows nothing
 of an app but its brief; one app shown in a channel at a time
 ([`release-v0.16.0.md`](release-v0.16.0.md), "Known limits").
 
-**Pending acceptance**
+**Acceptance**
 
+- **Accepted by the owner on 2026-11-26**, the day after the release: he
+  said the checks only a person can do
+  ([`e2e-manual.md`](e2e-manual.md), section 15) and the release
+  acceptance below were done. This record holds his word and no capture:
+  which of those checks he ran, and on which machines, is not written
+  here, so the lines of "Where it ran" above still say only what the
+  build's own tasks and the principal saw.
 - Done after publication: the installer on clean machines with this
   release's archives (five Linux images, macOS on Intel, Windows 11), then
   `bzz demo` on each; the checksums and attestations of the downloads
   ([principal]). The release has no `dist-manifest.json`, which earlier
   releases had; nothing bzz ships reads it.
-- The checks only a person can do ([`e2e-manual.md`](e2e-manual.md), section
-  15), and the owner's release acceptance: `bzz demo` from the published
+- The release acceptance, as the plan wrote it: `bzz demo` from the published
   installer; `Ctrl+K` to do three things he did not know the key for; a
   huddle with one other person where he sees both lanes and his muted
   microphone.

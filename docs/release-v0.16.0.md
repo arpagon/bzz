@@ -295,10 +295,12 @@ What v0.16.0 does not do, and what was not seen. Every item is in
 - An agent proposes only a new app, an app open in the channel it was
   asked in, or one of which no version was approved yet.
 
-**Pending acceptance**
+**Acceptance**
 
 - **The owner's production acceptance** (release acceptance 4): in one of
   his channels, an agent changes an app at his request and he approves it.
+  **Accepted by the owner on 2026-11-26**, by his word; this record holds
+  no capture of what he ran.
 - The real-model gate of M5, above.
 - CI on the four platforms and both relay jobs, which run when the branch
   is pushed.
