@@ -15,6 +15,10 @@
 #
 # BZZ_T7_BINARY: run that already built test binary instead of cargo (the
 # container runs of scripts/test-audio-containers.sh have no toolchain).
+# BZZ_T7_HOME (with BZZ_T7_BINARY): run the test with this empty folder as its home and no
+# PULSE_COOKIE nor XDG_CONFIG_HOME: no cookie anywhere, as on a session where
+# no PulseAudio client ever wrote one (pactl here writes one in its own home).
+# The test fails if a cookie is there before or after: bzz writes none.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
@@ -84,8 +88,25 @@ case $backend in
     ;;
 esac
 
+t7_env=()
+if [[ -n ${BZZ_T7_HOME:-} ]]; then
+  mkdir -p "$BZZ_T7_HOME"
+  cookies_in() { find "$1" -name cookie -o -name .pulse-cookie | head -1; }
+  [[ -z $(cookies_in "$BZZ_T7_HOME") ]] || { echo "BZZ_T7_HOME holds a cookie" >&2; exit 1; }
+  # The streams command runs as the test's child: pactl keeps its own home.
+  if [[ -n ${BZZ_AUDIO_STREAMS_CMD:-} ]]; then
+    export BZZ_AUDIO_STREAMS_CMD="export HOME='$HOME'${PULSE_COOKIE:+ PULSE_COOKIE='$PULSE_COOKIE'}; $BZZ_AUDIO_STREAMS_CMD"
+  fi
+  t7_env=(env -u PULSE_COOKIE -u XDG_CONFIG_HOME "HOME=$BZZ_T7_HOME")
+  echo "T7 home: $BZZ_T7_HOME, no cookie anywhere"
+fi
+
 if [[ -n ${BZZ_T7_BINARY:-} ]]; then
-  "$BZZ_T7_BINARY" --ignored --nocapture
+  "${t7_env[@]}" "$BZZ_T7_BINARY" --ignored --nocapture
+  if [[ -n ${BZZ_T7_HOME:-} && -n $(cookies_in "$BZZ_T7_HOME") ]]; then
+    echo "bzz wrote a cookie: $(cookies_in "$BZZ_T7_HOME")" >&2
+    exit 1
+  fi
 else
   cd "$repo_root"
   # The `pulseaudio` crate optimised even in this debug build. Unoptimised,

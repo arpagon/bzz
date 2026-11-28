@@ -175,13 +175,13 @@ pub fn render_with_lanes(
 }
 
 /// Why `:huddle devices` lists nothing. On Linux the lists come from the
-/// sound server, and are empty only when none answered (a server that runs
-/// always has an output, if only its null sink): the panel says what
-/// joining says.
+/// sound server, and are empty only when none answered or the one that
+/// answered refused bzz (a server that runs always has an output, if only
+/// its null sink): the panel says what joining says.
 fn no_devices_reason() -> &'static str {
     #[cfg(all(feature = "huddles-audio", target_os = "linux"))]
     {
-        crate::huddle::audio::NO_SOUND_SERVER
+        crate::huddle::audio::no_devices_reason()
     }
     #[cfg(not(all(feature = "huddles-audio", target_os = "linux")))]
     {

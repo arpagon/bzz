@@ -7,8 +7,13 @@
 #   scripts/test-audio-containers.sh t7 T7_BINARY
 #       T7 (tests/huddle_device_loopback_test.rs) through PipeWire on Debian,
 #       PipeWire on EL9 and PulseAudio, then with no sound server at all.
-#       T7_BINARY is the built test binary, linked against glibc 2.35 or
-#       older (build it in the CI image, ci/linux-build/).
+#       Then with no cookie anywhere in the test's home (as on a session
+#       where no PulseAudio client ever wrote one): PipeWire, PulseAudio of
+#       the same user, and a PulseAudio daemon of another user, open to
+#       anonymous clients (joins) and not (refused, said so; joins with its
+#       cookie in PULSE_COOKIE). T7_BINARY is the built test binary, linked
+#       against glibc 2.35 or older (build it in the CI image,
+#       ci/linux-build/).
 #   scripts/test-audio-containers.sh start BZZ_BINARY
 #       bzz --version and bzz paths on clean Debian, Ubuntu 22.04 and 24.04
 #       and AlmaLinux 9, which have no sound library.
@@ -74,6 +79,52 @@ case ${1:-} in
     printf '%s\n' "$out" | grep -E 'needs PipeWire or PulseAudio|test result' || true
     printf '%s\n' "$out" | grep -q 'huddle audio needs PipeWire or PulseAudio running' \
       || { echo "the no-server message is missing" >&2; status=1; }
+    # No cookie anywhere: bzz 0.17.0 sent an empty one and every server
+    # refused it (docs/validation-v0.17.1/cookie.md).
+    echo "### T7, pipewire-debian, no cookie anywhere"
+    run "${mounts[@]}" -e BZZ_T7_BINARY=/t7 -e BZZ_AUDIO_BACKEND=pipewire -e BZZ_T7_HOME=/tmp/no-cookie \
+      "$(image pipewire-debian)" bash -c "$start_pipewire"$'\n''exec bash /test-audio-loopback.sh' || status=1
+    echo "### T7, pulseaudio of the same user, no cookie anywhere"
+    run "${mounts[@]}" -e HOME=/tmp -e BZZ_T7_BINARY=/t7 -e BZZ_AUDIO_BACKEND=pulseaudio \
+      -e BZZ_T7_HOME=/tmp/no-cookie "$(image pulseaudio)" bash /test-audio-loopback.sh || status=1
+    # A daemon of another user (uid 1234) on a shared volume; T7 as 1000.
+    for anonymous in 1 0; do
+      volume=bzz-t7-other-$$-$anonymous name=bzz-t7-other-$$-$anonymous
+      docker volume create "$volume" >/dev/null
+      docker run --rm --network none -v "$volume:/sound" "$(image pulseaudio)" chown 1234:1234 /sound
+      docker run -d --rm --name "$name" --network none --user 1234:1234 -e HOME=/tmp \
+        -v "$volume:/sound" "$(image pulseaudio)" sh -c '
+          printf "%s\n" \
+            "load-module module-native-protocol-unix socket=/sound/native auth-anonymous='"$anonymous"' auth-cookie=/sound/cookie" \
+            "load-module module-null-sink sink_name=bzz_null rate=48000 channels=1" \
+            "set-default-sink bzz_null" "set-default-source bzz_null.monitor" >/tmp/bzz.pa
+          exec pulseaudio -n --daemonize=no --exit-idle-time=-1 --disallow-exit -F /tmp/bzz.pa' >/dev/null
+      for _ in $(seq 1 100); do
+        docker exec "$name" sh -c 'PULSE_SERVER=unix:/sound/native PULSE_COOKIE=/sound/cookie pactl info 2>/dev/null | grep -q "Default Sink: bzz_null"' && break
+        sleep 0.1
+      done
+      t7_other() {
+        run "${mounts[@]}" -v "$volume:/sound" -e PULSE_SERVER=unix:/sound/native -e BZZ_T7_BINARY=/t7 \
+          -e BZZ_AUDIO_BACKEND=default -e HOME=/tmp "$@" "$(image pulseaudio)" bash /test-audio-loopback.sh 2>&1
+      }
+      if [[ $anonymous == 1 ]]; then
+        echo "### T7, pulseaudio of another user, anonymous clients allowed, no cookie anywhere"
+        t7_other -e BZZ_T7_HOME=/tmp/no-cookie || status=1
+      else
+        echo "### T7, pulseaudio of another user, its cookie needed, no cookie anywhere (expected to fail, saying so)"
+        out=$(t7_other -e BZZ_T7_HOME=/tmp/no-cookie || true)
+        printf '%s\n' "$out" | grep -E 'refused bzz|needs PipeWire|test result' || true
+        printf '%s\n' "$out" | grep -q 'the sound server refused bzz: check PULSE_COOKIE' \
+          || { echo "the refused message is missing" >&2; status=1; }
+        echo "### T7, pulseaudio of another user, its cookie in PULSE_COOKIE"
+        docker exec "$name" cat /sound/cookie \
+          | docker run --rm -i --network none -v "$volume:/sound" "$(image pulseaudio)" \
+            sh -c 'cat >/sound/given && chown 1000 /sound/given && chmod 600 /sound/given'
+        t7_other -e PULSE_COOKIE=/sound/given || status=1
+      fi
+      docker rm -f "$name" >/dev/null 2>&1 || true
+      docker volume rm "$volume" >/dev/null
+    done
     exit $status
     ;;
   start)

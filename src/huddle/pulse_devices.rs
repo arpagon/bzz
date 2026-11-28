@@ -10,10 +10,13 @@
 
 use std::{
     collections::{BTreeSet, VecDeque},
-    ffi::{CStr, CString},
+    ffi::{CStr, CString, OsString},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -21,7 +24,10 @@ use buzz_audio_client::encoder::FRAME_SAMPLES;
 use pulseaudio::{Client, protocol};
 use tokio::sync::mpsc;
 
-use super::{DeviceBridge, Devices, MICROPHONE_DENIED, NO_SOUND_SERVER, SPEAKER_UNAVAILABLE};
+use super::{
+    DeviceBridge, Devices, MICROPHONE_DENIED, NO_SOUND_SERVER, SOUND_SERVER_REFUSED,
+    SPEAKER_UNAVAILABLE,
+};
 use crate::error::{Error, Result};
 
 const SPEC: protocol::SampleSpec = protocol::SampleSpec {
@@ -86,15 +92,29 @@ fn socket_candidates(env: impl Fn(&str) -> Option<String>, uid: u32) -> Vec<Path
     ]
 }
 
+/// The length of a cookie on the wire. Both servers refuse any other before
+/// they look at it: pipewire-pulse answers "invalid", PulseAudio drops the
+/// connection, even on a socket open to anonymous clients
+/// (docs/validation-v0.17.1/cookie.md).
+const COOKIE_LENGTH: usize = 256;
+
 /// The authentication cookies, where libpulse looks for them, each found
-/// once. PipeWire ignores them. PulseAudio wants its own unless the socket
-/// allows anonymous clients (libpulse also proves the user id over the
-/// socket, which this crate does not), and a daemon may keep its cookie in
-/// another of these places than the one `PULSE_COOKIE` names.
-fn cookies() -> Vec<Vec<u8>> {
-    let env = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+/// once, as libpulse reads them: the first 256 bytes of a file; a shorter
+/// file is no cookie (libpulse writes a new one over it). With none found,
+/// 256 zero bytes, which is what libpulse sends when it can neither read nor
+/// create a cookie. libpulse would create one in the user's configuration
+/// folder; bzz writes nothing outside its own folders, and a cookie just
+/// made up matches no daemon's, so the server answers zeros the same way.
+///
+/// pipewire-pulse takes any 256 bytes. PulseAudio takes its own cookie, or
+/// any 256 bytes on a socket open to anonymous clients or from a client of
+/// its own user (it reads the user id from the socket, as the kernel passes
+/// it). A daemon may keep its cookie in another of these places than the
+/// one `PULSE_COOKIE` names, hence every one is tried.
+fn cookies(env: impl Fn(&str) -> Option<OsString>) -> Vec<Vec<u8>> {
+    let env = |name: &str| env(name).filter(|value| !value.is_empty());
     let home = env("HOME").map(PathBuf::from);
-    [
+    let mut found = [
         env("PULSE_COOKIE").map(PathBuf::from),
         env("XDG_CONFIG_HOME").map(|dir| Path::new(&dir).join("pulse/cookie")),
         home.as_ref().map(|home| home.join(".config/pulse/cookie")),
@@ -103,41 +123,77 @@ fn cookies() -> Vec<Vec<u8>> {
     .into_iter()
     .flatten()
     .filter_map(|path| std::fs::read(path).ok())
+    .filter_map(|mut cookie| {
+        (cookie.len() >= COOKIE_LENGTH).then(|| {
+            cookie.truncate(COOKIE_LENGTH);
+            cookie
+        })
+    })
     .fold(Vec::new(), |mut found, cookie| {
         if !found.contains(&cookie) {
             found.push(cookie);
         }
         found
-    })
+    });
+    if found.is_empty() {
+        found.push(vec![0; COOKIE_LENGTH]);
+    }
+    found
 }
 
 fn connect() -> Result<Client> {
     let uid = rustix::process::getuid().as_raw();
-    connect_to(socket_candidates(|name| std::env::var(name).ok(), uid))
+    connect_to(
+        socket_candidates(|name| std::env::var(name).ok(), uid),
+        &cookies(|name| std::env::var_os(name)),
+    )
 }
 
 /// The first candidate that accepts the handshake, else the one line that
-/// says what is missing.
-fn connect_to(candidates: Vec<PathBuf>) -> Result<Client> {
-    let mut cookies: Vec<Option<Vec<u8>>> = cookies().into_iter().map(Some).collect();
-    if cookies.is_empty() {
-        cookies.push(None);
-    }
+/// says what went wrong: no server to speak to, or one that refused bzz.
+fn connect_to(candidates: Vec<PathBuf>, cookies: &[Vec<u8>]) -> Result<Client> {
+    let mut answered = false;
     for path in candidates {
-        for cookie in &cookies {
+        for cookie in cookies {
             let Ok(socket) = UnixStream::connect(&path) else {
                 break;
             };
+            answered = true;
+            // A PulseAudio of this user lets a client in by its user id, with
+            // any cookie. It reads the id from the credentials the kernel
+            // attaches to a message, which it does only while one end of the
+            // socket asks for them: the server asks after it accepts the
+            // connection, and a handshake sent before that carries none
+            // (seen once in six runs on a loaded machine: "refused"). Asking
+            // on this end too makes it certain; libpulse sends them itself.
+            let _ = rustix::net::sockopt::set_socket_passcred(&socket, true);
             // The handshake blocks; a hung server must not hang the join.
             let _ = socket.set_read_timeout(Some(Duration::from_secs(2)));
             let _ = socket.set_write_timeout(Some(Duration::from_secs(2)));
             // A refused cookie: the next one.
-            if let Ok(client) = Client::new_unix(c"bzz", socket, cookie.as_deref()) {
+            if let Ok(client) = Client::new_unix(c"bzz", socket, Some(cookie)) {
                 return Ok(client);
             }
         }
     }
-    Err(Error::Unsupported(NO_SOUND_SERVER.into()))
+    let message = if answered {
+        SOUND_SERVER_REFUSED
+    } else {
+        NO_SOUND_SERVER
+    };
+    Err(Error::Unsupported(message.into()))
+}
+
+/// Whether the last listing of devices found a server that refused bzz.
+static LISTING_REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// Why `:huddle devices` lists nothing: what joining would say.
+pub fn no_devices_reason() -> &'static str {
+    if LISTING_REFUSED.load(Ordering::Relaxed) {
+        SOUND_SERVER_REFUSED
+    } else {
+        NO_SOUND_SERVER
+    }
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime> {
@@ -314,7 +370,12 @@ fn first_time_missing(kind: &str, name: &str) -> bool {
 /// outputs are left out: nobody means them as a microphone. With no sound
 /// server both lists are empty.
 pub fn device_names() -> (Vec<String>, Vec<String>) {
-    let (Ok(client), Ok(runtime)) = (connect(), runtime()) else {
+    let client = connect();
+    LISTING_REFUSED.store(
+        matches!(&client, Err(Error::Unsupported(message)) if message == SOUND_SERVER_REFUSED),
+        Ordering::Relaxed,
+    );
+    let (Ok(client), Ok(runtime)) = (client, runtime()) else {
         return (Vec::new(), Vec::new());
     };
     let labels = |endpoints: Option<Vec<Endpoint>>| {
@@ -921,30 +982,180 @@ mod tests {
             env(&[("PULSE_SERVER", "unix:/nonexistent/bzz-test/native tcp:host")]),
             1,
         );
-        match connect_to(candidates) {
+        match connect_to(candidates, &cookies(|_| None)) {
             Err(Error::Unsupported(message)) => assert_eq!(message, NO_SOUND_SERVER),
             other => panic!("expected the no-sound-server line, got {other:?}"),
         }
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 
+    /// How a scripted server answers an AUTH: as each real one does
+    /// (docs/validation-v0.17.1/cookie.md, seen on the socket).
+    #[derive(Clone)]
+    enum Server {
+        /// pipewire-pulse 1.4: any 256 bytes; another length is "invalid".
+        PipeWire,
+        /// PulseAudio 17 that wants this cookie (a daemon of another user,
+        /// no anonymous clients): another length drops the connection,
+        /// another cookie is "access denied".
+        PulseAudioWants(Vec<u8>),
+    }
+
+    /// A server on a fresh socket, answering every connection's handshake;
+    /// it records the cookies it was sent.
+    fn scripted_server(
+        server: Server,
+    ) -> (
+        tempfile::TempDir,
+        PathBuf,
+        std::sync::Arc<Mutex<Vec<Vec<u8>>>>,
+    ) {
+        use std::io::{BufReader, Read as _};
+        let dir = tempfile::Builder::new()
+            .prefix("bzz-pulse")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let path = dir.path().join("native");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let record = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let (record, server) = (record.clone(), server.clone());
+                std::thread::spawn(move || {
+                    let version = protocol::MAX_VERSION;
+                    let mut writer = stream.try_clone().unwrap();
+                    let mut reader = BufReader::new(stream);
+                    let Ok((seq, protocol::Command::Auth(auth))) =
+                        protocol::read_command_message(&mut reader, version)
+                    else {
+                        return;
+                    };
+                    record.lock().unwrap().push(auth.cookie.clone());
+                    let refused = match (&server, auth.cookie.len() == COOKIE_LENGTH) {
+                        (Server::PipeWire, true) => None,
+                        (Server::PipeWire, false) => Some(protocol::PulseError::Invalid),
+                        (Server::PulseAudioWants(_), false) => return,
+                        (Server::PulseAudioWants(own), true) => {
+                            (auth.cookie != *own).then_some(protocol::PulseError::AccessDenied)
+                        }
+                    };
+                    if let Some(error) = refused {
+                        let _ = protocol::write_error(&mut writer, seq, &error);
+                        return;
+                    }
+                    let reply = protocol::AuthReply {
+                        version,
+                        ..Default::default()
+                    };
+                    protocol::write_reply_message(&mut writer, seq, &reply, version).unwrap();
+                    let Ok((seq, protocol::Command::SetClientName(_))) =
+                        protocol::read_command_message(&mut reader, version)
+                    else {
+                        return;
+                    };
+                    let reply = protocol::SetClientNameReply { client_id: 1 };
+                    protocol::write_reply_message(&mut writer, seq, &reply, version).unwrap();
+                    // Held open until bzz lets go.
+                    let _ = reader.read_to_end(&mut Vec::new());
+                });
+            }
+        });
+        (dir, path, seen)
+    }
+
+    /// A home with these files in it, and the environment that points at it.
+    fn home(
+        files: &[(&str, &[u8])],
+    ) -> (tempfile::TempDir, impl Fn(&str) -> Option<OsString> + use<>) {
+        let home = tempfile::tempdir().unwrap();
+        for (name, bytes) in files {
+            let path = home.path().join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        let root = home.path().to_owned();
+        let env = move |name: &str| (name == "HOME").then(|| root.clone().into_os_string());
+        (home, env)
+    }
+
+    /// The film's defect (bzz 0.17.0): with no cookie file anywhere, bzz sent
+    /// an empty cookie, pipewire-pulse answered "invalid", and the join said
+    /// that no server was running.
+    #[test]
+    fn with_no_cookie_anywhere_pipewire_lets_bzz_in() {
+        let (_home, env) = home(&[]);
+        let (_dir, socket, seen) = scripted_server(Server::PipeWire);
+        let client = connect_to(vec![socket], &cookies(env));
+        assert!(client.is_ok(), "{:?}", client.err());
+        assert_eq!(*seen.lock().unwrap(), vec![vec![0; COOKIE_LENGTH]]);
+    }
+
+    #[test]
+    fn a_cookie_is_read_as_libpulse_reads_it() {
+        let own: [u8; COOKIE_LENGTH] = std::array::from_fn(|n| n as u8);
+        // A longer file: its first 256 bytes, as libpulse sends.
+        let longer = [own.as_slice(), b"tail"].concat();
+        let (_home, env) = home(&[(".config/pulse/cookie", &longer)]);
+        let (_dir, socket, seen) = scripted_server(Server::PulseAudioWants(own.to_vec()));
+        let client = connect_to(vec![socket], &cookies(env));
+        assert!(client.is_ok(), "{:?}", client.err());
+        assert_eq!(*seen.lock().unwrap(), vec![own.to_vec()]);
+        // A shorter file is no cookie: zeros, which PipeWire takes.
+        let (_home, env) = home(&[(".pulse-cookie", b"short")]);
+        assert_eq!(cookies(env), vec![vec![0; COOKIE_LENGTH]]);
+    }
+
+    #[test]
+    fn every_cookie_found_is_tried_before_giving_up() {
+        let own = [7_u8; COOKIE_LENGTH];
+        let (_home, env) = home(&[
+            (".config/pulse/cookie", &[1_u8; COOKIE_LENGTH]),
+            (".pulse-cookie", &own),
+        ]);
+        let (_dir, socket, seen) = scripted_server(Server::PulseAudioWants(own.to_vec()));
+        assert!(connect_to(vec![socket], &cookies(env)).is_ok());
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    /// A daemon that wants its own cookie still gets nothing else, and the
+    /// join says it refused bzz, not that no server runs.
+    #[test]
+    fn a_server_that_refuses_bzz_is_named_so() {
+        assert!(!SOUND_SERVER_REFUSED.contains('\n'));
+        let (_home, env) = home(&[(".config/pulse/cookie", &[1_u8; COOKIE_LENGTH])]);
+        let (_dir, socket, seen) = scripted_server(Server::PulseAudioWants(vec![9; COOKIE_LENGTH]));
+        match connect_to(vec![socket], &cookies(env)) {
+            Err(Error::Unsupported(message)) => assert_eq!(message, SOUND_SERVER_REFUSED),
+            other => panic!("expected the refused line, got {:?}", other.err()),
+        }
+        assert_eq!(*seen.lock().unwrap(), vec![vec![1; COOKIE_LENGTH]]);
+    }
+
     /// The join's answer is shown whole in the status line at 80 columns,
     /// with the mode, a huddle in the channel and the longest connection
     /// word beside it.
     #[test]
-    fn no_sound_server_fits_an_80_column_status_line() {
+    fn the_sound_server_lines_fit_an_80_column_status_line() {
         use ratatui::{Terminal, backend::TestBackend, text::Line};
 
         use crate::{domain::ConnectionState, ui::status, ui::theme::Theme};
         let theme = Theme::builtin("bzz").unwrap();
-        for (mode, connection) in [
-            ("HUDDLE", ConnectionState::Online),
-            ("NORMAL", ConnectionState::Authenticating),
-            ("COMMAND", ConnectionState::IdentityMissing),
-        ] {
+        for (line, (mode, connection)) in [NO_SOUND_SERVER, SOUND_SERVER_REFUSED]
+            .into_iter()
+            .flat_map(|line| {
+                [
+                    ("HUDDLE", ConnectionState::Online),
+                    ("NORMAL", ConnectionState::Authenticating),
+                    ("COMMAND", ConnectionState::IdentityMissing),
+                ]
+                .map(|state| (line, state))
+            })
+        {
             let mut view = status::StatusBarView::new(mode, connection);
             view.channel = Some("#general");
-            view.notice = NO_SOUND_SERVER;
+            view.notice = line;
             view.huddle_slot(
                 Line::from("🎧 huddle · 12 in it · :huddle"),
                 status::priority::HUDDLE,
@@ -956,7 +1167,7 @@ mod tests {
             let row: String = (0..80)
                 .map(|x| terminal.backend().buffer()[(x, 0)].symbol().to_owned())
                 .collect();
-            assert!(row.contains(NO_SOUND_SERVER), "{mode}: {row}");
+            assert!(row.contains(line), "{mode}: {row}");
         }
     }
 }
