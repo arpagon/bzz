@@ -352,6 +352,10 @@ pub const SPEAKER_UNAVAILABLE: &str =
 /// the status line of an 80-column terminal, beside the mode and the
 /// connection; `:huddle devices` says the same.
 pub const NO_SOUND_SERVER: &str = "huddle audio needs PipeWire or PulseAudio running";
+/// Linux: a sound server answered but did not let bzz in (a PulseAudio of
+/// another user that wants its own cookie, or a server that never finished
+/// the handshake). Fits the same 80-column status line.
+pub const SOUND_SERVER_REFUSED: &str = "the sound server refused bzz: check PULSE_COOKIE";
 
 // Linux devices speak the PulseAudio protocol in pure Rust (PipeWire answers
 // it too), so the binary names no sound library. macOS and Windows use cpal.
@@ -359,7 +363,7 @@ pub const NO_SOUND_SERVER: &str = "huddle audio needs PipeWire or PulseAudio run
 #[path = "pulse_devices.rs"]
 mod pulse_devices;
 #[cfg(target_os = "linux")]
-pub use pulse_devices::{device_names, open_devices};
+pub use pulse_devices::{device_names, no_devices_reason, open_devices};
 
 /// Owns the device streams on a dedicated thread (cpal's are not `Send`).
 /// Dropping it stops both streams and releases the devices.
