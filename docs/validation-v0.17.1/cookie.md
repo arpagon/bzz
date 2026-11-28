@@ -199,6 +199,14 @@ all ok); `cargo test --locked --lib` (1054 passed, 3 ignored); `cargo test
 --locked --no-default-features --lib` (727 passed). `Cargo.toml` and
 `Cargo.lock` are unchanged.
 
+The rest of `scripts/test-audio-containers.sh`, with this branch's release
+binary built in the CI image: `start` (Debian, Ubuntu 22.04 and 24.04,
+AlmaLinux 9: 0 sound libraries, `bzz 0.17.0` and its paths, exit 0);
+`serve` and `stop`, PulseAudio and PipeWire (the socket answered, the
+defaults set). `scripts/check-linux-linkage.sh` on that binary: `NEEDED:
+libgcc_s.so.1 libm.so.6 libc.so.6 ld-linux-x86-64.so.2`, exit 0. `record`
+was not run (unchanged).
+
 ## Not proven
 
 - **A real desktop session**, PipeWire or PulseAudio, with and without a
