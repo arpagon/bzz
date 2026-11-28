@@ -215,12 +215,28 @@ was not run (unchanged).
   "PulseAudio of another user, anonymous" is its model.
 - A full join on a relay with the fixed binary (the device layer, T7, is
   what a join opens first; the relay part did not change).
-- PulseAudio's same-user acceptance relies on the kernel passing bzz's
-  credentials because the server asked for them (`SO_PASSCRED` on its end);
-  bzz does not send them itself as libpulse does. Seen on kernel 7.0 every
-  time; older kernels not tried. Setting `SO_PASSCRED` on bzz's own socket
-  would remove the doubt (`rustix`'s `net` feature is already in the build
-  through other crates) and was left out of this fix. It matters only for a
-  PulseAudio daemon of the same user whose cookie bzz cannot read, which a
-  daemon in the user's own home does not have.
 - Systems other than Linux x86_64 (aarch64 Linux uses the same code).
+
+## The principal's review: bzz asks for its credentials itself
+
+The task left one doubt: a PulseAudio of the same user lets a client in by
+its user id, which the kernel attaches to a message only while one end of
+the socket asks for it; the server asks after it accepts the connection,
+and bzz did not ask. The task saw that case pass every time.
+
+The principal ran the container script on the task's own test binary and
+the case failed: "the sound server refused bzz: check PULSE_COOKIE". Then
+that one case alone, ten times with each binary:
+
+| Binary | PulseAudio of the same user, no cookie anywhere |
+|---|---|
+| the task's fix | 0 of 10 passed |
+| with `SO_PASSCRED` set on bzz's socket before the handshake | 10 of 10 passed |
+
+So the handshake reaches the server before the server asks, on this machine
+now, and bzz sets `SO_PASSCRED` on its own end
+(`rustix::net::sockopt::set_socket_passcred`; the `net` feature of `rustix`
+is new in `Cargo.toml`, `Cargo.lock` is unchanged, no new crate). With it
+the whole container script passed three times in a row. Why the task saw
+it pass and the principal saw it fail was not found; the machine was under
+other load at both times.

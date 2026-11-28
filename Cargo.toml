@@ -105,7 +105,7 @@ cpal = { version = "0.16", optional = true }
 # (the default socket path). The agent runtime signals a harness's process
 # group through it (safe `kill`).
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1", default-features = false, features = ["std", "stdio", "process"] }
+rustix = { version = "1", default-features = false, features = ["std", "stdio", "process", "net"] }
 # Before bzz starts an agent's harness it marks every descriptor it holds
 # beyond the three standard streams as not to be handed on, also those bzz
 # itself inherited from the terminal it was started in: a real command an

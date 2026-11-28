@@ -159,6 +159,14 @@ fn connect_to(candidates: Vec<PathBuf>, cookies: &[Vec<u8>]) -> Result<Client> {
                 break;
             };
             answered = true;
+            // A PulseAudio of this user lets a client in by its user id, with
+            // any cookie. It reads the id from the credentials the kernel
+            // attaches to a message, which it does only while one end of the
+            // socket asks for them: the server asks after it accepts the
+            // connection, and a handshake sent before that carries none
+            // (seen once in six runs on a loaded machine: "refused"). Asking
+            // on this end too makes it certain; libpulse sends them itself.
+            let _ = rustix::net::sockopt::set_socket_passcred(&socket, true);
             // The handshake blocks; a hung server must not hang the join.
             let _ = socket.set_read_timeout(Some(Duration::from_secs(2)));
             let _ = socket.set_write_timeout(Some(Duration::from_secs(2)));
