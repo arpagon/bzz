@@ -983,14 +983,14 @@ mod tests {
 
     /// How a scripted server answers an AUTH: as each real one does
     /// (docs/validation-v0.17.1/cookie.md, seen on the socket).
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     enum Server {
         /// pipewire-pulse 1.4: any 256 bytes; another length is "invalid".
         PipeWire,
         /// PulseAudio 17 that wants this cookie (a daemon of another user,
         /// no anonymous clients): another length drops the connection,
         /// another cookie is "access denied".
-        PulseAudioWants([u8; COOKIE_LENGTH]),
+        PulseAudioWants(Vec<u8>),
     }
 
     /// A server on a fresh socket, answering every connection's handshake;
@@ -1014,7 +1014,7 @@ mod tests {
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
-                let record = record.clone();
+                let (record, server) = (record.clone(), server.clone());
                 std::thread::spawn(move || {
                     let version = protocol::MAX_VERSION;
                     let mut writer = stream.try_clone().unwrap();
@@ -1025,12 +1025,12 @@ mod tests {
                         return;
                     };
                     record.lock().unwrap().push(auth.cookie.clone());
-                    let refused = match (server, auth.cookie.len() == COOKIE_LENGTH) {
+                    let refused = match (&server, auth.cookie.len() == COOKIE_LENGTH) {
                         (Server::PipeWire, true) => None,
                         (Server::PipeWire, false) => Some(protocol::PulseError::Invalid),
                         (Server::PulseAudioWants(_), false) => return,
                         (Server::PulseAudioWants(own), true) => {
-                            (auth.cookie != own).then_some(protocol::PulseError::AccessDenied)
+                            (auth.cookie != *own).then_some(protocol::PulseError::AccessDenied)
                         }
                     };
                     if let Some(error) = refused {
@@ -1090,7 +1090,7 @@ mod tests {
         // A longer file: its first 256 bytes, as libpulse sends.
         let longer = [own.as_slice(), b"tail"].concat();
         let (_home, env) = home(&[(".config/pulse/cookie", &longer)]);
-        let (_dir, socket, seen) = scripted_server(Server::PulseAudioWants(own));
+        let (_dir, socket, seen) = scripted_server(Server::PulseAudioWants(own.to_vec()));
         let client = connect_to(vec![socket], &cookies(env));
         assert!(client.is_ok(), "{:?}", client.err());
         assert_eq!(*seen.lock().unwrap(), vec![own.to_vec()]);
@@ -1106,7 +1106,7 @@ mod tests {
             (".config/pulse/cookie", &[1_u8; COOKIE_LENGTH]),
             (".pulse-cookie", &own),
         ]);
-        let (_dir, socket, seen) = scripted_server(Server::PulseAudioWants(own));
+        let (_dir, socket, seen) = scripted_server(Server::PulseAudioWants(own.to_vec()));
         assert!(connect_to(vec![socket], &cookies(env)).is_ok());
         assert_eq!(seen.lock().unwrap().len(), 2);
     }
@@ -1117,7 +1117,7 @@ mod tests {
     fn a_server_that_refuses_bzz_is_named_so() {
         assert!(!SOUND_SERVER_REFUSED.contains('\n'));
         let (_home, env) = home(&[(".config/pulse/cookie", &[1_u8; COOKIE_LENGTH])]);
-        let (_dir, socket, seen) = scripted_server(Server::PulseAudioWants([9; COOKIE_LENGTH]));
+        let (_dir, socket, seen) = scripted_server(Server::PulseAudioWants(vec![9; COOKIE_LENGTH]));
         match connect_to(vec![socket], &cookies(env)) {
             Err(Error::Unsupported(message)) => assert_eq!(message, SOUND_SERVER_REFUSED),
             other => panic!("expected the refused line, got {:?}", other.err()),
